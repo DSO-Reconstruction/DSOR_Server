@@ -7,7 +7,7 @@ Interceptor.attach(sendto, {
         var len = args[2].toInt32();
 
         var sendData = Memory.readByteArray(buf, len);
-        console.log("[UDP] Données envoyées: " + hexdump(sendData, {
+        console.log("[UDP] Data sent: " + hexdump(sendData, {
             offset: 0,
             length: len,
             header: true,
@@ -26,7 +26,7 @@ Interceptor.attach(recvfrom, {
     onLeave: function (retval) {
         if (retval.toInt32() > 0) {
             var recvData = Memory.readByteArray(this.buf, retval.toInt32());
-            console.log("[UDP] Données reçues: " + hexdump(recvData, {
+            console.log("[UDP] Data received: " + hexdump(recvData, {
                 offset: 0,
                 length: retval.toInt32(),
                 header: true,
