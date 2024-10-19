@@ -151,11 +151,11 @@ If you are interested and want to read more about it here is the documentation f
 :::
 
 Thanks to these guys : 
-    - ZestiiSpaghett
-    - MedicalJewel105
-    - SmokeyStack
-    - ThomasOrs
-    - Adrian8115
-    - ismaileke
-    - Tom-Teclador
+     ZestiiSpaghett
+     MedicalJewel105
+     SmokeyStack
+     ThomasOrs
+     Adrian8115
+     ismaileke
+     Tom-Teclador
 
