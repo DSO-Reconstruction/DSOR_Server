@@ -1,21 +1,3 @@
----
-title: RakNet and MCPE
-mentions:
-    - ZestiiSpaghett
-    - MedicalJewel105
-    - SmokeyStack
-    - ThomasOrs
-    - Adrian8115
-    - ismaileke
-    - Tom-Teclador
-description: RakNet protocol for MCBE.
----
-
-Minecraft Bedrock uses a protocol known as [RakNet](http://www.jenkinssoftware.com/)
-Unlike Minecraft Java edition, Bedrock uses UDP on the port 19132
-
-You can find a list of Minecraft Bedrock server softwares [here](/servers/server-software#active-software).
-
 ## RakNet Notes
 
 -   All strings are prefixed with an unsigned short depicting their length.
@@ -168,4 +150,12 @@ If you are interested and want to read more about it here is the documentation f
 [another RakNet Protocol Documentation](https://github.com/vp817/RakNetProtocolDoc)
 :::
 
-This page is a WIP, feel free to contribute as it is still being worked on.
+Thanks to these guys : 
+    - ZestiiSpaghett
+    - MedicalJewel105
+    - SmokeyStack
+    - ThomasOrs
+    - Adrian8115
+    - ismaileke
+    - Tom-Teclador
+
