@@ -1,10 +1,3 @@
-import dgram from 'dgram';
-
-const server = dgram.createSocket('udp4');
-const PORT = 2190;
-const HOST = '0.0.0.0';
-const SERVER_GUID = Buffer.from('1234567890abcdef', 'hex');
-
 export default function handleFrameSetPacket(msg, rinfo) {
     const packetID = msg.readUInt8(0);  // Read Packet ID (0x80 to 0x8d)
 
