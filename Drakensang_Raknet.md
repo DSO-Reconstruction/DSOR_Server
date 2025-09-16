@@ -182,3 +182,19 @@ This document analyzes the RakNet protocol implementation for a Drakensang Onlin
 - **Bytes 35-46**: `DanDan210912` - Character name (ASCII)
 - **Bytes 47-160**: Character stats and position data (floating point values)
 
+
+
+Message Type,Description,Packet Size,Flags
+0x82 (DrasaCharacterService),Appears in large packets (1258+ bytes) 
+Contains character service data,Large (1258+ bytes),60 (reliable ordered)
+0x8A (Character Request),Medium-sized packets (836–1208 bytes) 
+Character data requests,Medium (836–1208 bytes),60 (reliable ordered)
+0x86 (Character Data),Variable-sized packets 
+Character data,Variable,60 (reliable ordered)
+0x88 (Map Load/Change),Variable-sized packets 
+Map load/change notifications,Variable,60 (reliable ordered)
+0x8B (Character Creation),Large packets 
+Character creation data,Large,60 (reliable ordered)
+0x84 (Server Response),Server responses 
+Variable-sized packets,Variable,60 (reliable ordered)
+
