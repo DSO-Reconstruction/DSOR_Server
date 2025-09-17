@@ -36,9 +36,8 @@ def send_periodic_ping(server, addr):
     
     try:
         server.sendto(ping_response, addr)
-        print(f"Sent periodic Connected Ping #{client_states[addr]['ping_count']} to client")
     except Exception as e:
-        print(f"Error sending periodic ping: {e}")
+        pass
 
 def send_0x82_message(server, addr):
     """Send the 0x82 message with DrasaCharacterService"""
@@ -65,9 +64,8 @@ def send_0x82_message(server, addr):
     
     try:
         server.sendto(message_0x82, addr)
-        print(f"Sent 0x82 message (DrasaCharacterService) to client {addr}")
     except Exception as e:
-        print(f"Error sending 0x82 message: {e}")
+        pass
 
 def ping_timer(server, addr):
     """Timer function to send pings every few milliseconds"""
@@ -100,19 +98,13 @@ def pack_address(addr, port: int = -1):
 def handle_frame_set_packet(msg, addr, server):
     # If client is already connected, ignore new packets except for ping
     if addr in connected_clients:
-        # Debug: log all Frame Set packets received
-        print(f"Frame Set packet received: {msg.hex()}")
         
         # Check if it's a Frame Set (0x84) containing a 0x8a message FIRST
         if msg[0] == 0x84 and bytes.fromhex('8a') in msg[4:]:
             # Only respond to first 0x8a message
             if addr in message_0x86_sent:
-                print(f"0x8a message received from client but already responded - ignoring")
                 return
                 
-            print("0x8a message received from client - sending 0x86 response")
-            print(f"Message hex: {msg.hex()}")
-            
             # Send 0x86 response (building from scratch with exact values from official server)
             response_0x86 = b''.join([
                 bytes.fromhex('84'),      # Frame Set packet
@@ -132,7 +124,6 @@ def handle_frame_set_packet(msg, addr, server):
             
             try:
                 server.sendto(response_0x86, addr)
-                print(f"Sent 0x86 message (character data) to client {addr}")
                 
                 # Small delay before 0x88 like official server
                 time.sleep(0.001)  # 1ms delay
@@ -141,43 +132,61 @@ def handle_frame_set_packet(msg, addr, server):
                 response_0x88 = b'\x84\x06\x00\x00\x60\x00\x08\x03\x00\x00\x03\x00\x00\x00\x88\x43\x00\x00'
                 
                 server.sendto(response_0x88, addr)
-                print(f"Sent 0x88 message to client {addr}")
                 
                 # Mark this client as having received 0x86/0x88
                 message_0x86_sent.add(addr)
                 
             except Exception as e:
-                print(f"Error sending 0x86/0x88 messages: {e}")
+                pass
             return
         
         # Check if it's a Frame Set (0x84) containing a 0x8d message
         elif msg[0] == 0x84 and bytes.fromhex('8d') in msg[4:]:
-            print("0x8d message received from client - acknowledging")
             # Just acknowledge, no specific response needed based on logs
             return
             
         # Check if it's a Frame Set (0x84) containing a 0x1b message
         elif msg[0] == 0x84 and bytes.fromhex('1b') in msg[4:]:
-            print("0x1b message received from client - sending 0x1b response")
+            print(f"RakNet Unknown message ID 0x1b detected from client")
+            print(f"Full message hex: {msg.hex()}")
+            print(f"About to send 0x1b response...")
             
-            # Send 0x1b response (EXACT structure from working official server)
-            response_0x1b = bytes.fromhex('840700002000d00000000400000000001b000000000d3122a983750531d0000000000000000000000000000000')
+            # Extract frame number from client message (bytes 1-3)
+            client_frame_num = msg[1:4]
+            
+            # Create response frame number (increment by 1)
+            frame_num = int.from_bytes(client_frame_num, 'little') + 1
+            response_frame_num = frame_num.to_bytes(3, 'little')
+            
+            # Send 0x1b response matching client structure more closely
+            response_0x1b = b''.join([
+                bytes.fromhex('84'),          # Frame Set packet
+                response_frame_num,           # Frame Set number (client + 1)
+                bytes.fromhex('2000'),        # Message flags (reliable)
+                bytes.fromhex('d000'),        # Payload length 
+                bytes.fromhex('0000'),        # Reliable frame index
+                bytes.fromhex('0400'),        # Ordering index
+                bytes.fromhex('0000'),        # Ordering channel
+                bytes.fromhex('1b'),          # Message ID 0x1b
+                bytes.fromhex('00000000'),    # Data
+                bytes.fromhex('0d3122a9'),    # Timestamp part 1
+                bytes.fromhex('83750531'),    # Timestamp part 2  
+                bytes.fromhex('d000'),        # Additional data
+                bytes.fromhex('0000000000000000000000000000')  # Padding
+            ])
             
             try:
-                time.sleep(0.02)  # Small delay like official server
                 server.sendto(response_0x1b, addr)
-                print(f"Sent 0x1b response to client {addr}")
+                print("0x1b response sent successfully!")
             except Exception as e:
-                print(f"Error sending 0x1b response: {e}")
+                print(f"ERROR sending 0x1b response: {e}")
             return
             
         # Check if it's a Frame Set (0x84) containing a Connected Ping (0x00)
         elif msg[0] == 0x84 and bytes.fromhex('00') in msg[4:]:
-            print(f"Connected Ping received from client (msg length: {len(msg)})")
             
             # Stop responding to pings after 0x82 message is sent
             if addr in message_0x82_sent:
-                print("Ignoring ping - 0x82 message already sent")
                 return
             
             # Initialize client state if not exists
@@ -188,7 +197,6 @@ def handle_frame_set_packet(msg, addr, server):
             
             # Handle the first ping differently (from New Incoming Connection)
             if not client_states[addr]['first_ping_received']:
-                print("First ping from client - starting ping/pong cycle")
                 client_states[addr]['first_ping_received'] = True
                 client_states[addr]['ping_count'] = 1
                 
@@ -214,15 +222,9 @@ def handle_frame_set_packet(msg, addr, server):
                 try:
                     server.sendto(combined_response, addr)
                     client_states[addr]['waiting_for_pong'] = True
-                    print(f"Sent Connected Ping + Pong #{client_states[addr]['ping_count']} to client")
                     
-                    # Start periodic ping timer for this client
-                    # Don't start automatic ping timer - let client initiate pings naturally
-                    # The official server responds to client pings rather than initiating them
-                    # Send 0x82 after receiving some pings from client instead
-                    print(f"Client {addr} ping-pong established")
                 except Exception as e:
-                    print(f"Error sending combined ping/pong: {e}")
+                    pass
                     
             else:
                 # Just respond with pong for subsequent pings
@@ -241,39 +243,27 @@ def handle_frame_set_packet(msg, addr, server):
                     server.sendto(pong_response, addr)
                     # Increment ping count for each ping received from client
                     client_states[addr]['ping_count'] += 1
-                    print(f"Sent Connected Pong response (ping #{client_states[addr]['ping_count']})")
                     
                     # Send 0x82 after receiving several pings from client (like official server)
                     if client_states[addr]['ping_count'] >= 4 and addr not in message_0x82_sent:
                         send_0x82_message(server, addr)
                         
                 except Exception as e:
-                    print(f"Error sending pong: {e}")
+                    pass
             
             return
         
         # Check if it's a Frame Set (0x84) containing a Connected Pong (0x03)
         elif msg[0] == 0x84 and bytes.fromhex('03') in msg[4:]:
-            print("Connected Pong received from client")
             
             # Initialize client state if not exists
             if addr not in client_states:
                 client_states[addr] = {'ping_count': 0, 'waiting_for_pong': False, 'first_ping_received': False}
             
-            print(f"Client state: waiting_for_pong={client_states[addr]['waiting_for_pong']}, ping_count={client_states[addr]['ping_count']}")
-            
-            # Just log that we received a pong, timer handles ping sending
-            print("Pong received from client - acknowledged")
-            
             return
-        
-        # Debug: log unknown Frame Set packets
-        else:
-            print(f"Unknown Frame Set packet received (length: {len(msg)}, hex: {msg[:20].hex()})")
 
     # Search for New Incoming Connection in Frame Set content
     if bytes.fromhex('13') in msg[10:70]:
-        print("New Incoming Connection detected - Client registered")
         connected_clients.add(addr)
         # Reset client state for new connection
         client_states[addr] = {'ping_count': 0, 'waiting_for_pong': False, 'first_ping_received': False}
@@ -281,18 +271,6 @@ def handle_frame_set_packet(msg, addr, server):
         message_0x82_sent.discard(addr)
         message_0x86_sent.discard(addr)
         
-        # # Send ACK for New Incoming Connection
-        # ack_response = b''.join([
-        #     bytes.fromhex('c0'),  # ACK packet
-        #     bytes.fromhex('0001'),  # Sequence number
-        #     bytes.fromhex('01'),  # Version
-        #     bytes(3),  # Padding
-        #     bytes(11)  # Padding
-        # ])
-        # try:
-        #     server.sendto(ack_response, addr)
-        # except Exception as e:
-        #     pass
         return
 
     # If not a New Incoming Connection, continue with Connection Request Accepted
@@ -334,10 +312,6 @@ def handle_frame_set_packet(msg, addr, server):
         struct.pack('>Q', 300000000)           # Time since start
     ])
     try:
-        #print("Client Address:", len(pack_address(addr)))              # Should be 7
-        #print("Internal Address:", len(pack_address('10.208.115.147', 2190)))  # Should be 7
-        #print("System Index:", len(struct.pack('>H', 0)))                        # Should be 2
-
         server.sendto(response, addr)
     except Exception as e:
         pass
@@ -356,7 +330,7 @@ START_TIME = int(time.time()*1000)
 while True:
     msg, addr = server.recvfrom(2048)
     packet_id = msg[0]
-    #print(msg)
+    
     if packet_id == 0x05: 
         response = b''.join([
             bytes.fromhex('06'),  # Open Connection Reply 1 (0x06)
