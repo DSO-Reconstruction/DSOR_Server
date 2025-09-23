@@ -104,22 +104,25 @@ def handle_frame_set_packet(msg, addr, server):
             # Only respond to first 0x8a message
             if addr in message_0x86_sent:
                 return
-                
+            
+            map = 'a0200_kingscity' # map to be loaded
+            payl_len = 2+3+1+(2+len(map))*2
+            payl_len = payl_len * 8 + 1     
             # Send 0x86 response (building from scratch with exact values from official server)
             response_0x86 = b''.join([
-                bytes.fromhex('84'),      # Frame Set packet
-                bytes.fromhex('050000'),  # Frame Set number 5
-                bytes.fromhex('60'),      # Message flags (reliable ordered)
-                bytes.fromhex('0141'),    # Payload length (241 bits)
-                bytes.fromhex('02'),      # Reliable message number
-                bytes.fromhex('000002'),  # Padding + ordering index 2
-                bytes.fromhex('000000'),  # Ordering channel + padding
-                bytes.fromhex('86'),      # Message ID 0x86
-                bytes.fromhex('0f00'),    # Length (10 bytes)
-                b'a0200_kingscity',            # Character data
-                bytes.fromhex('0f00'),    # Length (10 bytes) 
-                b'a0200_kingscity',            # Character data again
-                bytes.fromhex('ffffffff0000')  # Terminator
+                bytes.fromhex('84'),      # Frame Set packet 
+                bytes.fromhex('050000'),  # Frame Set number 5 
+                bytes.fromhex('60'),      # Message flags (reliable ordered) 
+                struct.pack(">H", payl_len),    # Payload length
+                bytes.fromhex('020000'),        # Reliable message number 
+                bytes.fromhex('020000'),        # ordering index 2 
+                bytes.fromhex('00'),            # Ordering channel
+                bytes.fromhex('86'),            # Message ID 0x86 
+                struct.pack("<H", len(map)),    # Length  
+                map.encode(),                   # map name
+                struct.pack("<H", len(map)),    # Length  
+                map.encode(),                   # map name
+                bytes.fromhex('ffffffff0000')   # Terminator
             ])
             
             try:
