@@ -1,0 +1,272 @@
+[spawn] C:\Users\USER\AppData\Local\Temp\DSOClient\dlcache\dro_client64.exe -rooturl httpnz://alicdn-prod-774.drakensang.com/cdndata -cdnurl httpnz://alicdn-prod-774.drakensang.com/cdndata -rootkey <CDN-ROOT-KEY-REDACTED> -ip 47.254.183.128:2190 -uid 0 -accid <REDACTED> -sid <REDACTED> -w 888 -h 544 -language en -serverlanguage en -instanceid 481 -bica game-481-01-public.prod.drakensang.com -bicp 2191 -supporturl https://accountcenter.bpsecure.com/Support?pid=481 -forumsurl ../GameAPI.php?action=portal.redirectToBoard/ -useDeltaDNA -standalone
+[spawn] cwd=C:\Users\USER\AppData\Local\Temp\DSOClient
+[ready] frida=17.17.0 sockets=['sendto', 'recvfrom', 'WSASendTo'] hooks=['StreamWrite']
+[instrumented] spawned pid 4360
+capturing; press Ctrl-C to stop
+HttpNzVirtualFileSystem: using root key from command line: <CDN-ROOT-KEY-REDACTED>
+Command Line Args: C:\Users\USER\AppData\Local\Temp\DSOClient\dlcache\dro_client64.exe -rooturl httpnz://alicdn-prod-774.drakensang.com/cdndata -cdnurl httpnz://alicdn-prod-774.drakensang.com/cdndata -rootkey <CDN-ROOT-KEY-REDACTED> -ip 47.254.183.128:2190 -uid 0 -accid <REDACTED> -sid <REDACTED> -w 888 -h 544 -language en -serverlanguage en -instanceid 481 -bica game-481-01-public.prod.drakensang.com -bicp 2191 -supporturl https://accountcenter.bpsecure.com/Support?pid=481 -forumsurl ../GameAPI.php?action=portal.redirectToBoard/ -useDeltaDNA -standalone
+D3D9DisplayDevice: frame time rounding enabled at 32 Hz
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/MasterBank.bank' loaded from disk (size:   0.054 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/MasterBank.strings.bank' loaded from disk (size:   0.309 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/reverb_snapshot.bank' loaded from disk (size:   0.009 MB)
+ShaderVariable::Setup() WARNING: unknown shader parameter 'ShadowProjTransform' in shader 'lightsources'!
+ShaderVariable::Setup() WARNING: unknown shader parameter 'ShadowOffsetScale' in shader 'lightsources'!
+ShaderVariable::Setup() WARNING: unknown shader parameter 'ShadowDarkeningFactor' in shader 'lightsources'!
+ShaderVariable::Setup() WARNING: unknown shader parameter 'GlobalLightPSSMTransforms' in shader 'lightsources'!
+ShaderVariable::Setup() WARNING: unknown shader parameter 'ShadowIntensity' in shader 'lightsources'!
+ShaderVariable::Setup() WARNING: unknown shader parameter 'ShadowDepthBias' in shader 'lightsources'!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/mini_game_snapshot.bank' loaded from disk (size:   0.001 MB)
+DrasaClientBase: Connecting to server 47.254.183.128:2190 ...
+DrasaClientHandler: Connection to server established!
+DrasaClientHandler: Handle login challenge!
+DrasaClient: Received switch map command (game-481-01-public.prod.drakensang.com:2192).
+python.exe : FactoryManager::ParseBluePrints(): Property Properties::SequencerCameraProperty doesn't exist in class 
+registry?
+At \\host.lan\Data\hook-dso.ps1:350 char:5
++     & $python.Source -u @arguments 2>&1 | Tee-Object -FilePath $scrip ...
++     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (FactoryManager:...class registry?:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+FactoryManager::ParseBluePrints(): Property InGameEditing::LevelEditorWaypointProperty doesn't exist in class registry?
+FactoryManager::ParseBluePrints(): Property Properties::PathCalculationProperty doesn't exist in class registry?
+Client activity signin manager activated
+Client activity signin manager activated
+CombatText::CombatTextTypeFromString(): Invalid CombatTextType string passed!
+RakNetClient::HandleDisconnectionByClient(): Connection to server closed (47.254.183.128:2190, 47.254.183.128:2190)!
+DrasaClientHandler: Actively disconnected from server (47.254.183.128).
+DrasaClientBase: Connecting to server game-481-01-public.prod.drakensang.com:2192 ...
+D3D9MouseRenderDevice::InternalUpdateMouseCursor - Texture not loaded.
+DrasaClientHandler: Connection to server established!
+DrasaClientHandler: Handle login challenge!
+InternalPathEngineServer::PreprocessMesh processing collide for shape [small]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [medium]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [large]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [giant]
+InternalPathEngineServer::Load: loading paths disabled!
+StagingSystem::EventTypeFromString: Invalid event type PlayerFightingCapabilityScoreChanged
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_loading_bank.bank' loaded from disk (size:   0.871 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_jingles.bank' loaded from disk (size:   0.782 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_ui.bank' loaded from disk (size:   1.076 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/quest_guide.bank' loaded from disk (size:   0.077 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/chapter.bank' loaded from disk (size:   0.055 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/gift.bank' loaded from disk (size:   0.053 MB)
+Client activity signin manager started
+DrasaClientHandler: Send client ready packet!
+Syncing client game world with time sync packet: 8867145 server game tick, 0 delay!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_charscreen.bank' loaded from disk (size:   1.911 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general_archetype.bank' loaded from disk (size:   0.592 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/music_coastvillage_hub_a_b_z.bank' loaded from disk (size:   2.430 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/arch_warrior_start_male_1h_foley.bank' loaded from disk (size:   0.336 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/arch_warrior_start_male_1h_voc.bank' loaded from disk (size:   0.271 MB)
+[FMOD_COREAUDIO WARNING] event: "event:/ui/char_gen/ui_char_gen_generate_warrior_male" was triggered, but no 
+EventDescription was found for it!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/char_gen.bank' loaded from disk (size:   0.298 MB)
+[FMOD_COREAUDIO INFO] FMOD_SYSTEM_CALLBACK_THREADCREATED: Name = 'FMOD nonblocking thread (0)'
+[FMOD_COREAUDIO WARNING] event: "event:/ui/general/ui_switch_screen" was triggered, but no EventDescription was found 
+for it!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general.bank' loaded from disk (size:   0.113 MB)
+ClientPlayerManager: handle event updates!
+DrasaClient: Received switch map command ().
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/char_gen.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/arch_warrior_start_male_1h_voc.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/arch_warrior_start_male_1h_foley.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/music_coastvillage_hub_a_b_z.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general_archetype.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_charscreen.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_jingles.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/gift.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/chapter.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/quest_guide.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_ui.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_loading_bank.bank' unloaded
+RakNetClient::HandleDisconnectionByClient(): Connection to server closed (game-481-01-public.prod.drakensang.com:2192, 47.254.183.128:2192)!
+DrasaClientHandler: Actively disconnected from server (47.254.183.128).
+DrasaClientBase: Connecting to server 47.254.183.128:2190 ...
+DrasaClientHandler: Connection to server established!
+DrasaClientHandler: Handle login challenge!
+DrasaClient: Received switch map command (47.245.165.152:30201).
+RakNetClient::HandleDisconnectionByClient(): Connection to server closed (47.254.183.128:2190, 47.254.183.128:2190)!
+DrasaClientHandler: Actively disconnected from server (47.254.183.128).
+DrasaClientBase: Connecting to server 47.245.165.152:30201 ...
+DrasaClientHandler: Connection to server established!
+DrasaClientHandler: Handle login challenge!
+IoTransformerCore::OpenInputStream(): failed to open input stream!
+IoServer::LoadStreamSync(): transform failed for file 
+'httpnz://alicdn-prod-774.drakensang.com/cdndata/export_win32/language/en/db.skill.xml'
+IoTransformerCore::OpenInputStream(): failed to open input stream!
+IoServer::LoadStreamSync(): transform failed for file 
+'httpnz://alicdn-prod-774.drakensang.com/cdndata/export_win32/language/en/db.skill.xml'
+InternalPathEngineServer::PreprocessMesh processing collide for shape [small]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [medium]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [large]
+InternalPathEngineServer::PreprocessMesh processing collide for shape [giant]
+InternalPathEngineServer::Load: loading paths disabled!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_small_a.bank' loaded from disk (size:   0.376 MB)
+StagingSystem::EventTypeFromString: Invalid event type PlayerFightingCapabilityScoreChanged
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_med_a.bank' loaded from disk (size:   0.081 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_xl_a.bank' loaded from disk (size:   0.084 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_a.bank' loaded from disk (size:   0.209 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_b.bank' loaded from disk (size:   0.233 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_c.bank' loaded from disk (size:   0.207 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_d.bank' loaded from disk (size:   0.176 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_med_e.bank' loaded from disk (size:   0.071 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_loading_bank.bank' loaded from disk (size:   0.871 MB)
+Client activity signin manager started
+DrasaClientHandler: Send client ready packet!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_jingles.bank' loaded from disk (size:   0.782 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_ui.bank' loaded from disk (size:   1.076 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/quest_guide.bank' loaded from disk (size:   0.077 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/chapter.bank' loaded from disk (size:   0.055 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/gift.bank' loaded from disk (size:   0.053 MB)
+Syncing client game world with time sync packet: 196 server game tick, 57 delay!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/warrior_skills.bank' loaded from disk (size:   0.765 MB)
+PlayClipJob: Anim clip 'female_idle_01' does not exist in 'ani:characters/multi_animations.nax3'! Play 
+'x_rotation_test instead'
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/ranger_skills.bank' loaded from disk (size:   0.891 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/hit.bank' loaded from disk (size:   0.272 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/monster_beast_hound.bank' loaded from disk (size:   0.113 MB)
+ClientPlayerManager: handle new player command!
+ClientPlayerManager: setup game player!
+ClientPlayerManager: setup player in gameworld!
+ClientPlayerManager: create game entity and actor observer!
+ClientPlayerManager: initialize managers!
+ClientSettingsManager - Client settings loaded for user 111886222 on instance 481!
+ClientPlayerManager: prepare staging system and posteffects!
+Factored local player "balenciagas" with user Id 111886222, actor Id 65557 and game entity Id 138
+ClientPlayerManager: new player setup done!
+ClientPlayerManager: handle quest log info!
+ClientPlayerManager: handle event updates!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_greek.bank' loaded from disk (size:   0.147 MB)
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general_archetype.bank' loaded from disk (size:   0.592 MB)
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/music_oldchapel_pve_a.bank' loaded from disk (size:   1.888 MB)
+[FMOD_COREAUDIO WARNING] event: "event:/ui/general/ui_open_screen" was triggered, but no EventDescription was found 
+for it!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general.bank' loaded from disk (size:   0.113 MB)
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+Received TimedChallengesInfoCommand ()
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+A signin calendar command created
+ActivitySigninCanlendar decoding
+0 line(s) of extra bonus received
+ClientPlayerManager: handle event updates!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+ClientMapManager: no valid point of interest set at time of OnFrame()!
+ClientChatManager::TrySendPendingChatClientLoggedInCommand(): notifying map server.
+ClientSettingsManager - Client settings saved for user 111886222 on instance 481!
+PlayClipJob: Anim clip 'combat_idle_01' does not exist in 'ani:characters/multi_animations.nax3'! Play 
+'x_rotation_test instead'
+
+ODE Message 2: inertia must be positive definite 
+(C:\jenkins-slave\workspace\dro.OmegaPipe.windows_client\nebula3\code\extlibs\ode\src\mass.cc:53)
+
+ODE Message 2: inertia must be positive definite 
+(C:\jenkins-slave\workspace\dro.OmegaPipe.windows_client\nebula3\code\extlibs\ode\src\mass.cc:53)
+
+ODE Message 2: inertia must be positive definite 
+(C:\jenkins-slave\workspace\dro.OmegaPipe.windows_client\nebula3\code\extlibs\ode\src\mass.cc:53)
+IoChannelHandler: failed to open stream 
+'httpnz://alicdn-prod-774.drakensang.com/cdndata/export_win32/textures/t008_dwarf_dale/mat_ground_stones_01_spec.dds' 
+for reading!
+Failed to load resource 'tex:t008_dwarf_dale/mat_ground_stones_01_spec.dds'!
+Syncing client game world with time sync packet: 301 server game tick, 2 delay!
+SimpleResourceMapper: failed to load resource 'tex:t008_dwarf_dale/mat_ground_stones_01_spec.dds'!
+Syncing client game world with time sync packet: 354 server game tick, 3 delay!
+Syncing client game world with time sync packet: 407 server game tick, 3 delay!
+Syncing client game world with time sync packet: 460 server game tick, 4 delay!
+Syncing client game world with time sync packet: 512 server game tick, 4 delay!
+Syncing client game world with time sync packet: 563 server game tick, 3 delay!
+Syncing client game world with time sync packet: 616 server game tick, 3 delay!
+Syncing client game world with time sync packet: 669 server game tick, 3 delay!
+Syncing client game world with time sync packet: 723 server game tick, 4 delay!
+Syncing client game world with time sync packet: 1225 server game tick, 2 delay!
+Syncing client game world with time sync packet: 1731 server game tick, 4 delay!
+Syncing client game world with time sync packet: 2231 server game tick, 3 delay!
+Syncing client game world with time sync packet: 2735 server game tick, 3 delay!
+GameWorld::HandleBeginDeath: Victim a0001_gen_anderworld_creature_1st_encounter (65544) is not alive or cannot receive 
+status effects!
+ClientMovementManager: HandleSpatialPositionAdjustment skill-threshold reached. Reset to -59.25/-0.00/54.20 
+ClientMovementManager: HandleSpatialPositionAdjustment distance-threshold reached. Reset to -59.25/-0.00/54.15 
+ClientPlayerManager: handle event updates!
+ClientGameWorld::UpdateExitState() exit entity with name 'a0001_exit_to_a0002' not found!
+Syncing client game world with time sync packet: 3238 server game tick, 2 delay!
+Syncing client game world with time sync packet: 3740 server game tick, 2 delay!
+Syncing client game world with time sync packet: 4243 server game tick, 3 delay!
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/music_oldchapel_pve_a.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_greek.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/monster_beast_hound.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/hit.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/ranger_skills.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_med_e.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_d.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_c.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_b.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_large_a.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_xl_a.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_water_waterfall_med_a.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/atmo_so_fire_small_a.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/warrior_skills.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/general_archetype.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_jingles.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/gift.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/chapter.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/quest_guide.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_ui.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/initial_loading_bank.bank' unloaded
+RakNetClient::HandleDisconnectionByClient(): Connection to server closed (47.245.165.152:30201, 47.245.165.152:30201)!
+DrasaClientHandler: Actively disconnected from server (47.254.183.128).
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/MasterBank.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/MasterBank.strings.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/reverb_snapshot.bank' unloaded
+[FMOD_COREAUDIO INFO] bank 'audio:fmodstudioexport/Desktop/mini_game_snapshot.bank' unloaded
+*** MANAGED RESOURCE LEAKS ***
+
+mdl:effects_playerskills/warrior_warshout.n3
+mdl:effects_playerskills/warrior_mightybash_1h.n3
+mdl:effects_playerskills/warrior_earthquake.n3
+mdl:effects/status_warrior_battlecry.n3
+mdl:effects_playerskills/warrior_mighty360_1h.n3
+mdl:effects_playerskills/warrior_mightyswing.n3
+mdl:effects_playerskills/warrior_battlecry.n3
+mdl:effects/status_warrior_defiance_buff.n3
+mdl:effects_playerskills/warrior_defiance_banner.n3
+mdl:effects_playerskills/warrior_defiance_loop.n3
+mdl:effects_playerskills/warrior_defiance_end.n3
+mdl:effects/status_area_earthquake.n3
+mdl:effects/status_area_earthquake_explosion.n3
+mdl:effects_playerskills/ranger_adrenalin.n3
+mdl:effects_playerskills/ranger_whirlwind.n3
+mdl:effects_playerskills/ranger_multishot.n3
+mdl:effects_playerskills/ranger_mightyshot.n3
+mdl:effects/spawn_packofwolves.n3
+mdl:effects_playerskills/ranger_trap_shrooms.n3
+mdl:effects_playerskills/ranger_trap_bullet.n3
+mdl:effects_playerskills/ranger_trap_impact.n3
+mdl:effects_playerskills/ranger_trap.n3
+mdl:effects_playerskills/ranger_mightyshot_bullet.n3
+mdl:effects_playerskills/ranger_mightyshot_bullet_impact.n3
+mdl:effects/xp_lvlup_01.n3
+mdl:effects/wisdom_lvlup_01.n3
+mdl:effects/group_lvlup_01.n3
+mdl:effects/quest_closed.n3
+mdl:effects/targetmarker.n3
+mdl:effects/anderworld_creature_strike_left.n3
+mdl:effects/anderworld_creature_strike_impact.n3
+mdl:effects/anderworld_creature_strike.n3
+mdl:effects/undead_mage_idle.n3
+

@@ -1,0 +1,21 @@
+# Captures and logs are the user's own session data. The ones committed under
+# docs/logs/ are redacted copies; the raw material stays out.
+/dso-capture/
+*.pcap
+*.pcapng
+session-*.jsonl
+calls-*.jsonl
+stacks-*.jsonl
+run-*.log
+python-*.log
+
+# Launch arguments hold a live session credential and the CDN root key.
+cmd.txt
+*cmd*.txt
+
+# Scratch
+__pycache__/
+*.pyc
+.pytest_cache/
+/scratch/
+/tmp/

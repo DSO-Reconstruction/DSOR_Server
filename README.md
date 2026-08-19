@@ -6,8 +6,16 @@ real sessions and against the client's own reaction; where something is a guess 
 says so, and where a plausible idea turned out to be wrong it is recorded as
 refuted rather than deleted.
 
-The client is a native Windows x64 build (no IL2CPP), so nothing here comes from
-decompiled game code — only from the wire and from the client's own log output.
+As of the last session the client completes the whole chain: it logs in, is
+dispatched to the character service, is shown its character, is granted the game,
+returns to the login server, is dispatched to a map server, and enters the world at
+the spawn point. What it does *not* yet do is render that character with its hair
+and equipment.
+
+Two sources feed these notes: packet captures of real and emulated sessions, and
+the client's own log. The client is a native Windows x64 build (no IL2CPP), so
+nothing here comes from decompiled game code except a static reading of symbol
+strings the binary retains in its assertion messages.
 
 ## Topology
 
@@ -23,9 +31,63 @@ session — and it issues every handoff.
 | 2192 | `DrasaCharacterService` | selection screen only; serves the map `a0000_char` |
 | dynamic (e.g. 30201) | `DrasaOnlineMapServer` | one world map |
 
-The character service does not serve a playable map. It hands the client back with
-an **empty** handoff, and the client returns to the login server for a real
-destination.
+The character service does not serve a playable map. It grants the client's request
+and hands it back with an **empty** handoff, and the client returns to the login
+server for a real destination.
+
+## The character-selection state machine
+
+This is the part that took longest, because the two message ids involved are easy
+to swap and swapping them makes the whole flow unexplainable.
+
+* `0x0087` is `Commands::CharacterSelectionCommand`.
+* `0x0086` is `Commands::CharacterGenerationCommand` — character **creation**.
+
+The selection command's body begins with an 8-bit `operation`, and that operation
+is the state machine:
+
+| operation | direction | meaning |
+|---|---|---|
+| 1 | server → client | here is the character list |
+| 2 | client → server | send me the character list |
+| 3 | client → server | **start the game with the selected character** |
+| 4 | server → client | refused, with a reason |
+| 5 | server → client | **granted**; the client enters its game state |
+| 7 | server → client | refresh the list |
+| 9 | server → client | update one character |
+
+Three consequences, each measured:
+
+**The server must push operation 1 unsolicited.** The client does not ask for the
+list on a fresh login. In the client, the only callers of its
+`RequestCharacterList` are a post-creation refresh and a cancel button; the login
+path calls none of them. Until the push arrives, the manager's state is 0, the
+selection *widget is never constructed*, and there is no button to press.
+
+**The push is refused if it arrives twice.** The handler requires the state to be
+at most 1, so a second push silently does nothing.
+
+**After clicking, the client waits for operation 5 with no timeout.** It sends
+operation 3, sets its state to "start-game sent", and stays there. A server that
+does not answer produces a client that looks frozen on the selection screen having
+apparently never offered the button — when in fact it offered it, the user clicked,
+and nothing came back. The grant must carry a **non-zero character id**, or the
+client rejects it and stays put.
+
+On the wire, in the reference session:
+
+```
+frame 102    S 0x84/0x0087  316 B  operation 1   the server pushes the list
+frame 2989   C 0x8b/0x0087   32 B  operation 3   the client asks to play
+frame 3633   C 0x8b/0x0087   32 B  operation 3   it asks again
+frame 19147  C 0x8b/0x0086  106 B  operation 1   the player creates a character
+frame 36658  S 0x84/0x0087   32 B  operation 5   the server grants
+```
+
+Note that the server sends **nothing at all** between the client's first request
+and its grant — seventeen thousand frames of nothing but the client's own pings and
+time syncs. That gap is a human deciding, and it is why the grant looked as though
+it were triggered by something else.
 
 ## Transport
 
@@ -44,8 +106,8 @@ RakNet 4.x, protocol version 5. The offline handshake (`0x05`–`0x08`),
 * **SystemAddress**: version byte 4, the IPv4 octets as their **bitwise
   complement**, then the port big-endian and uncomplemented.
 
-Four things about this layer cost real time to find, and each one stalls a client
-in a way that looks like a missing feature rather than a transport fault.
+Five faults at this layer each stall or kill a client in a way that looks like a
+missing feature rather than a transport problem.
 
 **A sequenced frame must not consume an ordering index.** It carries both an
 ordering and a sequencing field, but the ordering one *reports* the index the next
@@ -53,11 +115,11 @@ ordered message will use; only the sequencing field is its own, from a separate
 per-channel counter that resets whenever an ordered message goes out. Taking one
 index for each field spends two per sequenced message and leaves a hole in the
 ordered stream — and a peer cannot deliver anything past a hole. One unsolicited
-time-sync announcement was enough to strand the character roster and everything
+time-sync announcement was enough to strand the character list and everything
 behind it in the client's reorder buffer for good: the client sat on the map named
 in an earlier message and the selection screen never appeared. The capture settles
-it — the real server's `0x83` and the roster immediately after it both carry
-ordering index 4.
+it — the real server's `0x83` and the list immediately after it both carry ordering
+index 4.
 
 **Acknowledgements must not be paced.** Outbound datagrams are worth rate-limiting;
 a seven-byte ACK is not. Queued behind a 717 KB transfer at 250 datagrams a second,
@@ -79,6 +141,17 @@ forever. Resend oldest-first: a peer reassembling a split message is blocked on 
 earliest gap, so resending a later fragment it already holds advances nothing. Only
 reliable datagrams are worth retaining; resending an unreliable one defeats its
 purpose.
+
+**One message must arrive slowly.** The 717 KB event schedule crashes the client if
+it lands while the selection screen is still being built. The client's own log gives
+the order away: against the real server it logs the screen being built and switched
+*before* `handle event updates`; against a server that delivers the schedule in 2.4
+seconds it logs `handle event updates` first and then dies with an access violation
+in the audio thread the screen build starts next. The real service never triggered
+this because its transfer took 101.6 seconds to complete — six useful fragments a
+second, buried in retransmissions — so the schedule landed long after the player had
+left the screen. Reproducing that rate is not a workaround for a bug of ours; it is
+reproducing a property the client depends on.
 
 ## Message shapes
 
@@ -107,6 +180,10 @@ trailer byte. That byte is **not** constant, and it tracks the destination:
 | to the character service | `0x80` |
 | to a map server | `0x00` |
 | the empty one that releases a client | `0x00` |
+
+`0x84/0x010E` is a purchase-offer list — 23 entries in one sample, 30 in another,
+with price labels and validity dates — answered to a client `0x8B/0x010B` and paired
+with a small `0x84/0x010C`. It has nothing to do with entering the world.
 
 ## Per-tier behaviour
 
@@ -159,39 +236,43 @@ to follow.
 | 1 | `0x82` | 24 | service identity, answering `0x13` |
 | 2 | `0x86` | 31 | map assignment `a0000_char`, answering the client's `0x8A` |
 | 3 | `0x88` | 1 | bare signal |
-| 4 | `0x84/0x0087` | 316 | the roster — what the selection screen is built from |
+| 4 | `0x84/0x0087` | 316 | the character list, operation 1 |
 | 5 | `0x84/0x001B` | 12 | |
-| 6 | `0x84/0x00DD` | 717 KB | account data, 596 fragments |
+| 6 | `0x84/0x00DD` | 717 KB | the event schedule, 596 fragments, sent slowly |
 
-The 717 KB transfer starts **immediately after the roster**, at frame 103, and not
-in response to anything the player does. It does not have to finish first: the
-client pressed Play at frame 19147 with 534 of 596 fragments delivered, and the
-transfer only completed at frame 36658. Withholding it until the client asks to
-enter the world deadlocks — the client will not arm its Play button until the
-transfer is under way, so the request that would release it never comes.
+Then, on the client's `0x8B/0x0087` operation 3:
 
-Then, on the client's `0x8B/0x0086`:
+| index | message | size | notes |
+|---|---|---|---|
+| 7 | `0x84/0x0087` | 32 | operation 5, the grant |
+| 8 | `0x84/0x0070` | 6 | the empty handoff |
 
-| index | message | size |
-|---|---|---|
-| 7 | `0x84/0x0087` | 32 |
-| 8 | `0x84/0x0070` | 6 |
-| 9 | `0x84/0x0086` | 112 |
+The reference session also shows a 112-byte `0x84/0x0086` here, and it is *not* part
+of the release: it answers the character-creation command that session's player
+happened to send. A client selecting an existing character never sends one.
 
-Ordering indices 10–13 are two `0x84/0x010E` + `0x84/0x010C` pairs, and they are
-**answers**, not part of the release: the client asks twice with `0x8B/0x010B` at
-frame 36660 and they follow at 36663 and 36666. The second `0x010E` is larger than
-the first, so the two are not interchangeable. Ordering index says what order
-messages are delivered in, never what prompted them.
+## The map server, in ordering-index order
 
-The server **never** answers `0x8B/0x006F`, anywhere. And between the client's
-`0x006F` at frame 1936 and its `0x0086` at frame 19147 the server sends nothing at
-all — seventeen thousand frames of nothing but the client's own pings and time
-syncs. That gap is a human deciding, not a message exchange.
+| index | message | size | notes |
+|---|---|---|---|
+| 0 | `0x10` | 96 | |
+| 1 | `0x82` | 23 | `DrasaOnlineMapServer` |
+| 2 | `0x86` | 59 | the map name, twice |
+| 3 | `0x88` | 1 | |
+| 4 | `0x84/0x001B` | 12 | |
+| 5 | `0x85/0x0114` | 1261 | a cosmetics/unlock table |
+| 6 | `0x85/0x001D` | 631 KB | **the zone content**, 513 fragments |
+| 7 | `0x85/0x00A7` | 40 | |
+| 8 | `0x85/0x0074` | 182 | |
+| 9+ | `0x85/0x004F` | 96 each | thousands of them, the per-tick state |
 
-## The character record
+Index 6 is what populates the world, the player's own actor included. Skipping it
+produces a client that reaches the map, finds an empty zone, and dies on the
+assertion that its local player actor is valid.
 
-The roster is written with RakNet's `BitStream`, which packs a boolean into one bit,
+## The character list record
+
+The list is written with RakNet's `BitStream`, which packs a boolean into one bit,
 so **nothing in it is byte-aligned**. A 437-byte record held two plain-text
 character names and no byte-aligned search found either: the first begins at bit
 225, the second at bit 1323.
@@ -200,18 +281,89 @@ Getting the bit numbering's sign wrong is what delayed finding them. A buffer
 shifted left by *b* bits puts byte *i* of the shifted copy at absolute bit
 `8*i + b` of the original — not `8*i - b`.
 
-Strings use the same convention as everywhere else in the protocol, a 16-bit
-little-endian length then that many bytes, just written at an arbitrary bit offset.
-Confirmed: the 16 bits before an eleven-character name read as 11. Each character
-is followed by the map it was last on, which is what the client places it on. The
-account id from the client's own command line appears inside the record, so the
-roster is bound to the account rather than generic.
+Both known samples parse to the last bit. Offsets are into the body, after the
+three header bytes.
+
+```
+bit   0   u16 LE   operation (1 = list push) and deny reason
+bit  16   u32 LE   a character id
+bit  48   u32 LE   the account id
+bit  80   u32 LE   4        constant across two unrelated accounts
+bit 112   u32 LE   0        constant
+bit 144   u16 LE   1        constant
+bit 160   u16 LE   10531    constant
+bit 176   1 bit    0        constant
+bit 177   u32 LE   how many characters follow
+bit 209   the first character record
+```
+
+Each character is a length-prefixed name, a length-prefixed last-map name, then an
+834-bit block:
+
+| block offset | width | notes |
+|---|---|---|
+| +0 | u32 | unexplained; 0, 1 and 2 seen |
+| +64 | u32 | the only per-character number not accounted for; candidate for a model or appearance parameter |
+| +96 | u32 | the character id |
+| +160 | u32 | **the class** — 600 warrior, 719 mage, and equal for two mages of different levels |
+| +256 | u32 | experience candidate |
+| +288 | u32 | level candidate |
+| +320 | 512 bits | a 4×4 float matrix, byte-identical across every sample: a 180° yaw with no translation |
+
+After the last character comes one global equipment list: a 32-bit count, then per
+entry a length-prefixed template name, 20 zero bytes and one set bit. There is
+exactly **one** such list even when two characters exist, and entries carry no owner
+— so the record cannot bind gear to a character except by position.
+
+## The event schedule
+
+`0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
+inventory nor character state. It is a flat list of 8,233 dated event-schedule
+entries, identical for every player: PvP match cycles, seasonal events, shop
+promotions, difficulty unlocks.
+
+```
+u8  0x84 / u16 LE 0x00DD / u32 LE count
+per entry:
+  u32 LE  id            strictly increasing, unique
+  u16 LE + bytes        the event key
+  1 bit                 set in 16 of 8233
+  3 bits                always 0
+  6 x u32 LE            always 0
+  6 x u32 LE            year, month, day, hour, minute, second
+  u32 LE  n             parameter count
+  n x (u16 LE + bytes)  parameters
+4 bits of zero padding
+```
+
+The layout is verified by round-trip, not argued: decoding the recorded message and
+re-encoding it reproduces all 733,774 bytes, accounting for 5,870,188 of the file's
+5,870,192 bits. The other four are padding to the byte, which is why frames carry a
+length in bits.
+
+Two properties are worth knowing. The entries are ordered by id and **not** by date
+— the dates go backwards 501 times. And the gap from one entry's text to the next
+entry's length prefix is a constant 452 bits, which is not a multiple of eight, so
+every second string starts on a nibble boundary. That is why a byte-aligned search
+finds only half of them.
 
 ## Refuted
 
 Kept because a plausible idea that was checked and failed is worth more than the
 same idea rediscovered later.
 
+* `0x8B/0x0086` is **not** "enter world". It is character creation. Believing
+  otherwise made the Play click look like a message the real service ignored, so
+  this server ignored it too, and the client waited for a grant that never came.
+  This one cost more than every other mistake here combined.
+* The 717 KB transfer holds **no** account state, inventory or appearance. Every
+  string in it is an event or promotion key.
+* The character list record holds **no** appearance data either — no hair, face,
+  body or gender field survives a full parse of both samples.
+* Item entries in the record carry **no** slot, owner, level or enchantment: 20 zero
+  bytes and one true boolean.
+* The record's header is **209** bits, not 225. Bit 225 is where the first name's
+  *text* starts, because the 16-bit length prefix occupies 209–225.
 * The server does **not** echo a client's position bit-identically. Two hand-picked
   samples said it did; measured across 513, only 106 matched.
 * Bytes 7–8 of a movement message are **not** a duplicated heading. They agree
@@ -221,30 +373,54 @@ same idea rediscovered later.
   through `09`.
 * The confirmed character id does **not** appear in the entity snapshot — not in
   any of three coherent sessions. Entities are not addressed by it.
-* A roster ignored by the client is **not** an account mismatch: the client's own
+* A list the client seems to ignore is **not** an account mismatch: the client's own
   `-accid` is present in the record, at bit 48.
+* `char_gen` audio events and an FMOD worker thread are **not** signs of the client
+  falling back to character creation. They appear in the real session too — the
+  client builds that model to display it.
 
 ## Open
 
-* What `0x84/0x00DD` contains (717 KB), and the record's numeric fields.
-* The entity snapshot's block structure. Blocks are variable-length and tagged
-  `5f 00`.
-* What arms the Play button. Everything the real server sends before the click is
-  now reproduced byte for byte, and the client still does not offer it.
 * Why the selection screen renders a character with neither hair nor its equipped
-  gear, when the roster it was given is byte-identical to the real one. The
-  appearance may not come from this tier at all.
+  gear. Neither the list record nor the event schedule contains appearance data, and
+  the client's own symbols name `UpdateCharacterAppearance` and
+  `LoadCurrentCharacterEquipment` as the code involved. Block offset +64 in the
+  per-character record is the one unexplained number, and changing it in a served
+  list is a cheap decisive experiment.
+* The zone content `0x85/0x001D` (631 KB) and the per-tick `0x85/0x004F` are still
+  replayed verbatim rather than generated.
+* The chat service on 2191.
 
 ## Method
 
-Two things did more for progress than any single protocol insight.
+Three things did more for progress than any single protocol insight.
 
 **Record your own traffic in the same format as the reference capture.** Diagnosing
 a client that reaches a screen and stops had cost several rounds of guess, restart,
-retest — one hypothesis per round trip. A recording that can be diffed against a
-real session at message level tests every hypothesis at once, and found two
-transport faults in the first two comparisons.
+retest — one hypothesis per round trip, with a human in the loop each time. A
+recording that can be diffed against a real session at message level tests every
+hypothesis at once, and found two transport faults in its first two comparisons.
+
+**Replay the recorded client offline.** The capture holds every datagram the real
+client sent, so the whole flow can be driven into the server in-process with no game
+running. That is the only way to exercise a branch the live client refuses to reach,
+and a contiguity check over the resulting ordered stream catches the class of fault
+that is otherwise invisible.
 
 **Compare in ordering-index order, per connection.** Frame order misleads, merged
 connections mislead worse. Both mistakes were made here and both produced confident
 wrong conclusions.
+
+## Layout
+
+```
+server.py               the three tiers
+raknet/                 datagrams, frames, reliability, the bit-level stream
+dsor/                   message shapes, the character record, the event schedule
+dsor/data/              messages still replayed rather than generated
+tests/                  194 tests, including the offline replay harness
+tools/frida/            client-side capture: the agent, its driver, the launcher
+docs/logs/             redacted logs of a working session, and of a real one
+```
+
+Nothing here is affiliated with or endorsed by the game's publisher.
