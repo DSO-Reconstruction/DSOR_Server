@@ -1,16 +1,24 @@
-"""A RakNet server that a Drakensang Online client can complete a handshake with.
+"""The three tiers a Drakensang Online client needs to log in, choose a character
+and fight on a map.
 
-Run it, point the client at this host, and it will take a connection as far as
-the service-identity message.  Everything past that is the game protocol, which
-is not implemented here.
+Point the client's ``-ip`` at this host and it will complete the whole chain: login,
+character selection, the grant that releases it, back to the login server, a map
+server, and into the world. Creatures appear around it, can be struck, lose health
+and die.
 
-The shape to notice is that one process listens on **several ports**, each an
-independent service with its own GUID, and that connection state is keyed by
-``(ip, port)`` rather than by client GUID — because the client opens a
-connection to every service from the same peer, reusing one GUID.
+Two shapes are worth noticing before reading further. One process listens on
+**several ports**, each an independent service with its own GUID, and connection state
+is keyed by ``(ip, port)`` rather than by client GUID — the client opens a connection
+to every service from the same peer, reusing one GUID. And the **login server is a
+persistent dispatcher**: a client returns to it before every zone change, and where it
+sends that client depends on how far it has got.
 
-    python server.py                  # listen on every known service port
-    python server.py --port 2190      # just the login service
+    python server.py --advertise 192.168.1.10 -v --capture ~/session.jsonl
+    python server.py --advertise 192.168.1.10 --mobs 6 --mob-first-command
+
+``--advertise`` has to be an address the **client** can reach, so it cannot be
+detected here. ``--capture`` records every datagram in a reference capture's format,
+which is what makes a failing session comparable to a working one.
 """
 
 from __future__ import annotations

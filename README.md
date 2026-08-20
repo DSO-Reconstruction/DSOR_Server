@@ -20,6 +20,65 @@ the client's own log. The client is a native Windows x64 build (no IL2CPP), so
 nothing here comes from decompiled game code except a static reading of symbol
 strings the binary retains in its assertion messages.
 
+## Running it
+
+You need Python 3.11 or newer and nothing else — no third-party packages to serve a
+client, `pytest` to run the tests, `frida` only for client-side capture. This
+repository contains no game files.
+
+```sh
+python server.py --advertise 172.20.0.1 -v --capture ~/session.jsonl
+```
+
+`--advertise` is the address written into every handoff, and it has to be reachable
+**by the client**. Behind a VM that is not an address this process can see on itself,
+so it cannot be detected and must be given. `--capture` records every datagram in the
+same format as a reference capture, which is what makes a failing session diffable
+against a working one — use it.
+
+Then point the client at it. The one argument that matters is `-ip`; nothing needs
+patching. `tools/frida/hook-dso.ps1` replaces it and attaches Frida in one step:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1 `
+  -Spawn -SocketOnly -CmdFile \\host.lan\Data\dso\cmd.txt -LoginIp 172.20.0.1:2190
+```
+
+`-SocketOnly` skips the function hook and records UDP payloads only, which is the
+reliable mode; drop it to also hook a function by offset. `-ShowArgs` prints a running
+client's command line, which is how you produce the `cmd.txt` that file expects.
+**That file holds a live session credential and a CDN key** — the `.gitignore` here
+already excludes it.
+
+A fight, with everything on:
+
+```sh
+python server.py --advertise 172.20.0.1 -v     --mobs 6 --mob-first-command --creature-damage 3     --shop-offers 1 --shop-price 0
+```
+
+| flag | what it does |
+|---|---|
+| `--mobs N` | place N recorded creatures, up to 6 |
+| `--mob-first-command` | answer an entity request with the creature's own commands rather than the whole recorded batch |
+| `--mob-damage D` `--mob-health H` | how hard the player hits and how much a creature has. Both invented: no capture reports a creature's health |
+| `--creature-damage D` | how hard creatures hit back, `0` to disable |
+| `--mob-patrol N` `--mob-near D` | move creatures about, or place them near the player. Both go beyond what any capture shows, and `--mob-near` currently stops them appearing |
+| `--shop-offers N` `--shop-price P` | serve N purchase offers at price P. The cheapest proof a format is generated rather than replayed |
+| `--schedule-delay S` | how long to hold the 717 KB event schedule back. Zero reproduces the crash it exists to avoid |
+| `--map` | which map the map server serves |
+| `--login-port` `--character-port` `--map-port` | for running two instances side by side |
+
+And without a client at all:
+
+```sh
+python -m pytest -q
+```
+
+The suite needs no game and no network. Two of its files replay a recorded client
+into a real server in-process — one for the character tier, one for the map tier — and
+those are where a fault should be looked for first. `docs/REPRODUCING.md` covers
+reading the four artefacts a session produces and the three traps in comparing them.
+
 ## Topology
 
 Three tiers, and the surprising part is the first one: **the login server is a
