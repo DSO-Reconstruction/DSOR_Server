@@ -661,16 +661,15 @@ def test_only_creatures_that_can_be_removed_are_served():
     explain and undo.
     """
     ready = combat_ready_mobs()
-    assert len(ready) == 5
-    assert len(describable_mobs()) == 6, "one is deliberately held back"
-
-    hits, departures = hit_commands(), departure_commands()
+    hits = hit_commands()
     for record in ready:
-        actor = record[15:19]
-        assert actor in hits and actor in departures
+        assert record[15:19] in hits, "its blow is still a replay"
 
-    held_back = {r[15:19] for r in describable_mobs()} - {r[15:19] for r in ready}
-    assert held_back == {b"\x12\x00\x01\x00"}
+    # A recorded *removal* is no longer needed: DiscardMonsterCommand is generated and
+    # its body is empty. The creature that used to be held back for want of one — its
+    # removal arrived grouped with another actor's — is servable again.
+    assert len(ready) == 6
+    assert {r[15:19] for r in ready} == {r[15:19] for r in describable_mobs()}
 
 
 def test_a_hit_keeps_the_commands_addressed_to_its_creature():

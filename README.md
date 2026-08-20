@@ -151,21 +151,48 @@ of ours:
 | 15–18 | uint32 | actor id, from the command's server-side trailer |
 | 19 | | the `0xFF` terminator |
 
-`ActorStatsUpdateCommand` carries **two numbers, not a selector and a value**: an
-int64 maximum then a 32-bit float current, then the actor and the terminator. Three
-values in byte 0 across a whole session made it look like a stat id; they were
-maxima of 234, 235 and 236 — a character's ceiling drifting as it levels.
+`ActorStatsUpdateCommand` carries **current hit points as an int64, then the resource
+a skill spends as a 32-bit float**, then the actor and the terminator. This was
+misread twice, and each reading looked reasonable: byte 0 takes only three values
+across a whole session, so it looked like a stat selector, and then the pair looked
+like a maximum and a current value. The client's observer vtable settles it — the
+first field's setter notifies `OnHealthPointsChanged` and the second's
+`OnSkillResourceChanged`. So 234–236 was a nearly full health bar, and the float
+falling by exactly 5.00 per cast and recovering at 0.2 was mana or rage. Writing
+damage into the second field drains the resource and leaves health untouched.
 
-**A creature's health is never reported.** Two sessions, 154 stats updates between
-them, every one for the player — including the session in which six creatures were
-killed. There is no message for it, so the client derives a creature's bar from
-`NewMonsterCommand` and from the blows that land.
+The retail server only ever sent this for the player, but nothing in the client
+restricts it — that is server policy, not a client rule. It is also unnecessary,
+because `HitCommand` already carries the victim's health.
 
-What a kill looks like, from the session that contains six of them: a large
-`0x006B HitCommand` naming both the creature and the player, then a
-`0x0073 ActorsLeftVicinityCommand` naming the creature. Frames 5219 then 5410 for the
-first, 5525 then 5733 for the next, and so on. The small 160-byte hits name no
-creature at all — those are blows that did not land, or blows taken.
+**Where a creature's health bar comes from:** `NewMonsterCommand` at spawn — field 3
+is current hit points and field 4 the maximum, both int64 — and thereafter from
+`HitCommand`, which carries both on every blow. Fields 1 and 2 of that command are
+variable-length, so the offset of the pair has to be computed rather than assumed.
+
+Useful asymmetry: health always reaches the actor's attribute module even with no
+entity bound. Only the *visual* needs the binding.
+
+**What kills, and what does not.** `0x0073 ActorsLeftVicinityCommand` does *not*
+kill: it sets each named entity invisible. Sending it as a death leaves the creature
+standing there at zero health, which is exactly how that mistake presents. What kills
+is **`0x006C KillCommand`** — a tick, damage types, the killer, a float3 impulse the
+corpse is thrown with, a kill tick, and a single despawn bit — and the client's whole
+death sequence hangs off it. `0x002B DiscardMonsterCommand` is a third thing again:
+an instant deletion of entity and actor, no animation, and its body is **empty**, so
+it is seven bytes on the wire and needs no recording. Sending it in the same breath as
+a kill destroys the death sequence before it can play.
+
+`HitCommand`'s fields, from the client's decoder: damage is an **int32** and the
+victim is in the **trailer**, not the body; the attacker is a separate field, and the
+victim's post-blow current and maximum health travel in the same message. Five of its
+eighteen fields are single bits, so it cannot be assembled from whole bytes. For a
+floating damage number to appear at all, one field must carry the local player's
+actor id and another must be greater than zero.
+
+`0x0073` and `0x0074` are the same shape as each other and byte-aligned throughout: a
+32-bit count, that many 32-bit actor ids, then the trailer. Any set of actors can be
+announced or hidden in one generated message.
 
 The client also validates its own reach before sending anything:
 `SkillValidator: target for 'angrystrike' out of range!! 4.17 <-> 1.75`. So a server
@@ -561,19 +588,24 @@ same idea rediscovered later.
 
 ## Open
 
-* **Creature movement, health and death.** All three are per-actor state changes, and
-  all three are discarded unless the client has bound an entity to that actor in
-  `ClientActorManager::actorEntities`. Creation is the one thing that does not need
-  the binding, which is why creatures appear and then never change. The only live
-  writer of that table is `Properties::ActorProperty::OnActivate`, which depends on
-  the creature's entity template — level data, not a message. A real server does
-  manage it with bytes indistinguishable from ours on `0x005F`, so something is still
-  missing rather than impossible.
-* **`HitCommand`'s field layout.** Combat currently replays recorded hits, which
-  carry another session's damage numbers and animation, and that is the direct cause
-  of every incoherent state: creatures dying in one blow, standing at zero health,
-  flickering. Sixty-eight bytes of a single command is a tractable decode and it is
-  the clean fix.
+* **Creature movement.** Positions, the death animation and the health bar are all
+  per-actor visual changes, and all are skipped unless the client has bound an entity
+  to that actor in `ClientActorManager::actorEntities` — a 10,000-slot table indexed
+  by the low 16 bits of the actor id. Creation is the one thing that does not need the
+  binding, which is why creatures appear and then never change.
+  **But the binding is server-reachable**, and an earlier note here saying otherwise
+  was wrong: `NewMonsterCommand` creates the entity from its template, writes the
+  actor id into the entity's `ActorId` attribute *before* attaching it, and the attach
+  runs the property that registers the pair. There is no other inbound route for a
+  monster. Verified since: the actor id in the trailer of every description this
+  server sends is the creature's own, so a mismatch is not the cause. What remains
+  unverifiable from the executable is whether the monster templates declare
+  `Properties::ActorProperty` — that is blueprint data. It must hold in retail, since
+  hiding, dying and health bars all read the same table.
+* **Generating `HitCommand`.** Blows are still replayed, which means another session's
+  damage numbers, and that is the direct cause of every incoherent state seen so far:
+  creatures dying in one blow and standing at zero health. The layout is now known;
+  what it needs is a bit-level writer, which exists.
 * Why the selection screen renders a character with neither hair nor equipment.
   Neither the roster nor the event schedule holds appearance data.
 * The chat service on 2191, which carries only a handshake and one channel identifier

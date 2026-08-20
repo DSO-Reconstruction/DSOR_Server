@@ -38,7 +38,7 @@ from dsor.gameplay import (
     decode_entity_update,
     decode_position,
     decode_property_update,
-    encode_actor_health,
+    encode_actor_vitals,
     encode_client_movement,
     encode_entity_group,
     encode_entity_group_message,
@@ -52,6 +52,15 @@ from dsor.gameplay import (
     split_entity_group,
     with_motion,
     with_spawn,
+)
+from dsor.combat import (
+    ACTORS_LEFT_VICINITY,
+    KILL,
+    Kill,
+    encode_actors_enter_vicinity,
+    encode_actors_left_vicinity,
+    encode_discard_monster,
+    encode_kill,
 )
 from dsor.recorded import combat_ready_mobs, entity_descriptions, mob_templates
 
@@ -471,33 +480,35 @@ def test_the_tick_and_duration_wrap_rather_than_overflow():
     assert int.from_bytes(wrapped[13:15], "little") == 3
 
 
-def test_the_health_command_reproduces_the_real_bytes():
-    """Seventeen bytes: a maximum as int64, a current value as float, the actor id,
-    the terminator. Reproducing a recorded update exactly is what makes the encoder
-    trustworthy."""
+def test_the_vitals_command_reproduces_the_real_bytes():
+    """Seventeen bytes: current hit points as int64, the skill resource as a float,
+    the actor id, the terminator."""
     real = bytes.fromhex("857b00eb00000000000000cdcc4c3e15000100ff")
-    assert encode_actor_health(0xEB, 0.2, bytes.fromhex("15000100")) == real
+    assert encode_actor_vitals(0xEB, 0.2, bytes.fromhex("15000100")) == real
 
 
-def test_the_first_eight_bytes_are_a_maximum_not_a_stat_selector():
-    """A correction. This module read byte 0 as a stat id because the capture only
-    ever showed three values there — 0xEA, 0xEB, 0xEC.
+def test_the_two_fields_are_health_and_a_spendable_resource():
+    """Misread twice here, and each misreading looked reasonable.
 
-    They are maxima of 234, 235 and 236: a character's ceiling drifting as it levels,
-    not an enumeration. The client's handler feeds those eight bytes to the same
-    setter its monster-update path calls SetMaximumHitPoints, and the four after it to
-    SetCurrentHitPoints.
+    Byte 0 takes only three values across a session — 234, 235, 236 — so it read as a
+    stat selector; then the pair read as a maximum and a current value. The client's
+    observer vtable settles it: the first field's setter notifies
+    OnHealthPointsChanged and the second's OnSkillResourceChanged.
+
+    So the float falling by exactly 5.00 per cast and recovering at 0.2 was never
+    health — it was mana or rage. Writing damage there drains the resource and leaves
+    the health bar untouched, which is precisely what one round of testing showed.
     """
-    built = encode_actor_health(236, 60.0, bytes.fromhex("08000100"))
-    assert int.from_bytes(built[3:11], "little") == 236
-    assert struct.unpack("<f", built[11:15])[0] == 60.0
-    assert built[15:19] == bytes.fromhex("08000100")
+    built = encode_actor_vitals(200, 7.5, bytes.fromhex("15000100"))
+    assert int.from_bytes(built[3:11], "little") == 200, "health, first"
+    assert struct.unpack("<f", built[11:15])[0] == 7.5, "resource, second"
+    assert built[15:19] == bytes.fromhex("15000100")
     assert built[19] == COMMAND_TERMINATOR
 
 
-def test_a_health_update_needs_a_four_byte_actor():
+def test_a_vitals_update_needs_a_four_byte_actor():
     with pytest.raises(ValueError, match="actor id is 4 bytes"):
-        encode_actor_health(60, 1.0, b"\x01\x02")
+        encode_actor_vitals(60, 1.0, b"\x01\x02")
 
 
 # ── where a creature stands ─────────────────────────────────────────────────
@@ -556,3 +567,45 @@ def test_a_creature_has_two_positions_in_two_different_frames():
         # Same creature, and the two disagree by far more than rounding.
         assert abs(wire.x / WORLD_SCALE - described[0]) < 6.0, "x roughly agrees"
         assert abs(wire.y / WORLD_SCALE - described[2]) > 25.0, "the depth does not"
+
+
+# ── the lifecycle commands, generated ────────────────────────────────────────
+
+
+def test_discarding_a_creature_needs_no_recording():
+    """Its body is empty — the actor id in the trailer is the whole message — which
+    is what makes it the way to retire a creature no capture happens to contain a
+    removal for."""
+    built = encode_discard_monster(0x00010008)
+    assert built == bytes.fromhex("852b000800010 0ff".replace(" ", ""))
+    assert len(built) == 8, "id, command, actor, terminator"
+
+
+def test_a_vicinity_announcement_is_a_count_then_that_many_actors():
+    """Byte-aligned throughout, so no bit writer is needed and any set of actors can
+    be announced in one message."""
+    built = encode_actors_enter_vicinity([0x00010008, 0x0001000A], 0x00010015)
+    assert len(built) == 3 + 4 + 8 + 5
+    assert int.from_bytes(built[3:7], "little") == 2
+    assert int.from_bytes(built[7:11], "little") == 0x00010008
+    assert int.from_bytes(built[11:15], "little") == 0x0001000A
+    assert built[-1] == 0xFF
+
+
+def test_hiding_and_killing_are_different_commands():
+    """The mistake that left creatures standing at zero health: 0x0073 sets an entity
+    invisible, it does not kill. What kills is 0x006C, which carries the impulse the
+    corpse is thrown with and whether the body is removed."""
+    hide = encode_actors_left_vicinity([0x00010008], 0x00010015)
+    assert int.from_bytes(hide[1:3], "little") == ACTORS_LEFT_VICINITY
+
+    killed = encode_kill(Kill(victim=0x00010008, killer=0x00010015, despawn=True))
+    assert int.from_bytes(killed[1:3], "little") == KILL
+    assert killed != hide
+
+
+def test_a_kill_ends_one_bit_short_of_its_last_byte():
+    """Its despawn flag is a single bit, so the trailer and the terminator behind it
+    are shifted — which is why this cannot be assembled from whole bytes."""
+    killed = encode_kill(Kill(victim=0x00010008, killer=0x00010015, despawn=True))
+    assert killed[-1] == 0x80, "the terminator's last bit, then seven of padding"

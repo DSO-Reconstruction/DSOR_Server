@@ -346,13 +346,12 @@ def combat_ready_mobs() -> list[bytes]:
     whose removal message arrived grouped with another actor's in the capture, so it
     could not be isolated. One of the six is dropped for that reason.
     """
+    # A recorded removal is no longer required: DiscardMonsterCommand is generated
+    # and its body is empty, so any creature can be retired. Only the hit is still
+    # replayed, which is what this filter is now about — and that brings back the
+    # creature whose removal happened to arrive grouped with another actor's.
     hits = hit_commands()
-    departures = departure_commands()
-    return [
-        record
-        for record in describable_mobs()
-        if record[15:19] in hits and record[15:19] in departures
-    ]
+    return [record for record in describable_mobs() if record[15:19] in hits]
 
 
 def describable_mobs() -> list[bytes]:

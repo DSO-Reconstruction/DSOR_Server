@@ -517,29 +517,43 @@ def with_motion(
 
 STATS_OPCODE = 0x007B
 
-#: The stats command carries two numbers, not a selector and a value. The client's
-#: handler feeds the first eight bytes to the same setter its monster-update path
-#: calls SetMaximumHitPoints, and the four after it to SetCurrentHitPoints:
+#: The stats command carries two numbers, and they are current hit points and the
+#: resource a skill spends — not a selector and a value, and not a maximum and a
+#: current:
 #:
 #:     eb 00 00 00 00 00 00 00 | cd cc 4c 3e | 15 00 01 00 | ff
-#:     maximum, int64          | current, f32 | actor id    | terminator
+#:     hit points, int64       | resource, f32| actor id    | terminator
 #:
-#: This module read that first byte as a stat id for a while, on the strength of it
-#: taking only three values in the capture. Those three were maxima of 234, 235 and
-#: 236 — a character whose maximum drifts as it levels, not an enumeration.
-MAX_HEALTH_SIZE = 8
-CURRENT_HEALTH_SIZE = 4
+#: The client's observer vtable is what settles it: the setter for the first field
+#: notifies OnHealthPointsChanged, the one for the second OnSkillResourceChanged. So
+#: 234-236 was a nearly full health bar, and the float falling by exactly 5.00 per cast
+#: and recovering at 0.2 was mana or rage.
+#: Width of the current hit points, and of the skill resource that follows.
+HIT_POINTS_SIZE = 8
+RESOURCE_SIZE = 4
 
 
-def encode_actor_health(maximum: int, current: float, actor: bytes) -> bytes:
-    """Build a 0x85/0x007B reporting *actor*'s maximum and current health."""
+def encode_actor_vitals(hit_points: int, resource: float, actor: bytes) -> bytes:
+    """Build a 0x85/0x007B reporting *actor*'s current health and skill resource.
+
+    The two fields were misread twice here, and each misreading looked plausible. Byte
+    0 takes only three values across a whole session — 234, 235, 236 — so it read as a
+    stat selector; then the pair read as a maximum and a current value. The client's
+    own setters settle it: the first eight bytes go to SetHealthPoints and the four
+    after them to SetSkillResource.
+
+    So the float that fell by exactly 5.00 per cast and recovered at 0.2 was never
+    health at all — it was the resource a skill spends. Writing a damage value there
+    drains the player's mana and leaves their health untouched, which is what happened
+    for one round of testing.
+    """
     if len(actor) != ACTOR_ID_SIZE:
         raise ValueError(f"an actor id is {ACTOR_ID_SIZE} bytes, got {len(actor)}")
     return (
         bytes([0x85])
         + STATS_OPCODE.to_bytes(2, "little")
-        + maximum.to_bytes(MAX_HEALTH_SIZE, "little")
-        + struct.pack("<f", current)
+        + hit_points.to_bytes(HIT_POINTS_SIZE, "little")
+        + struct.pack("<f", resource)
         + actor
         + bytes([COMMAND_TERMINATOR])
     )

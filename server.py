@@ -39,6 +39,12 @@ from dsor.messages import (
     read_map_assignment,
     read_server_handoff,
 )
+from dsor.combat import (
+    Kill,
+    encode_actors_enter_vicinity,
+    encode_discard_monster,
+    encode_kill,
+)
 from dsor.protocol import SERVICE_PORTS, build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -50,7 +56,7 @@ from dsor.gameplay import (
     actor_id,
     decode_position,
     WORLD_SCALE as WORLD,
-    encode_actor_health,
+    encode_actor_vitals,
     monster_spawn,
     with_spawn,
     encode_entity_group_message,
@@ -274,8 +280,9 @@ class Service:
         self._last_strike: dict[tuple[str, int], float] = {}
         #: Where the player starts, and the ceiling reported alongside it. The
         #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
-        self.player_max = 31.6
-        self.player_max_ceiling = 236
+        self.player_max = 236
+        #: The resource a skill spends, reported alongside health and left alone.
+        self.player_resource = 10.0
         #: What one creature blow takes off, and how often one lands. Both ours.
         self.creature_damage = 3.0
         self.strike_interval = 1.5
@@ -888,14 +895,39 @@ class Service:
 
         if left > 0.0:
             return
-        # Dead: the real server removed it from the player's vicinity, one message per
-        # creature, shortly after the hit that killed it.
-        departure = departure_commands().get(target)
-        if departure is not None:
-            # Not trimmed: a removal is one command already, 111 bytes with no second
-            # command inside it, so looking for a boundary only produces a warning.
-            self._queue(connection, departure, sender)
-            log.info("%s: entity %s removed", self.name, target.hex(" "))
+        # Dead. Two generated commands, in this order, and neither is what this
+        # server used to send.
+        #
+        # ActorsLeftVicinityCommand — which is what was sent before — does not kill
+        # anything: it sets the entity invisible. That is why creatures stayed
+        # standing at zero health. What kills is KillCommand, which carries the
+        # impulse the corpse is thrown with and a flag saying whether the body is
+        # removed; the client's death sequence hangs off it. DiscardMonsterCommand
+        # then deletes the entity and the actor outright, and its body is empty, so
+        # it needs no recording — which is how a creature with no captured removal
+        # can be retired at all.
+        victim = int.from_bytes(target, "little")
+        tick = connection.elapsed_ms() // 10
+        self._queue(
+            connection,
+            encode_kill(
+                Kill(
+                    victim=victim,
+                    killer=int.from_bytes(PLAYER_ACTOR, "little"),
+                    impulse=(0.0, 1.0, 0.0),
+                    tick=tick,
+                    kill_tick=tick,
+                    despawn=True,
+                )
+            ),
+            sender,
+        )
+        # No DiscardMonsterCommand here. It deletes the entity outright, and sending
+        # it in the same breath as the kill destroys the death sequence before it can
+        # play — the creature simply vanished. The kill's own despawn flag already
+        # tells the client to clear the body; discarding is for retiring a creature
+        # that is not dying, and for one no capture contains a removal for.
+        log.info("%s: entity %s killed", self.name, target.hex(" "))
         self.mob_target.pop(sender, None)
 
     def _announce_vicinity(self, connection: Connection, sender) -> None:
@@ -908,16 +940,22 @@ class Service:
         """
         if not self.mobs or not self.announce_vicinity:
             return
-        announcements = vicinity_announcements()
-        served = [actor_id(record) for record in combat_ready_mobs()[: self.mobs]]
-        sent = 0
-        for actor in served:
-            announcement = announcements.get(actor)
-            if announcement is None:
-                continue
-            self._queue(connection, announcement, sender)
-            sent += 1
-        log.info("%s: announced %d nearby actors to %s", self.name, sent, sender)
+        served = [
+            int.from_bytes(actor_id(record), "little")
+            for record in combat_ready_mobs()[: self.mobs]
+        ]
+        if not served:
+            return
+        # Generated, not replayed: a count then that many 32-bit ids, byte-aligned
+        # throughout. One message announces the whole set, where the recorded ones
+        # announced a creature each and only existed for the six that happened to be
+        # captured.
+        self._queue(
+            connection,
+            encode_actors_enter_vicinity(served, int.from_bytes(PLAYER_ACTOR, "little")),
+            sender,
+        )
+        log.info("%s: announced %d nearby actors to %s", self.name, len(served), sender)
 
     def _describe_entity(self, connection: Connection, game, sender) -> None:
         """Answer "what is entity N" with the entity's description.
@@ -1114,12 +1152,17 @@ class Service:
             self.creature_damage = 0.0
             return
 
-        left = max(0.0, self.player_health.get(sender, self.player_max) - self.creature_damage)
+        left = max(
+            0.0, self.player_health.get(sender, float(self.player_max)) - self.creature_damage
+        )
         self.player_health[sender] = left
         self._queue(connection, blow, sender)
+        # Health in the first field, the skill resource in the second. Writing the
+        # damage into the second drained the player's mana and left their health
+        # untouched, which is exactly what a round of testing showed.
         self._queue(
             connection,
-            encode_actor_health(self.player_max_ceiling, left, PLAYER_ACTOR),
+            encode_actor_vitals(int(left), self.player_resource, PLAYER_ACTOR),
             sender,
         )
         log.info("%s: a creature struck %s, %.1f health left", self.name, sender, left)
