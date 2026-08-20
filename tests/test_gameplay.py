@@ -17,24 +17,43 @@ from __future__ import annotations
 
 import collections
 
+import struct
+
 import pytest
 
 from dsor.gameplay import (
     CLIENT_MOVEMENT_SIZE,
-    CLIENT_TRAILER_START,
     CLIENT_TRAILER,
+    CLIENT_TRAILER_START,
+    COMMAND_TERMINATOR,
+    ClientMovement,
+    ENTITY_SEPARATOR,
     MOVING,
     POSITION_TOLERANCE,
-    ClientMovement,
     Position,
+    SPAWN_FROM_END,
+    WORLD_SCALE,
+    actor_id,
     decode_client_movement,
     decode_entity_update,
-    decode_property_update,
-    find_action_events,
     decode_position,
+    decode_property_update,
+    encode_actor_health,
     encode_client_movement,
+    encode_entity_group,
+    encode_entity_group_message,
+    encode_entity_update,
     encode_position,
+    entity_index,
+    find_action_events,
+    monster_spawn,
+    reposition_entity,
+    ring_positions,
+    split_entity_group,
+    with_motion,
+    with_spawn,
 )
+from dsor.recorded import combat_ready_mobs, entity_descriptions, mob_templates
 
 CLIENT_MESSAGE = "0x8b/0x005f"
 SERVER_MESSAGE = "0x85/0x005f"
@@ -353,3 +372,187 @@ def test_an_event_with_no_updates_is_still_reported(experiment):
     """Dropping them would hide that a fifth of events have no visible effect."""
     events = find_action_events(_timeline(experiment, "B"))
     assert any(not event.properties for event in events)
+
+
+# ── several entities in one update ───────────────────────────────────────────
+
+
+def test_entities_are_chained_by_a_separator_and_not_counted():
+    """The multi-entity form of 0x85/0x005F has no count field.
+
+    Records are joined by two bytes that are the opcode itself, 0x005F
+    little-endian. The sizes seen in a real session are what settle it: 42 bytes is
+    two records, 64 is three and 152 is seven, each 20*n + 2*(n-1).
+    """
+    records = [bytes(range(20)), bytes(range(20, 40))]
+    body = encode_entity_group(records)
+    assert len(body) == 42
+    assert body[20:22] == ENTITY_SEPARATOR
+    assert split_entity_group(body) == records
+
+    for count, size in ((2, 42), (3, 64), (7, 152)):
+        assert len(encode_entity_group([bytes(20)] * count)) == size
+
+
+def test_repositioning_an_entity_touches_only_its_position():
+    """Rewriting anything else risks detaching the record from the entity the zone
+    content declared, and an entity the client does not know is one it will not
+    draw."""
+    original = bytes.fromhex("d6e9a8feec0a008080c3160a000000000a0001 00".replace(" ", ""))
+    moved = reposition_entity(original, Position(-10000, -344, 5800))
+    assert decode_position(moved) == Position(-10000, -344, 5800)
+    assert moved[6:] == original[6:], "everything after the position is untouched"
+    assert entity_index(moved) == entity_index(original)
+
+
+def test_a_record_of_the_wrong_length_is_refused():
+    with pytest.raises(ValueError, match="20 bytes"):
+        reposition_entity(bytes(19), Position(0, 0, 0))
+
+
+def test_the_single_entity_form_is_the_group_form_with_one_record():
+    """So the two encoders cannot drift apart."""
+    template = bytes(range(20))
+    position = Position(1, 2, 3)
+    grouped = encode_entity_group_message([encode_position(position) + template[6:]])
+    assert grouped == encode_entity_update(position, template)
+
+
+def test_creatures_are_placed_around_the_player_at_its_own_elevation():
+    """Ground height is not something this server knows, and every creature
+    observed in the tutorial dungeon shared the player's elevation."""
+    centre = Position(-10172, -344, 5888)
+    ring = ring_positions(centre, 4, radius=600)
+    assert len(ring) == 4
+    assert all(p.elevation == centre.elevation for p in ring)
+    assert all(round(centre.distance_to(p)) == 600 for p in ring)
+
+
+def test_the_recorded_creatures_are_real_records_with_distinct_indices():
+    """Eight of them, one per index the real session showed."""
+    templates = mob_templates()
+    assert len(templates) == 8
+    assert all(len(t) == 20 for t in templates)
+    indices = [entity_index(t) for t in templates]
+    assert len(set(indices)) == len(indices), "each is a different entity"
+    assert 0x15 not in indices, "none of them is the player"
+
+
+def test_a_fresh_tick_is_stamped_without_disturbing_the_actor():
+    """The real server re-announces every entity each tick with its counter
+    advanced by ten to twelve; this repeated the recorded value for ever.
+
+    What must not change is the actor id, since that is the only thing binding the
+    record to an entity the client has agreed to draw.
+    """
+    template = mob_templates()[0]
+    moved = with_motion(template, Position(-5000, -344, 2800), 12345, duration=18)
+
+    assert actor_id(moved) == actor_id(template)
+    assert decode_position(moved) == Position(-5000, -344, 2800)
+    assert int.from_bytes(moved[9:13], "little") == 12345
+    assert int.from_bytes(moved[13:15], "little") == 18
+    assert moved[19] == COMMAND_TERMINATOR
+
+
+def test_a_standing_entity_carries_duration_zero():
+    """Which is what 620 of 621 observed updates of one creature did."""
+    template = mob_templates()[0]
+    still = with_motion(template, decode_position(template), 999)
+    assert int.from_bytes(still[13:15], "little") == 0
+    assert still[:6] == template[:6], "it did not move"
+
+
+def test_the_tick_and_duration_wrap_rather_than_overflow():
+    """A session long enough to exceed either field should not raise."""
+    template = mob_templates()[0]
+    wrapped = with_motion(template, Position(0, 0, 0), 2**32 + 5, duration=2**16 + 3)
+    assert int.from_bytes(wrapped[9:13], "little") == 5
+    assert int.from_bytes(wrapped[13:15], "little") == 3
+
+
+def test_the_health_command_reproduces_the_real_bytes():
+    """Seventeen bytes: a maximum as int64, a current value as float, the actor id,
+    the terminator. Reproducing a recorded update exactly is what makes the encoder
+    trustworthy."""
+    real = bytes.fromhex("857b00eb00000000000000cdcc4c3e15000100ff")
+    assert encode_actor_health(0xEB, 0.2, bytes.fromhex("15000100")) == real
+
+
+def test_the_first_eight_bytes_are_a_maximum_not_a_stat_selector():
+    """A correction. This module read byte 0 as a stat id because the capture only
+    ever showed three values there — 0xEA, 0xEB, 0xEC.
+
+    They are maxima of 234, 235 and 236: a character's ceiling drifting as it levels,
+    not an enumeration. The client's handler feeds those eight bytes to the same
+    setter its monster-update path calls SetMaximumHitPoints, and the four after it to
+    SetCurrentHitPoints.
+    """
+    built = encode_actor_health(236, 60.0, bytes.fromhex("08000100"))
+    assert int.from_bytes(built[3:11], "little") == 236
+    assert struct.unpack("<f", built[11:15])[0] == 60.0
+    assert built[15:19] == bytes.fromhex("08000100")
+    assert built[19] == COMMAND_TERMINATOR
+
+
+def test_a_health_update_needs_a_four_byte_actor():
+    with pytest.raises(ValueError, match="actor id is 4 bytes"):
+        encode_actor_health(60, 1.0, b"\x01\x02")
+
+
+# ── where a creature stands ─────────────────────────────────────────────────
+
+
+def test_a_creature_is_pinned_by_its_description_not_by_a_movement_update():
+    """The finding that explains hundreds of ignored updates.
+
+    A position update for a creature is discarded — the client applies those only to
+    an actor it has bound to an entity — so the only position that takes effect is the
+    one inside its own description, three floats in world units. All six recorded
+    descriptions carry it 281 bytes from the end, at three different message sizes.
+    """
+    for description in entity_descriptions().values():
+        x, elevation, y = monster_spawn(description)
+        assert -100.0 < x < 0.0, "the tutorial dungeon's creatures sit here"
+        assert elevation == 0.0
+        assert 40.0 < y < 60.0
+
+
+def test_placing_a_creature_changes_twelve_bytes_and_nothing_else():
+    """The creature, its template and its handle stay the recorded ones."""
+    description = entity_descriptions()[b"\x08\x00\x01\x00"]
+    moved = with_spawn(description, -79.0, 0.0, 47.5)
+
+    assert monster_spawn(moved) == (-79.0, 0.0, 47.5)
+    assert len(moved) == len(description)
+    offset = len(description) - SPAWN_FROM_END
+    assert moved[:offset] == description[:offset]
+    assert moved[offset + 12 :] == description[offset + 12 :]
+
+
+def test_a_description_too_short_to_hold_a_position_is_refused():
+    with pytest.raises(ValueError, match="at least"):
+        monster_spawn(bytes(10))
+
+
+def test_a_creature_has_two_positions_in_two_different_frames():
+    """The distinction that made every distance bound fail, in both directions.
+
+    A creature's description carries three floats, and its movement records carry
+    three signed 16-bit fields — and they are **not** the same frame. Measured over a
+    real session: the player's decoded trajectory runs z=46 down to z=21, while the
+    descriptions put the creatures at z=52 to 55, an interval the player never enters.
+    Compared against the descriptions, the player was never nearer than 18 units and
+    was 30 away at the moment of every single attack, so a bound of 1.75 refused every
+    blow and so did a bound of 6. Compared on the wire, the same player came within
+    0.9 units.
+
+    Compare wire against wire.
+    """
+    for record in combat_ready_mobs():
+        wire = decode_position(record)
+        described = monster_spawn(entity_descriptions()[actor_id(record)])
+
+        # Same creature, and the two disagree by far more than rounding.
+        assert abs(wire.x / WORLD_SCALE - described[0]) < 6.0, "x roughly agrees"
+        assert abs(wire.y / WORLD_SCALE - described[2]) > 25.0, "the depth does not"

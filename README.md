@@ -9,8 +9,11 @@ refuted rather than deleted.
 As of the last session the client completes the whole chain: it logs in, is
 dispatched to the character service, is shown its character, is granted the game,
 returns to the login server, is dispatched to a map server, and enters the world at
-the spawn point. What it does *not* yet do is render that character with its hair
-and equipment.
+the spawn point. Creatures appear around it, can be struck, lose health and drop
+loot, and the shop shows whatever this server decides at whatever price it decides.
+
+What it does *not* do is render that character with its hair and equipment, or let a
+creature move. Both are recorded under **Open**, with what is known about why.
 
 Two sources feed these notes: packet captures of real and emulated sessions, and
 the client's own log. The client is a native Windows x64 build (no IL2CPP), so
@@ -34,6 +37,144 @@ session — and it issues every handoff.
 The character service does not serve a playable map. It grants the client's request
 and hands it back with an **empty** handoff, and the client returns to the login
 server for a real destination.
+
+## Command names
+
+The client is a native C++ build with no RTTI for its own classes, but Nebula3
+registers every class through a `Core::Rtti` constructor called with the name as a
+literal — 2282 of them — and each class's id getter sits at vtable slot 3 as a
+two-instruction `mov eax, <id>; ret`. That yields **372 command ids paired with
+their class names**, with no duplicates on either side, and the ids form a
+contiguous run from 0x0001 to 0x0176 with three gaps. The client's own factory
+refuses anything at or above 375, which confirms the space independently.
+
+The ones this server needs:
+
+| id | class | direction |
+|---|---|---|
+| `0x001C` | `ActorRequestCommand` | client asks what an actor is |
+| `0x001D` | `NewPlayerCommand` | |
+| `0x002A` | `NewMonsterCommand` | creates a creature |
+| `0x002B` | `DiscardMonsterCommand` | never seen on the wire |
+| `0x002C` | `MonsterUpdateCommand` | stats, not position |
+| `0x004F` | `StatusEffectCommand` | |
+| `0x005F` | `MoveCommand` | positions, both directions |
+| `0x006B` | `HitCommand` | |
+| `0x0070` | `SwitchMapCommand` | the handoff |
+| `0x0073` | `ActorsLeftVicinityCommand` | |
+| `0x0074` | `ActorsEnterVicinityCommand` | |
+| `0x007B` | `ActorStatsUpdateCommand` | |
+| `0x0086` | `CharacterGenerationCommand` | character *creation* |
+| `0x0087` | `CharacterSelectionCommand` | selection and entering the world |
+| `0x00A7` | `GuildStatusCommand` | |
+| `0x0114` | `AchievementInfoCommand` | |
+| `0x010B` `0x010C` `0x010E` | `OCPOfferRequest` / `Methods` / `OfferResponse` | the shop |
+
+Reading these names first, rather than guessing from sizes and positions, is what
+unblocked this project every time it stalled. Every wrong turn recorded under
+**Refuted** below was a guess made while the answer sat in the binary.
+
+## Commands come in batches
+
+A datagram does not carry one message. The client reads commands in sequence until
+fewer than sixteen bits remain, and **each command ends with a `0xFF` terminator**
+followed immediately by the next command's 16-bit id.
+
+This matters because it is easy to misread. A multi-entity position update looks
+exactly like records joined by a two-byte separator `5F 00` — and that reading
+produces byte-identical output, so it survives every test. It is wrong: the `0xFF`
+closes each command and `5F 00` is simply the next `MoveCommand`'s id. The mistake
+only surfaced on reading the client's decode loop.
+
+Two consequences worth keeping in mind. Per-id byte counts taken from a capture are
+**batch sizes labelled by the first command's id**, not message sizes — which is why
+the 631 KB "`0x001D`" holds some 1250 identifiers. And a recorded batch cannot be
+replayed wholesale onto a different world state: it carries the whole cascade the
+original session produced, including positions and loot placement. Filtering a batch
+to the commands whose trailer names the actor you care about, plus those addressed to
+no actor at all, is the workable middle ground between replaying everything and
+replaying only its first command.
+
+## A creature, from nothing to fighting
+
+Three legs, and only the last two are obvious:
+
+```
+server → client   0x0074 ActorsEnterVicinityCommand   an actor is near you
+client → server   0x001C ActorRequestCommand          what is actor N?
+server → client   0x002A NewMonsterCommand            this is what it is
+```
+
+A position update **alone will not do it**. `HandleMoveCommand` asks
+`CheckActorNeedsToBeRequested` first, and for an actor the client has never heard of
+it discards the command outright and asks. Leave that question unanswered and the
+creature never exists — the map loads, the player walks around, and nothing appears,
+with not one line in the client's log. It keeps asking for as long as it runs: 136
+times against this server before the answer existed, against 8 in a whole real
+session. Counting *distinct* requested ids is what tells retries apart from new
+actors.
+
+`0x002A` also pins the creature's initial position and health, as three floats and an
+int64 pair inside its own payload. And `RequestActor` is called directly from the
+vicinity handler, so an actor announced that way is set up by the path the real
+server used, rather than one the client merely noticed.
+
+## A creature has two positions, in two frames
+
+This one cost several rounds of a human staring at a screen, and it is worth stating
+loudly.
+
+* Its **description** carries three 32-bit floats, in world units.
+* Its **movement records** carry three signed 16-bit fields, world units × 128.
+
+They are not the same frame. Measured over one session: the player's decoded
+trajectory runs z=46 down to z=21, while the descriptions place the creatures at
+z=52 to 55 — an interval the player never enters. Measured against the descriptions,
+the player was never nearer than 18 units and was 30 away at the moment of every
+single attack. Measured on the wire, the same player came within 0.9.
+
+So a distance bound of 1.75 refused every blow, and so did a bound of 6. Compare wire
+against wire.
+
+## Combat
+
+`MoveCommand`, from the client's own decoder — and this is the layout, not a reading
+of ours:
+
+| offset | width | field |
+|---|---|---|
+| 0–5 | 3 × int16 | position, world units × 128 |
+| 6 | uint8 | scaled by 1/64 |
+| 7–8 | 2 × uint8 | two angles, each `(v/256)·2π − π` |
+| 9–12 | uint32 | start tick |
+| 13–14 | uint16 | duration; the end tick is the sum |
+| 15–18 | uint32 | actor id, from the command's server-side trailer |
+| 19 | | the `0xFF` terminator |
+
+`ActorStatsUpdateCommand` carries **two numbers, not a selector and a value**: an
+int64 maximum then a 32-bit float current, then the actor and the terminator. Three
+values in byte 0 across a whole session made it look like a stat id; they were
+maxima of 234, 235 and 236 — a character's ceiling drifting as it levels.
+
+**A creature's health is never reported.** Two sessions, 154 stats updates between
+them, every one for the player — including the session in which six creatures were
+killed. There is no message for it, so the client derives a creature's bar from
+`NewMonsterCommand` and from the blows that land.
+
+What a kill looks like, from the session that contains six of them: a large
+`0x006B HitCommand` naming both the creature and the player, then a
+`0x0073 ActorsLeftVicinityCommand` naming the creature. Frames 5219 then 5410 for the
+first, 5525 then 5733 for the next, and so on. The small 160-byte hits name no
+creature at all — those are blows that did not land, or blows taken.
+
+The client also validates its own reach before sending anything:
+`SkillValidator: target for 'angrystrike' out of range!! 4.17 <-> 1.75`. So a server
+need not check range; if the attack arrived, it was in range. What a server *must* do
+is decide **which** creature was hit, because `TargetSkillCommand` names no target —
+twenty-one bytes holding a skill id, a float, a tick and two unestablished fields,
+and not one actor id among them. Choosing afresh on every blow makes the choice flip
+between creatures standing close together, which reads on screen as damage being
+shared out; latch it instead.
 
 ## The character-selection state machine
 
@@ -181,9 +322,26 @@ trailer byte. That byte is **not** constant, and it tracks the destination:
 | to a map server | `0x00` |
 | the empty one that releases a client | `0x00` |
 
-`0x84/0x010E` is a purchase-offer list — 23 entries in one sample, 30 in another,
-with price labels and validity dates — answered to a client `0x8B/0x010B` and paired
-with a small `0x84/0x010C`. It has nothing to do with entering the world.
+`0x84/0x010E` is a purchase-offer list, answered to a client `0x8B/0x010B` and paired
+with a small `0x84/0x010C`. Its ordering indices sit right behind the release, which
+is why it was briefly mistaken for part of it; it is an answer to a request.
+
+```
+u8 0x84 / u16 0x010E / u32 count
+per offer:  105 bits, then three length-prefixed strings
+            the price is a 32-bit float at bit 32 of those 105
+            then a product label, a payment method (usually empty), a validity date
+then ~27 bits of trailer, carried verbatim
+```
+
+Both recorded samples round-trip byte for byte, and 105 is not a multiple of eight, so
+the strings drift a nibble per entry and a byte-aligned search finds about half of
+them. The number *in* the label is the quantity — 1500 andermants — and not the price,
+which is the separate float: the recorded list prices its bundles 1.99, 4.99, 9.99,
+24.99 and 49.99 there, and the client displays exactly those figures. Re-emitting the
+list with one entry at a price of zero is the cheapest proof that a format is
+understood rather than replayed, because the client then has to accept bytes no real
+server ever sent.
 
 ## Per-tier behaviour
 
@@ -378,18 +536,48 @@ same idea rediscovered later.
 * `char_gen` audio events and an FMOD worker thread are **not** signs of the client
   falling back to character creation. They appear in the real session too — the
   client builds that model to display it.
+* `5F 00` is **not** a separator between chained entity records. It is the next
+  command's id, and `0xFF` is the terminator of the one before. The wrong reading
+  emits byte-identical output, so nothing on the wire can catch it.
+* Byte 0 of a stats update is **not** a stat selector, and byte 15 of a movement
+  record is **not** an entity index. They are the low byte of a 64-bit maximum and
+  the low byte of a 32-bit actor id.
+* `0x002A` does **not** merely accompany a creature's arrival, and it is **not** a
+  zone trigger despite carrying names like `..._creature_1st_encounter`. It is what
+  creates the creature.
+* A creature's position **cannot** be changed by a movement update, and a creature's
+  health cannot be reported at all. Both are discarded for want of an actor→entity
+  binding, silently, with nothing in the client's log.
+* Rewriting the position inside a description at a fixed byte offset **breaks it**.
+  The message is bit-packed and ends three bits short of its last byte; reading at an
+  approximate offset forgives, writing does not — the creatures stopped appearing.
+* Filtering attacks by the client's own 1.75-unit reach refuses **every** blow, and so
+  does 6. See the two coordinate frames above.
+* Throttling the event schedule to the real service's measured six fragments a second
+  fixes the crash it causes and replaces it with a worse symptom: everything behind it
+  in the ordered stream waits for it, so the client sits on "loading data" for ninety
+  eight seconds. The real service did exactly that and its player waited forty-nine
+  seconds after clicking. Delay the start instead.
 
 ## Open
 
-* Why the selection screen renders a character with neither hair nor its equipped
-  gear. Neither the list record nor the event schedule contains appearance data, and
-  the client's own symbols name `UpdateCharacterAppearance` and
-  `LoadCurrentCharacterEquipment` as the code involved. Block offset +64 in the
-  per-character record is the one unexplained number, and changing it in a served
-  list is a cheap decisive experiment.
-* The zone content `0x85/0x001D` (631 KB) and the per-tick `0x85/0x004F` are still
-  replayed verbatim rather than generated.
-* The chat service on 2191.
+* **Creature movement, health and death.** All three are per-actor state changes, and
+  all three are discarded unless the client has bound an entity to that actor in
+  `ClientActorManager::actorEntities`. Creation is the one thing that does not need
+  the binding, which is why creatures appear and then never change. The only live
+  writer of that table is `Properties::ActorProperty::OnActivate`, which depends on
+  the creature's entity template — level data, not a message. A real server does
+  manage it with bytes indistinguishable from ours on `0x005F`, so something is still
+  missing rather than impossible.
+* **`HitCommand`'s field layout.** Combat currently replays recorded hits, which
+  carry another session's damage numbers and animation, and that is the direct cause
+  of every incoherent state: creatures dying in one blow, standing at zero health,
+  flickering. Sixty-eight bytes of a single command is a tractable decode and it is
+  the clean fix.
+* Why the selection screen renders a character with neither hair nor equipment.
+  Neither the roster nor the event schedule holds appearance data.
+* The chat service on 2191, which carries only a handshake and one channel identifier
+  in every capture so far.
 
 ## Method
 
@@ -411,6 +599,19 @@ that is otherwise invisible.
 connections mislead worse. Both mistakes were made here and both produced confident
 wrong conclusions.
 
+**Read the client's binary before guessing.** Every stall in this project was broken
+by it and none by inference from the wire: the two inverted command ids, the request
+that has to be answered before a creature exists, the real field layout of a movement
+record, the two numbers in a stats update. Between those, hours went into changing the
+server and asking a person to describe their screen — which is slow, tests one
+hypothesis at a time, and only answers the question you thought to ask. The binary
+answers the question you did not.
+
+**Read the client's log.** Every failure on the creature path writes a line there and
+none of them crashes, so silence in the log is itself information. It reported its own
+refusal to swing at something 4.17 units away when the skill reaches 1.75, and that
+one line explained a symptom two rounds of guessing had not.
+
 ## Layout
 
 ```
@@ -418,7 +619,7 @@ server.py               the three tiers
 raknet/                 datagrams, frames, reliability, the bit-level stream
 dsor/                   message shapes, the character record, the event schedule
 dsor/data/              messages still replayed rather than generated
-tests/                  194 tests, including the offline replay harness
+tests/                  243 tests, including two offline replay harnesses
 tools/frida/            client-side capture: the agent, its driver, the launcher
 docs/logs/             redacted logs of a working session, and of a real one
 ```

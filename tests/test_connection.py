@@ -220,3 +220,26 @@ def test_retransmissions_go_oldest_first():
     assert len(datagrams) > 2
     connection.resend_after_ms = 0
     assert connection.due_retransmissions(limit=2) == datagrams[:2]
+
+
+def test_a_datagram_sequence_is_assigned_when_it_is_sent_not_when_it_is_built():
+    """Was: sequences assigned at build time, so anything queued left a gap.
+
+    A datagram's sequence number is a transmit-order counter, and a peer reads a gap
+    in it as loss. Numbering 592 fragments at once and then releasing six a second
+    had the client NAK all 592 — repeatedly — which defeated the throttle and
+    doubled the traffic it was meant to reduce. Its screen sat on "loading data".
+    """
+    connection = make_connection()
+    frames = connection.frames_for(b"\x84" + bytes(4000))
+    assert len(frames) > 2, "large enough to split"
+
+    # Building took no sequence numbers at all.
+    (first,) = connection.send_message(b"\x88")
+    assert int.from_bytes(first[1:4], "little") == 0, (
+        "the frames built above must not have consumed sequence 0"
+    )
+
+    # Sealing them now continues from there, in the order they go out.
+    sealed = [connection.seal(frame) for frame in frames]
+    assert sequences_of(sealed) == list(range(1, len(frames) + 1))

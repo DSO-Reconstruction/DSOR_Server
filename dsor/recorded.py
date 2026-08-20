@@ -265,3 +265,282 @@ def entity_snapshot(map_name: str) -> list[bytes]:
 def entity_update_template() -> bytes:
     """The 20-byte body a generated entity update is written over."""
     return payload(ENTITY_UPDATE_TEMPLATE)
+
+
+#: Non-player entity records lifted from the tutorial dungeon, one per index the
+#: real session showed: 0x08, 0x0A, 0x0B, 0x0F, 0x10, 0x12, 0x13, 0x14.
+#:
+#: They are real records rather than invented ones on purpose. The zone content
+#: message defines what the map contains, and an identifier it never mentioned is an
+#: entity the client cannot draw — so a spawned creature has to be one the zone
+#: already knows about. Only its position is rewritten.
+MOB_TEMPLATES = "mob_templates.bin"
+
+
+def mob_templates() -> list[bytes]:
+    """The recorded non-player entity records, twenty bytes each."""
+    raw = payload(MOB_TEMPLATES)
+    return [raw[i : i + 20] for i in range(0, len(raw), 20)]
+
+
+#: Recorded 0x85/0x002A entity descriptions, one file each.
+#:
+#: These are the answer to the client's 0x8B/0x001C, which is how it asks "what is
+#: entity N". Its request body is four bytes and begins with the entity's index; the
+#: description carries that same four-byte handle back, and finding it is what paired
+#: each file with its creature.
+#:
+#: The handle's position is a rule rather than a table: it sits 260 bytes from the
+#: end in all of them — offset 151 in the 411-byte descriptions, 137 in the 397-byte
+#: ones and 146 in the 406-byte one. That it is derivable matters, because it means a
+#: description can be recognised without being listed.
+#:
+#: Why this is the missing piece: a position update for an entity the client has
+#: never heard of is ignored. In the reference session a creature does appear in a
+#: 0x005F before any description, and that misled this project for a while — the
+#: order is position, then the client's question, then the answer, and only then does
+#: the creature exist. Leaving the question unanswered means it never does, and the
+#: client asks again for as long as it is left running: 136 times against this
+#: server, against 8 in the real session.
+ENTITY_DESCRIPTIONS = (
+    "zone_trigger_01.bin",
+    "zone_trigger_03.bin",
+    "zone_trigger_04.bin",
+    "zone_trigger_06.bin",
+    "zone_trigger_07.bin",
+    "zone_trigger_08.bin",
+)
+
+#: How far from the end of a description its four-byte handle sits.
+HANDLE_FROM_END = 260
+
+#: Width of that handle, and of the client's request body.
+HANDLE_SIZE = 4
+
+
+def entity_handle(description: bytes) -> bytes:
+    """The four bytes naming which entity *description* describes."""
+    start = len(description) - HANDLE_FROM_END
+    if start < 3:
+        raise ValueError(
+            f"a description is at least {HANDLE_FROM_END + 3} bytes, "
+            f"got {len(description)}"
+        )
+    return description[start : start + HANDLE_SIZE]
+
+
+def entity_descriptions() -> dict[bytes, bytes]:
+    """Recorded descriptions, keyed by the handle the client asks with."""
+    out: dict[bytes, bytes] = {}
+    for name in ENTITY_DESCRIPTIONS:
+        body = payload(name)
+        out[entity_handle(body)] = body
+    return out
+
+
+def combat_ready_mobs() -> list[bytes]:
+    """Creature records this server can describe, hit **and** remove.
+
+    Serving one it cannot remove leaves a corpse at zero health that never goes away
+    and that the player can go on striking — which is what happened to the creature
+    whose removal message arrived grouped with another actor's in the capture, so it
+    could not be isolated. One of the six is dropped for that reason.
+    """
+    hits = hit_commands()
+    departures = departure_commands()
+    return [
+        record
+        for record in describable_mobs()
+        if record[15:19] in hits and record[15:19] in departures
+    ]
+
+
+def describable_mobs() -> list[bytes]:
+    """Creature records this server can also describe.
+
+    Serving an entity it cannot describe is pointless and worse than nothing: the
+    client discards the position outright, asks what the entity is, and gets no
+    answer — the exact dead end that kept the map empty.
+
+    Two of the recorded records are filtered out here, and for a reason worth
+    keeping: they are not monsters. The client has separate commands for each kind —
+    NewMonsterCommand for creatures, NewNPCCommand and NewDestroyableCommand for the
+    other two — and the reference session answered their requests with neither of the
+    descriptions collected here.
+    """
+    known = entity_descriptions()
+    return [record for record in mob_templates() if record[15:19] in known]
+
+
+def first_command(description: bytes, handle: bytes) -> bytes:
+    """The leading command of *description*, the one addressed to *handle*.
+
+    The recorded descriptions are not single messages but **batches**: the client
+    reads commands one after another, each ending in 0xFF, until fewer than sixteen
+    bits remain. A 411-byte one holds the creature's NewMonsterCommand and then
+    several more, the last of them about the player — whose actor id is what sits in
+    the batch's own trailer.
+
+    Cutting after the first command sends the client only what concerns the creature.
+    The cut is found rather than tabulated: the first 0xFF whose preceding 32 bits are
+    *handle* and which is followed by a plausible command id. Nothing is byte-aligned
+    here, so the result is rounded up to whole bytes; the few spare bits are below the
+    sixteen the client needs to try another command, so it stops there.
+    """
+    from raknet.bitstream import BitReader
+
+    reader = BitReader(description)
+    limit = len(description) * 8
+    for position in range(40, limit - 16):
+        reader.seek(position - 8)
+        if reader.read_bits(8) != 0xFF:
+            continue
+        reader.seek(position)
+        following = reader.read_uint(16)
+        if not 1 <= following < 0x177:
+            continue
+        reader.seek(position - 40)
+        if reader.read_uint(32).to_bytes(4, "little") == handle:
+            return description[: (position + 7) // 8]
+    raise ValueError(
+        f"no command addressed to {handle.hex(' ')} found in {len(description)} bytes"
+    )
+
+
+#: Recorded 0x85/0x0074 ActorsEnterVicinityCommand announcements, one per creature.
+#:
+#: This is the step that was missing. The real flow is three-legged: the server
+#: announces that an actor is near, the client asks what it is, the server describes
+#: it. Only the last two were implemented here, and the client's handler for the
+#: announcement calls RequestActor *directly* — so skipping it means the actor is set
+#: up by a different path than the real one took.
+#:
+#: Each announcement is 111 bytes and names exactly one creature, and in the reference
+#: session each arrived at the very frame that creature first appeared: 43835 for
+#: 0x08, 44046 for 0x0A, 44072 for 0x0B, 44925 for 0x0F, 44927 for 0x10, 44956 for
+#: 0x12.
+VICINITY_PREFIX = "vicinity_"
+
+
+def vicinity_announcements() -> dict[bytes, bytes]:
+    """The recorded announcements, keyed by the actor each names."""
+    out: dict[bytes, bytes] = {}
+    for actor in entity_descriptions():
+        try:
+            out[actor] = payload(f"{VICINITY_PREFIX}{actor.hex()}.bin")
+        except FileNotFoundError:
+            continue
+    return out
+
+
+#: Recorded combat messages, one file per creature, from a session where six of them
+#: were killed.
+#:
+#: This is the pair the emulator was missing, and finding it needed a capture that
+#: did not exist before: the earlier session's player never killed anything. In it,
+#: all 107 ActorStatsUpdateCommands targeted the player and not one targeted a
+#: creature — which is why reporting a creature's health did nothing, over several
+#: attempts. **A creature has no health message at all.** The client works its bar
+#: out from the hit.
+#:
+#: The pattern in the killing session is exact: a large 0x85/0x006B HitCommand naming
+#: both the creature and the player, then a 0x85/0x0073 ActorsLeftVicinityCommand
+#: naming the creature — frames 5219 then 5410 for one, 5525 then 5733 for the next,
+#: and so on for all six. The small 160-byte HitCommands name no creature; those are
+#: blows that did not land, or blows taken.
+HIT_PREFIX = "hit_"
+DEPARTURE_PREFIX = "leave_"
+
+
+def hit_commands() -> dict[bytes, bytes]:
+    """Recorded hits, keyed by the creature each names."""
+    return _by_actor(HIT_PREFIX)
+
+
+def departure_commands() -> dict[bytes, bytes]:
+    """Recorded removals, keyed by the creature each names."""
+    return _by_actor(DEPARTURE_PREFIX)
+
+
+def _by_actor(prefix: str) -> dict[bytes, bytes]:
+    out: dict[bytes, bytes] = {}
+    for actor in entity_descriptions():
+        try:
+            out[actor] = payload(f"{prefix}{actor.hex()}.bin")
+        except FileNotFoundError:
+            continue
+    return out
+
+
+#: A creature's blow against the player, replayed. Sixteen of these appear in the
+#: killing session, 163 or 164 bytes, and none of them names a creature — which is
+#: what marks them as blows *taken* rather than landed.
+#:
+#: This direction is worth more than the other, because it travels a channel that
+#: demonstrably works: the player's actor is bound to an entity, so the health updates
+#: that accompany these do take effect, where a creature's never can.
+INCOMING_HIT = "incoming_hit.bin"
+
+
+def incoming_hit() -> bytes:
+    """A recorded blow from a creature against the player."""
+    return payload(INCOMING_HIT)
+
+
+def commands_for(batch: bytes, actor: bytes) -> bytes:
+    """The commands inside *batch* that are addressed to *actor*, and only those.
+
+    Neither "send the whole batch" nor "send its first command" is right, and both
+    were tried. A recorded hit is ten commands or more: the blow itself, then the
+    cascade the real session produced around it — the player's own stats, the loot,
+    and a position for the creature where it happened to die. Sending all of it moved
+    the creature and its drop to wherever the other session's player stood. Sending
+    only the first dropped the effect that made it disappear, so it died at zero
+    health and stayed on screen.
+
+    Each command ends with a 32-bit actor id and a 0xFF, and the two bytes after that
+    are the next command's id, so a batch can be walked and filtered. Nothing is
+    byte-aligned — a batch ends three bits short of its last byte — so this is
+    assembled bit by bit and padded at the end. The client stops when fewer than
+    sixteen bits remain, which is what makes the padding safe.
+    """
+    from raknet.bitstream import BitReader, BitWriter
+
+    reader = BitReader(batch)
+    message_id = reader.read_uint(8)
+    limit = len(batch) * 8
+
+    # Walk the boundaries: a command runs from where its id starts to just past its
+    # terminator.
+    boundaries: list[int] = []
+    for position in range(reader.position + 16 + 40, limit + 1):
+        reader.seek(position - 8)
+        if reader.read_bits(8) != 0xFF:
+            continue
+        if position + 16 <= limit:
+            reader.seek(position)
+            if not 1 <= reader.read_uint(16) < 0x177:
+                continue
+        boundaries.append(position)
+
+    writer = BitWriter()
+    writer.write_uint(message_id, 8)
+    start = 8
+    kept = 0
+    for end in boundaries:
+        reader.seek(end - 40)
+        addressed = reader.read_uint(32).to_bytes(4, "little")
+        # The creature's own commands, and those addressed to nobody. A zero actor id
+        # marks an effect that belongs to no particular actor — which is where a death
+        # animation and a dropped item plausibly live, and dropping them left the
+        # creature dead at zero health, still standing and still solid.
+        if addressed in (actor, b"\x00\x00\x00\x00"):
+            reader.seek(start)
+            writer.write_bits(reader.read_bits(end - start), end - start)
+            kept += 1
+        start = end
+    if not kept:
+        raise ValueError(
+            f"no command addressed to {actor.hex(' ')} in {len(batch)} bytes"
+        )
+    return writer.to_bytes()

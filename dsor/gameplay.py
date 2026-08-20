@@ -347,3 +347,241 @@ def encode_entity_update(position: Position, template: bytes) -> bytes:
         + encode_position(position)
         + template[POSITION_SIZE:]
     )
+
+
+# ── Several entities in one update ──────────────────────────────────────────
+#
+# A 0x85/0x005F body can carry more than one entity, and the way it does so is
+# worth stating because it is not a count: the records are simply **chained with a
+# two-byte separator** that is the opcode itself, 0x005F little-endian. The sizes in
+# a real session confirm it — 42 bytes is two records, 64 is three, 152 is seven,
+# each being 20*n + 2*(n-1).
+#
+# Inside a record, the first six bytes are the position, in the same three signed
+# 16-bit fields as everywhere else. Bytes 9 and 10 are a 16-bit identifier and byte
+# 15 an index; the eight bytes after that never varied across 3,395 observed
+# records, so they are carried unchanged.
+
+#: The two bytes between consecutive entity records.
+ENTITY_SEPARATOR = bytes([0x5F, 0x00])
+
+#: Length of one record. Every one of the 3,395 single-entity updates was this long.
+ENTITY_RECORD_SIZE = 20
+
+#: Where the index sits. Distinct per entity: the player's was 0x15 and the
+#: creatures around it ran 0x08 to 0x14.
+ENTITY_INDEX_OFFSET = 15
+
+
+def split_entity_group(body: bytes) -> list[bytes]:
+    """Split a multi-entity 0x005F body into its records."""
+    return body.split(ENTITY_SEPARATOR)
+
+
+def encode_entity_group(records: list[bytes]) -> bytes:
+    """Chain *records* into one 0x005F body."""
+    if not records:
+        raise ValueError("an entity update needs at least one record")
+    return ENTITY_SEPARATOR.join(records)
+
+
+def reposition_entity(record: bytes, position: Position) -> bytes:
+    """Return *record* moved to *position*, everything else untouched.
+
+    Only the leading six bytes change. Rewriting anything else risks detaching the
+    record from the entity the zone content defined, and an entity the client does
+    not know about is one it will not draw.
+    """
+    if len(record) != ENTITY_RECORD_SIZE:
+        raise ValueError(
+            f"an entity record is {ENTITY_RECORD_SIZE} bytes, got {len(record)}"
+        )
+    return encode_position(position) + record[POSITION_SIZE:]
+
+
+def entity_index(record: bytes) -> int:
+    """The index byte, which distinguishes one entity from another."""
+    return record[ENTITY_INDEX_OFFSET]
+
+
+def encode_entity_group_message(records: list[bytes]) -> bytes:
+    """Build a 0x85/0x005F carrying several entities.
+
+    The single-entity form that :func:`encode_entity_update` produces is this with
+    one record, so the two agree by construction.
+    """
+    return (
+        bytes([0x85])
+        + (0x005F).to_bytes(2, "little")
+        + encode_entity_group(records)
+    )
+
+
+def ring_positions(centre: Position, count: int, radius: int = 600) -> list[Position]:
+    """*count* positions evenly spaced on a circle around *centre*.
+
+    Elevation is copied rather than computed: the ground height is not something
+    this server knows, and every creature observed in the tutorial dungeon shared
+    the player's elevation of -344.
+    """
+    import math
+
+    return [
+        Position(
+            x=centre.x + round(radius * math.cos(2 * math.pi * i / count)),
+            elevation=centre.elevation,
+            y=centre.y + round(radius * math.sin(2 * math.pi * i / count)),
+        )
+        for i in range(count)
+    ]
+
+
+# ── the fields inside a movement record ─────────────────────────────────────
+#
+# Named from the client's own decoder rather than guessed. Earlier passes here read
+# bytes 9-10 as an identifier and byte 15 as an index; both were parts of other
+# fields, which is why neither ever quite made sense.
+
+#: Where the start tick sits, and its width. The real server advances it by ten to
+#: twelve on every update of the same entity, re-announcing the same position.
+START_TICK_OFFSET = 9
+START_TICK_SIZE = 4
+
+#: Duration of the movement, immediately after. Zero in 620 of 621 observed updates
+#: of one creature — a standing entity is announced with duration zero.
+DURATION_OFFSET = 13
+DURATION_SIZE = 2
+
+#: The 32-bit actor id, which is what the client asks about when it does not
+#: recognise an entity.
+ACTOR_ID_OFFSET = 15
+ACTOR_ID_SIZE = 4
+
+#: One byte closing every command in a batch. Not a separator: the two bytes after
+#: it are the next command's id.
+COMMAND_TERMINATOR = 0xFF
+
+#: Divisor between the wire's signed 16-bit coordinates and world units.
+WORLD_SCALE = 128
+
+
+def actor_id(record: bytes) -> bytes:
+    """The four bytes identifying whose movement this is."""
+    return record[ACTOR_ID_OFFSET : ACTOR_ID_OFFSET + ACTOR_ID_SIZE]
+
+
+def with_motion(
+    record: bytes, position: Position, start_tick: int, duration: int = 0
+) -> bytes:
+    """Return *record* at *position*, stamped with a fresh tick and duration.
+
+    A stale start tick is the difference between this server and the real one: it
+    re-announced each entity every tick with the counter advanced, while this repeated
+    the recorded value for ever. Duration is what the client interpolates over, so a
+    non-zero one is what makes an entity glide rather than jump.
+    """
+    if len(record) != ENTITY_RECORD_SIZE:
+        raise ValueError(
+            f"an entity record is {ENTITY_RECORD_SIZE} bytes, got {len(record)}"
+        )
+    out = bytearray(record)
+    out[0:POSITION_SIZE] = encode_position(position)
+    out[START_TICK_OFFSET : START_TICK_OFFSET + START_TICK_SIZE] = (
+        start_tick % 2**32
+    ).to_bytes(START_TICK_SIZE, "little")
+    out[DURATION_OFFSET : DURATION_OFFSET + DURATION_SIZE] = (
+        duration % 2**16
+    ).to_bytes(DURATION_SIZE, "little")
+    return bytes(out)
+
+
+# ── actor stats ─────────────────────────────────────────────────────────────
+#
+# Commands::ActorStatsUpdateCommand, 0x85/0x007B. Seventeen bytes on the wire and
+# the layout is plain once the batch framing is accounted for:
+#
+#     eb 00 00 00 00 00 00 00 | cd cc 4c 3e | 15 00 01 00 | ff
+#     stat id, then seven bytes | float value | actor id    | terminator
+#
+# Three stat ids appear in the reference session, all of them for the player and
+# never for a creature:
+#
+#     0xEC   55 times, 0.00 to 63.60, falling in steps of exactly 5.00 and
+#            recovering in steps of 0.2 — the one that depletes
+#     0xEB   37 times, 0.20 to 10.00
+#     0xEA   15 times, 0.80 to 9.60
+#
+# Reading 0xEC as health is an inference from that shape, and applying any of them to
+# a creature is an extrapolation: the capture contains no example of a monster's
+# stats being reported at all.
+
+STATS_OPCODE = 0x007B
+
+#: The stats command carries two numbers, not a selector and a value. The client's
+#: handler feeds the first eight bytes to the same setter its monster-update path
+#: calls SetMaximumHitPoints, and the four after it to SetCurrentHitPoints:
+#:
+#:     eb 00 00 00 00 00 00 00 | cd cc 4c 3e | 15 00 01 00 | ff
+#:     maximum, int64          | current, f32 | actor id    | terminator
+#:
+#: This module read that first byte as a stat id for a while, on the strength of it
+#: taking only three values in the capture. Those three were maxima of 234, 235 and
+#: 236 — a character whose maximum drifts as it levels, not an enumeration.
+MAX_HEALTH_SIZE = 8
+CURRENT_HEALTH_SIZE = 4
+
+
+def encode_actor_health(maximum: int, current: float, actor: bytes) -> bytes:
+    """Build a 0x85/0x007B reporting *actor*'s maximum and current health."""
+    if len(actor) != ACTOR_ID_SIZE:
+        raise ValueError(f"an actor id is {ACTOR_ID_SIZE} bytes, got {len(actor)}")
+    return (
+        bytes([0x85])
+        + STATS_OPCODE.to_bytes(2, "little")
+        + maximum.to_bytes(MAX_HEALTH_SIZE, "little")
+        + struct.pack("<f", current)
+        + actor
+        + bytes([COMMAND_TERMINATOR])
+    )
+
+
+# ── where a creature actually stands ────────────────────────────────────────
+#
+# Not in the movement message. A creature is pinned by the position inside its own
+# description, as three 32-bit floats in **world** units — and a position update for
+# it is discarded, because the client only applies those to an actor it has bound to
+# an entity. That is why hundreds of movement updates moved nothing: the creature was
+# never anywhere but where its description put it.
+#
+# The offset is a rule, like the handle's: 281 bytes from the end in all six recorded
+# descriptions, whose sizes are 397, 406 and 411.
+
+#: How far from the end of a description its spawn position sits.
+SPAWN_FROM_END = 281
+
+
+def monster_spawn(description: bytes) -> tuple[float, float, float]:
+    """Where *description* places its creature, in world units."""
+    offset = len(description) - SPAWN_FROM_END
+    if offset < 3:
+        raise ValueError(
+            f"a description is at least {SPAWN_FROM_END + 3} bytes, "
+            f"got {len(description)}"
+        )
+    return struct.unpack_from("<fff", description, offset)
+
+
+def with_spawn(
+    description: bytes, x: float, elevation: float, y: float
+) -> bytes:
+    """Return *description* with its creature placed at a different position.
+
+    Twelve bytes change and nothing else, so the creature, its template and its
+    handle are the recorded ones — only where it stands is ours.
+    """
+    offset = len(description) - SPAWN_FROM_END
+    if offset < 3:
+        raise ValueError(f"description too short: {len(description)} bytes")
+    out = bytearray(description)
+    struct.pack_into("<fff", out, offset, x, elevation, y)
+    return bytes(out)

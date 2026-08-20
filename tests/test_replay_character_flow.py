@@ -75,10 +75,11 @@ def replayed() -> list[bytes]:
     service.socket.close()
     recorder = _Recorder()
     service.socket = recorder
-    # The event schedule is released at six datagrams a second in production, so a
-    # faithful replay would take a hundred seconds. Infinity drains it at once; the
-    # rate itself is asserted separately, not here.
+    # In production the event schedule is held back for a few seconds so it cannot
+    # reach the client while the character screen is still being built. Neither the
+    # hold nor the rate is what this harness is testing, so both are removed.
     service.slow_rate = float("inf")
+    service.slow_delay = 0.0
 
     for raw in _client_datagrams(CHARACTER_PORT):
         service.handle(raw, CLIENT)

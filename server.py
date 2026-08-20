@@ -19,6 +19,7 @@ import argparse
 import collections
 import json
 import logging
+import math
 import selectors
 import socket
 import time
@@ -39,13 +40,38 @@ from dsor.messages import (
     read_server_handoff,
 )
 from dsor.protocol import SERVICE_PORTS, build_service_identity
+from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
+    Position,
     SPAWN_POSITIONS,
     decode_client_movement,
+    START_TICK_OFFSET,
+    WORLD_SCALE,
+    actor_id,
+    decode_position,
+    WORLD_SCALE as WORLD,
+    encode_actor_health,
+    monster_spawn,
+    with_spawn,
+    encode_entity_group_message,
+    encode_position,
+    with_motion,
     encode_entity_update,
+    reposition_entity,
+    ring_positions,
 )
 from dsor.recorded import (
     CHARACTER_CHOSEN_NAME,
+    HANDLE_SIZE,
+    entity_descriptions,
+    commands_for,
+    first_command,
+    departure_commands,
+    hit_commands,
+    incoming_hit,
+    vicinity_announcements,
+    combat_ready_mobs,
+    describable_mobs,
     character_release,
     client_query_reply,
     map_entry_sequence,
@@ -105,11 +131,47 @@ OPERATION_START_GAME = 3
 OPERATION_DENY = 4
 OPERATION_GRANT = 5
 
-#: Datagrams a second for the event schedule, the one message that must arrive
-#: slowly. Measured on the real service: 596 fragments delivered in 101.6 seconds.
-#: It was not throttling on purpose — 54 of every 55 datagrams it sent were
-#: retransmissions — but the client depends on the result either way.
-SCHEDULE_FRAGMENTS_PER_SECOND = 6.0
+#: Seconds to hold the event schedule back before starting it.
+#:
+#: The client crashes if the schedule reaches it while the character screen is
+#: still being built, so it has to arrive later than that. What it must *not* do is
+#: arrive slowly: everything behind it in the ordered stream — the grant, the
+#: handoff, the shop — cannot be delivered until it completes, so throttling the
+#: whole transfer to the real service's measured six fragments a second left the
+#: client on "loading data" for the ninety-eight seconds that took.
+#:
+#: The real service did exactly that, and its player paid for it: they clicked at
+#: fifty-two seconds and were let into the world at a hundred and one, because the
+#: grant was queued behind the same transfer. That was an accident of a lossy link,
+#: not a design, and it is the one property here worth *not* reproducing.
+#:
+#: So: delay the start, then send at the normal rate.
+SCHEDULE_DELAY_SECONDS = 8.0
+
+#: Datagrams a second once it does start. The same rate as everything else.
+SCHEDULE_FRAGMENTS_PER_SECOND = 250.0
+
+#: The player's own actor id, as every recorded stats update carries it.
+PLAYER_ACTOR = bytes([0x15, 0x00, 0x01, 0x00])
+
+#: How close the client insists on being before it will send a skill at all, read
+#: from its own refusal: "target for 'angrystrike' out of range!! 4.17 <-> 1.75".
+#:
+#: Not used to filter anything, and the attempt is worth recording. Rejecting attacks
+#: whose nearest creature was further than this stopped damage entirely — eleven in
+#: one session — because the distance here is measured against the coordinates in a
+#: creature's description while the client measures against what it draws, and the two
+#: disagree by enough to matter: 2.3 against 1.75 in one observed case. The client is
+#: the authority on its own range, and it has already applied it before sending.
+SKILL_RANGE = 1.75
+
+#: Commands::TargetSkillCommand — the client using a skill. It names no target, so
+#: the server decides what was hit.
+TARGET_SKILL_OPCODE = 0x0047
+
+#: The client asking what an entity is, once per entity it does not recognise. Its
+#: body is the four-byte handle, and the answer is a 0x85/0x002A description.
+DESCRIBE_ENTITY_OPCODE = 0x001C
 
 #: A query the client sends twice, after the release and before it disconnects.
 #: Each one is answered with a 0x010E/0x010C pair, and the second answer is the
@@ -189,6 +251,63 @@ class Service:
         self.port = port
         self.name = name
         self.guid = guid
+        #: How many purchase offers to serve, or None for all of them.
+        self.shop_offers: int | None = None
+        #: Price to put on every offer, or None to leave the recorded ones.
+        self.shop_price: float | None = None
+        #: How many creatures to place around the player, from the recorded set.
+        self.mobs = 0
+        #: Distance to place them at, or 0 to leave them where they were recorded.
+        self.mob_radius = 0
+        #: Radius of a slow patrol around their own position, or 0 to stand still as
+        #: the recorded ones did.
+        self.mob_patrol = 0
+        #: Duration stamped on a moving entity, for the client to interpolate over.
+        self.tick_duration = 18
+        #: Health each served creature has left, keyed by its actor id.
+        self.mob_health: dict[bytes, float] = {}
+        #: Which creature each client is currently fighting, so consecutive blows
+        #: land on the same one.
+        self.mob_target: dict[tuple[str, int], bytes] = {}
+        #: The player's health, and when a creature last struck them.
+        self.player_health: dict[tuple[str, int], float] = {}
+        self._last_strike: dict[tuple[str, int], float] = {}
+        #: Where the player starts, and the ceiling reported alongside it. The
+        #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
+        self.player_max = 31.6
+        self.player_max_ceiling = 236
+        #: What one creature blow takes off, and how often one lands. Both ours.
+        self.creature_damage = 3.0
+        self.strike_interval = 1.5
+        #: How far a blow reaches, in world units, in either direction.
+        #:
+        #: Four, from measurement: replaying a real session's twelve attacks against
+        #: wire positions gives distances of 0.9 to 3.5. Looser than the client's own
+        #: 1.75 on purpose, because this measures from a creature's movement record
+        #: while the client measures from what it draws; six was too loose and made
+        #: the player take damage from creatures across the room.
+        self.reach = 4.0
+        #: What a creature starts with, and what one hit takes off it.
+        self.mob_max_health = 60.0
+        self.mob_damage = 12.0
+        #: The maximum reported alongside the current value. The capture's players
+        #: carried 234 to 236; a creature's is not observed at all.
+        self.mob_max_health_ceiling = 60
+        #: World units from the player to place a creature at, or 0 — the default —
+        #: for the position its own description carries.
+        #:
+        #: Rewriting it is off by default because it broke what worked: the creatures
+        #: stopped appearing at all. The description is bit-packed, with strings and
+        #: single-bit fields, so twelve bytes written at a fixed byte offset shift
+        #: everything behind them and the client's decoder gives up — silently, with
+        #: nothing in its log. Reading that offset yields plausible coordinates in all
+        #: six recorded descriptions, so the field is there; writing it needs the
+        #: bit-level layout, not a byte offset.
+        self.mob_near = 0.0
+        #: Send only the creature's own command instead of the whole recorded batch.
+        self.mob_first_command = False
+        #: Send the recorded vicinity announcement before a creature is asked about.
+        self.announce_vicinity = True
         #: Wire recorder, or None. Shared between services so one file holds the
         #: whole session across all three tiers, in one frame numbering.
         self.capture = capture
@@ -232,7 +351,7 @@ class Service:
             collections.deque()
         )
         #: Datagrams released at a deliberately slow rate, for the one message the
-        #: client must NOT receive quickly. See _send_slow.
+        #: client must NOT receive quickly. See _send_slow_sealed.
         self.slow: collections.deque[tuple[bytes, tuple[str, int]]] = (
             collections.deque()
         )
@@ -240,8 +359,13 @@ class Service:
         #: fragments in 101.6 seconds — six a second — because 54 out of every 55
         #: of its datagrams were retransmissions of fragments already sent.
         self.slow_rate = SCHEDULE_FRAGMENTS_PER_SECOND
+        #: How long to hold the queue before releasing anything from it.
+        self.slow_delay = SCHEDULE_DELAY_SECONDS
         self._slow_credit = 0.0
         self._slow_last = time.monotonic()
+        #: When the queue last became non-empty, so the delay is measured from
+        #: there rather than from the start of the process.
+        self._slow_since: float | None = None
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(("0.0.0.0", port))
@@ -281,11 +405,34 @@ class Service:
         else:
             self._handle_offline(raw, sender)
 
-    def _send(self, payload: bytes, sender: tuple[str, int]) -> None:
-        """Queue a datagram. The main loop decides when it actually leaves."""
-        self.outbound.append((payload, sender))
+    def _queue(
+        self,
+        connection: Connection,
+        payload: bytes,
+        sender: tuple[str, int],
+        reliability: Reliability = Reliability.RELIABLE_ORDERED,
+        channel: int = 0,
+        slow: bool = False,
+    ) -> int:
+        """Queue a message as frames, to be sealed when they actually go out.
 
-    def _send_slow(self, payload: bytes, sender: tuple[str, int]) -> None:
+        Sealing late is what makes pacing safe. A datagram's sequence number is a
+        transmit-order counter, so numbering at build time and sending later leaves
+        the peer staring at a gap it reads as loss.
+        """
+        frames = connection.frames_for(payload, reliability, channel)
+        queue = self.slow if slow else self.outbound
+        if slow and self._slow_since is None:
+            self._slow_since = time.monotonic()
+        for frame in frames:
+            queue.append((connection, frame, sender))
+        return len(frames)
+
+    def _send(self, payload: bytes, sender: tuple[str, int]) -> None:
+        """Queue an already-sealed datagram, for retransmissions."""
+        self.outbound.append((None, payload, sender))
+
+    def _send_slow_sealed(self, payload: bytes, sender: tuple[str, int]) -> None:
         """Queue a datagram for slow release.
 
         Exactly one message goes through here: the 717 KB event schedule. The
@@ -304,7 +451,7 @@ class Service:
         Slowing this down is therefore not a workaround for a bug of ours: it is
         reproducing a property of the real service that the client depends on.
         """
-        self.slow.append((payload, sender))
+        self.slow.append((None, payload, sender))
 
     def _send_now(self, payload: bytes, sender: tuple[str, int]) -> None:
         """Send immediately, for the handshake replies a client waits on."""
@@ -327,11 +474,39 @@ class Service:
         reply = build_timestamped(
             connection.elapsed_ms(), build_time_sync_reply(connection.elapsed_ms())
         )
-        for datagram in connection.send_message(
-            reply, reliability=Reliability.UNRELIABLE_SEQUENCED
-        ):
-            self._send(datagram, sender)
+        self._queue(connection, reply, sender, reliability=Reliability.UNRELIABLE_SEQUENCED)
         log.debug("%s: announced game clock %d", self.name, connection.elapsed_ms())
+
+    def _trim_offers(self, payload: bytes) -> bytes:
+        """Cut the purchase-offer list down to --shop-offers entries.
+
+        Nothing in the protocol needs this. It exists because re-emitting a message
+        with a different number of entries is the cheapest proof that a format is
+        actually understood rather than merely replayed: the client either shows the
+        shorter list or it does not.
+        """
+        if (self.shop_offers is None and self.shop_price is None) or len(payload) < 3:
+            return payload
+        if int.from_bytes(payload[1:3], "little") != SHOP_OPCODE:
+            return payload
+        try:
+            trimmed = payload
+            if self.shop_offers is not None:
+                trimmed = keep_first(trimmed, self.shop_offers)
+            if self.shop_price is not None:
+                trimmed = set_price(trimmed, self.shop_price)
+        except ValueError as error:
+            log.warning("%s: could not trim the offer list: %s", self.name, error)
+            return payload
+        log.info(
+            "%s: offer list rewritten (%d bytes instead of %d, %s offers, price %s)",
+            self.name,
+            len(trimmed),
+            len(payload),
+            self.shop_offers if self.shop_offers is not None else "all",
+            self.shop_price if self.shop_price is not None else "unchanged",
+        )
+        return trimmed
 
     def _send_ack(self, ack: bytes, sender: tuple[str, int]) -> None:
         """Send an acknowledgement immediately, ahead of the paced queue.
@@ -375,8 +550,13 @@ class Service:
         the offline replay harness uses so its tests do not take two minutes.
         """
         if not self.slow:
+            self._slow_since = None
             return 0
         now = time.monotonic()
+        if self._slow_since is not None and now - self._slow_since < self.slow_delay:
+            # Still inside the hold: let the client finish building its screen.
+            self._slow_last = now
+            return 0
         if self.slow_rate == float("inf"):
             self._slow_credit = len(self.slow)
         else:
@@ -385,22 +565,25 @@ class Service:
 
         sent = 0
         while self.slow and self._slow_credit >= 1.0:
-            payload, sender = self.slow.popleft()
-            self.socket.sendto(payload, sender)
+            sent += self._transmit(self.slow.popleft())
             self._slow_credit -= 1.0
-            sent += 1
         return sent
 
     def flush(self, burst: int) -> int:
         """Send at most *burst* queued datagrams. Returns how many went out."""
         sent = 0
         while self.outbound and sent < burst:
-            payload, sender = self.outbound.popleft()
-            if self.capture is not None:
-                self.capture.record(payload, self.port, sender, from_server=True)
-            self.socket.sendto(payload, sender)
-            sent += 1
+            sent += self._transmit(self.outbound.popleft())
         return sent
+
+    def _transmit(self, entry) -> int:
+        """Send one queued entry, sealing it if it is still a frame."""
+        connection, item, sender = entry
+        payload = connection.seal(item) if connection is not None else item
+        if self.capture is not None:
+            self.capture.record(payload, self.port, sender, from_server=True)
+        self.socket.sendto(payload, sender)
+        return 1
 
     def _handle_offline(self, raw: bytes, sender: tuple[str, int]) -> None:
         # Offline replies go out immediately rather than through the queue: the
@@ -482,15 +665,13 @@ class Service:
 
         if message_id == MessageID.CONNECTION_REQUEST:
             accepted = connection.handle_connection_request(message.payload)
-            for datagram in connection.send_message(accepted):
-                self._send(datagram, sender)
+            self._queue(connection, accepted, sender)
             log.info("%s: accepted %s", self.name, sender)
 
         elif message_id == MessageID.NEW_INCOMING_CONNECTION:
             # The client is now fully connected; a real service announces itself
             # here, which is the last thing this server knows how to do.
-            for datagram in connection.send_message(build_service_identity(self.name)):
-                self._send(datagram, sender)
+            self._queue(connection, build_service_identity(self.name), sender)
             log.info("%s: announced service identity to %s", self.name, sender)
 
         elif message_id == MessageID.CONNECTED_PING:
@@ -501,11 +682,7 @@ class Service:
             # keepalives sat in the ordered stream ahead of the messages that
             # matter, each one retransmitted for ever by the resend timer.
             client_time = int.from_bytes(message.payload[1:9], "big")
-            for datagram in connection.send_message(
-                connection.build_connected_pong(client_time),
-                reliability=Reliability.UNRELIABLE,
-            ):
-                self._send(datagram, sender)
+            self._queue(connection, connection.build_connected_pong(client_time), sender, reliability=Reliability.UNRELIABLE, )
 
         elif message_id == 0x8A:  # noqa: PLR2004 - documented in dsor.messages
             # The client has announced itself and is waiting. Observed reply from
@@ -560,8 +737,7 @@ class Service:
             )
             signal = build_bare_signal(0x88)
             for payload in ((signal, handoff) if chosen else (handoff, signal)):
-                for datagram in connection.send_message(payload):
-                    self._send(datagram, sender)
+                self._queue(connection, payload, sender)
             log.info(
                 "%s: dispatching %s to %s (%s)",
                 self.name,
@@ -575,10 +751,8 @@ class Service:
         if not self.map_name:
             log.warning("%s: no map to assign", self.name)
             return
-        for datagram in connection.send_message(build_map_assignment(self.map_name)):
-            self._send(datagram, sender)
-        for datagram in connection.send_message(build_bare_signal(0x88)):
-            self._send(datagram, sender)
+        self._queue(connection, build_map_assignment(self.map_name), sender)
+        self._queue(connection, build_bare_signal(0x88), sender)
         log.info("%s: assigned map %r", self.name, self.map_name)
 
     def _tick_pair(self, connection: Connection, sender) -> None:
@@ -590,14 +764,302 @@ class Service:
         position = self.positions.get(sender)
         if position is None:
             return
-        for datagram in connection.send_message(tick_state()):
-            self._send(datagram, sender)
-        message = encode_entity_update(position, entity_update_template())
-        for datagram in connection.send_message(message):
-            self._send(datagram, sender)
+        self._queue(connection, tick_state(), sender)
+        # The real server advances a tick counter on every update and re-announces
+        # each entity; it observed ten to twelve per update. Milliseconds over ten
+        # reproduces that rate without inventing a clock of our own.
+        tick = connection.elapsed_ms() // 10
+        self._queue(connection, self._entity_update(position, tick), sender)
+
+    def _creature_wire_position(self, actor: bytes):
+        """Where a creature stands, in the same frame as the player's own position.
+
+        This is the distinction that made every distance bound fail, in both
+        directions. A creature has two positions: the three floats inside its
+        description, and the three signed 16-bit fields in its movement records —
+        and **they are not the same frame**. The player's trajectory decoded from the
+        wire runs z=46 down to z=21; the descriptions put the creatures at z=52 to 55,
+        an interval it never enters. Measured against the descriptions, the player was
+        never closer than 18 units and 30 at the moment of every attack, so a bound of
+        1.75 refused everything and a bound of 6 refused everything. Measured on the
+        wire, the same player came within 3 units of a creature.
+
+        So: compare wire against wire.
+        """
+        for record in combat_ready_mobs():
+            if actor_id(record) == actor:
+                return decode_position(record)
+        return None
+
+    def _resolve_attack(self, connection: Connection, sender) -> None:
+        """Work out what the player just hit, and take health off it.
+
+        The client's TargetSkillCommand names no target: twenty-one bytes holding a
+        skill id, a float, a tick and two fields whose meaning is not established, and
+        not one actor id among them. Deciding who was hit is therefore the server's
+        job, which is why hitting a creature forever did nothing — nobody was
+        deciding.
+
+        What this does is the simplest defensible rule — nearest creature to the
+        player — and it is ours rather than measured. The capture never reports a
+        creature's stats at all, so both the health scale and the damage are invented;
+        only the message they travel in is real.
+        """
+        position = self.positions.get(sender)
+        if position is None or not self.mob_health:
+            return
+
+        alive = [
+            actor for actor, left in self.mob_health.items() if left > 0.0
+        ]
+        if not alive:
+            return
+
+        here = (position.x / WORLD, position.y / WORLD)
+
+        def distance(actor: bytes) -> float:
+            where = self._creature_wire_position(actor)
+            return float("inf") if where is None else position.distance_to(where)
+
+        # Keep hitting whatever is already being hit. The client names no target —
+        # measured: across a session with six kills, not one message from it carries a
+        # creature's id except the question "what is this entity" — so the server
+        # chooses, and choosing the nearest afresh on every blow makes the choice flip
+        # between creatures standing close together. That is what looked like damage
+        # being shared between them.
+        latched = self.mob_target.get(sender)
+        if latched is not None and latched in alive:
+            target = latched
+        else:
+            # Generous rather than exact. Filtering at the client's own 1.75 units
+            # stopped damage entirely — eleven attacks refused in one session —
+            # because the distance here is measured against the coordinates in a
+            # creature's description while the client measures against what it draws,
+            # and the two differed by 2.3 against 1.75. But no bound at all meant a
+            # blow could land on a creature thirty units away once the near one died.
+            nearby = [a for a in alive if distance(a) <= self.reach * WORLD]
+            if not nearby:
+                log.info(
+                    "%s: %s attacked with nothing within %.0f units",
+                    self.name,
+                    sender,
+                    self.reach,
+                )
+                return
+            target = min(nearby, key=distance)
+            self.mob_target[sender] = target
+
+        # One blow, one kill — because the blow being replayed is the one that
+        # killed this creature in the capture, and the client reads its health out of
+        # it. It shows zero after the first hit however much health this server
+        # thinks is left, so counting further hits only means striking a corpse and
+        # then, when the count finally runs out, moving on to the next creature. That
+        # is what looked like hitting one creature killing the others.
+        left = 0.0
+        self.mob_health[target] = left
+
+        # The hit itself, replayed. A creature has no health message — every one of
+        # the 107 stats updates in both captured sessions targets the player, even the
+        # session where six creatures died — so the client works its bar out from
+        # this. Reporting health to a creature was an extrapolation, and it never had
+        # any effect.
+        hit = hit_commands().get(target)
+        if hit is not None:
+            if self.mob_first_command:
+                # Everything in the batch addressed to this creature, and nothing
+                # else. Sending the whole batch teleported it and dropped its loot
+                # where the other session's player stood; sending only its first
+                # command lost whatever made it disappear, so it died at zero health
+                # and stayed on screen. The commands aimed at the creature are the
+                # ones that belong to it.
+                try:
+                    hit = commands_for(hit, target)
+                except ValueError as error:
+                    log.info("%s: %s, sending it whole", self.name, error)
+            self._queue(connection, hit, sender)
+        log.info(
+            "%s: %s hit entity %s, %.1f health left%s",
+            self.name,
+            sender,
+            target.hex(" "),
+            left,
+            "" if hit is not None else " (no recorded hit for it)",
+        )
+
+        if left > 0.0:
+            return
+        # Dead: the real server removed it from the player's vicinity, one message per
+        # creature, shortly after the hit that killed it.
+        departure = departure_commands().get(target)
+        if departure is not None:
+            # Not trimmed: a removal is one command already, 111 bytes with no second
+            # command inside it, so looking for a boundary only produces a warning.
+            self._queue(connection, departure, sender)
+            log.info("%s: entity %s removed", self.name, target.hex(" "))
+        self.mob_target.pop(sender, None)
+
+    def _announce_vicinity(self, connection: Connection, sender) -> None:
+        """Tell the client which actors are near it.
+
+        The leg of the exchange this server skipped. The client's handler for this
+        announcement calls RequestActor directly, so an actor announced this way is
+        set up by the path the real server used; one the client merely noticed in a
+        position update is not.
+        """
+        if not self.mobs or not self.announce_vicinity:
+            return
+        announcements = vicinity_announcements()
+        served = [actor_id(record) for record in combat_ready_mobs()[: self.mobs]]
+        sent = 0
+        for actor in served:
+            announcement = announcements.get(actor)
+            if announcement is None:
+                continue
+            self._queue(connection, announcement, sender)
+            sent += 1
+        log.info("%s: announced %d nearby actors to %s", self.name, sent, sender)
+
+    def _describe_entity(self, connection: Connection, game, sender) -> None:
+        """Answer "what is entity N" with the entity's description.
+
+        This is what makes a creature exist. A position update for an entity the
+        client has never heard of is ignored, so the sequence is: the entity appears
+        in a 0x005F, the client asks about it with 0x8B/0x001C, and only once it has
+        an answer does it instantiate and draw the thing.
+
+        Leaving the question unanswered is invisible in a log and fatal on screen:
+        the map loads, the player walks around, and no creature ever appears. The
+        client keeps asking for as long as it is running — 136 times against this
+        server before this existed, against 8 in the whole reference session.
+
+        The request body is the four-byte handle, and the recorded descriptions carry
+        that same handle back, which is how each was paired with its creature.
+        """
+        handle = game.body[:HANDLE_SIZE]
+        # Only creatures this server can see through to the end. Describing one it
+        # cannot place, hit or remove produced exactly what it sounds like: a creature
+        # standing at full health that no blow could ever reach.
+        servable = {actor_id(record) for record in combat_ready_mobs()[: self.mobs]}
+        description = (
+            entity_descriptions().get(handle) if handle in servable else None
+        )
+        if description is None:
+            log.info(
+                "%s: %s asked about entity %s, which is not in the recorded set",
+                self.name,
+                sender,
+                handle.hex(" "),
+            )
+            return
+        # Where the creature stands is decided here and nowhere else. A position
+        # update for it is discarded — the client only applies those to an actor it
+        # has bound to an entity — so the description's own position is the only one
+        # that takes effect. Hundreds of movement updates moved nothing for exactly
+        # this reason.
+        if self.mob_near:
+            here = self.positions.get(sender)
+            if here is not None:
+                index = len(self.mob_health)
+                angle = 2 * math.pi * index / max(1, self.mobs)
+                description = with_spawn(
+                    description,
+                    here.x / WORLD + self.mob_near * math.cos(angle),
+                    0.0,
+                    here.y / WORLD + self.mob_near * math.sin(angle),
+                )
+        if self.mob_first_command:
+            # Send only the command addressed to this creature. The recorded
+            # description is a batch — the NewMonsterCommand and then several more,
+            # the last about the player, whose actor id is what the batch's own
+            # trailer carries. Replaying commands aimed at other actors is at best
+            # noise.
+            try:
+                description = first_command(description, handle)
+            except ValueError as error:
+                log.warning("%s: %s", self.name, error)
+        self._queue(connection, description, sender)
+        # No health is reported for a creature, because there is no such message. Two
+        # captured sessions carry 154 ActorStatsUpdateCommands between them and every
+        # single one targets the player — including the session in which six creatures
+        # were killed. This sent a baseline anyway for a while; it was noise the real
+        # server never emits, and the client took no notice of it either way. The
+        # counter below is kept only to decide when to send the removal.
+        self.mob_health[handle] = self.mob_max_health
+        log.info(
+            "%s: described entity %s to %s (%d bytes)",
+            self.name,
+            handle.hex(" "),
+            sender,
+            len(description),
+        )
+
+    def _entity_update(self, position, tick: int = 0) -> bytes:
+        """The player's position, and any creatures placed around it.
+
+        Several entities travel in one 0x85/0x005F, chained by a two-byte separator
+        rather than counted. The creature records are real ones lifted from the
+        tutorial dungeon with only their position rewritten: the zone content
+        message is what tells the client the map contains them, so an invented
+        identifier would be an entity it cannot draw.
+        """
+        player = with_motion(
+            encode_position(position) + entity_update_template()[6:], position, tick
+        )
+        if not self.mobs:
+            return encode_entity_group_message([player])
+
+        # Only the living. Re-announcing a creature the client has been told to
+        # remove makes it flicker: removed, redeclared a tick later, removed again.
+        templates = [
+            record
+            for record in combat_ready_mobs()[: self.mobs]
+            if self.mob_health.get(actor_id(record), self.mob_max_health) > 0.0
+        ]
+        if not templates:
+            return encode_entity_group_message([player])
+        if self.mob_patrol:
+            # Beyond what the capture shows: its creatures stood still, 620 of 621
+            # updates at one position with duration zero. This walks them in a slow
+            # circle around that position instead, with a duration for the client to
+            # interpolate over, because a standing monster is hard to tell from a
+            # broken one.
+            placed = []
+            for offset, template in enumerate(templates):
+                home = decode_position(template)
+                angle = (tick / 100.0) + offset
+                placed.append(
+                    with_motion(
+                        template,
+                        Position(
+                            x=home.x + round(self.mob_patrol * math.cos(angle)),
+                            elevation=home.elevation,
+                            y=home.y + round(self.mob_patrol * math.sin(angle)),
+                        ),
+                        tick,
+                        duration=self.tick_duration,
+                    )
+                )
+            return encode_entity_group_message([player, *placed])
+
+        if not self.mob_radius:
+            # Where the capture put them. Their own positions are valid by
+            # construction — they stand on ground the map actually has — whereas a
+            # ring around the player is a guess, and a creature inside a wall is one
+            # the client has every reason to refuse to draw.
+            return encode_entity_group_message(
+                [player, *(with_motion(t, decode_position(t), tick) for t in templates)]
+            )
+
+        placed = [
+            reposition_entity(template, where)
+            for template, where in zip(
+                templates, ring_positions(position, len(templates), self.mob_radius)
+            )
+        ]
+        return encode_entity_group_message([player, *placed])
 
     def game_tick(self) -> None:
-        """Send a tick pair to everyone in the world."""
+        """Send a tick pair to everyone in the world, and let creatures strike back."""
         for sender in list(self.in_world):
             connection = self.connections.get(sender)
             if connection is None:
@@ -605,6 +1067,62 @@ class Service:
                 self.positions.pop(sender, None)
                 continue
             self._tick_pair(connection, sender)
+            self._creatures_strike(connection, sender)
+
+    def _creatures_strike(self, connection: Connection, sender) -> None:
+        """Let a live creature hit the player, every so often.
+
+        Two messages, both replayed from a session where creatures fought back: the
+        blow, and the player's health afterwards. The blow is one of the sixteen
+        163-byte hits that name no creature — the mark of a blow taken rather than
+        landed.
+
+        This direction works where the other cannot: the player's actor is bound to an
+        entity, so its health updates take effect. A creature's never do, which is why
+        no creature's health is reported at all.
+
+        The rate and the damage are this server's, not measured. The real session's
+        sixteen blows were spread over a fight this server has no model of.
+        """
+        if not self.creature_damage:
+            return
+        position = self.positions.get(sender)
+        if position is None:
+            return
+        def near(actor: bytes) -> bool:
+            where = self._creature_wire_position(actor)
+            return where is not None and (
+                position.distance_to(where) <= self.reach * WORLD
+            )
+
+        if not any(
+            left > 0.0 and near(actor) for actor, left in self.mob_health.items()
+        ):
+            # Nothing alive within reach. Losing health with no creature beside you
+            # was this condition being "any creature anywhere", which every described
+            # creature satisfied for the whole session.
+            return
+        now = time.monotonic()
+        if now - self._last_strike.get(sender, 0.0) < self.strike_interval:
+            return
+        self._last_strike[sender] = now
+
+        try:
+            blow = incoming_hit()
+        except FileNotFoundError as error:
+            log.error("%s: %s", self.name, error)
+            self.creature_damage = 0.0
+            return
+
+        left = max(0.0, self.player_health.get(sender, self.player_max) - self.creature_damage)
+        self.player_health[sender] = left
+        self._queue(connection, blow, sender)
+        self._queue(
+            connection,
+            encode_actor_health(self.player_max_ceiling, left, PLAYER_ACTOR),
+            sender,
+        )
+        log.info("%s: a creature struck %s, %.1f health left", self.name, sender, left)
 
     def _send_character_list(
         self, connection: Connection, sender, repeat: bool = False
@@ -618,7 +1136,7 @@ class Service:
         Ordering indices 4, 5 and 6: the list, its acknowledgement, and the 717 KB
         event schedule. The first two go out at once; the schedule goes out slowly,
         because the client crashes if it arrives before the selection screen has
-        finished building. See _send_slow.
+        finished building. See _send_slow_sealed.
         """
         if sender in self.record_sent and not repeat:
             log.info("%s: %s asked for the roster again", self.name, sender)
@@ -631,17 +1149,18 @@ class Service:
         # The clock first, as the real service does: it announced its own between
         # the client's ready signal and the list.
         self._announce_game_clock(connection, sender)
+        # On a repeat, the list and its acknowledgement only: the schedule behind
+        # them is global and already on its way.
+        if repeat:
+            record = record[:2]
         total = 0
         for index, piece in enumerate(record):
-            datagrams = connection.send_message(piece)
-            queue = self._send if index < 2 else self._send_slow
-            for datagram in datagrams:
-                queue(datagram, sender)
-            total += len(datagrams)
+            total += self._queue(connection, piece, sender, slow=index >= 2)
         self.record_sent.add(sender)
         log.info(
-            "%s: pushed the character list to %s (%d datagrams)",
+            "%s: pushed the character list%s to %s (%d datagrams)",
             self.name,
+            " again" if repeat else "",
             sender,
             total,
         )
@@ -725,10 +1244,7 @@ class Service:
             # retransmitted: what arrives is then a stale timestamp presented as
             # current, and sequencing exists precisely so a late one is dropped
             # rather than delivered.
-            for datagram in connection.send_message(
-                reply, reliability=Reliability.UNRELIABLE_SEQUENCED
-            ):
-                self._send(datagram, sender)
+            self._queue(connection, reply, sender, reliability=Reliability.UNRELIABLE_SEQUENCED)
             self.time_syncs_answered[sender] = answered + 1
             log.debug("%s: time sync, clock %d", self.name, clock)
             return
@@ -755,12 +1271,28 @@ class Service:
             # the frame order suggested they came much later; the ordering index
             # says otherwise, and it is the authority.
             for piece in map_entry_sequence():
-                for datagram in connection.send_message(piece):
-                    self._send(datagram, sender)
+                self._queue(connection, piece, sender)
             self.in_world.add(sender)
             self.positions[sender] = spawn
+            self._announce_vicinity(connection, sender)
             self._tick_pair(connection, sender)
             log.info("%s: %s entered the world at %s", self.name, sender, spawn)
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode == TARGET_SKILL_OPCODE
+        ):
+            self._resolve_attack(connection, sender)
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode == DESCRIBE_ENTITY_OPCODE
+        ):
+            self._describe_entity(connection, game, sender)
             return
 
         if (
@@ -790,7 +1322,15 @@ class Service:
             if operation == OPERATION_START_GAME:
                 self._release_character(connection, game, sender)
             elif operation == OPERATION_REQUEST_LIST:
-                # Not expected on a fresh login, but answerable: push the list.
+                # Answer it. A static reading of the client said a second list is
+                # refused unless its state is at most 1, and this refused to send one
+                # on the strength of that — which left the client waiting forever for
+                # something it had explicitly asked for. If it is asking, its state
+                # permits it; the inference was sound and the conclusion was not.
+                #
+                # The list and its acknowledgement go again, the event schedule does
+                # not: it is global data, it is already in flight or delivered, and
+                # 717 KB of it a second time only delays what the client wants.
                 self._send_character_list(connection, sender, repeat=True)
             else:
                 log.info(
@@ -820,8 +1360,8 @@ class Service:
         ):
             seen = self.queries_seen.get(sender, 0)
             for piece in client_query_reply(seen):
-                for datagram in connection.send_message(piece):
-                    self._send(datagram, sender)
+                piece = self._trim_offers(piece)
+                self._queue(connection, piece, sender)
             self.queries_seen[sender] = seen + 1
             log.info("%s: answered query %d from %s", self.name, seen + 1, sender)
             return
@@ -858,6 +1398,18 @@ def serve(
     map_name: str = "a0001_start_tutorial_dun",
     capture_path: str | None = None,
     schedule_rate: float = SCHEDULE_FRAGMENTS_PER_SECOND,
+    shop_offers: int | None = None,
+    shop_price: float | None = None,
+    schedule_delay: float = SCHEDULE_DELAY_SECONDS,
+    mobs: int = 0,
+    mob_radius: int = 0,
+    mob_patrol: int = 0,
+    mob_health: float = 60.0,
+    mob_damage: float = 12.0,
+    mob_near: float = 0.0,
+    creature_damage: float = 3.0,
+    mob_first_command: bool = False,
+    announce_vicinity: bool = True,
 ) -> None:
     """Run the three tiers the real service is built from.
 
@@ -902,6 +1454,19 @@ def serve(
             ),
         )
         service.slow_rate = schedule_rate
+        service.slow_delay = schedule_delay
+        service.mobs = mobs
+        service.mob_radius = mob_radius
+        service.mob_patrol = mob_patrol
+        service.mob_max_health = mob_health
+        service.mob_damage = mob_damage
+        service.mob_max_health_ceiling = int(mob_health)
+        service.mob_near = mob_near
+        service.creature_damage = creature_damage
+        service.mob_first_command = mob_first_command
+        service.announce_vicinity = announce_vicinity
+        service.shop_offers = shop_offers
+        service.shop_price = shop_price
         services[service.socket] = service
         selector.register(service.socket, selectors.EVENT_READ)
         log.info("listening on udp/%d as %s (%s)", port, name, role)
@@ -987,9 +1552,133 @@ def main() -> None:
         default=SCHEDULE_FRAGMENTS_PER_SECOND,
         metavar="N",
         help=(
-            "datagrams a second for the 717 KB event schedule (default: "
-            f"{SCHEDULE_FRAGMENTS_PER_SECOND:g}, the measured rate). Raise it to "
-            "test whether the client still crashes when it arrives early."
+            "datagrams a second for the 717 KB event schedule once it starts "
+            f"(default: {SCHEDULE_FRAGMENTS_PER_SECOND:g})"
+        ),
+    )
+    parser.add_argument(
+        "--shop-offers",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "serve only the first N purchase offers instead of all 23. Proves the "
+            "offer list is generated rather than replayed, since the client has to "
+            "accept a message it has never seen"
+        ),
+    )
+    parser.add_argument(
+        "--schedule-delay",
+        type=float,
+        default=SCHEDULE_DELAY_SECONDS,
+        metavar="S",
+        help=(
+            "seconds to hold the event schedule back so it arrives after the "
+            f"character screen is built (default: {SCHEDULE_DELAY_SECONDS:g}). "
+            "Zero reproduces the crash it was added to avoid"
+        ),
+    )
+    parser.add_argument(
+        "--mobs",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "place N recorded creatures in a ring around the player. They are real "
+            "entity records from the tutorial dungeon with only their position "
+            "rewritten, since the client can only draw what the zone content "
+            "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--mob-health",
+        type=float,
+        default=60.0,
+        metavar="H",
+        help=(
+            "health each creature starts with. Invented: the capture never reports a "
+            "creature's stats, only the player's, whose depleting stat ran to 63.60"
+        ),
+    )
+    parser.add_argument(
+        "--mob-damage",
+        type=float,
+        default=12.0,
+        metavar="D",
+        help="health one hit takes off a creature (also invented)",
+    )
+    parser.add_argument(
+        "--no-vicinity",
+        dest="announce_vicinity",
+        action="store_false",
+        help=(
+            "skip the recorded ActorsEnterVicinityCommand announcements. They are "
+            "the leg of the exchange that makes the client request an actor the way "
+            "the real server caused it to"
+        ),
+    )
+    parser.add_argument(
+        "--mob-first-command",
+        action="store_true",
+        help=(
+            "answer an entity request with only the creature's own command instead of "
+            "the whole recorded batch, which also holds commands about other actors"
+        ),
+    )
+    parser.add_argument(
+        "--creature-damage",
+        type=float,
+        default=3.0,
+        metavar="D",
+        help=(
+            "health a creature's blow takes off the player, 0 to disable retaliation. "
+            "The blow itself is replayed from a real session; the damage and the rate "
+            "are this server's"
+        ),
+    )
+    parser.add_argument(
+        "--mob-near",
+        type=float,
+        default=0.0,
+        metavar="D",
+        help=(
+            "place each creature D world units from the player. Default 0 keeps the "
+            "position its own description carries. Rewriting it currently stops the "
+            "creatures appearing at all — the field is bit-packed and a byte-aligned "
+            "write corrupts what follows"
+        ),
+    )
+    parser.add_argument(
+        "--mob-patrol",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "walk the creatures in a circle of N wire units around their own "
+            "position. Default 0 stands still, as the recorded ones did — this goes "
+            f"beyond the capture. Divide by {WORLD_SCALE} for world units"
+        ),
+    )
+    parser.add_argument(
+        "--mob-radius",
+        type=int,
+        default=0,
+        metavar="N",
+        help=(
+            "place the creatures N units from the player instead of where they were "
+            "recorded. Default 0 keeps their own positions, which are the only ones "
+            "known to be on ground the map has"
+        ),
+    )
+    parser.add_argument(
+        "--shop-price",
+        type=float,
+        default=None,
+        metavar="P",
+        help=(
+            "put price P on every purchase offer. The price is a 32-bit float in "
+            "each entry's leading block, and the recorded list prices its bundles "
+            "1.99 to 49.99 there"
         ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -1007,6 +1696,18 @@ def main() -> None:
         map_name=args.map,
         capture_path=args.capture,
         schedule_rate=args.schedule_rate,
+        shop_offers=args.shop_offers,
+        shop_price=args.shop_price,
+        schedule_delay=args.schedule_delay,
+        mobs=args.mobs,
+        mob_radius=args.mob_radius,
+        mob_patrol=args.mob_patrol,
+        mob_health=args.mob_health,
+        mob_damage=args.mob_damage,
+        mob_near=args.mob_near,
+        creature_damage=args.creature_damage,
+        mob_first_command=args.mob_first_command,
+        announce_vicinity=args.announce_vicinity,
     )
 
 

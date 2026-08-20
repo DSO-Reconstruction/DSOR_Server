@@ -277,6 +277,47 @@ class Connection:
             for old in sorted(self._sent)[: len(self._sent) - self.retain]:
                 del self._sent[old]
 
+    def frames_for(
+        self,
+        payload: bytes,
+        reliability: Reliability = Reliability.RELIABLE_ORDERED,
+        channel: int = 0,
+    ) -> list[Frame]:
+        """Split *payload* into frames, without assigning datagram sequences.
+
+        Separating this from :meth:`seal` is what makes a paced or throttled queue
+        possible. A datagram's sequence number is a *transmit-order* counter: the
+        peer treats a gap in it as loss and asks for everything missing. Numbering
+        at build time and sending later manufactures exactly that gap — 592
+        fragments numbered at once but released six a second had the client NAK all
+        592, repeatedly, which both defeated the throttle and doubled the traffic it
+        was meant to reduce.
+        """
+        budget = self.mtu - UDP_IPV4_OVERHEAD - 4 - MAX_FRAME_HEADER
+        if budget <= 0:
+            raise ValueError(f"MTU {self.mtu} leaves no room for a payload")
+
+        if len(payload) <= budget:
+            return [self._make_frame(payload, reliability, channel)]
+        return self._split(payload, reliability, channel, budget)
+
+    def seal(self, frame: Frame) -> bytes:
+        """Give *frame* the next datagram sequence number and return the datagram.
+
+        Call this when the datagram actually goes on the wire. Reliable datagrams
+        are retained here, since that is also when the resend timer should start.
+        """
+        sequence = self._take_sequence()
+        datagram = build_datagram_header(sequence) + build_frame(frame)
+        # Only reliable datagrams are worth keeping. A peer NAKs by reliable
+        # index, so there is nothing to ask for otherwise — and resending an
+        # unreliable one defeats its purpose: a retransmitted clock reading is
+        # a stale timestamp presented as current, which is the opposite of
+        # what a time sync is for.
+        if frame.reliability.has_reliable_index:
+            self._retain(sequence, datagram)
+        return datagram
+
     def send_message(
         self,
         payload: bytes,
@@ -285,30 +326,11 @@ class Connection:
     ) -> list[bytes]:
         """Wrap *payload* into datagrams, splitting it if it exceeds the MTU.
 
-        Returns the datagrams to put on the wire, in order.
+        Sequences are assigned immediately, so this suits anything sent straight
+        away — the handshake, and tests. Anything that will sit in a queue should
+        use :meth:`frames_for` and seal at transmit time instead.
         """
-        budget = self.mtu - UDP_IPV4_OVERHEAD - 4 - MAX_FRAME_HEADER
-        if budget <= 0:
-            raise ValueError(f"MTU {self.mtu} leaves no room for a payload")
-
-        if len(payload) <= budget:
-            frames = [self._make_frame(payload, reliability, channel)]
-        else:
-            frames = self._split(payload, reliability, channel, budget)
-
-        out = []
-        for frame in frames:
-            sequence = self._take_sequence()
-            datagram = build_datagram_header(sequence) + build_frame(frame)
-            # Only reliable datagrams are worth keeping. A peer NAKs by reliable
-            # index, so there is nothing to ask for otherwise — and resending an
-            # unreliable one defeats its purpose: a retransmitted clock reading is
-            # a stale timestamp presented as current, which is the opposite of
-            # what a time sync is for.
-            if reliability.has_reliable_index:
-                self._retain(sequence, datagram)
-            out.append(datagram)
-        return out
+        return [self.seal(frame) for frame in self.frames_for(payload, reliability, channel)]
 
     def _split(
         self, payload: bytes, reliability: Reliability, channel: int, budget: int

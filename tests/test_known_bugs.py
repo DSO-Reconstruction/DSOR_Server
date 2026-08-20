@@ -11,6 +11,8 @@ from raknet.datagram import parse_datagram_header
 import time
 from pathlib import Path
 
+import pytest
+
 from dsor.messages import (
     HANDOFF_TRAILER_MAP,
     build_server_handoff,
@@ -19,11 +21,24 @@ from dsor.messages import (
 )
 from dsor.recorded import (
     CHARACTER_RELEASE_SEQUENCE,
+    HANDLE_FROM_END,
+    describable_mobs,
+    entity_descriptions,
+    entity_handle,
+    first_command,
+    combat_ready_mobs,
+    commands_for,
+    departure_commands,
+    describable_mobs,
+    hit_commands,
+    vicinity_announcements,
+    mob_templates,
     CHARACTER_SELECTION_SEQUENCE,
     MAP_ENTRY_SEQUENCE,
     client_query_reply,
     payload,
 )
+from dsor.gameplay import ENTITY_SEPARATOR, Position, actor_id
 from raknet.constants import Reliability
 from raknet.frame import parse_frames
 from raknet.offline import build_open_connection_reply_1
@@ -383,19 +398,23 @@ def test_sequenced_numbering_restarts_after_an_ordered_message():
     assert frame.sequencing_index == 0
 
 
-def test_the_event_schedule_is_released_slowly_and_separately():
-    """Was: all 592 fragments of the 717 KB schedule queued with everything else,
-    landing in 2.4 seconds.
+def test_the_event_schedule_is_held_back_and_kept_off_the_fast_queue():
+    """Two mistakes in sequence, and the second was mine correcting the first badly.
 
-    Symptom: the client crashed with an access violation while building its
-    character screen. Its own log gives the order away. Against the real server it
-    logs the screen being built and switched *before* "handle event updates";
-    against this one, receiving the schedule forty times faster, it logs "handle
-    event updates" first and dies in the audio thread the screen build starts next.
+    Delivering the 717 KB schedule immediately crashed the client: it processed the
+    schedule before it had finished building the character screen, and died in the
+    audio thread the screen build starts next.
 
-    The real service delivered those fragments over 101.6 seconds — not by design,
-    but because 54 of every 55 datagrams it sent were retransmissions. The client
-    depends on the result regardless, so the rate is reproduced deliberately.
+    Throttling the whole transfer to the real service's six fragments a second fixed
+    the crash and replaced it with a worse symptom. The schedule is ordering index 6
+    and the grant, the handoff and the shop are 7, 8 and 9 — none of which a peer can
+    deliver until 6 completes. So the client sat on "loading data" for the ninety-
+    eight seconds that took. The real service did the same and its player waited
+    forty-nine seconds after clicking; that was an accident of a lossy link, not a
+    property worth reproducing.
+
+    What the client actually needs is for the schedule to arrive *after* the screen,
+    not slowly. So: hold the start, then send at the normal rate.
     """
     service = Service(port=42196, name="test-slow", role="character")
     sent: list[bytes] = []
@@ -403,22 +422,21 @@ def test_the_event_schedule_is_released_slowly_and_separately():
     service.socket = type(
         "Stub", (), {"sendto": lambda _s, data, _to: sent.append(data)}
     )()
-    try:
-        for index in range(20):
-            service._send_slow(bytes([index]), ("172.20.0.2", 1))
-        assert not service.outbound, "the schedule must not use the fast queue"
+    for index in range(20):
+        service._send_slow_sealed(bytes([index]), ("172.20.0.2", 1))
+    assert not service.outbound, "the schedule must not use the fast queue"
 
-        # No time has passed, so no credit has accrued.
-        service._slow_credit = 0.0
-        service._slow_last = time.monotonic()
-        assert service.flush_slow() == 0
+    # Inside the hold, nothing leaves however much credit has accrued.
+    service._slow_since = time.monotonic()
+    service._slow_last = time.monotonic() - 10.0
+    assert service.flush_slow() == 0
+    assert not sent
 
-        # A second's worth of credit releases the measured rate, and no more.
-        service._slow_last -= 1.0
-        assert service.flush_slow() == int(SCHEDULE_FRAGMENTS_PER_SECOND)
-        assert len(service.slow) == 20 - int(SCHEDULE_FRAGMENTS_PER_SECOND)
-    finally:
-        pass
+    # Past it, the queue drains at the ordinary rate rather than a trickle.
+    service._slow_since = time.monotonic() - service.slow_delay - 1.0
+    service._slow_last = time.monotonic() - 1.0
+    assert service.flush_slow() == 20
+    assert len(sent) == 20
 
 
 def test_an_infinite_rate_drains_the_slow_queue():
@@ -432,7 +450,7 @@ def test_an_infinite_rate_drains_the_slow_queue():
     )()
     service.slow_rate = float("inf")
     for index in range(50):
-        service._send_slow(bytes([index]), ("172.20.0.2", 1))
+        service._send_slow_sealed(bytes([index]), ("172.20.0.2", 1))
     assert service.flush_slow() == 50
     assert not service.slow
 
@@ -458,3 +476,254 @@ def test_the_map_entry_includes_the_zone_content():
         0x0074,   # 8
     ]
     assert len(payload("zone_content.bin")) == 631_240
+
+
+def test_every_recorded_creature_can_be_described_by_its_own_handle():
+    """Was: the client's 0x8B/0x001C left unanswered.
+
+    That request is how the client asks what an entity is, and its four-byte body
+    begins with the entity's index. A position update for an entity it has never
+    heard of is ignored, so without an answer the creature never exists: the map
+    loads, the player walks, and nothing appears. The client asks for as long as it
+    runs — 136 times against this server, against 8 in the whole reference session.
+
+    The pairing is not guesswork. Each recorded description carries the same
+    four-byte handle the client asks with, 260 bytes from its end.
+    """
+    descriptions = entity_descriptions()
+    assert len(descriptions) == 6
+
+    for handle, description in descriptions.items():
+        assert entity_handle(description) == handle, "self-consistent by construction"
+        assert parse_message(description).opcode == 0x002A
+        assert handle[1:] == b"\x00\x01\x00", "the handle's shape, index first"
+
+    # The indices are exactly the creatures the recorded position updates carry.
+    assert sorted(handle[0] for handle in descriptions) == [
+        0x08, 0x0A, 0x0B, 0x0F, 0x10, 0x12
+    ]
+
+
+def test_the_handle_offset_is_a_rule_and_not_a_table():
+    """It sits 260 bytes from the end in every description — offset 151 in the
+    411-byte ones, 137 in the 397-byte one, 146 in the 406-byte one. Derivable
+    means a description can be recognised without being listed.
+    """
+    for description in entity_descriptions().values():
+        offset = len(description) - HANDLE_FROM_END
+        assert description[offset : offset + 4] == entity_handle(description)
+
+
+def test_a_description_too_short_to_hold_a_handle_is_refused():
+    with pytest.raises(ValueError, match="at least"):
+        entity_handle(bytes(10))
+
+
+def test_only_entities_that_can_be_described_are_served():
+    """Was: eight creature records served with only six descriptions to go with them.
+
+    The client discards a position for an actor it does not know, asks what the actor
+    is, and waits. Measured in one session: the six records with a description were
+    asked about exactly **once** each, and the two without were asked **25 times**
+    each. Answering ends the question; serving an entity you cannot describe is worse
+    than not serving it.
+
+    The two excluded ones are not monsters. The client has a separate command per
+    kind — NewMonsterCommand for creatures, NewNPCCommand and NewDestroyableCommand
+    for the others — and the reference session answered their requests with neither of
+    the descriptions collected here.
+    """
+    served = describable_mobs()
+    descriptions = entity_descriptions()
+    assert len(served) == 6
+    assert len(mob_templates()) == 8, "two are deliberately held back"
+    for record in served:
+        assert record[15:19] in descriptions
+
+    excluded = {r[15:19] for r in mob_templates()} - {r[15:19] for r in served}
+    assert excluded == {b"\x13\x00\x01\x00", b"\x14\x00\x01\x00"}
+
+
+def test_an_entity_record_ends_with_a_terminator_not_a_separator():
+    """A correction worth keeping, because the wrong model produced right bytes.
+
+    This treated 0x5F 0x00 as a separator between chained records. It is not: 0xFF at
+    the end of each record is a per-command terminator, and 0x5F 0x00 is simply the
+    *next command's id* — the client reads a batch of commands, each one ending in
+    0xFF. The two models emit identical bytes, so the mistake was invisible until the
+    client's own decoder was read.
+
+    A record is therefore 15 bytes of payload, a 4-byte actor id, and the terminator.
+    """
+    for record in mob_templates():
+        assert len(record) == 20
+        assert record[19] == 0xFF, "the terminator, not part of a separator"
+
+    # What earlier passes called an index and an id were parts of other fields: byte
+    # 15 is the low byte of the 32-bit actor id, and bytes 9-12 are a start tick.
+    record = mob_templates()[0]
+    assert record[15] == record[15:19][0]
+    assert int.from_bytes(record[9:13], "little") == 2492
+
+
+def test_a_description_is_a_batch_and_its_trailer_names_the_player():
+    """What looked like one message per creature is several.
+
+    The client reads commands in sequence, each ending in 0xFF, until fewer than
+    sixteen bits remain. So a 411-byte "description" is the creature's
+    NewMonsterCommand followed by more commands — and the actor id in the *batch's*
+    trailer is the player's, 15 00 01 00, in all six. Matching on that would have
+    addressed every creature as the player.
+
+    Nothing here is byte-aligned either: every batch ends three bits short of its last
+    byte, which is why a twelve-byte write at a fixed byte offset corrupted one.
+    """
+    for handle, batch in entity_descriptions().items():
+        assert batch[-1] == 0xF8, "0xFF shifted three bits, then zero padding"
+
+        only = first_command(batch, handle)
+        assert len(only) < len(batch), "the batch holds more than this creature"
+        assert only[0] == 0x85
+        assert int.from_bytes(only[1:3], "little") == 0x002A
+        assert batch.startswith(only[:-1]), "a prefix, not a rebuild"
+
+
+def test_every_served_creature_has_a_vicinity_announcement():
+    """Was: the announcement leg of the exchange skipped entirely.
+
+    The real exchange has three legs — the server announces that an actor is near,
+    the client asks what it is, the server describes it — and only the last two were
+    implemented. The client's handler for the announcement calls RequestActor
+    directly, so an actor announced this way is set up by the path the real server
+    used; one the client merely noticed in a position update is not.
+
+    Each recorded announcement is 111 bytes and names exactly one creature, and in
+    the reference session each arrived at the very frame that creature first appeared.
+    """
+    announcements = vicinity_announcements()
+    descriptions = entity_descriptions()
+    assert set(announcements) == set(descriptions), "one per creature we can describe"
+
+    for actor, announcement in announcements.items():
+        message = parse_message(announcement)
+        assert (message.message_id, message.opcode) == (0x85, 0x0074)
+        assert len(announcement) == 111
+        assert actor in message.body, "the announcement names its actor"
+
+
+def test_a_creature_has_no_health_message_only_a_hit():
+    """The correction that needed a second capture to establish.
+
+    This server reported a creature's health with 0x007B ActorStatsUpdateCommand,
+    over several attempts, and nothing ever happened. Two captured sessions say why:
+    154 stats updates between them, **every one** targeting the player — including in
+    the session where six creatures were killed. A creature has no health message.
+
+    What the killing session does show is an exact pair per death: a large
+    0x85/0x006B HitCommand naming both the creature and the player, then a
+    0x85/0x0073 ActorsLeftVicinityCommand naming the creature. Frames 5219 then 5410
+    for the first, 5525 then 5733 for the second, and so on for all six.
+    """
+    hits = hit_commands()
+    assert len(hits) == 6, "one per creature killed in the reference session"
+    for actor, hit in hits.items():
+        message = parse_message(hit)
+        assert (message.message_id, message.opcode) == (0x85, 0x006B)
+        assert actor in message.body, "the hit names its creature"
+        assert len(hit) > 200, "the small 160-byte hits name no creature at all"
+
+    # Five of the six also name the player who landed the blow. The sixth, a
+    # 545-byte one, does not — asserting that all of them did was a guess this test
+    # caught, and the exception is kept rather than smoothed over because it means
+    # the player is not a required field.
+    naming_player = [
+        actor for actor, hit in hits.items()
+        if b"\x15\x00\x01\x00" in parse_message(hit).body
+    ]
+    assert len(naming_player) == 5
+
+    departures = departure_commands()
+    for actor, departure in departures.items():
+        message = parse_message(departure)
+        assert (message.message_id, message.opcode) == (0x85, 0x0073)
+        assert actor in message.body
+
+
+def test_only_creatures_that_can_be_removed_are_served():
+    """Was: a creature served with no removal message to go with it.
+
+    It reached zero health, the client drew it dead, and it never went away — so the
+    player could keep striking a corpse. Its removal arrived in the capture grouped
+    with another actor's, so it could not be isolated; one of the six is dropped for
+    that reason rather than served half-working.
+
+    The same rule already applies to descriptions: serve nothing you cannot also
+    explain and undo.
+    """
+    ready = combat_ready_mobs()
+    assert len(ready) == 5
+    assert len(describable_mobs()) == 6, "one is deliberately held back"
+
+    hits, departures = hit_commands(), departure_commands()
+    for record in ready:
+        actor = record[15:19]
+        assert actor in hits and actor in departures
+
+    held_back = {r[15:19] for r in describable_mobs()} - {r[15:19] for r in ready}
+    assert held_back == {b"\x12\x00\x01\x00"}
+
+
+def test_a_hit_keeps_the_commands_addressed_to_its_creature():
+    """Two wrong answers before this one, and each broke something the other fixed.
+
+    A recorded hit is a batch of ten commands or more. Sending all of it teleported
+    the creature and dropped its loot where the other session's player stood; sending
+    only its first command lost whatever made it disappear, so it died at zero health
+    and stayed on screen. What belongs to the creature is the commands addressed to
+    it — one per 32-bit actor id before each 0xFF terminator.
+    """
+    hits = hit_commands()
+    kept = {}
+    for actor, batch in hits.items():
+        try:
+            kept[actor] = commands_for(batch, actor)
+        except ValueError:
+            continue
+
+    assert len(kept) == 5, "one hit has no detectable command boundary"
+    for actor, filtered in kept.items():
+        batch = hits[actor]
+        assert len(filtered) < len(batch), "the cascade is dropped"
+        assert len(filtered) > 100, "and more than just the blow survives"
+        assert filtered[0] == 0x85
+        assert int.from_bytes(filtered[1:3], "little") == 0x006B
+
+
+def test_a_dead_creature_is_not_re_announced():
+    """Was: the tick reported every served creature's position regardless of health.
+
+    Symptom: a creature was removed, redeclared a tick later, removed again — it
+    flickered and stayed on screen. Telling a client to forget something and then
+    immediately reminding it of the same thing is not a protocol problem.
+    """
+    service = Service(port=42198, name="test-tick", role="map", map_name="a0001_start_tutorial_dun")
+    try:
+        service.mobs = 5
+        living = combat_ready_mobs()[:5]
+        assert living, "the fixture set is not empty"
+
+        # Measured by length, not by counting the separator: that two-byte pattern
+        # also occurs inside the records as data, which is the same naivety that once
+        # made this project read it as a separator in the first place.
+        header, record, joiner = 3, 20, len(ENTITY_SEPARATOR)
+
+        before = service._entity_update(Position(-10172, -344, 5888))
+        assert len(before) == header + record + len(living) * (joiner + record)
+
+        # Kill them all and the update carries the player alone.
+        for entry in living:
+            service.mob_health[actor_id(entry)] = 0.0
+        after = service._entity_update(Position(-10172, -344, 5888))
+        assert len(after) == header + record
+    finally:
+        service.socket.close()
