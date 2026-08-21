@@ -79,6 +79,7 @@ from dsor.recorded import (
     CHARACTER_CHOSEN_NAME,
     HANDLE_SIZE,
     entity_descriptions,
+    with_template,
     first_command,
     combat_ready_mobs,
     describable_mobs,
@@ -342,6 +343,8 @@ class Service:
         self.mob_near = 0.0
         #: Send only the creature's own command instead of the whole recorded batch.
         self.mob_first_command = False
+        #: Spawn this blueprint instead of the recorded one, or None to keep it.
+        self.mob_template: str | None = None
         #: Send the recorded vicinity announcement before a creature is asked about.
         self.announce_vicinity = True
         #: Wire recorder, or None. Shared between services so one file holds the
@@ -1064,6 +1067,15 @@ class Service:
                 description = first_command(description, handle)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
+        if self.mob_template:
+            # The blueprint name is the description's first field, so it can be
+            # replaced and everything behind it copied bit for bit. What the client
+            # accepts is limited by its own data: an unresolvable name logs an invalid
+            # template id and creates nothing.
+            try:
+                description = with_template(description, self.mob_template)
+            except ValueError as error:
+                log.warning("%s: %s", self.name, error)
         self._queue(connection, description, sender)
         # No health is reported for a creature, because there is no such message. Two
         # captured sessions carry 154 ActorStatsUpdateCommands between them and every
@@ -1540,6 +1552,7 @@ def serve(
     creature_damage: float = 3.0,
     mob_despawn: bool = False,
     mob_first_command: bool = False,
+    mob_template: str | None = None,
     announce_vicinity: bool = True,
 ) -> None:
     """Run the three tiers the real service is built from.
@@ -1596,6 +1609,7 @@ def serve(
         service.creature_damage = creature_damage
         service.mob_despawn = mob_despawn
         service.mob_first_command = mob_first_command
+        service.mob_template = mob_template
         service.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
         service.shop_price = shop_price
@@ -1753,6 +1767,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mob-template",
+        metavar="NAME",
+        help=(
+            "spawn this blueprint instead of the recorded one. The recorded creatures "
+            "are a0001_gen_anderworld_creature, ..._1st_encounter and ..._1st_loot; "
+            "any name the client's own data resolves under 'Monster' should work"
+        ),
+    )
+    parser.add_argument(
         "--mob-first-command",
         action="store_true",
         help=(
@@ -1852,6 +1875,7 @@ def main() -> None:
         creature_damage=args.creature_damage,
         mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,
+        mob_template=args.mob_template,
         announce_vicinity=args.announce_vicinity,
     )
 

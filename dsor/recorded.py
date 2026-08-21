@@ -330,7 +330,12 @@ def entity_handle(description: bytes) -> bytes:
 
 
 def entity_descriptions() -> dict[bytes, bytes]:
-    """Recorded descriptions, keyed by the handle the client asks with."""
+    """Descriptions a creature can be answered with, keyed by its actor id.
+
+    Batches, whose leading command is the description. The library's single commands
+    are **not** merged in here: callers read a creature's position out of whatever this
+    returns, and that offset is known for a batch and not for a single command.
+    """
     out: dict[bytes, bytes] = {}
     for name in ENTITY_DESCRIPTIONS:
         body = payload(name)
@@ -346,10 +351,14 @@ def combat_ready_mobs() -> list[bytes]:
     whose removal message arrived grouped with another actor's in the capture, so it
     could not be isolated. One of the six is dropped for that reason.
     """
-    # A recorded removal is no longer required: DiscardMonsterCommand is generated
-    # and its body is empty, so any creature can be retired. Only the hit is still
-    # replayed, which is what this filter is now about — and that brings back the
-    # creature whose removal happened to arrive grouped with another actor's.
+    # Deliberately *not* the library, though it holds eleven creatures against these
+    # six. Serving a library description needs the creature's position read out of it,
+    # for the kill to announce the death in the right place — and that position cannot
+    # yet be located inside a single command, only inside a batch. Switching the source
+    # broke the death animation, which had just started working.
+    #
+    # The library and its accessors stay, because the extraction was the hard part.
+    # What is missing is one field's offset. See library_records.
     hits = hit_commands()
     return [record for record in describable_mobs() if record[15:19] in hits]
 
@@ -543,3 +552,148 @@ def commands_for(batch: bytes, actor: bytes) -> bytes:
             f"no command addressed to {actor.hex(' ')} in {len(batch)} bytes"
         )
     return writer.to_bytes()
+
+
+def monster_spawn(description: bytes):
+    """Where a description places its creature, in world units. See dsor.gameplay."""
+    from dsor.gameplay import monster_spawn as _spawn
+
+    return _spawn(description)
+
+
+def monster_template(description: bytes) -> str:
+    """The blueprint name a description spawns, its first field."""
+    from raknet.bitstream import BitReader
+
+    reader = BitReader(description)
+    reader.read_uint(8)          # message id
+    reader.read_uint(16)         # command id
+    return reader.read_string()
+
+
+def with_template(description: bytes, name: str) -> bytes:
+    """Return *description* spawning *name* instead.
+
+    Only possible because the template name is the **first** field: everything behind
+    it can be copied verbatim, bit for bit, without being understood. A different
+    length shifts all of that, which is why this reassembles rather than patching in
+    place — the same message is bit-packed and ends three bits short of its last byte,
+    and an in-place write at a byte offset is what broke it once before.
+
+    What the client accepts is limited by its own blueprint data: the name has to
+    resolve in the factory under the "Monster" category, or it logs an invalid template
+    id and creates nothing.
+
+    And resolving is not enough. Tried against a0001_champion_undead_mage_01, one of
+    the ten templates the tutorial dungeon's own database lists: the client logged no
+    rejection and drew nothing at all. The second field of the command is a composite
+    array, copied verbatim here from whichever creature the description was captured
+    from, so a mage receives a creature's payload. Changing the name alone gives an
+    entity whose name resolves and whose appearance does not belong to it.
+
+    Which means the templates this server can really serve are the three it has whole
+    descriptions for. Serving another needs a capture in which that creature appears —
+    one of the few remaining questions where a new capture is genuinely the answer
+    rather than more reading.
+    """
+    from raknet.bitstream import BitReader, BitWriter
+
+    reader = BitReader(description)
+    message_id = reader.read_uint(8)
+    command = reader.read_uint(16)
+    reader.read_string()                       # the old name, discarded
+    rest = reader.remaining
+
+    writer = BitWriter()
+    writer.write_uint(message_id, 8)
+    writer.write_uint(command, 16)
+    writer.write_string(name)
+    writer.write_bits(reader.read_bits(rest), rest)
+    return writer.to_bytes()
+
+
+#: Complete NewMonsterCommands, one file per creature blueprint, lifted whole out of
+#: a session that walked three maps.
+#:
+#: This supersedes rewriting a creature's description to name a different blueprint.
+#: That approach resolved the name and drew nothing, because everything behind the
+#: name — including a composite array describing the creature — still belonged to the
+#: original. A creature *is* its description: the command carries its blueprint, its
+#: actor id, its spawn position and its health, and serving one whole is the only way
+#: to get a creature that is internally consistent.
+#:
+#: Extracting them needed a stricter reading of a batch than "any 0xFF followed by a
+#: plausible command id". That accepts false boundaries, and the giveaway was the actor
+#: ids it produced: 0xFFFFFF00 and 0xFFFF8000, which are not actors. Requiring the
+#: candidate to look like one — 0x0001xxxx with a low half under ten thousand, the
+#: shape of every real actor in these captures — turned seven doubtful extractions
+#: into eleven sound ones.
+MONSTER_PREFIX = "monster_"
+
+
+def monster_library() -> dict[str, bytes]:
+    """Every extracted creature description, keyed by its blueprint name."""
+    out: dict[str, bytes] = {}
+    for path in sorted(DATA.glob(f"{MONSTER_PREFIX}*.bin")):
+        out[path.stem[len(MONSTER_PREFIX) :]] = path.read_bytes()
+    return out
+
+
+def library_actor(description: bytes) -> bytes | None:
+    """The actor id a library description carries, or None if it cannot be read."""
+    from raknet.bitstream import BitReader
+
+    total = len(description) * 8
+    reader = BitReader(description)
+    for padding in range(8):
+        end = total - padding
+        if end - 40 < 0:
+            continue
+        reader.seek(end - 8)
+        if reader.read_bits(8) != 0xFF:
+            continue
+        reader.seek(end - 40)
+        actor = reader.read_uint(32)
+        if (actor >> 16) == 1 and (actor & 0xFFFF) < 10000:
+            return actor.to_bytes(4, "little")
+    return None
+
+
+def library_creatures(map_prefix: str = "a0001") -> dict[bytes, bytes]:
+    """Library descriptions for one map, keyed by the actor each carries.
+
+    Filtered by map because ``actorEntities`` on the client is indexed by an actor
+    id's low sixteen bits alone: two creatures from different maps can share those,
+    and serving both would have one overwrite the other's binding. Two of the eleven
+    extracted descriptions do exactly that.
+    """
+    out: dict[bytes, bytes] = {}
+    for name, description in monster_library().items():
+        if not name.startswith(map_prefix):
+            continue
+        actor = library_actor(description)
+        if actor is not None:
+            out[actor] = description
+    return out
+
+
+def library_records(map_prefix: str = "a0001") -> list[bytes]:
+    """Movement records for the library creatures that can also be placed.
+
+    A creature needs two things: a description saying what it is, and a record saying
+    where it stands. The library supplies the first, the recorded movement records the
+    second, and only a creature present in both can be served.
+
+    Reading the position out of the description instead would be better, and is
+    blocked. Its second field is an array of ten composite elements of *variable* size
+    — two creatures whose names are the same length yield descriptions of 172 and 176
+    bytes — so nothing behind that array can be reached by reading forward. The earlier
+    "281 bytes from the end" rule does not rescue it either: that was measured on
+    batches, and these are single commands.
+    """
+    placed = {record[15:19]: record for record in mob_templates()}
+    return [
+        placed[actor]
+        for actor in sorted(library_creatures(map_prefix))
+        if actor in placed
+    ]
