@@ -697,3 +697,97 @@ def library_records(map_prefix: str = "a0001") -> list[bytes]:
         for actor in sorted(library_creatures(map_prefix))
         if actor in placed
     ]
+
+
+def with_actor(description: bytes, actor: bytes) -> bytes:
+    """Return *description* creating *actor* instead of the one it carries.
+
+    A description carries its own actor id in its trailer, and that is the actor the
+    client creates. Serving one under a different slot without changing it creates the
+    wrong actor: the client goes on asking about the one it wanted, every few seconds,
+    for ever — the same signature as a request never answered at all.
+
+    Only those 32 bits change. They are not byte-aligned, so this rewrites them in
+    place at the bit offset where the trailer was found.
+    """
+    from raknet.bitstream import BitReader, BitWriter
+
+    if len(actor) != 4:
+        raise ValueError(f"an actor id is 4 bytes, got {len(actor)}")
+
+    total = len(description) * 8
+    reader = BitReader(description)
+    for padding in range(8):
+        end = total - padding
+        if end - 40 < 0:
+            continue
+        reader.seek(end - 8)
+        if reader.read_bits(8) != 0xFF:
+            continue
+        reader.seek(end - 40)
+        candidate = reader.read_uint(32)
+        if (candidate >> 16) != 1 or (candidate & 0xFFFF) >= 10000:
+            continue
+        writer = BitWriter()
+        reader.seek(0)
+        writer.write_bits(reader.read_bits(end - 40), end - 40)
+        writer.write_uint(int.from_bytes(actor, "little"), 32)
+        writer.write_uint(0xFF, 8)
+        return writer.to_bytes()
+    raise ValueError("no actor trailer found to rewrite")
+
+
+#: How far from the end of a *single* NewMonsterCommand its spawn position sits, in
+#: bits. Measured by cross-reference rather than guessed: three creatures appear both
+#: as a batch, where the position's offset was already known, and as a single command
+#: in the library. Searching each single command for the float triple its batch
+#: carries puts it 448 bits from the end in all three — at byte 130, 116 and 125
+#: respectively, so the rule holds across three different message lengths.
+#:
+#: The batch rule of 281 bytes from the end does not apply here and never could: it was
+#: measured on batches, whose tails differ.
+SPAWN_FROM_END_BITS = 448
+
+
+def library_spawn(description: bytes) -> tuple[float, float, float]:
+    """Where a single-command description places its creature, in world units."""
+    import struct
+
+    from raknet.bitstream import BitReader
+
+    start = len(description) * 8 - SPAWN_FROM_END_BITS
+    if start < 24:
+        raise ValueError(f"description too short: {len(description)} bytes")
+    reader = BitReader(description, start)
+    return tuple(
+        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+        for _ in range(3)
+    )
+
+
+def with_library_spawn(
+    description: bytes, x: float, elevation: float, y: float
+) -> bytes:
+    """Return a single-command description placing its creature elsewhere.
+
+    Ninety-six bits change and nothing else, so the blueprint, the actor and the
+    health stay as captured — only where it stands is chosen.
+    """
+    import struct
+
+    from raknet.bitstream import BitReader, BitWriter
+
+    start = len(description) * 8 - SPAWN_FROM_END_BITS
+    if start < 24:
+        raise ValueError(f"description too short: {len(description)} bytes")
+    reader = BitReader(description)
+    writer = BitWriter()
+    writer.write_bits(reader.read_bits(start), start)
+    for component in (x, elevation, y):
+        writer.write_uint(
+            int.from_bytes(struct.pack("<f", component), "little"), 32
+        )
+    reader.seek(start + 96)
+    remaining = reader.remaining
+    writer.write_bits(reader.read_bits(remaining), remaining)
+    return writer.to_bytes()

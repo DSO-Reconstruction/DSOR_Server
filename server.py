@@ -79,6 +79,10 @@ from dsor.recorded import (
     CHARACTER_CHOSEN_NAME,
     HANDLE_SIZE,
     entity_descriptions,
+    monster_library,
+    library_spawn,
+    with_actor,
+    with_library_spawn,
     with_template,
     first_command,
     combat_ready_mobs,
@@ -188,6 +192,19 @@ DESCRIBE_ENTITY_OPCODE = 0x001C
 #: Each one is answered with a 0x010E/0x010C pair, and the second answer is the
 #: larger of the two.
 CLIENT_QUERY_OPCODE = 0x010B
+
+
+def actor_id_matches_first(handle: bytes, served: int) -> bool:
+    """Whether *handle* is the first of the served creatures.
+
+    Compared by actor id rather than by call order, so a client asking about them out
+    of sequence still swaps the same one.
+    """
+    from dsor.gameplay import actor_id
+    from dsor.recorded import combat_ready_mobs
+
+    first = combat_ready_mobs()[:served]
+    return bool(first) and actor_id(first[0]) == handle
 
 
 class Capture:
@@ -345,6 +362,8 @@ class Service:
         self.mob_first_command = False
         #: Spawn this blueprint instead of the recorded one, or None to keep it.
         self.mob_template: str | None = None
+        #: Library blueprint to serve in place of the first creature, or None.
+        self.mob_swap: str | None = None
         #: Send the recorded vicinity announcement before a creature is asked about.
         self.announce_vicinity = True
         #: Wire recorder, or None. Shared between services so one file holds the
@@ -1067,6 +1086,59 @@ class Service:
                 description = first_command(description, handle)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
+        if self.mob_swap and actor_id_matches_first(handle, self.mobs):
+            # Swap the first served creature for a library blueprint, keeping the slot's
+            # own movement record so it stands where that slot stood. What position it
+            # is *drawn* at comes from the swapped description, which this server cannot
+            # read — so it may well appear somewhere else entirely, or not at all. The
+            # kill still announces the death at the slot's own position for the same
+            # reason.
+            library = monster_library()
+            swapped = library.get(self.mob_swap)
+            if swapped is None:
+                log.warning(
+                    "%s: no library creature named %r; have %s",
+                    self.name,
+                    self.mob_swap,
+                    ", ".join(sorted(library)),
+                )
+            else:
+                log.info(
+                    "%s: serving %r in place of entity %s",
+                    self.name,
+                    self.mob_swap,
+                    handle.hex(" "),
+                )
+                # Rewritten to create the actor the client asked about. Without this
+                # it creates the actor the description carries — 31 for the swamp
+                # creature — and the client goes on asking about the one it wanted
+                # every three seconds, which is exactly what happened.
+                try:
+                    swapped = with_actor(swapped, handle)
+                    # And placed where the slot's own creature stood. A library
+                    # description carries the position of wherever it was captured —
+                    # the swamp creature's is (-27.45, 7.00, -10.48), on the third map
+                    # — so served untouched it appears a hundred units away, correctly
+                    # and invisibly. Its offset is 448 bits from the end, found by
+                    # cross-reference: three creatures appear both as a batch, whose
+                    # position offset was known, and as a single command here.
+                    slot = entity_descriptions().get(handle)
+                    if slot is not None:
+                        x, elevation, y = monster_spawn(slot)
+                        swapped = with_library_spawn(swapped, x, elevation, y)
+                        log.info(
+                            "%s: placed it at (%.2f, %.2f, %.2f)",
+                            self.name,
+                            x,
+                            elevation,
+                            y,
+                        )
+                except ValueError as error:
+                    log.warning("%s: %s", self.name, error)
+                self.mob_health[handle] = self.mob_max_health
+                self._queue(connection, swapped, sender)
+                return
+
         if self.mob_template:
             # The blueprint name is the description's first field, so it can be
             # replaced and everything behind it copied bit for bit. What the client
@@ -1553,6 +1625,7 @@ def serve(
     mob_despawn: bool = False,
     mob_first_command: bool = False,
     mob_template: str | None = None,
+    mob_swap: str | None = None,
     announce_vicinity: bool = True,
 ) -> None:
     """Run the three tiers the real service is built from.
@@ -1610,6 +1683,7 @@ def serve(
         service.mob_despawn = mob_despawn
         service.mob_first_command = mob_first_command
         service.mob_template = mob_template
+        service.mob_swap = mob_swap
         service.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
         service.shop_price = shop_price
@@ -1767,6 +1841,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--mob-swap",
+        metavar="NAME",
+        help=(
+            "serve this library blueprint in place of the first creature. It is drawn "
+            "wherever its own description places it, which this server cannot read, so "
+            "it may appear elsewhere or not at all"
+        ),
+    )
+    parser.add_argument(
         "--mob-template",
         metavar="NAME",
         help=(
@@ -1876,6 +1959,7 @@ def main() -> None:
         mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,
         mob_template=args.mob_template,
+        mob_swap=args.mob_swap,
         announce_vicinity=args.announce_vicinity,
     )
 

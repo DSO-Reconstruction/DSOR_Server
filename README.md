@@ -178,6 +178,32 @@ int64 pair inside its own payload. And `RequestActor` is called directly from th
 vicinity handler, so an actor announced that way is set up by the path the real
 server used, rather than one the client merely noticed.
 
+## Serving a creature that was never captured here
+
+A capture of a full tutorial run yields complete `NewMonsterCommand`s for eleven
+creature blueprints across three maps. Each is a single command rather than a batch,
+and serving one somewhere else needs exactly two fields rewritten:
+
+* **its actor id**, in the trailer. That is the actor the client creates, so serving a
+  description under a different slot without changing it creates the wrong actor — and
+  the client goes on asking about the one it wanted, every three seconds, indefinitely.
+  A request that repeats is a request never satisfied, which is the same signature as
+  one never answered at all.
+* **its spawn position**, 448 bits from the end. A description carries the position of
+  wherever it was captured: a third-map creature served untouched on the first map
+  appears a hundred units away, correctly and invisibly. That is not a failure mode
+  that looks like anything — no rejection, no log line, no repeat.
+
+Both offsets are rules rather than tables, and the position's was found by
+cross-reference rather than search: three creatures appear both as a batch, where the
+offset was already known, and as a single command, so searching each single command
+for the float triple its batch carries locates it. 448 bits in all three, at three
+different message lengths.
+
+Rewriting only the blueprint *name* does not work. Everything behind it — including a
+second field holding an array of ten composite elements of variable size — still
+describes the original creature, so the name resolves and nothing is drawn.
+
 ## A creature has two positions, in two frames
 
 This one cost several rounds of a human staring at a screen, and it is worth stating
