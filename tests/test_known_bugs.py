@@ -726,3 +726,39 @@ def test_a_dead_creature_is_not_re_announced():
         assert len(after) == header + record
     finally:
         service.socket.close()
+
+
+def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
+    """Was: a creature dropped from the entity update the instant it died.
+
+    The wire showed it plainly — the update went from 155 bytes to 133 in the same
+    breath as the kill, one record and its separator — so the client was told to play
+    a death sequence over something this server had stopped mentioning. It vanished
+    instead, with no animation and nothing in its log.
+
+    Bounded on the other side too: reporting a creature after the client has finished
+    removing it flickers it back into existence, which is a mistake this file already
+    records once.
+    """
+    service = Service(
+        port=42200, name="test-corpse", role="map", map_name="a0001_start_tutorial_dun"
+    )
+    try:
+        service.mobs = 1
+        (creature,) = combat_ready_mobs()[:1]
+        actor = actor_id(creature)
+        alive = len(service._entity_update(Position(-10172, -344, 5888)))
+
+        # Dead, but freshly so: still reported.
+        service.mob_health[actor] = 0.0
+        service.corpse_ticks[actor] = service.corpse_lifetime
+        assert len(service._entity_update(Position(-10172, -344, 5888))) == alive
+
+        # The grace period runs out over that many ticks, and then it is gone.
+        for _ in range(service.corpse_lifetime + 1):
+            service.game_tick()
+        assert actor not in service.corpse_ticks
+        gone = len(service._entity_update(Position(-10172, -344, 5888)))
+        assert gone == alive - 22, "one twenty-byte record and its two-byte joiner"
+    finally:
+        service.socket.close()

@@ -109,16 +109,24 @@ class Kill:
 
     victim: int
     killer: int
-    #: Where the corpse is thrown, as three floats.
-    impulse: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: **Where the creature dies**, in world units, as three floats. Decoding a real
+    #: kill reads (-49.41, 0.00, 53.45) — squarely inside the range the tutorial
+    #: dungeon's creatures stand in, so this is a position and not the direction an
+    #: earlier reading took it for. Sending a direction here puts the death at the map
+    #: origin.
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     tick: int = 0
+    #: Zero in the recorded kill, so zero here.
     kill_tick: int = 0
-    #: Whether the body is removed rather than left lying.
-    despawn: bool = True
-    damage_types: list[int] = field(default_factory=list)
-    unknown_48: int = 0
+    #: Whether the body is removed rather than left lying. False in the recorded kill.
+    despawn: bool = False
+    #: One entry, value zero, in the recorded kill.
+    damage_types: list[int] = field(default_factory=lambda: [0])
+    #: Copied from the recorded kill rather than understood. 75 and 0.
+    unknown_48: int = 75
     unknown_4c: int = 0
-    unknown_74: int = 0
+    #: 0xFFFFFFFF in the recorded kill — the client's "no actor" value.
+    unknown_74: int = 0xFFFFFFFF
 
 
 def encode_kill(kill: Kill) -> bytes:
@@ -139,7 +147,7 @@ def encode_kill(kill: Kill) -> bytes:
     writer.write_uint(kill.unknown_48, 32)
     writer.write_uint(kill.unknown_4c, 32)
     writer.write_uint(kill.killer, 32)
-    for component in kill.impulse:
+    for component in kill.position:
         writer.write_uint(int.from_bytes(struct.pack("<f", component), "little"), 32)
     writer.write_uint(kill.kill_tick, 32)
     writer.write_uint(kill.unknown_74, 32)

@@ -279,6 +279,11 @@ class Service:
         #: Which creature each client is currently fighting, so consecutive blows
         #: land on the same one.
         self.mob_target: dict[tuple[str, int], bytes] = {}
+        #: How many more ticks a dead creature stays in the entity update, so its
+        #: death sequence has something to play over.
+        self.corpse_ticks: dict[bytes, int] = {}
+        #: How long that is. Twenty ticks at ten a second is two seconds.
+        self.corpse_lifetime = 20
         #: The player's health, and when a creature last struck them.
         self.player_health: dict[tuple[str, int], float] = {}
         self._last_strike: dict[tuple[str, int], float] = {}
@@ -938,15 +943,25 @@ class Service:
         # can be retired at all.
         victim = int.from_bytes(target, "little")
         tick = connection.elapsed_ms() // 10
+        # In the *description* frame, not the wire one. A real kill for this creature
+        # carries (-45.68, 54.63) where its movement records put it at (-42.18,
+        # 23.45) — the same two frames that made every distance bound fail, and the
+        # same trap fallen into again on this field. A death announced thirty units
+        # from the body has nothing to play over.
+        try:
+            described = monster_spawn(entity_descriptions()[target])
+        except (KeyError, ValueError):
+            described = None
         self._queue(
             connection,
             encode_kill(
                 Kill(
                     victim=victim,
                     killer=int.from_bytes(PLAYER_ACTOR, "little"),
-                    impulse=(0.0, 1.0, 0.0),
+                    # Where it dies, in world units — not a direction. A real kill
+                    # carries the creature's own position here.
+                    position=described if described else (0.0, 0.0, 0.0),
                     tick=tick,
-                    kill_tick=tick,
                     # False, so the body is left lying. True means "remove it",
                     # which is what made creatures vanish the instant they died with
                     # no animation — nothing can play over a corpse already cleared.
@@ -960,6 +975,7 @@ class Service:
         # play — the creature simply vanished. The kill's own despawn flag already
         # tells the client to clear the body; discarding is for retiring a creature
         # that is not dying, and for one no capture contains a removal for.
+        self.corpse_ticks[target] = self.corpse_lifetime
         log.info("%s: entity %s killed", self.name, target.hex(" "))
         self.mob_target.pop(sender, None)
 
@@ -1079,12 +1095,19 @@ class Service:
         if not self.mobs:
             return encode_entity_group_message([player])
 
-        # Only the living. Re-announcing a creature the client has been told to
-        # remove makes it flicker: removed, redeclared a tick later, removed again.
+        # The living, and the recently dead. Dropping a creature from the tick the
+        # instant it dies is what made it vanish with no animation: the client was
+        # told to play a death sequence over something this server had stopped
+        # mentioning, so there was nothing to play it on. The update went from 155
+        # bytes to 133 in the same breath as the kill — one record and its separator.
+        #
+        # Still bounded, because re-announcing a creature *after* the client has
+        # finished removing it makes it flicker back into existence.
         templates = [
             record
             for record in combat_ready_mobs()[: self.mobs]
             if self.mob_health.get(actor_id(record), self.mob_max_health) > 0.0
+            or self.corpse_ticks.get(actor_id(record), 0) > 0
         ]
         if not templates:
             return encode_entity_group_message([player])
@@ -1131,6 +1154,11 @@ class Service:
 
     def game_tick(self) -> None:
         """Send a tick pair to everyone in the world, and let creatures strike back."""
+        # Age the corpses first, so one killed this tick is still reported once.
+        for actor in list(self.corpse_ticks):
+            self.corpse_ticks[actor] -= 1
+            if self.corpse_ticks[actor] <= 0:
+                del self.corpse_ticks[actor]
         for sender in list(self.in_world):
             connection = self.connections.get(sender)
             if connection is None:
