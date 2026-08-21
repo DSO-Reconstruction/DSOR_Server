@@ -55,6 +55,9 @@ from dsor.gameplay import (
 )
 from dsor.combat import (
     ACTORS_LEFT_VICINITY,
+    HIT,
+    Hit,
+    encode_hit,
     KILL,
     Kill,
     encode_actors_enter_vicinity,
@@ -62,7 +65,8 @@ from dsor.combat import (
     encode_discard_monster,
     encode_kill,
 )
-from dsor.recorded import combat_ready_mobs, entity_descriptions, mob_templates
+from raknet.bitstream import BitReader
+from dsor.recorded import first_command, hit_commands, combat_ready_mobs, entity_descriptions, mob_templates
 
 CLIENT_MESSAGE = "0x8b/0x005f"
 SERVER_MESSAGE = "0x85/0x005f"
@@ -609,3 +613,95 @@ def test_a_kill_ends_one_bit_short_of_its_last_byte():
     are shifted — which is why this cannot be assembled from whole bytes."""
     killed = encode_kill(Kill(victim=0x00010008, killer=0x00010015, despawn=True))
     assert killed[-1] == 0x80, "the terminator's last bit, then seven of padding"
+
+
+def test_a_generated_hit_is_the_same_size_as_the_real_one():
+    """Independent confirmation of an eighteen-field layout with five booleans:
+    generating one produces exactly the 68 bytes the leading command of a recorded
+    hit batch occupies."""
+    built = encode_hit(
+        Hit(
+            victim=0x00010008,
+            attacker=0x00010015,
+            damage=12,
+            victim_health=48,
+            victim_max_health=60,
+            combat_value_owner=0x00010015,
+            combat_value=12.0,
+            tick=1234,
+        )
+    )
+    assert len(built) == 68
+    assert built[0] == 0x85
+    assert int.from_bytes(built[1:3], "little") == HIT
+
+
+def test_the_victims_health_travels_in_the_blow_which_is_why_replay_failed():
+    """The client takes a creature's health from the hit and nowhere else.
+
+    A recorded blow is the one that killed its creature, so it carries zero, and the
+    creature dies on the spot by the unanimated path — the client logs "Victim ... is
+    not alive or cannot receive" and then "received kill message twice" when the real
+    death arrives behind it. Only a generated blow can leave a creature standing.
+    """
+    survives = encode_hit(
+        Hit(
+            victim=0x00010008,
+            attacker=0x00010015,
+            damage=12,
+            victim_health=48,
+            victim_max_health=60,
+            combat_value_owner=0x00010015,
+        )
+    )
+    dies = encode_hit(
+        Hit(
+            victim=0x00010008,
+            attacker=0x00010015,
+            damage=12,
+            victim_health=0,
+            victim_max_health=60,
+            combat_value_owner=0x00010015,
+        )
+    )
+    assert survives != dies, "the health left is what differs"
+    assert len(survives) == len(dies)
+
+
+def test_a_real_hit_decodes_sensibly_with_this_layout():
+    """The check that should have come before the encoder, not after it.
+
+    A correct total length proves nothing on its own — two adjacent fields swapped
+    give the same 68 bytes. Reading a recorded blow back with this layout is what
+    settles it, and every field lands on a plausible value: one damage type, three
+    false booleans, the victim left at 0 of a maximum of 12, damage 11, and both actor
+    ids the player's.
+
+    It also caught a scale error, and settled the scale itself: a creature holds
+    **twelve** points, confirmed in play. Serving 60 against a client that knows it has
+    twelve is read as a heal and drawn as a floating +400, which is how this was found.
+
+    A caution for whoever revisits this: hunting a plausible value through a
+    bit-packed message finds mirages. This same message yields 44 by reading its 11 two
+    bits late, and 24 and 48 by reading its 12 one and two bits late — every one of them
+    looks like a health value, and one of them was briefly believed over the aligned
+    read.
+    """
+    recorded = first_command(hit_commands()[b"\x08\x00\x01\x00"], b"\x08\x00\x01\x00")
+    assert len(recorded) == 68
+
+    reader = BitReader(recorded)
+    assert reader.read_uint(8) == 0x85
+    assert reader.read_uint(16) == HIT
+    reader.read_uint(32)                     # tick
+    assert reader.read_uint(32) == 1         # one damage type
+    reader.read_uint(8)
+    assert [reader.read_bool() for _ in range(3)] == [False, False, False]
+    assert reader.read_uint(64) == 0, "the victim was left at zero"
+    assert reader.read_uint(64) == 12, "out of twelve"
+    assert reader.read_uint(32) == 0 and reader.read_uint(32) == 0   # shields
+    assert reader.read_uint(32) == 11, "the blow did eleven"
+    reader.read_uint(32)                     # kind
+    player = int.from_bytes(b"\x15\x00\x01\x00", "little")
+    assert reader.read_uint(32) == player, "the attacker"
+    assert reader.read_uint(32) == player, "and whose floating number it is"

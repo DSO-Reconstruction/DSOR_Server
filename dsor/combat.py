@@ -146,3 +146,73 @@ def encode_kill(kill: Kill) -> bytes:
     writer.write_bool(kill.despawn)
     _close(writer, kill.victim)
     return writer.to_bytes()
+
+
+@dataclass
+class Hit:
+    """0x006B HitCommand: one blow, and the victim's health after it.
+
+    The field that matters most is not the damage but ``victim_health``: the client
+    takes the victim's health straight from this message. Replaying a recorded blow
+    therefore replays the health it left behind — and a *killing* blow carries zero,
+    so the victim dies on the spot by the unanimated path. Its own log says so
+    plainly: "Victim ... is not alive or cannot receive", then "received kill message
+    twice" when the real KillCommand arrives after.
+
+    So a creature can only survive a blow, and only die with an animation, if this
+    message is generated.
+    """
+
+    victim: int
+    attacker: int
+    damage: int
+    victim_health: int
+    victim_max_health: int
+    #: Whose floating damage number this is. The client draws none unless this is the
+    #: local player's actor, and unless ``combat_value`` is greater than zero.
+    combat_value_owner: int
+    combat_value: float = 1.0
+    tick: int = 0
+    critical: bool = False
+    shield: int = 0
+    max_shield: int = 0
+    damage_types: list[int] = field(default_factory=lambda: [0])
+    kind: int = 0
+    heavy_until_tick: int = 0
+
+
+def encode_hit(hit: Hit) -> bytes:
+    """Build a 0x006B.
+
+    Five of its eighteen fields are single bits, so everything behind them is shifted
+    and packed most-significant-first — a byte writer cannot produce this.
+    """
+    import struct
+
+    writer = BitWriter()
+    writer.write_uint(MESSAGE_ID, 8)
+    _open(writer, HIT)
+    writer.write_uint(hit.tick, 32)
+    writer.write_uint(len(hit.damage_types), 32)
+    for kind in hit.damage_types:
+        writer.write_uint(kind & 0xFF, 8)
+    writer.write_bool(False)
+    writer.write_bool(hit.critical)
+    writer.write_bool(False)
+    writer.write_uint(hit.victim_health & (2**64 - 1), 64)
+    writer.write_uint(hit.victim_max_health & (2**64 - 1), 64)
+    writer.write_uint(hit.shield & 0xFFFFFFFF, 32)
+    writer.write_uint(hit.max_shield & 0xFFFFFFFF, 32)
+    writer.write_uint(hit.damage & 0xFFFFFFFF, 32)
+    writer.write_uint(hit.kind & 0xFFFFFFFF, 32)
+    writer.write_uint(hit.attacker, 32)
+    writer.write_uint(hit.combat_value_owner, 32)
+    writer.write_uint(hit.heavy_until_tick, 32)
+    writer.write_uint(
+        int.from_bytes(struct.pack("<f", hit.combat_value), "little"), 32
+    )
+    writer.write_bool(False)
+    writer.write_bool(False)
+    writer.write_uint(0, 16)  # a string the inbound path never uses; length zero
+    _close(writer, hit.victim)
+    return writer.to_bytes()

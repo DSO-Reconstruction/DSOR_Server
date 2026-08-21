@@ -48,7 +48,9 @@ from dsor.messages import (
     read_server_handoff,
 )
 from dsor.combat import (
+    Hit,
     Kill,
+    encode_hit,
     encode_actors_enter_vicinity,
     encode_discard_monster,
     encode_kill,
@@ -64,7 +66,6 @@ from dsor.gameplay import (
     actor_id,
     decode_position,
     WORLD_SCALE as WORLD,
-    encode_actor_vitals,
     monster_spawn,
     with_spawn,
     encode_entity_group_message,
@@ -78,12 +79,7 @@ from dsor.recorded import (
     CHARACTER_CHOSEN_NAME,
     HANDLE_SIZE,
     entity_descriptions,
-    commands_for,
     first_command,
-    departure_commands,
-    hit_commands,
-    incoming_hit,
-    vicinity_announcements,
     combat_ready_mobs,
     describable_mobs,
     character_release,
@@ -288,9 +284,12 @@ class Service:
         self._last_strike: dict[tuple[str, int], float] = {}
         #: Where the player starts, and the ceiling reported alongside it. The
         #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
+        #: The player's health. 236 is measured — a nearly full bar in the capture.
         self.player_max = 236
         #: The resource a skill spends, reported alongside health and left alone.
         self.player_resource = 10.0
+        #: Whether a killed creature's body is removed at once.
+        self.mob_despawn = False
         #: What one creature blow takes off, and how often one lands. Both ours.
         self.creature_damage = 3.0
         self.strike_interval = 1.5
@@ -303,8 +302,25 @@ class Service:
         #: the player take damage from creatures across the room.
         self.reach = 4.0
         #: What a creature starts with, and what one hit takes off it.
-        self.mob_max_health = 60.0
-        self.mob_damage = 12.0
+        #: A creature's health, and what one blow takes off it.
+        #:
+        #: Twelve is measured and since confirmed in play: decoding a recorded blow
+        #: reads "victim health 0, max 12, damage 11" — a creature holding twelve
+        #: points, killed by a blow of eleven.
+        #:
+        #: The scale matters even more than the exact number. Serving 60 against a
+        #: client that knows a creature has twelve is read as a *heal* and drawn as a
+        #: floating +400, which is how this was found.
+        #:
+        #: Four rather than eleven only so a fight lasts three blows instead of one;
+        #: `--mob-damage 11` is what the character actually does.
+        #:
+        #: A caution for whoever revisits this: hunting a plausible number through a
+        #: bit-packed message finds mirages. Reading this message's 11 two bits late
+        #: gives 44, and its 12 one or two bits late gives 24 and 48 — every one of
+        #: them looks like a health value, and one of them briefly convinced me.
+        self.mob_max_health = 12.0
+        self.mob_damage = 4.0
         #: The maximum reported alongside the current value. The capture's players
         #: carried 234 to 236; a creature's is not observed at all.
         self.mob_max_health_ceiling = 60
@@ -864,41 +880,47 @@ class Service:
             target = min(nearby, key=distance)
             self.mob_target[sender] = target
 
-        # One blow, one kill — because the blow being replayed is the one that
-        # killed this creature in the capture, and the client reads its health out of
-        # it. It shows zero after the first hit however much health this server
-        # thinks is left, so counting further hits only means striking a corpse and
-        # then, when the count finally runs out, moving on to the next creature. That
-        # is what looked like hitting one creature killing the others.
-        left = 0.0
+        left = max(0.0, self.mob_health[target] - self.mob_damage)
         self.mob_health[target] = left
 
-        # The hit itself, replayed. A creature has no health message — every one of
-        # the 107 stats updates in both captured sessions targets the player, even the
-        # session where six creatures died — so the client works its bar out from
-        # this. Reporting health to a creature was an extrapolation, and it never had
-        # any effect.
-        hit = hit_commands().get(target)
-        if hit is not None:
-            if self.mob_first_command:
-                # Everything in the batch addressed to this creature, and nothing
-                # else. Sending the whole batch teleported it and dropped its loot
-                # where the other session's player stood; sending only its first
-                # command lost whatever made it disappear, so it died at zero health
-                # and stayed on screen. The commands aimed at the creature are the
-                # ones that belong to it.
-                try:
-                    hit = commands_for(hit, target)
-                except ValueError as error:
-                    log.info("%s: %s, sending it whole", self.name, error)
-            self._queue(connection, hit, sender)
+        # The blow, generated. A creature has no health message of its own — every
+        # stats update in both captured sessions targets the player — so the client
+        # takes the victim's health from this message and nowhere else.
+        #
+        # Which is precisely why replaying one could never work: a recorded blow is a
+        # *killing* blow, so it carries zero, and the creature died on the spot by the
+        # unanimated path. The client said so: "Victim ... is not alive or cannot
+        # receive", then "received kill message twice" when the real death arrived
+        # after. Generating it is what lets a creature survive a hit at all.
+        victim = int.from_bytes(target, "little")
+        player = int.from_bytes(PLAYER_ACTOR, "little")
+        self._queue(
+            connection,
+            encode_hit(
+                Hit(
+                    victim=victim,
+                    attacker=player,
+                    damage=int(self.mob_damage),
+                    victim_health=int(left),
+                    victim_max_health=int(self.mob_max_health),
+                    # The floating damage number is drawn only for the local player's
+                    # own blows, and only when the value is above zero.
+                    combat_value_owner=player,
+                    # Zero, as the real blow carries. The floating number comes from
+                    # the damage field; putting it here as well draws a second one.
+                    combat_value=0.0,
+                    tick=connection.elapsed_ms() // 10,
+                )
+            ),
+            sender,
+        )
         log.info(
-            "%s: %s hit entity %s, %.1f health left%s",
+            "%s: %s hit entity %s for %.0f, %.1f left",
             self.name,
             sender,
             target.hex(" "),
+            self.mob_damage,
             left,
-            "" if hit is not None else " (no recorded hit for it)",
         )
 
         if left > 0.0:
@@ -925,7 +947,10 @@ class Service:
                     impulse=(0.0, 1.0, 0.0),
                     tick=tick,
                     kill_tick=tick,
-                    despawn=True,
+                    # False, so the body is left lying. True means "remove it",
+                    # which is what made creatures vanish the instant they died with
+                    # no animation — nothing can play over a corpse already cleared.
+                    despawn=self.mob_despawn,
                 )
             ),
             sender,
@@ -1153,27 +1178,53 @@ class Service:
             return
         self._last_strike[sender] = now
 
-        try:
-            blow = incoming_hit()
-        except FileNotFoundError as error:
-            log.error("%s: %s", self.name, error)
-            self.creature_damage = 0.0
-            return
-
-        left = max(
-            0.0, self.player_health.get(sender, float(self.player_max)) - self.creature_damage
+        # Whoever is nearest does the striking, so the blow names a real attacker.
+        attacker = min(
+            (
+                actor
+                for actor, remaining in self.mob_health.items()
+                if remaining > 0.0 and near(actor)
+            ),
+            key=lambda actor: position.distance_to(self._creature_wire_position(actor)),
         )
+
+        # Floored above zero. Driving it to zero leaves the player standing at an
+        # empty bar and not dying, because nothing here kills a player — that is a
+        # separate command this server does not send yet, and an empty bar with no
+        # death is worse than a scratch.
+        current = self.player_health.get(sender, float(self.player_max))
+        left = max(1.0, current - self.creature_damage)
         self.player_health[sender] = left
-        self._queue(connection, blow, sender)
-        # Health in the first field, the skill resource in the second. Writing the
-        # damage into the second drained the player's mana and left their health
-        # untouched, which is exactly what a round of testing showed.
+
+        # One message, not two. This used to replay a recorded blow *and* send a
+        # separate vitals update, so the number the player saw came from another
+        # session's fight while the health actually applied came from here — a "-1"
+        # floating up while the bar dropped by fifteen, and a "+400" whenever the
+        # vitals message happened to raise the bar rather than lower it. A hit carries
+        # the victim's health, so it is the only thing that needs sending.
         self._queue(
             connection,
-            encode_actor_vitals(int(left), self.player_resource, PLAYER_ACTOR),
+            encode_hit(
+                Hit(
+                    victim=int.from_bytes(PLAYER_ACTOR, "little"),
+                    attacker=int.from_bytes(attacker, "little"),
+                    damage=int(self.creature_damage),
+                    victim_health=int(left),
+                    victim_max_health=int(self.player_max),
+                    combat_value_owner=int.from_bytes(PLAYER_ACTOR, "little"),
+                    combat_value=0.0,
+                    tick=connection.elapsed_ms() // 10,
+                )
+            ),
             sender,
         )
-        log.info("%s: a creature struck %s, %.1f health left", self.name, sender, left)
+        log.info(
+            "%s: entity %s struck %s, %.0f health left",
+            self.name,
+            attacker.hex(" "),
+            sender,
+            left,
+        )
 
     def _send_character_list(
         self, connection: Connection, sender, repeat: bool = False
@@ -1459,6 +1510,7 @@ def serve(
     mob_damage: float = 12.0,
     mob_near: float = 0.0,
     creature_damage: float = 3.0,
+    mob_despawn: bool = False,
     mob_first_command: bool = False,
     announce_vicinity: bool = True,
 ) -> None:
@@ -1514,6 +1566,7 @@ def serve(
         service.mob_max_health_ceiling = int(mob_health)
         service.mob_near = mob_near
         service.creature_damage = creature_damage
+        service.mob_despawn = mob_despawn
         service.mob_first_command = mob_first_command
         service.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
@@ -1644,19 +1697,22 @@ def main() -> None:
     parser.add_argument(
         "--mob-health",
         type=float,
-        default=60.0,
+        default=12.0,
         metavar="H",
         help=(
-            "health each creature starts with. Invented: the capture never reports a "
-            "creature's stats, only the player's, whose depleting stat ran to 63.60"
+            "health each creature starts with. Twelve is measured from a recorded blow "
+            "and confirmed in play; serving far more is read as a heal"
         ),
     )
     parser.add_argument(
         "--mob-damage",
         type=float,
-        default=12.0,
+        default=4.0,
         metavar="D",
-        help="health one hit takes off a creature (also invented)",
+        help=(
+            "health one blow takes off a creature. Four makes a fight last three "
+            "blows; 11 is what the character really does, and kills in one"
+        ),
     )
     parser.add_argument(
         "--no-vicinity",
@@ -1674,6 +1730,15 @@ def main() -> None:
         help=(
             "answer an entity request with only the creature's own command instead of "
             "the whole recorded batch, which also holds commands about other actors"
+        ),
+    )
+    parser.add_argument(
+        "--mob-despawn",
+        action="store_true",
+        help=(
+            "clear a killed creature's body at once instead of leaving it lying. On by "
+            "mistake once, and it removed the corpse before the death animation could "
+            "play"
         ),
     )
     parser.add_argument(
@@ -1757,6 +1822,7 @@ def main() -> None:
         mob_damage=args.mob_damage,
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
+        mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,
         announce_vicinity=args.announce_vicinity,
     )
