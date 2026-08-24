@@ -263,6 +263,26 @@ class TargetSkill:
     unknown_c8: int = 0
     #: Zero. One skips movement modulation and transform correction.
     flag: bool = False
+    #: The skill's own timing, from its row in the client's _Template_Skill. These
+    #: eight fields are the whole reason nothing ever animated: this command is 64
+    #: bytes on the wire and this server was sending 26. The terminator landed where
+    #: the client expects the impact tick, so the visualizer was handed nonsense for
+    #: its duration and its position and finished in the same breath it started —
+    #: about a hundredth of a second of the swing, which is exactly what was seen.
+    #:
+    #: Confirmed on two live attacks by two different creatures: impact tick equals
+    #: start plus HitFrame (8890+15=8905 and 8905+19=8924, both exact), and the two
+    #: duration fields are SkillUnblockFrame and MotionUnblockFrame (30/30 and
+    #: 41/41, both exact).
+    hit_frame: int = 0
+    unblock_frame: int = 0
+    #: The attacker's position, in the *description* frame rather than the wire one.
+    #: Read off both samples: the offset from each attacker's movement record is
+    #: identical for both creatures, +11.11 in x and +42.97 in z, which is the second
+    #: coordinate frame already documented for the kill position.
+    position: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    #: One in both samples. A rate, most likely; reproduced rather than understood.
+    factor: float = 1.0
 
 
 def encode_target_skill(skill: TargetSkill) -> bytes:
@@ -285,7 +305,25 @@ def encode_target_skill(skill: TargetSkill) -> bytes:
     writer.write_uint(skill.unknown_c8, 32)
     writer.write_bool(skill.flag)
     writer.write_uint(skill.target, 32)
-    _close(writer, skill.attacker)
+    writer.write_uint(skill.attacker, 32)
+    writer.write_uint((skill.start_tick + skill.hit_frame) % 2**32, 32)
+    writer.write_uint(skill.hit_frame & 0xFFFFFFFF, 32)
+    # Twice: SkillUnblockFrame then MotionUnblockFrame. Equal in every sample, and
+    # equal in the table for all three skills looked up, so they are written from one
+    # value rather than pretending to know a case where they differ.
+    writer.write_uint(skill.unblock_frame & 0xFFFFFFFF, 32)
+    writer.write_uint(skill.unblock_frame & 0xFFFFFFFF, 32)
+    writer.write_uint(0, 32)
+    for value in (*skill.position, skill.factor):
+        writer.write_uint(
+            int.from_bytes(struct.pack("<f", value), "little"), 32
+        )
+    # One more bit, false. Found by search rather than by reading: without it the
+    # command is 62 of 64 bytes right, and with it all 64 match a real one exactly.
+    writer.write_bool(False)
+    # No trailing actor: this command names its attacker in the body, so the trailer
+    # is the terminator alone.
+    writer.write_uint(TERMINATOR, 8)
     return writer.to_bytes()
 
 

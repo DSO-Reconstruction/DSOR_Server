@@ -868,3 +868,69 @@ def test_the_hit_delay_is_the_skills_hit_frame():
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
     assert service.creature_hit_frame == 12
+
+
+def test_the_skill_command_is_sixty_four_bytes_not_twenty_six():
+    """Reproduce two real skill commands byte for byte.
+
+    This server sent 26 bytes where the command is 64. The terminator landed where
+    the client expects the impact tick, so the visualizer got nonsense for its
+    duration and its position and finished as it started — the hundredth of a second
+    of animation that was actually observed.
+
+    Two live attacks, two different creatures, two different skills: reproduced
+    exactly, which pins impact tick = start + HitFrame and the two duration fields
+    as SkillUnblockFrame and MotionUnblockFrame.
+    """
+    import struct
+
+    from dsor.combat import TargetSkill, encode_target_skill
+
+    cases = [
+        (
+            "47 00 00 00 64 06 56 fc 8c 3f ba 22 00 00 00 00 00 00 13 00 00 80 04"
+            " 00 00 80 64 91 00 00 07 80 00 00 0f 00 00 00 0f 00 00 00 00 00 00 00"
+            " 6b d1 89 61 00 00 70 20 0a 57 07 e0 80 00 40 1f bf c0",
+            1636, 8890, 15, 30, (-36.66, 7.0, -8.98), 0x08, "56fc8c3f",
+        ),
+        (
+            "47 00 00 00 6b 06 67 e5 f7 3e c9 22 00 00 00 00 00 00 13 00 00 80 0f"
+            " 80 00 80 6e 11 00 00 09 80 00 00 14 80 00 00 14 80 00 00 00 00 00 00"
+            " 7b 14 0c 61 00 00 70 20 33 33 7b 60 00 00 40 1f bf c0",
+            1643, 8905, 19, 41, (-38.04, 7.0, -7.70), 0x1F, "67e5f73e",
+        ),
+    ]
+    for raw, skill, tick, hit_frame, unblock, position, actor, heading in cases:
+        real = bytes.fromhex(raw.replace(" ", ""))
+        assert len(real) == 64
+        built = encode_target_skill(
+            TargetSkill(
+                attacker=int.from_bytes(bytes([actor, 0, 1, 0]), "little"),
+                target=int.from_bytes(bytes([0x26, 0, 1, 0]), "little"),
+                skill_id=skill,
+                heading=struct.unpack("<f", bytes.fromhex(heading))[0],
+                start_tick=tick,
+                hit_frame=hit_frame,
+                unblock_frame=unblock,
+                position=position,
+            )
+        )[1:]
+        assert built == real, f"skill {skill} differs"
+
+
+def test_the_skills_heading_points_back_at_the_attacker():
+    """The reverse of the blow's direction, which is what the samples show.
+
+    Attacker at world (-47.77, -51.95) striking a player at (-50.57, -53.38) carries
+    1.1015; the vector from the target to the attacker gives 1.0986. The forward
+    vector gives -2.0430, which is 180 degrees out — creatures swung away from the
+    player.
+    """
+    import math
+
+    player = (-50.57, -53.38)
+    for attacker, observed in (((-47.77, -51.95), 1.1015), ((-49.16, -50.67), 0.4842)):
+        back = math.atan2(attacker[0] - player[0], attacker[1] - player[1])
+        assert abs(back - observed) < 0.01, f"{back} vs {observed}"
+        forward = math.atan2(player[0] - attacker[0], player[1] - attacker[1])
+        assert abs(abs(forward - observed) - math.pi) < 0.01

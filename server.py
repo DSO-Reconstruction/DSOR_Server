@@ -378,10 +378,16 @@ class Service:
         #:                  hit shapes apart: 52 with two types are creatures striking
         #:                  the player, 2 with one type are the player striking back.
         self.creature_hit_frame = 12
+        #: SkillUnblockFrame, the swing's total length. Confirmed on the wire for two
+        #: other skills: ThingRootsStrike's 30 and ThingSwampStrike's 41 are exactly
+        #: what their commands carry.
+        self.creature_unblock_frame = 27
         self.creature_hit_range = 2.25
         self.creature_damage_types = [0, 4]
         #: Blows in flight: when they land, who throws them, and at whom.
         self.pending_hits: list[tuple[float, tuple, bytes]] = []
+        #: Cached offset between the wire frame and the description frame.
+        self._frame_offset: tuple[float, float, float] | None = None
         #: Where the player starts, and the ceiling reported alongside it. The
         #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
         #: The player's health. 236 is measured — a nearly full bar in the capture.
@@ -1501,7 +1507,11 @@ class Service:
         where = self._creature_wire_position(attacker)
         heading = 0.0
         if where is not None:
-            heading = math.atan2(position.x - where.x, position.y - where.y)
+            # From the *target* to the attacker, which is the reverse of the direction
+            # the blow travels. Measured, not reasoned: both real samples fit this to
+            # within 0.3 degrees, and the forward vector misses by 180. Sending the
+            # forward one made creatures swing away from the player.
+            heading = math.atan2(where.x - position.x, where.y - position.y)
         # Three ticks ahead, on the live clock rather than the last tick the client
         # happened to report. Both skill commands the client itself sent announce a
         # start three ticks past its own latest movement tick — 2735 against 2732,
@@ -1516,6 +1526,9 @@ class Service:
                 skill_id=self.creature_skill,
                 heading=heading,
                 start_tick=now + self.skill_lead,
+                hit_frame=self.creature_hit_frame,
+                unblock_frame=self.creature_unblock_frame,
+                position=self._described_position(where),
             )
         )
         self._queue(
@@ -1532,6 +1545,39 @@ class Service:
                 sender,
                 attacker,
             )
+        )
+
+    def _described_position(self, where) -> tuple[float, float, float]:
+        """A wire position in the frame the descriptions use.
+
+        The two frames differ by a constant per map, and the constant is derived
+        here rather than written down: every described creature sits at the same
+        offset from its own movement record — (-3.50, +2.69, +31.18) for the tutorial
+        dungeon, and identical for all three creatures checked. The live service
+        shows the same thing on its own map with a different constant, which is why
+        this reads it off the data instead of hard-coding it.
+        """
+        if where is None:
+            return (0.0, 0.0, 0.0)
+        if self._frame_offset is None:
+            self._frame_offset = (0.0, 0.0, 0.0)
+            for record in combat_ready_mobs():
+                try:
+                    described = monster_spawn(entity_descriptions()[actor_id(record)])
+                except (KeyError, ValueError):
+                    continue
+                home = decode_position(record)
+                self._frame_offset = (
+                    described[0] - home.x / WORLD,
+                    described[1] - home.elevation / WORLD,
+                    described[2] - home.y / WORLD,
+                )
+                break
+        dx, dy, dz = self._frame_offset
+        return (
+            where.x / WORLD + dx,
+            where.elevation / WORLD + dy,
+            where.y / WORLD + dz,
         )
 
     def _land_pending_hits(self) -> None:
