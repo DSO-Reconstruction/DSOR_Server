@@ -56,12 +56,7 @@ from dsor.gameplay import (
     ring_positions,
     with_motion,
 )
-from dsor.items import (
-    item_drop,
-    item_pickup_batch,
-    with_drop,
-    with_pickup_batch,
-)
+from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -212,10 +207,18 @@ class Rules:
     announce_vicinity: bool = True
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
-    #: The blueprint to drop, or None to keep the recorded one. Anything in the
-    #: client's _Template_Item; a name it cannot resolve creates nothing at all,
-    #: exactly as an unknown monster blueprint does.
-    drop_template: str | None = None
+    #: Whether to answer a pickup at all.
+    #:
+    #: Answering replays the recorded inventory, which carries the layout of every
+    #: storage — so the player's own equipment gets rearranged by another session's
+    #: arrangement. Refusing leaves the item on the ground and the client retrying,
+    #: which is untidy but touches nothing. Neither is right; building the inventory
+    #: is what would be.
+    allow_pickup: bool = True
+    #: Blueprints to drop, cycled through one per kill, or empty to keep the
+    #: recorded one. Anything in the client's _Template_Item; a name it cannot
+    #: resolve creates nothing at all, exactly as an unknown monster blueprint does.
+    drop_templates: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -316,11 +319,49 @@ class World:
     #: Actor ids handed to dropped items. Starts above the recorded creatures so a
     #: drop cannot collide with one of them, or with the player's 0x15.
     next_item: int = 0x40
-    #: Items lying on the ground: their actor, and the id the drop declared for
-    #: each. The client validates the id when it asks to pick one up.
-    dropped: dict[bytes, int] = field(default_factory=dict)
-    #: Item ids handed out. Above anything the replayed inventory carries.
-    next_item_id: int = 90000
+    #: How far apart two items on the ground must lie, in world units. Ours: the
+    #: client stacks items that share a place and a stack crashes it.
+    drop_spacing: float = 1.2
+    #: How many bag cells there are to hand out. Read off the storage descriptors in
+    #: both messages, which carry 5 and 6. Beyond this a pickup is refused rather
+    #: than allowed to land outside the grid.
+    slot_capacity: int = 5
+    #: The first cell to hand out.
+    #:
+    #: Not zero. The character's login inventory carries two items and **no**
+    #: allocations, so those two are placed by the client itself — at the first free
+    #: cells, evidently — and claiming cell 0 draws its own assertion by name:
+    #:
+    #:   *** NEBULA ASSERTION ***  programmer says: Storage slot is occupied
+    #:   Game::Inventory::AddItemAtStorageSlot(...)
+    #:
+    #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
+    #: the messages that says where the client put them.
+    first_slot: int = 2
+    #: How many items have been dropped, which also picks the next blueprint.
+    drops: int = 0
+    #: The inventory slot the next pickup is put in.
+    #:
+    #: The bag is a grid, and a slot outside it crashes the client just as surely as
+    #: two items in the same cell do. A first attempt started at ten, which is past
+    #: the end: the storages the messages describe carry a size byte of 5 and 6, and
+    #: the character's own login inventory allocates **no** bag slots at all — its
+    #: sword and shield are equipped, and equipment is not in this table. So the
+    #: cells are free, and they are few.
+    next_slot: int = -1
+    #: Items lying on the ground, by actor: where each one lies. Positions matter
+    #: beyond bookkeeping — two items in the same place stack, and a stack crashes
+    #: the client, so a new drop is nudged clear of the ones already down.
+    dropped: dict[bytes, tuple[float, float, float]] = field(default_factory=dict)
+    #: What each item lying there is, so the pickup names the same thing the drop
+    #: did. Cycling blueprints without this put a different item in the bag from the
+    #: one on the ground.
+    templates: dict[bytes, str | None] = field(default_factory=dict)
+    #: Item ids handed out. Both real ones observed are below 65536 — 6753 on the
+    #: ground and 31633 in an inventory — so these stay in that range too. A first
+    #: attempt started at 90000, which is past a 16-bit field: if the client narrows
+    #: this id anywhere, 90001 becomes 24465 and the lookup cannot succeed.
+    next_item_id: int = 40000
     #: Messages produced by the current call, waiting to be handed back.
     _outbox: list[tuple[Address, bytes]] = field(default_factory=list)
 
@@ -396,13 +437,23 @@ class World:
             self.reset_creatures()
 
     def reset_creatures(self) -> None:
-        """Every creature alive again, back where it was recorded."""
+        """Every creature alive again, back where it was recorded.
+
+        And the counters with them. These three lines once landed in
+        ``age_corpses``, which runs ten times a second: the slot counter restarted
+        every tick so two pickups both took cell 2, the blueprint table was wiped so
+        a picked-up item arrived as whatever the recording held, and — worst — actor
+        ids repeated, so two different items could claim the same one.
+        """
         for creature in self.creatures.values():
             creature.health = creature.max_health
             creature.position = creature.home()
             creature.corpse_ticks = 0
             creature.described = False
         self.dropped.clear()
+        self.templates.clear()
+        self.next_item = 0x40
+        self.next_slot = -1
 
     def inhabitants(self) -> list[Player]:
         return [p for p in self.players.values() if p.in_world]
@@ -750,24 +801,24 @@ class World:
         # understood and inventing a tail is how the skill command came to be 26
         # bytes of a 64-byte message.
         if self.rules.drop_items and described is not None:
-            self.next_item += 1
-            lying = bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00])
-            self.next_item_id += 1
-            self.dropped[lying] = self.next_item_id
-            self._emit(
-                with_drop(
-                    item_drop(),
-                    lying,
-                    described,
-                    template=self.rules.drop_template,
-                    item_id=self.next_item_id,
-                ),
-                sender,
-            )
+            # One item per blueprint named, all from the same body. They are spread
+            # out rather than piled up: two items in the same place stack, and a
+            # stack crashes the client.
+            for blueprint in self.rules.drop_templates or [None]:
+                self.next_item += 1
+                lying = bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00])
+                where = self.clear_of_other_drops(described)
+                self.dropped[lying] = where
+                self.templates[lying] = blueprint
+                self.drops += 1
+                self._emit(
+                    with_drop(item_drop(), lying, where, template=blueprint), sender
+                )
             log.info(
-                "%s: %s dropped an item at (%.2f, %.2f, %.2f)",
+                "%s: %s dropped %d item(s) around (%.2f, %.2f, %.2f)",
                 self.name,
                 target.hex(" "),
+                len(self.rules.drop_templates or [None]),
                 *described,
             )
         if self.rules.kill_experience:
@@ -1023,6 +1074,46 @@ class World:
         self.resolve_attack(sender)
         return self._drain()
 
+    def blueprint_for(self, index: int) -> str | None:
+        """The blueprint the *index*-th drop leaves, cycling through the rules."""
+        names = self.rules.drop_templates
+        return names[index % len(names)] if names else None
+
+    def clear_of_other_drops(
+        self, where: tuple[float, float, float]
+    ) -> tuple[float, float, float]:
+        """*where*, moved until no other item lies within ``drop_spacing``.
+
+        Two items sharing a place stack, and a stack crashes the client. Creatures
+        that die together — a group killed in one fight, or one killed where another
+        already fell — would otherwise drop on top of each other.
+
+        The nudge spirals outward so the item stays near the body, and gives up after
+        a bounded number of tries rather than looping.
+        """
+        import math
+
+        def clashes(spot: tuple[float, float, float]) -> bool:
+            return any(
+                math.hypot(spot[0] - other[0], spot[2] - other[2])
+                < self.drop_spacing
+                for other in self.dropped.values()
+            )
+
+        if not clashes(where):
+            return where
+        for step in range(1, 25):
+            angle = step * 2.399963  # the golden angle, so the ring fills evenly
+            radius = self.drop_spacing * (1 + step * 0.35)
+            spot = (
+                where[0] + radius * math.cos(angle),
+                where[1],
+                where[2] + radius * math.sin(angle),
+            )
+            if not clashes(spot):
+                return spot
+        return where
+
     def pick_up(self, sender: Address, actor: bytes) -> list[tuple[Address, bytes]]:
         """A player has asked for the item lying at *actor*.
 
@@ -1034,11 +1125,35 @@ class World:
         established, and the client does not need a name here because the 0x002D that
         put the item on the ground already told it what the actor is.
         """
+        if not self.rules.allow_pickup:
+            log.info("%s: %s asked for item %s, and pickup is off",
+                     self.name, sender, actor.hex(" "))
+            return []
         if actor not in self.dropped:
             log.info("%s: %s asked for item %s, which is not lying here",
                      self.name, sender, actor.hex(" "))
             return []
-        item_id = self.dropped.pop(actor)
-        self._emit(with_pickup_batch(item_pickup_batch(), actor, item_id), sender)
-        log.info("%s: %s picked up item %s", self.name, sender, actor.hex(" "))
+        if self.next_slot < 0:
+            self.next_slot = self.first_slot
+        if self.next_slot >= self.slot_capacity:
+            log.info(
+                "%s: %s asked for item %s and the bag is full at %d cells",
+                self.name, sender, actor.hex(" "), self.slot_capacity,
+            )
+            return []
+        del self.dropped[actor]
+        blueprint = self.templates.pop(actor, None)
+        slot = self.next_slot
+        self.next_slot += 1
+        self._emit(
+            with_taken(
+                item_taken(),
+                actor,
+                template=blueprint,
+                slot=slot,
+            ),
+            sender,
+        )
+        log.info("%s: %s picked up item %s into cell %d of %d",
+                 self.name, sender, actor.hex(" "), slot, self.slot_capacity)
         return self._drain()

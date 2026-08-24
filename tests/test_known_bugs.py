@@ -1054,3 +1054,143 @@ def test_a_world_does_not_carry_its_corpses_into_the_next_session():
     assert victim.health == victim.max_health, "alive again once nobody is left"
     assert victim.position == victim.home()
     assert not world.dropped, "and nothing of the last session lying around"
+
+
+def test_two_items_never_drop_on_the_same_spot():
+    """A stack crashes the client, so drops are kept apart.
+
+    Creatures that die together, or one killed where another already fell, would
+    otherwise leave their items in the same place.
+    """
+    import math
+
+    from dsor.world import World
+
+    world = World()
+    first = (-40.0, 0.0, 50.0)
+    world.dropped[bytes([0x41, 0, 1, 0])] = first
+
+    # The same place is refused and moved clear.
+    moved = world.clear_of_other_drops(first)
+    assert math.hypot(moved[0] - first[0], moved[2] - first[2]) >= world.drop_spacing
+    assert moved[1] == first[1], "the height is left alone"
+
+    # Somewhere already clear is returned untouched.
+    far = (-60.0, 0.0, 50.0)
+    assert world.clear_of_other_drops(far) == far
+
+    # And a crowd stays a crowd of separate items.
+    spots = []
+    for index in range(6):
+        spot = world.clear_of_other_drops(first)
+        world.dropped[bytes([0x50 + index, 0, 1, 0])] = spot
+        spots.append(spot)
+    for i, a in enumerate(spots):
+        for b in spots[i + 1 :]:
+            assert math.hypot(a[0] - b[0], a[2] - b[2]) >= world.drop_spacing * 0.99
+
+
+def test_each_pickup_lands_in_its_own_inventory_slot():
+    """The recorded reply always allocates slot 1, so two pickups stacked.
+
+    Stacking crashes the client. Array 3 of the inventory command is the allocation
+    table — (item actor, slot) pairs — decoded from the client's own serialiser and
+    confirmed by a walk that lands exactly on the command's terminator.
+
+    The recorded table also allocates a second item belonging to the session it came
+    from, which is what moved the player's equipped sword into the bag. Only the
+    picked-up item is allocated now.
+    """
+    from dsor.items import allocations, item_taken, with_taken
+    from dsor.world import World
+
+    recorded = item_taken()
+    assert allocations(recorded) == [
+        (bytes([0x01, 0x00, 0x01, 0x00]), 0),
+        (bytes([0x04, 0x00, 0x01, 0x00]), 1),
+    ]
+
+    seen = set()
+    for offset in range(3):
+        actor = bytes([0x42 + offset, 0x00, 0x01, 0x00])
+        reply = with_taken(recorded, actor, slot=11 + offset)
+        pairs = allocations(reply)
+        assert pairs == [(actor, 11 + offset)], pairs
+        seen.add(11 + offset)
+    assert len(seen) == 3, "no two pickups share a slot"
+
+    world = World()
+    here = ("1.2.3.4", 5)
+    # Every pickup takes the next cell, and the bag is finite: past its capacity the
+    # request is refused rather than allocated outside the grid, which crashes the
+    # client exactly as a stacked cell does.
+    free = world.slot_capacity - world.first_slot
+    for index in range(free):
+        actor = bytes([0x41 + index, 0, 1, 0])
+        world.dropped[actor] = (0.0, 0.0, 0.0)
+        assert world.pick_up(here, actor), f"cell {index} should be free"
+    assert world.next_slot == world.slot_capacity
+    assert free >= 1, "at least one cell has to be handed out"
+    overflow = bytes([0x60, 0, 1, 0])
+    world.dropped[overflow] = (0.0, 0.0, 0.0)
+    assert world.pick_up(here, overflow) == [], "a full bag refuses"
+    assert overflow in world.dropped, "and the item stays on the ground"
+
+
+def test_a_kill_can_leave_several_items_at_once():
+    """One per blueprint named, all spread clear of each other.
+
+    Ten items from one body is the case that matters: they must not share a place,
+    because the client stacks items that do and a stack crashes it.
+    """
+    import math
+
+    from dsor.world import World
+
+    world = World()
+    world.rules.drop_templates = [f"item_{n}" for n in range(10)]
+    body = (-40.0, 0.0, 50.0)
+    for _ in world.rules.drop_templates:
+        world.next_item += 1
+        actor = bytes([world.next_item & 0xFF, 0x00, 0x01, 0x00])
+        world.dropped[actor] = world.clear_of_other_drops(body)
+
+    assert len(world.dropped) == 10
+    spots = list(world.dropped.values())
+    for i, a in enumerate(spots):
+        for b in spots[i + 1 :]:
+            gap = math.hypot(a[0] - b[0], a[2] - b[2])
+            assert gap >= world.drop_spacing * 0.99, gap
+    # And they stay near the body rather than scattering across the map.
+    assert max(math.hypot(s[0] - body[0], s[2] - body[2]) for s in spots) < 12
+
+
+def test_the_counters_survive_a_tick():
+    """They were reset ten times a second, and it caused three separate faults.
+
+    The reset belongs to reset_creatures, which runs when the last player leaves. It
+    landed in age_corpses, which runs every tick. So the slot counter restarted
+    constantly and two pickups both took cell 2; the blueprint table was wiped so a
+    picked-up item arrived as whatever the recording held; and actor ids repeated, so
+    two items could claim the same one.
+    """
+    from dsor.world import World
+
+    world = World()
+    world.rules.mobs = 2
+    world._ready()
+    world.next_item = 0x55
+    world.next_slot = 7
+    world.templates[bytes([0x55, 0, 1, 0])] = "something"
+
+    for _ in range(20):
+        world.age_corpses()
+
+    assert world.next_item == 0x55, "actor ids must not be handed out twice"
+    assert world.next_slot == 7, "the bag cell must keep advancing"
+    assert world.templates, "and the world must remember what it dropped"
+
+    # Leaving does reset them.
+    world.forget(("1.2.3.4", 5))
+    assert world.next_slot == -1 and world.next_item == 0x40
+    assert not world.templates

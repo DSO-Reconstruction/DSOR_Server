@@ -816,41 +816,97 @@ def test_a_drop_is_rewritten_where_the_creature_fell():
 def test_a_pickup_is_answered_for_an_item_that_is_lying_there():
     """And refused for one that is not.
 
-    PickupItemCommand is four bytes: the item's actor id. The reply is the whole
-    recorded batch — a 0x004F carrying a LocationEffectInfoCommand and then the
-    ItemInfoCommand — with only that command's actor and item id rewritten.
+    PickupItemCommand is four bytes: the item's actor. The answer is 8.4 KB and
+    arrives in fragments — a DiscardItemCommand taking the item off the ground, then
+    the whole InventoryInfoCommand, then a StatusEffectCommand. Every pickup in the
+    capture is answered by exactly that, and it went unseen because fragmented
+    frames were being skipped.
 
-    Two things had to be right before the client would take it. The item id must be
-    the one the drop declared, because the client validates it and says so:
-    "Received ItemInfoCommand with invalid item id (%u)!". And the reply is sent as
-    the batch it was captured in rather than as the bare command, which is the same
-    lesson a skill command taught: identical bytes, and nothing happened until the
-    framing matched too.
+    Which refutes two things asserted here before it: that a successful pickup might
+    need no reply at all, and that the real server never sends a DiscardItemCommand.
     """
-    from dsor.items import (
-        batch_pickup_actor,
-        batch_pickup_item_id,
-        item_pickup_batch,
-        with_pickup_batch,
-    )
+    from dsor.items import _read_bits, item_taken, with_taken
     from dsor.world import World
 
-    recorded = item_pickup_batch()
-    assert batch_pickup_actor(recorded) == bytes([0x04, 0x00, 0x01, 0x00])
-    assert batch_pickup_item_id(recorded) == 31633
-
-    moved = with_pickup_batch(recorded, bytes([0x41, 0x00, 0x01, 0x00]), 90001)
+    recorded = item_taken()
+    assert len(recorded) > 8000, "the inventory travels with it"
+    assert _read_bits(recorded, 24, 4) == bytes([0x04, 0x00, 0x01, 0x00])
+    moved = with_taken(recorded, bytes([0x41, 0x00, 0x01, 0x00]))
     assert len(moved) == len(recorded)
-    assert batch_pickup_actor(moved) == bytes([0x41, 0x00, 0x01, 0x00])
-    assert batch_pickup_item_id(moved) == 90001
+    assert _read_bits(moved, 24, 4) == bytes([0x41, 0x00, 0x01, 0x00])
+
+    changed = {i for i, (a, b) in enumerate(zip(recorded, moved)) if a != b}
+    # Byte 3 is the discarded actor; bits 145..177 straddle bytes 18 and 19.
+    # Byte 3 is the ground removal, 18-19 the inventory record, 188-189 the slot
+    # allocation. Two of the three are not byte-aligned, so which bytes move depends
+    # on the value written.
+    assert 2 <= len(changed) <= 8, sorted(changed)
 
     world = World()
     here = ("1.2.3.4", 5)
     lying = bytes([0x41, 0x00, 0x01, 0x00])
     assert world.pick_up(here, lying) == [], "nothing has been dropped yet"
-    world.dropped[lying] = 90001
+    world.dropped[lying] = 0x41
     out = world.pick_up(here, lying)
     assert len(out) == 1 and out[0][0] == here
-    assert batch_pickup_actor(out[0][1]) == lying
-    assert batch_pickup_item_id(out[0][1]) == 90001, "the id the drop declared"
+    assert _read_bits(out[0][1], 24, 4) == lying
     assert world.pick_up(here, lying) == [], "and it cannot be taken twice"
+
+
+def test_a_taken_item_is_renamed_everywhere_it_is_mentioned():
+    """Three places, and the third is the one the client asserted on.
+
+    The recorded reply names its item in the DiscardItemCommand, in the inventory's
+    first record, and in the allocation table that says which slot holds it. Missing
+    the last drew a Nebula assertion by name:
+
+        InvalidIndex != outItemWithLocation.primarySlotIdx
+        ClientInventoryManager::LocateItem(...)
+
+    The offsets are searched for and read back rather than computed. A first attempt
+    computed them and got the sign of the bit shift wrong, which wrote the actor two
+    bits early — into whatever field lay there.
+    """
+    from dsor.items import _read_bits, item_taken, taken_actor_bits, with_taken
+
+    recorded = item_taken()
+    sites = taken_actor_bits(recorded)
+    assert sites == [24, 145, 1508], sites
+    for bit in sites:
+        assert _read_bits(recorded, bit, 4) == bytes([0x04, 0x00, 0x01, 0x00])
+
+    moved = with_taken(recorded, bytes([0x42, 0x00, 0x01, 0x00]))
+    assert len(moved) == len(recorded)
+    assert taken_actor_bits(moved) == [], "no mention of the old item survives"
+    for bit in sites:
+        assert _read_bits(moved, bit, 4) == bytes([0x42, 0x00, 0x01, 0x00])
+
+
+def test_the_taken_record_names_its_own_blueprint():
+    """The item record carries its template, bit-misaligned, at bit 515.
+
+    A byte-level search of the 8.4 KB reply finds no item names at all, which is why
+    the inventory was taken for a message that referenced items purely by number.
+    It is not: the record names its blueprint, and so do 247 further strings in a
+    name table further along. All of them sit at arbitrary bit offsets.
+
+    The recorded name is a sword — exactly what appeared in the bag when only the
+    actor was rewritten.
+    """
+    from dsor.items import (
+        RECORDED_TAKEN_TEMPLATE,
+        _find_string,
+        item_taken,
+        with_taken,
+    )
+
+    recorded = item_taken()
+    assert RECORDED_TAKEN_TEMPLATE == "warrior_base_rh_sword_speedAttack_damage"
+    assert _find_string(recorded, RECORDED_TAKEN_TEMPLATE) == 515
+
+    helmet = "warrior_base_helmet_critical_healthpoints_speedMovement"
+    moved = with_taken(recorded, bytes([0x42, 0x00, 0x01, 0x00]), template=helmet)
+    assert _find_string(moved, RECORDED_TAKEN_TEMPLATE) is None
+    assert _find_string(moved, helmet) == 515
+    # Longer name, longer message: the reader takes the length from the prefix.
+    assert len(moved) == len(recorded) + len(helmet) - len(RECORDED_TAKEN_TEMPLATE)

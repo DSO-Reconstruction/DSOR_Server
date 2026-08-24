@@ -1277,7 +1277,10 @@ def serve(
     mob_speed: int | None = None,
     skill_lead: int | None = None,
     drop_items: bool = True,
-    drop_template: str | None = None,
+    allow_pickup: bool = True,
+    first_slot: int | None = None,
+    slot_capacity: int | None = None,
+    drop_templates: list[str] | None = None,
     mob_aggro: float | None = None,
     mob_stop: float | None = None,
     level_every: int = 34,
@@ -1347,7 +1350,12 @@ def serve(
         if skill_lead is not None:
             service.rules.skill_lead = skill_lead
         service.rules.drop_items = drop_items
-        service.rules.drop_template = drop_template
+        service.rules.allow_pickup = allow_pickup
+        if first_slot is not None:
+            service.world.first_slot = first_slot
+        if slot_capacity is not None:
+            service.world.slot_capacity = slot_capacity
+        service.rules.drop_templates = list(drop_templates or [])
         if mob_aggro is not None:
             service.rules.mob_aggro = mob_aggro
         if mob_stop is not None:
@@ -1594,10 +1602,34 @@ def main() -> None:
     )
     parser.add_argument(
         "--drop-item",
-        dest="drop_template",
+        dest="drop_templates",
         metavar="NAME",
+        action="append",
         default=None,
-        help="blueprint a dying creature leaves, from the client's _Template_Item",
+        help="blueprint a dying creature leaves, from the client's _Template_Item. "
+        "Repeat, or give a comma-separated list, to cycle through several",
+    )
+    parser.add_argument(
+        "--first-slot",
+        type=int,
+        default=None,
+        metavar="N",
+        help="first bag cell a pickup may use. Not 0: the character arrives with two "
+        "items the client places itself, and claiming an occupied cell asserts",
+    )
+    parser.add_argument(
+        "--slot-capacity",
+        type=int,
+        default=None,
+        metavar="N",
+        help="how many bag cells there are. The storage descriptors say 5",
+    )
+    parser.add_argument(
+        "--no-pickup",
+        dest="allow_pickup",
+        action="store_false",
+        help="leave a clicked item on the ground rather than replaying the recorded "
+        "inventory, which rearranges the player's own equipment",
     )
     parser.add_argument(
         "--no-drops",
@@ -1709,7 +1741,15 @@ def main() -> None:
         mob_speed=args.mob_speed,
         skill_lead=args.skill_lead,
         drop_items=args.drop_items,
-        drop_template=args.drop_template,
+        allow_pickup=args.allow_pickup,
+        first_slot=args.first_slot,
+        slot_capacity=args.slot_capacity,
+        drop_templates=[
+            name
+            for entry in (args.drop_templates or [])
+            for name in entry.split(",")
+            if name
+        ],
         mob_aggro=args.mob_aggro,
         mob_stop=args.mob_stop,
         level_every=args.level_every,
