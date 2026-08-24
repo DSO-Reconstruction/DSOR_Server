@@ -1026,3 +1026,31 @@ def test_the_experience_message_matches_a_real_one_bit_for_bit():
     )
     mine = "".join(f"{c:08b}" for c in built[1:])[: len(real)]
     assert mine == real, "the whole command, not a prefix of it"
+
+
+def test_a_world_does_not_carry_its_corpses_into_the_next_session():
+    """State that outlives the players it belonged to.
+
+    A creature killed in one session stayed dead through every reconnection after
+    it, so the map emptied out a little each time. A player then walked to a
+    remembered spot, found nothing there, and swung at air five times while the
+    survivors stood too far off to notice.
+
+    The same defect as a level counter kept on the service instead of the player.
+    """
+    from dsor.world import World
+
+    world = World()
+    world.rules.mobs = 3
+    world._ready()
+    victim = next(iter(world.creatures.values()))
+    victim.health = 0.0
+    victim.described = True
+    here = ("1.2.3.4", 5)
+    world.player(here).in_world = True
+    world.dropped[bytes([0x41, 0, 1, 0])] = 90001
+
+    world.forget(here)
+    assert victim.health == victim.max_health, "alive again once nobody is left"
+    assert victim.position == victim.home()
+    assert not world.dropped, "and nothing of the last session lying around"

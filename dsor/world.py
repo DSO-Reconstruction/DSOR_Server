@@ -112,7 +112,9 @@ class Rules:
     #: How near the player must be before a creature takes an interest. Without
     #: this every creature on the map converged from any distance. Nothing in the
     #: capture fixes the real value, so this is a choice, not a finding.
-    mob_aggro: float = 14.0
+    #: Fourteen was too small for this map: the creatures sit sixteen or more units
+    #: apart, so only one within arm's reach of the path ever reacted.
+    mob_aggro: float = 20.0
     #: Duration stamped on a moving entity, for the client to interpolate over.
     tick_duration: int = 18
     #: How many more ticks a dead creature stays in the entity update, so its death
@@ -380,9 +382,27 @@ class World:
         return player
 
     def forget(self, address: Address) -> None:
-        """Remove a player entirely. One place, not nine."""
+        """Remove a player entirely. One place, not nine.
+
+        And when the last one goes, put the creatures back. Not respawning — the
+        dead stay dead while anyone is here — but a world that carries one session's
+        corpses into the next gets emptier every time somebody reconnects. That is
+        what left a player standing on the spot where a creature had died an hour
+        earlier, swinging at nothing, with the survivors too far away to notice.
+        """
         self.players.pop(address, None)
         self.pending_hits = [h for h in self.pending_hits if h[1] != address]
+        if not self.players:
+            self.reset_creatures()
+
+    def reset_creatures(self) -> None:
+        """Every creature alive again, back where it was recorded."""
+        for creature in self.creatures.values():
+            creature.health = creature.max_health
+            creature.position = creature.home()
+            creature.corpse_ticks = 0
+            creature.described = False
+        self.dropped.clear()
 
     def inhabitants(self) -> list[Player]:
         return [p for p in self.players.values() if p.in_world]
