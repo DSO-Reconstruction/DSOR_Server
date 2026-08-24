@@ -59,6 +59,7 @@ from dsor.combat import (
     encode_discard_monster,
     encode_kill,
 )
+from dsor.world import World
 from dsor.protocol import SERVICE_PORTS, build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -325,34 +326,28 @@ class Service:
         self.mob_aggro = 14.0
         self.mob_tick = 0
         #: Where each creature has walked to, once it starts moving.
-        self.mob_positions: dict[bytes, object] = {}
+        #: The map instance: its creatures, and the players in it. Replaces thirteen
+        #: parallel dictionaries that all had to be kept in step by hand.
+        self.world = World()
         #: Duration stamped on a moving entity, for the client to interpolate over.
         self.tick_duration = 18
         #: Health each served creature has left, keyed by its actor id.
-        self.mob_health: dict[bytes, float] = {}
         #: Which creature each client is currently fighting, so consecutive blows
         #: land on the same one.
-        self.mob_target: dict[tuple[str, int], bytes] = {}
         #: How many more ticks a dead creature stays in the entity update, so its
         #: death sequence has something to play over.
-        self.corpse_ticks: dict[bytes, int] = {}
         #: How long that is. Twenty ticks at ten a second is two seconds.
         self.corpse_lifetime = 20
         #: Experience awarded per kill. Seventeen is what a real award carried.
         self.kill_experience = 17
         #: Experience banked per client, the level reached, and what a level costs.
-        self.player_xp: dict[tuple[str, int], int] = {}
         #: Per client, because a level counter on the service kept climbing across
         #: reconnections: a fresh client that is level 1 was told it had reached
         #: level 5, and an experience award of seventeen is invisible against a
         #: level 5 bar. That is the whole of "je n'ai plus d'xp".
-        self.player_levels: dict[tuple[str, int], int] = {}
         self.level_every = 0
         #: The player's health, and when a creature last struck them.
-        self.player_health: dict[tuple[str, int], float] = {}
-        self._last_strike: dict[tuple[str, int], float] = {}
         #: The client's own game tick, read from its movement records.
-        self.client_tick: dict[tuple[str, int], int] = {}
         #: Zero-based index of the skill a creature swings with. 440 is
         #: AnderworldCreatureStrike, which the tutorial dungeon's creature template
         #: grants; the client refuses a skill its actor does not hold.
@@ -385,7 +380,6 @@ class Service:
         self.creature_hit_range = 2.25
         self.creature_damage_types = [0, 4]
         #: Blows in flight: when they land, who throws them, and at whom.
-        self.pending_hits: list[tuple[float, tuple, bytes]] = []
         #: Cached offset between the wire frame and the description frame.
         self._frame_offset: tuple[float, float, float] | None = None
         #: Where the player starts, and the ceiling reported alongside it. The
@@ -484,9 +478,7 @@ class Service:
         #: depends on the tier. See _answers_time_sync.
         self.time_syncs_answered: dict[tuple[str, int], int] = {}
         #: Clients that have finished entering the world and are being ticked.
-        self.in_world: set[tuple[str, int]] = set()
         #: Where each of them last was, so a tick can report it.
-        self.positions: dict[tuple[str, int], object] = {}
         #: Datagrams waiting to go out, paced by the main loop. Sending 409
         #: fragments in a tight loop lost half of them; the peer's buffer cannot
         #: absorb a burst that size and nothing retransmits what it drops.
@@ -839,8 +831,7 @@ class Service:
         elif message_id == MessageID.DISCONNECTION_NOTIFICATION:
             connection.state = State.CLOSED
             self.connections.pop(sender, None)
-            self.in_world.discard(sender)
-            self.positions.pop(sender, None)
+            self.world.forget(sender)
             self.record_sent.discard(sender)
             log.info("%s: %s disconnected", self.name, sender)
 
@@ -898,13 +889,25 @@ class Service:
         self._queue(connection, build_bare_signal(0x88), sender)
         log.info("%s: assigned map %r", self.name, self.map_name)
 
+    def _world(self) -> World:
+        """The map instance, populated on first use.
+
+        Lazily, because the creature count and their health come from the command
+        line and are set after construction.
+        """
+        if not self.world.creatures and self.mobs:
+            self.world.populate(
+                combat_ready_mobs()[: self.mobs], self.mob_max_health
+            )
+        return self.world
+
     def _tick_pair(self, connection: Connection, sender) -> None:
         """One tick: the 0x85/0x004F state, then the generated position.
 
         The order matters — the real server always sends 0x004F first — and the
         pair is what the client expects continuously, not once.
         """
-        position = self.positions.get(sender)
+        position = self.world.player(sender).position
         if position is None:
             return
         self._queue(connection, tick_state(), sender)
@@ -929,9 +932,9 @@ class Service:
 
         So: compare wire against wire.
         """
-        moved = self.mob_positions.get(actor)
-        if moved is not None:
-            return moved
+        creature = self._world().creature(actor)
+        if creature is not None:
+            return creature.position
         for record in combat_ready_mobs():
             if actor_id(record) == actor:
                 return decode_position(record)
@@ -951,13 +954,10 @@ class Service:
         creature's stats at all, so both the health scale and the damage are invented;
         only the message they travel in is real.
         """
-        position = self.positions.get(sender)
-        if position is None or not self.mob_health:
+        position = self.world.player(sender).position
+        if position is None:
             return
-
-        alive = [
-            actor for actor, left in self.mob_health.items() if left > 0.0
-        ]
+        alive = [creature.actor for creature in self._world().engageable()]
         if not alive:
             return
 
@@ -973,7 +973,7 @@ class Service:
         # chooses, and choosing the nearest afresh on every blow makes the choice flip
         # between creatures standing close together. That is what looked like damage
         # being shared between them.
-        latched = self.mob_target.get(sender)
+        latched = self.world.player(sender).target
         if latched is not None and latched in alive:
             target = latched
         else:
@@ -993,10 +993,11 @@ class Service:
                 )
                 return
             target = min(nearby, key=distance)
-            self.mob_target[sender] = target
+            self.world.player(sender).target = target
 
-        left = max(0.0, self.mob_health[target] - self.mob_damage)
-        self.mob_health[target] = left
+        struck = self.world.creatures[target]
+        left = max(0.0, struck.health - self.mob_damage)
+        struck.health = left
 
         # The blow, generated. A creature has no health message of its own — every
         # stats update in both captured sessions targets the player — so the client
@@ -1092,7 +1093,7 @@ class Service:
         # play — the creature simply vanished. The kill's own despawn flag already
         # tells the client to clear the body; discarding is for retiring a creature
         # that is not dying, and for one no capture contains a removal for.
-        self.corpse_ticks[target] = self.corpse_lifetime
+        self.world.creatures[target].corpse_ticks = self.corpse_lifetime
         if self.kill_experience:
             # Addressed to the player, not the creature — which is why this server's
             # batch filter dropped it for hours: it keeps what belongs to the creature
@@ -1100,18 +1101,21 @@ class Service:
             # Banked first, because the field is a total. Sending the award itself
             # lit up the first creature and nothing after it — a total that never
             # moves is a gain of zero.
-            self.player_xp[sender] = self.player_xp.get(sender, 0) + self.kill_experience
+            earner = self.world.player(sender)
+            earner.experience += self.kill_experience
             self._queue(
                 connection,
                 encode_xp_changed(
-                    self.player_xp[sender], int.from_bytes(PLAYER_ACTOR, "little")
+                    earner.experience, int.from_bytes(PLAYER_ACTOR, "little")
                 ),
                 sender,
             )
-            level_now = 1 + self.player_xp[sender] // self.level_every if self.level_every else 1
-            if self.level_every and level_now > self.player_levels.get(sender, 1):
-                level = level_now
-                self.player_levels[sender] = level
+            if self.level_every:
+                level = 1 + earner.experience // self.level_every
+            else:
+                level = earner.level
+            if level > earner.level:
+                earner.level = level
                 self._queue(
                     connection,
                     encode_player_level(
@@ -1126,7 +1130,7 @@ class Service:
             target.hex(" "),
             " (+%d xp)" % self.kill_experience if self.kill_experience else "",
         )
-        self.mob_target.pop(sender, None)
+        self.world.player(sender).target = None
 
     def _announce_vicinity(self, connection: Connection, sender) -> None:
         """Tell the client which actors are near it.
@@ -1193,9 +1197,11 @@ class Service:
         # that takes effect. Hundreds of movement updates moved nothing for exactly
         # this reason.
         if self.mob_near:
-            here = self.positions.get(sender)
+            here = self.world.player(sender).position
             if here is not None:
-                index = len(self.mob_health)
+                index = sum(
+                    1 for c in self._world().creatures.values() if c.described
+                )
                 angle = 2 * math.pi * index / max(1, self.mobs)
                 description = with_spawn(
                     description,
@@ -1262,7 +1268,9 @@ class Service:
                         )
                 except ValueError as error:
                     log.warning("%s: %s", self.name, error)
-                self.mob_health[handle] = self.mob_max_health
+                described = self._world().creature(handle)
+                if described is not None:
+                    described.described = True
                 self._queue(connection, swapped, sender)
                 return
 
@@ -1282,7 +1290,9 @@ class Service:
         # were killed. This sent a baseline anyway for a while; it was noise the real
         # server never emits, and the client took no notice of it either way. The
         # counter below is kept only to decide when to send the removal.
-        self.mob_health[handle] = self.mob_max_health
+        known = self._world().creature(handle)
+        if known is not None:
+            known.described = True
         log.info(
             "%s: described entity %s to %s (%d bytes)",
             self.name,
@@ -1316,13 +1326,8 @@ class Service:
         #
         # Still bounded, because re-announcing a creature *after* the client has
         # finished removing it makes it flicker back into existence.
-        templates = [
-            record
-            for record in combat_ready_mobs()[: self.mobs]
-            if self.mob_health.get(actor_id(record), self.mob_max_health) > 0.0
-            or self.corpse_ticks.get(actor_id(record), 0) > 0
-        ]
-        if not templates:
+        announced = self._world().announced()
+        if not announced:
             return encode_entity_group_message([player], trailing)
         if self.mob_chase:
             # Toward the player, and at a player's pace. Two things made the first
@@ -1338,16 +1343,14 @@ class Service:
             self.mob_tick = tick
             reach = self.mob_stop * WORLD_SCALE
             aggro = self.mob_aggro * WORLD_SCALE
-            for template in templates:
-                actor = actor_id(template)
-                here = self.mob_positions.get(actor) or decode_position(template)
+            for creature in announced:
+                template, here = creature.record, creature.position
                 span = here.distance_to(position)
                 heading = heading_to(position.x - here.x, position.y - here.y)
                 if span > aggro:
                     # Out of range: leave it exactly as it stands, facing as it was.
                     # A heading here would turn every creature on the map toward the
                     # player from across the zone.
-                    self.mob_positions[actor] = here
                     placed.append(with_motion(template, here, tick, speed=0))
                     continue
                 if span <= reach + self.mob_speed * elapsed:
@@ -1360,7 +1363,6 @@ class Service:
                     # capture carry speed zero and duration zero, so anything else
                     # here would claim a movement the client would extrapolate into
                     # the player.
-                    self.mob_positions[actor] = here
                     placed.append(
                         with_motion(template, here, tick, speed=0, heading=heading)
                     )
@@ -1371,7 +1373,7 @@ class Service:
                     elevation=position.elevation,
                     y=here.y + round((position.y - here.y) * step / span),
                 )
-                self.mob_positions[actor] = moved
+                creature.position = moved
                 placed.append(
                     with_motion(
                         template,
@@ -1428,15 +1430,11 @@ class Service:
     def game_tick(self) -> None:
         """Send a tick pair to everyone in the world, and let creatures strike back."""
         # Age the corpses first, so one killed this tick is still reported once.
-        for actor in list(self.corpse_ticks):
-            self.corpse_ticks[actor] -= 1
-            if self.corpse_ticks[actor] <= 0:
-                del self.corpse_ticks[actor]
-        for sender in list(self.in_world):
+        self.world.age_corpses()
+        for sender in [p.address for p in self.world.inhabitants()]:
             connection = self.connections.get(sender)
             if connection is None:
-                self.in_world.discard(sender)
-                self.positions.pop(sender, None)
+                self.world.forget(sender)
                 continue
             self._tick_pair(connection, sender)
             self._creatures_strike(connection, sender)
@@ -1459,7 +1457,7 @@ class Service:
         """
         if not self.creature_damage:
             return
-        position = self.positions.get(sender)
+        position = self.world.player(sender).position
         if position is None:
             return
         def near(actor: bytes) -> bool:
@@ -1469,23 +1467,24 @@ class Service:
             )
 
         if not any(
-            left > 0.0 and near(actor) for actor, left in self.mob_health.items()
+            near(creature.actor) for creature in self._world().engageable()
         ):
             # Nothing alive within reach. Losing health with no creature beside you
             # was this condition being "any creature anywhere", which every described
             # creature satisfied for the whole session.
             return
         now = time.monotonic()
-        if now - self._last_strike.get(sender, 0.0) < self.strike_interval:
+        striker = self.world.player(sender)
+        if now - striker.last_struck < self.strike_interval:
             return
-        self._last_strike[sender] = now
+        striker.last_struck = now
 
         # Whoever is nearest does the striking, so the blow names a real attacker.
         attacker = min(
             (
-                actor
-                for actor, remaining in self.mob_health.items()
-                if remaining > 0.0 and near(actor)
+                creature.actor
+                for creature in self._world().engageable()
+                if near(creature.actor)
             ),
             key=lambda actor: position.distance_to(self._creature_wire_position(actor)),
         )
@@ -1546,7 +1545,7 @@ class Service:
         # says 12, and the wire agrees: the median gap from a real announcement to
         # the next hit is twelve ticks. Landing it immediately is what cut the swing
         # short — the client had resolved the blow before the animation could play.
-        self.pending_hits.append(
+        self.world.pending_hits.append(
             (
                 time.monotonic() + self.creature_hit_frame * GAME_TICK_MS / 1000.0,
                 sender,
@@ -1590,18 +1589,20 @@ class Service:
     def _land_pending_hits(self) -> None:
         """Apply the blows whose impact frame has arrived."""
         now = time.monotonic()
-        due = [entry for entry in self.pending_hits if entry[0] <= now]
+        due = [entry for entry in self.world.pending_hits if entry[0] <= now]
         if not due:
             return
-        self.pending_hits = [entry for entry in self.pending_hits if entry[0] > now]
+        self.world.pending_hits = [
+            entry for entry in self.world.pending_hits if entry[0] > now
+        ]
         for _, sender, attacker in due:
             connection = self.connections.get(sender)
-            position = self.positions.get(sender)
-            if connection is None or position is None or sender not in self.in_world:
+            victim = self.world.player(sender)
+            position = victim.position
+            if connection is None or position is None or not victim.in_world:
                 continue
-            current = self.player_health.get(sender, float(self.player_max))
-            left = max(0.0, current - self.creature_damage)
-            self.player_health[sender] = left
+            left = max(0.0, victim.health - self.creature_damage)
+            victim.health = left
             # One message, not two. This used to replay a recorded blow *and* send a
             # separate vitals update, so the number the player saw came from another
             # session's fight while the health actually applied came from here — a "-1"
@@ -1641,7 +1642,7 @@ class Service:
                     ),
                     sender,
                 )
-                self.player_health[sender] = float(self.player_max)
+                victim.health = float(self.player_max)
                 log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
 
         log.info(
@@ -1790,7 +1791,7 @@ class Service:
                     "%s: no arrival position known for %r", self.name, self.map_name
                 )
                 return
-            if sender in self.in_world:
+            if self.world.player(sender).in_world:
                 log.info("%s: %s repeated its ready signal", self.name, sender)
                 return
             # Ordering indices on the real map server: ack 4, the cosmetics table
@@ -1800,8 +1801,11 @@ class Service:
             # says otherwise, and it is the authority.
             for piece in map_entry_sequence():
                 self._queue(connection, piece, sender)
-            self.in_world.add(sender)
-            self.positions[sender] = spawn
+            entrant = self.world.player(sender)
+            entrant.position = spawn
+            entrant.in_world = True
+            entrant.health = float(self.player_max)
+            entrant.max_health = float(self.player_max)
             self._announce_vicinity(connection, sender)
             self._tick_pair(connection, sender)
             log.info("%s: %s entered the world at %s", self.name, sender, spawn)
@@ -1831,11 +1835,12 @@ class Service:
         ):
             # The client reports where it walked to; remember it so the next tick
             # reports the same place back.
-            self.positions[sender] = decode_client_movement(game.body).position
+            mover = self.world.player(sender)
+            mover.position = decode_client_movement(game.body).position
             # The client's own game tick, taken from its movement record rather than
             # invented. A skill's start tick is compared against it, and a stale one
             # makes the visualizer finish the instant it is created.
-            self.client_tick[sender] = int.from_bytes(game.body[9:13], "little")
+            mover.tick = int.from_bytes(game.body[9:13], "little")
             return
 
         if self.role == "character" and game.message_id == 0x8D:

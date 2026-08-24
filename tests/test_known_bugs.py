@@ -721,7 +721,7 @@ def test_a_dead_creature_is_not_re_announced():
 
         # Kill them all and the update carries the player alone.
         for entry in living:
-            service.mob_health[actor_id(entry)] = 0.0
+            service._world().creatures[actor_id(entry)].health = 0.0
         after = service._entity_update(Position(-10172, -344, 5888))
         assert len(after) == header + record
     finally:
@@ -750,14 +750,15 @@ def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
         alive = len(service._entity_update(Position(-10172, -344, 5888)))
 
         # Dead, but freshly so: still reported.
-        service.mob_health[actor] = 0.0
-        service.corpse_ticks[actor] = service.corpse_lifetime
+        dead = service._world().creatures[actor]
+        dead.health = 0.0
+        dead.corpse_ticks = service.corpse_lifetime
         assert len(service._entity_update(Position(-10172, -344, 5888))) == alive
 
         # The grace period runs out over that many ticks, and then it is gone.
         for _ in range(service.corpse_lifetime + 1):
             service.game_tick()
-        assert actor not in service.corpse_ticks
+        assert service._world().creatures[actor].corpse_ticks == 0
         gone = len(service._entity_update(Position(-10172, -344, 5888)))
         assert gone == alive - 22, "one twenty-byte record and its two-byte joiner"
     finally:
