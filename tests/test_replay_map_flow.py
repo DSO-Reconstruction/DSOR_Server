@@ -121,8 +121,8 @@ def replayed():
     service.socket.close()
     recorder = _Recorder()
     service.socket = recorder
-    service.mobs = 5
-    service.mob_first_command = True
+    service.rules.mobs = 5
+    service.rules.mob_first_command = True
 
     real: list[bytes] = []
     for row in rows:

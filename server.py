@@ -59,7 +59,7 @@ from dsor.combat import (
     encode_discard_monster,
     encode_kill,
 )
-from dsor.world import World
+from dsor.world import Rules, World
 from dsor.protocol import SERVICE_PORTS, build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -304,147 +304,10 @@ class Service:
         self.shop_offers: int | None = None
         #: Price to put on every offer, or None to leave the recorded ones.
         self.shop_price: float | None = None
-        #: How many creatures to place around the player, from the recorded set.
-        self.mobs = 0
-        #: Distance to place them at, or 0 to leave them where they were recorded.
-        self.mob_radius = 0
-        #: Radius of a slow patrol around their own position, or 0 to stand still as
-        #: the recorded ones did.
-        self.mob_patrol = 0
-        #: Walk creatures toward the player instead, and how far per tick in wire units.
-        self.mob_chase = True
-        self.mob_speed = WALK_UNITS_PER_TICK
-        #: How close a creature comes before it stands and faces the player. The
-        #: first attempt stopped at 1.5 world units, which is inside the player: it
-        #: read as walking through them. Matched to the attack reach instead, so a
-        #: creature halts exactly where it could strike from.
-        self.mob_stop = 2.0
-        #: How near the player must be before a creature takes an interest. Without
-        #: this every creature on the map converged from any distance, which is what
-        #: "trigger par moi bien trop loin" describes. Nothing in the capture fixes
-        #: the real value, so this is a choice, not a finding.
-        self.mob_aggro = 14.0
-        self.mob_tick = 0
-        #: Where each creature has walked to, once it starts moving.
-        #: The map instance: its creatures, and the players in it. Replaces thirteen
-        #: parallel dictionaries that all had to be kept in step by hand.
-        self.world = World()
-        #: Duration stamped on a moving entity, for the client to interpolate over.
-        self.tick_duration = 18
-        #: Health each served creature has left, keyed by its actor id.
-        #: Which creature each client is currently fighting, so consecutive blows
-        #: land on the same one.
-        #: How many more ticks a dead creature stays in the entity update, so its
-        #: death sequence has something to play over.
-        #: How long that is. Twenty ticks at ten a second is two seconds.
-        self.corpse_lifetime = 20
-        #: Experience awarded per kill. Seventeen is what a real award carried.
-        self.kill_experience = 17
-        #: Experience banked per client, the level reached, and what a level costs.
-        #: Per client, because a level counter on the service kept climbing across
-        #: reconnections: a fresh client that is level 1 was told it had reached
-        #: level 5, and an experience award of seventeen is invisible against a
-        #: level 5 bar. That is the whole of "je n'ai plus d'xp".
-        self.level_every = 0
-        #: The player's health, and when a creature last struck them.
-        #: The client's own game tick, read from its movement records.
-        #: Zero-based index of the skill a creature swings with. 440 is
-        #: AnderworldCreatureStrike, which the tutorial dungeon's creature template
-        #: grants; the client refuses a skill its actor does not hold.
-        self.creature_skill = 440
-        #: How many ticks ahead a skill is announced. Three is what the client's own
-        #: skill commands carry, in both samples the capture holds.
-        self.skill_lead = 3
-        #: The rest of the creature's blow, read off row 441 of the client's own
-        #: _Template_Skill rather than guessed. Every one of these was wrong here, and
-        #: each wrong one produced a symptom:
-        #:
-        #:   HitFrame 12    the impact lands twelve ticks into the swing. Sending the
-        #:                  hit in the same breath as the skill is why the animation
-        #:                  showed for about a hundredth of a second.
-        #:   AttackRange 2  how close it must be to strike. Stopping at 3.5 put the
-        #:                  creature outside its own reach: it halted far away and
-        #:                  kept edging closer for ever.
-        #:   HitRange 2.25  how far the blow itself carries.
-        #:   CoolDown 2.75  seconds between swings. Confirmed on the wire: 70 ticks
-        #:                  between one creature's attacks, and a tick is 40 ms.
-        #:   DamageType     DarkMagic and Physical, so two entries. The player's own
-        #:                  angrystrike has one, which is what tells the capture's two
-        #:                  hit shapes apart: 52 with two types are creatures striking
-        #:                  the player, 2 with one type are the player striking back.
-        self.creature_hit_frame = 12
-        #: SkillUnblockFrame, the swing's total length. Confirmed on the wire for two
-        #: other skills: ThingRootsStrike's 30 and ThingSwampStrike's 41 are exactly
-        #: what their commands carry.
-        self.creature_unblock_frame = 27
-        self.creature_hit_range = 2.25
-        self.creature_damage_types = [0, 4]
-        #: Blows in flight: when they land, who throws them, and at whom.
-        #: Cached offset between the wire frame and the description frame.
-        self._frame_offset: tuple[float, float, float] | None = None
-        #: Where the player starts, and the ceiling reported alongside it. The
-        #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
-        #: The player's health. 236 is measured — a nearly full bar in the capture.
-        self.player_max = 236
-        #: The resource a skill spends, reported alongside health and left alone.
-        self.player_resource = 10.0
-        #: Whether a killed creature's body is removed at once.
-        self.mob_despawn = False
-        #: What one creature blow takes off, and how often one lands. Both ours.
-        self.creature_damage = 3.0
-        #: One second, from the creature template's own AttackInterval.
-        self.strike_interval = 2.75
-        #: How far a blow reaches, in world units, in either direction.
-        #:
-        #: Four, from measurement: replaying a real session's twelve attacks against
-        #: wire positions gives distances of 0.9 to 3.5. Looser than the client's own
-        #: 1.75 on purpose, because this measures from a creature's movement record
-        #: while the client measures from what it draws; six was too loose and made
-        #: the player take damage from creatures across the room.
-        #: 3.5, from the creature template's own AggroRange, rather than a guess.
-        self.reach = 3.5
-        #: What a creature starts with, and what one hit takes off it.
-        #: A creature's health, and what one blow takes off it.
-        #:
-        #: Twelve is measured and since confirmed in play: decoding a recorded blow
-        #: reads "victim health 0, max 12, damage 11" — a creature holding twelve
-        #: points, killed by a blow of eleven.
-        #:
-        #: The scale matters even more than the exact number. Serving 60 against a
-        #: client that knows a creature has twelve is read as a *heal* and drawn as a
-        #: floating +400, which is how this was found.
-        #:
-        #: Four rather than eleven only so a fight lasts three blows instead of one;
-        #: `--mob-damage 11` is what the character actually does.
-        #:
-        #: A caution for whoever revisits this: hunting a plausible number through a
-        #: bit-packed message finds mirages. Reading this message's 11 two bits late
-        #: gives 44, and its 12 one or two bits late gives 24 and 48 — every one of
-        #: them looks like a health value, and one of them briefly convinced me.
-        self.mob_max_health = 12.0
-        self.mob_damage = 4.0
-        #: The maximum reported alongside the current value. The capture's players
-        #: carried 234 to 236; a creature's is not observed at all.
-        self.mob_max_health_ceiling = 60
-        #: World units from the player to place a creature at, or 0 — the default —
-        #: for the position its own description carries.
-        #:
-        #: Rewriting it is off by default because it broke what worked: the creatures
-        #: stopped appearing at all. The description is bit-packed, with strings and
-        #: single-bit fields, so twelve bytes written at a fixed byte offset shift
-        #: everything behind them and the client's decoder gives up — silently, with
-        #: nothing in its log. Reading that offset yields plausible coordinates in all
-        #: six recorded descriptions, so the field is there; writing it needs the
-        #: bit-level layout, not a byte offset.
-        self.mob_near = 0.0
-        #: Send only the creature's own command instead of the whole recorded batch.
-        self.mob_first_command = False
-        #: Spawn this blueprint instead of the recorded one, or None to keep it.
-        self.mob_template: str | None = None
-        #: Library blueprint to serve in place of the first creature, or None.
-        self.mob_swap: str | None = None
-        #: Send the recorded vicinity announcement before a creature is asked about.
-        self.announce_vicinity = True
+        #: What the world does, and what it currently is. Rules are set once from
+        #: the command line; state changes every tick.
+        self.rules = Rules()
+        self.world = World(rules=self.rules)
         #: Wire recorder, or None. Shared between services so one file holds the
         #: whole session across all three tiers, in one frame numbering.
         self.capture = capture
@@ -895,9 +758,9 @@ class Service:
         Lazily, because the creature count and their health come from the command
         line and are set after construction.
         """
-        if not self.world.creatures and self.mobs:
+        if not self.world.creatures and self.rules.mobs:
             self.world.populate(
-                combat_ready_mobs()[: self.mobs], self.mob_max_health
+                combat_ready_mobs()[: self.rules.mobs], self.rules.mob_max_health
             )
         return self.world
 
@@ -983,20 +846,20 @@ class Service:
             # creature's description while the client measures against what it draws,
             # and the two differed by 2.3 against 1.75. But no bound at all meant a
             # blow could land on a creature thirty units away once the near one died.
-            nearby = [a for a in alive if distance(a) <= self.reach * WORLD]
+            nearby = [a for a in alive if distance(a) <= self.rules.reach * WORLD]
             if not nearby:
                 log.info(
                     "%s: %s attacked with nothing within %.0f units",
                     self.name,
                     sender,
-                    self.reach,
+                    self.rules.reach,
                 )
                 return
             target = min(nearby, key=distance)
             self.world.player(sender).target = target
 
         struck = self.world.creatures[target]
-        left = max(0.0, struck.health - self.mob_damage)
+        left = max(0.0, struck.health - self.rules.mob_damage)
         struck.health = left
 
         # The blow, generated. A creature has no health message of its own — every
@@ -1016,9 +879,9 @@ class Service:
                 Hit(
                     victim=victim,
                     attacker=player,
-                    damage=int(self.mob_damage),
+                    damage=int(self.rules.mob_damage),
                     victim_health=int(left),
-                    victim_max_health=int(self.mob_max_health),
+                    victim_max_health=int(self.rules.mob_max_health),
                     # The floating damage number is drawn only for the local player's
                     # own blows, and only when the value is above zero.
                     combat_value_owner=player,
@@ -1035,7 +898,7 @@ class Service:
             self.name,
             sender,
             target.hex(" "),
-            self.mob_damage,
+            self.rules.mob_damage,
             left,
         )
 
@@ -1083,7 +946,7 @@ class Service:
                     # False, so the body is left lying. True means "remove it",
                     # which is what made creatures vanish the instant they died with
                     # no animation — nothing can play over a corpse already cleared.
-                    despawn=self.mob_despawn,
+                    despawn=self.rules.mob_despawn,
                 )
             ),
             sender,
@@ -1093,8 +956,8 @@ class Service:
         # play — the creature simply vanished. The kill's own despawn flag already
         # tells the client to clear the body; discarding is for retiring a creature
         # that is not dying, and for one no capture contains a removal for.
-        self.world.creatures[target].corpse_ticks = self.corpse_lifetime
-        if self.kill_experience:
+        self.world.creatures[target].corpse_ticks = self.rules.corpse_lifetime
+        if self.rules.kill_experience:
             # Addressed to the player, not the creature — which is why this server's
             # batch filter dropped it for hours: it keeps what belongs to the creature
             # or to nobody, and experience belongs to whoever landed the blow.
@@ -1102,7 +965,7 @@ class Service:
             # lit up the first creature and nothing after it — a total that never
             # moves is a gain of zero.
             earner = self.world.player(sender)
-            earner.experience += self.kill_experience
+            earner.experience += self.rules.kill_experience
             self._queue(
                 connection,
                 encode_xp_changed(
@@ -1110,8 +973,8 @@ class Service:
                 ),
                 sender,
             )
-            if self.level_every:
-                level = 1 + earner.experience // self.level_every
+            if self.rules.level_every:
+                level = 1 + earner.experience // self.rules.level_every
             else:
                 level = earner.level
             if level > earner.level:
@@ -1128,7 +991,7 @@ class Service:
             "%s: entity %s killed%s",
             self.name,
             target.hex(" "),
-            " (+%d xp)" % self.kill_experience if self.kill_experience else "",
+            " (+%d xp)" % self.rules.kill_experience if self.rules.kill_experience else "",
         )
         self.world.player(sender).target = None
 
@@ -1140,11 +1003,11 @@ class Service:
         set up by the path the real server used; one the client merely noticed in a
         position update is not.
         """
-        if not self.mobs or not self.announce_vicinity:
+        if not self.rules.mobs or not self.rules.announce_vicinity:
             return
         served = [
             int.from_bytes(actor_id(record), "little")
-            for record in combat_ready_mobs()[: self.mobs]
+            for record in combat_ready_mobs()[: self.rules.mobs]
         ]
         if not served:
             return
@@ -1179,7 +1042,7 @@ class Service:
         # Only creatures this server can see through to the end. Describing one it
         # cannot place, hit or remove produced exactly what it sounds like: a creature
         # standing at full health that no blow could ever reach.
-        servable = {actor_id(record) for record in combat_ready_mobs()[: self.mobs]}
+        servable = {actor_id(record) for record in combat_ready_mobs()[: self.rules.mobs]}
         description = (
             entity_descriptions().get(handle) if handle in servable else None
         )
@@ -1196,20 +1059,20 @@ class Service:
         # has bound to an entity — so the description's own position is the only one
         # that takes effect. Hundreds of movement updates moved nothing for exactly
         # this reason.
-        if self.mob_near:
+        if self.rules.mob_near:
             here = self.world.player(sender).position
             if here is not None:
                 index = sum(
                     1 for c in self._world().creatures.values() if c.described
                 )
-                angle = 2 * math.pi * index / max(1, self.mobs)
+                angle = 2 * math.pi * index / max(1, self.rules.mobs)
                 description = with_spawn(
                     description,
-                    here.x / WORLD + self.mob_near * math.cos(angle),
+                    here.x / WORLD + self.rules.mob_near * math.cos(angle),
                     0.0,
-                    here.y / WORLD + self.mob_near * math.sin(angle),
+                    here.y / WORLD + self.rules.mob_near * math.sin(angle),
                 )
-        if self.mob_first_command:
+        if self.rules.mob_first_command:
             # Send only the command addressed to this creature. The recorded
             # description is a batch — the NewMonsterCommand and then several more,
             # the last about the player, whose actor id is what the batch's own
@@ -1219,7 +1082,7 @@ class Service:
                 description = first_command(description, handle)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
-        if self.mob_swap and actor_id_matches_first(handle, self.mobs):
+        if self.rules.mob_swap and actor_id_matches_first(handle, self.rules.mobs):
             # Swap the first served creature for a library blueprint, keeping the slot's
             # own movement record so it stands where that slot stood. What position it
             # is *drawn* at comes from the swapped description, which this server cannot
@@ -1227,19 +1090,19 @@ class Service:
             # kill still announces the death at the slot's own position for the same
             # reason.
             library = monster_library()
-            swapped = library.get(self.mob_swap)
+            swapped = library.get(self.rules.mob_swap)
             if swapped is None:
                 log.warning(
                     "%s: no library creature named %r; have %s",
                     self.name,
-                    self.mob_swap,
+                    self.rules.mob_swap,
                     ", ".join(sorted(library)),
                 )
             else:
                 log.info(
                     "%s: serving %r in place of entity %s",
                     self.name,
-                    self.mob_swap,
+                    self.rules.mob_swap,
                     handle.hex(" "),
                 )
                 # Rewritten to create the actor the client asked about. Without this
@@ -1274,13 +1137,13 @@ class Service:
                 self._queue(connection, swapped, sender)
                 return
 
-        if self.mob_template:
+        if self.rules.mob_template:
             # The blueprint name is the description's first field, so it can be
             # replaced and everything behind it copied bit for bit. What the client
             # accepts is limited by its own data: an unresolvable name logs an invalid
             # template id and creates nothing.
             try:
-                description = with_template(description, self.mob_template)
+                description = with_template(description, self.rules.mob_template)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
         self._queue(connection, description, sender)
@@ -1315,7 +1178,7 @@ class Service:
         player = with_motion(
             encode_position(position) + entity_update_template()[6:], position, tick
         )
-        if not self.mobs:
+        if not self.rules.mobs:
             return encode_entity_group_message([player], trailing)
 
         # The living, and the recently dead. Dropping a creature from the tick the
@@ -1329,7 +1192,7 @@ class Service:
         announced = self._world().announced()
         if not announced:
             return encode_entity_group_message([player], trailing)
-        if self.mob_chase:
+        if self.rules.mob_chase:
             # Toward the player, and at a player's pace. Two things made the first
             # attempt look like a teleport rather than a walk, and they were the same
             # thing twice: the record was stamped with speed zero, so the client had
@@ -1339,10 +1202,10 @@ class Service:
             # WALK_UNITS_PER_TICK fix both. The animation follows for free, because
             # it is NetworkSmoothMotionProperty that both interpolates and animates.
             placed = []
-            elapsed = max(1, tick - self.mob_tick)
-            self.mob_tick = tick
-            reach = self.mob_stop * WORLD_SCALE
-            aggro = self.mob_aggro * WORLD_SCALE
+            elapsed = max(1, tick - self.world.tick)
+            self.world.tick = tick
+            reach = self.rules.mob_stop * WORLD_SCALE
+            aggro = self.rules.mob_aggro * WORLD_SCALE
             for creature in announced:
                 template, here = creature.record, creature.position
                 span = here.distance_to(position)
@@ -1353,7 +1216,7 @@ class Service:
                     # player from across the zone.
                     placed.append(with_motion(template, here, tick, speed=0))
                     continue
-                if span <= reach + self.mob_speed * elapsed:
+                if span <= reach + self.rules.mob_speed * elapsed:
                     # Snapped to the stop distance instead of approaching it
                     # asymptotically. Clamping the step to the distance remaining left
                     # the creature always a fraction outside, announcing a walk it
@@ -1367,7 +1230,7 @@ class Service:
                         with_motion(template, here, tick, speed=0, heading=heading)
                     )
                     continue
-                step = min(self.mob_speed * elapsed, span - reach)
+                step = min(self.rules.mob_speed * elapsed, span - reach)
                 moved = Position(
                     x=here.x + round((position.x - here.x) * step / span),
                     elevation=position.elevation,
@@ -1379,14 +1242,14 @@ class Service:
                         template,
                         moved,
                         tick,
-                        duration=self.tick_duration,
+                        duration=self.rules.tick_duration,
                         speed=WALK_SPEED,
                         heading=heading,
                     )
                 )
             return encode_entity_group_message([player, *placed], trailing)
 
-        if self.mob_patrol:
+        if self.rules.mob_patrol:
             # Beyond what the capture shows: its creatures stood still, 620 of 621
             # updates at one position with duration zero. This walks them in a slow
             # circle around that position instead, with a duration for the client to
@@ -1400,17 +1263,17 @@ class Service:
                     with_motion(
                         template,
                         Position(
-                            x=home.x + round(self.mob_patrol * math.cos(angle)),
+                            x=home.x + round(self.rules.mob_patrol * math.cos(angle)),
                             elevation=home.elevation,
-                            y=home.y + round(self.mob_patrol * math.sin(angle)),
+                            y=home.y + round(self.rules.mob_patrol * math.sin(angle)),
                         ),
                         tick,
-                        duration=self.tick_duration,
+                        duration=self.rules.tick_duration,
                     )
                 )
             return encode_entity_group_message([player, *placed])
 
-        if not self.mob_radius:
+        if not self.rules.mob_radius:
             # Where the capture put them. Their own positions are valid by
             # construction — they stand on ground the map actually has — whereas a
             # ring around the player is a guess, and a creature inside a wall is one
@@ -1422,7 +1285,7 @@ class Service:
         placed = [
             reposition_entity(template, where)
             for template, where in zip(
-                templates, ring_positions(position, len(templates), self.mob_radius)
+                templates, ring_positions(position, len(templates), self.rules.mob_radius)
             )
         ]
         return encode_entity_group_message([player, *placed])
@@ -1455,7 +1318,7 @@ class Service:
         The rate and the damage are this server's, not measured. The real session's
         sixteen blows were spread over a fight this server has no model of.
         """
-        if not self.creature_damage:
+        if not self.rules.creature_damage:
             return
         position = self.world.player(sender).position
         if position is None:
@@ -1463,7 +1326,7 @@ class Service:
         def near(actor: bytes) -> bool:
             where = self._creature_wire_position(actor)
             return where is not None and (
-                position.distance_to(where) <= self.creature_hit_range * WORLD
+                position.distance_to(where) <= self.rules.creature_hit_range * WORLD
             )
 
         if not any(
@@ -1475,7 +1338,7 @@ class Service:
             return
         now = time.monotonic()
         striker = self.world.player(sender)
-        if now - striker.last_struck < self.strike_interval:
+        if now - striker.last_struck < self.rules.strike_interval:
             return
         striker.last_struck = now
 
@@ -1529,11 +1392,11 @@ class Service:
             TargetSkill(
                 attacker=int.from_bytes(attacker, "little"),
                 target=int.from_bytes(PLAYER_ACTOR, "little"),
-                skill_id=self.creature_skill,
+                skill_id=self.rules.creature_skill,
                 heading=heading,
-                start_tick=now + self.skill_lead,
-                hit_frame=self.creature_hit_frame,
-                unblock_frame=self.creature_unblock_frame,
+                start_tick=now + self.rules.skill_lead,
+                hit_frame=self.rules.creature_hit_frame,
+                unblock_frame=self.rules.creature_unblock_frame,
                 position=self._described_position(where),
             )
         )
@@ -1547,7 +1410,7 @@ class Service:
         # short — the client had resolved the blow before the animation could play.
         self.world.pending_hits.append(
             (
-                time.monotonic() + self.creature_hit_frame * GAME_TICK_MS / 1000.0,
+                time.monotonic() + self.rules.creature_hit_frame * GAME_TICK_MS / 1000.0,
                 sender,
                 attacker,
             )
@@ -1565,21 +1428,21 @@ class Service:
         """
         if where is None:
             return (0.0, 0.0, 0.0)
-        if self._frame_offset is None:
-            self._frame_offset = (0.0, 0.0, 0.0)
+        if self.world.frame_offset is None:
+            self.world.frame_offset = (0.0, 0.0, 0.0)
             for record in combat_ready_mobs():
                 try:
                     described = monster_spawn(entity_descriptions()[actor_id(record)])
                 except (KeyError, ValueError):
                     continue
                 home = decode_position(record)
-                self._frame_offset = (
+                self.world.frame_offset = (
                     described[0] - home.x / WORLD,
                     described[1] - home.elevation / WORLD,
                     described[2] - home.y / WORLD,
                 )
                 break
-        dx, dy, dz = self._frame_offset
+        dx, dy, dz = self.world.frame_offset
         return (
             where.x / WORLD + dx,
             where.elevation / WORLD + dy,
@@ -1601,7 +1464,7 @@ class Service:
             position = victim.position
             if connection is None or position is None or not victim.in_world:
                 continue
-            left = max(0.0, victim.health - self.creature_damage)
+            left = max(0.0, victim.health - self.rules.creature_damage)
             victim.health = left
             # One message, not two. This used to replay a recorded blow *and* send a
             # separate vitals update, so the number the player saw came from another
@@ -1615,12 +1478,12 @@ class Service:
                     Hit(
                         victim=int.from_bytes(PLAYER_ACTOR, "little"),
                         attacker=int.from_bytes(attacker, "little"),
-                        damage=int(self.creature_damage),
+                        damage=int(self.rules.creature_damage),
                         victim_health=int(left),
-                        victim_max_health=int(self.player_max),
+                        victim_max_health=int(self.rules.player_max),
                         combat_value_owner=int.from_bytes(attacker, "little"),
                         combat_value=0.0,
-                        damage_types=list(self.creature_damage_types),
+                        damage_types=list(self.rules.creature_damage_types),
                         tick=connection.elapsed_ms() // GAME_TICK_MS,
                     )
                 ),
@@ -1642,7 +1505,7 @@ class Service:
                     ),
                     sender,
                 )
-                victim.health = float(self.player_max)
+                victim.health = float(self.rules.player_max)
                 log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
 
         log.info(
@@ -1804,8 +1667,8 @@ class Service:
             entrant = self.world.player(sender)
             entrant.position = spawn
             entrant.in_world = True
-            entrant.health = float(self.player_max)
-            entrant.max_health = float(self.player_max)
+            entrant.health = float(self.rules.player_max)
+            entrant.max_health = float(self.rules.player_max)
             self._announce_vicinity(connection, sender)
             self._tick_pair(connection, sender)
             log.info("%s: %s entered the world at %s", self.name, sender, spawn)
@@ -2003,31 +1866,31 @@ def serve(
         )
         service.slow_rate = schedule_rate
         service.slow_delay = schedule_delay
-        service.mobs = mobs
-        service.mob_radius = mob_radius
-        service.mob_patrol = mob_patrol
-        service.mob_max_health = mob_health
-        service.mob_damage = mob_damage
-        service.mob_max_health_ceiling = int(mob_health)
-        service.mob_near = mob_near
-        service.creature_damage = creature_damage
-        service.creature_skill = creature_skill
-        service.mob_despawn = mob_despawn
-        service.mob_first_command = mob_first_command
-        service.mob_template = mob_template
-        service.mob_swap = mob_swap
-        service.kill_experience = kill_experience
-        service.mob_chase = mob_chase
+        service.rules.mobs = mobs
+        service.rules.mob_radius = mob_radius
+        service.rules.mob_patrol = mob_patrol
+        service.rules.mob_max_health = mob_health
+        service.rules.mob_damage = mob_damage
+        service.rules.mob_max_health_ceiling = int(mob_health)
+        service.rules.mob_near = mob_near
+        service.rules.creature_damage = creature_damage
+        service.rules.creature_skill = creature_skill
+        service.rules.mob_despawn = mob_despawn
+        service.rules.mob_first_command = mob_first_command
+        service.rules.mob_template = mob_template
+        service.rules.mob_swap = mob_swap
+        service.rules.kill_experience = kill_experience
+        service.rules.mob_chase = mob_chase
         if mob_speed is not None:
-            service.mob_speed = mob_speed
+            service.rules.mob_speed = mob_speed
         if skill_lead is not None:
-            service.skill_lead = skill_lead
+            service.rules.skill_lead = skill_lead
         if mob_aggro is not None:
-            service.mob_aggro = mob_aggro
+            service.rules.mob_aggro = mob_aggro
         if mob_stop is not None:
-            service.mob_stop = mob_stop
-        service.level_every = level_every
-        service.announce_vicinity = announce_vicinity
+            service.rules.mob_stop = mob_stop
+        service.rules.level_every = level_every
+        service.rules.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
         service.shop_price = shop_price
         services[service.socket] = service

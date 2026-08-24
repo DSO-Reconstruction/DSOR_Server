@@ -707,7 +707,7 @@ def test_a_dead_creature_is_not_re_announced():
     """
     service = Service(port=42198, name="test-tick", role="map", map_name="a0001_start_tutorial_dun")
     try:
-        service.mobs = 5
+        service.rules.mobs = 5
         living = combat_ready_mobs()[:5]
         assert living, "the fixture set is not empty"
 
@@ -744,7 +744,7 @@ def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
         port=42200, name="test-corpse", role="map", map_name="a0001_start_tutorial_dun"
     )
     try:
-        service.mobs = 1
+        service.rules.mobs = 1
         (creature,) = combat_ready_mobs()[:1]
         actor = actor_id(creature)
         alive = len(service._entity_update(Position(-10172, -344, 5888)))
@@ -752,11 +752,11 @@ def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
         # Dead, but freshly so: still reported.
         dead = service._world().creatures[actor]
         dead.health = 0.0
-        dead.corpse_ticks = service.corpse_lifetime
+        dead.corpse_ticks = service.rules.corpse_lifetime
         assert len(service._entity_update(Position(-10172, -344, 5888))) == alive
 
         # The grace period runs out over that many ticks, and then it is gone.
-        for _ in range(service.corpse_lifetime + 1):
+        for _ in range(service.rules.corpse_lifetime + 1):
             service.game_tick()
         assert service._world().creatures[actor].corpse_ticks == 0
         gone = len(service._entity_update(Position(-10172, -344, 5888)))
@@ -789,7 +789,7 @@ def test_a_swing_is_announced_ahead_of_the_clock():
     import server
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    assert service.skill_lead == 3
+    assert service.rules.skill_lead == 3
 
 
 def test_the_creature_blow_uses_the_skills_own_numbers():
@@ -804,11 +804,11 @@ def test_the_creature_blow_uses_the_skills_own_numbers():
     import server
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    assert service.creature_hit_frame == 12
-    assert service.mob_stop == 2.0
-    assert service.creature_hit_range == 2.25
-    assert service.strike_interval == 2.75
-    assert len(service.creature_damage_types) == 2
+    assert service.rules.creature_hit_frame == 12
+    assert service.rules.mob_stop == 2.0
+    assert service.rules.creature_hit_range == 2.25
+    assert service.rules.strike_interval == 2.75
+    assert len(service.rules.creature_damage_types) == 2
 
 
 def test_a_creature_stops_instead_of_creeping_in():
@@ -868,7 +868,7 @@ def test_the_hit_delay_is_the_skills_hit_frame():
     import server
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    assert service.creature_hit_frame == 12
+    assert service.rules.creature_hit_frame == 12
 
 
 def test_the_skill_command_is_sixty_four_bytes_not_twenty_six():
