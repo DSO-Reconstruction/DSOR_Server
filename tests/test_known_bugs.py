@@ -716,13 +716,13 @@ def test_a_dead_creature_is_not_re_announced():
         # made this project read it as a separator in the first place.
         header, record, joiner = 3, 20, len(ENTITY_SEPARATOR)
 
-        before = service._entity_update(Position(-10172, -344, 5888))
+        before = service.world.entity_update(Position(-10172, -344, 5888))
         assert len(before) == header + record + len(living) * (joiner + record)
 
         # Kill them all and the update carries the player alone.
         for entry in living:
-            service._world().creatures[actor_id(entry)].health = 0.0
-        after = service._entity_update(Position(-10172, -344, 5888))
+            service.world._ready().creatures[actor_id(entry)].health = 0.0
+        after = service.world.entity_update(Position(-10172, -344, 5888))
         assert len(after) == header + record
     finally:
         service.socket.close()
@@ -747,19 +747,19 @@ def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
         service.rules.mobs = 1
         (creature,) = combat_ready_mobs()[:1]
         actor = actor_id(creature)
-        alive = len(service._entity_update(Position(-10172, -344, 5888)))
+        alive = len(service.world.entity_update(Position(-10172, -344, 5888)))
 
         # Dead, but freshly so: still reported.
-        dead = service._world().creatures[actor]
+        dead = service.world._ready().creatures[actor]
         dead.health = 0.0
         dead.corpse_ticks = service.rules.corpse_lifetime
-        assert len(service._entity_update(Position(-10172, -344, 5888))) == alive
+        assert len(service.world.entity_update(Position(-10172, -344, 5888))) == alive
 
         # The grace period runs out over that many ticks, and then it is gone.
         for _ in range(service.rules.corpse_lifetime + 1):
             service.game_tick()
-        assert service._world().creatures[actor].corpse_ticks == 0
-        gone = len(service._entity_update(Position(-10172, -344, 5888)))
+        assert service.world._ready().creatures[actor].corpse_ticks == 0
+        gone = len(service.world.entity_update(Position(-10172, -344, 5888)))
         assert gone == alive - 22, "one twenty-byte record and its two-byte joiner"
     finally:
         service.socket.close()
@@ -949,8 +949,8 @@ def test_a_death_is_announced_where_the_creature_stands():
     from dsor.gameplay import Position
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    near = service._described_position(Position(-7593, -344, 2855))
-    far = service._described_position(Position(-5399, -344, 3002))
+    near = service.world.described_position(Position(-7593, -344, 2855))
+    far = service.world.described_position(Position(-5399, -344, 3002))
     assert near != far, "two positions must not describe the same place"
     # And the frame offset is applied, not the raw wire coordinates.
     assert near != (-7593 / 128, -344 / 128, 2855 / 128)
