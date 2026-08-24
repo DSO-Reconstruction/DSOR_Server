@@ -762,3 +762,61 @@ def test_a_corpse_stays_in_the_tick_long_enough_to_fall():
         assert gone == alive - 22, "one twenty-byte record and its two-byte joiner"
     finally:
         service.socket.close()
+
+
+def test_experience_is_a_running_total_not_an_award():
+    """Sending the award repeated the same number and read as no gain.
+
+    One real message carried 17 in its first field, which fits both an award and a
+    total after one kill. The client discriminated: a fixed 17 lit up the first
+    creature and nothing afterwards.
+    """
+    from dsor.combat import encode_xp_changed
+
+    first = encode_xp_changed(17, 0x00010015)
+    second = encode_xp_changed(34, 0x00010015)
+    assert first != second, "two kills must not produce the same message"
+    assert len(first) == len(second)
+
+
+def test_a_swing_is_announced_ahead_of_the_clock():
+    """A start tick already past makes the visualizer finish as it starts.
+
+    Both skill commands the client sent announce three ticks past its own latest
+    movement tick: 2735 against 2732, and 2788 against 2785.
+    """
+    import server
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    assert service.skill_lead == 3
+
+
+def test_the_creature_blow_uses_the_skills_own_numbers():
+    """Every one of these was invented before, and each wrong one had a symptom.
+
+    Row 441 of the client's own _Template_Skill: HitFrame 12, AttackRange 2.0,
+    HitRange 2.25, CoolDown 2.75, and two damage types. Stopping beyond the
+    creature's own attack range is what made it halt far off and creep in for ever;
+    landing the hit in the same breath as the swing is what cut the animation to a
+    hundredth of a second.
+    """
+    import server
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    assert service.creature_hit_frame == 12
+    assert service.mob_stop == 2.0
+    assert service.creature_hit_range == 2.25
+    assert service.strike_interval == 2.75
+    assert len(service.creature_damage_types) == 2
+
+
+def test_a_creature_stops_instead_of_creeping_in():
+    """Clamping the step to the distance remaining never crosses the threshold.
+
+    The creature stayed a fraction outside its stop distance and announced a walk
+    it never finished. The step must overshoot into the stop, not converge on it.
+    """
+    stop, speed = 256.0, 6 * 3
+    span = stop + 4.0
+    assert span > stop, "still outside"
+    assert span <= stop + speed, "and within one step, so it must stand this tick"

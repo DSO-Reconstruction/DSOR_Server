@@ -94,7 +94,11 @@ class Resolver:
             ).append(va)
 
     def command_id(self, name: str) -> int | None:
-        literal = b"Commands::" + name.encode() + b"\0"
+        # A fully qualified name is taken as given; a bare one is a Commands:: class.
+        # The client's skill commands live in Skills::, which is why enumerating only
+        # Commands:: missed them.
+        qualified = name if "::" in name else "Commands::" + name
+        literal = qualified.encode() + b"\0"
         for m in re.finditer(re.escape(literal), self.image.data):
             va = self.image.to_va(m.start())
             if va is None:

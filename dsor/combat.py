@@ -34,6 +34,7 @@ TERMINATOR = 0xFF
 DISCARD_MONSTER = 0x002B
 ACTORS_LEFT_VICINITY = 0x0073
 ACTORS_ENTER_VICINITY = 0x0074
+TARGET_SKILL = 0x0047
 HIT = 0x006B
 KILL = 0x006C
 
@@ -223,4 +224,117 @@ def encode_hit(hit: Hit) -> bytes:
     writer.write_bool(False)
     writer.write_uint(0, 16)  # a string the inbound path never uses; length zero
     _close(writer, hit.victim)
+    return writer.to_bytes()
+
+
+@dataclass
+class TargetSkill:
+    """0x0047 TargetSkillCommand: what makes a creature swing.
+
+    There is no "play this animation" command in the protocol — 371 command classes
+    and not one names a sequence, an animation or a gesture. A creature swings if and
+    only if it is sent a skill, and everything visible follows client-side: the skill's
+    type picks a visualizer, the visualizer looks its sequence up in the client's own
+    data, and the sequence drives the animation. The hit message asks for no animation
+    at all, for anyone.
+
+    Two constraints come from the client and cannot be worked around:
+
+    * the skill must be one the creature's own template grants. The tutorial
+      dungeon's creature has ``AnderworldCreatureStrike``, and its actor is asked
+      whether it holds that template before anything is visualised.
+    * ``start_tick`` is compared against the client's own game tick, which advances as
+      the network tick over 32. A stale one makes the visualizer finish the moment it
+      starts, and a command that arrives before its creature exists is queued and then
+      discarded unless the creature appears within five game ticks.
+    """
+
+    attacker: int
+    target: int
+    skill_id: int
+    heading: float = 0.0
+    start_tick: int = 0
+    #: Zero passes the client's high-water check, which is read but never written.
+    high_water: int = 0
+    unknown_c8: int = 0
+    #: Zero. One skips movement modulation and transform correction.
+    flag: bool = False
+
+
+def encode_target_skill(skill: TargetSkill) -> bytes:
+    """Build a 0x0047.
+
+    Its last field before the trailer is a single bit, so the trailer and terminator
+    behind it are shifted and this cannot be assembled from whole bytes.
+    """
+    import struct
+
+    writer = BitWriter()
+    writer.write_uint(MESSAGE_ID, 8)
+    _open(writer, TARGET_SKILL)
+    writer.write_uint(skill.high_water, 16)
+    writer.write_uint(skill.skill_id, 16)
+    writer.write_uint(
+        int.from_bytes(struct.pack("<f", skill.heading), "little"), 32
+    )
+    writer.write_uint(skill.start_tick % 2**32, 32)
+    writer.write_uint(skill.unknown_c8, 32)
+    writer.write_bool(skill.flag)
+    writer.write_uint(skill.target, 32)
+    _close(writer, skill.attacker)
+    return writer.to_bytes()
+
+
+#: Commands::XPChangedCommand, and its neighbours, named from the binary by walking
+#: the Rtti registration back to the id getter at vtable slot 3.
+XP_CHANGED = 0x007D
+PLAYER_LEVEL_UPDATE = 0x007C
+GROUP_XP_CHANGED = 0x007E
+
+
+def encode_xp_changed(
+    total: int, actor: int, second: int = 1, third: int = 0, fourth: int = 100
+) -> bytes:
+    """0x007D: award experience to a player.
+
+    Read off a real one carried inside a hit batch: four 32-bit fields reading
+    17, 1, 0, 100 and then a single bit, addressed to the player. The other three are
+    reproduced as observed rather than understood.
+
+    The first field is the **running total**, not the award. The single observation
+    cannot tell the two apart — 17 after one kill fits either — but the client can:
+    sending 17 for every kill showed experience for the first creature and nothing
+    afterwards, which is what a total that never changes looks like. So the reading
+    that fits one capture and every kill after it is the total.
+
+    Why this was missed for so long: it travels *inside the batch of the blow that
+    kills*, addressed to the **player**, and this server's batch filter keeps only what
+    is addressed to the creature or to nobody. The experience was being dropped by the
+    very filter that fixed the creature's death.
+    """
+    writer = BitWriter()
+    writer.write_uint(MESSAGE_ID, 8)
+    _open(writer, XP_CHANGED)
+    for value in (total, second, third, fourth):
+        writer.write_uint(value & 0xFFFFFFFF, 32)
+    writer.write_bool(False)
+    _close(writer, actor)
+    return writer.to_bytes()
+
+
+def encode_player_level(level: int, actor: int) -> bytes:
+    """0x007C: tell the client its character is now *level*.
+
+    Read off the one real example in a capture, sent when the character went from one
+    to two: four 32-bit fields reading 2, 0, 0, 0 and then sixteen bits, addressed to
+    the player. The first is taken as the new level; the rest are reproduced as
+    observed.
+    """
+    writer = BitWriter()
+    writer.write_uint(MESSAGE_ID, 8)
+    _open(writer, PLAYER_LEVEL_UPDATE)
+    for value in (level, 0, 0, 0):
+        writer.write_uint(value & 0xFFFFFFFF, 32)
+    writer.write_uint(0, 16)
+    _close(writer, actor)
     return writer.to_bytes()

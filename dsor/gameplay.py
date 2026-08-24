@@ -405,17 +405,25 @@ def entity_index(record: bytes) -> int:
     return record[ENTITY_INDEX_OFFSET]
 
 
-def encode_entity_group_message(records: list[bytes]) -> bytes:
-    """Build a 0x85/0x005F carrying several entities.
+def encode_entity_group_message(
+    records: list[bytes], trailing: list[bytes] | None = None
+) -> bytes:
+    """Build a 0x85/0x005F carrying several entities, and anything batched behind.
 
     The single-entity form that :func:`encode_entity_update` produces is this with
     one record, so the two agree by construction.
+
+    ``trailing`` holds whole messages to append as further commands of the same
+    batch, each stripped of its own 0x85 header. This is not decoration: all 56
+    skill commands the real server sent in the long session ride inside a movement
+    batch, immediately behind the records, and not one travelled alone. The
+    records end byte-aligned on their terminator, so a command appended here
+    starts on a byte boundary exactly as the capture shows.
     """
-    return (
-        bytes([0x85])
-        + (0x005F).to_bytes(2, "little")
-        + encode_entity_group(records)
-    )
+    body = encode_entity_group(records)
+    for message in trailing or []:
+        body += message[1:]
+    return bytes([0x85]) + (0x005F).to_bytes(2, "little") + body
 
 
 def ring_positions(centre: Position, count: int, radius: int = 600) -> list[Position]:

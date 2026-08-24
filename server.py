@@ -313,7 +313,16 @@ class Service:
         #: Walk creatures toward the player instead, and how far per tick in wire units.
         self.mob_chase = True
         self.mob_speed = WALK_UNITS_PER_TICK
-        self.mob_stop = 1.5
+        #: How close a creature comes before it stands and faces the player. The
+        #: first attempt stopped at 1.5 world units, which is inside the player: it
+        #: read as walking through them. Matched to the attack reach instead, so a
+        #: creature halts exactly where it could strike from.
+        self.mob_stop = 2.0
+        #: How near the player must be before a creature takes an interest. Without
+        #: this every creature on the map converged from any distance, which is what
+        #: "trigger par moi bien trop loin" describes. Nothing in the capture fixes
+        #: the real value, so this is a choice, not a finding.
+        self.mob_aggro = 14.0
         self.mob_tick = 0
         #: Where each creature has walked to, once it starts moving.
         self.mob_positions: dict[bytes, object] = {}
@@ -333,8 +342,12 @@ class Service:
         self.kill_experience = 17
         #: Experience banked per client, the level reached, and what a level costs.
         self.player_xp: dict[tuple[str, int], int] = {}
-        self.player_level = 1
-        self.level_every = 34
+        #: Per client, because a level counter on the service kept climbing across
+        #: reconnections: a fresh client that is level 1 was told it had reached
+        #: level 5, and an experience award of seventeen is invisible against a
+        #: level 5 bar. That is the whole of "je n'ai plus d'xp".
+        self.player_levels: dict[tuple[str, int], int] = {}
+        self.level_every = 0
         #: The player's health, and when a creature last struck them.
         self.player_health: dict[tuple[str, int], float] = {}
         self._last_strike: dict[tuple[str, int], float] = {}
@@ -344,6 +357,31 @@ class Service:
         #: AnderworldCreatureStrike, which the tutorial dungeon's creature template
         #: grants; the client refuses a skill its actor does not hold.
         self.creature_skill = 440
+        #: How many ticks ahead a skill is announced. Three is what the client's own
+        #: skill commands carry, in both samples the capture holds.
+        self.skill_lead = 3
+        #: The rest of the creature's blow, read off row 441 of the client's own
+        #: _Template_Skill rather than guessed. Every one of these was wrong here, and
+        #: each wrong one produced a symptom:
+        #:
+        #:   HitFrame 12    the impact lands twelve ticks into the swing. Sending the
+        #:                  hit in the same breath as the skill is why the animation
+        #:                  showed for about a hundredth of a second.
+        #:   AttackRange 2  how close it must be to strike. Stopping at 3.5 put the
+        #:                  creature outside its own reach: it halted far away and
+        #:                  kept edging closer for ever.
+        #:   HitRange 2.25  how far the blow itself carries.
+        #:   CoolDown 2.75  seconds between swings. Confirmed on the wire: 70 ticks
+        #:                  between one creature's attacks, and a tick is 40 ms.
+        #:   DamageType     DarkMagic and Physical, so two entries. The player's own
+        #:                  angrystrike has one, which is what tells the capture's two
+        #:                  hit shapes apart: 52 with two types are creatures striking
+        #:                  the player, 2 with one type are the player striking back.
+        self.creature_hit_frame = 12
+        self.creature_hit_range = 2.25
+        self.creature_damage_types = [0, 4]
+        #: Blows in flight: when they land, who throws them, and at whom.
+        self.pending_hits: list[tuple[float, tuple, bytes]] = []
         #: Where the player starts, and the ceiling reported alongside it. The
         #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
         #: The player's health. 236 is measured — a nearly full bar in the capture.
@@ -355,7 +393,7 @@ class Service:
         #: What one creature blow takes off, and how often one lands. Both ours.
         self.creature_damage = 3.0
         #: One second, from the creature template's own AttackInterval.
-        self.strike_interval = 1.0
+        self.strike_interval = 2.75
         #: How far a blow reaches, in world units, in either direction.
         #:
         #: Four, from measurement: replaying a real session's twelve attacks against
@@ -1046,25 +1084,29 @@ class Service:
             # Addressed to the player, not the creature — which is why this server's
             # batch filter dropped it for hours: it keeps what belongs to the creature
             # or to nobody, and experience belongs to whoever landed the blow.
+            # Banked first, because the field is a total. Sending the award itself
+            # lit up the first creature and nothing after it — a total that never
+            # moves is a gain of zero.
+            self.player_xp[sender] = self.player_xp.get(sender, 0) + self.kill_experience
             self._queue(
                 connection,
                 encode_xp_changed(
-                    self.kill_experience, int.from_bytes(PLAYER_ACTOR, "little")
+                    self.player_xp[sender], int.from_bytes(PLAYER_ACTOR, "little")
                 ),
                 sender,
             )
-            self.player_xp[sender] = self.player_xp.get(sender, 0) + self.kill_experience
-            if self.level_every and self.player_xp[sender] >= self.level_every:
-                self.player_xp[sender] -= self.level_every
-                self.player_level += 1
+            level_now = 1 + self.player_xp[sender] // self.level_every if self.level_every else 1
+            if self.level_every and level_now > self.player_levels.get(sender, 1):
+                level = level_now
+                self.player_levels[sender] = level
                 self._queue(
                     connection,
                     encode_player_level(
-                        self.player_level, int.from_bytes(PLAYER_ACTOR, "little")
+                        level, int.from_bytes(PLAYER_ACTOR, "little")
                     ),
                     sender,
                 )
-                log.info("%s: %s reached level %d", self.name, sender, self.player_level)
+                log.info("%s: %s reached level %d", self.name, sender, level)
         log.info(
             "%s: entity %s killed%s",
             self.name,
@@ -1236,7 +1278,9 @@ class Service:
             len(description),
         )
 
-    def _entity_update(self, position, tick: int = 0) -> bytes:
+    def _entity_update(
+        self, position, tick: int = 0, trailing: list[bytes] | None = None
+    ) -> bytes:
         """The player's position, and any creatures placed around it.
 
         Several entities travel in one 0x85/0x005F, chained by a two-byte separator
@@ -1249,7 +1293,7 @@ class Service:
             encode_position(position) + entity_update_template()[6:], position, tick
         )
         if not self.mobs:
-            return encode_entity_group_message([player])
+            return encode_entity_group_message([player], trailing)
 
         # The living, and the recently dead. Dropping a creature from the tick the
         # instant it dies is what made it vanish with no animation: the client was
@@ -1266,7 +1310,7 @@ class Service:
             or self.corpse_ticks.get(actor_id(record), 0) > 0
         ]
         if not templates:
-            return encode_entity_group_message([player])
+            return encode_entity_group_message([player], trailing)
         if self.mob_chase:
             # Toward the player, and at a player's pace. Two things made the first
             # attempt look like a teleport rather than a walk, and they were the same
@@ -1280,12 +1324,25 @@ class Service:
             elapsed = max(1, tick - self.mob_tick)
             self.mob_tick = tick
             reach = self.mob_stop * WORLD_SCALE
+            aggro = self.mob_aggro * WORLD_SCALE
             for template in templates:
                 actor = actor_id(template)
                 here = self.mob_positions.get(actor) or decode_position(template)
                 span = here.distance_to(position)
                 heading = heading_to(position.x - here.x, position.y - here.y)
-                if span <= reach:
+                if span > aggro:
+                    # Out of range: leave it exactly as it stands, facing as it was.
+                    # A heading here would turn every creature on the map toward the
+                    # player from across the zone.
+                    self.mob_positions[actor] = here
+                    placed.append(with_motion(template, here, tick, speed=0))
+                    continue
+                if span <= reach + self.mob_speed * elapsed:
+                    # Snapped to the stop distance instead of approaching it
+                    # asymptotically. Clamping the step to the distance remaining left
+                    # the creature always a fraction outside, announcing a walk it
+                    # never finished: "elles s'arretent loin et continuent de vouloir
+                    # venir".
                     # Arrived: stand and face the player. Standing creatures in the
                     # capture carry speed zero and duration zero, so anything else
                     # here would claim a movement the client would extrapolate into
@@ -1312,7 +1369,7 @@ class Service:
                         heading=heading,
                     )
                 )
-            return encode_entity_group_message([player, *placed])
+            return encode_entity_group_message([player, *placed], trailing)
 
         if self.mob_patrol:
             # Beyond what the capture shows: its creatures stood still, 620 of 621
@@ -1370,6 +1427,7 @@ class Service:
                 continue
             self._tick_pair(connection, sender)
             self._creatures_strike(connection, sender)
+        self._land_pending_hits()
 
     def _creatures_strike(self, connection: Connection, sender) -> None:
         """Let a live creature hit the player, every so often.
@@ -1394,7 +1452,7 @@ class Service:
         def near(actor: bytes) -> bool:
             where = self._creature_wire_position(actor)
             return where is not None and (
-                position.distance_to(where) <= self.reach * WORLD
+                position.distance_to(where) <= self.creature_hit_range * WORLD
             )
 
         if not any(
@@ -1423,10 +1481,6 @@ class Service:
         # empty bar and not dying, because nothing here kills a player — that is a
         # separate command this server does not send yet, and an empty bar with no
         # death is worse than a scratch.
-        current = self.player_health.get(sender, float(self.player_max))
-        left = max(0.0, current - self.creature_damage)
-        self.player_health[sender] = left
-
         # The swing first. There is no "play this animation" command in the protocol —
         # 371 command classes and not one names a sequence or a gesture — so a creature
         # animates only when sent a skill. The hit asks for no animation at all, for
@@ -1438,64 +1492,104 @@ class Service:
         # the client's skill table, and the wire wants a zero-based index — 440. That
         # mapping is confirmed the other way round too: the player's angrystrike is row
         # 1839 and the client sends 1838.
+        #
+        # And it travels *inside* a movement batch, because that is the only form the
+        # capture contains: all 56 skill commands the real server sent ride behind
+        # the movement records of a 0x005F, and not one travelled alone. Sending it
+        # standalone reproduced the real bytes exactly — 26 of 26 — and still drew
+        # nothing, which left the framing as the last difference.
+        where = self._creature_wire_position(attacker)
+        heading = 0.0
+        if where is not None:
+            heading = math.atan2(position.x - where.x, position.y - where.y)
+        # Three ticks ahead, on the live clock rather than the last tick the client
+        # happened to report. Both skill commands the client itself sent announce a
+        # start three ticks past its own latest movement tick — 2735 against 2732,
+        # 2788 against 2785 — so a skill starts in the near future, not now. Feeding
+        # it a tick that had already passed is what showed a hundredth of a second of
+        # the swing: the visualizer was created and finished in the same breath.
+        now = connection.elapsed_ms() // GAME_TICK_MS
+        skill = encode_target_skill(
+            TargetSkill(
+                attacker=int.from_bytes(attacker, "little"),
+                target=int.from_bytes(PLAYER_ACTOR, "little"),
+                skill_id=self.creature_skill,
+                heading=heading,
+                start_tick=now + self.skill_lead,
+            )
+        )
         self._queue(
-            connection,
-            encode_target_skill(
-                TargetSkill(
-                    attacker=int.from_bytes(attacker, "little"),
-                    target=int.from_bytes(PLAYER_ACTOR, "little"),
-                    skill_id=self.creature_skill,
-                    start_tick=self.client_tick.get(sender, 0),
-                )
-            ),
-            sender,
+            connection, self._entity_update(position, now, trailing=[skill]), sender
         )
 
-        # One message, not two. This used to replay a recorded blow *and* send a
-        # separate vitals update, so the number the player saw came from another
-        # session's fight while the health actually applied came from here — a "-1"
-        # floating up while the bar dropped by fifteen, and a "+400" whenever the
-        # vitals message happened to raise the bar rather than lower it. A hit carries
-        # the victim's health, so it is the only thing that needs sending.
-        self._queue(
-            connection,
-            encode_hit(
-                Hit(
-                    victim=int.from_bytes(PLAYER_ACTOR, "little"),
-                    attacker=int.from_bytes(attacker, "little"),
-                    damage=int(self.creature_damage),
-                    victim_health=int(left),
-                    victim_max_health=int(self.player_max),
-                    combat_value_owner=int.from_bytes(PLAYER_ACTOR, "little"),
-                    combat_value=0.0,
-                    tick=connection.elapsed_ms() // GAME_TICK_MS,
-                )
-            ),
-            sender,
+        # And the blow lands twelve ticks later, not now. The skill's own HitFrame
+        # says 12, and the wire agrees: the median gap from a real announcement to
+        # the next hit is twelve ticks. Landing it immediately is what cut the swing
+        # short — the client had resolved the blow before the animation could play.
+        self.pending_hits.append(
+            (
+                time.monotonic() + self.creature_hit_frame * GAME_TICK_MS / 1000.0,
+                sender,
+                attacker,
+            )
         )
-        if left <= 0.0:
-            # A player at zero health with nothing killing them stands at an empty bar
-            # for ever. The same command that kills a creature kills a player.
+
+    def _land_pending_hits(self) -> None:
+        """Apply the blows whose impact frame has arrived."""
+        now = time.monotonic()
+        due = [entry for entry in self.pending_hits if entry[0] <= now]
+        if not due:
+            return
+        self.pending_hits = [entry for entry in self.pending_hits if entry[0] > now]
+        for _, sender, attacker in due:
+            connection = self.connections.get(sender)
+            position = self.positions.get(sender)
+            if connection is None or position is None or sender not in self.in_world:
+                continue
+            current = self.player_health.get(sender, float(self.player_max))
+            left = max(0.0, current - self.creature_damage)
+            self.player_health[sender] = left
+            # One message, not two. This used to replay a recorded blow *and* send a
+            # separate vitals update, so the number the player saw came from another
+            # session's fight while the health actually applied came from here — a "-1"
+            # floating up while the bar dropped by fifteen, and a "+400" whenever the
+            # vitals message happened to raise the bar rather than lower it. A hit
+            # carries the victim's health, so it is the only thing that needs sending.
             self._queue(
                 connection,
-                encode_kill(
-                    Kill(
+                encode_hit(
+                    Hit(
                         victim=int.from_bytes(PLAYER_ACTOR, "little"),
-                        killer=int.from_bytes(attacker, "little"),
-                        position=(
-                            position.x / WORLD,
-                            0.0,
-                            position.y / WORLD,
-                        ),
+                        attacker=int.from_bytes(attacker, "little"),
+                        damage=int(self.creature_damage),
+                        victim_health=int(left),
+                        victim_max_health=int(self.player_max),
+                        combat_value_owner=int.from_bytes(PLAYER_ACTOR, "little"),
+                        combat_value=0.0,
+                        damage_types=list(self.creature_damage_types),
                         tick=connection.elapsed_ms() // GAME_TICK_MS,
-                        despawn=False,
                     )
                 ),
                 sender,
             )
-            self.player_health[sender] = float(self.player_max)
-            log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
-            return
+            if left <= 0.0:
+                # A player at zero health with nothing killing them stands at an empty
+                # bar for ever. The same command that kills a creature kills a player.
+                self._queue(
+                    connection,
+                    encode_kill(
+                        Kill(
+                            victim=int.from_bytes(PLAYER_ACTOR, "little"),
+                            killer=int.from_bytes(attacker, "little"),
+                            position=(position.x / WORLD, 0.0, position.y / WORLD),
+                            tick=connection.elapsed_ms() // GAME_TICK_MS,
+                            despawn=False,
+                        )
+                    ),
+                    sender,
+                )
+                self.player_health[sender] = float(self.player_max)
+                log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
 
         log.info(
             "%s: entity %s struck %s, %.0f health left",
@@ -1801,6 +1895,9 @@ def serve(
     kill_experience: int = 17,
     mob_chase: bool = True,
     mob_speed: int | None = None,
+    skill_lead: int | None = None,
+    mob_aggro: float | None = None,
+    mob_stop: float | None = None,
     level_every: int = 34,
     announce_vicinity: bool = True,
 ) -> None:
@@ -1865,6 +1962,12 @@ def serve(
         service.mob_chase = mob_chase
         if mob_speed is not None:
             service.mob_speed = mob_speed
+        if skill_lead is not None:
+            service.skill_lead = skill_lead
+        if mob_aggro is not None:
+            service.mob_aggro = mob_aggro
+        if mob_stop is not None:
+            service.mob_stop = mob_stop
         service.level_every = level_every
         service.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
@@ -2099,6 +2202,29 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--skill-lead",
+        type=int,
+        default=None,
+        metavar="TICKS",
+        help="how many game ticks ahead a creature's swing is announced",
+    )
+    parser.add_argument(
+        "--mob-aggro",
+        dest="mob_aggro",
+        type=float,
+        default=None,
+        metavar="UNITS",
+        help="world units within which a creature notices the player",
+    )
+    parser.add_argument(
+        "--mob-stop",
+        dest="mob_stop",
+        type=float,
+        default=None,
+        metavar="UNITS",
+        help="world units a creature stops short of the player",
+    )
+    parser.add_argument(
         "--mob-speed",
         type=int,
         default=None,
@@ -2114,7 +2240,7 @@ def main() -> None:
     parser.add_argument(
         "--level-every",
         type=int,
-        default=34,
+        default=0,
         metavar="N",
         help="experience needed per level, 0 to never level. 34 is two kills at 17",
     )
@@ -2184,6 +2310,9 @@ def main() -> None:
         kill_experience=args.kill_experience,
         mob_chase=args.mob_chase,
         mob_speed=args.mob_speed,
+        skill_lead=args.skill_lead,
+        mob_aggro=args.mob_aggro,
+        mob_stop=args.mob_stop,
         level_every=args.level_every,
         announce_vicinity=args.announce_vicinity,
     )

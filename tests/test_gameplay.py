@@ -764,3 +764,25 @@ def test_chase_speed_is_a_walk_not_a_leap():
 
     per_second = WALK_UNITS_PER_TICK * 1000 / 40
     assert 100 <= per_second <= 200
+
+
+def test_a_movement_batch_can_carry_a_trailing_command():
+    """The form every real skill command took.
+
+    All 56 skill commands the real server sent in the long session ride behind the
+    movement records of a 0x005F batch; none travelled alone. The records end
+    byte-aligned on their terminator, so the appended command must start on a byte
+    boundary with its own two-byte id, exactly as `ff 47 00` shows in the capture.
+    """
+    from dsor.combat import TargetSkill, encode_target_skill
+    from dsor.gameplay import encode_entity_group_message
+    from dsor.recorded import combat_ready_mobs
+
+    skill = encode_target_skill(
+        TargetSkill(attacker=0x00010008, target=0x00010015, skill_id=440)
+    )
+    batch = encode_entity_group_message([combat_ready_mobs()[0]], [skill])
+    assert batch[:3] == b"\x85\x5f\x00"
+    assert b"\xff\x47\x00" in batch
+    # And the appended command is the real one, minus only its own message header.
+    assert batch.endswith(skill[1:])
