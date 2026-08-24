@@ -1,24 +1,21 @@
 """Decoders for the two high-rate gameplay messages.
 
-Everything here was recovered by controlled experiment rather than by reading
-code: two captures where the player stood still, walked, stood still again, and
-in the second one took four hits from an enemy. Static analysis could not have
-produced any of it — the fields are only visible in what changes and what does
-not.
+Most of the field layout came from two captures where the player stood still,
+walked, stood still again, and took four hits: a field that freezes while the
+player is stationary and drifts while walking identifies itself. Some of it came
+from the client's binary and its database instead, and those parts say so.
 
-The method matters because it decides what may be claimed. A field is described
-here only when the capture forces it:
+A field is described here only when the evidence forces it:
 
 * **Position** — the three ``int16`` at the start are frozen bit-for-bit through
   every stationary phase across 1,855 consecutive message pairs, and drift
   smoothly while walking. Two perpendicular walks separated the axes: one moved
   almost purely in the field at offset 0, the other almost purely in the field at
-  offset 4, while offset 2 stayed at the same value throughout both — which is
-  what elevation does on flat ground.
-* **Move flag** — byte 6 is 0x40 or 0 and nothing else, across 21,259 messages.
-  When it is 0 the position essentially never changes: zero exceptions in the two
-  short experiments, 17 in 7,794 pairs over a long session. Treated as a strong
-  tendency, not an invariant, because the long session says so.
+  offset 4, while offset 2 stayed put — which is what elevation does on flat
+  ground.
+* **Speed and heading** — bytes 6, 7 and 8. See the constants below; the heading
+  law was fitted against 114 real movement pairs and the alternatives rejected by
+  a wide margin.
 * **Tick** — byte 9 advances even while standing still, so it is a clock and not
   a movement counter.
 * **Property updates** — 0x85/0x007B carries an identifier and a ``float32``. The
@@ -29,7 +26,10 @@ Two readings were tried and **refuted**, and are recorded as such so they are no
 proposed again:
 
 * bytes 7 and 8 are *not* reliably equal (about half the time during movement),
-  so they are not a duplicated heading;
+  so they are not a duplicated heading — they are two headings, the current one
+  and the one being turned toward, which is why they differ exactly while an
+  entity turns. The observation was right and the conclusion drawn from it was
+  not;
 * the server's position is *not* bit-identical to the client's — it tracks within
   a few tens of units, which is ordinary authority lag. An early sample of two
   messages happened to match exactly and that was over-read.

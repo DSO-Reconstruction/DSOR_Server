@@ -1,24 +1,28 @@
 # experimental
 
 Notes on the Drakensang Online network protocol, written while building a server
-the retail client will talk to. Everything here was measured against captures of
-real sessions and against the client's own reaction; where something is a guess it
-says so, and where a plausible idea turned out to be wrong it is recorded as
-refuted rather than deleted.
+the retail client will talk to.
 
-As of the last session the client completes the whole chain: it logs in, is
-dispatched to the character service, is shown its character, is granted the game,
-returns to the login server, is dispatched to a map server, and enters the world at
-the spawn point. Creatures appear around it, can be struck, lose health and drop
-loot, and the shop shows whatever this server decides at whatever price it decides.
+The client logs in, is dispatched to the character service, is shown its character,
+is granted the game, returns to the login server, is dispatched to a map server and
+enters the world. Creatures spawn around it, walk toward it, strike it with an
+animation, take damage, die and drop loot. Experience is awarded and levels are
+granted. The shop shows whatever this server decides, at whatever price.
 
-What it does *not* do is render that character with its hair and equipment, or let a
-creature move. Both are recorded under **Open**, with what is known about why.
+Four sources feed these notes:
 
-Two sources feed these notes: packet captures of real and emulated sessions, and
-the client's own log. The client is a native Windows x64 build (no IL2CPP), so
-nothing here comes from decompiled game code except a static reading of symbol
-strings the binary retains in its assertion messages.
+* **packet captures**, of real sessions and of this server's own;
+* **the client's log**, which names most of its own refusals;
+* **the client's binary**, a native Windows x64 build. Command ids come from
+  walking the Nebula3 Rtti registration to the id getter at vtable slot 3
+  (`tools/command_ids.py`); function bounds come from the PE exception table;
+* **the client's database**, `db_static.sqlite`. `_Template_Skill` and
+  `_Template_Monster` hold the numbers that govern combat — hit frames, ranges,
+  cooldowns, damage types, which skills a monster carries.
+
+Guesses say they are guesses. Ideas that turned out to be wrong are kept under
+**Refuted** rather than deleted, because most of them are plausible enough to be
+tried again.
 
 ## Running it
 
@@ -139,7 +143,7 @@ A datagram does not carry one message. The client reads commands in sequence unt
 fewer than sixteen bits remain, and **each command ends with a `0xFF` terminator**
 followed immediately by the next command's 16-bit id.
 
-This matters because it is easy to misread. A multi-entity position update looks
+This is easy to misread. A multi-entity position update looks
 exactly like records joined by a two-byte separator `5F 00` — and that reading
 produces byte-identical output, so it survives every test. It is wrong: the `0xFF`
 closes each command and `5F 00` is simply the next `MoveCommand`'s id. The mistake
@@ -206,9 +210,6 @@ describes the original creature, so the name resolves and nothing is drawn.
 
 ## A creature has two positions, in two frames
 
-This one cost several rounds of a human staring at a screen, and it is worth stating
-loudly.
-
 * Its **description** carries three 32-bit floats, in world units.
 * Its **movement records** carry three signed 16-bit fields, world units × 128.
 
@@ -260,7 +261,7 @@ entity bound. Only the *visual* needs the binding.
 
 **What kills, and what does not.** `0x0073 ActorsLeftVicinityCommand` does *not*
 kill: it sets each named entity invisible. Sending it as a death leaves the creature
-standing there at zero health, which is exactly how that mistake presents. What kills
+standing there at zero health. What kills
 is **`0x006C KillCommand`** — a tick, damage types, the killer, a float3 impulse the
 corpse is thrown with, a kill tick, and a single despawn bit — and the client's whole
 death sequence hangs off it. `0x002B DiscardMonsterCommand` is a third thing again:
@@ -268,12 +269,16 @@ an instant deletion of entity and actor, no animation, and its body is **empty**
 it is seven bytes on the wire and needs no recording. Sending it in the same breath as
 a kill destroys the death sequence before it can play.
 
-`HitCommand`'s fields, from the client's decoder: damage is an **int32** and the
-victim is in the **trailer**, not the body; the attacker is a separate field, and the
-victim's post-blow current and maximum health travel in the same message. Five of its
-eighteen fields are single bits, so it cannot be assembled from whole bytes. For a
-floating damage number to appear at all, one field must carry the local player's
-actor id and another must be greater than zero.
+`HitCommand`: damage is an **int32**, the victim is in the **trailer** rather than
+the body, the attacker is a separate field, and the victim's post-blow current and
+maximum health travel in the same message. Five of its eighteen fields are single
+bits, so it cannot be assembled from whole bytes.
+
+Two of its fields were invented here and 74 real hits — two sessions, two creature
+skills — refute both unanimously. `kind` is **3**, never 0. The floating number
+belongs to the **attacker**, never the victim; an earlier note here claimed the
+client draws nothing unless it is the local player's actor, and the combat value
+alongside it is 0.0 in all 74.
 
 `0x0073` and `0x0074` are the same shape as each other and byte-aligned throughout: a
 32-bit count, that many 32-bit actor ids, then the trailer. Any set of actors can be
@@ -282,11 +287,53 @@ announced or hidden in one generated message.
 The client also validates its own reach before sending anything:
 `SkillValidator: target for 'angrystrike' out of range!! 4.17 <-> 1.75`. So a server
 need not check range; if the attack arrived, it was in range. What a server *must* do
-is decide **which** creature was hit, because `TargetSkillCommand` names no target —
-twenty-one bytes holding a skill id, a float, a tick and two unestablished fields,
-and not one actor id among them. Choosing afresh on every blow makes the choice flip
-between creatures standing close together, which reads on screen as damage being
-shared out; latch it instead.
+for the player's own blows is decide **which** creature was hit: choosing afresh on
+every blow makes the choice flip between creatures standing close together, which
+reads on screen as damage being shared out. Latch it instead.
+
+### The swing
+
+A creature animates only when sent `0x0047 TargetSkillCommand`, and the command is
+**64 bytes**. An earlier note here called it twenty-one and said it named no target;
+both were wrong, and the missing fields are why creature attacks never animated —
+the terminator landed where the client expects the impact tick, so the visualizer
+got nonsense for its duration and its position and finished as it started.
+
+| field | width | value |
+|---|---|---|
+| high water | uint16 | 0; read but never written |
+| skill | uint16 | zero-based index into `_Template_Skill` |
+| heading | float32 | from the **target** back to the attacker |
+| start tick | uint32 | three ticks ahead of now |
+| — | uint32 | 0 |
+| — | 1 bit | 0 |
+| target | uint32 | actor |
+| attacker | uint32 | actor |
+| impact tick | uint32 | start tick + `HitFrame` |
+| hit frame | uint32 | `HitFrame` |
+| unblock | uint32 | `SkillUnblockFrame` |
+| motion unblock | uint32 | `MotionUnblockFrame` |
+| — | uint32 | 0 |
+| position | 3 × float32 | the attacker's, in the description frame |
+| — | float32 | 1.0 |
+| — | 1 bit | 0 |
+| | | the `0xFF` terminator, no trailing actor |
+
+Every derived field is confirmed against two live attacks by different creatures:
+8890 + 15 = 8905 and 8905 + 19 = 8924 for the impact tick, 30/30 and 41/41 for the
+two durations, and both commands reproduce byte for byte. The heading is the reverse
+vector, which fits both samples to within 0.3° where the forward vector misses by
+180 — a creature sent the forward one swings away from the player.
+
+The command rides **inside a movement batch**, behind the records; all 77 observed
+did, and none travelled alone.
+
+The rest of the blow comes from the skill's own row rather than from invention. For
+`AnderworldCreatureStrike`: `HitFrame` 12 (the hit is sent twelve ticks after the
+swing), `AttackRange` 2.0 (stop closer than this or the creature halts outside its
+own reach and creeps in for ever), `HitRange` 2.25, `CoolDown` 2.75 s, and
+`DamageType` `DarkMagic;Physical` — two entries, where the player's `angrystrike`
+has one.
 
 ## The character-selection state machine
 
@@ -673,61 +720,32 @@ same idea rediscovered later.
 
 ## Open
 
-* **Creature movement.** Positions, the death animation and the health bar are all
-  per-actor visual changes, and all are skipped unless the client has bound an entity
-  to that actor in `ClientActorManager::actorEntities` — a 10,000-slot table indexed
-  by the low 16 bits of the actor id. Creation is the one thing that does not need the
-  binding, which is why creatures appear and then never change.
-  **But the binding is server-reachable**, and an earlier note here saying otherwise
-  was wrong: `NewMonsterCommand` creates the entity from its template, writes the
-  actor id into the entity's `ActorId` attribute *before* attaching it, and the attach
-  runs the property that registers the pair. There is no other inbound route for a
-  monster. Verified since: the actor id in the trailer of every description this
-  server sends is the creature's own, so a mismatch is not the cause. What remains
-  unverifiable from the executable is whether the monster templates declare
-  `Properties::ActorProperty` — that is blueprint data. It must hold in retail, since
-  hiding, dying and health bars all read the same table.
-* **Generating `HitCommand`.** Blows are still replayed, which means another session's
-  damage numbers, and that is the direct cause of every incoherent state seen so far:
-  creatures dying in one blow and standing at zero health. The layout is now known;
-  what it needs is a bit-level writer, which exists.
-* Why the selection screen renders a character with neither hair nor equipment.
-  Neither the roster nor the event schedule holds appearance data.
-* The chat service on 2191, which carries only a handshake and one channel identifier
-  in every capture so far.
+* **Collision and pathing.** Creatures walk straight at the player and through
+  walls. Nothing here reads the map's navigation data.
+* **Loot pickup.** `ItemInfoCommand` and `DiscardItemCommand` are named, but the
+  loot is still replayed with another session's coordinates, so it cannot be
+  picked up.
+* **Character appearance.** The selection screen draws a character with neither
+  hair nor equipment. Neither the roster nor the event schedule carries
+  appearance data.
+* **The chat service on 2191**, which carries only a handshake and one channel
+  identifier in every capture so far.
 
-## Method
+## What tests found what
 
-Three things did more for progress than any single protocol insight.
-
-**Record your own traffic in the same format as the reference capture.** Diagnosing
-a client that reaches a screen and stops had cost several rounds of guess, restart,
-retest — one hypothesis per round trip, with a human in the loop each time. A
-recording that can be diffed against a real session at message level tests every
-hypothesis at once, and found two transport faults in its first two comparisons.
-
-**Replay the recorded client offline.** The capture holds every datagram the real
-client sent, so the whole flow can be driven into the server in-process with no game
-running. That is the only way to exercise a branch the live client refuses to reach,
-and a contiguity check over the resulting ordered stream catches the class of fault
-that is otherwise invisible.
-
-**Compare in ordering-index order, per connection.** Frame order misleads, merged
-connections mislead worse. Both mistakes were made here and both produced confident
-wrong conclusions.
-
-**Read the client's binary before guessing.** Every stall in this project was broken
-by it and none by inference from the wire: the two inverted command ids, the request
-that has to be answered before a creature exists, the real field layout of a movement
-record, the two numbers in a stats update. Between those, hours went into changing the
-server and asking a person to describe their screen — which is slow, tests one
-hypothesis at a time, and only answers the question you thought to ask. The binary
-answers the question you did not.
-
-**Read the client's log.** Every failure on the creature path writes a line there and
-none of them crashes, so silence in the log is itself information. It reported its own
-refusal to swing at something 4.17 units away when the skill reaches 1.75, and that
-one line explained a symptom two rounds of guessing had not.
+* **Diffing this server's capture against a real one, per connection and in
+  ordering-index order.** Frame order misleads; merged connections mislead worse.
+  Both mistakes were made here.
+* **Replaying the recorded client offline.** The capture holds every datagram the
+  real client sent, so the whole flow runs in-process with no game. It reaches
+  branches the live client refuses to reach.
+* **The database and the binary before the wire.** Six combat numbers were
+  invented here and every one had a visible symptom; all six sit in one row of
+  `_Template_Skill`.
+* **Comparing whole messages, not prefixes.** A check here once reported a command
+  reproduced "byte for byte" after comparing 26 bytes chosen by hand. The command
+  is 64 bytes, and the eight missing fields were why creature attacks never
+  animated. Compare lengths first.
 
 ## Layout
 
@@ -736,7 +754,8 @@ server.py               the three tiers
 raknet/                 datagrams, frames, reliability, the bit-level stream
 dsor/                   message shapes, the character record, the event schedule
 dsor/data/              messages still replayed rather than generated
-tests/                  243 tests, including two offline replay harnesses
+tools/command_ids.py    command ids, recovered from the client binary by name
+tests/                  the suite, including two offline replay harnesses
 tools/frida/            client-side capture: the agent, its driver, the launcher
 docs/logs/             redacted logs of a working session, and of a real one
 ```
