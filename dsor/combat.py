@@ -177,8 +177,10 @@ class Hit:
     damage: int
     victim_health: int
     victim_max_health: int
-    #: Whose floating damage number this is. The client draws none unless this is the
-    #: local player's actor, and unless ``combat_value`` is greater than zero.
+    #: Whose blow the floating number belongs to. **The attacker**, in all 74 real
+    #: hits across two independent sessions — never the victim. An earlier note here
+    #: claimed the client draws nothing unless this is the local player's actor; the
+    #: samples refute it outright, and this server had been sending the player.
     combat_value_owner: int
     combat_value: float = 1.0
     tick: int = 0
@@ -186,7 +188,9 @@ class Hit:
     shield: int = 0
     max_shield: int = 0
     damage_types: list[int] = field(default_factory=lambda: [0])
-    kind: int = 0
+    #: Three, in every one of the 74 real hits from two sessions and two creature
+    #: skills. Zero was this server's invention and nothing observed carries it.
+    kind: int = 3
     heavy_until_tick: int = 0
 
 

@@ -820,3 +820,51 @@ def test_a_creature_stops_instead_of_creeping_in():
     span = stop + 4.0
     assert span > stop, "still outside"
     assert span <= stop + speed, "and within one step, so it must stand this tick"
+
+
+def test_the_hit_layout_decodes_a_real_official_hit():
+    """The whole 0x006B layout, checked against a capture it was not derived from.
+
+    A session where the player stood still on the live service and took twenty
+    blows. Every field lands on a sensible value and nothing is left over: health
+    345 of 348, damage 2, attacker 08 00 01 00. Two fields this server had wrong:
+    kind is 3 in all 74 real hits across two sessions, and the floating number
+    belongs to the attacker, never the victim.
+    """
+    import struct
+
+    from raknet.bitstream import BitReader
+
+    real = bytes.fromhex(
+        "c9 22 00 00 01 00 00 00 00 0b 20 20 00 00 00 00 00 0b 80 20 00 00 00 00"
+        " 00 00 00 00 00 00 00 00 00 00 40 00 00 00 60 00 00 01 00 00 20 01 00 00"
+        " 20 00 00 00 00 00 00 00 00 00 00 01 30 00 08 07".replace(" ", "")
+    )
+    r = BitReader(real)
+    assert r.read_uint(32) == 8905
+    assert r.read_uint(32) == 1
+    assert [r.read_uint(8)] == [0]
+    assert [r.read_bool() for _ in range(3)] == [False, False, False]
+    assert r.read_uint(64) == 345
+    assert r.read_uint(64) == 348
+    assert r.read_uint(32) == 0 and r.read_uint(32) == 0
+    assert r.read_uint(32) == 2
+    assert r.read_uint(32) == 3, "kind is three, not zero"
+    attacker = r.read_uint(32).to_bytes(4, "little")
+    owner = r.read_uint(32).to_bytes(4, "little")
+    assert attacker == owner == bytes([0x08, 0x00, 0x01, 0x00])
+    assert r.read_uint(32) == 0
+    assert struct.unpack("<f", r.read_uint(32).to_bytes(4, "little"))[0] == 0.0
+
+
+def test_the_hit_delay_is_the_skills_hit_frame():
+    """Confirmed on the wire for three different skills.
+
+    ThingRootsStrike has HitFrame 15 and its blows land fifteen ticks after the
+    swing; ThingSwampStrike has 19 and lands at nineteen. AnderworldCreatureStrike
+    has 12, which is what this server uses.
+    """
+    import server
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    assert service.creature_hit_frame == 12

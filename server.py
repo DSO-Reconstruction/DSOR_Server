@@ -1564,7 +1564,7 @@ class Service:
                         damage=int(self.creature_damage),
                         victim_health=int(left),
                         victim_max_health=int(self.player_max),
-                        combat_value_owner=int.from_bytes(PLAYER_ACTOR, "little"),
+                        combat_value_owner=int.from_bytes(attacker, "little"),
                         combat_value=0.0,
                         damage_types=list(self.creature_damage_types),
                         tick=connection.elapsed_ms() // GAME_TICK_MS,
