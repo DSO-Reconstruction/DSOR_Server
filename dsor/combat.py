@@ -334,32 +334,79 @@ PLAYER_LEVEL_UPDATE = 0x007C
 GROUP_XP_CHANGED = 0x007E
 
 
+#: Experience at which each level begins, for a warrior. Read from
+#: ``_Template_XPLevels`` in the client's own database, and confirmed twice on the
+#: wire: a real award carried (17, 1, 0, 100) and another (115, 2, 100, 440), which
+#: are exactly "level 1 runs 0 to 100" and "level 2 runs 100 to 440".
+#:
+#: The four classes share this curve; only their hit points differ.
+LEVEL_EXPERIENCE = (
+    0, 100, 440, 1000, 2000, 3300, 5200, 7700, 10800, 14700,
+    19600, 25900, 33800, 43700, 55800, 70700, 89000, 112000, 140000, 172000,
+    212000, 261000, 319000, 389000, 475000, 579000, 698000, 830000, 982000, 1150000,
+)
+
+#: A warrior's hit points at each level, from the same table. Equipment adds to it:
+#: the captured level 1 warrior read 235 of 236 where the table says 225.
+LEVEL_HIT_POINTS = (
+    225, 333, 442, 550, 658, 767, 875, 983, 1092, 1200,
+    1500, 1800, 2100, 2400, 2700, 3000, 3300, 3600, 3900, 4200,
+    4770, 5340, 5910, 6480, 7050, 7620, 8190, 8760, 9330, 9900,
+)
+
+
+def level_for(experience: int) -> int:
+    """The level *experience* points buy, one-based."""
+    level = 1
+    for index, threshold in enumerate(LEVEL_EXPERIENCE, start=1):
+        if experience >= threshold:
+            level = index
+    return level
+
+
+def level_bounds(level: int) -> tuple[int, int]:
+    """Where *level* starts, and where the next one does."""
+    floor = LEVEL_EXPERIENCE[min(level, len(LEVEL_EXPERIENCE)) - 1]
+    ceiling = (
+        LEVEL_EXPERIENCE[level]
+        if level < len(LEVEL_EXPERIENCE)
+        else LEVEL_EXPERIENCE[-1]
+    )
+    return floor, ceiling
+
+
 def encode_xp_changed(
-    total: int, actor: int, second: int = 1, third: int = 0, fourth: int = 100
+    total: int, actor: int, level: int = 1, levelled: bool = False
 ) -> bytes:
-    """0x007D: award experience to a player.
+    """0x007D: the player's experience, and the bar it fills.
 
-    Read off a real one carried inside a hit batch: four 32-bit fields reading
-    17, 1, 0, 100 and then a single bit, addressed to the player. The other three are
-    reproduced as observed rather than understood.
+    Four 32-bit fields and a bit, then the actor. What they are is settled by two
+    real messages read at the bit level, and then confirmed against a table in the
+    client's database that neither of them came from:
 
-    The first field is the **running total**, not the award. The single observation
-    cannot tell the two apart — 17 after one kill fits either — but the client can:
-    sending 17 for every kill showed experience for the first creature and nothing
-    afterwards, which is what a total that never changes looks like. So the reading
-    that fits one capture and every kill after it is the total.
+        (17,  1, 0,   100)   17 points, level 1, level 1 starts at 0, level 2 at 100
+        (115, 2, 100, 440)   115 points, level 2, and level 3 starts at 440
 
-    Why this was missed for so long: it travels *inside the batch of the blow that
-    kills*, addressed to the **player**, and this server's batch filter keeps only what
-    is addressed to the creature or to nobody. The experience was being dropped by the
-    very filter that fixed the creature's death.
+    ``_Template_XPLevels`` gives 0, 100, 440, 1000 for the first four levels, which
+    is exactly what the pairs say. So the fields are: total experience, current
+    level, the level's own floor, and the next level's floor.
+
+    This was wrong here in a way the client showed plainly. The award was sent in
+    the first field, so the total never moved and only the first kill of a session
+    displayed anything; and the level and both thresholds were hard-coded to level
+    1, so the bar's scale never changed either.
+
+    The trailing bit is 1 in the sample that arrived with a level-up and 0 in the
+    other, so it is written as "the level changed" — a reading two samples support
+    and neither proves.
     """
+    floor, ceiling = level_bounds(level)
     writer = BitWriter()
     writer.write_uint(MESSAGE_ID, 8)
     _open(writer, XP_CHANGED)
-    for value in (total, second, third, fourth):
+    for value in (total, level, floor, ceiling):
         writer.write_uint(value & 0xFFFFFFFF, 32)
-    writer.write_bool(False)
+    writer.write_bool(levelled)
     _close(writer, actor)
     return writer.to_bytes()
 

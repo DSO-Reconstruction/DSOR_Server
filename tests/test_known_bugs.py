@@ -995,3 +995,34 @@ def test_the_command_table_agrees_with_what_was_established_otherwise():
     # And the space is flat: an id names exactly one command.
     ids = [int(m.group(1), 16) for m in re.finditer(r"\| `0x([0-9A-F]{4})` \|", table.read_text())]
     assert len(ids) == len(set(ids)), "two commands cannot share an id"
+
+
+def test_the_experience_message_matches_a_real_one_bit_for_bit():
+    """Four fields and a bit, settled by two captures and a table.
+
+    Real messages read (17, 1, 0, 100) and (115, 2, 100, 440), and
+    _Template_XPLevels gives 0, 100, 440, 1000 for the first four levels. So the
+    fields are total experience, level, the level's floor, and the next level's.
+
+    This server sent the award in the first field with the level and both
+    thresholds pinned to level 1, so the total never moved and the bar's scale
+    never changed — only the first kill of a session showed anything at all.
+    """
+    from dsor.combat import encode_xp_changed, level_bounds, level_for
+
+    assert level_for(17) == 1 and level_bounds(1) == (0, 100)
+    assert level_for(115) == 2 and level_bounds(2) == (100, 440)
+    assert level_for(1000) == 4
+
+    built = encode_xp_changed(
+        115, int.from_bytes(bytes([0x15, 0, 1, 0]), "little"), level=2, levelled=True
+    )
+    # The command as it appears in a batch: the same bits behind a 0xFF instead of
+    # the 0x85 message id. Taken from frame 8601 of the 21 August capture, bit 3608.
+    real = (
+        "0111110100000000011100110000000000000000000000000000001000000000"
+        "0000000000000000011001000000000000000000000000001011100000000001"
+        "000000000000000010001010100000000000000010000000011111111"
+    )
+    mine = "".join(f"{c:08b}" for c in built[1:])[: len(real)]
+    assert mine == real, "the whole command, not a prefix of it"

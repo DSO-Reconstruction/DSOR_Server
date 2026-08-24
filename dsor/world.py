@@ -39,6 +39,7 @@ from dsor.combat import (
     encode_player_level,
     encode_target_skill,
     encode_xp_changed,
+    level_for,
 )
 from dsor.gameplay import (
     WALK_SPEED,
@@ -113,7 +114,8 @@ class Rules:
     corpse_lifetime: int = 20
     #: Experience awarded per kill. Seventeen is what a real award carried.
     kill_experience: int = 17
-    #: Experience per level, 0 to never level.
+    #: Experience per level, or 0 — the default — to follow the client's own curve
+    #: from _Template_XPLevels. Kept only for forcing a level quickly in testing.
     level_every: int = 0
     #: Zero-based index of the skill a creature swings with. 440 is
     #: AnderworldCreatureStrike, which the tutorial dungeon's creature template
@@ -711,18 +713,25 @@ class World:
             # moves is a gain of zero.
             earner = self.player(sender)
             earner.experience += self.rules.kill_experience
-            self._emit(encode_xp_changed(
-                    earner.experience, int.from_bytes(PLAYER_ACTOR, "little")
+            # The level is not a knob: it follows from the experience through the
+            # client's own curve, 0 / 100 / 440 / 1000 for the first four. The bar
+            # only fills correctly if the message carries the level and both of its
+            # thresholds, which is what was hard-coded to level 1 before.
+            level = level_for(earner.experience)
+            levelled = level > earner.level
+            self._emit(
+                encode_xp_changed(
+                    earner.experience,
+                    int.from_bytes(PLAYER_ACTOR, "little"),
+                    level=level,
+                    levelled=levelled,
                 ),
                 sender,
             )
-            if self.rules.level_every:
-                level = 1 + earner.experience // self.rules.level_every
-            else:
-                level = earner.level
-            if level > earner.level:
+            if levelled:
                 earner.level = level
-                self._emit(encode_player_level(
+                self._emit(
+                    encode_player_level(
                         level, int.from_bytes(PLAYER_ACTOR, "little")
                     ),
                     sender,
