@@ -15,6 +15,8 @@ sample, which is exactly how both were arrived at in the first place.
 
 from __future__ import annotations
 
+import pytest
+
 import collections
 
 import struct
@@ -786,3 +788,26 @@ def test_a_movement_batch_can_carry_a_trailing_command():
     assert b"\xff\x47\x00" in batch
     # And the appended command is the real one, minus only its own message header.
     assert batch.endswith(skill[1:])
+
+
+def test_a_drop_is_rewritten_where_the_creature_fell():
+    """Only the actor and the position, and nothing else in the command.
+
+    The recorded 0x002D carries the place a creature died in another session, which
+    is why replayed loot lay somewhere unreachable. Its tail is not understood, so
+    it is copied bit for bit rather than rebuilt — the lesson from a skill command
+    that was 26 bytes of a 64-byte message.
+    """
+    from dsor.items import drop_actor, drop_position, item_drop, with_drop
+
+    recorded = item_drop()
+    assert drop_actor(recorded) == bytes([0x03, 0x00, 0x01, 0x00])
+    assert drop_position(recorded) == pytest.approx((-30.33, 0.0, 54.03), abs=1e-4)
+
+    moved = with_drop(recorded, bytes([0x41, 0x00, 0x01, 0x00]), (-1.5, 0.0, 2.25))
+    assert len(moved) == len(recorded)
+    assert drop_actor(moved) == bytes([0x41, 0x00, 0x01, 0x00])
+    assert drop_position(moved) == pytest.approx((-1.5, 0.0, 2.25))
+    # Everything outside those two fields is untouched.
+    changed = {i for i, (a, b) in enumerate(zip(recorded, moved)) if a != b}
+    assert changed <= {3} | set(range(92, 105)), sorted(changed)

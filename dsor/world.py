@@ -56,6 +56,7 @@ from dsor.gameplay import (
     ring_positions,
     with_motion,
 )
+from dsor.items import item_drop, with_drop
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -202,6 +203,8 @@ class Rules:
     mob_swap: str | None = None
     #: Send the recorded vicinity announcement before a creature is asked about.
     announce_vicinity: bool = True
+    #: Whether a dying creature leaves an item where it fell.
+    drop_items: bool = True
 
 
 @dataclass
@@ -299,6 +302,9 @@ class World:
     stepped_tick: int = 0
     #: Cached offset between the wire frame and the description frame.
     frame_offset: tuple[float, float, float] | None = None
+    #: Actor ids handed to dropped items. Starts above the recorded creatures so a
+    #: drop cannot collide with one of them, or with the player's 0x15.
+    next_item: int = 0x40
     #: Messages produced by the current call, waiting to be handed back.
     _outbox: list[tuple[Address, bytes]] = field(default_factory=list)
 
@@ -704,6 +710,27 @@ class World:
         # tells the client to clear the body; discarding is for retiring a creature
         # that is not dying, and for one no capture contains a removal for.
         self.creatures[target].corpse_ticks = self.rules.corpse_lifetime
+        # And what it leaves behind, at the place it fell rather than the place the
+        # recording's creature fell. Only the actor and the position are rewritten;
+        # the rest of the command is copied bit for bit, because its tail is not
+        # understood and inventing a tail is how the skill command came to be 26
+        # bytes of a 64-byte message.
+        if self.rules.drop_items and described is not None:
+            self.next_item += 1
+            self._emit(
+                with_drop(
+                    item_drop(),
+                    bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00]),
+                    described,
+                ),
+                sender,
+            )
+            log.info(
+                "%s: %s dropped an item at (%.2f, %.2f, %.2f)",
+                self.name,
+                target.hex(" "),
+                *described,
+            )
         if self.rules.kill_experience:
             # Addressed to the player, not the creature — which is why this server's
             # batch filter dropped it for hours: it keeps what belongs to the creature

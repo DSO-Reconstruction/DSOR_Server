@@ -1264,6 +1264,7 @@ def serve(
     mob_chase: bool = True,
     mob_speed: int | None = None,
     skill_lead: int | None = None,
+    drop_items: bool = True,
     mob_aggro: float | None = None,
     mob_stop: float | None = None,
     level_every: int = 34,
@@ -1332,6 +1333,7 @@ def serve(
             service.rules.mob_speed = mob_speed
         if skill_lead is not None:
             service.rules.skill_lead = skill_lead
+        service.rules.drop_items = drop_items
         if mob_aggro is not None:
             service.rules.mob_aggro = mob_aggro
         if mob_stop is not None:
@@ -1577,6 +1579,12 @@ def main() -> None:
         help="how many game ticks ahead a creature's swing is announced",
     )
     parser.add_argument(
+        "--no-drops",
+        dest="drop_items",
+        action="store_false",
+        help="stop a dying creature leaving an item where it fell",
+    )
+    parser.add_argument(
         "--mob-aggro",
         dest="mob_aggro",
         type=float,
@@ -1679,6 +1687,7 @@ def main() -> None:
         mob_chase=args.mob_chase,
         mob_speed=args.mob_speed,
         skill_lead=args.skill_lead,
+        drop_items=args.drop_items,
         mob_aggro=args.mob_aggro,
         mob_stop=args.mob_stop,
         level_every=args.level_every,
