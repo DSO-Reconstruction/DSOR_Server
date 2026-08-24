@@ -56,7 +56,12 @@ from dsor.gameplay import (
     ring_positions,
     with_motion,
 )
-from dsor.items import item_drop, with_drop
+from dsor.items import (
+    item_drop,
+    item_pickup_batch,
+    with_drop,
+    with_pickup_batch,
+)
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -205,6 +210,10 @@ class Rules:
     announce_vicinity: bool = True
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
+    #: The blueprint to drop, or None to keep the recorded one. Anything in the
+    #: client's _Template_Item; a name it cannot resolve creates nothing at all,
+    #: exactly as an unknown monster blueprint does.
+    drop_template: str | None = None
 
 
 @dataclass
@@ -305,6 +314,11 @@ class World:
     #: Actor ids handed to dropped items. Starts above the recorded creatures so a
     #: drop cannot collide with one of them, or with the player's 0x15.
     next_item: int = 0x40
+    #: Items lying on the ground: their actor, and the id the drop declared for
+    #: each. The client validates the id when it asks to pick one up.
+    dropped: dict[bytes, int] = field(default_factory=dict)
+    #: Item ids handed out. Above anything the replayed inventory carries.
+    next_item_id: int = 90000
     #: Messages produced by the current call, waiting to be handed back.
     _outbox: list[tuple[Address, bytes]] = field(default_factory=list)
 
@@ -717,11 +731,16 @@ class World:
         # bytes of a 64-byte message.
         if self.rules.drop_items and described is not None:
             self.next_item += 1
+            lying = bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00])
+            self.next_item_id += 1
+            self.dropped[lying] = self.next_item_id
             self._emit(
                 with_drop(
                     item_drop(),
-                    bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00]),
+                    lying,
                     described,
+                    template=self.rules.drop_template,
+                    item_id=self.next_item_id,
                 ),
                 sender,
             )
@@ -982,4 +1001,24 @@ class World:
     def attack(self, sender: Address) -> list[tuple[Address, bytes]]:
         """A player has swung: resolve it and return what to send."""
         self.resolve_attack(sender)
+        return self._drain()
+
+    def pick_up(self, sender: Address, actor: bytes) -> list[tuple[Address, bytes]]:
+        """A player has asked for the item lying at *actor*.
+
+        The request is four bytes and nothing else — the item's actor id — which is
+        the whole of PickupItemCommand as the client sends it.
+
+        The answer replays a real ItemInfoCommand with the actor rewritten. Nothing
+        else in it is touched: it carries an item id and fields whose meaning is not
+        established, and the client does not need a name here because the 0x002D that
+        put the item on the ground already told it what the actor is.
+        """
+        if actor not in self.dropped:
+            log.info("%s: %s asked for item %s, which is not lying here",
+                     self.name, sender, actor.hex(" "))
+            return []
+        item_id = self.dropped.pop(actor)
+        self._emit(with_pickup_batch(item_pickup_batch(), actor, item_id), sender)
+        log.info("%s: %s picked up item %s", self.name, sender, actor.hex(" "))
         return self._drain()

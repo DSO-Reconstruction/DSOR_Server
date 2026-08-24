@@ -811,3 +811,46 @@ def test_a_drop_is_rewritten_where_the_creature_fell():
     # Everything outside those two fields is untouched.
     changed = {i for i, (a, b) in enumerate(zip(recorded, moved)) if a != b}
     assert changed <= {3} | set(range(92, 105)), sorted(changed)
+
+
+def test_a_pickup_is_answered_for_an_item_that_is_lying_there():
+    """And refused for one that is not.
+
+    PickupItemCommand is four bytes: the item's actor id. The reply is the whole
+    recorded batch — a 0x004F carrying a LocationEffectInfoCommand and then the
+    ItemInfoCommand — with only that command's actor and item id rewritten.
+
+    Two things had to be right before the client would take it. The item id must be
+    the one the drop declared, because the client validates it and says so:
+    "Received ItemInfoCommand with invalid item id (%u)!". And the reply is sent as
+    the batch it was captured in rather than as the bare command, which is the same
+    lesson a skill command taught: identical bytes, and nothing happened until the
+    framing matched too.
+    """
+    from dsor.items import (
+        batch_pickup_actor,
+        batch_pickup_item_id,
+        item_pickup_batch,
+        with_pickup_batch,
+    )
+    from dsor.world import World
+
+    recorded = item_pickup_batch()
+    assert batch_pickup_actor(recorded) == bytes([0x04, 0x00, 0x01, 0x00])
+    assert batch_pickup_item_id(recorded) == 31633
+
+    moved = with_pickup_batch(recorded, bytes([0x41, 0x00, 0x01, 0x00]), 90001)
+    assert len(moved) == len(recorded)
+    assert batch_pickup_actor(moved) == bytes([0x41, 0x00, 0x01, 0x00])
+    assert batch_pickup_item_id(moved) == 90001
+
+    world = World()
+    here = ("1.2.3.4", 5)
+    lying = bytes([0x41, 0x00, 0x01, 0x00])
+    assert world.pick_up(here, lying) == [], "nothing has been dropped yet"
+    world.dropped[lying] = 90001
+    out = world.pick_up(here, lying)
+    assert len(out) == 1 and out[0][0] == here
+    assert batch_pickup_actor(out[0][1]) == lying
+    assert batch_pickup_item_id(out[0][1]) == 90001, "the id the drop declared"
+    assert world.pick_up(here, lying) == [], "and it cannot be taken twice"

@@ -204,6 +204,9 @@ SKILL_RANGE = 1.75
 #: Commands::TargetSkillCommand — the client using a skill. It names no target, so
 #: the server decides what was hit.
 TARGET_SKILL_OPCODE = 0x0047
+#: Commands::PickupItemCommand. The client sends the item's actor id and nothing
+#: else — four bytes, the shortest request in the protocol.
+PICKUP_ITEM_OPCODE = 0x0064
 
 #: The client asking what an entity is, once per entity it does not recognise. Its
 #: body is the four-byte handle, and the answer is a 0x85/0x002A description.
@@ -1132,6 +1135,15 @@ class Service:
         if (
             self.role == "map"
             and game.message_id == 0x8B
+            and game.opcode == PICKUP_ITEM_OPCODE
+            and len(game.body) >= 4
+        ):
+            self._ship(self.world.pick_up(sender, game.body[:4]))
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
             and game.opcode == DESCRIBE_ENTITY_OPCODE
         ):
             self._describe_entity(connection, game, sender)
@@ -1265,6 +1277,7 @@ def serve(
     mob_speed: int | None = None,
     skill_lead: int | None = None,
     drop_items: bool = True,
+    drop_template: str | None = None,
     mob_aggro: float | None = None,
     mob_stop: float | None = None,
     level_every: int = 34,
@@ -1334,6 +1347,7 @@ def serve(
         if skill_lead is not None:
             service.rules.skill_lead = skill_lead
         service.rules.drop_items = drop_items
+        service.rules.drop_template = drop_template
         if mob_aggro is not None:
             service.rules.mob_aggro = mob_aggro
         if mob_stop is not None:
@@ -1579,6 +1593,13 @@ def main() -> None:
         help="how many game ticks ahead a creature's swing is announced",
     )
     parser.add_argument(
+        "--drop-item",
+        dest="drop_template",
+        metavar="NAME",
+        default=None,
+        help="blueprint a dying creature leaves, from the client's _Template_Item",
+    )
+    parser.add_argument(
         "--no-drops",
         dest="drop_items",
         action="store_false",
@@ -1688,6 +1709,7 @@ def main() -> None:
         mob_speed=args.mob_speed,
         skill_lead=args.skill_lead,
         drop_items=args.drop_items,
+        drop_template=args.drop_template,
         mob_aggro=args.mob_aggro,
         mob_stop=args.mob_stop,
         level_every=args.level_every,
