@@ -954,3 +954,44 @@ def test_a_death_is_announced_where_the_creature_stands():
     assert near != far, "two positions must not describe the same place"
     # And the frame offset is applied, not the raw wire coordinates.
     assert near != (-7593 / 128, -344 / 128, 2855 / 128)
+
+
+def test_the_command_table_agrees_with_what_was_established_otherwise():
+    """The id table is only worth having if it reproduces the known answers.
+
+    Every one of these was established before the tool existed — from captures, from
+    the client's decoder, or from a message this server already sends correctly. If
+    the tool disagrees with any of them, the other 300 are not to be trusted either.
+    """
+    import pathlib
+    import re
+
+    table = pathlib.Path("docs/commands.md")
+    if not table.exists():  # the table is generated, not required to be present
+        return
+    found = {
+        m.group(2): int(m.group(1), 16)
+        for m in re.finditer(r"\| `0x([0-9A-F]{4})` \| (\w+) \|", table.read_text())
+    }
+    known = {
+        "MoveCommand": 0x005F,
+        "HitCommand": 0x006B,
+        "KillCommand": 0x006C,
+        "NewMonsterCommand": 0x002A,
+        "DiscardMonsterCommand": 0x002B,
+        "ActorRequestCommand": 0x001C,
+        "ActorStatsUpdateCommand": 0x007B,
+        "PlayerLevelUpdateCommand": 0x007C,
+        "XPChangedCommand": 0x007D,
+        "CharacterGenerationCommand": 0x0086,
+        "CharacterSelectionCommand": 0x0087,
+        "ActorsEnterVicinityCommand": 0x0074,
+        "ActorsLeftVicinityCommand": 0x0073,
+        "TargetSkillCommand": 0x0047,
+        "SwitchMapCommand": 0x0070,
+    }
+    for name, identifier in known.items():
+        assert found.get(name) == identifier, f"{name}: {found.get(name)!r}"
+    # And the space is flat: an id names exactly one command.
+    ids = [int(m.group(1), 16) for m in re.finditer(r"\| `0x([0-9A-F]{4})` \|", table.read_text())]
+    assert len(ids) == len(set(ids)), "two commands cannot share an id"

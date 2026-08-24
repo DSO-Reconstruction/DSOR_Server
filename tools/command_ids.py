@@ -92,12 +92,25 @@ class Resolver:
             self.thunks.setdefault(
                 va + 7 + struct.unpack("<i", m.group(1))[0], []
             ).append(va)
+        self._index_pointers()
 
     def command_id(self, name: str) -> int | None:
-        # A fully qualified name is taken as given; a bare one is a Commands:: class.
-        # The client's skill commands live in Skills::, which is why enumerating only
-        # Commands:: missed them.
-        qualified = name if "::" in name else "Commands::" + name
+        """The wire id of *name*, or None if the chain does not resolve.
+
+        Three spellings are tried, because the Rtti name is not always the C++ one:
+        the name as given, the bare class name qualified with ``Commands::``, and
+        the bare name alone. The client's skill commands register as plain
+        ``SkillCommand`` with no namespace, which is why enumerating ``Commands::``
+        missed them entirely.
+        """
+        bare = name.rsplit("::", 1)[-1]
+        for spelling in dict.fromkeys((name, "Commands::" + bare, bare)):
+            found = self._resolve(spelling)
+            if found is not None:
+                return found
+        return None
+
+    def _resolve(self, qualified: str) -> int | None:
         literal = qualified.encode() + b"\0"
         for m in re.finditer(re.escape(literal), self.image.data):
             va = self.image.to_va(m.start())
@@ -107,21 +120,44 @@ class Resolver:
             # loads the name, then `this`. Confirmed against HitCommand, whose id
             # this route reproduces as 0x6B.
             for site in self.leas.get(va, []):
-                rtti = self.lea_at.get(site + 7)
-                if rtti is None:
-                    continue
-                for thunk in self.thunks.get(rtti, []):
-                    found = self._from_vtable(thunk)
-                    if found is not None:
-                        return found
+                # Usually the very next lea loads `this`; occasionally the
+                # constructor emits something between the two, so a short window is
+                # searched rather than one fixed offset.
+                for delta in range(1, 32):
+                    rtti = self.lea_at.get(site + delta)
+                    if rtti is None:
+                        continue
+                    for thunk in self.thunks.get(rtti, []):
+                        found = self._from_vtable(thunk)
+                        if found is not None:
+                            return found
         return None
 
+    def _index_pointers(self) -> None:
+        """Every aligned 64-bit word in the data sections, by value.
+
+        Built once. Resolving one name used to rescan the whole 22 MB image for a
+        pointer; with 289 names that is the difference between minutes and seconds.
+        Only .rdata and .data are scanned, because that is where vtables live.
+        """
+        self.pointers: dict[int, list[int]] = {}
+        for section in self.image.sections:
+            if section.name not in (".rdata", ".data"):
+                continue
+            start = section.raw_offset
+            end = min(start + section.raw_size, len(self.image.data))
+            end -= (end - start) % 8
+            for offset in range(start, end, 8):
+                value = int.from_bytes(self.image.data[offset : offset + 8], "little")
+                if value >> 32:  # only plausible virtual addresses
+                    self.pointers.setdefault(value, []).append(offset)
+
     def _from_vtable(self, thunk: int) -> int | None:
-        needle = struct.pack("<Q", thunk)
-        for p in re.finditer(re.escape(needle), self.image.data):
-            slot = struct.unpack_from(
-                "<Q", self.image.data, p.start() + 8 * ID_GETTER_SLOT
-            )[0]
+        for start in self.pointers.get(thunk, ()):
+            slot_at = start + 8 * ID_GETTER_SLOT
+            if slot_at + 8 > len(self.image.data):
+                continue
+            slot = struct.unpack_from("<Q", self.image.data, slot_at)[0]
             offset = self.image.to_offset(slot)
             if offset is None:
                 continue
