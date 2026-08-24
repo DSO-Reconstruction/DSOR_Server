@@ -934,3 +934,22 @@ def test_the_skills_heading_points_back_at_the_attacker():
         assert abs(back - observed) < 0.01, f"{back} vs {observed}"
         forward = math.atan2(player[0] - attacker[0], player[1] - attacker[1])
         assert abs(abs(forward - observed) - math.pi) < 0.01
+
+
+def test_a_death_is_announced_where_the_creature_stands():
+    """Not where it spawned.
+
+    The kill position used the creature's recorded spawn, which was invisible while
+    creatures stood still on the spot they were described at, and wrong as soon as
+    they walked: the death animation played back at the spawn point. It has to be
+    the current position, converted into the description frame.
+    """
+    import server
+    from dsor.gameplay import Position
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    near = service._described_position(Position(-7593, -344, 2855))
+    far = service._described_position(Position(-5399, -344, 3002))
+    assert near != far, "two positions must not describe the same place"
+    # And the frame offset is applied, not the raw wire coordinates.
+    assert near != (-7593 / 128, -344 / 128, 2855 / 128)

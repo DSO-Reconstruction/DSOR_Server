@@ -1053,15 +1053,22 @@ class Service:
         # can be retired at all.
         victim = int.from_bytes(target, "little")
         tick = connection.elapsed_ms() // GAME_TICK_MS
-        # In the *description* frame, not the wire one. A real kill for this creature
-        # carries (-45.68, 54.63) where its movement records put it at (-42.18,
-        # 23.45) — the same two frames that made every distance bound fail, and the
-        # same trap fallen into again on this field. A death announced thirty units
-        # from the body has nothing to play over.
-        try:
-            described = monster_spawn(entity_descriptions()[target])
-        except (KeyError, ValueError):
-            described = None
+        # Where it stands *now*, in the description frame rather than the wire one.
+        # Two mistakes on this one field. The frame first: a real kill for this
+        # creature carries (-45.68, 54.63) where its movement records put it at
+        # (-42.18, 23.45), and a death announced thirty units from the body has
+        # nothing to play over. Then the position itself: this read the creature's
+        # recorded *spawn*, which was invisible while creatures stood still and
+        # obvious the moment they chased — they died back where they started.
+        described = None
+        here = self._creature_wire_position(target)
+        if here is not None:
+            described = self._described_position(here)
+        if described is None:
+            try:
+                described = monster_spawn(entity_descriptions()[target])
+            except (KeyError, ValueError):
+                described = None
         self._queue(
             connection,
             encode_kill(
