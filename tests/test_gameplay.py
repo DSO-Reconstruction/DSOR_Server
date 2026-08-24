@@ -705,3 +705,62 @@ def test_a_real_hit_decodes_sensibly_with_this_layout():
     player = int.from_bytes(b"\x15\x00\x01\x00", "little")
     assert reader.read_uint(32) == player, "the attacker"
     assert reader.read_uint(32) == player, "and whose floating number it is"
+
+
+def test_heading_law_matches_the_measured_axes():
+    """Heading is clockwise from +y, the only convention the capture supports.
+
+    Fitted against 114 real movement pairs: this one lands within 3.2 degrees,
+    every other axis convention is 73 degrees or worse. The two axis-aligned
+    families in the capture are what pin it — heading 0 travels +y, heading 128
+    travels -y.
+    """
+    from dsor.gameplay import HEADING_UNITS, heading_to
+
+    assert heading_to(0, 1) == 0
+    assert heading_to(0, -1) == HEADING_UNITS // 2
+    assert heading_to(1, 0) == HEADING_UNITS // 4
+    assert heading_to(-1, 0) == 3 * HEADING_UNITS // 4
+
+
+def test_motion_stamps_speed_and_both_headings():
+    """A walking record must carry a non-zero speed, or the client snaps.
+
+    This is the bug the user saw as "ils se tp sur moi": position changing while
+    byte 6 said the creature was standing. The same byte is what
+    UpdateMovementAnimation reads, so a zero also meant no walk animation.
+    """
+    from dsor.gameplay import (
+        HEADING_GOAL_OFFSET,
+        HEADING_OFFSET,
+        MOVE_SPEED_OFFSET,
+        WALK_SPEED,
+        Position,
+        with_motion,
+    )
+    from dsor.recorded import combat_ready_mobs
+
+    record = combat_ready_mobs()[0]
+    out = with_motion(
+        record, Position(10, 20, 30), 99, duration=18, speed=WALK_SPEED, heading=200
+    )
+    assert out[MOVE_SPEED_OFFSET] == WALK_SPEED
+    assert out[HEADING_OFFSET] == out[HEADING_GOAL_OFFSET] == 200
+    assert len(out) == len(record)
+    # And a standing record keeps speed zero.
+    still = with_motion(record, Position(10, 20, 30), 99, speed=0, heading=200)
+    assert still[MOVE_SPEED_OFFSET] == 0
+    assert still[13:15] == b"\x00\x00"
+
+
+def test_chase_speed_is_a_walk_not_a_leap():
+    """Wire units per game tick, not per update.
+
+    The first chase stepped 60 units per 100 ms update. A real walk is about six
+    units per 40 ms tick, so that was four times a player's run and read as a
+    teleport. Guard the unit, because getting it wrong looks like a different bug.
+    """
+    from dsor.gameplay import WALK_UNITS_PER_TICK
+
+    per_second = WALK_UNITS_PER_TICK * 1000 / 40
+    assert 100 <= per_second <= 200

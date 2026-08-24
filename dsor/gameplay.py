@@ -37,6 +37,7 @@ proposed again:
 
 from __future__ import annotations
 
+import math
 import struct
 from dataclasses import dataclass
 
@@ -462,6 +463,58 @@ ACTOR_ID_SIZE = 4
 COMMAND_TERMINATOR = 0xFF
 
 #: Divisor between the wire's signed 16-bit coordinates and world units.
+MOVE_SPEED_OFFSET = 6
+"""Byte 6: how fast the entity is travelling, 0 when it stands still.
+
+Read as a flag at first, because 0x40 and 0 are most of its values. The long
+session refutes the flag: it also takes 0x1d, 0x20, 0x29, 0x2d, 0x31, 0x33,
+0x36, 0x39 and every value from 0x3c to 0x41 — a continuum, not two states. It
+is what makes the client dead-reckon, and it is what
+``NetworkSmoothMotionProperty::UpdateMovementAnimation`` reads to pick the
+animation: a zero here with a position that keeps changing is a standing
+creature being teleported, which is exactly what this server used to draw.
+"""
+
+WALK_SPEED = 0x40
+"""The value a walking entity carries. The player's own records cluster on
+0x3c-0x41 for every sustained walk in the long session."""
+
+HEADING_OFFSET = 7
+HEADING_GOAL_OFFSET = 8
+"""Bytes 7 and 8: the heading now, and the heading being turned toward.
+
+An earlier reading — "a duplicated heading" — was refuted because the two are
+unequal about half the time while moving. That refutation was right and the
+conclusion drawn from it was wrong: they are *two* headings, and they differ
+exactly while the entity turns. Byte 7 predicts the direction actually
+travelled to within 3.2 degrees over 114 movement pairs, byte 8 does not.
+"""
+
+HEADING_UNITS = 256
+"""A full turn. Clockwise from +y: ``angle = 90 deg - heading * 360 / 256``.
+
+Measured, not assumed. Records with heading 0 move purely +y and records with
+heading 128 purely -y, and the intermediate values follow: median error +0.4
+degrees, standard deviation 3.2, 99% of 114 pairs within 15 degrees. Fitting
+byte 8 instead, or any of the four other axis conventions, gives 73 degrees or
+worse.
+"""
+
+WALK_UNITS_PER_TICK = 6
+"""Wire units a walking entity covers per game tick.
+
+Every clean axis-aligned sample in the long session moves 24 to 25 units in
+four to five ticks. At 40 ms a tick that is about 1.2 world units a second.
+Creatures here were stepped 60 units per 100 ms update — four times a player's
+run — which is the other half of why they appeared to teleport.
+"""
+
+
+def heading_to(dx: float, dy: float) -> int:
+    """The heading byte for travel along *(dx, dy)*, clockwise from +y."""
+    return round(math.atan2(dx, dy) * HEADING_UNITS / (2 * math.pi)) % HEADING_UNITS
+
+
 WORLD_SCALE = 128
 
 
@@ -471,7 +524,12 @@ def actor_id(record: bytes) -> bytes:
 
 
 def with_motion(
-    record: bytes, position: Position, start_tick: int, duration: int = 0
+    record: bytes,
+    position: Position,
+    start_tick: int,
+    duration: int = 0,
+    speed: int | None = None,
+    heading: int | None = None,
 ) -> bytes:
     """Return *record* at *position*, stamped with a fresh tick and duration.
 
@@ -492,6 +550,11 @@ def with_motion(
     out[DURATION_OFFSET : DURATION_OFFSET + DURATION_SIZE] = (
         duration % 2**16
     ).to_bytes(DURATION_SIZE, "little")
+    if speed is not None:
+        out[MOVE_SPEED_OFFSET] = speed & 0xFF
+    if heading is not None:
+        out[HEADING_OFFSET] = heading % HEADING_UNITS
+        out[HEADING_GOAL_OFFSET] = heading % HEADING_UNITS
     return bytes(out)
 
 

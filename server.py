@@ -49,8 +49,12 @@ from dsor.messages import (
 )
 from dsor.combat import (
     Hit,
+    TargetSkill,
+    encode_target_skill,
     Kill,
     encode_hit,
+    encode_player_level,
+    encode_xp_changed,
     encode_actors_enter_vicinity,
     encode_discard_monster,
     encode_kill,
@@ -60,20 +64,23 @@ from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
     Position,
     SPAWN_POSITIONS,
-    decode_client_movement,
     START_TICK_OFFSET,
+    WALK_SPEED,
+    WALK_UNITS_PER_TICK,
     WORLD_SCALE,
-    actor_id,
-    decode_position,
     WORLD_SCALE as WORLD,
-    monster_spawn,
-    with_spawn,
+    actor_id,
+    decode_client_movement,
+    decode_position,
     encode_entity_group_message,
-    encode_position,
-    with_motion,
     encode_entity_update,
+    encode_position,
+    heading_to,
+    monster_spawn,
     reposition_entity,
     ring_positions,
+    with_motion,
+    with_spawn,
 )
 from dsor.recorded import (
     CHARACTER_CHOSEN_NAME,
@@ -165,6 +172,19 @@ SCHEDULE_DELAY_SECONDS = 8.0
 
 #: Datagrams a second once it does start. The same rate as everything else.
 SCHEDULE_FRAGMENTS_PER_SECOND = 250.0
+
+#: Milliseconds per game tick, measured rather than guessed.
+#:
+#: Both sides stamp their movement commands on one counter, and the game clock a time
+#: sync announces is a different scale. Reading the two together in one session settles
+#: the ratio: at the moment the client announced a clock of 6217 it stamped a movement
+#: at 156, and 6217 / 40 = 155.4. Over the whole session the movement counter runs
+#: 106..5200 while the clock runs 4262..10558.
+#:
+#: This server announced its clock in milliseconds and stamped movement at
+#: milliseconds over *ten*, so its ticks ran four times fast against its own clock —
+#: and a movement window outside the client's clock moves nothing at all, silently.
+GAME_TICK_MS = 40
 
 #: The player's own actor id, as every recorded stats update carries it.
 PLAYER_ACTOR = bytes([0x15, 0x00, 0x01, 0x00])
@@ -290,6 +310,13 @@ class Service:
         #: Radius of a slow patrol around their own position, or 0 to stand still as
         #: the recorded ones did.
         self.mob_patrol = 0
+        #: Walk creatures toward the player instead, and how far per tick in wire units.
+        self.mob_chase = True
+        self.mob_speed = WALK_UNITS_PER_TICK
+        self.mob_stop = 1.5
+        self.mob_tick = 0
+        #: Where each creature has walked to, once it starts moving.
+        self.mob_positions: dict[bytes, object] = {}
         #: Duration stamped on a moving entity, for the client to interpolate over.
         self.tick_duration = 18
         #: Health each served creature has left, keyed by its actor id.
@@ -302,9 +329,21 @@ class Service:
         self.corpse_ticks: dict[bytes, int] = {}
         #: How long that is. Twenty ticks at ten a second is two seconds.
         self.corpse_lifetime = 20
+        #: Experience awarded per kill. Seventeen is what a real award carried.
+        self.kill_experience = 17
+        #: Experience banked per client, the level reached, and what a level costs.
+        self.player_xp: dict[tuple[str, int], int] = {}
+        self.player_level = 1
+        self.level_every = 34
         #: The player's health, and when a creature last struck them.
         self.player_health: dict[tuple[str, int], float] = {}
         self._last_strike: dict[tuple[str, int], float] = {}
+        #: The client's own game tick, read from its movement records.
+        self.client_tick: dict[tuple[str, int], int] = {}
+        #: Zero-based index of the skill a creature swings with. 440 is
+        #: AnderworldCreatureStrike, which the tutorial dungeon's creature template
+        #: grants; the client refuses a skill its actor does not hold.
+        self.creature_skill = 440
         #: Where the player starts, and the ceiling reported alongside it. The
         #: killing session's readings ran 0.0 to 31.6 against a maximum of 234 to 236.
         #: The player's health. 236 is measured — a nearly full bar in the capture.
@@ -315,7 +354,8 @@ class Service:
         self.mob_despawn = False
         #: What one creature blow takes off, and how often one lands. Both ours.
         self.creature_damage = 3.0
-        self.strike_interval = 1.5
+        #: One second, from the creature template's own AttackInterval.
+        self.strike_interval = 1.0
         #: How far a blow reaches, in world units, in either direction.
         #:
         #: Four, from measurement: replaying a real session's twelve attacks against
@@ -323,7 +363,8 @@ class Service:
         #: 1.75 on purpose, because this measures from a creature's movement record
         #: while the client measures from what it draws; six was too loose and made
         #: the player take damage from creatures across the room.
-        self.reach = 4.0
+        #: 3.5, from the creature template's own AggroRange, rather than a guess.
+        self.reach = 3.5
         #: What a creature starts with, and what one hit takes off it.
         #: A creature's health, and what one blow takes off it.
         #:
@@ -826,7 +867,7 @@ class Service:
         # The real server advances a tick counter on every update and re-announces
         # each entity; it observed ten to twelve per update. Milliseconds over ten
         # reproduces that rate without inventing a clock of our own.
-        tick = connection.elapsed_ms() // 10
+        tick = connection.elapsed_ms() // GAME_TICK_MS
         self._queue(connection, self._entity_update(position, tick), sender)
 
     def _creature_wire_position(self, actor: bytes):
@@ -844,6 +885,9 @@ class Service:
 
         So: compare wire against wire.
         """
+        moved = self.mob_positions.get(actor)
+        if moved is not None:
+            return moved
         for record in combat_ready_mobs():
             if actor_id(record) == actor:
                 return decode_position(record)
@@ -936,7 +980,7 @@ class Service:
                     # Zero, as the real blow carries. The floating number comes from
                     # the damage field; putting it here as well draws a second one.
                     combat_value=0.0,
-                    tick=connection.elapsed_ms() // 10,
+                    tick=connection.elapsed_ms() // GAME_TICK_MS,
                 )
             ),
             sender,
@@ -964,7 +1008,7 @@ class Service:
         # it needs no recording — which is how a creature with no captured removal
         # can be retired at all.
         victim = int.from_bytes(target, "little")
-        tick = connection.elapsed_ms() // 10
+        tick = connection.elapsed_ms() // GAME_TICK_MS
         # In the *description* frame, not the wire one. A real kill for this creature
         # carries (-45.68, 54.63) where its movement records put it at (-42.18,
         # 23.45) — the same two frames that made every distance bound fail, and the
@@ -998,7 +1042,35 @@ class Service:
         # tells the client to clear the body; discarding is for retiring a creature
         # that is not dying, and for one no capture contains a removal for.
         self.corpse_ticks[target] = self.corpse_lifetime
-        log.info("%s: entity %s killed", self.name, target.hex(" "))
+        if self.kill_experience:
+            # Addressed to the player, not the creature — which is why this server's
+            # batch filter dropped it for hours: it keeps what belongs to the creature
+            # or to nobody, and experience belongs to whoever landed the blow.
+            self._queue(
+                connection,
+                encode_xp_changed(
+                    self.kill_experience, int.from_bytes(PLAYER_ACTOR, "little")
+                ),
+                sender,
+            )
+            self.player_xp[sender] = self.player_xp.get(sender, 0) + self.kill_experience
+            if self.level_every and self.player_xp[sender] >= self.level_every:
+                self.player_xp[sender] -= self.level_every
+                self.player_level += 1
+                self._queue(
+                    connection,
+                    encode_player_level(
+                        self.player_level, int.from_bytes(PLAYER_ACTOR, "little")
+                    ),
+                    sender,
+                )
+                log.info("%s: %s reached level %d", self.name, sender, self.player_level)
+        log.info(
+            "%s: entity %s killed%s",
+            self.name,
+            target.hex(" "),
+            " (+%d xp)" % self.kill_experience if self.kill_experience else "",
+        )
         self.mob_target.pop(sender, None)
 
     def _announce_vicinity(self, connection: Connection, sender) -> None:
@@ -1195,6 +1267,53 @@ class Service:
         ]
         if not templates:
             return encode_entity_group_message([player])
+        if self.mob_chase:
+            # Toward the player, and at a player's pace. Two things made the first
+            # attempt look like a teleport rather than a walk, and they were the same
+            # thing twice: the record was stamped with speed zero, so the client had
+            # no velocity to extrapolate and simply snapped to each new position and
+            # played the idle animation over it; and the step was 60 wire units per
+            # 100 ms update, four times a real walk. A speed byte, a heading, and
+            # WALK_UNITS_PER_TICK fix both. The animation follows for free, because
+            # it is NetworkSmoothMotionProperty that both interpolates and animates.
+            placed = []
+            elapsed = max(1, tick - self.mob_tick)
+            self.mob_tick = tick
+            reach = self.mob_stop * WORLD_SCALE
+            for template in templates:
+                actor = actor_id(template)
+                here = self.mob_positions.get(actor) or decode_position(template)
+                span = here.distance_to(position)
+                heading = heading_to(position.x - here.x, position.y - here.y)
+                if span <= reach:
+                    # Arrived: stand and face the player. Standing creatures in the
+                    # capture carry speed zero and duration zero, so anything else
+                    # here would claim a movement the client would extrapolate into
+                    # the player.
+                    self.mob_positions[actor] = here
+                    placed.append(
+                        with_motion(template, here, tick, speed=0, heading=heading)
+                    )
+                    continue
+                step = min(self.mob_speed * elapsed, span - reach)
+                moved = Position(
+                    x=here.x + round((position.x - here.x) * step / span),
+                    elevation=position.elevation,
+                    y=here.y + round((position.y - here.y) * step / span),
+                )
+                self.mob_positions[actor] = moved
+                placed.append(
+                    with_motion(
+                        template,
+                        moved,
+                        tick,
+                        duration=self.tick_duration,
+                        speed=WALK_SPEED,
+                        heading=heading,
+                    )
+                )
+            return encode_entity_group_message([player, *placed])
+
         if self.mob_patrol:
             # Beyond what the capture shows: its creatures stood still, 620 of 621
             # updates at one position with duration zero. This walks them in a slow
@@ -1305,8 +1424,32 @@ class Service:
         # separate command this server does not send yet, and an empty bar with no
         # death is worse than a scratch.
         current = self.player_health.get(sender, float(self.player_max))
-        left = max(1.0, current - self.creature_damage)
+        left = max(0.0, current - self.creature_damage)
         self.player_health[sender] = left
+
+        # The swing first. There is no "play this animation" command in the protocol —
+        # 371 command classes and not one names a sequence or a gesture — so a creature
+        # animates only when sent a skill. The hit asks for no animation at all, for
+        # anyone, which is why a creature that damages the player still stands there.
+        #
+        # The skill has to be one the creature's own template grants: the client asks
+        # its actor whether it holds that template before visualising anything. The
+        # tutorial dungeon's creature has AnderworldCreatureStrike, which is row 441 of
+        # the client's skill table, and the wire wants a zero-based index — 440. That
+        # mapping is confirmed the other way round too: the player's angrystrike is row
+        # 1839 and the client sends 1838.
+        self._queue(
+            connection,
+            encode_target_skill(
+                TargetSkill(
+                    attacker=int.from_bytes(attacker, "little"),
+                    target=int.from_bytes(PLAYER_ACTOR, "little"),
+                    skill_id=self.creature_skill,
+                    start_tick=self.client_tick.get(sender, 0),
+                )
+            ),
+            sender,
+        )
 
         # One message, not two. This used to replay a recorded blow *and* send a
         # separate vitals update, so the number the player saw came from another
@@ -1325,11 +1468,35 @@ class Service:
                     victim_max_health=int(self.player_max),
                     combat_value_owner=int.from_bytes(PLAYER_ACTOR, "little"),
                     combat_value=0.0,
-                    tick=connection.elapsed_ms() // 10,
+                    tick=connection.elapsed_ms() // GAME_TICK_MS,
                 )
             ),
             sender,
         )
+        if left <= 0.0:
+            # A player at zero health with nothing killing them stands at an empty bar
+            # for ever. The same command that kills a creature kills a player.
+            self._queue(
+                connection,
+                encode_kill(
+                    Kill(
+                        victim=int.from_bytes(PLAYER_ACTOR, "little"),
+                        killer=int.from_bytes(attacker, "little"),
+                        position=(
+                            position.x / WORLD,
+                            0.0,
+                            position.y / WORLD,
+                        ),
+                        tick=connection.elapsed_ms() // GAME_TICK_MS,
+                        despawn=False,
+                    )
+                ),
+                sender,
+            )
+            self.player_health[sender] = float(self.player_max)
+            log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
+            return
+
         log.info(
             "%s: entity %s struck %s, %.0f health left",
             self.name,
@@ -1518,6 +1685,10 @@ class Service:
             # The client reports where it walked to; remember it so the next tick
             # reports the same place back.
             self.positions[sender] = decode_client_movement(game.body).position
+            # The client's own game tick, taken from its movement record rather than
+            # invented. A skill's start tick is compared against it, and a stale one
+            # makes the visualizer finish the instant it is created.
+            self.client_tick[sender] = int.from_bytes(game.body[9:13], "little")
             return
 
         if self.role == "character" and game.message_id == 0x8D:
@@ -1622,10 +1793,15 @@ def serve(
     mob_damage: float = 12.0,
     mob_near: float = 0.0,
     creature_damage: float = 3.0,
+    creature_skill: int = 440,
     mob_despawn: bool = False,
     mob_first_command: bool = False,
     mob_template: str | None = None,
     mob_swap: str | None = None,
+    kill_experience: int = 17,
+    mob_chase: bool = True,
+    mob_speed: int | None = None,
+    level_every: int = 34,
     announce_vicinity: bool = True,
 ) -> None:
     """Run the three tiers the real service is built from.
@@ -1680,10 +1856,16 @@ def serve(
         service.mob_max_health_ceiling = int(mob_health)
         service.mob_near = mob_near
         service.creature_damage = creature_damage
+        service.creature_skill = creature_skill
         service.mob_despawn = mob_despawn
         service.mob_first_command = mob_first_command
         service.mob_template = mob_template
         service.mob_swap = mob_swap
+        service.kill_experience = kill_experience
+        service.mob_chase = mob_chase
+        if mob_speed is not None:
+            service.mob_speed = mob_speed
+        service.level_every = level_every
         service.announce_vicinity = announce_vicinity
         service.shop_offers = shop_offers
         service.shop_price = shop_price
@@ -1841,6 +2023,13 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--kill-experience",
+        type=int,
+        default=17,
+        metavar="N",
+        help="experience awarded per kill, 0 for none. A real award carried 17",
+    )
+    parser.add_argument(
         "--mob-swap",
         metavar="NAME",
         help=(
@@ -1876,6 +2065,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--creature-skill",
+        type=int,
+        default=440,
+        metavar="N",
+        help=(
+            "zero-based index of the skill creatures swing with. 440 is "
+            "AnderworldCreatureStrike, row 441 of the client's skill table; the client "
+            "refuses one the creature's template does not grant"
+        ),
+    )
+    parser.add_argument(
         "--creature-damage",
         type=float,
         default=3.0,
@@ -1897,6 +2097,26 @@ def main() -> None:
             "creatures appearing at all — the field is bit-packed and a byte-aligned "
             "write corrupts what follows"
         ),
+    )
+    parser.add_argument(
+        "--mob-speed",
+        type=int,
+        default=None,
+        metavar="UNITS",
+        help="wire units a creature covers per game tick, about 6 for a walk",
+    )
+    parser.add_argument(
+        "--no-chase",
+        dest="mob_chase",
+        action="store_false",
+        help="leave creatures where they stand instead of walking them at the player",
+    )
+    parser.add_argument(
+        "--level-every",
+        type=int,
+        default=34,
+        metavar="N",
+        help="experience needed per level, 0 to never level. 34 is two kills at 17",
     )
     parser.add_argument(
         "--mob-patrol",
@@ -1956,10 +2176,15 @@ def main() -> None:
         mob_damage=args.mob_damage,
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
+        creature_skill=args.creature_skill,
         mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,
         mob_template=args.mob_template,
         mob_swap=args.mob_swap,
+        kill_experience=args.kill_experience,
+        mob_chase=args.mob_chase,
+        mob_speed=args.mob_speed,
+        level_every=args.level_every,
         announce_vicinity=args.announce_vicinity,
     )
 
