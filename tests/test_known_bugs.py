@@ -1178,12 +1178,12 @@ def test_each_pickup_lands_in_its_own_inventory_slot():
     # Every pickup takes the next cell, and the bag is finite: past its capacity the
     # request is refused rather than allocated outside the grid, which crashes the
     # client exactly as a stacked cell does.
-    free = world.slot_capacity - world.first_slot
+    free = world.rules.slot_capacity - world.rules.first_slot
     for index in range(free):
         actor = bytes([0x41 + index, 0, 1, 0])
         world.dropped[actor] = (0.0, 0.0, 0.0)
         assert world.pick_up(here, actor), f"cell {index} should be free"
-    assert world.next_slot == world.slot_capacity
+    assert world.next_slot == world.rules.slot_capacity
     assert free >= 1, "at least one cell has to be handed out"
     overflow = bytes([0x60, 0, 1, 0])
     world.dropped[overflow] = (0.0, 0.0, 0.0)

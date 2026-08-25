@@ -1,0 +1,54 @@
+# Settings for the Drakensang Online server emulator.
+#
+# This file is the source of truth and the flags are overrides:
+#
+#     defaults in the dataclasses  <-  [service] and [rules]  <-  the command line
+#                                          [world.<map>] is more specific than either
+#
+# A key that names no setting is an error rather than a shrug, because a mistyped key
+# in a config file is the failure that looks like success: the server starts, looks
+# healthy, and does not do the thing that was asked.
+#
+# Run with:  python3 server.py
+# Every setting below has a --flag of the same name; see --help for what each does.
+
+[service]
+advertise = "172.20.0.1"
+verbose = true
+console_port = 2199
+
+# Everything a player arrives with. These used to be a 428-character command line.
+[rules]
+start_level = 100
+grant_up_to_level = 100
+player_max = 6000
+mob_first_command = true
+
+# What one peer may ask of the server, and what it is not taken at its word for.
+# See dsor/trust.py for why each tolerance is as loose as it is.
+enforce = true
+pickup_range = 12.0
+
+# Effects. Animated ones are held back: the element this server builds carries no
+# float3 vectors, and an animated effect sends the client's sequencer into a
+# FixedArray it cannot index. See dsor/recorded.py.
+status_effects = true
+force_effects = true
+animated_effects = false
+
+# Shop and inventory. first_slot is 2 because the client already fills cells 0 and 1,
+# and dropping an item into an occupied cell is refused with "Storage slot is occupied".
+first_slot = 2
+slot_capacity = 20
+drop_templates = [
+    "warrior_mythic_rh_sword_01",
+    "warrior_mythic_shoulders_01",
+]
+
+# The tutorial dungeon. A per-world table is the most specific statement there is, so
+# it wins over both the global table and the command line.
+[world.a0001_start_tutorial_dun]
+# Creatures hit for what their own template says when this is 0; 250 is a testing
+# figure, chosen so a player at 6000 health actually loses some and a life leech has
+# something to give back.
+creature_damage = 250.0

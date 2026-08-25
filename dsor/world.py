@@ -223,6 +223,22 @@ class Rules:
     #: often, what it cost, and what it may pick up. Off is for debugging a capture,
     #: not for running a service.
     enforce: bool = True
+    #: How many bag cells there are to hand out. Read off the storage descriptors in
+    #: both messages, which carry 5 and 6. Beyond this a pickup is refused rather
+    #: than allowed to land outside the grid.
+    slot_capacity: int = 5
+    #: The first cell to hand out.
+    #:
+    #: Not zero. The character's login inventory carries two items and **no**
+    #: allocations, so those two are placed by the client itself — at the first free
+    #: cells, evidently — and claiming cell 0 draws its own assertion by name:
+    #:
+    #:   *** NEBULA ASSERTION ***  programmer says: Storage slot is occupied
+    #:   Game::Inventory::AddItemAtStorageSlot(...)
+    #:
+    #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
+    #: the messages that says where the client put them.
+    first_slot: int = 2
     #: How far a player may be from an item and still pick it up, in world units.
     #: Ours: the client has an AutoPickupRange somewhere but not in _Globals, so this
     #: is a bound rather than the game's own.
@@ -523,22 +539,6 @@ class World:
     #: How far apart two items on the ground must lie, in world units. Ours: the
     #: client stacks items that share a place and a stack crashes it.
     drop_spacing: float = 1.2
-    #: How many bag cells there are to hand out. Read off the storage descriptors in
-    #: both messages, which carry 5 and 6. Beyond this a pickup is refused rather
-    #: than allowed to land outside the grid.
-    slot_capacity: int = 5
-    #: The first cell to hand out.
-    #:
-    #: Not zero. The character's login inventory carries two items and **no**
-    #: allocations, so those two are placed by the client itself — at the first free
-    #: cells, evidently — and claiming cell 0 draws its own assertion by name:
-    #:
-    #:   *** NEBULA ASSERTION ***  programmer says: Storage slot is occupied
-    #:   Game::Inventory::AddItemAtStorageSlot(...)
-    #:
-    #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
-    #: the messages that says where the client put them.
-    first_slot: int = 2
     #: How many items have been dropped, which also picks the next blueprint.
     drops: int = 0
     #: The inventory slot the next pickup is put in.
@@ -2337,11 +2337,11 @@ class World:
                      self.name, sender, actor.hex(" "))
             return []
         if self.next_slot < 0:
-            self.next_slot = self.first_slot
-        if self.next_slot >= self.slot_capacity:
+            self.next_slot = self.rules.first_slot
+        if self.next_slot >= self.rules.slot_capacity:
             log.info(
                 "%s: %s asked for item %s and the bag is full at %d cells",
-                self.name, sender, actor.hex(" "), self.slot_capacity,
+                self.name, sender, actor.hex(" "), self.rules.slot_capacity,
             )
             return []
         del self.dropped[actor]
@@ -2358,7 +2358,7 @@ class World:
             sender,
         )
         log.info("%s: %s picked up item %s into cell %d of %d",
-                 self.name, sender, actor.hex(" "), slot, self.slot_capacity)
+                 self.name, sender, actor.hex(" "), slot, self.rules.slot_capacity)
         return self._drain()
 
     def smite_all(self, sender: Address) -> list[tuple[Address, bytes]]:

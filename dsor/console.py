@@ -31,6 +31,8 @@ SETTABLE: dict[str, Callable[[str], object]] = {
     "creature_skill": int,
     "strike_interval": float,
     "effect_stack": int,
+    "first_slot": int,
+    "slot_capacity": int,
     "animated_effects": bool,
     "reach": float,
     "reach_slack": float,
@@ -51,9 +53,10 @@ SETTABLE: dict[str, Callable[[str], object]] = {
 }
 
 #: World state that may be set the same way.
+#: Settings that live on the world rather than the rules. Two used to be here --
+#: first_slot and slot_capacity -- and they are policy, not state, so they moved to the
+#: rules where a config file can reach them.
 WORLD_SETTABLE: dict[str, Callable[[str], object]] = {
-    "first_slot": int,
-    "slot_capacity": int,
     "drop_spacing": float,
 }
 

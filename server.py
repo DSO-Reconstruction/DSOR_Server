@@ -63,6 +63,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
+from dsor import config
 from dsor.combat import decode_skill_use
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
@@ -1509,6 +1510,7 @@ class Service:
 
 
 def serve(
+    settings: dict | None = None,
     login_port: int = 2190,
     character_port: int = 2192,
     map_port: int = 30000,
@@ -1633,6 +1635,24 @@ def serve(
         service.rules.granted_skills = list(granted_skills or [])
         service.rules.grant_up_to_level = grant_up_to_level
         service.rules.start_level = start_level
+        # The file's rules, applied after the options so the file is the source of
+        # truth and the options are what you reach for before writing something down.
+        # Loud rather than silent about it: a setting quietly ignored is the failure
+        # this whole thing exists to avoid.
+        from_file = config.rules_for(
+            settings or {}, map_name, worlds=role == "map"
+        )
+        if from_file:
+            try:
+                applied = config.apply_to(service.rules, from_file, "rules")
+            except config.ConfigError as error:
+                raise SystemExit(str(error))
+            log.info(
+                "%s: %d setting(s) from the config file: %s",
+                service.name,
+                len(applied),
+                ", ".join(sorted(applied)),
+            )
         if map_spawns and role == "map":
             usable = servable_points(set(monster_library()))
             service.world.populate_from_map(usable, mob_health)
@@ -1656,9 +1676,9 @@ def serve(
         service.rules.drop_items = drop_items
         service.rules.allow_pickup = allow_pickup
         if first_slot is not None:
-            service.world.first_slot = first_slot
+            service.rules.first_slot = first_slot
         if slot_capacity is not None:
-            service.world.slot_capacity = slot_capacity
+            service.rules.slot_capacity = slot_capacity
         service.rules.drop_templates = list(drop_templates or [])
         if mob_aggro is not None:
             service.rules.mob_aggro = mob_aggro
@@ -1755,6 +1775,17 @@ def serve(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--config",
+        metavar="PATH",
+        help=(
+            "settings file, TOML. Defaults to ./dsor.toml if it exists. Its [service] "
+            "and [rules] tables become the defaults for the options below, so a flag "
+            "given on the command line still wins; a [world.<map>] table is more "
+            "specific than either and wins over both, which is the point of having a "
+            "file — one server, several worlds, different numbers"
+        ),
+    )
     parser.add_argument(
         "--advertise",
         default="127.0.0.1",
@@ -2188,6 +2219,33 @@ def main() -> None:
         ),
     )
     parser.add_argument("--verbose", "-v", action="store_true")
+
+    # The file first, as the defaults, so an explicit flag overrides it without any
+    # of this having to know which flags were given. Fifty-one options and a 428
+    # character command line is what made a file necessary.
+    known, _rest = parser.parse_known_args()
+    try:
+        settings = config.load(known.config)
+    except config.ConfigError as error:
+        parser.error(str(error))
+    if settings:
+        # [service] names command-line options, because that is what it configures:
+        # ports, the advertised address, the capture file. [rules] does not go through
+        # here at all -- only 21 of the 53 options are rules, and 25 of the 46 rules
+        # have no option, so routing them through argparse would refuse exactly the
+        # settings a file is for.
+        destinations = {
+            action.dest for action in parser._actions if action.dest != "help"
+        }
+        from_file = {}
+        for name, value in (settings.get("service") or {}).items():
+            if name not in destinations:
+                near = sorted(d for d in destinations if d.startswith(name[:4]))
+                hint = f"; did you mean {', '.join(near)}?" if near else ""
+                parser.error(f"[service] has no setting {name!r}{hint}")
+            from_file[name] = value
+        parser.set_defaults(**from_file)
+
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -2195,6 +2253,7 @@ def main() -> None:
         format="%(asctime)s %(levelname)-7s %(message)s",
     )
     serve(
+        settings=settings,
         login_port=args.login_port,
         character_port=args.character_port,
         map_port=args.map_port,
