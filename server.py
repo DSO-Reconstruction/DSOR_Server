@@ -63,6 +63,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
+from dsor.combat import decode_skill_use
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.mapdata import SPAWN_POINTS, servable_points
@@ -223,8 +224,20 @@ SKILL_OPCODES = {
     0x0046: "SkillCommand",
     0x0047: "TargetSkillCommand",
     0x0048: "BulletSkillCommand",
+    # Measured: stuncharge arrives as this one, and leaving it out was the whole of
+    # "certains font pas de degats". Eight of them in the real captures too.
+    0x0049: "TargetPointBulletSkillCommand",
     0x004A: "ShiftedSkillCommand",
     0x004B: "TargetBulletSkillCommand",
+}
+
+#: The two remaining skill commands, deliberately not treated as a blow.
+#: SustainedSkillCommand 0x004C is a channelled skill and needs a start-and-stop
+#: model rather than one hit per command; SkillStopCommand 0x004D ends one. The
+#: warrior has no sustained skill, and neither appears in any capture here.
+SKILL_OPCODES_UNHANDLED = {
+    0x004C: "SustainedSkillCommand",
+    0x004D: "SkillStopCommand",
 }
 #: Commands::PickupItemCommand. The client sends the item's actor id and nothing
 #: else — four bytes, the shortest request in the protocol.
@@ -1265,28 +1278,28 @@ class Service:
             and game.message_id == 0x8B
             and game.opcode in SKILL_OPCODES
         ):
-            # The skill's wire index, at body bytes 2 and 3, little endian. Measured
-            # rather than assumed: a session at level 15 read 1838 for angrystrike,
-            # 1839 for mightyswing and 1842 for mighty360 at this offset, and those
-            # are rows 1839, 1840 and 1843 of the client's own skill table.
-            wire = (
-                int.from_bytes(game.body[2:4], "little")
-                if len(game.body) >= 4
-                else None
-            )
+            # Every skill command begins the same way: the skill's wire index, and
+            # a float saying where the player is aiming. Both come from the command
+            # rather than being inferred — a movement record's facing is the last one
+            # the client happened to send, and a player who turns and swings in the
+            # same breath has moved on.
+            use = decode_skill_use(game.body)
+            wire = use.wire if use else None
+            aim = use.heading if use else None
             known = skill_at(wire)
             log.info(
-                "%s: %s used %s (%s) via %s",
+                "%s: %s used %s (%s) aiming %s via %s",
                 self.name,
                 sender,
                 known.id if known else f"unknown skill {wire}",
                 f"{known.targeting} {known.hit_range:g}u x{known.damage_modifier:g}"
                 if known
                 else "no template",
+                f"{aim * 360 // 256}deg" if aim is not None else "unstated",
                 SKILL_OPCODES[game.opcode],
             )
             self._set_clock(sender)
-            self._ship(self.world.attack(sender, wire))
+            self._ship(self.world.attack(sender, wire, aim))
             return
 
         if (

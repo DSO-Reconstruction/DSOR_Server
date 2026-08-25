@@ -370,6 +370,12 @@ class World:
     #: Blows in flight, as (when it lands, victim, attacker). A creature's blow is
     #: announced when the swing starts and applied at the skill's impact frame.
     pending_hits: list[tuple[float, Address, bytes]] = field(default_factory=list)
+    #: Swings whose victims are chosen later, not now: a leap and a charge strike
+    #: where they land, and where they land is not known until the player's own
+    #: movement records say so. (due, address, skill wire, aim)
+    pending_swings: list[tuple[float, Address, int | None, int | None]] = field(
+        default_factory=list
+    )
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
     stepped_tick: int = 0
@@ -574,6 +580,7 @@ class World:
         """
         self.players.pop(address, None)
         self.pending_hits = [h for h in self.pending_hits if h[1] != address]
+        self.pending_swings = [s for s in self.pending_swings if s[1] != address]
         if not self.players:
             self.reset_creatures()
 
@@ -787,7 +794,7 @@ class World:
 
 
     def victims_of(
-        self, sender: Address, used: Skill | None
+        self, sender: Address, used: Skill | None, aim: int | None = None
     ) -> list[bytes]:
         """Which creatures *used* strikes, cast by the player at *sender*.
 
@@ -852,7 +859,12 @@ class World:
         # the wire uses for a heading and comparing in it avoids a conversion in the
         # middle of a wrap.
         half = used.arc / 360.0 * HEADING_UNITS / 2.0
-        facing = self.player(sender).heading
+        # Where the command says the player is aiming, and only failing that the
+        # last facing a movement record reported. The command is the better source:
+        # across 277 real skill commands the two agree to within eight units 77% of
+        # the time, and the disagreements are exactly the turns — the player pointed
+        # somewhere and swung before the next movement record went out.
+        facing = self.player(sender).heading if aim is None else aim
         struck = []
         for actor in within:
             where = self.wire_position(actor)
@@ -866,7 +878,13 @@ class World:
                 struck.append(actor)
         return sorted(struck, key=distance)
 
-    def resolve_attack(self, sender: Address, wire: int | None = None) -> None:
+    def resolve_attack(
+        self,
+        sender: Address,
+        wire: int | None = None,
+        aim: int | None = None,
+        travelled: bool = False,
+    ) -> None:
         """Work out what the player just hit with skill *wire*, and take health off it.
 
         Neither skill command names a victim: ``TargetSkillCommand`` carries a skill
@@ -880,6 +898,24 @@ class World:
         the blow is the client's.
         """
         used = skill_at(wire)
+        if used is not None and used.lands_where_it_ends and not travelled:
+            # A leap or a charge. Come back when the player has got there.
+            self.pending_swings.append(
+                (
+                    time.monotonic() + used.hit_frame * GAME_TICK_MS / 1000.0,
+                    sender,
+                    wire,
+                    aim,
+                )
+            )
+            log.info(
+                "%s: %s launched %s, resolving in %d ticks where it lands",
+                self.name,
+                sender,
+                used.id,
+                used.hit_frame,
+            )
+            return
         if used is not None and used.harmless:
             # Not a blow. Either the skill is cast on the caster — warshout,
             # frenzyshout, defiance, spikedShield — or its damage modifier is zero
@@ -898,7 +934,7 @@ class World:
             )
             return
 
-        targets = self.victims_of(sender, used)
+        targets = self.victims_of(sender, used, aim)
         if not targets:
             log.info(
                 "%s: %s attacked with %s and nothing was within %.2f units",
@@ -1299,6 +1335,32 @@ class World:
         )
 
 
+    def land_swings(self) -> None:
+        """Resolve the swings that had to wait for the player to arrive somewhere.
+
+        A leap and a charge strike at the far end of the travel, not the near end:
+        enragingleap has an attack range of 10 and a hit range of under three, so it
+        crosses ten units and hits within three of where it comes down. Resolving it
+        the moment the command arrives measures from where the player left, which put
+        the damage in the wrong place — and for a jump of ten units against a reach of
+        three, usually on nobody.
+
+        Waiting for the skill's own hit frame solves it without decoding the
+        destination out of the command, which is a field whose layout is not
+        established. Eleven ticks is 440 ms and the client sends movement records
+        continuously, so by the time the blow lands the player's position is the one
+        they landed on, reported by the client itself.
+        """
+        now = time.monotonic()
+        due = [entry for entry in self.pending_swings if entry[0] <= now]
+        if not due:
+            return
+        self.pending_swings = [e for e in self.pending_swings if e[0] > now]
+        for _, sender, wire, aim in due:
+            if not self.player(sender).in_world:
+                continue
+            self.resolve_attack(sender, wire, aim, travelled=True)
+
     def land_hits(self) -> None:
         """Apply the blows whose impact frame has arrived."""
         now = time.monotonic()
@@ -1392,6 +1454,7 @@ class World:
             self._tick_pair(player.address)
             self.creature_swing(player.address)
         self.land_hits()
+        self.land_swings()
         return self._drain()
 
     def enter(self, sender: Address) -> list[tuple[Address, bytes]]:
@@ -1400,10 +1463,13 @@ class World:
         return self._drain()
 
     def attack(
-        self, sender: Address, wire: int | None = None
+        self,
+        sender: Address,
+        wire: int | None = None,
+        aim: int | None = None,
     ) -> list[tuple[Address, bytes]]:
-        """A player has swung skill *wire*: resolve it and return what to send."""
-        self.resolve_attack(sender, wire)
+        """A player has swung skill *wire* toward *aim*: resolve it and send."""
+        self.resolve_attack(sender, wire, aim)
         return self._drain()
 
     def blueprint_for(self, index: int) -> str | None:

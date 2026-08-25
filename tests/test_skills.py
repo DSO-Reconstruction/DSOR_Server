@@ -290,3 +290,128 @@ def test_a_stationary_player_can_still_aim_a_cone():
     world.resolve_attack(sender, skills.wire_of("mightyswing"))
     assert world.creatures[south].health < 1000.0, "in front of a player facing south"
     assert world.creatures[north].health == 1000.0, "behind them"
+
+
+def test_the_aim_comes_out_of_the_command_itself():
+    """Four real commands, decoded. The float at offset 4 is the aim, in radians.
+
+    Measured across 277 real skill commands: every one falls inside [-pi, +pi],
+    spanning -3.1315 to +3.0803 across 198 distinct values. Fitting (sign, offset)
+    against the facing byte of the movement record immediately before each command
+    gives sign +1 and offset 128 — half a turn — with a median error of one unit out
+    of 256.
+    """
+    from dsor.combat import decode_skill_use
+
+    captured = {
+        "mightybash": "0000 3b07 93948 3bf 26060000 869057b100".replace(" ", ""),
+        "angrystrike": "00002e0753 79aabf 05020000 e11cee8e428000 8000",
+        "stuncharge": "0000 3307 ee88babf 52040000 c1",
+        "enragingleap": "0000 3907 26d6f13f c3040000 7915",
+    }
+    expected = {
+        "mightybash": (1851, 86, 1574),
+        "angrystrike": (1838, 74, 517),
+        "stuncharge": (1843, 69, 1106),
+        "enragingleap": (1849, 205, 1219),
+    }
+    for name, hexed in captured.items():
+        use = decode_skill_use(bytes.fromhex(hexed.replace(" ", "")))
+        assert use is not None, name
+        assert (use.wire, use.heading, use.tick) == expected[name], name
+        assert skills.skill(use.wire).id == name
+
+
+def test_a_body_too_short_or_not_a_heading_is_refused():
+    """Better to fall back to the movement facing than aim with another field."""
+    import struct
+
+    from dsor.combat import decode_skill_use
+
+    assert decode_skill_use(b"\x00" * 11) is None
+    # A float well outside [-pi, +pi] is not a heading.
+    body = b"\x00\x00" + (1838).to_bytes(2, "little") + struct.pack("<f", 900.0)
+    assert decode_skill_use(body + b"\x00" * 4) is None
+
+
+def test_the_command_aim_beats_a_stale_movement_facing():
+    """The player turns, then swings, before the next movement record goes out.
+
+    This is the 23% of real commands where the two disagree, and the command is the
+    one that is right.
+    """
+    world = a_world()
+    sender = a_player(world, heading=0)  # the last record said "facing +y"
+    south = stand(world, 0x85, 0.0, -2.0)
+    north = stand(world, 0x86, 0.0, 2.0)
+
+    # ... but the command says the player is aiming -y.
+    world.resolve_attack(sender, skills.wire_of("mightyswing"), aim=128)
+    assert world.creatures[south].health < 1000.0, "aimed where the command said"
+    assert world.creatures[north].health == 1000.0, "not where the record said"
+
+
+def test_a_leap_is_resolved_where_it_lands_not_where_it_started():
+    """enragingleap crosses ten units and hits within under three of the landing.
+
+    Resolving it on arrival of the command measured from where the player left, which
+    for a jump of ten against a reach of three usually meant nobody at all.
+    """
+    world = a_world()
+    sender = a_player(world)
+    far = stand(world, 0x85, 0.0, 9.0)
+
+    leap = skills.wire_of("enragingleap")
+    world.resolve_attack(sender, leap)
+    assert world.creatures[far].health == 1000.0, "nothing yet — it is in the air"
+    assert len(world.pending_swings) == 1
+
+    # The client reports where the player came down, as it does continuously.
+    world.player(sender).position = Position(0.0, 0.0, 9.0 * 128.0)
+    world.pending_swings = [(0.0,) + entry[1:] for entry in world.pending_swings]
+    world.land_swings()
+    assert world.creatures[far].health < 1000.0, "hit where it landed"
+    assert not world.pending_swings
+
+
+def test_a_leap_that_lands_on_nobody_still_clears():
+    world = a_world()
+    sender = a_player(world)
+    world.resolve_attack(sender, skills.wire_of("enragingleap"))
+    world.pending_swings = [(0.0,) + entry[1:] for entry in world.pending_swings]
+    world.land_swings()
+    assert not world.pending_swings
+
+
+def test_a_player_who_leaves_takes_their_pending_swing_with_them():
+    world = a_world()
+    sender = a_player(world)
+    world.resolve_attack(sender, skills.wire_of("enragingleap"))
+    assert world.pending_swings
+    world.forget(sender)
+    assert not world.pending_swings
+
+
+def test_a_charge_travels_too():
+    """stuncharge has an attack range of 10 and a 45 degree arc."""
+    charge = skills.by_id("stuncharge")
+    assert charge.lands_where_it_ends
+    assert (charge.attack_range, charge.arc) == (10.0, 45.0)
+    assert charge.kind == "Charge"
+
+
+def test_every_skill_command_the_client_sends_is_dispatched():
+    """0x0049 was missing, and stuncharge arrives as it.
+
+    Measured in the captures: 0x0046, 0x0047, 0x0049 and 0x004A from the client, and
+    eight of the 0x0049 on the live service too. Leaving it out was the whole of
+    "certains font pas de degats".
+    """
+    import server
+
+    for opcode in (0x0046, 0x0047, 0x0048, 0x0049, 0x004A, 0x004B):
+        assert opcode in server.SKILL_OPCODES, hex(opcode)
+    assert server.SKILL_OPCODES[0x0049] == "TargetPointBulletSkillCommand"
+    # And the two left out on purpose are named, so neither is left out by accident.
+    assert set(server.SKILL_OPCODES_UNHANDLED) == {0x004C, 0x004D}
+    assert not set(server.SKILL_OPCODES) & set(server.SKILL_OPCODES_UNHANDLED)

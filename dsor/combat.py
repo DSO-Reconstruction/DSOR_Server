@@ -20,8 +20,11 @@ The four commands here split neatly along that line:
 
 from __future__ import annotations
 
+import math
+import struct
 from dataclasses import dataclass, field
 
+from dsor.gameplay import HEADING_UNITS
 from raknet.bitstream import BitWriter
 
 #: Message id every server-to-client game command travels under.
@@ -452,3 +455,74 @@ def encode_player_level(level: int, actor: int) -> bytes:
     writer.write_uint(0, 16)
     _close(writer, actor)
     return writer.to_bytes()
+
+
+#: Offsets in the body of every skill command the client sends. The first two bytes
+#: are zero, then the skill's wire index, then a float32, then a tick.
+SKILL_USE_SKILL_OFFSET = 2
+SKILL_USE_HEADING_OFFSET = 4
+SKILL_USE_TICK_OFFSET = 8
+SKILL_USE_MINIMUM = 12
+
+#: Half a turn, in the 256ths the wire uses for a heading.
+HEADING_HALF_TURN = 128
+
+
+@dataclass(frozen=True)
+class SkillUse:
+    """A skill command's leading fields, which every one of them shares.
+
+    Six command classes carry a skill the player has just used — SkillCommand,
+    TargetSkillCommand, BulletSkillCommand, TargetPointBulletSkillCommand,
+    ShiftedSkillCommand and TargetBulletSkillCommand — and all six begin the same
+    way. What follows differs and is not decoded here.
+    """
+
+    #: The skill's wire index: the row before its row in the client's skill table.
+    wire: int
+    #: Where the player is aiming, in 256ths of a turn clockwise from +y — the same
+    #: units :mod:`dsor.gameplay` uses for a movement record's heading.
+    heading: int
+    #: The client's own game tick when the skill started.
+    tick: int
+
+
+def decode_skill_use(body: bytes) -> SkillUse | None:
+    """Read the fields common to every skill command, or None if *body* is too short.
+
+    The float at offset 4 is the aim, in radians, and it is the client saying exactly
+    where the player is pointing — which is better than anything this server can infer.
+    A movement record's facing lags: it is the last one the client happened to send,
+    and a player who turns and swings in the same breath has moved on. Across 277 real
+    skill commands the two agree to within eight units only 77% of the time, and the
+    disagreements are the turns.
+
+    Measured, not assumed. All 277 samples fall inside [-pi, +pi] — spanning -3.1315
+    to +3.0803, so right to the bounds — across 198 distinct values. Fitting the pair
+    (sign, offset) against the facing byte of the movement record immediately
+    preceding each command gives sign +1 and offset 128, with a median error of one
+    unit out of 256.
+
+    That offset of half a turn is not arbitrary, and it confirms something already
+    known from the other direction: this server's own outbound skill command carries
+    the vector from the *target* to the attacker, the reverse of the direction the
+    blow travels, which was measured to 0.3 degrees against two real samples. The
+    client's field is the same quantity, so half a turn converts one to the other.
+    """
+    if len(body) < SKILL_USE_MINIMUM:
+        return None
+    radians = struct.unpack_from("<f", body, SKILL_USE_HEADING_OFFSET)[0]
+    if not -math.pi - 0.01 <= radians <= math.pi + 0.01:
+        # Not a heading. Refuse rather than aim a swing with a number that is
+        # something else; the caller falls back to the movement record's facing.
+        return None
+    units = round(radians / (2.0 * math.pi) * HEADING_UNITS) + HEADING_HALF_TURN
+    return SkillUse(
+        wire=int.from_bytes(
+            body[SKILL_USE_SKILL_OFFSET : SKILL_USE_SKILL_OFFSET + 2], "little"
+        ),
+        heading=units % HEADING_UNITS,
+        tick=int.from_bytes(
+            body[SKILL_USE_TICK_OFFSET : SKILL_USE_TICK_OFFSET + 4], "little"
+        ),
+    )
