@@ -417,23 +417,63 @@ def hit_points_at(level: int) -> int:
 
 
 def level_for(experience: int) -> int:
-    """The level *experience* points buy, one-based."""
+    """The level *experience* points buy, one-based.
+
+    Never above :data:`MAX_LEVEL`, because a level past it has an experience band of
+    zero width and the client's character sheet asserts on one.
+    """
     level = 1
     for index, threshold in enumerate(LEVEL_EXPERIENCE, start=1):
         if experience >= threshold:
             level = index
-    return level
+    return min(level, MAX_LEVEL)
+
+
+def _highest_usable_level() -> int:
+    """The highest level whose experience band actually has a width.
+
+    The warrior's curve plateaus at 100 and then rises by one point per level, and
+    that runs out: levels 105 to 110 all begin at 882229606. A level whose floor and
+    ceiling are the same number gives the client an experience bar of zero width, and
+    the client refuses it — see :func:`level_bounds`.
+    """
+    for level in range(len(LEVEL_EXPERIENCE) - 1, 0, -1):
+        if LEVEL_EXPERIENCE[level] > LEVEL_EXPERIENCE[level - 1]:
+            return level
+    return 1
+
+
+#: The highest level this server will report, 104 for a warrior.
+#:
+#: Not a choice: 105 to 110 share an experience threshold, so a character at any of
+#: them has an experience bar of zero width and the client asserts rather than draw
+#: it. Whatever the live service does at its cap, it does not do this.
+MAX_LEVEL = _highest_usable_level()
 
 
 def level_bounds(level: int) -> tuple[int, int]:
-    """Where *level* starts, and where the next one does."""
-    floor = LEVEL_EXPERIENCE[min(level, len(LEVEL_EXPERIENCE)) - 1]
-    ceiling = (
-        LEVEL_EXPERIENCE[level]
-        if level < len(LEVEL_EXPERIENCE)
-        else LEVEL_EXPERIENCE[-1]
-    )
-    return floor, ceiling
+    """Where *level* starts, and where the next one does.
+
+    The ceiling is always above the floor, and that is a requirement rather than a
+    nicety. ``UI::CharacterSheetWidget::SetMaxXpLevel`` computes the bar's width as
+    ceiling minus floor and asserts it is positive:
+
+        mov   r14d, [rax + 0x28]   ; the floor
+        mov   r15d, [rax + 0x2c]   ; the ceiling
+        mov   ebp, r15d
+        sub   ebp, r14d            ; the width
+        test  ebp, ebp
+        jg    ok                   ; else "maxLevel > 0"
+        ...
+        mov   [r13 + 0x40], ebp    ; the bar's maximum
+
+    So the name in the assertion is misleading — it is a width, not a level — and a
+    band of zero width crashes the character sheet. This server sent one: a level 100
+    character killing anything at all went straight past 882229606 to level 110,
+    where the floor and the ceiling are the same number.
+    """
+    level = max(1, min(level, MAX_LEVEL))
+    return LEVEL_EXPERIENCE[level - 1], LEVEL_EXPERIENCE[level]
 
 
 def encode_xp_changed(
@@ -462,6 +502,13 @@ def encode_xp_changed(
     and neither proves.
     """
     floor, ceiling = level_bounds(level)
+    if level >= MAX_LEVEL:
+        # At the cap the band is one point wide — the warrior's curve rises by a
+        # single point per level from 100 — so a real total sits far above the
+        # ceiling and the bar draws past its own end. Report the ceiling instead.
+        # Experience stops meaning anything at the cap, and an overfull bar means
+        # less than a full one.
+        total = min(total, ceiling)
     writer = BitWriter()
     writer.write_uint(MESSAGE_ID, 8)
     _open(writer, XP_CHANGED)

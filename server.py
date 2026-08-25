@@ -1792,7 +1792,11 @@ def main() -> None:
         type=int,
         default=0,
         metavar="N",
-        help="the level a player arrives at, experience set to that level's floor",
+        help=(
+            "the level a player arrives at, experience set to that level's floor. "
+            "Capped at 104: levels 105 to 110 share an experience threshold, so "
+            "their bar has zero width and the client's character sheet asserts on it"
+        ),
     )
     parser.add_argument(
         "--grant-skill",

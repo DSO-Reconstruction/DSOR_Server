@@ -55,14 +55,50 @@ def test_the_thresholds_rise_to_104_and_then_stop_rising():
             assert upper == lower, level
 
 
-def test_a_level_survives_a_round_trip_up_to_the_flat_top():
-    for level in (1, 2, 15, 30, 31, 99, 100, 104):
+def test_a_level_survives_a_round_trip_up_to_the_cap():
+    from dsor.combat import MAX_LEVEL
+
+    for level in (1, 2, 15, 30, 31, 99, 100, MAX_LEVEL):
         floor, _ = level_bounds(level)
         assert level_for(floor) == level, level
 
-    # And inside the flat top it cannot: asking for 105 gets 110, because they are
-    # the same number of points. The server warns rather than pretending otherwise.
-    assert level_for(level_bounds(105)[0]) == 110
+
+def test_no_level_has_an_experience_band_of_zero_width():
+    """The client's character sheet crashes on one, and this server sent one.
+
+    UI::CharacterSheetWidget::SetMaxXpLevel computes the bar's width as ceiling minus
+    floor and asserts it is positive:
+
+        mov  r14d, [rax + 0x28]   ; the floor
+        mov  r15d, [rax + 0x2c]   ; the ceiling
+        sub  ebp, r14d            ; the width
+        test ebp, ebp
+        jg   ok                   ; else "maxLevel > 0"
+
+    The name is misleading — it is a width, not a level. A level 100 character killing
+    anything at all went straight past 882229606 to level 110, where the floor and the
+    ceiling are the same number, and the sheet asserted.
+    """
+    from dsor.combat import MAX_LEVEL
+
+    for level in range(1, 200):
+        floor, ceiling = level_bounds(level)
+        assert ceiling > floor, f"level {level} has a bar of zero width"
+
+    assert MAX_LEVEL == 104, "the last level with a band of its own"
+    # Which is not a choice: 105 upward share a threshold.
+    assert LEVEL_EXPERIENCE[104] == LEVEL_EXPERIENCE[109]
+    assert LEVEL_EXPERIENCE[103] < LEVEL_EXPERIENCE[104]
+
+
+def test_experience_past_the_cap_reports_the_cap():
+    """Not level 110, whose band has no width."""
+    from dsor.combat import MAX_LEVEL
+
+    assert level_for(10**12) == MAX_LEVEL
+    assert level_for(882229601 + 17) == MAX_LEVEL
+    floor, ceiling = level_bounds(level_for(10**12))
+    assert ceiling > floor
 
 
 def test_the_top_of_the_curve_answers_instead_of_the_old_thirty():
@@ -168,3 +204,35 @@ def test_reset_puts_a_discarded_creature_back():
     assert not creature.discarded
     assert creature.health == creature.max_health
     assert creature.alive
+
+
+def test_the_bar_never_draws_past_its_own_end_at_the_cap():
+    """The cap's band is one point wide, and a real total sits far above it.
+
+    The warrior's curve rises by a single point per level from 100, so a character at
+    the cap who kills anything has more experience than the band can hold. The bar's
+    current value would exceed its maximum.
+    """
+    from dsor.combat import MAX_LEVEL, encode_xp_changed, level_bounds
+
+    floor, ceiling = level_bounds(MAX_LEVEL)
+    assert ceiling - floor == 1, "one point wide, which is what forces this"
+
+    body = encode_xp_changed(total=floor + 5000, actor=0x150001, level=MAX_LEVEL)
+    # Four 32-bit fields after the message id and the two-byte opcode.
+    fields = [
+        int.from_bytes(body[3 + 4 * i : 7 + 4 * i], "little") for i in range(4)
+    ]
+    reported_total, reported_level, reported_floor, reported_ceiling = fields
+    assert reported_level == MAX_LEVEL
+    assert (reported_floor, reported_ceiling) == (floor, ceiling)
+    assert reported_total == ceiling, "clamped into the band"
+    assert reported_total - reported_floor <= reported_ceiling - reported_floor
+
+
+def test_below_the_cap_the_total_is_reported_untouched():
+    from dsor.combat import encode_xp_changed, level_bounds
+
+    floor, _ = level_bounds(15)
+    body = encode_xp_changed(total=floor + 400, actor=0x150001, level=15)
+    assert int.from_bytes(body[3:7], "little") == floor + 400
