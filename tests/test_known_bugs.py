@@ -1512,3 +1512,21 @@ def test_the_skill_book_lists_every_skill_and_a_bit_says_which_you_own():
     assert len(out) == len(state)
     assert sum(1 for a, b in zip(state, out) if a != b) == 1
     assert granted(out) == {1838, 1839, 1868}
+
+
+def test_every_skill_command_counts_as_a_swing():
+    """A targeted skill is 0x0047; one without a target is 0x0046.
+
+    Handling only the targeted one meant angrystrike landed and every skill unlocked
+    by levelling did nothing: the client sent SkillCommand seventeen times for
+    mightyswing and mighty360 in one session, and this server ignored all of it. The
+    capture is what said so — nothing in the server's own log could have, because
+    nothing reached it.
+    """
+    import server
+
+    assert 0x0046 in server.SKILL_OPCODES, "a swing with no target"
+    assert 0x0047 in server.SKILL_OPCODES, "a swing at somebody"
+    # The ranged family too, so a bullet skill is at least seen and logged.
+    assert {0x0048, 0x004A, 0x004B} <= set(server.SKILL_OPCODES)
+    assert server.SKILL_OPCODES[0x0046] == "SkillCommand"

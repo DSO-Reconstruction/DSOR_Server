@@ -211,6 +211,19 @@ SKILL_RANGE = 1.75
 #: Commands::TargetSkillCommand — the client using a skill. It names no target, so
 #: the server decides what was hit.
 TARGET_SKILL_OPCODE = 0x0047
+
+#: Every command the client uses to say "I swung". A targeted skill names its victim
+#: and comes as 0x0047; one that does not — a swing, a spin — comes as 0x0046, and a
+#: ranged one as a bullet command. Handling only 0x0047 meant angrystrike landed and
+#: every skill unlocked by levelling did nothing at all: the client sent SkillCommand
+#: seventeen times for mightyswing and mighty360 and this server ignored all of it.
+SKILL_OPCODES = {
+    0x0046: "SkillCommand",
+    0x0047: "TargetSkillCommand",
+    0x0048: "BulletSkillCommand",
+    0x004A: "ShiftedSkillCommand",
+    0x004B: "TargetBulletSkillCommand",
+}
 #: Commands::PickupItemCommand. The client sends the item's actor id and nothing
 #: else — four bytes, the shortest request in the protocol.
 PICKUP_ITEM_OPCODE = 0x0064
@@ -1248,8 +1261,20 @@ class Service:
         if (
             self.role == "map"
             and game.message_id == 0x8B
-            and game.opcode == TARGET_SKILL_OPCODE
+            and game.opcode in SKILL_OPCODES
         ):
+            used = (
+                int.from_bytes(game.body[2:4], "little")
+                if len(game.body) >= 4
+                else None
+            )
+            log.info(
+                "%s: %s used skill %s via %s",
+                self.name,
+                sender,
+                used,
+                SKILL_OPCODES[game.opcode],
+            )
             self._set_clock(sender)
             self._ship(self.world.attack(sender))
             return
