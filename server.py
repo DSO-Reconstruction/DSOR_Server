@@ -1493,6 +1493,7 @@ def serve(
     status_effects: bool = True,
     force_effects: bool = False,
     animated_effects: bool = False,
+    player_health: float = 0.0,
     tough_mob: float = 0.0,
     tough_mobs: int = 1,
     creature_skill: int = 440,
@@ -1582,6 +1583,7 @@ def serve(
         service.rules.status_effects = status_effects
         service.rules.force_effects = force_effects
         service.rules.animated_effects = animated_effects
+        service.rules.player_max = int(player_health)
         service.rules.mob_despawn = mob_despawn
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
@@ -1775,6 +1777,18 @@ def main() -> None:
             "entity records from the tutorial dungeon with only their position "
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--player-health",
+        type=float,
+        default=0.0,
+        metavar="HP",
+        help=(
+            "force this much health on the player. The default, 0, uses the level "
+            "table: 225 at level 1, 450000 at 100. Lowering it is how a life leech or "
+            "a heal becomes visible at all — at 450000 against creatures that hit for "
+            "1, the bar never moves and nothing has anything to heal"
         ),
     )
     parser.add_argument(
@@ -2128,6 +2142,7 @@ def main() -> None:
         status_effects=args.status_effects,
         force_effects=args.force_effects,
         animated_effects=args.animated_effects,
+        player_health=args.player_health,
         tough_mob=args.tough_mob,
         tough_mobs=args.tough_mobs,
         creature_skill=args.creature_skill,
