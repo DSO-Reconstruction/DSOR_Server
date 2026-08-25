@@ -129,6 +129,17 @@ class Modifier:
     #: What it applies to: a damage type, a skill id, Movement, Min and Max.
     targets: tuple[str, ...]
 
+    @property
+    def skills_named(self) -> tuple[str, ...]:
+        """The skill ids this modifier names, if it names any.
+
+        A target can carry a suffix -- ``angrystrike#skillDamageRel`` -- which is
+        stripped, because the part before the hash is the template id.
+        """
+        if self.attribute not in SKILL_ATTRIBUTES:
+            return ()
+        return tuple(target.split("#")[0] for target in self.targets)
+
     def amount(self, parameters: dict[str, float]) -> float | None:
         """The modifier's value with *parameters* substituted, or None if unknown."""
         if self.value.startswith("$"):
@@ -139,12 +150,63 @@ class Modifier:
             return None
 
 
+#: Modifier attributes that reach into a *skill's* definition, or spawn an actor.
+#: Serving one asks the client to resolve something the character does not own, and it
+#: asserts rather than shrug: ``skillTemplateId.IsValid()`` in
+#: Game::ActorStatusEffectModule, reached through GetSkillLocaAddModifications.
+#:
+#: The two that produced it are identifiable:
+#:
+#:   set_cny2026_warrior_earthquake_dmg
+#:       SkillStatusEffect:modLE,earthquake,skill_earthquake_aura,$1:-0.05
+#:   warrior_talent_damage_dealer_cooldown_reduction
+#:       ActiveCoolDown:$talent_warrior_dd_cd,absolute,Skill01..Skill20
+#:
+#: One rewrites another skill's status effects, the other names skill *slots*. Both go
+#: through the skill-template path, and neither belongs on a character with no set and
+#: no talents.
+FORBIDDEN_ATTRIBUTES = frozenset({
+    "SkillStatusEffect", "ActiveCoolDown", "Localize", "SkillSequence",
+    "UnlockHiddenSkills", "SkinModifier", "Minion", "Pet", "Mounted",
+    "DropAmount",
+    # A capture-the-flag flag, from warshout's ctfdropflag. Not in the tooltip, and
+    # nothing to do with a dungeon.
+    "PVPEventModifier",
+})
+
+#: Modifier attributes that name a skill. Safe only when every skill they name is one
+#: the character actually has -- which keeps warshout's angrystrike buff and
+#: frenzyshout's life leech, both of which name warrior skills a level 100 warrior has.
+SKILL_ATTRIBUTES = frozenset({
+    "SkillDamage", "SkillHitDamage", "LifeLeech", "ResourceCost", "CoolDown",
+    "SkillDamageType",
+})
+
+#: Effect ids this server will force when asked. A skill's own effects and the
+#: crowd-control and damage-over-time debuffs, and nothing that depends on equipment,
+#: a set or a talent -- because forcing those is both nonsense on a character who has
+#: none and the road to the assertion above.
+FORCEABLE_PREFIXES = ("skill_", "debuff_", "buff_")
+
+
+def forceable(effect_id: str) -> bool:
+    """Whether *effect_id* is one this server will force."""
+    return effect_id.startswith(FORCEABLE_PREFIXES)
+
+
 def parse_modifiers(packed: str) -> tuple[Modifier, ...]:
     """Read a StartModifiers / TickModifiers / StopModifiers string."""
     out = []
     for clause in packed.split(";"):
         clause = clause.strip()
-        if not clause or ":" not in clause:
+        if not clause:
+            continue
+        if ":" not in clause:
+            # A bare word is a flag with no value: skill_mighty360_debuff_taunt's
+            # whole StartModifiers is "Taunt". Dropping those made the effect look
+            # like it changed nothing, and the tool that checks tooltips against what
+            # is served then blamed the wrong thing.
+            out.append(Modifier(clause, "", "", ()))
             continue
         attribute, _, rest = clause.partition(":")
         parts = [p.strip() for p in rest.split(",") if p.strip()]
@@ -261,6 +323,31 @@ class Effect:
     @property
     def changes_anything(self) -> bool:
         return bool(self.starts or self.ticks)
+
+    def servable(self, known_skills: frozenset[str] = frozenset()) -> bool:
+        """Whether every modifier is one this server can serve.
+
+        Permissive by default and strict where it has to be. A modifier that only
+        changes a number on the actor, chains another effect or sets a variable is
+        fine. One that names a skill is fine when the character has every skill it
+        names. One in :data:`FORBIDDEN_ATTRIBUTES` never is, because it reaches into a
+        skill's own definition or spawns an actor, and the client asserts rather than
+        shrug.
+
+        Being permissive matters: a strict "plain attributes only" rule threw out
+        debuff_cc_stun for carrying a StopStatusEffect and debuff_dot_poison for
+        chaining an explosion trigger -- the two effects most worth having.
+        """
+        modifiers = self.starts + self.ticks
+        if not modifiers:
+            return False
+        for modifier in modifiers:
+            if modifier.attribute in FORBIDDEN_ATTRIBUTES:
+                return False
+            named = modifier.skills_named
+            if named and not all(skill in known_skills for skill in named):
+                return False
+        return True
 
 
 #: Every effect the classes' skills name, by wire index.

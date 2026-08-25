@@ -190,6 +190,9 @@ class Rules:
     #: debuff_dot_poison both read C:0.0. This server has no talents, so faithfully
     #: they never fire. A testing switch, not fidelity, which is why it is off.
     force_effects: bool = False
+    #: Which class's skills a modifier may name. One class per world for now, because
+    #: this server serves one character.
+    character_class: str = "warrior"
     #: Whether a killed creature's body is removed at once.
     mob_despawn: bool = False
     #: What one creature blow takes off, and how often one lands. Both ours.
@@ -1335,12 +1338,43 @@ class World:
         fidelity, which is why it is off by default and named for what it does.
         """
         if self.rules.force_effects:
-            return effects.anything_by(used.wire, victim=victim)
-        return (
-            effects.inflicted_by(used.wire)
-            if victim
-            else effects.granted_by(used.wire)
+            candidates = effects.anything_by(used.wire, victim=victim)
+            # Only a skill's own effects and the crowd-control and damage-over-time
+            # debuffs. Forcing the item, set and talent entries is nonsense on a
+            # character who has none of those, and it is also what reached the
+            # client's skillTemplateId.IsValid() assertion:
+            # set_cny2026_warrior_earthquake_dmg rewrites another skill's status
+            # effects, and warrior_talent_damage_dealer_cooldown_reduction names skill
+            # slots.
+            candidates = tuple(
+                entry for entry in candidates if effects.forceable(entry.effect)
+            )
+        else:
+            candidates = (
+                effects.inflicted_by(used.wire)
+                if victim
+                else effects.granted_by(used.wire)
+            )
+        # And whatever the switch says, never an effect whose modifiers reach into a
+        # skill's definition or spawn an actor. Applied to the unforced path too,
+        # because a skill's own list can name one.
+        return tuple(
+            entry
+            for entry in candidates
+            if (found := effects.by_id(entry.effect)) is not None
+            and found.servable(self.class_skills)
         )
+
+    @property
+    def class_skills(self) -> frozenset[str]:
+        """Every skill of the character class this world serves.
+
+        A modifier that names a skill is only safe if the character has it, and a
+        level 100 warrior has all eighteen.
+        """
+        from dsor.skills import of_class
+
+        return frozenset(skill.id for skill in of_class(self.rules.character_class))
 
     def _buff(self, entry, now: float):
         found = effects.by_id(entry.effect)

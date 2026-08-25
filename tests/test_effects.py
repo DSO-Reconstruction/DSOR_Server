@@ -232,9 +232,21 @@ def test_all_of_a_skills_effects_travel_now():
     assert EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS == EFFECT_ACTOR_BIT == 702
     assert 1 + 32 + EFFECT_ELEMENT_BITS + 32 + 8 + 2 == len(tick_state()[3:]) * 8
 
+    from dsor.skills import by_id
+
     world, sender = a_player()
-    granted = effects.granted_by(wire_of("warshout"))
-    assert len(granted) == 4
+    # granted_by is the skill's own list, before this server decides what it can
+    # serve: it still holds ctfdropflag, a capture-the-flag flag with no place in a
+    # dungeon. The world's own filter is what settles the four.
+    assert len(effects.granted_by(wire_of("warshout"))) == 5
+    granted = world._entries(by_id("warshout"), victim=False)
+    assert [entry.effect for entry in granted] == [
+        "skill_warshout_buff_movementspeed",
+        "skill_warshout_buff_damage",
+        "skill_warshout_buff_angrystrike",
+        "skill_warshout_buff_mightybash",
+    ]
+
     world.resolve_attack(sender, wire_of("warshout"))
     assert len(world.player(sender).buffs) == 4
 
@@ -424,3 +436,154 @@ def status_effect_fields_duration():
     from dsor.recorded import status_effect_fields
 
     return status_effect_fields()[5]
+
+
+def test_no_effect_that_reaches_into_a_skill_is_ever_served():
+    """The client asserts on one: skillTemplateId.IsValid().
+
+    Two produced it, and both are identifiable from their modifiers:
+
+        set_cny2026_warrior_earthquake_dmg
+            SkillStatusEffect:modLE,earthquake,skill_earthquake_aura,$1:-0.05
+        warrior_talent_damage_dealer_cooldown_reduction
+            ActiveCoolDown:$talent_warrior_dd_cd,absolute,Skill01..Skill20
+
+    One rewrites another skill's status effects, the other names skill slots. Neither
+    belongs on a character with no set and no talents, and a blanket "apply everything"
+    sent both.
+    """
+    from dsor.skills import of_class
+
+    warrior = frozenset(s.id for s in of_class("warrior"))
+    for name in (
+        "set_cny2026_warrior_earthquake_dmg",
+        "warrior_talent_damage_dealer_cooldown_reduction",
+    ):
+        found = effects.by_id(name)
+        assert found is not None, name
+        assert not found.servable(warrior), name
+
+
+def test_the_filter_keeps_the_effects_worth_having():
+    """A stricter rule threw out both of the ones that matter.
+
+    "Plain attribute changes only" excluded debuff_cc_stun for carrying a
+    StopStatusEffect and debuff_dot_poison for chaining an explosion trigger. Chaining
+    another effect and stopping one are not the problem; reaching into a skill is.
+    """
+    from dsor.skills import of_class
+
+    warrior = frozenset(s.id for s in of_class("warrior"))
+    assert effects.by_id("debuff_cc_stun").servable(warrior)
+    assert effects.by_id("debuff_dot_poison").servable(warrior)
+    # And the ones naming warrior skills, which a warrior has.
+    assert effects.by_id("skill_frenzyshout_buff_lifeleech").servable(warrior)
+    assert effects.by_id("skill_warshout_buff_angrystrike").servable(warrior)
+    # The hash suffix is stripped before the name is checked.
+    modifier = effects.by_id("skill_warshout_buff_angrystrike").starts[0]
+    assert modifier.skills_named == ("angrystrike",)
+
+
+def test_forcing_only_reaches_a_skills_own_effects_and_the_debuffs():
+    """Not the item, set and talent entries: nonsense, and the road to the assertion."""
+    assert effects.forceable("debuff_cc_stun")
+    assert effects.forceable("skill_warshout_buff_damage")
+    for name in (
+        "item_materi_belt_buff",
+        "itemset_sewers_damage_buff",
+        "talent_warrior_dd_warshout_buff_crit",
+        "set_cny2026_warrior_earthquake_dmg",
+        "chr2025_set_coldchill",
+        "ammunition_damage_fire",
+    ):
+        assert not effects.forceable(name), name
+
+
+def test_forced_gives_exactly_the_stun_and_the_poison():
+    world, sender = a_player()
+    world.rules.force_effects = True
+    from dsor.skills import by_id
+
+    inflicted = {
+        entry.effect
+        for entry in world._entries(by_id("laceratingstrike"), victim=True)
+    }
+    assert "debuff_cc_stun" in inflicted
+    assert "skill_laceratingstrike_debuff_armor" in inflicted
+    assert not any(name.startswith("ammunition_") for name in inflicted)
+
+    poisoned = {
+        entry.effect for entry in world._entries(by_id("mightybash"), victim=True)
+    }
+    assert "debuff_dot_poison" in poisoned
+
+
+def test_dragon_hide_puts_its_effects_on_a_place_not_on_an_actor():
+    """Which is why defiance does nothing here, and it is not a dropped effect.
+
+    Its UserStatusEffects are all item, set and talent entries. Everything that is
+    actually the skill -- the resource refill, the regeneration, the auras that slow
+    and weaken enemies -- sits in LocationStatusEffects, a third list this server does
+    not serve at all: an aura placed on the ground rather than on a character.
+    """
+    from dsor.skills import wire_of
+
+    assert effects.granted_by(wire_of("defiance")) == ()
+    assert effects.inflicted_by(wire_of("defiance")) == ()
+
+    # Its aura is in the table, and it is an aura: no modifiers of its own, and
+    # Groups says so.
+    aura = effects.by_id("skill_defiance_enemies_movement_aura")
+    assert aura is not None
+    assert aura.groups == "Aura"
+    assert not aura.starts and not aura.ticks, "an aura carries no modifier itself"
+
+    # And what the aura *does* is in an effect this table does not carry, because the
+    # generator collects what the class skills name and nothing collects what an
+    # effect names in turn. A second gap, recorded rather than papered over: nested
+    # effects are invisible here.
+    assert effects.by_id("skill_defiance_buff_resource") is None
+
+
+def test_the_tooltips_own_tokens_agree_with_what_is_served():
+    """The check the descriptions make possible without their words.
+
+    _Template_LocaleToken says which effect each piece of a skill's description reads
+    from. A token of type SkillEffect whose attribute is UserEffect or VictimEffect
+    names an effect that goes on an actor; LocationEffect names an aura on the ground.
+
+    So warshout's tooltip names exactly the four this server sends, and defiance's
+    names six auras and nothing else -- which is the description itself saying Dragon
+    Hide is a place, not a buff.
+    """
+    import sqlite3
+    from pathlib import Path
+
+    from dsor.skills import by_id, wire_of
+
+    database = Path.home() / "dso/db/db_static.sqlite"
+    if not database.exists():
+        import pytest
+
+        pytest.skip("the client database is not here")
+
+    db = sqlite3.connect(str(database))
+    rows = db.execute(
+        "SELECT Param1Attr, Param1Id, Param2Id FROM _Template_LocaleToken"
+        " WHERE TokenType = 'SkillEffect' AND Param1Id IN ('warshout', 'defiance')"
+    ).fetchall()
+
+    promised = {}
+    for attribute, skill, effect_id in rows:
+        promised.setdefault(skill, set()).add((attribute, effect_id))
+
+    world = World(name="t")
+    served = {
+        entry.effect for entry in world._entries(by_id("warshout"), victim=False)
+    }
+    assert {e for a, e in promised["warshout"] if a == "UserEffect"} == served
+
+    # Every one of defiance's is a LocationEffect, so there is nothing to put on the
+    # character at all.
+    assert all(a == "LocationEffect" for a, _ in promised["defiance"])
+    assert not world._entries(by_id("defiance"), victim=False)
