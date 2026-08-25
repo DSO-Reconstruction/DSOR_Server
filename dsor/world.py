@@ -39,6 +39,8 @@ from dsor.combat import (
     encode_player_level,
     encode_target_skill,
     encode_xp_changed,
+    damage_at,
+    hit_points_at,
     level_for,
 )
 from dsor.gameplay import (
@@ -167,7 +169,8 @@ class Rules:
     #: Replaying a real session's twelve attacks against wire positions gives 0.9 to
     #: 3.5; six was too loose and made the player take damage across the room.
     reach: float = 3.5
-    #: A creature's health, and what one blow takes off it.
+    #: A creature's health, and what one blow takes off it. Damage of 0 — the
+    #: default — means "follow the character's level curve" instead.
     #:
     #: Twelve is measured and since confirmed in play: decoding a recorded blow
     #: reads "victim health 0, max 12, damage 11" — a creature holding twelve
@@ -182,7 +185,7 @@ class Rules:
     #: gives 44, and its 12 one or two bits late gives 24 and 48 — every one of them
     #: looks like a health value, and one of them briefly convinced me.
     mob_max_health: float = 12.0
-    mob_damage: float = 4.0
+    mob_damage: float = 0.0
     #: The maximum reported alongside the current value. The capture's players
     #: carried 234 to 236; a creature's is not observed at all.
     mob_max_health_ceiling: int = 60
@@ -701,7 +704,12 @@ class World:
             self.player(sender).target = target
 
         struck = self.creatures[target]
-        left = max(0.0, struck.health - self.rules.mob_damage)
+        # What the character hits for, from the client's own class curve rather than
+        # a number invented here: fifteen at level one, not four. Equipment adds to
+        # it and this does not model that — an item's damage is rolled per instance
+        # and scaled to a level, and is not in its template at all.
+        blow = self.rules.mob_damage or damage_at(self.player(sender).level)
+        left = max(0.0, struck.health - blow)
         struck.health = left
 
         # The blow, generated. A creature has no health message of its own — every
@@ -719,11 +727,12 @@ class World:
                 Hit(
                     victim=victim,
                     attacker=player,
-                    damage=int(self.rules.mob_damage),
+                    damage=int(blow),
                     victim_health=int(left),
                     victim_max_health=int(self.rules.mob_max_health),
-                    # The floating damage number is drawn only for the local player's
-                    # own blows, and only when the value is above zero.
+                    # The attacker, which for the player's own blow is the player.
+                    # Seventy-four real hits carry the attacker here, never the
+                    # victim, and an earlier note claiming otherwise is refuted.
                     combat_value_owner=player,
                     # Zero, as the real blow carries. The floating number comes from
                     # the damage field; putting it here as well draws a second one.
@@ -738,7 +747,7 @@ class World:
             self.name,
             sender,
             target.hex(" "),
-            self.rules.mob_damage,
+            blow,
             left,
         )
 

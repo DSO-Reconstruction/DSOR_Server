@@ -355,6 +355,31 @@ LEVEL_HIT_POINTS = (
 )
 
 
+#: A warrior's own damage at each level, from the same table. Fifteen at level one,
+#: not the four this server used to invent.
+#:
+#: Items add to it, and how much cannot be read from a template: MinDamage,
+#: MaxDamage and Armor are all empty there, with ItemLevelScalingType set to
+#: ToContextLevel. An item's numbers are rolled per instance and scaled to a level,
+#: which is also why a replayed item record shows the rarity and level it was
+#: recorded with rather than the ones its blueprint suggests.
+LEVEL_DAMAGE = (
+    15, 17, 18, 20, 22, 23, 25, 27, 28, 30,
+    33, 35, 38, 40, 43, 45, 48, 50, 53, 55,
+    71, 87, 103, 119, 135, 151, 167, 183, 199, 215,
+)
+
+
+def damage_at(level: int) -> int:
+    """What a character of *level* hits for, before equipment."""
+    return LEVEL_DAMAGE[min(max(level, 1), len(LEVEL_DAMAGE)) - 1]
+
+
+def hit_points_at(level: int) -> int:
+    """What a character of *level* has, before equipment."""
+    return LEVEL_HIT_POINTS[min(max(level, 1), len(LEVEL_HIT_POINTS)) - 1]
+
+
 def level_for(experience: int) -> int:
     """The level *experience* points buy, one-based."""
     level = 1

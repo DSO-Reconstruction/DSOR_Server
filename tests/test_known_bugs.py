@@ -1194,3 +1194,21 @@ def test_the_counters_survive_a_tick():
     world.forget(("1.2.3.4", 5))
     assert world.next_slot == -1 and world.next_item == 0x40
     assert not world.templates
+
+
+def test_the_player_hits_for_what_their_level_says():
+    """Four was invented here; the client's own table says fifteen at level one.
+
+    _Template_XPLevels carries BaseDamage and BaseHP per class and level. Equipment
+    adds to both, and that is not modelled: MinDamage, MaxDamage and Armor are all
+    empty in _Template_Item, with ItemLevelScalingType set to ToContextLevel, so an
+    item's numbers are rolled per instance rather than stored.
+    """
+    from dsor.combat import LEVEL_DAMAGE, damage_at, hit_points_at
+
+    assert LEVEL_DAMAGE[:4] == (15, 17, 18, 20)
+    assert damage_at(1) == 15 and damage_at(2) == 17
+    assert hit_points_at(1) == 225 and hit_points_at(2) == 333
+    # Out of range clamps rather than raising.
+    assert damage_at(0) == damage_at(1)
+    assert damage_at(999) == LEVEL_DAMAGE[-1]
