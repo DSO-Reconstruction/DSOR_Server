@@ -60,6 +60,7 @@ from dsor.combat import (
     encode_kill,
 )
 from dsor.world import Rules, World
+from dsor.console import Console
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -1264,7 +1265,7 @@ def serve(
     mob_radius: int = 0,
     mob_patrol: int = 0,
     mob_health: float = 60.0,
-    mob_damage: float = 12.0,
+    mob_damage: float = 0.0,
     mob_near: float = 0.0,
     creature_damage: float = 3.0,
     creature_skill: int = 440,
@@ -1278,6 +1279,8 @@ def serve(
     skill_lead: int | None = None,
     drop_items: bool = True,
     allow_pickup: bool = True,
+    console_port: int = 2199,
+    console_host: str = "127.0.0.1",
     first_slot: int | None = None,
     slot_capacity: int | None = None,
     drop_templates: list[str] | None = None,
@@ -1305,6 +1308,7 @@ def serve(
         log.info("recording every datagram to %s", capture_path)
     selector = selectors.DefaultSelector()
     services = {}
+    console = None
 
     tiers = [
         (login_port, "DrasaOnlineLoginServer", "login"),
@@ -1366,6 +1370,13 @@ def serve(
         service.shop_price = shop_price
         services[service.socket] = service
         selector.register(service.socket, selectors.EVENT_READ)
+        if role == "map" and console_port:
+            # On the map service, because everything worth changing lives in its
+            # world. Registered in the same selector as the game sockets, so it
+            # neither blocks the tick nor needs a thread.
+            console = Console(service, host=console_host, port=console_port)
+            selector.register(console.socket, selectors.EVENT_READ)
+            log.info("console on %s:%d", console_host, console_port)
         log.info("listening on udp/%d as %s (%s)", port, name, role)
     log.info("handoffs will advertise %s", advertise)
 
@@ -1389,6 +1400,9 @@ def serve(
                 service.outbound or service.slow for service in services.values()
             )
             for key, _ in selector.select(timeout=tick if busy else 1.0):
+                if console is not None and key.fileobj is console.socket:
+                    console.accept()
+                    continue
                 service = services[key.fileobj]
                 raw, sender = service.socket.recvfrom(2048)
                 # No blanket try/except here on purpose: during protocol
@@ -1500,11 +1514,12 @@ def main() -> None:
     parser.add_argument(
         "--mob-damage",
         type=float,
-        default=4.0,
+        default=0.0,
         metavar="D",
         help=(
-            "health one blow takes off a creature. Four makes a fight last three "
-            "blows; 11 is what the character really does, and kills in one"
+            "health one blow takes off a creature, or 0 — the default — to follow "
+            "the character's own level curve from _Template_XPLevels: 15 at level "
+            "one, 17 at two. A fixed 4 was invented here"
         ),
     )
     parser.add_argument(
@@ -1608,6 +1623,20 @@ def main() -> None:
         default=None,
         help="blueprint a dying creature leaves, from the client's _Template_Item. "
         "Repeat, or give a comma-separated list, to cycle through several",
+    )
+    parser.add_argument(
+        "--console-port",
+        type=int,
+        default=2199,
+        metavar="PORT",
+        help="line-oriented admin console; 0 to switch it off",
+    )
+    parser.add_argument(
+        "--console-host",
+        default="127.0.0.1",
+        metavar="ADDR",
+        help="what the console listens on. Loopback by default: it hands out items "
+        "and levels and has no authentication",
     )
     parser.add_argument(
         "--first-slot",
@@ -1742,6 +1771,8 @@ def main() -> None:
         skill_lead=args.skill_lead,
         drop_items=args.drop_items,
         allow_pickup=args.allow_pickup,
+        console_port=args.console_port,
+        console_host=args.console_host,
         first_slot=args.first_slot,
         slot_capacity=args.slot_capacity,
         drop_templates=[

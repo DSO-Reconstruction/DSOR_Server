@@ -1,0 +1,200 @@
+"""A live control surface, so testing does not mean restarting.
+
+Every change made during a session of this project cost a server restart and a
+reconnect: the client had to log in again, walk back to the creatures, and lose
+whatever state it had. That loop is the single biggest tax on finding anything out,
+and it is entirely self-inflicted — the values being changed are plain attributes on
+two objects.
+
+This is a line-oriented TCP console, registered in the same selector as the game
+sockets so it neither blocks the tick nor needs a thread. One request, one reply,
+connection closed — usable with ``nc``, ``socat`` or a one-line shell function.
+
+It is bound to the loopback interface by default, because it can hand out items and
+levels and has no authentication whatsoever.
+"""
+
+from __future__ import annotations
+
+import socket
+from typing import Callable
+
+HOST = "127.0.0.1"
+PORT = 2199
+
+#: Rules that may be set, with the type to read them as. Anything not listed here
+#: is refused rather than guessed at, so a typo cannot silently do nothing.
+SETTABLE: dict[str, Callable[[str], object]] = {
+    "mob_damage": float,
+    "mob_max_health": float,
+    "creature_damage": float,
+    "creature_skill": int,
+    "strike_interval": float,
+    "reach": float,
+    "mob_speed": int,
+    "mob_stop": float,
+    "mob_aggro": float,
+    "mob_chase": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "kill_experience": int,
+    "level_every": int,
+    "skill_lead": int,
+    "creature_hit_frame": int,
+    "creature_unblock_frame": int,
+    "creature_hit_range": float,
+    "drop_items": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "allow_pickup": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "player_max": int,
+    "mobs": int,
+}
+
+#: World state that may be set the same way.
+WORLD_SETTABLE: dict[str, Callable[[str], object]] = {
+    "first_slot": int,
+    "slot_capacity": int,
+    "drop_spacing": float,
+}
+
+
+class Console:
+    """The admin listener, and the commands it understands."""
+
+    def __init__(self, service, host: str = HOST, port: int = PORT) -> None:
+        self.service = service
+        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.socket.bind((host, port))
+        self.socket.listen(4)
+        self.socket.setblocking(False)
+
+    def accept(self) -> None:
+        """Take one connection, answer it, and close. Never blocks for long."""
+        try:
+            client, _ = self.socket.accept()
+        except OSError:
+            return
+        try:
+            client.settimeout(0.5)
+            try:
+                line = client.recv(4096).decode("utf-8", "replace").strip()
+            except OSError:
+                return
+            reply = self.run(line)
+            client.sendall((reply + "\n").encode())
+        finally:
+            client.close()
+
+    # ── commands ─────────────────────────────────────────────────────────────
+
+    def run(self, line: str) -> str:
+        if not line:
+            return self.help()
+        parts = line.split()
+        name, args = parts[0].lower(), parts[1:]
+        handler = getattr(self, "_do_" + name, None)
+        if handler is None:
+            return f"unknown command {name!r}. try: help"
+        try:
+            return handler(*args)
+        except TypeError:
+            return f"wrong arguments for {name}. try: help"
+        except Exception as error:  # a bad value must not take the server down
+            return f"{name}: {error}"
+
+    def help(self) -> str:
+        return (
+            "status                 what the world holds right now\n"
+            "get [name]             read one rule, or all of them\n"
+            "set <name> <value>     change a rule; see get for the names\n"
+            "drops <a,b,c>          what a dying creature leaves\n"
+            "xp <amount>            grant experience to everyone in the world\n"
+            "level <n>              set everyone's level outright\n"
+            "revive                 refill everyone's health\n"
+            "reset                  every creature alive again, ground cleared\n"
+            "attrs [text]           attribute ids, filtered by name\n"
+        )
+
+    def _do_help(self) -> str:
+        return self.help()
+
+    def _do_status(self) -> str:
+        world = self.service.world
+        alive = sum(1 for c in world.creatures.values() if c.alive)
+        lines = [
+            f"creatures      {alive} alive of {len(world.creatures)}",
+            f"players        {len(world.players)} known, "
+            f"{len(world.inhabitants())} in the world",
+            f"ground         {len(world.dropped)} item(s) lying",
+            f"next actor     0x{world.next_item:02x}   next cell {world.next_slot}",
+            f"drops          {', '.join(world.rules.drop_templates) or '(recorded)'}",
+        ]
+        for player in world.players.values():
+            lines.append(
+                f"player         {player.address} level {player.level} "
+                f"xp {player.experience} health {player.health:.0f}"
+                f"/{player.max_health:.0f}"
+            )
+        return "\n".join(lines)
+
+    def _do_get(self, name: str | None = None) -> str:
+        rules = self.service.rules
+        world = self.service.world
+        if name is None:
+            rows = [f"{key:24} {getattr(rules, key)!r}" for key in sorted(SETTABLE)]
+            rows += [
+                f"{key:24} {getattr(world, key)!r}" for key in sorted(WORLD_SETTABLE)
+            ]
+            return "\n".join(rows)
+        if name in SETTABLE:
+            return f"{name} = {getattr(rules, name)!r}"
+        if name in WORLD_SETTABLE:
+            return f"{name} = {getattr(world, name)!r}"
+        return f"{name!r} is not a setting. try: get"
+
+    def _do_set(self, name: str, value: str) -> str:
+        if name in SETTABLE:
+            target, cast = self.service.rules, SETTABLE[name]
+        elif name in WORLD_SETTABLE:
+            target, cast = self.service.world, WORLD_SETTABLE[name]
+        else:
+            return f"{name!r} is not settable. try: get"
+        was = getattr(target, name)
+        setattr(target, name, cast(value))
+        return f"{name}: {was!r} -> {getattr(target, name)!r}"
+
+    def _do_drops(self, names: str) -> str:
+        wanted = [part for part in names.split(",") if part]
+        self.service.rules.drop_templates = wanted
+        return f"drops: {len(wanted)} blueprint(s) per kill"
+
+    def _do_xp(self, amount: str) -> str:
+        grant = int(amount)
+        touched = 0
+        for player in self.service.world.inhabitants():
+            player.experience += grant
+            touched += 1
+        return f"granted {grant} to {touched} player(s); it shows on the next kill"
+
+    def _do_level(self, level: str) -> str:
+        value = int(level)
+        for player in self.service.world.inhabitants():
+            player.level = value
+        return f"level set to {value}; damage follows on the next blow"
+
+    def _do_revive(self) -> str:
+        for player in self.service.world.inhabitants():
+            player.health = player.max_health
+        return "healed"
+
+    def _do_reset(self) -> str:
+        self.service.world.reset_creatures()
+        return "creatures back, ground cleared"
+
+    def _do_attrs(self, text: str = "") -> str:
+        from dsor.attributes import ATTRIBUTES
+
+        rows = [
+            f"{value:4} {name}"
+            for value, name in sorted(ATTRIBUTES.items())
+            if text.lower() in name.lower()
+        ]
+        return "\n".join(rows) or f"no attribute matches {text!r}"

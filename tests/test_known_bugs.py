@@ -1237,3 +1237,36 @@ def test_the_attribute_enumeration_is_complete_and_in_order():
     assert attribute_id("Block") == 26 and attribute_id("Critical") == 27
     assert attribute_name(-1) == "InvalidActorAttribute"
     assert attribute_id("NotAnAttribute") == -1
+
+
+def test_the_console_reads_and_writes_the_live_rules():
+    """The point of it: change a value without restarting and reconnecting.
+
+    Every change made while building this cost a restart and a login, which is the
+    largest tax on finding anything out. The console also caught a real fault the
+    moment it existed: the command line's --mob-damage default of 4 was overriding
+    the level curve it was supposed to defer to, so the player still hit for four.
+    """
+    import server
+    from dsor.console import Console
+
+    service = server.Service(port=42199, name="t", role="map", map_name="a0001")
+    try:
+        console = Console(service, port=0)
+        try:
+            assert "mob_damage" in console.run("get")
+            assert console.run("get mob_damage").endswith("0.0")
+            assert "->" in console.run("set mob_damage 25")
+            assert service.rules.mob_damage == 25.0
+            # A name that is not settable is refused, not silently ignored.
+            assert "not settable" in console.run("set nonsense 1")
+            assert "unknown command" in console.run("wibble")
+            # And it never raises, whatever it is handed.
+            assert console.run("set mob_damage banana")
+            assert console.run("")
+            assert "MovementSpeed" in console.run("attrs speed")
+            assert "creatures" in console.run("status")
+        finally:
+            console.socket.close()
+    finally:
+        service.socket.close()
