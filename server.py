@@ -1164,7 +1164,17 @@ class Service:
             # tick pairs. These last two were dropped in an earlier version because
             # the frame order suggested they came much later; the ordering index
             # says otherwise, and it is the authority.
-            for piece in map_entry_sequence():
+            mapped = any(c.blueprint for c in self.world._ready().creatures.values())
+            for index, piece in enumerate(map_entry_sequence()):
+                if mapped and index == 4:
+                    # The recorded vicinity announcement names the six creatures of
+                    # the session it came from. Sent alongside the map's own spawn
+                    # table, the client ends up knowing actors nothing can describe —
+                    # it asked about 14 00 01 00 and got nothing — and drawing
+                    # creatures at positions no creature stands at. Invisible mobs,
+                    # and mobs that cannot be hit because the server has no such
+                    # creature. This server announces its own set instead.
+                    continue
                 self._queue(connection, piece, sender)
             entrant = self.world.player(sender)
             entrant.position = spawn

@@ -182,9 +182,19 @@ class Console:
         return f"level set to {value}; damage follows on the next blow"
 
     def _do_revive(self) -> str:
+        """Bring the dead back, and top up the living.
+
+        Needed because death is now final: a player who dies stays at zero until
+        something revives them. Refilling on the spot is what let a corpse be killed
+        again — the client drew a body while the server thought the bar was full.
+        """
+        healed = []
         for player in self.service.world.inhabitants():
-            player.health = player.max_health
-        return "healed"
+            was = player.health
+            player.health = player.max_health or float(self.service.rules.player_max)
+            player.max_health = player.health
+            healed.append(f"{player.address} {was:.0f} -> {player.health:.0f}")
+        return "\n".join(healed) or "nobody in the world"
 
     def _do_kill(self) -> str:
         world = self.service.world

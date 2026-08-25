@@ -1342,3 +1342,36 @@ def test_the_world_can_be_filled_from_the_map_data():
     # Seven of the ten blueprints are extracted; the rest are served by renaming.
     library = set(monster_library())
     assert len(blueprints() & library) == 7
+
+
+def test_death_is_final_until_something_revives_you():
+    """A corpse whose bar the server keeps full can be killed again.
+
+    Refilling health in the same breath as sending the kill left the client drawing a
+    body while this server thought the player was whole: they lay there and died over
+    and over. Death now stands, creatures stop striking the dead, and reviving is its
+    own act.
+    """
+    from dsor.world import World
+
+    world = World()
+    world.rules.mobs = 1
+    world.rules.creature_damage = 30.0
+    world._ready()
+    creature = next(iter(world.creatures.values()))
+    creature.described = True
+    here = ("1.2.3.4", 5)
+    victim = world.player(here)
+    victim.in_world = True
+    victim.position = creature.position
+    victim.health = victim.max_health = 20.0
+
+    world.pending_hits.append((0.0, here, creature.actor))
+    world.land_hits()
+    assert victim.health == 0.0, "the blow lands"
+    assert not victim.alive
+
+    # A second blow finds a corpse and does nothing to it.
+    world.pending_hits.append((0.0, here, creature.actor))
+    world.land_hits()
+    assert victim.health == 0.0, "the dead are not killed twice"

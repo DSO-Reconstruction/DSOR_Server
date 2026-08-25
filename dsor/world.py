@@ -992,6 +992,8 @@ class World:
             return
         now = time.monotonic()
         striker = self.player(sender)
+        if not striker.alive:
+            return
         if now - striker.last_struck < self.rules.strike_interval:
             return
         striker.last_struck = now
@@ -1084,6 +1086,8 @@ class World:
             position = victim.position
             if position is None or not victim.in_world:
                 continue
+            if not victim.alive:
+                continue
             left = max(0.0, victim.health - self.rules.creature_damage)
             victim.health = left
             # One message, not two. This used to replay a recorded blow *and* send a
@@ -1108,8 +1112,10 @@ class World:
                 sender,
             )
             if left <= 0.0:
-                # A player at zero health with nothing killing them stands at an empty
-                # bar for ever. The same command that kills a creature kills a player.
+                # A player at zero health with nothing killing them stands at an
+                # empty bar for ever. The same command that kills a creature kills a
+                # player — and the death stands: refilling here is what let a corpse
+                # be killed again and again.
                 self._emit(encode_kill(
                         Kill(
                             victim=int.from_bytes(PLAYER_ACTOR, "little"),
@@ -1121,16 +1127,15 @@ class World:
                     ),
                     sender,
                 )
-                victim.health = float(self.rules.player_max)
-                log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
 
-        log.info(
-            "%s: entity %s struck %s, %.0f health left",
-            self.name,
-            attacker.hex(" "),
-            sender,
-            left,
-        )
+                log.info("%s: %s was killed by %s", self.name, sender, attacker.hex(" "))
+            log.info(
+                "%s: entity %s struck %s, %.0f health left",
+                self.name,
+                attacker.hex(" "),
+                sender,
+                left,
+            )
 
     # ── the tick ─────────────────────────────────────────────────────────────
 
