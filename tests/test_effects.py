@@ -725,3 +725,176 @@ def test_what_survives_the_filters_is_still_worth_having():
         "skill_battlecry_debuff_resistance",
         "skill_battlecry_debuff_attackspeed",
     }
+
+
+def a_creature(world, actor=b"\x86\x00\x01\x00", health=5_000_000.0):
+    from dsor.gameplay import Position
+    from dsor.world import Creature
+
+    world.creatures[actor] = Creature(
+        actor=actor,
+        record=b"",
+        position=Position(0, 0, 0),
+        health=health,
+        max_health=health,
+        blueprint="a0001_gen_anderworld_creature",
+        described=True,
+    )
+    return actor
+
+
+def swing(world, sender, name):
+    world.resolve_attack(sender, wire_of(name))
+    world.pending_swings = [(0.0,) + e[1:] for e in world.pending_swings]
+    world.land_swings()
+
+
+def test_a_new_cast_no_longer_wipes_the_buffs_already_on_you():
+    """A real bug, and the whole of "le sort qui doit heal ne fait rien".
+
+    Applying a skill's effects *replaced* the list, so frenzyshout put its life leech
+    on and the very next angrystrike — which grants a frenzy buff of its own — wiped it
+    before it could ever pay out.
+    """
+    world, sender = a_player()
+    world.rules.mob_damage = 1000.0
+    # angrystrike's own frenzy buffs read C:0.0, so without this it grants nothing and
+    # there is no second cast to be wiped by.
+    world.rules.force_effects = True
+    a_creature(world)
+
+    swing(world, sender, "frenzyshout")
+    assert {effects.effect(b[0]).id for b in world.player(sender).buffs} == {
+        "skill_frenzyshout_buff_lifeleech",
+        "skill_frenzyshout_buff_armor",
+        "skill_frenzyshout_buff_resistance",
+    }
+
+    swing(world, sender, "angrystrike")
+    carried = {effects.effect(b[0]).id for b in world.player(sender).buffs}
+    assert "skill_frenzyshout_buff_lifeleech" in carried, "survived the next cast"
+    assert "skill_angrystrike_buff_frenzy_movementspeed" in carried
+
+
+def test_a_life_leech_heals_a_share_of_what_was_dealt():
+    """frenzyshout's LifeLeech:$0,absolute over eleven named skills, $0 of 0.2.
+
+    Served here rather than by the client, because every effect that carries a
+    mechanic like this is animated and an animated effect cannot be sent yet — there is
+    not one in any capture to check against.
+    """
+    world, sender = a_player()
+    world.rules.animated_effects = False
+    world.rules.mob_damage = 1000.0
+    world.player(sender).level = 100
+    world.player(sender).max_health = 450_000.0
+    world.player(sender).health = 400_000.0
+    a_creature(world)
+
+    swing(world, sender, "frenzyshout")
+    before = world.player(sender).health
+    swing(world, sender, "angrystrike")
+    gained = world.player(sender).health - before
+    # angrystrike is 1.25 of the blow, and the leech is a fifth of that.
+    assert gained == 1000.0 * 1.25 * 0.2
+
+
+def test_a_leech_does_not_heal_past_full_or_on_a_skill_it_does_not_cover():
+    world, sender = a_player()
+    world.rules.animated_effects = False
+    world.rules.mob_damage = 1000.0
+    player = world.player(sender)
+    player.max_health = 2700.0
+    player.health = 2700.0
+    a_creature(world)
+
+    swing(world, sender, "frenzyshout")
+    swing(world, sender, "angrystrike")
+    assert player.health == 2700.0, "already full"
+
+    # battlecry is not in the leech's list of skills.
+    player.health = 100.0
+    modifier = next(
+        m
+        for m in effects.by_id("skill_frenzyshout_buff_lifeleech").starts
+        if m.attribute == "LifeLeech"
+    )
+    assert "battlecry" not in modifier.targets
+    assert "angrystrike" in modifier.targets
+
+
+def test_a_poison_ticks_on_its_own_rate_for_its_own_duration():
+    """debuff_dot_poison every 1.5 seconds for 2. Its damage is ours.
+
+    The template reads $debuff_dot_poison_dmg, a named variable a talent sets, and
+    there is no talent here — nor is the value in _Template_StatusEffectLevelModifier,
+    which has nine columns and none about poison.
+    """
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.mob_damage = 1000.0
+    actor = a_creature(world)
+
+    assert effects.by_id("debuff_dot_poison").over_time
+    assert effects.by_id("debuff_dot_poison").tick_rate == 1.5
+    assert not effects.by_id("skill_frenzyshout_buff_lifeleech").over_time
+
+    swing(world, sender, "mightybash")
+    assert len(world.pending_dots) == 1
+    after_blow = world.creatures[actor].health
+
+    for _ in range(3):
+        world.pending_dots = [(0.0,) + e[1:] for e in world.pending_dots]
+        world.land_dots()
+    assert world.creatures[actor].health < after_blow, "the poison bit"
+    # Bounded: it does not tick for ever.
+    for _ in range(20):
+        world.pending_dots = [(0.0,) + e[1:] for e in world.pending_dots]
+        world.land_dots()
+    assert not world.pending_dots
+
+
+def test_a_poison_ticks_once_here_because_that_is_what_the_template_says():
+    """Two seconds of duration at a rate of 1.5 is one tick, not two.
+
+    Worth pinning: it looks like a rounding choice and it is the template's own
+    arithmetic. debuff_dot_burn is 3 seconds at 1.0 and gets three.
+    """
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.mob_damage = 10.0
+    actor = a_creature(world, health=30.0)
+
+    swing(world, sender, "mightybash")
+    assert world.pending_dots[0][4] == 1, "one tick"
+
+    world.pending_dots = [(0.0,) + e[1:] for e in world.pending_dots]
+    world.land_dots()
+    assert not world.pending_dots
+    assert 0.0 < world.creatures[actor].health < 5.0, "bitten, not killed"
+
+    assert effects.by_id("debuff_dot_burn").duration == 3.0
+    assert effects.by_id("debuff_dot_burn").tick_rate == 1.0
+
+
+def test_a_poison_that_kills_ends_the_creature_properly():
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.mob_damage = 10.0
+    actor = a_creature(world, health=26.0)
+    swing(world, sender, "mightybash")
+    world.pending_dots = [(0.0,) + e[1:] for e in world.pending_dots]
+    world.land_dots()
+    assert world.creatures[actor].health == 0.0
+    assert not world.pending_dots
+
+
+def test_a_player_who_leaves_takes_their_poison_with_them():
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.mob_damage = 1000.0
+    a_creature(world)
+    swing(world, sender, "mightybash")
+    assert world.pending_dots
+    world.forget(sender)
+    assert not world.pending_dots

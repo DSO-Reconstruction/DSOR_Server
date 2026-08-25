@@ -204,6 +204,9 @@ class Rules:
     #: sequencer assertion that holds animated effects back, and it has been read wrong
     #: twice already, so it is something to try rather than something known.
     effect_stack: int = -1
+    #: What share of the blow a damage-over-time effect deals each tick. Ours: the
+    #: templates read a named variable a talent sets, and there is no talent here.
+    dot_share: float = 0.15
     #: Which class's skills a modifier may name. One class per world for now, because
     #: this server serves one character.
     character_class: str = "warrior"
@@ -444,6 +447,22 @@ class World:
     pending_swings: list[tuple[float, Address, int | None, int | None]] = field(
         default_factory=list
     )
+    #: Damage still to come from an effect that deals it over time — a poison, a burn,
+    #: a bleed. (due, address, creature, damage per tick, ticks left, seconds between)
+    #:
+    #: Applied here rather than by the client. The client *can* do it —
+    #: debuff_dot_poison's TickModifiers are CurrHealthPointsDmg every 1.5 seconds —
+    #: but every effect that carries one also carries an animation, and an animated
+    #: effect cannot be sent: it sends the client's sequencer into a FixedArray it
+    #: cannot index, and there is nothing in any capture to check one against. Twenty
+    #: thousand real 0x004F messages hold exactly four distinct effects and not one of
+    #: them is animated.
+    #:
+    #: So the mechanic is served and the visualisation is not. A number floats off the
+    #: creature every tick and its health drops, which is the part that matters.
+    pending_dots: list[tuple[float, Address, bytes, float, int, float]] = field(
+        default_factory=list
+    )
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
     stepped_tick: int = 0
@@ -678,6 +697,7 @@ class World:
         self.players.pop(address, None)
         self.pending_hits = [h for h in self.pending_hits if h[1] != address]
         self.pending_swings = [s for s in self.pending_swings if s[1] != address]
+        self.pending_dots = [d for d in self.pending_dots if d[1] != address]
         if not self.players:
             self.reset_creatures()
 
@@ -1075,6 +1095,7 @@ class World:
 
         player = int.from_bytes(PLAYER_ACTOR, "little")
         killed = []
+        dealt = 0.0
         for target in targets:
             struck = self.creatures[target]
             left = max(0.0, struck.health - blow)
@@ -1112,6 +1133,8 @@ class World:
                 sender,
             )
             self.inflict_effects(target, used)
+            self.start_dots(sender, target, used, blow)
+            dealt += blow
             log.info(
                 "%s: %s hit entity %s with %s for %.0f, %.1f left",
                 self.name,
@@ -1123,6 +1146,9 @@ class World:
             )
             if left <= 0.0:
                 killed.append(target)
+
+        # And what a life leech gives back, on the total rather than per victim.
+        self.leech(sender, used, dealt)
 
         # Deaths after every blow, so an area skill reports all its damage before the
         # first corpse rearranges the creature list.
@@ -1296,9 +1322,21 @@ class World:
             return
         now = time.monotonic()
         player = self.player(sender)
+        # Merged, not replaced. Replacing was a real bug and exactly the one that made
+        # "le sort qui doit heal quand je tape" do nothing: frenzyshout put its life
+        # leech on, and the very next angrystrike — which grants a frenzy buff of its
+        # own — wiped it before it could ever pay out.
+        #
+        # A fresh cast of the same effect refreshes it rather than stacking, and
+        # anything already expired goes.
+        fresh = {entry.effect for entry in granted}
         player.buffs = [
-            self._buff(entry, now) for entry in granted
-        ]
+            held
+            for held in player.buffs
+            if held[2] > now
+            and (found := effects.effect(held[0])) is not None
+            and found.id not in fresh
+        ] + [self._buff(entry, now) for entry in granted]
         log.info(
             "%s: %s gains %s",
             self.name,
@@ -1331,7 +1369,14 @@ class World:
         if not inflicted:
             return
         now = time.monotonic()
-        creature.effects = [self._buff(entry, now) for entry in inflicted]
+        fresh = {entry.effect for entry in inflicted}
+        creature.effects = [
+            held
+            for held in creature.effects
+            if held[2] > now
+            and (found := effects.effect(held[0])) is not None
+            and found.id not in fresh
+        ] + [self._buff(entry, now) for entry in inflicted]
         log.info(
             "%s: entity %s suffers %s",
             self.name,
@@ -1701,6 +1746,116 @@ class World:
         )
 
 
+    def land_dots(self) -> None:
+        """Apply the damage-over-time whose tick has come round."""
+        now = time.monotonic()
+        due = [entry for entry in self.pending_dots if entry[0] <= now]
+        if not due:
+            return
+        self.pending_dots = [e for e in self.pending_dots if e[0] > now]
+        player = int.from_bytes(PLAYER_ACTOR, "little")
+        for _, sender, target, damage, left, interval in due:
+            creature = self.creature(target)
+            if creature is None or not creature.alive:
+                continue
+            remaining = max(0.0, creature.health - damage)
+            creature.health = remaining
+            self._emit(
+                encode_hit(
+                    Hit(
+                        victim=int.from_bytes(target, "little"),
+                        attacker=player,
+                        damage=int(damage),
+                        victim_health=int(remaining),
+                        victim_max_health=int(creature.max_health),
+                        combat_value_owner=player,
+                        combat_value=0.0,
+                        tick=self.player(sender).server_tick,
+                    )
+                ),
+                sender,
+            )
+            if remaining <= 0.0:
+                self.creature_died(sender, target)
+                continue
+            if left > 1:
+                self.pending_dots.append(
+                    (now + interval, sender, target, damage, left - 1, interval)
+                )
+
+    def start_dots(
+        self, sender: Address, target: bytes, used: Skill | None, blow: float
+    ) -> None:
+        """Schedule whatever damage over time *used* inflicts on *target*.
+
+        The rate and the count are the effect's own: debuff_dot_poison ticks every 1.5
+        seconds for 2, debuff_dot_burn every second for 3, debuff_dot_bleeding every
+        second for 5. The amount per tick is not — the templates read
+        ``$debuff_dot_poison_dmg``, a named variable a talent sets, and there is no
+        talent here. A share of the blow that caused it is this server's choice.
+        """
+        if used is None or not self.rules.status_effects:
+            return
+        now = time.monotonic()
+        for entry in effects.anything_by(used.wire, victim=True):
+            found = effects.by_id(entry.effect)
+            if found is None or not found.over_time:
+                continue
+            interval = found.tick_rate or 1.0
+            ticks = max(1, int((entry.duration or found.duration or 1.0) / interval))
+            damage = blow * self.rules.dot_share
+            self.pending_dots.append(
+                (now + interval, sender, target, damage, ticks, interval)
+            )
+            log.info(
+                "%s: entity %s takes %s, %.0f a tick every %.1fs for %d",
+                self.name,
+                target.hex(" "),
+                entry.effect,
+                damage,
+                interval,
+                ticks,
+            )
+            return
+
+    def leech(self, sender: Address, used: Skill | None, dealt: float) -> None:
+        """Heal the player for a share of *dealt*, if a life leech is on them.
+
+        frenzyshout's own effect: ``LifeLeech:$0,absolute`` over eleven named skills,
+        with $0 of 0.2. Served here rather than by the client for the same reason the
+        poison is — and this is the "sort qui doit heal quand je tape".
+        """
+        if used is None or dealt <= 0.0:
+            return
+        player = self.player(sender)
+        for wire, parameters, _seconds in self.live_effects(player):
+            found = effects.effect(wire)
+            if found is None:
+                continue
+            for modifier in found.starts:
+                if modifier.attribute != "LifeLeech":
+                    continue
+                if used.id not in modifier.targets:
+                    continue
+                share = parameters[0] if parameters else 0.0
+                if share <= 0.0:
+                    continue
+                healed = min(player.max_health, player.health + dealt * share)
+                if healed == player.health:
+                    return
+                gained = healed - player.health
+                player.health = healed
+                self.report_vitals(sender)
+                log.info(
+                    "%s: %s leeches %.0f of %.0f back with %s",
+                    self.name,
+                    sender,
+                    gained,
+                    dealt,
+                    used.id,
+                )
+                return
+
     def land_swings(self) -> None:
         """Resolve the swings whose impact frame has now arrived.
 
@@ -1857,6 +2012,7 @@ class World:
             self.creature_swing(player.address)
         self.land_hits()
         self.land_swings()
+        self.land_dots()
         return self._drain()
 
     def enter(self, sender: Address) -> list[tuple[Address, bytes]]:

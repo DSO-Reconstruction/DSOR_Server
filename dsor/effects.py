@@ -245,6 +245,19 @@ class Effect:
         return bool(self.starts or self.ticks)
 
     @property
+    def over_time(self) -> bool:
+        """Whether the effect deals damage on a tick rather than at once.
+
+        debuff_dot_poison, debuff_dot_burn and debuff_dot_bleeding all carry
+        ``CurrHealthPointsDmg`` in TickModifiers. The client would do this itself given
+        the effect, but every one of them is animated and an animated effect cannot be
+        sent yet -- so the damage is served and the green bubbles are not.
+        """
+        return any(
+            modifier.attribute == "CurrHealthPointsDmg" for modifier in self.ticks
+        )
+
+    @property
     def animated(self) -> bool:
         """Whether the client plays a sequence or an animation for this effect.
 
