@@ -16,16 +16,37 @@ A token whose TokenType is ``SkillEffect`` and whose Param1Attr is ``UserEffect`
 names an aura placed on the ground, which it cannot.
 """
 
+import pathlib
 import sqlite3
 import sys
 
 
+def connect(path: str):
+    """Open the client's database read-only, and refuse a path that is not one.
+
+    ``sqlite3.connect`` *creates* a database when the file is missing, so running one
+    of these from the wrong directory left an empty ``db_static.sqlite`` behind and
+    then generated a table with nothing in it. A generator that quietly produces an
+    empty module is the same failure as a config file that quietly ignores a key.
+    """
+    found = pathlib.Path(path)
+    if not found.exists():
+        raise SystemExit(
+            f"no database at {found}. Point this at the client's own, usually "
+            "~/dso/db/db_static.sqlite"
+        )
+    return sqlite3.connect(f"file:{found}?mode=ro", uri=True)
+
+
 def main(path: str, character_class: str) -> None:
-    sys.path.insert(0, ".")
+    # The repository root from this file, not the working directory. Inserting "."
+    # meant the tool only ran from the root, and the failure it gave there was a
+    # missing dsor module rather than anything about what it was asked to do.
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+    db = connect(path)
+
     from dsor import effects
     from dsor.skills import of_class
-
-    db = sqlite3.connect(path)
     tokens = db.execute(
         "SELECT Id, Param1Attr, Param1Id, Param2Id, TokenType"
         " FROM _Template_LocaleToken WHERE TokenType = 'SkillEffect'"

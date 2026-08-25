@@ -10,6 +10,7 @@ guessed. The wire index is ``rowid - 1``: the client sends 1838 for row 1839,
 ``angrystrike``, which is how the mapping was confirmed.
 """
 
+import pathlib
 import sqlite3
 import sys
 
@@ -21,8 +22,26 @@ FIELDS = [
 ]
 
 
+
+def connect(path: str):
+    """Open the client's database read-only, and refuse a path that is not one.
+
+    ``sqlite3.connect`` *creates* a database when the file is missing, so running one
+    of these from the wrong directory left an empty ``db_static.sqlite`` behind and
+    then generated a table with nothing in it. A generator that quietly produces an
+    empty module is the same failure as a config file that quietly ignores a key.
+    """
+    found = pathlib.Path(path)
+    if not found.exists():
+        raise SystemExit(
+            f"no database at {found}. Point this at the client's own, usually "
+            "~/dso/db/db_static.sqlite"
+        )
+    return sqlite3.connect(f"file:{found}?mode=ro", uri=True)
+
+
 def main(path: str) -> None:
-    db = sqlite3.connect(path)
+    db = connect(path)
     rows = db.execute(
         f"SELECT rowid - 1, {', '.join(FIELDS)} FROM _Template_Skill ORDER BY rowid"
     ).fetchall()

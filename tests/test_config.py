@@ -105,3 +105,38 @@ def test_the_file_can_express_a_rule_no_flag_can():
     config.apply_to(rules, {"dot_share": 0.5, "corpse_lifetime": 40}, "rules")
     assert rules.dot_share == 0.5
     assert rules.corpse_lifetime == 40
+
+
+def test_a_generator_refuses_a_missing_database_instead_of_creating_one():
+    """sqlite3.connect creates a database when the file is missing.
+
+    Running a generator from the wrong directory left an empty db_static.sqlite behind
+    and would then have written a module with nothing in it. A generator that quietly
+    produces an empty table is the same failure as a config file that quietly ignores a
+    key, which is the one this module exists to refuse.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    tools = Path("tools")
+    if not tools.exists():
+        pytest.skip("no tools directory in this checkout")
+
+    for name in (
+        "effect_table.py",
+        "monster_table.py",
+        "skill_table.py",
+        "level_table.py",
+        "skill_promises.py",
+    ):
+        script = tools / name
+        done = subprocess.run(
+            [sys.executable, str(script.resolve()), "/nowhere/db_static.sqlite"],
+            capture_output=True,
+            text=True,
+            cwd="/tmp",
+        )
+        assert done.returncode != 0, name
+        assert "no database at" in (done.stderr + done.stdout), name
+        assert not Path("/tmp/db_static.sqlite").exists(), f"{name} created one"
