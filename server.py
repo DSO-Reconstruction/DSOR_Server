@@ -209,10 +209,14 @@ TARGET_SKILL_OPCODE = 0x0047
 #: else — four bytes, the shortest request in the protocol.
 PICKUP_ITEM_OPCODE = 0x0064
 
-#: The client's own god mode, unlocked by launching it with -godmode. Its keys are
-#: bound in a section the binary labels "Debug (invisible / unavailable in public
-#: builds)": godModeToggle, godModeKillUnderMouse, godModeKillAllNearby,
-#: godModeKillAll, monsterDebugTextToggle, increaseMovementSpeed.
+#: The client's own god mode. Handled for completeness, but **this client will never
+#: send any of it**: the -godmode switch sets one byte at offset 0x1a9d of a config
+#: object, and that byte is written by two functions and read by none. Since the
+#: displacement needs a 32-bit encoding, a read could not have been missed.
+#:
+#: So the feature is compiled out, exactly as its own keybinding section says —
+#: "Debug (invisible / unavailable in public builds)" — leaving the labels and the
+#: flag behind as dead data. The console is what actually works; see dsor/console.py.
 GOD_MODE_OPCODES = {
     0x0100: "ActivateGodMode",
     0x0101: "GodModeKill",
