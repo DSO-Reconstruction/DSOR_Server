@@ -406,6 +406,37 @@ LEVEL_DAMAGE = (
 )
 
 
+#: The resource pool -- rage for a warrior -- at each level. A hundred at every one
+#: of the 110, which is worth having generated rather than written down, because a
+#: hundred is what makes the rest of the numbers come out right.
+#:
+#: Measured twice on the wire. A skill's ResourceCost and ResourceGain are fractions
+#: of this: angrystrike's gain of 0.05 is the 5.00 the resource rises by after each
+#: cast in a real session, exactly, and the range it moves in -- 0 to 63.6 -- is a
+#: warrior building rage in a pool of a hundred.
+#:
+#: This server used ten, so warshout's gain of 0.6 put 6 points on a bar of a hundred
+#: and nothing appeared to happen.
+LEVEL_RESOURCE = (
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+    100, 100, 100, 100, 100, 100, 100, 100, 100, 100,
+)
+
+
+def resource_at(level: int) -> float:
+    """The size of the resource pool at *level*."""
+    return float(LEVEL_RESOURCE[min(max(level, 1), len(LEVEL_RESOURCE)) - 1])
+
+
 def damage_at(level: int) -> int:
     """What a character of *level* hits for, before equipment."""
     return LEVEL_DAMAGE[min(max(level, 1), len(LEVEL_DAMAGE)) - 1]

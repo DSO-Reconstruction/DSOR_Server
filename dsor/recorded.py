@@ -893,6 +893,39 @@ EFFECT_INDEX_BITS = 16
 #: flags and the array's own count.
 EFFECT_PARAMETERS_BIT = EFFECT_INDEX_BIT + EFFECT_INDEX_BITS + 8 * 32 + 4 + 32
 
+#: Where the eight 32-bit fields begin: past the flag, the count and the index.
+EFFECT_FIELDS_BIT = EFFECT_INDEX_BIT + EFFECT_INDEX_BITS
+
+#: Which of those eight are ticks, and what each one is.
+#:
+#: Read from three consecutive real messages on the live service:
+#:
+#:     [65691, 318, 0, 293, 0, 25, 100, 0]
+#:     [65716, 343, 0, 318, 0, 25, 100, 0]
+#:     [65741, 368, 0, 343, 0, 25, 100, 0]
+#:
+#: Fields 0, 1 and 3 all advance by 25 a message; field 3 is the previous message's
+#: field 1; field 5 is 25 throughout and field 6 is 100. Twenty-five ticks is one
+#: second at 40 ms a tick, and the effect they carry --
+#: a0001_tutorial_heal_on_low_health -- has a StatusEffectDuration of exactly 1.0. So
+#: field 3 is when the effect began, field 1 when it ends, and field 5 how long it
+#: runs, all in game ticks.
+#:
+#: Which is why replaying the recorded values did nothing at all: they say the effect
+#: ended at tick 318, and the client's own clock is in the tens of thousands. It was
+#: over before it arrived.
+#:
+#: Fields 0, 2, 4, 6 and 7 are left as recorded. Field 0 tracks field 3 at a fixed
+#: distance within one session and a different one across sessions -- 65398 against
+#: 65395 -- so it is another clock with its own epoch, and guessing at it would be
+#: guessing.
+EFFECT_END_TICK_FIELD = 1
+EFFECT_START_TICK_FIELD = 3
+EFFECT_DURATION_FIELD = 5
+
+#: Game ticks per second: 25, at 40 ms a tick.
+EFFECT_TICKS_PER_SECOND = 25
+
 #: How many parameters the recorded element carries. Rewriting values in place keeps
 #: the count, so a modifier that reads only $0 gets it and the rest stay zero.
 EFFECT_PARAMETERS = 5
@@ -905,6 +938,15 @@ def status_effect_index(state: bytes | None = None) -> int:
     body = (state or tick_state())[3:]
     reader = BitReader(body, EFFECT_INDEX_BIT)
     return reader.read_uint(EFFECT_INDEX_BITS)
+
+
+def status_effect_fields(state: bytes | None = None) -> list[int]:
+    """The eight 32-bit fields of the recorded element's single effect."""
+    from raknet.bitstream import BitReader
+
+    body = (state or tick_state())[3:]
+    reader = BitReader(body, EFFECT_FIELDS_BIT)
+    return [reader.read_uint(32) for _ in range(8)]
 
 
 def status_effect_parameters(state: bytes | None = None) -> list[float]:
@@ -922,7 +964,11 @@ def status_effect_parameters(state: bytes | None = None) -> list[float]:
 
 
 def with_status_effect(
-    state: bytes, wire: int, parameters: list[float] | None = None
+    state: bytes,
+    wire: int,
+    parameters: list[float] | None = None,
+    start_tick: int | None = None,
+    seconds: float | None = None,
 ) -> bytes:
     """The recorded tick state with its one effect replaced by *wire*.
 
@@ -931,11 +977,11 @@ def with_status_effect(
     real message and inventing a tail is how the skill command came to be 26 bytes of
     a 64-byte one.
 
-    Which means the duration is the recorded effect's, not the one the skill asks
-    for: warshout wants ten seconds and this carries whatever
-    ``a0001_tutorial_heal_on_low_health`` was sent with. The buff is refreshed every
-    tick while it is meant to be active, so the duration does not decide when it ends
-    -- this server does.
+    The three tick fields do move, and they have to. The recorded ones say the effect
+    began at tick 151 and ended at 176, and a client whose clock is in the tens of
+    thousands reads that as something that finished long ago -- which is exactly why
+    replaying them, with the right effect index and the right parameter, did nothing
+    visible at all.
     """
     import struct
 
@@ -945,6 +991,16 @@ def with_status_effect(
             f"an effect index is {EFFECT_INDEX_BITS} bits, and {wire} does not fit"
         )
     _write_bits(body, EFFECT_INDEX_BIT, wire, EFFECT_INDEX_BITS)
+    if start_tick is not None:
+        span = max(1, round((seconds or 1.0) * EFFECT_TICKS_PER_SECOND))
+        for field, value in (
+            (EFFECT_START_TICK_FIELD, start_tick),
+            (EFFECT_END_TICK_FIELD, start_tick + span),
+            (EFFECT_DURATION_FIELD, span),
+        ):
+            _write_bits(
+                body, EFFECT_FIELDS_BIT + 32 * field, value & 0xFFFFFFFF, 32
+            )
     for index, value in enumerate(parameters or []):
         if index >= EFFECT_PARAMETERS:
             break

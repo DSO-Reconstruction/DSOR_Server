@@ -41,6 +41,7 @@ from dsor.combat import (
     encode_xp_changed,
     damage_at,
     hit_points_at,
+    resource_at,
     level_for,
 )
 from dsor.gameplay import (
@@ -176,7 +177,10 @@ class Rules:
     #: of a stated 2700 shows a bar one twelfth full.
     player_max: int = 0
     #: The resource a skill spends, reported alongside health and left alone.
-    player_resource: float = 10.0
+    #: Zero — the default — means "what the level table's BaseMana says", which is a
+    #: hundred at every level. Ten was written here and it is why nothing appeared to
+    #: happen: warshout's ResourceGain of 0.6 put six points on a bar of a hundred.
+    player_resource: float = 0.0
     #: Whether a skill's status effects are served at all. The buff is a rewritten
     #: recording, so if it ever upsets the client this is the switch.
     status_effects: bool = True
@@ -356,14 +360,14 @@ class Player:
     #: rage".
     resource: float = 0.0
     #: The one status effect this player is under, as (effect wire, parameters,
-    #: when it expires on the monotonic clock).
+    #: when it expires on the monotonic clock, how many seconds it runs).
     #:
     #: One, not several, and that is a limit of the message rather than a choice: the
     #: recorded 0x004F carries exactly one effect element, and three of the eight
     #: integers in it are not understood, so a second element cannot be built from
     #: nothing. warshout grants four effects and this carries the first that changes
     #: something — the movement speed, which is the one that shows.
-    buff: tuple[int, tuple[float, ...], float] | None = None
+    buff: tuple[int, tuple[float, ...], float, float] | None = None
     #: Which way the player is facing, in 256ths of a turn clockwise from +y, read
     #: from the heading byte of their own movement records. An arc skill needs it:
     #: mightyswing cuts 170 degrees of *something*, and without a facing there is no
@@ -1231,7 +1235,7 @@ class World:
         """
         if used is None:
             return False
-        pool = self.rules.player_resource
+        pool = self.resource_pool(sender)
         change = (used.resource_gain - used.resource_cost) * pool
         if not change:
             return False
@@ -1273,6 +1277,7 @@ class World:
             found.wire,
             parameters,
             time.monotonic() + seconds,
+            seconds,
         )
         log.info(
             "%s: %s gains %s for %.0fs (%s)",
@@ -1285,17 +1290,23 @@ class World:
             ),
         )
 
-    def live_buff(self, sender: Address) -> tuple[int, tuple[float, ...]] | None:
+    def live_buff(
+        self, sender: Address
+    ) -> tuple[int, tuple[float, ...], float] | None:
         """The player's buff if it has not run out, and None once it has."""
         buff = self.player(sender).buff
         if buff is None:
             return None
-        wire, parameters, expires = buff
+        wire, parameters, expires, seconds = buff
         if time.monotonic() >= expires:
             self.player(sender).buff = None
             log.debug("%s: %s's buff expired", self.name, sender)
             return None
-        return wire, parameters
+        return wire, parameters, seconds
+
+    def resource_pool(self, sender: Address) -> float:
+        """How much rage this player can hold, from the client's own level table."""
+        return self.rules.player_resource or resource_at(self.player(sender).level)
 
     def report_vitals(self, sender: Address) -> None:
         """Tell the client the player's health and resource.
@@ -1308,6 +1319,14 @@ class World:
         self._emit(
             encode_actor_vitals(int(player.health), player.resource, PLAYER_ACTOR),
             sender,
+        )
+        log.info(
+            "%s: %s has %.0f health and %.1f of %.0f rage",
+            self.name,
+            sender,
+            player.health,
+            player.resource,
+            self.resource_pool(sender),
         )
 
     def player_health(self, level: int) -> float:
@@ -1623,7 +1642,17 @@ class World:
             # Re-sent every tick while it lasts. The recorded element's own duration
             # is left as it stands, so refreshing it is what keeps the buff up and
             # dropping it is what ends it.
-            state = with_status_effect(state, buff[0], list(buff[1]))
+            # On the clock this server announces, which is the one a skill's start
+            # tick already uses and the one the client compares against. Replaying
+            # the recorded ticks said the effect ended at 176, and a client in the
+            # tens of thousands read it as long over.
+            state = with_status_effect(
+                state,
+                buff[0],
+                list(buff[1]),
+                start_tick=player.server_tick,
+                seconds=buff[2],
+            )
         self._emit(state, sender)
         self._emit(self.entity_update(player.position, player.server_tick), sender)
 

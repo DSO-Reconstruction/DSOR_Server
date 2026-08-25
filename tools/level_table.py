@@ -62,6 +62,7 @@ def main(path: str) -> None:
         "LEVEL_EXPERIENCE": rows(db, "LevelXP"),
         "LEVEL_HIT_POINTS": rows(db, "BaseHP"),
         "LEVEL_DAMAGE": rows(db, "BaseDamage"),
+        "LEVEL_RESOURCE": rows(db, "BaseMana"),
     }
 
     target = pathlib.Path("dsor/combat.py")

@@ -133,7 +133,10 @@ def test_a_shout_gives_rage_and_says_so():
     assert player.resource == 0.0
 
     world.resolve_attack(sender, wire_of("warshout"))
-    assert player.resource == 0.6 * world.rules.player_resource
+    # 0.6 of a pool of a hundred, which the level table gives. Sixty rage, not six:
+    # the pool was written here as ten and that is why nothing appeared to happen.
+    assert world.resource_pool(sender) == 100.0
+    assert player.resource == 60.0
 
     sent = world._drain()
     assert sent, "the client was told"
@@ -149,9 +152,10 @@ def test_a_shout_gives_rage_and_says_so():
 def test_the_resource_never_leaves_its_pool():
     world, sender = a_player()
     player = world.player(sender)
+    pool = world.resource_pool(sender)
     for _ in range(20):
         world.resolve_attack(sender, wire_of("warshout"))
-    assert player.resource == world.rules.player_resource
+    assert player.resource == pool
 
     for _ in range(40):
         world.resolve_attack(sender, wire_of("mighty360"))
@@ -176,9 +180,9 @@ def test_the_buff_stops_when_it_runs_out():
     player = world.player(sender)
     assert player.buff is not None
 
-    # Ten seconds is what warshout asks for; put it in the past.
-    wire, parameters, _ = player.buff
-    player.buff = (wire, parameters, time.monotonic() - 1.0)
+    # Ten seconds is what warshout asks for; put its expiry in the past.
+    wire, parameters, _expires, seconds = player.buff
+    player.buff = (wire, parameters, time.monotonic() - 1.0, seconds)
     assert world.live_buff(sender) is None
     assert player.buff is None
 
@@ -219,3 +223,86 @@ def test_only_one_effect_can_be_carried_and_that_is_the_messages_fault():
     world.resolve_attack(sender, wire_of("warshout"))
     assert world.player(sender).buff[0] == effects.wire_of(granted[0].effect)
     assert len(world.player(sender).buff[1]) == EFFECT_PARAMETERS
+
+
+def test_the_pool_is_a_hundred_and_the_arithmetic_comes_out_exact():
+    """Measured twice on the wire, in one real session.
+
+    Out of combat the resource falls by exactly 5.00 a step, from 63.6 to 0. Then two
+    angrystrikes raise it by exactly 5.00 each -- 0.2 to 5.2, then 5.4 to 10.4 -- and
+    angrystrike's ResourceGain is 0.05. So the fractions in the templates are
+    fractions of a hundred, which is what BaseMana says at every one of the 110
+    levels.
+
+    An earlier note here read those falling steps of 5.00 as the effect of the skill.
+    They are the decay between casts; the skill is the rise.
+    """
+    from dsor.combat import resource_at
+    from dsor.skills import by_id
+
+    assert resource_at(1) == resource_at(100) == 100.0
+    assert by_id("angrystrike").resource_gain * resource_at(1) == 5.0
+    assert by_id("warshout").resource_gain * resource_at(1) == 60.0
+    assert by_id("mighty360").resource_cost * resource_at(1) == 40.0
+
+
+def test_a_skill_both_costs_and_gains_from_the_same_pool():
+    world, sender = a_player()
+    world.player(sender).level = 100
+    for name, expected in (
+        ("warshout", 60.0),
+        ("angrystrike", 65.0),
+        ("mighty360", 25.0),
+    ):
+        world.resolve_attack(sender, wire_of(name))
+        assert world.player(sender).resource == expected, name
+
+
+def test_the_buff_is_stamped_with_the_clock_the_server_announces():
+    """Replaying the recorded ticks is why nothing happened.
+
+    They say the effect began at 151 and ended at 176. A client whose clock is in the
+    tens of thousands reads that as something long finished, so the right index and
+    the right parameter arrived attached to an expired window.
+    """
+    from dsor.recorded import (
+        EFFECT_TICKS_PER_SECOND,
+        status_effect_fields,
+    )
+
+    assert status_effect_fields()[1] == 176, "the recording ends here"
+
+    world, sender = a_player()
+    world.player(sender).server_tick = 41230
+    world.resolve_attack(sender, wire_of("warshout"))
+    world._drain()
+    world._tick_pair(sender)
+    fields = status_effect_fields(world._drain()[0][1])
+
+    span = 10 * EFFECT_TICKS_PER_SECOND  # warshout asks for ten seconds
+    assert fields[3] == 41230, "starts now"
+    assert fields[1] == 41230 + span, "ends ten seconds from now"
+    assert fields[5] == span, "and says how long it runs"
+    # The five this server does not understand are left exactly as recorded.
+    recorded = status_effect_fields()
+    for index in (0, 2, 4, 6, 7):
+        assert fields[index] == recorded[index], index
+
+
+def test_twenty_five_ticks_is_one_second():
+    """The duration field read 25 for an effect whose template says 1.0 seconds.
+
+    Which is the tick rate the rest of this server already uses: 40 ms.
+    """
+    from dsor.recorded import EFFECT_TICKS_PER_SECOND
+    from dsor.world import GAME_TICK_MS
+
+    assert EFFECT_TICKS_PER_SECOND * GAME_TICK_MS == 1000
+    assert effects.effect(1350).duration == 1.0
+    assert status_effect_fields_duration() == EFFECT_TICKS_PER_SECOND
+
+
+def status_effect_fields_duration():
+    from dsor.recorded import status_effect_fields
+
+    return status_effect_fields()[5]
