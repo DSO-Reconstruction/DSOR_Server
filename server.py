@@ -48,6 +48,8 @@ from dsor.messages import (
     read_server_handoff,
 )
 from dsor.combat import (
+    level_bounds,
+    level_for,
     Hit,
     TargetSkill,
     encode_target_skill,
@@ -1228,6 +1230,13 @@ class Service:
             entrant = self.world.player(sender)
             entrant.position = spawn
             entrant.in_world = True
+            if self.rules.start_level > 1 and not entrant.experience:
+                entrant.experience = level_bounds(self.rules.start_level)[0]
+                entrant.level = level_for(entrant.experience)
+                log.info(
+                    "%s: %s arrives at level %d with %d experience",
+                    self.name, sender, entrant.level, entrant.experience,
+                )
             entrant.health = float(self.rules.player_max)
             entrant.max_health = float(self.rules.player_max)
             self._announce_vicinity(connection, sender)
@@ -1408,6 +1417,7 @@ def serve(
     map_spawns: bool = False,
     granted_skills: list[str] | None = None,
     grant_up_to_level: int = 0,
+    start_level: int = 0,
     kill_experience: int = 17,
     mob_chase: bool = True,
     mob_speed: int | None = None,
@@ -1484,6 +1494,7 @@ def serve(
         service.rules.mob_swap = mob_swap
         service.rules.granted_skills = list(granted_skills or [])
         service.rules.grant_up_to_level = grant_up_to_level
+        service.rules.start_level = start_level
         if map_spawns and role == "map":
             usable = servable_points(set(monster_library()))
             service.world.populate_from_map(usable, mob_health)
@@ -1687,6 +1698,13 @@ def main() -> None:
         default=17,
         metavar="N",
         help="experience awarded per kill, 0 for none. A real award carried 17",
+    )
+    parser.add_argument(
+        "--start-level",
+        type=int,
+        default=0,
+        metavar="N",
+        help="the level a player arrives at, experience set to that level's floor",
     )
     parser.add_argument(
         "--grant-skill",
@@ -1945,6 +1963,7 @@ def main() -> None:
             for name in entry.split(",") if name
         ],
         grant_up_to_level=args.grant_skills_to_level,
+        start_level=args.start_level,
         kill_experience=args.kill_experience,
         mob_chase=args.mob_chase,
         mob_speed=args.mob_speed,

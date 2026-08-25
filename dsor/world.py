@@ -216,6 +216,11 @@ class Rules:
     #: unlocked but refuses to place is one whose bit is clear.
     granted_skills: list[str] = field(default_factory=list)
     grant_up_to_level: int = 0
+    #: The level a player arrives at, or 0 to start from nothing. Sets the experience
+    #: to that level's floor, so the bar and the level agree — the client is told a
+    #: level and both of its thresholds together, and moving one without the others
+    #: leaves it describing a different character.
+    start_level: int = 0
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
     #: Whether to answer a pickup at all.
