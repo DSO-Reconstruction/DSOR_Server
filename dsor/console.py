@@ -109,6 +109,7 @@ class Console:
             "xp <amount>            grant experience to everyone in the world\n"
             "level <n>              set everyone's level outright\n"
             "revive                 refill everyone's health\n"
+            "kill                   kill every live creature, drops and all\n"
             "reset                  every creature alive again, ground cleared\n"
             "attrs [text]           attribute ids, filtered by name\n"
         )
@@ -184,6 +185,17 @@ class Console:
         for player in self.service.world.inhabitants():
             player.health = player.max_health
         return "healed"
+
+    def _do_kill(self) -> str:
+        world = self.service.world
+        players = world.inhabitants()
+        if not players:
+            return "nobody is in the world to credit the kills to"
+        alive = sum(1 for c in world.creatures.values() if c.alive)
+        for player in players:
+            self.service._ship(world.smite_all(player.address))
+            break
+        return f"killed {alive} creature(s)"
 
     def _do_reset(self) -> str:
         self.service.world.reset_creatures()

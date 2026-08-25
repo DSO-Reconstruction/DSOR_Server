@@ -1270,3 +1270,33 @@ def test_the_console_reads_and_writes_the_live_rules():
             console.socket.close()
     finally:
         service.socket.close()
+
+
+def test_a_death_can_be_commanded_as_well_as_caused():
+    """The death sequence is one function, called from two places.
+
+    God mode asks for creatures to die without a blow, and so does the console. Both
+    go through the path a real blow takes, so the animation, the experience and the
+    drops happen exactly as in a fight. A second implementation of dying is precisely
+    the mistake that once had a replayed blow and a generated one disagreeing about
+    the same creature's health.
+    """
+    from dsor.world import World
+
+    world = World()
+    world.rules.mobs = 3
+    world.rules.drop_items = False
+    world._ready()
+    for creature in world.creatures.values():
+        creature.described = True
+    here = ("1.2.3.4", 5)
+    player = world.player(here)
+    player.in_world = True
+
+    assert all(c.alive for c in world.creatures.values())
+    out = world.smite_all(here)
+    assert out, "a death sends messages"
+    assert not any(c.alive for c in world.creatures.values())
+    assert player.experience == 3 * world.rules.kill_experience
+    # Struck again, nothing more happens: the dead are not killed twice.
+    assert world.smite_all(here) == []

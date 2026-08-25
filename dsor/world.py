@@ -753,6 +753,15 @@ class World:
 
         if left > 0.0:
             return
+        self.creature_died(sender, target)
+
+    def creature_died(self, sender: Address, target: bytes) -> None:
+        """Everything a creature's death sends.
+
+        Split out of the blow that causes it so a death can also be commanded — by
+        the console, or by the client's own god mode — without pretending an attack
+        happened.
+        """
         # Dead. Two generated commands, in this order, and neither is what this
         # server used to send.
         #
@@ -1165,4 +1174,19 @@ class World:
         )
         log.info("%s: %s picked up item %s into cell %d of %d",
                  self.name, sender, actor.hex(" "), slot, self.slot_capacity)
+        return self._drain()
+
+    def smite_all(self, sender: Address) -> list[tuple[Address, bytes]]:
+        """Kill every live creature, as god mode asks.
+
+        Through the same path a blow takes, so the death animation, the experience
+        and the drops all happen exactly as they would in a fight. Anything else
+        would be a second implementation of dying, and this project already learned
+        what two sources of the same truth cost.
+        """
+        for creature in list(self.creatures.values()):
+            if not creature.alive:
+                continue
+            creature.health = 0.0
+            self.creature_died(sender, creature.actor)
         return self._drain()

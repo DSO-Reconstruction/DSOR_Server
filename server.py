@@ -209,6 +209,18 @@ TARGET_SKILL_OPCODE = 0x0047
 #: else — four bytes, the shortest request in the protocol.
 PICKUP_ITEM_OPCODE = 0x0064
 
+#: The client's own god mode, unlocked by launching it with -godmode. Its keys are
+#: bound in a section the binary labels "Debug (invisible / unavailable in public
+#: builds)": godModeToggle, godModeKillUnderMouse, godModeKillAllNearby,
+#: godModeKillAll, monsterDebugTextToggle, increaseMovementSpeed.
+GOD_MODE_OPCODES = {
+    0x0100: "ActivateGodMode",
+    0x0101: "GodModeKill",
+    0x0102: "GodModeTeleport",
+    0x0103: "GodModeCreateItem",
+    0x0104: "GodModeToggleLootDrop",
+}
+
 #: The client asking what an entity is, once per entity it does not recognise. Its
 #: body is the four-byte handle, and the answer is a 0x85/0x002A description.
 DESCRIBE_ENTITY_OPCODE = 0x001C
@@ -1131,6 +1143,26 @@ class Service:
         ):
             self._set_clock(sender)
             self._ship(self.world.attack(sender))
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode in GOD_MODE_OPCODES
+        ):
+            # Logged in full before anything is done with it. None of these has ever
+            # been seen on the wire, so their payloads are unknown, and the first
+            # useful thing is to find out whether the client sends them at all.
+            log.info(
+                "%s: god mode %s from %s, %d bytes: %s",
+                self.name,
+                GOD_MODE_OPCODES[game.opcode],
+                sender,
+                len(game.body),
+                game.body[:48].hex(" "),
+            )
+            if game.opcode == 0x0101:
+                self._ship(self.world.smite_all(sender))
             return
 
         if (
