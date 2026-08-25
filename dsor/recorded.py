@@ -855,3 +855,128 @@ def with_library_spawn(
     remaining = reader.remaining
     writer.write_bits(reader.read_bits(remaining), remaining)
     return writer.to_bytes()
+
+
+# ── the per-tick status effect state ────────────────────────────────────────
+#
+# The 0x004F replayed every tick is not opaque. StatusEffectCommand::Serialize was
+# recovered through the vtable the same way the command ids were, and the layout is:
+#
+#     1 bit    a flag
+#     32 bits  how many effects follow
+#     per effect:
+#       16 bits   the effect's wire index, rowid - 1 in _Template_StatusEffect
+#       32 x 8    eight integers, written from object offsets 0x04, 0x0c, 0x14,
+#                 0x08, 0x18, 0x10, 0x1c, 0x20 -- so the wire order is not the
+#                 struct order, and which is the duration and which the source is
+#                 not established
+#       1 bit x 3 flags
+#       1 bit     whether parameters follow
+#       32 bits   how many, then that many float32       <- the $0, $1, $2
+#       ... more fields, not decoded
+#
+# Decoding the recorded message with that grammar reads: one effect, index 1350,
+# which is row 1351, ``a0001_tutorial_heal_on_low_health`` -- exactly what a tutorial
+# dungeon carries -- and five parameters, all zero. A layout that produces the right
+# name from the right table on the first try is not a coincidence.
+#
+# What is *not* established is enough to build an element from nothing: three of the
+# eight integers are unknown and so are the fields past the parameter array. So this
+# rewrites the recorded one in place instead, which is the same technique the item
+# drop and the creature description already use.
+
+#: Where the single effect's index sits: past the flag and the count.
+EFFECT_INDEX_BIT = 1 + 32
+EFFECT_INDEX_BITS = 16
+
+#: Where its parameter array starts: past the index, eight 32-bit fields, four
+#: flags and the array's own count.
+EFFECT_PARAMETERS_BIT = EFFECT_INDEX_BIT + EFFECT_INDEX_BITS + 8 * 32 + 4 + 32
+
+#: How many parameters the recorded element carries. Rewriting values in place keeps
+#: the count, so a modifier that reads only $0 gets it and the rest stay zero.
+EFFECT_PARAMETERS = 5
+
+
+def status_effect_index(state: bytes | None = None) -> int:
+    """The effect index the recorded tick state carries."""
+    from raknet.bitstream import BitReader
+
+    body = (state or tick_state())[3:]
+    reader = BitReader(body, EFFECT_INDEX_BIT)
+    return reader.read_uint(EFFECT_INDEX_BITS)
+
+
+def status_effect_parameters(state: bytes | None = None) -> list[float]:
+    """The parameters the recorded tick state carries -- five zeros."""
+    import struct
+
+    from raknet.bitstream import BitReader
+
+    body = (state or tick_state())[3:]
+    reader = BitReader(body, EFFECT_PARAMETERS_BIT)
+    return [
+        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+        for _ in range(EFFECT_PARAMETERS)
+    ]
+
+
+def with_status_effect(
+    state: bytes, wire: int, parameters: list[float] | None = None
+) -> bytes:
+    """The recorded tick state with its one effect replaced by *wire*.
+
+    Only the effect's index and its parameters move. Everything else -- the eight
+    integers, the flags, the tail -- is left exactly as recorded, because it is a
+    real message and inventing a tail is how the skill command came to be 26 bytes of
+    a 64-byte one.
+
+    Which means the duration is the recorded effect's, not the one the skill asks
+    for: warshout wants ten seconds and this carries whatever
+    ``a0001_tutorial_heal_on_low_health`` was sent with. The buff is refreshed every
+    tick while it is meant to be active, so the duration does not decide when it ends
+    -- this server does.
+    """
+    import struct
+
+    body = bytearray(state[3:])
+    if not 0 <= wire < 1 << EFFECT_INDEX_BITS:
+        raise ValueError(
+            f"an effect index is {EFFECT_INDEX_BITS} bits, and {wire} does not fit"
+        )
+    _write_bits(body, EFFECT_INDEX_BIT, wire, EFFECT_INDEX_BITS)
+    for index, value in enumerate(parameters or []):
+        if index >= EFFECT_PARAMETERS:
+            break
+        raw = int.from_bytes(struct.pack("<f", value), "little")
+        _write_bits(body, EFFECT_PARAMETERS_BIT + 32 * index, raw, 32)
+
+    out = state[:3] + bytes(body)
+    # Read it back. Every in-place rewrite in this file that was not read back turned
+    # out to be wrong somewhere -- the actor written two bits early, the position that
+    # was not always 448 bits from the end.
+    if status_effect_index(out) != wire:
+        raise ValueError(
+            f"wrote effect {wire} and read back {status_effect_index(out)}"
+        )
+    return out
+
+
+def _write_bits(buffer: bytearray, position: int, value: int, count: int) -> None:
+    """Overwrite *count* bits at *position*, most significant first.
+
+    Little-endian byte order for whole-byte widths, matching
+    :meth:`raknet.bitstream.BitWriter.write_uint`.
+    """
+    if count % 8 == 0:
+        raw = value.to_bytes(count // 8, "little")
+        bits = "".join(f"{byte:08b}" for byte in raw)
+    else:
+        bits = f"{value:0{count}b}"[-count:]
+    for offset, bit in enumerate(bits):
+        index = position + offset
+        mask = 1 << (7 - (index & 7))
+        if bit == "1":
+            buffer[index >> 3] |= mask
+        else:
+            buffer[index >> 3] &= 0xFF ^ mask

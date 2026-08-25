@@ -1490,6 +1490,7 @@ def serve(
     mob_damage: float = 0.0,
     mob_near: float = 0.0,
     creature_damage: float = 0.0,
+    status_effects: bool = True,
     creature_skill: int = 440,
     mob_despawn: bool = False,
     mob_first_command: bool = False,
@@ -1574,6 +1575,7 @@ def serve(
         service.rules.mob_near = mob_near
         service.rules.creature_damage = creature_damage
         service.rules.creature_skill = creature_skill
+        service.rules.status_effects = status_effects
         service.rules.mob_despawn = mob_despawn
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
@@ -1745,6 +1747,16 @@ def main() -> None:
             "entity records from the tutorial dungeon with only their position "
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--no-status-effects",
+        dest="status_effects",
+        action="store_false",
+        help=(
+            "do not serve a skill's status effects. They travel as a rewritten "
+            "recording of the per-tick 0x004F, so this is the switch if that upsets "
+            "the client"
         ),
     )
     parser.add_argument(
@@ -2045,6 +2057,7 @@ def main() -> None:
         mob_damage=args.mob_damage,
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
+        status_effects=args.status_effects,
         creature_skill=args.creature_skill,
         mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,

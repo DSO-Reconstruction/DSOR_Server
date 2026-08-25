@@ -28,6 +28,17 @@ def stand(world: World, tag: int, x: float, y: float) -> bytes:
     return actor
 
 
+def swing(world, sender, name, aim=None):
+    """Use skill *name* and let its impact frame arrive.
+
+    Every blow now waits its own HitFrame — 5 ticks for angrystrike, 11 for
+    enragingleap — so a test that wants the damage has to let the clock run.
+    """
+    world.resolve_attack(sender, skills.wire_of(name), aim)
+    world.pending_swings = [(0.0,) + entry[1:] for entry in world.pending_swings]
+    world.land_swings()
+
+
 def a_player(world: World, heading: int = 0) -> tuple[str, int]:
     sender = ("127.0.0.1", 1)
     player = world.player(sender)
@@ -70,7 +81,7 @@ def test_a_single_target_skill_hits_one_creature_of_three():
     for tag, y in ((0x85, 1.0), (0x86, 1.2), (0x87, 1.4)):
         stand(world, tag, 0.0, y)
 
-    world.resolve_attack(sender, skills.wire_of("angrystrike"))
+    swing(world, sender, "angrystrike")
     hurt = [c for c in world.creatures.values() if c.health < 1000.0]
     assert len(hurt) == 1, "Actor targeting strikes one creature"
     # 1.25 times the blow, which is the skill's own multiplier.
@@ -84,7 +95,7 @@ def test_a_radius_skill_hits_everything_around_including_behind():
     stand(world, 0x86, 0.0, -3.0)  # behind
     stand(world, 0x87, 3.0, 0.0)   # to the side
 
-    world.resolve_attack(sender, skills.wire_of("mighty360"))
+    swing(world, sender, "mighty360")
     hurt = [c for c in world.creatures.values() if c.health < 1000.0]
     assert len(hurt) == 3, "Radius targeting spares nobody in range"
     assert all(c.health == 1000.0 - 15.0 for c in hurt), "1.5 times the blow"
@@ -97,7 +108,7 @@ def test_an_arc_skill_spares_what_is_behind_the_player():
     front = stand(world, 0x85, 0.0, 2.0)
     back = stand(world, 0x86, 0.0, -2.0)
 
-    world.resolve_attack(sender, skills.wire_of("mightyswing"))
+    swing(world, sender, "mightyswing")
     assert world.creatures[front].health == 1000.0 - 10.0, "in the arc"
     assert world.creatures[back].health == 1000.0, "behind the swing"
 
@@ -113,7 +124,7 @@ def test_the_arc_follows_where_the_player_looks():
         sender = a_player(world, heading=heading)
         stand(world, 0x85, 0.0, 2.0)
         stand(world, 0x86, 0.0, -2.0)
-        world.resolve_attack(sender, skills.wire_of("mightyswing"))
+        swing(world, sender, "mightyswing")
         assert world.creatures[bytes([hit, 0, 1, 0])].health < 1000.0
         assert world.creatures[bytes([spared, 0, 1, 0])].health == 1000.0
 
@@ -135,10 +146,10 @@ def test_a_longer_skill_reaches_further_than_a_shorter_one():
     sender = a_player(world)
     far = stand(world, 0x85, 0.0, 6.0)
 
-    world.resolve_attack(sender, skills.wire_of("angrystrike"))
+    swing(world, sender, "angrystrike")
     assert world.creatures[far].health == 1000.0, "beyond 1.75 + 1.75"
 
-    world.resolve_attack(sender, skills.wire_of("mighty360"))
+    swing(world, sender, "mighty360")
     assert world.creatures[far].health < 1000.0, "within 6.3 + 1.75"
 
 
@@ -189,7 +200,7 @@ def test_an_area_skill_that_covers_nothing_hits_nothing():
     world = a_world()
     sender = a_player(world)
     stand(world, 0x85, 0.0, 40.0)
-    world.resolve_attack(sender, skills.wire_of("mighty360"))
+    swing(world, sender, "mighty360")
     assert all(c.health == 1000.0 for c in world.creatures.values())
 
 
@@ -200,6 +211,8 @@ def test_an_unknown_skill_falls_back_to_one_blow_at_the_old_reach():
     near = stand(world, 0x85, 0.0, 1.0)
     assert skills.skill(999999) is None
     world.resolve_attack(sender, 999999)
+    world.pending_swings = [(0.0,) + e[1:] for e in world.pending_swings]
+    world.land_swings()
     assert world.creatures[near].health == 1000.0 - 10.0, "no multiplier applied"
 
 
@@ -210,7 +223,7 @@ def test_an_area_skill_can_kill_several_creatures_at_once():
     for tag, y in ((0x85, 1.0), (0x86, 2.0), (0x87, 3.0)):
         stand(world, tag, 0.0, y)
 
-    world.resolve_attack(sender, skills.wire_of("mighty360"))
+    swing(world, sender, "mighty360")
     assert all(c.health == 0.0 for c in world.creatures.values())
 
 
@@ -287,7 +300,7 @@ def test_a_stationary_player_can_still_aim_a_cone():
     south = stand(world, 0x85, 0.0, -2.0)
     north = stand(world, 0x86, 0.0, 2.0)
 
-    world.resolve_attack(sender, skills.wire_of("mightyswing"))
+    swing(world, sender, "mightyswing")
     assert world.creatures[south].health < 1000.0, "in front of a player facing south"
     assert world.creatures[north].health == 1000.0, "behind them"
 
@@ -346,7 +359,7 @@ def test_the_command_aim_beats_a_stale_movement_facing():
     north = stand(world, 0x86, 0.0, 2.0)
 
     # ... but the command says the player is aiming -y.
-    world.resolve_attack(sender, skills.wire_of("mightyswing"), aim=128)
+    swing(world, sender, "mightyswing", aim=128)
     assert world.creatures[south].health < 1000.0, "aimed where the command said"
     assert world.creatures[north].health == 1000.0, "not where the record said"
 
@@ -377,15 +390,14 @@ def test_a_leap_is_resolved_where_it_lands_not_where_it_started():
 def test_a_leap_that_lands_on_nobody_still_clears():
     world = a_world()
     sender = a_player(world)
-    world.resolve_attack(sender, skills.wire_of("enragingleap"))
-    world.pending_swings = [(0.0,) + entry[1:] for entry in world.pending_swings]
-    world.land_swings()
+    swing(world, sender, "enragingleap")
     assert not world.pending_swings
 
 
 def test_a_player_who_leaves_takes_their_pending_swing_with_them():
     world = a_world()
     sender = a_player(world)
+    # Not swing(): this wants the blow still in flight.
     world.resolve_attack(sender, skills.wire_of("enragingleap"))
     assert world.pending_swings
     world.forget(sender)
@@ -415,3 +427,48 @@ def test_every_skill_command_the_client_sends_is_dispatched():
     # And the two left out on purpose are named, so neither is left out by accident.
     assert set(server.SKILL_OPCODES_UNHANDLED) == {0x004C, 0x004D}
     assert not set(server.SKILL_OPCODES) & set(server.SKILL_OPCODES_UNHANDLED)
+
+
+def test_every_blow_waits_its_own_impact_frame():
+    """The damage was applied at the start of the swing, not when the weapon connects.
+
+    Each skill states the frame: 5 ticks for angrystrike, 7 for mighty360, 9 for
+    mightybash, 11 for enragingleap. At 40 ms a tick that is 200 to 440 ms, which is
+    the difference between a number appearing as the sword lands and one appearing
+    before the swing has visibly begun.
+
+    The same correction was already made for creatures, where sending the hit in the
+    same breath as the swing cut the animation to a hundredth of a second. It had
+    never been applied to the player's own blow.
+    """
+    for name, frame in (
+        ("angrystrike", 5),
+        ("mighty360", 7),
+        ("mightybash", 9),
+        ("enragingleap", 11),
+    ):
+        assert skills.by_id(name).hit_frame == frame, name
+
+        world = a_world()
+        sender = a_player(world)
+        near = stand(world, 0x85, 0.0, 1.0)
+        world.resolve_attack(sender, skills.wire_of(name))
+        assert world.creatures[near].health == 1000.0, f"{name} landed too early"
+        assert len(world.pending_swings) == 1, name
+
+        due = world.pending_swings[0][0]
+        # Scheduled the skill's own frame ahead, in seconds.
+        assert due > 0.0
+        world.pending_swings = [(0.0,) + e[1:] for e in world.pending_swings]
+        world.land_swings()
+        assert world.creatures[near].health < 1000.0, f"{name} never landed"
+
+
+def test_a_blow_in_flight_does_not_land_twice():
+    world = a_world()
+    sender = a_player(world)
+    near = stand(world, 0x85, 0.0, 1.0)
+    swing(world, sender, "angrystrike")
+    once = world.creatures[near].health
+    world.land_swings()
+    assert world.creatures[near].health == once

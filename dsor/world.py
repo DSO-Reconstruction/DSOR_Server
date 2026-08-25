@@ -51,6 +51,7 @@ from dsor.gameplay import (
     Position,
     actor_id,
     decode_position,
+    encode_actor_vitals,
     encode_entity_group_message,
     encode_position,
     HEADING_UNITS,
@@ -62,6 +63,7 @@ from dsor.gameplay import (
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
+from dsor import effects
 from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
 from dsor.recorded import (
@@ -69,6 +71,7 @@ from dsor.recorded import (
     entity_descriptions,
     entity_update_template,
     tick_state,
+    with_status_effect,
 )
 
 log = logging.getLogger("dsor.world")
@@ -174,6 +177,9 @@ class Rules:
     player_max: int = 0
     #: The resource a skill spends, reported alongside health and left alone.
     player_resource: float = 10.0
+    #: Whether a skill's status effects are served at all. The buff is a rewritten
+    #: recording, so if it ever upsets the client this is the switch.
+    status_effects: bool = True
     #: Whether a killed creature's body is removed at once.
     mob_despawn: bool = False
     #: What one creature blow takes off, and how often one lands. Both ours.
@@ -343,6 +349,21 @@ class Player:
     #: The client's own game tick, read from its movement records. A skill's start
     #: tick is compared against it.
     tick: int = 0
+    #: The resource a skill spends and a shout gives back — rage for a warrior. Was
+    #: never reported at all: encode_actor_vitals existed and nothing called it, so
+    #: the only health the client ever heard came from a hit and the resource never
+    #: moved. warshout's ResourceGain of 0.6 is the whole of "furious battlecry gives
+    #: rage".
+    resource: float = 0.0
+    #: The one status effect this player is under, as (effect wire, parameters,
+    #: when it expires on the monotonic clock).
+    #:
+    #: One, not several, and that is a limit of the message rather than a choice: the
+    #: recorded 0x004F carries exactly one effect element, and three of the eight
+    #: integers in it are not understood, so a second element cannot be built from
+    #: nothing. warshout grants four effects and this carries the first that changes
+    #: something — the movement speed, which is the one that shows.
+    buff: tuple[int, tuple[float, ...], float] | None = None
     #: Which way the player is facing, in 256ths of a turn clockwise from +y, read
     #: from the heading byte of their own movement records. An arc skill needs it:
     #: mightyswing cuts 170 degrees of *something*, and without a facing there is no
@@ -939,8 +960,27 @@ class World:
         the blow is the client's.
         """
         used = skill_at(wire)
-        if used is not None and used.lands_where_it_ends and not travelled:
-            # A leap or a charge. Come back when the player has got there.
+        if used is not None and not travelled:
+            # Before the blow, and whether or not there is one: a shout costs and
+            # gives nothing to hit.
+            self.apply_effects(sender, used)
+            if self.spend_resource(sender, used):
+                self.report_vitals(sender)
+        if used is not None and not travelled and used.hit_frame > 0:
+            # Not yet. A blow lands on the skill's own HitFrame, which is 5 ticks for
+            # angrystrike, 7 for mighty360, 9 for mightybash and 11 for enragingleap —
+            # 200 to 440 ms after the swing begins. Resolving on arrival of the
+            # command put the damage at the start of the animation instead of at the
+            # moment the weapon connects, so the number floated up before the swing
+            # had visibly happened.
+            #
+            # This is the same correction already made for creatures, where sending
+            # the hit in the same breath as the swing cut the animation to a
+            # hundredth of a second. It was never applied to the player's own blow.
+            #
+            # For a leap or a charge it does a second job: those strike at the far end
+            # of the travel, and waiting means the player's own movement records have
+            # arrived and say where they came down.
             self.pending_swings.append(
                 (
                     time.monotonic() + used.hit_frame * GAME_TICK_MS / 1000.0,
@@ -949,12 +989,13 @@ class World:
                     aim,
                 )
             )
-            log.info(
-                "%s: %s launched %s, resolving in %d ticks where it lands",
+            log.debug(
+                "%s: %s began %s, landing in %d ticks%s",
                 self.name,
                 sender,
                 used.id,
                 used.hit_frame,
+                " where it lands" if used.lands_where_it_ends else "",
             )
             return
         if used is not None and used.harmless:
@@ -1177,6 +1218,98 @@ class World:
         self.player(sender).target = None
 
 
+    def spend_resource(self, sender: Address, used: Skill | None) -> bool:
+        """Move the player's resource for *used*, and say whether it changed.
+
+        Both directions come from the skill's own template, as fractions of the pool:
+        angrystrike gives 0.05 back, mighty360 costs 0.4, and warshout gives 0.6 —
+        which is the rage "furious battlecry" is supposed to grant.
+
+        A cost that cannot be paid is not enforced. The client has already played the
+        animation by the time this runs, and refusing a blow the player has seen land
+        is worse than letting the pool go to nothing.
+        """
+        if used is None:
+            return False
+        pool = self.rules.player_resource
+        change = (used.resource_gain - used.resource_cost) * pool
+        if not change:
+            return False
+        player = self.player(sender)
+        before = player.resource
+        player.resource = max(0.0, min(pool, before + change))
+        return player.resource != before
+
+    def apply_effects(self, sender: Address, used: Skill | None) -> None:
+        """Put *used*'s own status effects on the player, if it grants any.
+
+        The client owns the arithmetic. It has _Template_StatusEffect too, so a
+        modifier like ``Speed:$0,relative,Movement`` is applied by the client from the
+        effect index and the parameter this sends — which is why the buff can work at
+        all without this server modelling movement speed, damage scaling or
+        resistances.
+
+        warshout — "furious battlecry" — grants four: 40% movement speed, 30% damage,
+        15% on angrystrike and a cheaper mightybash. Only the first that changes
+        something is carried, because the message holds one element.
+        """
+        if not self.rules.status_effects or used is None:
+            return
+        granted = effects.granted_by(used.wire)
+        if not granted:
+            return
+        entry = granted[0]
+        found = effects.by_id(entry.effect)
+        if found is None:
+            return
+        parameters = tuple(
+            entry.substitutions.get(f"${index}", 0.0) for index in range(5)
+        )
+        # The duration the skill asks for, not the recorded element's: this server
+        # decides when the buff ends, because the recorded integers are reused as they
+        # stand and one of them is presumably the duration.
+        seconds = entry.duration or found.duration or 1.0
+        self.player(sender).buff = (
+            found.wire,
+            parameters,
+            time.monotonic() + seconds,
+        )
+        log.info(
+            "%s: %s gains %s for %.0fs (%s)",
+            self.name,
+            sender,
+            entry.effect,
+            seconds,
+            ", ".join(
+                f"{m.attribute} {m.amount(entry.substitutions)}" for m in found.starts
+            ),
+        )
+
+    def live_buff(self, sender: Address) -> tuple[int, tuple[float, ...]] | None:
+        """The player's buff if it has not run out, and None once it has."""
+        buff = self.player(sender).buff
+        if buff is None:
+            return None
+        wire, parameters, expires = buff
+        if time.monotonic() >= expires:
+            self.player(sender).buff = None
+            log.debug("%s: %s's buff expired", self.name, sender)
+            return None
+        return wire, parameters
+
+    def report_vitals(self, sender: Address) -> None:
+        """Tell the client the player's health and resource.
+
+        Nothing did this. ``encode_actor_vitals`` was written, tested and never
+        called, so the only health the client ever heard was whatever a hit carried
+        and the resource stayed wherever it started.
+        """
+        player = self.player(sender)
+        self._emit(
+            encode_actor_vitals(int(player.health), player.resource, PLAYER_ACTOR),
+            sender,
+        )
+
     def player_health(self, level: int) -> float:
         """What a character of *level* has, unless a rule forces a figure.
 
@@ -1384,20 +1517,15 @@ class World:
 
 
     def land_swings(self) -> None:
-        """Resolve the swings that had to wait for the player to arrive somewhere.
+        """Resolve the swings whose impact frame has now arrived.
 
-        A leap and a charge strike at the far end of the travel, not the near end:
-        enragingleap has an attack range of 10 and a hit range of under three, so it
-        crosses ten units and hits within three of where it comes down. Resolving it
-        the moment the command arrives measures from where the player left, which put
-        the damage in the wrong place — and for a jump of ten units against a reach of
-        three, usually on nobody.
-
-        Waiting for the skill's own hit frame solves it without decoding the
-        destination out of the command, which is a field whose layout is not
-        established. Eleven ticks is 440 ms and the client sends movement records
-        continuously, so by the time the blow lands the player's position is the one
-        they landed on, reported by the client itself.
+        Every skill waits its own HitFrame, the way a creature's blow already did.
+        Two things depend on it. The number the player sees should appear when the
+        weapon connects, not when the swing starts — 5 ticks for angrystrike, 11 for
+        enragingleap. And a leap or a charge strikes at the far end of the travel, so
+        waiting also means the player's own movement records have arrived and say
+        where they came down, without decoding a destination field whose layout is not
+        established.
         """
         now = time.monotonic()
         due = [entry for entry in self.pending_swings if entry[0] <= now]
@@ -1489,7 +1617,14 @@ class World:
         player = self.player(sender)
         if player.position is None:
             return
-        self._emit(tick_state(), sender)
+        state = tick_state()
+        buff = self.live_buff(sender)
+        if buff is not None:
+            # Re-sent every tick while it lasts. The recorded element's own duration
+            # is left as it stands, so refreshing it is what keeps the buff up and
+            # dropping it is what ends it.
+            state = with_status_effect(state, buff[0], list(buff[1]))
+        self._emit(state, sender)
         self._emit(self.entity_update(player.position, player.server_tick), sender)
 
     def tick(self) -> list[tuple[Address, bytes]]:

@@ -16,7 +16,7 @@ import sys
 FIELDS = [
     "Id", "Name", "CharClass", "TargetingType", "SkillType", "Angle", "HitRange", "AttackRange",
     "DamageModifier", "HitFrame", "SkillUnblockFrame", "MotionUnblockFrame",
-    "CoolDown", "ResourceCost", "BulletCount", "UseWeaponDPS", "DamageType",
+    "CoolDown", "ResourceCost", "ResourceGain", "BulletCount", "UseWeaponDPS", "DamageType",
     "UnlockLevel",
 ]
 
@@ -94,6 +94,10 @@ class Skill:
     motion_unblock_frame: int
     cool_down: float
     resource_cost: float
+    #: What the skill *gives back*, as a fraction of the resource pool. warshout --
+    #: "furious battlecry" -- gives 0.6, which is the rage it grants, and this server
+    #: never gave any of it.
+    resource_gain: float
     bullet_count: int
     uses_weapon_dps: bool
     damage_type: str
@@ -147,15 +151,16 @@ SKILLS: dict[int, Skill] = {{}}''')
     print("for _row in [")
     for row in rows:
         (wire, sid, name, char_class, targeting, kind, angle, hit_range,
-         attack_range, modifier, hit_frame, unblock, motion, cooldown, cost, bullets,
-         weapon_dps, damage_type, unlock) = row
+         attack_range, modifier, hit_frame, unblock, motion, cooldown, cost, gain,
+         bullets, weapon_dps, damage_type, unlock) = row
         print(
             f"    ({wire}, {text(sid)!r}, {text(name)!r},"
             f" {text(char_class)!r}, {text(targeting)!r},"
             f" {text(kind)!r}, {num(angle)!r}, {num(hit_range)!r},"
             f" {num(attack_range)!r}, {num(modifier, 1.0)!r}, {whole(hit_frame)},"
             f" {whole(unblock)}, {whole(motion)}, {num(cooldown)!r},"
-            f" {num(cost)!r}, {whole(bullets)}, {bool(whole(weapon_dps))},"
+            f" {num(cost)!r}, {num(gain)!r}, {whole(bullets)},"
+            f" {bool(whole(weapon_dps))},"
             f" {text(damage_type)!r}, {whole(unlock)}),"
         )
     print("]:")
