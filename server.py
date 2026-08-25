@@ -1261,12 +1261,28 @@ class Service:
             if self.rules.start_level > 1 and not entrant.experience:
                 entrant.experience = level_bounds(self.rules.start_level)[0]
                 entrant.level = level_for(entrant.experience)
+                if entrant.level != self.rules.start_level:
+                    # Levels 105 to 110 all begin at 882229606 in the warrior's
+                    # curve, so experience cannot tell them apart and asking for any
+                    # of them lands on 110. Say so rather than report a level the
+                    # client will not agree with.
+                    log.warning(
+                        "%s: level %d and level %d share an experience threshold, "
+                        "so %s arrives at %d",
+                        self.name,
+                        self.rules.start_level,
+                        entrant.level,
+                        sender,
+                        entrant.level,
+                    )
                 log.info(
                     "%s: %s arrives at level %d with %d experience",
                     self.name, sender, entrant.level, entrant.experience,
                 )
-            entrant.health = float(self.rules.player_max)
-            entrant.max_health = float(self.rules.player_max)
+            # Whatever their level says, so a level 15 warrior does not arrive with
+            # a bar one twelfth full.
+            entrant.max_health = self.world.player_health(entrant.level)
+            entrant.health = entrant.max_health
             self._announce_vicinity(connection, sender)
             self._set_clock(sender)
             self._ship(self.world.enter(sender))

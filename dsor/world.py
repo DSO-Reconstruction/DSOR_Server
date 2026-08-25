@@ -163,7 +163,15 @@ class Rules:
     creature_hit_range: float = 0.0
     creature_damage_types: list[int] = field(default_factory=lambda: [0, 4])
     #: The player's health. 236 is measured — a nearly full bar in the capture.
-    player_max: int = 236
+    #: Zero — the default — means "what the character's level says", from
+    #: _Template_XPLevels: 225 at level 1, 2700 at 15, 450000 at 100. A number forces
+    #: one figure regardless of level.
+    #:
+    #: 236 was the old default and it is a measured number — a nearly full bar on a
+    #: captured level 1 warrior, against the table's 225, the difference being
+    #: equipment. It was right for that one character, and a level 15 warrior with 236
+    #: of a stated 2700 shows a bar one twelfth full.
+    player_max: int = 0
     #: The resource a skill spends, reported alongside health and left alone.
     player_resource: float = 10.0
     #: Whether a killed creature's body is removed at once.
@@ -292,6 +300,9 @@ class Creature:
     #: the update the instant it dies leaves the client nothing to play the death
     #: sequence over.
     corpse_ticks: int = 0
+    #: Whether the client has been told to delete this entity. A corpse that has had
+    #: its time is discarded once, not once per tick.
+    discarded: bool = False
 
     @classmethod
     def from_record(cls, record: bytes, max_health: float) -> "Creature":
@@ -555,9 +566,38 @@ class World:
         return [c for c in self.creatures.values() if c.alive and c.described]
 
     def age_corpses(self) -> None:
+        """Count the corpses down, and delete the body when it has had its time.
+
+        The counting down was already here and did nothing when it reached zero: the
+        corpse left the position update and the entity stayed, so a killed creature
+        lay on the screen for ever. Leaving the position update is not removal — the
+        client keeps whatever it has been told about until something tells it
+        otherwise.
+
+        That something is DiscardMonsterCommand, whose body is empty: the actor id in
+        the trailer is the whole message. Sending it in the same breath as the kill
+        destroys the death sequence before it can play, which is why it is sent
+        *here*, two seconds later, once the body has finished falling.
+
+        Once per corpse. This method runs ten times a second, and three counter
+        resets once landed in it by mistake — the damage that did is written up in
+        reset_creatures. Anything stateful in here needs a guard, and ``discarded``
+        is that guard.
+        """
         for creature in self.creatures.values():
-            if creature.corpse_ticks:
-                creature.corpse_ticks -= 1
+            if not creature.corpse_ticks:
+                continue
+            creature.corpse_ticks -= 1
+            if creature.corpse_ticks or creature.discarded:
+                continue
+            creature.discarded = True
+            for player in self.inhabitants():
+                self._emit(
+                    encode_discard_monster(
+                        int.from_bytes(creature.actor, "little")
+                    ),
+                    player.address,
+                )
 
     # ── players ──────────────────────────────────────────────────────────────
 
@@ -597,6 +637,7 @@ class World:
             creature.health = creature.max_health
             creature.position = creature.home()
             creature.corpse_ticks = 0
+            creature.discarded = False
             creature.described = False
         self.dropped.clear()
         self.templates.clear()
@@ -1136,6 +1177,13 @@ class World:
         self.player(sender).target = None
 
 
+    def player_health(self, level: int) -> float:
+        """What a character of *level* has, unless a rule forces a figure.
+
+        From the client's own class curve, the same table the damage comes from.
+        """
+        return float(self.rules.player_max or hit_points_at(level))
+
     def creature_health(self, blueprint: str | None, fallback: float) -> float:
         """The health *blueprint* starts with, from the client's monster table.
 
@@ -1395,7 +1443,7 @@ class World:
                         attacker=int.from_bytes(attacker, "little"),
                         damage=int(blow),
                         victim_health=int(left),
-                        victim_max_health=int(self.rules.player_max),
+                        victim_max_health=int(victim.max_health),
                         combat_value_owner=int.from_bytes(attacker, "little"),
                         combat_value=0.0,
                         damage_types=list(self.rules.creature_damage_types),
