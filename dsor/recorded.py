@@ -749,6 +749,41 @@ def with_actor(description: bytes, actor: bytes) -> bytes:
 SPAWN_FROM_END_BITS = 448
 
 
+def spawn_bit(
+    description: bytes, points: list[tuple[float, float, float]]
+) -> int | None:
+    """The bit offset of the position inside *description*, found by recognising it.
+
+    A fixed offset does not work, and assuming one corrupted the message: 448 bits
+    from the end is right for an ordinary creature, but the undead mage's position
+    sits at 480 and the healing champion's at 520. Writing at 448 for those wrote over
+    whatever lay there, and the client answered plainly:
+
+        Could not decode command (ID: '42', 'Commands::NewMonsterCommand')
+
+    It could not be caught by a round-trip, either: reading and writing at the same
+    wrong offset is symmetric and looks perfect.
+
+    So the position is located by matching it against the map's own spawn points,
+    which is where these creatures were captured standing. Exactly one candidate
+    survives for each of the seven blueprints.
+    """
+    import struct
+
+    size = len(description)
+    value = int.from_bytes(description, "big")
+    for shift in range(8):
+        window = ((value << shift) & ((1 << (8 * size)) - 1)).to_bytes(size, "big")
+        for index in range(size - 12):
+            triple = struct.unpack_from("<3f", window, index)
+            if any(
+                abs(triple[0] - x) < 0.6 and abs(triple[2] - y) < 0.6
+                for x, _elevation, y in points
+            ):
+                return index * 8 + shift
+    return None
+
+
 def library_spawn(description: bytes) -> tuple[float, float, float]:
     """Where a single-command description places its creature, in world units."""
     import struct
@@ -763,6 +798,35 @@ def library_spawn(description: bytes) -> tuple[float, float, float]:
         struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
         for _ in range(3)
     )
+
+
+def with_library_spawn_at(
+    description: bytes, bit: int, x: float, elevation: float, y: float
+) -> bytes:
+    """Return *description* with the position at *bit* replaced.
+
+    Ninety-six bits change and nothing else, so the blueprint, the actor and the
+    health stay as captured — only where it stands is chosen. The offset is passed in
+    rather than assumed, because it is not the same for every creature.
+    """
+    import struct
+
+    from raknet.bitstream import BitReader, BitWriter
+
+    reader = BitReader(description)
+    head = reader.read_bits(bit)
+    reader.read_bits(96)
+    rest = reader.remaining
+    tail = reader.read_bits(rest)
+
+    writer = BitWriter()
+    writer.write_bits(head, bit)
+    for value in (x, elevation, y):
+        writer.write_uint(
+            int.from_bytes(struct.pack("<f", value), "little"), 32
+        )
+    writer.write_bits(tail, rest)
+    return writer.to_bytes()
 
 
 def with_library_spawn(

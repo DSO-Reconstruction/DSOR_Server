@@ -1423,3 +1423,47 @@ def test_a_creature_with_no_attack_never_strikes():
     dummies = [c for c in world.creatures.values() if c.attack_skill is None]
     assert dummies, "the dummy and the mage are in the map's table"
     assert all(c.blueprint for c in dummies)
+
+
+def test_the_position_offset_is_not_the_same_for_every_creature():
+    """448 bits from the end is right for some and wrong for others.
+
+    Assuming it wrote the position over whatever else lay there, and the client said
+    so plainly: "Could not decode command (ID: '42', 'Commands::NewMonsterCommand')".
+    The healing champion was re-described thirty times because of it, while every
+    other creature was described once.
+
+    A round-trip could not catch it: reading and writing at the same wrong offset is
+    symmetric and looks perfect. So the position is found by recognising it against
+    the map's own spawn points, which is where these creatures were captured standing.
+    """
+    import struct
+
+    from dsor.mapdata import SPAWN_POINTS
+    from dsor.recorded import monster_library, spawn_bit, with_library_spawn_at
+
+    points = [(x, e, y) for _n, x, e, y in SPAWN_POINTS]
+    library = monster_library()
+    offsets = {}
+    for name, base in library.items():
+        if not name.startswith("a0001"):
+            continue
+        bit = spawn_bit(base, points)
+        assert bit is not None, name
+        offsets[name] = len(base) * 8 - bit
+
+    assert offsets["a0001_gen_anderworld_creature"] == 448
+    assert offsets["a0001_champion_undead_mage_01"] == 480
+    assert offsets["a0001_champion_anderworld_creature_healing"] == 520
+    assert len(set(offsets.values())) == 3, "three different offsets, not one"
+
+    # And writing at the found offset lands exactly there, without resizing.
+    name = "a0001_champion_anderworld_creature_healing"
+    base = library[name]
+    bit = spawn_bit(base, points)
+    moved = with_library_spawn_at(base, bit, 1.5, 2.5, 3.5)
+    assert len(moved) == len(base)
+    size = len(moved)
+    window = ((int.from_bytes(moved, "big") << (bit % 8)) & ((1 << 8 * size) - 1))
+    raw = window.to_bytes(size, "big")
+    assert struct.unpack_from("<3f", raw, bit // 8) == (1.5, 2.5, 3.5)

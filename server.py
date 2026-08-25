@@ -92,7 +92,9 @@ from dsor.recorded import (
     monster_library,
     library_spawn,
     with_actor,
+    spawn_bit,
     with_library_spawn,
+    with_library_spawn_at,
     with_template,
     first_command,
     combat_ready_mobs,
@@ -875,9 +877,17 @@ class Service:
                     self.name, mapped.blueprint,
                 )
                 return
+            points = [(x, e, y) for _n, x, e, y in SPAWN_POINTS]
+            bit = spawn_bit(base, points)
+            if bit is None:
+                log.warning(
+                    "%s: cannot locate the position in %s, refusing to move it",
+                    self.name, mapped.blueprint,
+                )
+                return
             try:
                 built = with_actor(base, handle)
-                built = with_library_spawn(built, *mapped.described_at)
+                built = with_library_spawn_at(built, bit, *mapped.described_at)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
             else:
