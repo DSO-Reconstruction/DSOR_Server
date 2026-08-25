@@ -65,6 +65,7 @@ from dsor.gameplay import (
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
 from dsor import effects
+from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
 from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
 from dsor.recorded import (
@@ -80,6 +81,13 @@ log = logging.getLogger("dsor.world")
 #: Milliseconds in one game tick.
 GAME_TICK_MS = 40
 #: The player's own actor, as every command's trailer carries it.
+#: The actor the recorded player description names. The first player in a world gets
+#: it so that recording still matches; everybody after gets one of their own from the
+#: world's :class:`~dsor.actors.ActorSpace`.
+#:
+#: It used to be *the* player actor, a module constant, which meant every player in a
+#: world was the same entity. That is the first thing that had to go for two people to
+#: stand in one map at once.
 PLAYER_ACTOR = bytes([0x15, 0x00, 0x01, 0x00])
 WORLD = WORLD_SCALE
 
@@ -335,6 +343,11 @@ class Creature:
     effects: list[tuple[int, tuple[float, ...], float, float]] = field(
         default_factory=list
     )
+    #: When this creature last struck anybody, on the monotonic clock. Its own, not
+    #: the player's: the cooldown used to live on the player being hit, so ten players
+    #: around one creature each had their own timer and the creature struck ten times
+    #: as often.
+    last_struck: float = 0.0
     #: Whether the client has been sent its description. Until it has, the client
     #: has no entity for the actor and nothing addressed to it can be drawn.
     described: bool = False
@@ -377,6 +390,9 @@ class Player:
     """One player in a map instance."""
 
     address: Address
+    #: This player's own actor id, four bytes as the wire wants it. Assigned on
+    #: arrival from the world's actor space.
+    actor: bytes = PLAYER_ACTOR
     position: Position | None = None
     health: float = 0.0
     max_health: float = 0.0
@@ -462,6 +478,25 @@ class World:
     #: creature every tick and its health drops, which is the part that matters.
     pending_dots: list[tuple[float, Address, bytes, float, int, float]] = field(
         default_factory=list
+    )
+    #: Every actor id in this world, handed out so that none collide. One space per
+    #: world, which is also what makes a world shardable: two worlds can hand out the
+    #: same ids because no client ever sees both.
+    actors: ActorSpace = field(default_factory=ActorSpace)
+    #: The creature movement records for the tick in progress, built once by
+    #: advance_creatures and shared by every viewer. They do not depend on who is
+    #: looking, which is what makes sharing them correct as well as cheap.
+    placed: list[bytes] = field(default_factory=list)
+    #: Which tick :attr:`placed` was built for, so a caller that asks for an update
+    #: without having advanced the world first still gets one -- built once, however
+    #: many viewers ask.
+    placed_tick: int | None = None
+    #: A creature's (hit frame, unblock frame, reach, cooldown) by blueprint. It
+    #: depends on the blueprint and the rules and nothing else, and it was being
+    #: recomputed once per creature per player per tick -- three dictionary lookups
+    #: and a skill-table hit each time.
+    _timings: dict[tuple, tuple[int, int, float, float]] = field(
+        default_factory=dict
     )
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
@@ -564,7 +599,10 @@ class World:
         # rewritten.
         base = combat_ready_mobs()[0]
         for index, (blueprint, x, elevation, y) in enumerate(points):
-            actor = bytes([(first_actor + index) & 0xFF, 0x00, 0x01, 0x00])
+            # Reserved rather than masked. The old form was
+            # ``bytes([(first_actor + index) & 0xFF, ...])``, which wraps at 256 and
+            # made a collision silent.
+            actor = encode_actor(self.actors.reserve(0x00010000 | (first_actor + index)))
             record = bytearray(base)
             record[ACTOR_ID_OFFSET : ACTOR_ID_OFFSET + 4] = actor
             self.creatures[actor] = Creature(
@@ -681,9 +719,22 @@ class World:
         """The player at *address*, created on first sight."""
         player = self.players.get(address)
         if player is None:
-            player = Player(address=address)
+            player = Player(address=address, actor=self._player_actor())
             self.players[address] = player
         return player
+
+    def _player_actor(self) -> bytes:
+        """An actor for a player arriving now.
+
+        The first gets the one the recorded description names, so the single-player
+        path is untouched. Everybody after gets a fresh one -- which is necessary but
+        not yet sufficient for them to be visible: their description is still a replay
+        of the recorded character and names the recorded actor, so serving a second
+        player properly needs that rewritten too.
+        """
+        if RECORDED_PLAYER not in self.actors.taken:
+            return encode_actor(self.actors.reserve(RECORDED_PLAYER))
+        return self.actors.take_bytes()
 
     def forget(self, address: Address) -> None:
         """Remove a player entirely. One place, not nine.
@@ -694,7 +745,9 @@ class World:
         what left a player standing on the spot where a creature had died an hour
         earlier, swinging at nothing, with the survivors too far away to notice.
         """
-        self.players.pop(address, None)
+        leaving = self.players.pop(address, None)
+        if leaving is not None:
+            self.actors.give_back(int.from_bytes(leaving.actor, "little"))
         self.pending_hits = [h for h in self.pending_hits if h[1] != address]
         self.pending_swings = [s for s in self.pending_swings if s[1] != address]
         self.pending_dots = [d for d in self.pending_dots if d[1] != address]
@@ -714,8 +767,11 @@ class World:
             creature.health = creature.max_health
             creature.position = creature.home()
             creature.corpse_ticks = 0
+            creature.last_struck = 0.0
             creature.discarded = False
             creature.described = False
+        for lying in self.dropped:
+            self.actors.give_back(int.from_bytes(lying, "little"))
         self.dropped.clear()
         self.templates.clear()
         self.next_item = 0x40
@@ -784,6 +840,83 @@ class World:
         )
 
 
+    def advance_creatures(self, tick: int) -> None:
+        """Move every creature one step, and remember how to say so.
+
+        Once a tick for the whole world, not once per viewer. A creature chases the
+        nearest player in the world rather than "the player", because with two people
+        in a map there is no such thing -- and the records it produces are the same
+        for everybody, so they are built here and shared.
+
+        Everything about *how* it moves is unchanged and was hard-won: a record
+        stamped with speed zero gives the client no velocity to extrapolate, so it
+        snaps and plays the idle animation; a step of 60 wire units per update is four
+        times a walk. The speed byte, the heading and WALK_UNITS_PER_TICK are what make
+        it a walk, and NetworkSmoothMotionProperty animates it for free.
+        """
+        self.placed_tick = tick
+        announced = self._ready().announced()
+        if not announced or not self.rules.mob_chase:
+            self.placed = []
+            return
+
+        standing = [
+            player.position
+            for player in self.players.values()
+            if player.in_world and player.position is not None
+        ]
+        elapsed = max(1, tick - self.stepped_tick)
+        self.stepped_tick = tick
+        reach = self.rules.mob_stop * WORLD_SCALE
+        aggro = self.rules.mob_aggro * WORLD_SCALE
+
+        placed = []
+        for creature in announced:
+            template, here = creature.record, creature.position
+            if not standing:
+                placed.append(with_motion(template, here, tick, speed=0))
+                continue
+            # The nearest player in the world. With one player this is the player, so
+            # nothing about the single-player behaviour changes.
+            position = min(standing, key=here.distance_squared_to)
+            span = here.distance_to(position)
+            heading = heading_to(position.x - here.x, position.y - here.y)
+            if span > aggro:
+                # Out of range: leave it exactly as it stands, facing as it was. A
+                # heading here would turn every creature on the map toward the player
+                # from across the zone.
+                placed.append(with_motion(template, here, tick, speed=0))
+                continue
+            if span <= reach + self.rules.mob_speed * elapsed:
+                # Arrived: stand and face the player. Clamping the step to the
+                # distance remaining left the creature always a fraction outside,
+                # announcing a walk it never finished — "elles s'arretent loin et
+                # continuent de vouloir venir". Standing creatures in the capture
+                # carry speed zero and duration zero, so anything else here claims a
+                # movement the client extrapolates into the player.
+                placed.append(
+                    with_motion(template, here, tick, speed=0, heading=heading)
+                )
+                continue
+            step = min(self.rules.mob_speed * elapsed, span - reach)
+            moved = Position(
+                x=here.x + round((position.x - here.x) * step / span),
+                elevation=position.elevation,
+                y=here.y + round((position.y - here.y) * step / span),
+            )
+            creature.position = moved
+            placed.append(
+                with_motion(
+                    template,
+                    moved,
+                    tick,
+                    duration=self.rules.tick_duration,
+                    speed=WALK_SPEED,
+                    heading=heading,
+                )
+            )
+        self.placed = placed
+
     def entity_update(
         self, position, tick: int = 0, trailing: list[bytes] | None = None
     ) -> bytes:
@@ -813,61 +946,14 @@ class World:
         if not announced:
             return encode_entity_group_message([player], trailing)
         if self.rules.mob_chase:
-            # Toward the player, and at a player's pace. Two things made the first
-            # attempt look like a teleport rather than a walk, and they were the same
-            # thing twice: the record was stamped with speed zero, so the client had
-            # no velocity to extrapolate and simply snapped to each new position and
-            # played the idle animation over it; and the step was 60 wire units per
-            # 100 ms update, four times a real walk. A speed byte, a heading, and
-            # WALK_UNITS_PER_TICK fix both. The animation follows for free, because
-            # it is NetworkSmoothMotionProperty that both interpolates and animates.
-            placed = []
-            elapsed = max(1, tick - self.stepped_tick)
-            self.stepped_tick = tick
-            reach = self.rules.mob_stop * WORLD_SCALE
-            aggro = self.rules.mob_aggro * WORLD_SCALE
-            for creature in announced:
-                template, here = creature.record, creature.position
-                span = here.distance_to(position)
-                heading = heading_to(position.x - here.x, position.y - here.y)
-                if span > aggro:
-                    # Out of range: leave it exactly as it stands, facing as it was.
-                    # A heading here would turn every creature on the map toward the
-                    # player from across the zone.
-                    placed.append(with_motion(template, here, tick, speed=0))
-                    continue
-                if span <= reach + self.rules.mob_speed * elapsed:
-                    # Snapped to the stop distance instead of approaching it
-                    # asymptotically. Clamping the step to the distance remaining left
-                    # the creature always a fraction outside, announcing a walk it
-                    # never finished: "elles s'arretent loin et continuent de vouloir
-                    # venir".
-                    # Arrived: stand and face the player. Standing creatures in the
-                    # capture carry speed zero and duration zero, so anything else
-                    # here would claim a movement the client would extrapolate into
-                    # the player.
-                    placed.append(
-                        with_motion(template, here, tick, speed=0, heading=heading)
-                    )
-                    continue
-                step = min(self.rules.mob_speed * elapsed, span - reach)
-                moved = Position(
-                    x=here.x + round((position.x - here.x) * step / span),
-                    elevation=position.elevation,
-                    y=here.y + round((position.y - here.y) * step / span),
-                )
-                creature.position = moved
-                placed.append(
-                    with_motion(
-                        template,
-                        moved,
-                        tick,
-                        duration=self.rules.tick_duration,
-                        speed=WALK_SPEED,
-                        heading=heading,
-                    )
-                )
-            return encode_entity_group_message([player, *placed], trailing)
+            # Serialised, not moved. Moving happens once a tick in advance_creatures;
+            # this used to do it here, which meant a creature was moved once per
+            # viewer and each time toward a different player, and stepped_tick
+            # advanced on the first viewer so everybody after saw an elapsed of zero.
+            # One creature has one position.
+            if self.placed_tick != tick:
+                self.advance_creatures(tick)
+            return encode_entity_group_message([player, *self.placed], trailing)
 
         if self.rules.mob_patrol:
             # Beyond what the capture shows: its creatures stood still, 620 of 621
@@ -1093,7 +1179,7 @@ class World:
         base = self.rules.mob_damage or damage_at(self.player(sender).level)
         blow = base * (used.damage_modifier if used else 1.0)
 
-        player = int.from_bytes(PLAYER_ACTOR, "little")
+        player = int.from_bytes(self.player(sender).actor, "little")
         killed = []
         dealt = 0.0
         for target in targets:
@@ -1194,7 +1280,7 @@ class World:
         self._emit(encode_kill(
                 Kill(
                     victim=victim,
-                    killer=int.from_bytes(PLAYER_ACTOR, "little"),
+                    killer=int.from_bytes(self.player(sender).actor, "little"),
                     # Where it dies, in world units — not a direction. A real kill
                     # carries the creature's own position here.
                     position=described if described else (0.0, 0.0, 0.0),
@@ -1223,8 +1309,11 @@ class World:
             # out rather than piled up: two items in the same place stack, and a
             # stack crashes the client.
             for blueprint in self.rules.drop_templates or [None]:
-                self.next_item += 1
-                lying = bytes([self.next_item & 0xFF, 0x00, 0x01, 0x00])
+                # From the world's space, not a counter masked to one byte. Items
+                # are the ones that grow without bound, and two of them once claimed
+                # the same actor -- which showed as a picked-up item arriving as the
+                # wrong thing.
+                lying = self.actors.take_bytes()
                 where = self.clear_of_other_drops(described)
                 self.dropped[lying] = where
                 self.templates[lying] = blueprint
@@ -1257,7 +1346,7 @@ class World:
             self._emit(
                 encode_xp_changed(
                     earner.experience,
-                    int.from_bytes(PLAYER_ACTOR, "little"),
+                    int.from_bytes(self.player(sender).actor, "little"),
                     level=level,
                     levelled=levelled,
                 ),
@@ -1267,7 +1356,7 @@ class World:
                 earner.level = level
                 self._emit(
                     encode_player_level(
-                        level, int.from_bytes(PLAYER_ACTOR, "little")
+                        level, int.from_bytes(self.player(sender).actor, "little")
                     ),
                     sender,
                 )
@@ -1490,7 +1579,7 @@ class World:
         """
         player = self.player(sender)
         self._emit(
-            encode_actor_vitals(int(player.health), player.resource, PLAYER_ACTOR),
+            encode_actor_vitals(int(player.health), player.resource, player.actor),
             sender,
         )
         log.info(
@@ -1605,79 +1694,106 @@ class World:
         AnderworldCreatureStrike's, which is what this server assumed for every
         creature before it read the table.
         """
+        creature = self.creature(actor)
+        # The rules are part of the key, not just the blueprint. They are settable at
+        # runtime from the debug console, and a cache keyed on the blueprint alone
+        # went on answering with the old numbers after a "set creature_hit_frame 40" —
+        # which is exactly what the test for that override caught.
+        key = (
+            creature.blueprint if creature else None,
+            self.rules.creature_hit_frame,
+            self.rules.creature_unblock_frame,
+            self.rules.creature_hit_range,
+            self.rules.strike_interval,
+        )
+        cached = self._timings.get(key)
+        if cached is not None:
+            return cached
         used = self.creature_skill(actor)
-        return (
+        found = (
             self.rules.creature_hit_frame or (used.hit_frame if used else 12),
             self.rules.creature_unblock_frame or (used.unblock_frame if used else 27),
             self.rules.creature_hit_range or (used.hit_range if used else 2.25),
             self.rules.strike_interval or (used.cool_down if used else 2.75),
         )
+        self._timings[key] = found
+        return found
 
-    def creature_swing(self, sender: Address) -> None:
-        """Let a live creature hit the player, every so often.
+    def creatures_strike(self) -> None:
+        """Let every creature that can reach somebody hit them, once a tick.
 
-        Two messages, both replayed from a session where creatures fought back: the
-        blow, and the player's health afterwards. The blow is one of the sixteen
-        163-byte hits that name no creature — the mark of a blow taken rather than
-        landed.
+        One pass over the creatures rather than one pass per player. It used to be the
+        other way round -- ``for each player, which creatures are near me`` -- and that
+        was 79% of the whole tick at two thousand players, because it recomputed each
+        creature's reach, skill and timing once per viewer.
 
-        This direction works where the other cannot: the player's actor is bound to an
-        entity, so its health updates take effect. A creature's never do, which is why
-        no creature's health is reported at all.
-
-        The rate and the damage are this server's, not measured. The real session's
-        sixteen blows were spread over a fight this server has no model of.
+        Inverting it also puts the cooldown check first, which is the cheap one: a
+        creature that swung recently is skipped before any distance is measured, and
+        most of them have. What survives is O(creatures off cooldown x players), and
+        the reach a creature has is looked up once per creature instead of once per
+        pair.
         """
         if self.rules.creature_damage < 0.0:
             # Negative turns creature attacks off entirely. Zero used to mean that,
             # and now means "each creature hits for what its own template says".
             return
-        position = self.player(sender).position
-        if position is None:
+        standing = [
+            player
+            for player in self.players.values()
+            if player.in_world and player.alive and player.position is not None
+        ]
+        if not standing:
             return
-        def near(actor: bytes) -> bool:
-            creature = self.creature(actor)
-            if creature is not None and creature.blueprint and not creature.attack_skill:
+        now = time.monotonic()
+        for creature in self._ready().engageable():
+            if creature.blueprint and not creature.attack_skill:
                 # No attack in its own blueprint, so it never strikes. The movement
                 # target's only skill is monster_selfkill and it stands eight units
                 # from where a player arrives: it walked over and hit, invisibly.
-                return False
-            where = self.wire_position(actor)
-            if where is None:
-                return False
-            _, _, reach, _ = self.creature_timing(actor)
-            return position.distance_to(where) <= reach * WORLD
-
-        if not any(
-            near(creature.actor) for creature in self._ready().engageable()
-        ):
-            # Nothing alive within reach. Losing health with no creature beside you
-            # was this condition being "any creature anywhere", which every described
-            # creature satisfied for the whole session.
-            return
-        striker = self.player(sender)
-        if not striker.alive:
-            return
-
-        # Whoever is nearest does the striking, so the blow names a real attacker.
-        attacker = min(
-            (
+                continue
+            hit_frame, unblock_frame, reach, cooldown = self.creature_timing(
                 creature.actor
-                for creature in self._ready().engageable()
-                if near(creature.actor)
-            ),
-            key=lambda actor: position.distance_to(self.wire_position(actor)),
-        )
-        hit_frame, unblock_frame, _, cooldown = self.creature_timing(attacker)
+            )
+            # The cheap test first, and the one that skips the most.
+            if now - creature.last_struck < cooldown:
+                continue
+            where = self.wire_position(creature.actor)
+            if where is None:
+                continue
+            limit = (reach * WORLD) ** 2
+            victim = min(standing, key=lambda p: p.position.distance_squared_to(where))
+            if victim.position.distance_squared_to(where) > limit:
+                # Nothing alive within reach. Losing health with no creature beside
+                # you was this condition being "any creature anywhere", which every
+                # described creature satisfied for the whole session.
+                continue
+            creature.last_struck = now
+            victim.last_struck = now
+            self._creature_blow(victim.address, creature.actor, hit_frame,
+                                unblock_frame)
 
-        # The attacker's own cooldown, so a creature that waits three seconds between
-        # shots is not made to swing at another's pace. Still one clock per player
-        # rather than per creature, which means a group attacks at the rate of
-        # whichever of them is nearest — ours, and a simplification.
-        now = time.monotonic()
-        if now - striker.last_struck < cooldown:
+    def creature_swing(self, sender: Address) -> None:
+        """The old per-player entry point, kept for callers and tests that use it."""
+        self.creatures_strike()
+
+    def _creature_blow(
+        self, sender: Address, attacker: bytes, hit_frame: int, unblock_frame: int
+    ) -> None:
+        """One creature's swing at one player.
+
+        Two messages, both replayed from a session where creatures fought back: the
+        blow, and the player's health afterwards. The blow is one of the sixteen
+        163-byte hits that name no creature -- the mark of a blow taken rather than
+        landed.
+
+        This direction works where the other cannot: the player's actor is bound to an
+        entity, so its health updates take effect. A creature's never do, which is why
+        no creature's health is reported at all.
+        """
+        striker = self.player(sender)
+        position = striker.position
+        if position is None:
             return
-        striker.last_struck = now
 
         # Floored above zero. Driving it to zero leaves the player standing at an
         # empty bar and not dying, because nothing here kills a player — that is a
@@ -1718,7 +1834,7 @@ class World:
         skill = encode_target_skill(
             TargetSkill(
                 attacker=int.from_bytes(attacker, "little"),
-                target=int.from_bytes(PLAYER_ACTOR, "little"),
+                target=int.from_bytes(self.player(sender).actor, "little"),
                 skill_id=(
                     (self.creature(attacker).attack_skill if self.creature(attacker) else None)
                     or self.rules.creature_skill
@@ -1753,8 +1869,8 @@ class World:
         if not due:
             return
         self.pending_dots = [e for e in self.pending_dots if e[0] > now]
-        player = int.from_bytes(PLAYER_ACTOR, "little")
         for _, sender, target, damage, left, interval in due:
+            player = int.from_bytes(self.player(sender).actor, "little")
             creature = self.creature(target)
             if creature is None or not creature.alive:
                 continue
@@ -1907,7 +2023,7 @@ class World:
             # carries the victim's health, so it is the only thing that needs sending.
             self._emit(encode_hit(
                     Hit(
-                        victim=int.from_bytes(PLAYER_ACTOR, "little"),
+                        victim=int.from_bytes(victim.actor, "little"),
                         attacker=int.from_bytes(attacker, "little"),
                         damage=int(blow),
                         victim_health=int(left),
@@ -1927,7 +2043,7 @@ class World:
                 # be killed again and again.
                 self._emit(encode_kill(
                         Kill(
-                            victim=int.from_bytes(PLAYER_ACTOR, "little"),
+                            victim=int.from_bytes(victim.actor, "little"),
                             killer=int.from_bytes(attacker, "little"),
                             position=(position.x / WORLD, 0.0, position.y / WORLD),
                             tick=self.player(sender).server_tick,
@@ -1975,7 +2091,7 @@ class World:
                         (wire, list(parameters), player.server_tick, seconds)
                         for wire, parameters, seconds in live
                     ],
-                    PLAYER_ACTOR,
+                    player.actor,
                     stack=self._stack(),
                 ),
                 sender,
@@ -2007,9 +2123,14 @@ class World:
         Corpses age first, so one killed this tick is still reported once.
         """
         self.age_corpses()
+        # Creatures first, once, so every player is sent the same world.
+        clock = next(
+            (p.server_tick for p in self.inhabitants() if p.server_tick), 0
+        )
+        self.advance_creatures(clock)
         for player in self.inhabitants():
             self._tick_pair(player.address)
-            self.creature_swing(player.address)
+        self.creatures_strike()
         self.land_hits()
         self.land_swings()
         self.land_dots()

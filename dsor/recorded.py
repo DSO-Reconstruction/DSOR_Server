@@ -122,8 +122,15 @@ ENTITY_UPDATE_TEMPLATE = "entity_update_template.bin"
 
 
 @lru_cache(maxsize=None)
+@lru_cache(maxsize=None)
 def payload(name: str) -> bytes:
-    """Load a recorded message by file name, complete with its id and opcode."""
+    """Load a recorded message by file name, complete with its id and opcode.
+
+    Cached, because it is on the per-tick path. ``tick_state`` calls it for every
+    player every tick, so a thousand players at ten ticks a second was ten thousand
+    file reads a second for the same 96 bytes. The result is immutable bytes and the
+    files do not change while the server runs, so there is nothing to invalidate.
+    """
     path = DATA / name
     if not path.exists():
         raise FileNotFoundError(

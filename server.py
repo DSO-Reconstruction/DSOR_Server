@@ -899,7 +899,9 @@ class Service:
         # captured.
         self._queue(
             connection,
-            encode_actors_enter_vicinity(served, int.from_bytes(PLAYER_ACTOR, "little")),
+            encode_actors_enter_vicinity(
+                served, int.from_bytes(self.world.player(sender).actor, "little")
+            ),
             sender,
         )
         log.info("%s: announced %d nearby actors to %s", self.name, len(served), sender)
