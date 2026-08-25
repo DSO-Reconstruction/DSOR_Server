@@ -174,17 +174,19 @@ def test_the_buff_rides_the_tick_state_while_it_lasts():
     assert abs(status_effect_parameters(state)[0] - 0.4) < 1e-6
 
 
-def test_the_buff_stops_when_it_runs_out():
+def test_a_buff_stops_when_it_runs_out():
     world, sender = a_player()
     world.resolve_attack(sender, wire_of("warshout"))
     player = world.player(sender)
-    assert player.buff is not None
+    assert player.buffs
 
-    # Ten seconds is what warshout asks for; put its expiry in the past.
-    wire, parameters, _expires, seconds = player.buff
-    player.buff = (wire, parameters, time.monotonic() - 1.0, seconds)
-    assert world.live_buff(sender) is None
-    assert player.buff is None
+    # Ten seconds is what warshout asks for; put every expiry in the past.
+    player.buffs = [
+        (wire, parameters, time.monotonic() - 1.0, seconds)
+        for wire, parameters, _expires, seconds in player.buffs
+    ]
+    assert world.live_effects(player) == []
+    assert player.buffs == []
 
     world._drain()
     world._tick_pair(sender)
@@ -196,7 +198,7 @@ def test_the_switch_turns_the_whole_thing_off():
     world, sender = a_player()
     world.rules.status_effects = False
     world.resolve_attack(sender, wire_of("warshout"))
-    assert world.player(sender).buff is None
+    assert world.player(sender).buffs == []
     world._drain()
     world._tick_pair(sender)
     assert status_effect_index(world._drain()[0][1]) == 1350
@@ -205,24 +207,140 @@ def test_the_switch_turns_the_whole_thing_off():
 def test_a_skill_that_grants_nothing_leaves_the_state_alone():
     world, sender = a_player()
     world.resolve_attack(sender, wire_of("angrystrike"))
-    assert world.player(sender).buff is None
+    assert world.player(sender).buffs == []
 
 
-def test_only_one_effect_can_be_carried_and_that_is_the_messages_fault():
-    """A limit worth stating rather than hiding.
+def test_all_of_a_skills_effects_travel_now():
+    """It used to be one, and that is why most of them looked broken.
 
-    The recorded 0x004F holds exactly one effect element, and three of the eight
-    integers in it are not understood, so a second cannot be built. warshout grants
-    four and one is served.
+    The recorded 0x004F carries a single element and the element's tail branches over
+    vectors this server does not decode. But a *copy* of a real element needs only its
+    length, and the length is known: the player's actor sits at bit 702 and the first
+    element begins at 33, so an element is 669 bits. The arithmetic closes exactly --
+    1 flag + 32 count + 669 + 32 actor + 8 terminator, plus two bits of padding, is the
+    744 the message is.
     """
-    from dsor.recorded import EFFECT_PARAMETERS
+    from dsor.recorded import (
+        EFFECT_ACTOR_BIT,
+        EFFECT_ELEMENT_BIT,
+        EFFECT_ELEMENT_BITS,
+        status_effect_count,
+        status_effect_indices,
+        status_effects_message,
+    )
+
+    assert EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS == EFFECT_ACTOR_BIT == 702
+    assert 1 + 32 + EFFECT_ELEMENT_BITS + 32 + 8 + 2 == len(tick_state()[3:]) * 8
 
     world, sender = a_player()
     granted = effects.granted_by(wire_of("warshout"))
     assert len(granted) == 4
     world.resolve_attack(sender, wire_of("warshout"))
-    assert world.player(sender).buff[0] == effects.wire_of(granted[0].effect)
-    assert len(world.player(sender).buff[1]) == EFFECT_PARAMETERS
+    assert len(world.player(sender).buffs) == 4
+
+    world._drain()
+    world._tick_pair(sender)
+    state = world._drain()[0][1]
+    assert status_effect_count(state) == 4
+    assert [effects.effect(w).id for w in status_effect_indices(state)] == [
+        entry.effect for entry in granted
+    ]
+
+
+def test_one_effect_at_the_recorded_values_reproduces_the_recording():
+    """The strongest check available on the whole layout.
+
+    If the flag, the count, the element length, the actor and the terminator are all
+    right, then building a message from the recorded element with the recorded values
+    must give back the recording byte for byte. It does.
+    """
+    from dsor.recorded import status_effect_fields, status_effects_message
+
+    fields = status_effect_fields()
+    built = status_effects_message(
+        [(1350, [0.0] * 5, fields[3], 1.0)], b"\x15\x00\x01\x00"
+    )
+    assert built == tick_state()
+
+
+def test_frenzyshout_no_longer_drops_its_life_leech():
+    """Three effects, and the visible one used to be the one thrown away.
+
+    Carrying only the first meant a resistance buff nobody can see, which is exactly
+    what "ne fait rien" looks like.
+    """
+    granted = effects.granted_by(wire_of("frenzyshout"))
+    assert [entry.effect for entry in granted] == [
+        "skill_frenzyshout_buff_armor",
+        "skill_frenzyshout_buff_resistance",
+        "skill_frenzyshout_buff_lifeleech",
+    ]
+    world, sender = a_player()
+    world.resolve_attack(sender, wire_of("frenzyshout"))
+    carried = {
+        effects.effect(wire).id for wire, *_ in world.player(sender).buffs
+    }
+    assert "skill_frenzyshout_buff_lifeleech" in carried
+
+
+def test_a_stun_and_a_poison_are_gated_behind_talents_and_can_be_forced():
+    """The honest state of both.
+
+    debuff_cc_stun is ActorFeature:off,Movement,RegularSkills for five seconds, and
+    debuff_dot_poison is CurrHealthPointsDmg every 1.5 seconds. Both are real, both are
+    the client's own arithmetic -- and both read C:0.0 on the warrior's skills, meaning
+    a talent has to raise the chance. This server has no talents, so faithfully they
+    never fire.
+    """
+    stun = effects.by_id("debuff_cc_stun")
+    poison = effects.by_id("debuff_dot_poison")
+    assert "ActorFeature" in stun.start_modifiers
+    assert stun.duration == 5.0
+    assert "CurrHealthPointsDmg" in poison.tick_modifiers
+    assert poison.tick_rate == 1.5
+
+    lacerating = wire_of("laceratingstrike")
+    assert "debuff_cc_stun" not in [e.effect for e in effects.inflicted_by(lacerating)]
+    assert "debuff_cc_stun" in [
+        e.effect for e in effects.anything_by(lacerating, victim=True)
+    ]
+
+    bash = wire_of("mightybash")
+    assert effects.inflicted_by(bash) == ()
+    assert "debuff_dot_poison" in [
+        e.effect for e in effects.anything_by(bash, victim=True)
+    ]
+
+
+def test_an_inflicted_effect_is_addressed_to_the_creature():
+    """Which actor the message names is the only thing that decides who it lands on."""
+    from dsor.gameplay import Position
+    from dsor.recorded import status_effect_actor, status_effect_indices
+    from dsor.world import Creature
+
+    world, sender = a_player()
+    actor = b"\x86\x00\x01\x00"
+    world.creatures[actor] = Creature(
+        actor=actor,
+        record=b"",
+        position=Position(0, 0, 0),
+        health=100.0,
+        max_health=100.0,
+        blueprint="a0001_gen_anderworld_creature",
+        described=True,
+    )
+    world.rules.force_effects = True
+    world.inflict_effects(actor, __import__("dsor.skills", fromlist=["by_id"]).by_id("mightybash"))
+    assert world.creatures[actor].effects, "something landed on it"
+
+    world._drain()
+    world._tick_pair(sender)
+    sent = [payload for _address, payload in world._drain()]
+    addressed = [p for p in sent if len(p) > 3 and p[1:3] == b"\x4f\x00"]
+    assert any(status_effect_actor(p) == actor for p in addressed), "on the creature"
+    on_creature = next(p for p in addressed if status_effect_actor(p) == actor)
+    names = [effects.effect(w).id for w in status_effect_indices(on_creature)]
+    assert "debuff_dot_poison" in names
 
 
 def test_the_pool_is_a_hundred_and_the_arithmetic_comes_out_exact():

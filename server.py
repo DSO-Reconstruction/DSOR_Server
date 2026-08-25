@@ -1491,6 +1491,7 @@ def serve(
     mob_near: float = 0.0,
     creature_damage: float = 0.0,
     status_effects: bool = True,
+    force_effects: bool = False,
     tough_mob: float = 0.0,
     tough_mobs: int = 1,
     creature_skill: int = 440,
@@ -1578,6 +1579,7 @@ def serve(
         service.rules.creature_damage = creature_damage
         service.rules.creature_skill = creature_skill
         service.rules.status_effects = status_effects
+        service.rules.force_effects = force_effects
         service.rules.mob_despawn = mob_despawn
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
@@ -1790,6 +1792,17 @@ def main() -> None:
         default=1,
         metavar="N",
         help="how many creatures --tough-mob applies to (default 1)",
+    )
+    parser.add_argument(
+        "--force-effects",
+        action="store_true",
+        help=(
+            "apply the effect entries whose chance is zero. Those are gated behind an "
+            "item, a talent or a set bonus, and the warrior's stun and poison are "
+            "among them: laceratingstrike's debuff_cc_stun and mightybash's "
+            "debuff_dot_poison both read C:0.0, so faithfully they never fire without "
+            "a talent this server does not model. A testing switch, not fidelity"
+        ),
     )
     parser.add_argument(
         "--no-status-effects",
@@ -2100,6 +2113,7 @@ def main() -> None:
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
         status_effects=args.status_effects,
+        force_effects=args.force_effects,
         tough_mob=args.tough_mob,
         tough_mobs=args.tough_mobs,
         creature_skill=args.creature_skill,

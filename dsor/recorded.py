@@ -926,6 +926,29 @@ EFFECT_DURATION_FIELD = 5
 #: Game ticks per second: 25, at 40 ms a tick.
 EFFECT_TICKS_PER_SECOND = 25
 
+#: Where the first effect element begins, how long one is, and where the trailing
+#: actor sits.
+#:
+#: The length is not guessed. Searching the recorded message for the player's actor
+#: finds it at bit 702, ten bits from the end -- the terminator and two of padding --
+#: and the first element begins at bit 33. So an element is 669 bits, and the
+#: arithmetic closes exactly: 1 flag + 32 count + 669 + 32 actor + 8 terminator = 742,
+#: which with two bits of padding is the 744 the message actually is.
+#:
+#: That is what makes more than one effect possible. The tail of an element has
+#: conditional branches over float3 vectors that are not decoded, but a *copy* of a
+#: real element does not need them decoded -- only its length, and its length is now
+#: known.
+EFFECT_ELEMENT_BIT = 1 + 32
+EFFECT_ELEMENT_BITS = 669
+EFFECT_ACTOR_BIT = EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS
+EFFECT_ACTOR_BITS = 32
+
+#: Offsets *inside* one element.
+IN_ELEMENT_INDEX = 0
+IN_ELEMENT_FIELDS = EFFECT_INDEX_BITS
+IN_ELEMENT_PARAMETERS = EFFECT_PARAMETERS_BIT - EFFECT_ELEMENT_BIT
+
 #: How many parameters the recorded element carries. Rewriting values in place keeps
 #: the count, so a modifier that reads only $0 gets it and the rest stay zero.
 EFFECT_PARAMETERS = 5
@@ -1036,3 +1059,148 @@ def _write_bits(buffer: bytearray, position: int, value: int, count: int) -> Non
             buffer[index >> 3] |= mask
         else:
             buffer[index >> 3] &= 0xFF ^ mask
+
+
+
+def _read_bits(buffer: bytes, position: int, count: int) -> int:
+    """Read *count* bits at *position*, byte-swapped for whole-byte widths.
+
+    The same convention :meth:`raknet.bitstream.BitReader.read_uint` uses and
+    :func:`_write_bits` writes: the bytes of a multi-byte integer are little-endian
+    while the bits inside each byte are most significant first. Reading it the other
+    way round turned 1350 into 17925 -- 0x0546 against 0x4605 -- and the read-back
+    check in :func:`status_effects_message` is what caught it.
+    """
+    from raknet.bitstream import BitReader
+
+    reader = BitReader(bytes(buffer), position)
+    return reader.read_uint(count) if count % 8 == 0 else reader.read_bits(count)
+
+
+def _element_template(state: bytes | None = None) -> bytearray:
+    """The recorded effect element, on its own, as a 669-bit run of bytes.
+
+    Copied whole rather than understood whole. Its tail branches over vectors this
+    server does not decode, and a copy does not care.
+    """
+    body = (state or tick_state())[3:]
+    out = bytearray((EFFECT_ELEMENT_BITS + 7) // 8)
+    for index in range(EFFECT_ELEMENT_BITS):
+        bit = (body[(EFFECT_ELEMENT_BIT + index) >> 3] >>
+               (7 - ((EFFECT_ELEMENT_BIT + index) & 7))) & 1
+        if bit:
+            out[index >> 3] |= 1 << (7 - (index & 7))
+    return out
+
+
+def status_effects_message(
+    entries: list[tuple[int, list[float], int, float]],
+    actor: bytes,
+    state: bytes | None = None,
+) -> bytes:
+    """A 0x004F carrying every effect in *entries*, addressed to *actor*.
+
+    *entries* is (effect wire, parameters, start tick, seconds) apiece. An empty list
+    is a message saying "nothing is on you", which is how an effect is taken away.
+
+    Built from copies of the recorded element, so every field this server does not
+    understand keeps the value a real server sent. What is rewritten in each copy is
+    the effect index, the three tick fields and the parameters -- and the message's
+    own count and trailing actor.
+
+    Addressing it to a creature is what puts a stun or a poison on one: the actor at
+    the end is the only thing that decides who an effect lands on.
+    """
+    import struct
+
+    original = (state or tick_state())
+    flag = _read_bits(original[3:], 0, 1)
+    template = _element_template(original)
+
+    bits: list[int] = []
+
+    def push(value: int, count: int, little_endian: bool = True) -> None:
+        if count % 8 == 0 and little_endian:
+            raw = value.to_bytes(count // 8, "little")
+            for byte in raw:
+                bits.extend((byte >> (7 - i)) & 1 for i in range(8))
+        else:
+            bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
+
+    push(flag, 1)
+    push(len(entries), 32)
+    for wire, parameters, start_tick, seconds in entries:
+        if not 0 <= wire < 1 << EFFECT_INDEX_BITS:
+            raise ValueError(
+                f"an effect index is {EFFECT_INDEX_BITS} bits, and {wire} does not fit"
+            )
+        element = bytearray(template)
+        _write_bits(element, IN_ELEMENT_INDEX, wire, EFFECT_INDEX_BITS)
+        span = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
+        for field, value in (
+            (EFFECT_START_TICK_FIELD, start_tick),
+            (EFFECT_END_TICK_FIELD, start_tick + span),
+            (EFFECT_DURATION_FIELD, span),
+        ):
+            _write_bits(
+                element, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
+            )
+        for index, value in enumerate(parameters[:EFFECT_PARAMETERS]):
+            _write_bits(
+                element,
+                IN_ELEMENT_PARAMETERS + 32 * index,
+                int.from_bytes(struct.pack("<f", value), "little"),
+                32,
+            )
+        for index in range(EFFECT_ELEMENT_BITS):
+            bits.append((element[index >> 3] >> (7 - (index & 7))) & 1)
+
+    push(int.from_bytes(actor, "little"), EFFECT_ACTOR_BITS)
+    push(0xFF, 8)
+
+    while len(bits) % 8:
+        bits.append(0)
+    body = bytearray(len(bits) // 8)
+    for index, bit in enumerate(bits):
+        if bit:
+            body[index >> 3] |= 1 << (7 - (index & 7))
+
+    out = original[:3] + bytes(body)
+    # Read it back, every element of it. Nothing in this file that skipped this step
+    # turned out to be right.
+    if entries:
+        seen = status_effect_indices(out)
+        wanted = [wire for wire, *_ in entries]
+        if seen != wanted:
+            raise ValueError(f"wrote effects {wanted} and read back {seen}")
+    return out
+
+
+def status_effect_count(state: bytes | None = None) -> int:
+    """How many effects a 0x004F carries."""
+    body = (state or tick_state())[3:]
+    from raknet.bitstream import BitReader
+
+    return BitReader(body, 1).read_uint(32)
+
+
+def status_effect_indices(state: bytes | None = None) -> list[int]:
+    """Every effect index a 0x004F carries, in order."""
+    body = (state or tick_state())[3:]
+    count = status_effect_count(state)
+    return [
+        _read_bits(
+            body,
+            EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS * index + IN_ELEMENT_INDEX,
+            EFFECT_INDEX_BITS,
+        )
+        for index in range(count)
+    ]
+
+
+def status_effect_actor(state: bytes | None = None) -> bytes:
+    """Who a 0x004F is addressed to."""
+    body = (state or tick_state())[3:]
+    count = status_effect_count(state)
+    at = EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS * count
+    return _read_bits(body, at, EFFECT_ACTOR_BITS).to_bytes(4, "little")

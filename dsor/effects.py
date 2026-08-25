@@ -665,12 +665,27 @@ def inflicted_by(skill_wire: int) -> tuple[Entry, ...]:
     return _certain(SKILL_EFFECTS.get(skill_wire), 1)
 
 
-def _certain(packed: tuple[str, str] | None, which: int) -> tuple[Entry, ...]:
+def anything_by(skill_wire: int, victim: bool = False) -> tuple[Entry, ...]:
+    """Every effect the skill names, chance or no chance.
+
+    A chance of 0.0 marks the entries gated behind an item, a talent or a set bonus,
+    and the warrior's stun and poison are among them: laceratingstrike's
+    debuff_cc_stun and mightybash's debuff_dot_poison both read C:0.0. Faithfully they
+    never fire without the talent that raises the chance, and this server has no
+    talents -- so this exists to be able to exercise them, and the switch that uses it
+    is off by default.
+    """
+    return _certain(SKILL_EFFECTS.get(skill_wire), 1 if victim else 0, gated=True)
+
+
+def _certain(
+    packed: tuple[str, str] | None, which: int, gated: bool = False
+) -> tuple[Entry, ...]:
     if packed is None:
         return ()
     out = []
     for entry in parse_entries(packed[which]):
-        if not entry.certain:
+        if not (entry.certain or gated):
             continue
         found = BY_ID.get(entry.effect)
         if found is None or not found.changes_anything:
