@@ -1212,3 +1212,28 @@ def test_the_player_hits_for_what_their_level_says():
     # Out of range clamps rather than raising.
     assert damage_at(0) == damage_at(1)
     assert damage_at(999) == LEVEL_DAMAGE[-1]
+
+
+def test_the_attribute_enumeration_is_complete_and_in_order():
+    """84 entries, recovered from a jump table rather than from loose strings.
+
+    Attribute::ActorAttributeIdToString compiles to `cmp eax, 0x53` over the value
+    plus one, then 84 offsets each landing on a block that loads its own name. So
+    the list is complete and ordered by construction — unlike a list assembled by
+    scanning for plausible strings, which is how this project produced a confident
+    and wrong skill list from the same binary.
+    """
+    from dsor.attributes import ATTRIBUTES, attribute_id, attribute_name
+
+    assert len(ATTRIBUTES) == 84
+    assert min(ATTRIBUTES) == -1 and max(ATTRIBUTES) == 82
+    assert sorted(ATTRIBUTES) == list(range(-1, 83)), "no gaps"
+    # The ones a player would notice.
+    assert attribute_id("MovementSpeed") == 0
+    assert attribute_id("MaxHealthPoints") == 2
+    assert attribute_id("MinDamage") == 11 and attribute_id("MaxDamage") == 12
+    assert attribute_id("Armor") == 19
+    assert attribute_id("AllResistance") == 20
+    assert attribute_id("Block") == 26 and attribute_id("Critical") == 27
+    assert attribute_name(-1) == "InvalidActorAttribute"
+    assert attribute_id("NotAnAttribute") == -1
