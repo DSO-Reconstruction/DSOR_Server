@@ -63,6 +63,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
+from dsor.skills import skill as skill_at
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
@@ -1263,20 +1264,28 @@ class Service:
             and game.message_id == 0x8B
             and game.opcode in SKILL_OPCODES
         ):
-            used = (
+            # The skill's wire index, at body bytes 2 and 3, little endian. Measured
+            # rather than assumed: a session at level 15 read 1838 for angrystrike,
+            # 1839 for mightyswing and 1842 for mighty360 at this offset, and those
+            # are rows 1839, 1840 and 1843 of the client's own skill table.
+            wire = (
                 int.from_bytes(game.body[2:4], "little")
                 if len(game.body) >= 4
                 else None
             )
+            known = skill_at(wire)
             log.info(
-                "%s: %s used skill %s via %s",
+                "%s: %s used %s (%s) via %s",
                 self.name,
                 sender,
-                used,
+                known.id if known else f"unknown skill {wire}",
+                f"{known.targeting} {known.hit_range:g}u x{known.damage_modifier:g}"
+                if known
+                else "no template",
                 SKILL_OPCODES[game.opcode],
             )
             self._set_clock(sender)
-            self._ship(self.world.attack(sender))
+            self._ship(self.world.attack(sender, wire))
             return
 
         if (
@@ -1325,7 +1334,13 @@ class Service:
             # The client reports where it walked to; remember it so the next tick
             # reports the same place back.
             mover = self.world.player(sender)
-            mover.position = decode_client_movement(game.body).position
+            moved = decode_client_movement(game.body)
+            mover.position = moved.position
+            # Which way the player is facing, for an arc skill to be an arc. The pair
+            # is (heading now, heading being turned toward); the first is the one a
+            # blow leaves along. Without it mightyswing's 170 degrees had no centre
+            # and cut a fixed direction regardless of where the player looked.
+            mover.heading = moved.direction[0]
             # The client's own game tick, taken from its movement record rather than
             # invented. A skill's start tick is compared against it, and a stale one
             # makes the visualizer finish the instant it is created.

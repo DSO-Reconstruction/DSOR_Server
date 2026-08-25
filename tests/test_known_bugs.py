@@ -803,12 +803,23 @@ def test_the_creature_blow_uses_the_skills_own_numbers():
     """
     import server
 
+    from dsor import skills
+
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    assert service.rules.creature_hit_frame == 12
     assert service.rules.mob_stop == 2.0
-    assert service.rules.creature_hit_range == 2.25
-    assert service.rules.strike_interval == 2.75
     assert len(service.rules.creature_damage_types) == 2
+
+    # They are no longer constants on this server: a creature's timing comes from
+    # whichever skill its own blueprint grants. These four were right for exactly one
+    # creature, and that creature is the one the tutorial dungeon is full of.
+    strike = skills.by_id("AnderworldCreatureStrike")
+    assert (strike.hit_frame, strike.hit_range, strike.cool_down) == (12, 2.25, 2.75)
+    assert strike.attack_range == 2.0
+
+    # And its ranged sibling shares none of them, which is why one figure for every
+    # creature could not have been right.
+    shot = skills.by_id("AnderworldCreatureShot")
+    assert (shot.hit_frame, shot.hit_range, shot.cool_down) == (0, 16.0, 3.0)
 
 
 def test_a_creature_stops_instead_of_creeping_in():
@@ -863,12 +874,55 @@ def test_the_hit_delay_is_the_skills_hit_frame():
 
     ThingRootsStrike has HitFrame 15 and its blows land fifteen ticks after the
     swing; ThingSwampStrike has 19 and lands at nineteen. AnderworldCreatureStrike
-    has 12, which is what this server uses.
+    has 12, which is what this server uses for the creature that has it.
     """
     import server
+    from dsor import skills
+    from dsor.gameplay import Position
+    from dsor.mapdata import attack_skill
+    from dsor.world import Creature
 
     service = server.Service(port=30000, name="t", role="map", map_name="a0001")
-    assert service.rules.creature_hit_frame == 12
+    # Zero means "ask the skill", the way mob_damage's zero means "follow the level
+    # curve". A number here forces one figure on every creature, for watching a swing
+    # in slow motion from the debug console.
+    assert service.rules.creature_hit_frame == 0
+
+    world = service.world
+    blueprint = "a0001_gen_anderworld_creature"
+    actor = b"\x85\x00\x01\x00"
+    world.creatures[actor] = Creature(
+        actor=actor,
+        record=b"",
+        position=Position(0.0, 0.0, 0.0),
+        health=12.0,
+        max_health=12.0,
+        blueprint=blueprint,
+        attack_skill=attack_skill(blueprint),
+    )
+    # That blueprint's one attack is AnderworldCreatureStrike, so its own numbers are
+    # exactly the four that used to be hard-coded for every creature alike.
+    assert world.creature_skill(actor).id == "AnderworldCreatureStrike"
+    assert world.creature_timing(actor) == (12, 27, 2.25, 2.75)
+
+    # A creature whose blueprint grants no attack falls back to those same numbers,
+    # and never swings anyway.
+    bare = b"\x86\x00\x01\x00"
+    world.creatures[bare] = Creature(
+        actor=bare, record=b"", position=Position(0.0, 0.0, 0.0),
+        health=12.0, max_health=12.0,
+        blueprint="a0001_champion_undead_mage_01", attack_skill=None,
+    )
+    assert world.creature_skill(bare) is None
+    assert world.creature_timing(bare) == (12, 27, 2.25, 2.75)
+
+    # An override still wins, whichever creature it is.
+    service.rules.creature_hit_frame = 40
+    assert world.creature_timing(actor)[0] == 40
+    assert world.creature_timing(bare)[0] == 40
+
+    assert skills.by_id("ThingRootsStrike").hit_frame == 15
+    assert skills.by_id("ThingSwampStrike").hit_frame == 19
 
 
 def test_the_skill_command_is_sixty_four_bytes_not_twenty_six():

@@ -53,6 +53,7 @@ from dsor.gameplay import (
     decode_position,
     encode_entity_group_message,
     encode_position,
+    HEADING_UNITS,
     heading_to,
     monster_spawn,
     reposition_entity,
@@ -61,6 +62,7 @@ from dsor.gameplay import (
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
+from dsor.skills import Skill, skill as skill_at
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -148,12 +150,16 @@ class Rules:
     #:                  angrystrike has one, which is what tells the capture's two
     #:                  hit shapes apart: 52 with two types are creatures striking
     #:                  the player, 2 with one type are the player striking back.
-    creature_hit_frame: int = 12
+    #: Zero — the default — means "take it from the creature's own skill", the way
+    #: mob_damage takes zero to mean "follow the character's level curve". A number
+    #: here forces that value on every creature, which is what the debug console does
+    #: when a swing needs to be watched in slow motion.
+    creature_hit_frame: int = 0
     #: SkillUnblockFrame, the swing's total length. Confirmed on the wire for two
     #: other skills: ThingRootsStrike's 30 and ThingSwampStrike's 41 are exactly
     #: what their commands carry.
-    creature_unblock_frame: int = 27
-    creature_hit_range: float = 2.25
+    creature_unblock_frame: int = 0
+    creature_hit_range: float = 0.0
     creature_damage_types: list[int] = field(default_factory=lambda: [0, 4])
     #: The player's health. 236 is measured — a nearly full bar in the capture.
     player_max: int = 236
@@ -163,7 +169,7 @@ class Rules:
     mob_despawn: bool = False
     #: What one creature blow takes off, and how often one lands. Both ours.
     creature_damage: float = 3.0
-    strike_interval: float = 2.75
+    strike_interval: float = 0.0
     #: How far the player's own blow reaches, in world units.
     #:
     #: Looser than the client's own 1.75 on purpose, because this measures from a
@@ -171,6 +177,10 @@ class Rules:
     #: Replaying a real session's twelve attacks against wire positions gives 0.9 to
     #: 3.5; six was too loose and made the player take damage across the room.
     reach: float = 3.5
+    #: How much looser than its own stated range every skill reaches, for the same
+    #: reason: wire coordinates against drawn ones. 1.75 puts angrystrike's 1.75 at
+    #: exactly the 3.5 above, which is the figure tuned by hand and confirmed in play.
+    reach_slack: float = 1.75
     #: A creature's health, and what one blow takes off it. Damage of 0 — the
     #: default — means "follow the character's level curve" instead.
     #:
@@ -306,6 +316,11 @@ class Player:
     #: The client's own game tick, read from its movement records. A skill's start
     #: tick is compared against it.
     tick: int = 0
+    #: Which way the player is facing, in 256ths of a turn clockwise from +y, read
+    #: from the heading byte of their own movement records. An arc skill needs it:
+    #: mightyswing cuts 170 degrees of *something*, and without a facing there is no
+    #: arc to cut.
+    heading: int = 0
     #: When a creature last struck this player, on the server's monotonic clock.
     last_struck: float = 0.0
     #: The creature this player is hitting. Latched: choosing afresh on every blow
@@ -741,112 +756,193 @@ class World:
         return encode_entity_group_message([player, *placed])
 
 
-    def resolve_attack(self, sender: Address) -> None:
-        """Work out what the player just hit, and take health off it.
+    def victims_of(
+        self, sender: Address, used: Skill | None
+    ) -> list[bytes]:
+        """Which creatures *used* strikes, cast by the player at *sender*.
 
-        The client's TargetSkillCommand names no target: twenty-one bytes holding a
-        skill id, a float, a tick and two fields whose meaning is not established, and
-        not one actor id among them. Deciding who was hit is therefore the server's
-        job, which is why hitting a creature forever did nothing — nobody was
-        deciding.
+        A skill is not one shape, and serving every skill as "the one creature in
+        front" is what made the skills unlocked by levelling do nothing at all. The
+        client's own table says how each one picks its victims:
 
-        What this does is the simplest defensible rule — nearest creature to the
-        player — and it is ours rather than measured. The capture never reports a
-        creature's stats at all, so both the health scale and the damage are invented;
-        only the message they travel in is real.
+          Actor         the single named target. ``angrystrike``.
+          Angle, Cone   an arc in front of the caster, ``arc`` degrees wide.
+                        ``mightyswing`` cuts 170 degrees at 3.5 units.
+          Radius        everything around, out to ``hit_range``. ``mighty360``
+                        reaches 6.3.
+          User          the caster alone. A buff: it damages nobody.
+
+        The range is the skill's own ``hit_range`` plus ``reach_slack``, and the slack
+        is not decoration. Filtering at the client's exact figure stopped damage
+        entirely — eleven attacks refused in one session — because the distance here
+        is measured against the coordinates in a creature's description while the
+        client measures against what it draws, and replaying a real session's twelve
+        attacks gives 0.9 to 3.5 against a stated 1.75. A slack of 1.75 puts
+        ``angrystrike`` at exactly the 3.5 that was tuned by hand and confirmed in
+        play, and scales the others by their own numbers rather than flattening them.
         """
         position = self.player(sender).position
         if position is None:
-            return
+            return []
         alive = [creature.actor for creature in self._ready().engageable()]
         if not alive:
-            return
-
-        here = (position.x / WORLD, position.y / WORLD)
+            return []
 
         def distance(actor: bytes) -> float:
             where = self.wire_position(actor)
             return float("inf") if where is None else position.distance_to(where)
 
-        # Keep hitting whatever is already being hit. The client names no target —
-        # measured: across a session with six kills, not one message from it carries a
-        # creature's id except the question "what is this entity" — so the server
-        # chooses, and choosing the nearest afresh on every blow makes the choice flip
-        # between creatures standing close together. That is what looked like damage
-        # being shared between them.
-        latched = self.player(sender).target
-        if latched is not None and latched in alive:
-            target = latched
-        else:
-            # Generous rather than exact. Filtering at the client's own 1.75 units
-            # stopped damage entirely — eleven attacks refused in one session —
-            # because the distance here is measured against the coordinates in a
-            # creature's description while the client measures against what it draws,
-            # and the two differed by 2.3 against 1.75. But no bound at all meant a
-            # blow could land on a creature thirty units away once the near one died.
-            nearby = [a for a in alive if distance(a) <= self.rules.reach * WORLD]
-            if not nearby:
-                log.info(
-                    "%s: %s attacked with nothing within %.0f units",
-                    self.name,
-                    sender,
-                    self.rules.reach,
-                )
-                return
-            target = min(nearby, key=distance)
-            self.player(sender).target = target
+        reach = (
+            used.hit_range + self.rules.reach_slack if used else self.rules.reach
+        )
+        within = [a for a in alive if distance(a) <= reach * WORLD]
 
-        struck = self.creatures[target]
+        if used is None or not used.area:
+            # One victim, and the same one as last time. The client names no target —
+            # measured: across a session with six kills, not one message from it
+            # carries a creature's id except the question "what is this entity" — so
+            # the server chooses, and choosing the nearest afresh on every blow makes
+            # the choice flip between creatures standing close together. That is what
+            # looked like damage being shared between them.
+            latched = self.player(sender).target
+            if latched is not None and latched in alive:
+                return [latched]
+            if not within:
+                return []
+            target = min(within, key=distance)
+            self.player(sender).target = target
+            return [target]
+
+        # An area skill. No latching: it hits what it covers, and it may cover
+        # nothing.
+        if used.arc >= 360.0:
+            return sorted(within, key=distance)
+
+        # An arc, in 256ths of a turn rather than degrees, because that is the unit
+        # the wire uses for a heading and comparing in it avoids a conversion in the
+        # middle of a wrap.
+        half = used.arc / 360.0 * HEADING_UNITS / 2.0
+        facing = self.player(sender).heading
+        struck = []
+        for actor in within:
+            where = self.wire_position(actor)
+            if where is None:
+                continue
+            bearing = heading_to(where.x - position.x, where.y - position.y)
+            offset = (bearing - facing + HEADING_UNITS // 2) % HEADING_UNITS - (
+                HEADING_UNITS // 2
+            )
+            if abs(offset) <= half:
+                struck.append(actor)
+        return sorted(struck, key=distance)
+
+    def resolve_attack(self, sender: Address, wire: int | None = None) -> None:
+        """Work out what the player just hit with skill *wire*, and take health off it.
+
+        Neither skill command names a victim: ``TargetSkillCommand`` carries a skill
+        id, a float, a tick and two fields whose meaning is not established, and not
+        one actor id among them. Deciding who was hit is therefore the server's job,
+        which is why hitting a creature forever did nothing — nobody was deciding.
+
+        What the skill *does* say, in the client's own table, is how many victims and
+        how far and how hard. That is :meth:`victims_of`. The health scale is still
+        ours — the capture never reports a creature's stats at all — but the shape of
+        the blow is the client's.
+        """
+        used = skill_at(wire)
+        if used is not None and used.harmless:
+            # Not a blow. Either the skill is cast on the caster — warshout,
+            # frenzyshout, defiance, spikedShield — or its damage modifier is zero
+            # because the whole effect lives in status effects: battlecry debuffs
+            # movement speed, resistance and attack speed for five seconds, and
+            # earthquake lays an aura on the ground that does its damage over eight.
+            # This server models neither, so it says so rather than serving a blow of
+            # zero that reads as a bug.
+            log.info(
+                "%s: %s used %s (%s, x%.2f), whose effect this server does not model",
+                self.name,
+                sender,
+                used.id,
+                used.targeting,
+                used.damage_modifier,
+            )
+            return
+
+        targets = self.victims_of(sender, used)
+        if not targets:
+            log.info(
+                "%s: %s attacked with %s and nothing was within %.2f units",
+                self.name,
+                sender,
+                used.id if used else "an unknown skill",
+                used.hit_range + self.rules.reach_slack if used else self.rules.reach,
+            )
+            return
+
         # What the character hits for, from the client's own class curve rather than
         # a number invented here: fifteen at level one, not four. Equipment adds to
         # it and this does not model that — an item's damage is rolled per instance
         # and scaled to a level, and is not in its template at all.
-        blow = self.rules.mob_damage or damage_at(self.player(sender).level)
-        left = max(0.0, struck.health - blow)
-        struck.health = left
-
-        # The blow, generated. A creature has no health message of its own — every
-        # stats update in both captured sessions targets the player — so the client
-        # takes the victim's health from this message and nowhere else.
         #
-        # Which is precisely why replaying one could never work: a recorded blow is a
-        # *killing* blow, so it carries zero, and the creature died on the spot by the
-        # unanimated path. The client said so: "Victim ... is not alive or cannot
-        # receive", then "received kill message twice" when the real death arrived
-        # after. Generating it is what lets a creature survive a hit at all.
-        victim = int.from_bytes(target, "little")
-        player = int.from_bytes(PLAYER_ACTOR, "little")
-        self._emit(encode_hit(
-                Hit(
-                    victim=victim,
-                    attacker=player,
-                    damage=int(blow),
-                    victim_health=int(left),
-                    victim_max_health=int(self.rules.mob_max_health),
-                    # The attacker, which for the player's own blow is the player.
-                    # Seventy-four real hits carry the attacker here, never the
-                    # victim, and an earlier note claiming otherwise is refuted.
-                    combat_value_owner=player,
-                    # Zero, as the real blow carries. The floating number comes from
-                    # the damage field; putting it here as well draws a second one.
-                    combat_value=0.0,
-                    tick=self.player(sender).server_tick,
-                )
-            ),
-            sender,
-        )
-        log.info(
-            "%s: %s hit entity %s for %.0f, %.1f left",
-            self.name,
-            sender,
-            target.hex(" "),
-            blow,
-            left,
-        )
+        # Times the skill's own multiplier: 1.25 for angrystrike, 1.5 for mighty360,
+        # 1.0 for mightyswing, which is paid for by its hitting several creatures.
+        base = self.rules.mob_damage or damage_at(self.player(sender).level)
+        blow = base * (used.damage_modifier if used else 1.0)
 
-        if left > 0.0:
-            return
-        self.creature_died(sender, target)
+        player = int.from_bytes(PLAYER_ACTOR, "little")
+        killed = []
+        for target in targets:
+            struck = self.creatures[target]
+            left = max(0.0, struck.health - blow)
+            struck.health = left
+
+            # The blow, generated. A creature has no health message of its own —
+            # every stats update in both captured sessions targets the player — so
+            # the client takes the victim's health from this message and nowhere else.
+            #
+            # Which is precisely why replaying one could never work: a recorded blow
+            # is a *killing* blow, so it carries zero, and the creature died on the
+            # spot by the unanimated path. The client said so: "Victim ... is not
+            # alive or cannot receive", then "received kill message twice" when the
+            # real death arrived after. Generating it is what lets a creature survive
+            # a hit at all.
+            self._emit(encode_hit(
+                    Hit(
+                        victim=int.from_bytes(target, "little"),
+                        attacker=player,
+                        damage=int(blow),
+                        victim_health=int(left),
+                        victim_max_health=int(self.rules.mob_max_health),
+                        # The attacker, which for the player's own blow is the
+                        # player. Seventy-four real hits carry the attacker here,
+                        # never the victim, and an earlier note claiming otherwise is
+                        # refuted.
+                        combat_value_owner=player,
+                        # Zero, as the real blow carries. The floating number comes
+                        # from the damage field; putting it here as well draws a
+                        # second one.
+                        combat_value=0.0,
+                        tick=self.player(sender).server_tick,
+                    )
+                ),
+                sender,
+            )
+            log.info(
+                "%s: %s hit entity %s with %s for %.0f, %.1f left",
+                self.name,
+                sender,
+                target.hex(" "),
+                used.id if used else "an unknown skill",
+                blow,
+                left,
+            )
+            if left <= 0.0:
+                killed.append(target)
+
+        # Deaths after every blow, so an area skill reports all its damage before the
+        # first corpse rearranges the creature list.
+        for target in killed:
+            self.creature_died(sender, target)
 
     def creature_died(self, sender: Address, target: bytes) -> None:
         """Everything a creature's death sends.
@@ -974,6 +1070,36 @@ class World:
         self.player(sender).target = None
 
 
+    def creature_skill(self, actor: bytes) -> Skill | None:
+        """The skill the creature at *actor* strikes with, from the client's table.
+
+        The tutorial dungeon's creature has ``AnderworldCreatureStrike``, and that
+        row is where the three numbers this server used to carry as constants
+        actually come from: HitFrame 12, SkillUnblockFrame 27, AttackRange 2 and
+        CoolDown 2.75. They were right — for that one creature. Its ranged sibling
+        ``AnderworldCreatureShot`` reaches 16 units, waits 3 seconds and lands its
+        blow on frame 0, and none of those constants describes it at all.
+        """
+        creature = self.creature(actor)
+        if creature is None or creature.attack_skill is None:
+            return None
+        return skill_at(creature.attack_skill)
+
+    def creature_timing(self, actor: bytes) -> tuple[int, int, float, float]:
+        """(hit frame, unblock frame, hit range, cooldown) for the creature at *actor*.
+
+        Each creature's own, unless a rule forces one on everybody. The fallbacks are
+        AnderworldCreatureStrike's, which is what this server assumed for every
+        creature before it read the table.
+        """
+        used = self.creature_skill(actor)
+        return (
+            self.rules.creature_hit_frame or (used.hit_frame if used else 12),
+            self.rules.creature_unblock_frame or (used.unblock_frame if used else 27),
+            self.rules.creature_hit_range or (used.hit_range if used else 2.25),
+            self.rules.strike_interval or (used.cool_down if used else 2.75),
+        )
+
     def creature_swing(self, sender: Address) -> None:
         """Let a live creature hit the player, every so often.
 
@@ -1002,9 +1128,10 @@ class World:
                 # from where a player arrives: it walked over and hit, invisibly.
                 return False
             where = self.wire_position(actor)
-            return where is not None and (
-                position.distance_to(where) <= self.rules.creature_hit_range * WORLD
-            )
+            if where is None:
+                return False
+            _, _, reach, _ = self.creature_timing(actor)
+            return position.distance_to(where) <= reach * WORLD
 
         if not any(
             near(creature.actor) for creature in self._ready().engageable()
@@ -1013,13 +1140,9 @@ class World:
             # was this condition being "any creature anywhere", which every described
             # creature satisfied for the whole session.
             return
-        now = time.monotonic()
         striker = self.player(sender)
         if not striker.alive:
             return
-        if now - striker.last_struck < self.rules.strike_interval:
-            return
-        striker.last_struck = now
 
         # Whoever is nearest does the striking, so the blow names a real attacker.
         attacker = min(
@@ -1030,6 +1153,16 @@ class World:
             ),
             key=lambda actor: position.distance_to(self.wire_position(actor)),
         )
+        hit_frame, unblock_frame, _, cooldown = self.creature_timing(attacker)
+
+        # The attacker's own cooldown, so a creature that waits three seconds between
+        # shots is not made to swing at another's pace. Still one clock per player
+        # rather than per creature, which means a group attacks at the rate of
+        # whichever of them is nearest — ours, and a simplification.
+        now = time.monotonic()
+        if now - striker.last_struck < cooldown:
+            return
+        striker.last_struck = now
 
         # Floored above zero. Driving it to zero leaves the player standing at an
         # empty bar and not dying, because nothing here kills a player — that is a
@@ -1077,8 +1210,8 @@ class World:
                 ),
                 heading=heading,
                 start_tick=now + self.rules.skill_lead,
-                hit_frame=self.rules.creature_hit_frame,
-                unblock_frame=self.rules.creature_unblock_frame,
+                hit_frame=hit_frame,
+                unblock_frame=unblock_frame,
                 position=self.described_position(where),
             )
         )
@@ -1091,7 +1224,7 @@ class World:
         # short — the client had resolved the blow before the animation could play.
         self.pending_hits.append(
             (
-                time.monotonic() + self.rules.creature_hit_frame * GAME_TICK_MS / 1000.0,
+                time.monotonic() + hit_frame * GAME_TICK_MS / 1000.0,
                 sender,
                 attacker,
             )
@@ -1194,9 +1327,11 @@ class World:
         self._tick_pair(sender)
         return self._drain()
 
-    def attack(self, sender: Address) -> list[tuple[Address, bytes]]:
-        """A player has swung: resolve it and return what to send."""
-        self.resolve_attack(sender)
+    def attack(
+        self, sender: Address, wire: int | None = None
+    ) -> list[tuple[Address, bytes]]:
+        """A player has swung skill *wire*: resolve it and return what to send."""
+        self.resolve_attack(sender, wire)
         return self._drain()
 
     def blueprint_for(self, index: int) -> str | None:
