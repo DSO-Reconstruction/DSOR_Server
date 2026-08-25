@@ -62,6 +62,7 @@ from dsor.gameplay import (
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
+from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
 from dsor.recorded import (
     combat_ready_mobs,
@@ -168,7 +169,11 @@ class Rules:
     #: Whether a killed creature's body is removed at once.
     mob_despawn: bool = False
     #: What one creature blow takes off, and how often one lands. Both ours.
-    creature_damage: float = 3.0
+    #: Zero — the default — means "each creature hits for what its own template
+    #: says": one for the tutorial creature, five to nine for the undead mage. A
+    #: number forces one blow on everybody; a negative number turns creature attacks
+    #: off. Eight was being served for every creature alike.
+    creature_damage: float = 0.0
     strike_interval: float = 0.0
     #: How far the player's own blow reaches, in world units.
     #:
@@ -196,7 +201,10 @@ class Rules:
     #: bit-packed message finds mirages. Reading this message's 11 two bits late
     #: gives 44, and its 12 one or two bits late gives 24 and 48 — every one of them
     #: looks like a health value, and one of them briefly convinced me.
-    mob_max_health: float = 12.0
+    #: Zero — the default — means "each creature has what its own template says":
+    #: 24 for the tutorial creature, 50 for the undead mage champion. Twelve was
+    #: served for all of them, and twelve was a misreading of a recorded blow.
+    mob_max_health: float = 0.0
     mob_damage: float = 0.0
     #: The maximum reported alongside the current value. The capture's players
     #: carried 234 to 236; a creature's is not observed at all.
@@ -245,6 +253,14 @@ class Rules:
     #: recorded one. Anything in the client's _Template_Item; a name it cannot
     #: resolve creates nothing at all, exactly as an unknown monster blueprint does.
     drop_templates: list[str] = field(default_factory=list)
+
+
+#: What a creature has when nothing else says. The tutorial dungeon's own creature,
+#: from the client's monster table — and the value this server should have been
+#: serving all along. The twelve it did serve came from decoding a recorded blow, and
+#: the note beside that reading warned that misreading the field by a bit or two gives
+#: 24. It does, and 24 is the answer.
+DEFAULT_CREATURE_HEALTH = 24.0
 
 
 @dataclass
@@ -462,8 +478,15 @@ class World:
                 actor=actor,
                 record=bytes(record),
                 position=Position(0, 0, 0),
-                health=max_health,
-                max_health=max_health,
+                # Its own health, from the client's monster table. Twenty-four for
+                # the tutorial creature and fifty for the undead mage champion, not
+                # one figure for all — and *not* the twelve this server used to
+                # serve, which came from misreading a recorded blow by a bit or two.
+                # The client knows each creature's health from that same table, so a
+                # figure that disagrees is read as a change to it: that is the real
+                # reason 60 was drawn as a floating +400.
+                health=self.creature_health(blueprint, max_health),
+                max_health=self.creature_health(blueprint, max_health),
                 blueprint=blueprint,
                 described_at=(x, elevation, y),
                 attack_skill=attack_skill(blueprint),
@@ -502,9 +525,16 @@ class World:
             )
 
     def populate(self, records: list[bytes], max_health: float) -> None:
-        """Fill the world with the creatures *records* describes."""
+        """Fill the world with the creatures *records* describes.
+
+        A recorded record carries no blueprint, so there is no template to ask and
+        *max_health* is all there is. Zero — which is what the rule now holds by
+        default, meaning "ask the template" — would spawn them dead, so it falls back
+        to the tutorial creature's own 24: these records are that creature.
+        """
+        health = max_health or DEFAULT_CREATURE_HEALTH
         for record in records:
-            creature = Creature.from_record(record, max_health)
+            creature = Creature.from_record(record, health)
             self.creatures[creature.actor] = creature
 
     def creature(self, actor: bytes) -> Creature | None:
@@ -912,7 +942,7 @@ class World:
                         attacker=player,
                         damage=int(blow),
                         victim_health=int(left),
-                        victim_max_health=int(self.rules.mob_max_health),
+                        victim_max_health=int(struck.max_health),
                         # The attacker, which for the player's own blow is the
                         # player. Seventy-four real hits carry the attacker here,
                         # never the victim, and an earlier note claiming otherwise is
@@ -1070,6 +1100,42 @@ class World:
         self.player(sender).target = None
 
 
+    def creature_health(self, blueprint: str | None, fallback: float) -> float:
+        """The health *blueprint* starts with, from the client's monster table.
+
+        A rule set explicitly overrides it, so the debug console can still make a
+        creature take twenty blows. Otherwise the template wins, and *fallback* only
+        applies to a blueprint the table does not carry —
+        ``a0001_normal_anderworld_minion_01`` is one such.
+        """
+        if self.rules.mob_max_health:
+            return self.rules.mob_max_health
+        known = monster(blueprint)
+        if known is not None:
+            return float(known.hit_points)
+        return fallback or DEFAULT_CREATURE_HEALTH
+
+    def creature_blow(self, actor: bytes) -> float:
+        """What the creature at *actor* takes off a player, from its own template.
+
+        One to one for the tutorial dungeon's creature, two to three for the champion
+        that opens the exit, five to nine for the undead mage. This server served
+        eight for every creature alike, which is what "les monstres ne tapent pas
+        comme sur le vrai serveur" was: eight times too hard for the creature the
+        dungeon is full of, and not hard enough for its champion.
+
+        Midpoint rather than a roll, because nothing else here is random and a
+        reproducible blow is worth more than a realistic one while this is being
+        debugged.
+        """
+        if self.rules.creature_damage:
+            return self.rules.creature_damage
+        creature = self.creature(actor)
+        known = monster(creature.blueprint) if creature else None
+        if known is None:
+            return 3.0
+        return (known.min_damage + known.max_damage) / 2.0
+
     def creature_skill(self, actor: bytes) -> Skill | None:
         """The skill the creature at *actor* strikes with, from the client's table.
 
@@ -1115,7 +1181,9 @@ class World:
         The rate and the damage are this server's, not measured. The real session's
         sixteen blows were spread over a fight this server has no model of.
         """
-        if not self.rules.creature_damage:
+        if self.rules.creature_damage < 0.0:
+            # Negative turns creature attacks off entirely. Zero used to mean that,
+            # and now means "each creature hits for what its own template says".
             return
         position = self.player(sender).position
         if position is None:
@@ -1247,7 +1315,11 @@ class World:
                 continue
             if not victim.alive:
                 continue
-            left = max(0.0, victim.health - self.rules.creature_damage)
+            blow = self.creature_blow(attacker)
+            used = self.creature_skill(attacker)
+            if used is not None:
+                blow *= used.damage_modifier
+            left = max(0.0, victim.health - blow)
             victim.health = left
             # One message, not two. This used to replay a recorded blow *and* send a
             # separate vitals update, so the number the player saw came from another
@@ -1259,7 +1331,7 @@ class World:
                     Hit(
                         victim=int.from_bytes(PLAYER_ACTOR, "little"),
                         attacker=int.from_bytes(attacker, "little"),
-                        damage=int(self.rules.creature_damage),
+                        damage=int(blow),
                         victim_health=int(left),
                         victim_max_health=int(self.rules.player_max),
                         combat_value_owner=int.from_bytes(attacker, "little"),

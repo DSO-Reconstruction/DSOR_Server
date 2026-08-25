@@ -26,10 +26,14 @@ Two readings were tried and **refuted**, and are recorded as such so they are no
 proposed again:
 
 * bytes 7 and 8 are *not* reliably equal (about half the time during movement),
-  so they are not a duplicated heading — they are two headings, the current one
-  and the one being turned toward, which is why they differ exactly while an
-  entity turns. The observation was right and the conclusion drawn from it was
-  not;
+  so they are not a duplicated heading. The observation was right and the
+  conclusion drawn from it was not. Nor are they "the current heading and the one
+  being turned toward", which was the second reading and also too loose: byte 7 is
+  the heading being *travelled* along and byte 8 is the body's own facing. Over
+  twelve live sessions, 128,580 stationary records carry zero in byte 7 99.9% of
+  the time — a player standing still travels nowhere — while byte 8 holds a real
+  facing across 147 distinct values. Byte 8 is therefore the one to ask which way
+  somebody points, in either state;
 * the server's position is *not* bit-identical to the client's — it tracks within
   a few tens of units, which is ordinary authority lag. An early sample of two
   messages happened to match exactly and that was over-read.
@@ -113,11 +117,20 @@ def encode_position(position: Position) -> bytes:
 class ClientMovement:
     """The client's 0x8B/0x005F message, sent continuously while in the world.
 
-    ``direction`` is the pair of bytes at offsets 7 and 8. They clearly track the
-    direction of travel — they take distinctly different values for two different
-    walks, and sit at (0, 128) at rest — but what they encode is not established,
-    so they are exposed as raw bytes rather than converted into an angle that
-    would look more authoritative than the evidence.
+    ``direction`` is the pair of bytes at offsets 7 and 8: the heading being
+    travelled along, and the body's own facing. Both are in 256ths of a turn,
+    clockwise from +y, the same scale as :data:`HEADING_UNITS`.
+
+    Byte 7 is zero at rest, because a player standing still is travelling nowhere:
+    99.9% of 128,580 stationary records across twelve live sessions. An earlier note
+    here read the resting pair as (0, 128) and called the encoding unestablished;
+    128 was simply the facing that session, and the same measurement shows 147
+    distinct values in byte 8.
+
+    So ``direction[1]`` is what answers "which way is this character pointing",
+    whether or not they are moving. ``direction[0]`` answers it only while they
+    walk, and using it to aim a skill pointed every blow along +y — because a
+    player attacks standing still.
     """
 
     position: Position
@@ -489,7 +502,17 @@ WALK_SPEED = 0x40
 
 HEADING_OFFSET = 7
 HEADING_GOAL_OFFSET = 8
-"""Bytes 7 and 8: the heading now, and the heading being turned toward.
+"""Bytes 7 and 8: the heading being travelled along, and the body's own facing.
+
+Not interchangeable, and which one is read matters. Byte 7 is a *movement* heading
+and a player standing still is travelling nowhere: over twelve live sessions, 128580
+stationary records carry zero there 99.9% of the time, while byte 8 carries a real
+facing across 147 distinct values. While moving the two agree to within three units
+in 88% of 5318 records.
+
+So byte 8 is the one to ask which way somebody is pointing, in either state. Byte 7
+answers it only while they are walking, and reading it for a skill aimed every blow
+north — a player attacks standing still.
 
 An earlier reading — "a duplicated heading" — was refuted because the two are
 unequal about half the time while moving. That refutation was right and the

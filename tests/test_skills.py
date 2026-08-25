@@ -243,3 +243,50 @@ def test_the_wire_index_is_the_row_before():
     assert skills.wire_of("mightyswing") == 1839
     assert skills.wire_of("mighty360") == 1842
     assert skills.wire_of("AnderworldCreatureStrike") == 440
+
+
+def test_the_facing_comes_from_the_body_byte_not_the_movement_byte():
+    """The arc bug, pinned. Byte 7 is zero whenever the player stands still.
+
+    Measured over twelve live sessions: 128,580 stationary movement records carry
+    zero in byte 7 99.9% of the time, while byte 8 holds a real facing across 147
+    distinct values. A player attacks standing still, so reading byte 7 aimed every
+    swing along +y and mightyswing's 170 degree arc pointed north whatever the screen
+    showed.
+    """
+    from dsor.gameplay import (
+        ClientMovement,
+        Position,
+        decode_client_movement,
+        encode_client_movement,
+    )
+
+    at_rest = ClientMovement(
+        position=Position(100, 0, 200),
+        moving=False,
+        direction=(0, 185),  # the shape 128,389 real records take
+        tick=7,
+        counter=1,
+        unknown=0,
+        trailer=bytes([0, 20, 0]),
+    )
+    body = encode_client_movement(at_rest)
+    assert decode_client_movement(body).direction == (0, 185)
+    assert body[7] == 0, "travelling nowhere"
+    assert body[8] == 185, "but facing somewhere"
+
+
+def test_a_stationary_player_can_still_aim_a_cone():
+    """End to end: standing still, facing south, mightyswing must hit what is south.
+
+    With the movement byte read instead, this creature was behind a north-facing
+    cone and took nothing.
+    """
+    world = a_world()
+    sender = a_player(world, heading=128)  # facing -y
+    south = stand(world, 0x85, 0.0, -2.0)
+    north = stand(world, 0x86, 0.0, 2.0)
+
+    world.resolve_attack(sender, skills.wire_of("mightyswing"))
+    assert world.creatures[south].health < 1000.0, "in front of a player facing south"
+    assert world.creatures[north].health == 1000.0, "behind them"

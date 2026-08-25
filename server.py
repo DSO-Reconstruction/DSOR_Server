@@ -63,6 +63,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
+from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
@@ -1336,11 +1337,22 @@ class Service:
             mover = self.world.player(sender)
             moved = decode_client_movement(game.body)
             mover.position = moved.position
-            # Which way the player is facing, for an arc skill to be an arc. The pair
-            # is (heading now, heading being turned toward); the first is the one a
-            # blow leaves along. Without it mightyswing's 170 degrees had no centre
-            # and cut a fixed direction regardless of where the player looked.
-            mover.heading = moved.direction[0]
+            # Which way the player is facing, for an arc skill to be an arc.
+            #
+            # The second byte, not the first, and the difference is the whole bug.
+            # The pair is (movement heading, body facing), and a player who is
+            # standing still is not moving anywhere: across twelve sessions on the
+            # live service, 128580 stationary records carry zero in the first byte
+            # 99.9% of the time while the second holds a real facing — 147 distinct
+            # values. When the player is moving the two agree to within three units
+            # in 88% of 5318 records, so the second byte is right in both states and
+            # the first is right in only one.
+            #
+            # Reading the first meant every blow was aimed north, because a player
+            # attacks standing still. mightyswing's 170 degree arc pointed the same
+            # way whatever the screen showed, which is why some swings hit one
+            # creature where they should have hit three.
+            mover.heading = moved.direction[1]
             # The client's own game tick, taken from its movement record rather than
             # invented. A skill's start tick is compared against it, and a stale one
             # makes the visualizer finish the instant it is created.
@@ -1445,10 +1457,10 @@ def serve(
     mobs: int = 0,
     mob_radius: int = 0,
     mob_patrol: int = 0,
-    mob_health: float = 60.0,
+    mob_health: float = 0.0,
     mob_damage: float = 0.0,
     mob_near: float = 0.0,
-    creature_damage: float = 3.0,
+    creature_damage: float = 0.0,
     creature_skill: int = 440,
     mob_despawn: bool = False,
     mob_first_command: bool = False,
@@ -1524,7 +1536,12 @@ def serve(
         service.rules.mob_patrol = mob_patrol
         service.rules.mob_max_health = mob_health
         service.rules.mob_damage = mob_damage
-        service.rules.mob_max_health_ceiling = int(mob_health)
+        # The ceiling only matters when one figure is forced on everybody; with
+        # per-creature health the tallest template is the ceiling. Fifty, the undead
+        # mage champion's.
+        service.rules.mob_max_health_ceiling = int(
+            mob_health or max(m.hit_points for m in MONSTERS.values())
+        )
         service.rules.mob_near = mob_near
         service.rules.creature_damage = creature_damage
         service.rules.creature_skill = creature_skill
@@ -1704,11 +1721,13 @@ def main() -> None:
     parser.add_argument(
         "--mob-health",
         type=float,
-        default=12.0,
+        default=0.0,
         metavar="H",
         help=(
-            "health each creature starts with. Twelve is measured from a recorded blow "
-            "and confirmed in play; serving far more is read as a heal"
+            "force this health on every creature. The default, 0, gives each creature "
+            "what the client's own monster table says it has: 24 for the tutorial "
+            "dungeon's creature, 50 for the undead mage champion. Forcing a figure "
+            "the client's table disagrees with is what gets drawn as a heal"
         ),
     )
     parser.add_argument(
@@ -1820,12 +1839,13 @@ def main() -> None:
     parser.add_argument(
         "--creature-damage",
         type=float,
-        default=3.0,
+        default=0.0,
         metavar="D",
         help=(
-            "health a creature's blow takes off the player, 0 to disable retaliation. "
-            "The blow itself is replayed from a real session; the damage and the rate "
-            "are this server's"
+            "force this blow on every creature; negative disables retaliation. The "
+            "default, 0, gives each creature its own template's damage times its "
+            "skill's multiplier: 1 for the tutorial dungeon's creature, 2 to 3 for "
+            "the champion that opens the exit, 5 to 9 for the undead mage"
         ),
     )
     parser.add_argument(
