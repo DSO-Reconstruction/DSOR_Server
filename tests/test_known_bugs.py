@@ -1300,3 +1300,45 @@ def test_a_death_can_be_commanded_as_well_as_caused():
     assert player.experience == 3 * world.rules.kill_experience
     # Struck again, nothing more happens: the dead are not killed twice.
     assert world.smite_all(here) == []
+
+
+def test_the_world_can_be_filled_from_the_map_data():
+    """Twenty-five creatures where the map puts them, not six from a recording.
+
+    The client's own map database carries _Instance_SpawnPoint, and its positions are
+    in the same frame a description uses: spawn point 5 sits at (-62.82, 0.00, 53.48),
+    which is bit-for-bit the position the recorded description of actor 08 carries.
+    That is what makes the table usable instead of merely interesting.
+
+    Three of the twenty-five are champions and one is a health globe — the mini bosses
+    and pickups that a session in this dungeon actually contains.
+    """
+    from dsor.mapdata import SPAWN_POINTS, blueprints
+    from dsor.recorded import monster_library
+    from dsor.world import World
+
+    assert len(SPAWN_POINTS) == 25
+    assert sum(1 for name, *_ in SPAWN_POINTS if "champion" in name) == 3
+    assert any("healthglobe" in name for name, *_ in SPAWN_POINTS)
+    assert ("a0001_gen_anderworld_creature_1st_encounter", -62.82, 0.0, 53.48) in [
+        (n, x, e, y) for n, x, e, y in SPAWN_POINTS
+    ]
+
+    world = World()
+    world.populate_from_map(SPAWN_POINTS, 12.0)
+    assert len(world.creatures) == 25
+    assert all(c.alive for c in world.creatures.values())
+    # Actors start past the player's 0x15 and past the items at 0x40.
+    assert all(c.actor[0] >= 0x80 for c in world.creatures.values())
+    # Each has a wire position derived from the described one, and a record to carry
+    # it, addressed to itself.
+    from dsor.gameplay import actor_id
+
+    for creature in world.creatures.values():
+        assert creature.described_at is not None
+        assert creature.position.x or creature.position.y
+        assert actor_id(creature.record) == creature.actor
+
+    # Seven of the ten blueprints are extracted; the rest are served by renaming.
+    library = set(monster_library())
+    assert len(blueprints() & library) == 7

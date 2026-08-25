@@ -44,6 +44,7 @@ from dsor.combat import (
     level_for,
 )
 from dsor.gameplay import (
+    ACTOR_ID_OFFSET,
     WALK_SPEED,
     WALK_UNITS_PER_TICK,
     WORLD_SCALE,
@@ -236,6 +237,12 @@ class Creature:
     position: Position
     health: float
     max_health: float
+    #: The blueprint this creature is, when it comes from the map's own spawn table
+    #: rather than from a recorded batch. None means "whatever the recording held".
+    blueprint: str | None = None
+    #: Where the map says it stands, in the description frame. Kept because that is
+    #: the frame a description carries, and converting loses precision.
+    described_at: tuple[float, float, float] | None = None
     #: Whether the client has been sent its description. Until it has, the client
     #: has no entity for the actor and nothing addressed to it can be drawn.
     described: bool = False
@@ -264,7 +271,9 @@ class Creature:
         return self.alive or self.corpse_ticks > 0
 
     def home(self) -> Position:
-        """Where it was first recorded, whatever it has done since."""
+        """Where it started, whatever it has done since."""
+        if not self.record:
+            return self.position
         return decode_position(self.record)
 
 
@@ -392,6 +401,73 @@ class World:
         return self
 
     # ── creatures ────────────────────────────────────────────────────────────
+
+    def populate_from_map(
+        self,
+        points: list[tuple[str, float, float, float]],
+        max_health: float,
+        first_actor: int = 0x80,
+    ) -> None:
+        """Fill the world from the map's own spawn table.
+
+        Twenty-five creatures at the positions the client's map data gives, against
+        the six a recorded batch held — and three of them are champions. Actors start
+        at 0x80 so they cannot collide with the player's 0x15 or with the items,
+        which take 0x40 upward.
+
+        The positions are in the description frame, so they are stored as given and
+        converted only where a movement record needs them.
+        """
+        # A movement record, borrowed and re-addressed. Everything downstream — the
+        # chase, the hit, the corpse — works off a record, and a mapped creature has
+        # none of its own; only the actor and the position in it matter, and both are
+        # rewritten.
+        base = combat_ready_mobs()[0]
+        for index, (blueprint, x, elevation, y) in enumerate(points):
+            actor = bytes([(first_actor + index) & 0xFF, 0x00, 0x01, 0x00])
+            record = bytearray(base)
+            record[ACTOR_ID_OFFSET : ACTOR_ID_OFFSET + 4] = actor
+            self.creatures[actor] = Creature(
+                actor=actor,
+                record=bytes(record),
+                position=Position(0, 0, 0),
+                health=max_health,
+                max_health=max_health,
+                blueprint=blueprint,
+                described_at=(x, elevation, y),
+            )
+        self._place_from_descriptions()
+
+    def _place_from_descriptions(self) -> None:
+        """Give every mapped creature a wire position from its described one."""
+        offset = self.frame_offset
+        if offset is None:
+            # Derived the same way the kill position is: the constant between the two
+            # frames, read off a creature that exists in both.
+            for record in combat_ready_mobs():
+                try:
+                    described = monster_spawn(entity_descriptions()[actor_id(record)])
+                except (KeyError, ValueError):
+                    continue
+                home = decode_position(record)
+                offset = (
+                    described[0] - home.x / WORLD,
+                    described[1] - home.elevation / WORLD,
+                    described[2] - home.y / WORLD,
+                )
+                self.frame_offset = offset
+                break
+        if offset is None:
+            return
+        for creature in self.creatures.values():
+            if creature.described_at is None:
+                continue
+            x, elevation, y = creature.described_at
+            creature.position = Position(
+                x=round((x - offset[0]) * WORLD),
+                elevation=round((elevation - offset[1]) * WORLD),
+                y=round((y - offset[2]) * WORLD),
+            )
 
     def populate(self, records: list[bytes], max_health: float) -> None:
         """Fill the world with the creatures *records* describes."""

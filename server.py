@@ -61,6 +61,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
+from dsor.mapdata import SPAWN_POINTS
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -813,10 +814,18 @@ class Service:
         """
         if not self.rules.mobs or not self.rules.announce_vicinity:
             return
-        served = [
-            int.from_bytes(actor_id(record), "little")
-            for record in combat_ready_mobs()[: self.rules.mobs]
-        ]
+        world = self.world._ready()
+        if any(c.blueprint for c in world.creatures.values()):
+            # From the map's own spawn table: twenty-five creatures, three of them
+            # champions, at the positions the client's map data gives.
+            served = [
+                int.from_bytes(c.actor, "little") for c in world.creatures.values()
+            ]
+        else:
+            served = [
+                int.from_bytes(actor_id(record), "little")
+                for record in combat_ready_mobs()[: self.rules.mobs]
+            ]
         if not served:
             return
         # Generated, not replayed: a count then that many 32-bit ids, byte-aligned
@@ -851,6 +860,34 @@ class Service:
         # cannot place, hit or remove produced exactly what it sounds like: a creature
         # standing at full health that no blow could ever reach.
         servable = {actor_id(record) for record in combat_ready_mobs()[: self.rules.mobs]}
+        mapped = self.world._ready().creature(handle)
+        if mapped is not None and mapped.blueprint and mapped.described_at:
+            # Built rather than looked up: a library description of any creature,
+            # renamed to the blueprint the map wants and placed where the map puts
+            # it. The name is the description's first field and the position sits 448
+            # bits from its end, so both can be rewritten without understanding what
+            # lies between.
+            library = monster_library()
+            base = library.get(mapped.blueprint) or next(iter(library.values()))
+            try:
+                built = with_actor(base, handle)
+                if mapped.blueprint not in library:
+                    built = with_template(built, mapped.blueprint)
+                built = with_library_spawn(built, *mapped.described_at)
+            except ValueError as error:
+                log.warning("%s: %s", self.name, error)
+            else:
+                mapped.described = True
+                self._queue(connection, built, sender)
+                log.info(
+                    "%s: described %s as %s at (%.2f, %.2f, %.2f) to %s",
+                    self.name,
+                    handle.hex(" "),
+                    mapped.blueprint,
+                    *mapped.described_at,
+                    sender,
+                )
+                return
         description = (
             entity_descriptions().get(handle) if handle in servable else None
         )
@@ -1309,6 +1346,7 @@ def serve(
     mob_first_command: bool = False,
     mob_template: str | None = None,
     mob_swap: str | None = None,
+    map_spawns: bool = False,
     kill_experience: int = 17,
     mob_chase: bool = True,
     mob_speed: int | None = None,
@@ -1383,6 +1421,10 @@ def serve(
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
         service.rules.mob_swap = mob_swap
+        if map_spawns and role == "map":
+            service.world.populate_from_map(SPAWN_POINTS, mob_health)
+            service.rules.mobs = len(SPAWN_POINTS)
+            log.info("map spawns: %d creature(s)", len(SPAWN_POINTS))
         service.rules.kill_experience = kill_experience
         service.rules.mob_chase = mob_chase
         if mob_speed is not None:
@@ -1576,12 +1618,22 @@ def main() -> None:
         help="experience awarded per kill, 0 for none. A real award carried 17",
     )
     parser.add_argument(
+        "--map-spawns",
+        action="store_true",
+        help="populate the world from the client's own map data — 25 creatures at "
+        "the positions _Instance_SpawnPoint gives, three of them champions and one "
+        "a health globe — instead of the six a recorded batch held",
+    )
+    parser.add_argument(
         "--mob-swap",
         metavar="NAME",
         help=(
-            "serve this library blueprint in place of the first creature. It is drawn "
-            "wherever its own description places it, which this server cannot read, so "
-            "it may appear elsewhere or not at all"
+            "serve this library blueprint in place of the first creature — including "
+            "the tutorial's champions. It is placed where that creature stood: the "
+            "position sits 448 bits from the end of a single-command description, "
+            "found by cross-referencing three creatures that appear both as a batch "
+            "and as one command. An earlier version of this help said the position "
+            "could not be read, which stopped being true"
         ),
     )
     parser.add_argument(
@@ -1801,6 +1853,7 @@ def main() -> None:
         mob_first_command=args.mob_first_command,
         mob_template=args.mob_template,
         mob_swap=args.mob_swap,
+        map_spawns=args.map_spawns,
         kill_experience=args.kill_experience,
         mob_chase=args.mob_chase,
         mob_speed=args.mob_speed,
