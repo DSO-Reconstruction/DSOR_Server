@@ -17,9 +17,8 @@ from dsor.world import World
 def a_player():
     world = World(name="t")
     world.rules.mobs = 0
-    # The animated ones too, so these exercise the whole pipeline. The server holds
-    # them back by default — see test_an_animated_effect_is_held_back — and the two
-    # tests about that restriction turn this off again.
+    # Animated effects are on by default now; two tests turn them off to check the
+    # switch still holds them back.
     world.rules.animated_effects = True
     sender = ("127.0.0.1", 1)
     player = world.player(sender)
@@ -263,21 +262,26 @@ def test_all_of_a_skills_effects_travel_now():
     ]
 
 
-def test_one_effect_at_the_recorded_values_reproduces_the_recording():
-    """The strongest check available on the whole layout.
+def test_the_grammar_reads_the_recording_field_for_field():
+    """The element layout, from StatusEffectCommand's Deserialize, against the wire.
 
-    If the flag, the count, the element length, the actor and the terminator are all
-    right, then building a message from the recorded element with the recorded values
-    must give back the recording byte for byte. It does.
+    The element reader at 0x140a4c6bc reads: a 16-bit index, eight 32-bit fields, four
+    bools, and -- only if the fourth bool is set -- a float32 parameter array, a bool,
+    and a *signed* byte. The recording agrees with every part of that.
+
+    Copying the element used to reproduce the recording byte for byte, which was the
+    check that validated the copy. Elements are built now, and deliberately shorter, so
+    the check moved to the grammar itself.
     """
-    from dsor.recorded import status_effect_fields, status_effects_message
+    from dsor.recorded import element_grammar
 
-    fields = status_effect_fields()
-    built = status_effects_message(
-        [(1350, [0.0] * 5, fields[3], 1.0)],
-        b"\x15\x00\x01\x00",
-    )
-    assert built == tick_state()
+    grammar = element_grammar()
+    assert grammar["index"] == 1350
+    assert grammar["integers"] == [65546, 176, 0, 151, 0, 25, 100, 0]
+    assert grammar["flags"] == [False, False, False, True], "the fourth is the gate"
+    assert len(grammar["parameters"]) == 5
+    assert grammar["tail_bool"] is True
+    assert grammar["tail_byte"] == 2, "so the recording does carry vectors"
 
 
 def test_frenzyshout_no_longer_drops_its_life_leech():
@@ -595,45 +599,78 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
     assert not world._entries(by_id("defiance"), victim=False)
 
 
-def test_the_eight_bit_field_is_a_length_discriminator_not_a_track_index():
-    """A reading that was wrong, and the experiment that refuted it.
+def test_the_eight_bit_field_ends_the_element_and_leaves_the_vectors_out():
+    """A field read three ways, two of them wrong.
 
-    Writing 0 there was meant to fix a sequencer assertion. It desynchronised the
-    client instead: it read the first effect of a two-effect message correctly and the
-    second as costume_halloween_2023_pumpkin_helmet_angry_warrior, then found a garbage
-    actor and reported "invalid command ending in multi command 79".
+    First it looked like a track index, and writing 0 there was meant to fix a
+    sequencer assertion. It desynchronised the client instead: it read the first effect
+    of a two-effect message correctly and the second as
+    costume_halloween_2023_pumpkin_helmet_angry_warrior, found a garbage actor id
+    3175926989, and reported "invalid command ending in multi command 79". The
+    disassembly had already said it chooses how many float3 vectors follow.
 
-    The disassembly said why, and it was there to be read before the experiment:
+    Then it was copied verbatim, which kept the parse right and kept the tutorial
+    heal's vectors on every effect.
 
-        cmp byte ptr [rbx + 0x38], 0
-        cmp dword ptr [rbx + 0x3c], -1     ; skip the vector block entirely
-        cmp dword ptr [rbx + 0x3c], 0      ; two vectors or three
-
-    [rbx+0x3c] is this field and it chooses how many float3 vectors follow. Change it
-    and the element changes length, so everything after it lands at the wrong bit.
+    Deserialize settles it: the byte is read with movsx, so 0xFF is -1, and -1 together
+    with a false bool before it *ends the element*. So an element can be built with no
+    vectors at all, which is what the sequencer needed -- nothing borrowed for it to
+    index.
     """
-    from dsor.recorded import status_effect_track, status_effects_message
-
-    assert status_effect_track() == 2
-
-    # Copied verbatim, with no option to do otherwise.
-    sent = status_effects_message(
-        [(effects.wire_of("skill_frenzyshout_buff_lifeleech"), [0.2] * 5, 41230, 10.0)],
-        b"\x15\x00\x01\x00",
+    from dsor.recorded import (
+        BUILT_ELEMENT_BITS,
+        EFFECT_ELEMENT_BITS,
+        NO_VECTORS,
+        status_effect_indices,
+        status_effect_track,
+        status_effects_message,
     )
-    assert status_effect_track(sent) == 2
+
+    assert NO_VECTORS == 0xFF, "-1 as a signed byte"
+    assert BUILT_ELEMENT_BITS == 477
+    assert EFFECT_ELEMENT_BITS == 669, "what the recording's own element costs"
+    assert EFFECT_ELEMENT_BITS - BUILT_ELEMENT_BITS == 192, "six floats of vectors"
+
+    sent = status_effects_message(
+        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 41230, 5.0)],
+        b"\x86\x00\x01\x00",
+    )
+    assert status_effect_track(sent) == NO_VECTORS
+    assert status_effect_indices(sent) == [effects.wire_of("debuff_cc_stun")]
 
 
-def test_an_animated_effect_is_held_back():
-    """The other half of the same tail, and still unsolved.
+def test_several_built_elements_stay_aligned():
+    """The mistake that produced a halloween pumpkin, guarded against directly."""
+    from dsor.recorded import (
+        status_effect_actor,
+        status_effect_count,
+        status_effect_indices,
+        status_effects_message,
+    )
 
-    The recorded element belongs to a0001_tutorial_heal_on_low_health, which has no
-    sequence and no animation, so replaying it never entered the sequencer and the
-    vectors in its tail were never used. An animated effect does enter it, with a tail
-    that has no tracks and no position for them, and the client asserts on a FixedArray.
+    wires = [
+        effects.wire_of(name)
+        for name in (
+            "debuff_dot_poison",
+            "debuff_cc_stun",
+            "skill_laceratingstrike_debuff_armor",
+        )
+    ]
+    actor = b"\x86\x00\x01\x00"
+    sent = status_effects_message([(w, [0.3] * 5, 41230, 5.0) for w in wires], actor)
+    assert status_effect_count(sent) == 3
+    assert status_effect_indices(sent) == wires, "every one at its own offset"
+    assert status_effect_actor(sent) == actor, "and the actor after all three"
 
-    So animated effects wait. Fifteen of the warrior's have no animation, and those are
-    the ones served.
+
+def test_an_animated_effect_can_be_held_back():
+    """The switch, and the reason it existed.
+
+    While an element was a copy of the tutorial heal's it carried that effect's float3
+    vectors, and handing them to an animated effect sent the client's sequencer into a
+    FixedArray it could not index. Elements are built now and end before the vectors,
+    so animated effects are sent again — but the switch stays, because the sequencer is
+    the part of this with the worst track record.
     """
     from dsor.skills import by_id
 

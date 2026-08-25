@@ -1116,6 +1116,56 @@ def _element_template(state: bytes | None = None) -> bytearray:
     return out
 
 
+def element_grammar(state: bytes | None = None) -> dict:
+    """The recorded element's own fields, read with the grammar from Deserialize.
+
+    ``StatusEffects::StatusEffectCommand``'s Deserialize leads to an array reader and
+    then to an element reader at 0x140a4c6bc, which reads, in wire order:
+
+        +0x00   16 bits   the effect index
+        +0x04 +0x0c +0x14 +0x08 +0x18 +0x10 +0x1c +0x20   eight 32-bit fields
+        +0x25 +0x26 +0x39 +0x24                            four bools
+                  if +0x24 is false the element ENDS HERE
+        +0x28   the float32 parameter array: a 32-bit count, then that many
+        +0x38   one bool
+        +0x3c   one **signed** byte -- read with movsx, so 0xFF is -1
+                  if +0x38 is false AND +0x3c is -1 the element ENDS HERE
+                  otherwise float3 vectors follow, two or three of them depending
+                  on whether +0x3c is zero
+
+    Which is the way out of the sequencer crash. The recording carries +0x38 true and
+    +0x3c 2, so it has vectors -- 192 bits of them -- and copying it gave every effect
+    the tutorial heal's vectors. Writing +0x38 false and +0x3c -1 ends the element
+    instead, and an element with no vectors has nothing borrowed in it.
+
+    An element built that way is 477 bits against the recorded 669.
+    """
+    from raknet.bitstream import BitReader
+
+    body = (state or tick_state())[3:]
+    reader = BitReader(body, EFFECT_ELEMENT_BIT)
+    index = reader.read_uint(16)
+    integers = [reader.read_uint(32) for _ in range(8)]
+    flags = [reader.read_bool() for _ in range(4)]
+    count = reader.read_uint(32)
+    parameters = [reader.read_uint(32) for _ in range(count)]
+    return {
+        "index": index,
+        "integers": integers,
+        "flags": flags,
+        "parameters": parameters,
+        "tail_bool": reader.read_bool(),
+        "tail_byte": reader.read_uint(8),
+    }
+
+
+#: What ``+0x3c`` is written as to end an element: -1 as a signed byte.
+NO_VECTORS = 0xFF
+
+#: How long an element built without vectors is: 16 + 8*32 + 4 + 32 + 5*32 + 1 + 8.
+BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
+
+
 def status_effects_message(
     entries: list[tuple[int, list[float], int, float]],
     actor: bytes,
@@ -1124,28 +1174,30 @@ def status_effects_message(
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
     *entries* is (effect wire, parameters, start tick, seconds) apiece. An empty list
-    is a message saying "nothing is on you", which is how an effect is taken away.
+    says "nothing is on you", which is how an effect is taken away.
 
-    Built from copies of the recorded element, so every field this server does not
-    understand keeps the value a real server sent. What is rewritten in each copy is
-    the effect index, the three tick fields and the parameters -- and the message's
-    own count and trailing actor.
+    Built field by field now, not copied. The five integers whose meaning is not
+    established keep the values a real server sent -- 65546, 0, 0, 100, 0 -- and the
+    three that are ticks carry the current tick and the duration asked for. The
+    element then ends after the parameters, with no vectors, because the vectors in
+    the recording belong to the tutorial dungeon's heal and handing them to an
+    animated effect is what sent the client's sequencer into a FixedArray it could not
+    index.
 
     Addressing it to a creature is what puts a stun or a poison on one: the actor at
     the end is the only thing that decides who an effect lands on.
     """
     import struct
 
-    original = (state or tick_state())
+    original = state or tick_state()
+    grammar = element_grammar(original)
     flag = _read_bits(original[3:], 0, 1)
-    template = _element_template(original)
 
     bits: list[int] = []
 
     def push(value: int, count: int, little_endian: bool = True) -> None:
         if count % 8 == 0 and little_endian:
-            raw = value.to_bytes(count // 8, "little")
-            for byte in raw:
+            for byte in value.to_bytes(count // 8, "little"):
                 bits.extend((byte >> (7 - i)) & 1 for i in range(8))
         else:
             bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
@@ -1157,26 +1209,28 @@ def status_effects_message(
             raise ValueError(
                 f"an effect index is {EFFECT_INDEX_BITS} bits, and {wire} does not fit"
             )
-        element = bytearray(template)
-        _write_bits(element, IN_ELEMENT_INDEX, wire, EFFECT_INDEX_BITS)
+        push(wire, EFFECT_INDEX_BITS)
+
         span = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
-        for field, value in (
-            (EFFECT_START_TICK_FIELD, start_tick),
-            (EFFECT_END_TICK_FIELD, start_tick + span),
-            (EFFECT_DURATION_FIELD, span),
-        ):
-            _write_bits(
-                element, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
-            )
-        for index, value in enumerate(parameters[:EFFECT_PARAMETERS]):
-            _write_bits(
-                element,
-                IN_ELEMENT_PARAMETERS + 32 * index,
-                int.from_bytes(struct.pack("<f", value), "little"),
-                32,
-            )
-        for index in range(EFFECT_ELEMENT_BITS):
-            bits.append((element[index >> 3] >> (7 - (index & 7))) & 1)
+        integers = list(grammar["integers"])
+        integers[EFFECT_START_TICK_FIELD] = start_tick & 0xFFFFFFFF
+        integers[EFFECT_END_TICK_FIELD] = (start_tick + span) & 0xFFFFFFFF
+        integers[EFFECT_DURATION_FIELD] = span & 0xFFFFFFFF
+        for value in integers:
+            push(value, 32)
+
+        for value in grammar["flags"][:3]:
+            push(1 if value else 0, 1)
+        push(1, 1)  # +0x24: the parameters follow
+
+        push(EFFECT_PARAMETERS, 32)
+        padded = list(parameters[:EFFECT_PARAMETERS])
+        padded += [0.0] * (EFFECT_PARAMETERS - len(padded))
+        for value in padded:
+            push(int.from_bytes(struct.pack("<f", value), "little"), 32)
+
+        push(0, 1)            # +0x38 false, and
+        push(NO_VECTORS, 8)   # +0x3c = -1, which ends the element
 
     push(int.from_bytes(actor, "little"), EFFECT_ACTOR_BITS)
     push(0xFF, 8)
@@ -1189,8 +1243,8 @@ def status_effects_message(
             body[index >> 3] |= 1 << (7 - (index & 7))
 
     out = original[:3] + bytes(body)
-    # Read it back, every element of it. Nothing in this file that skipped this step
-    # turned out to be right.
+    # Read it back, every element of it. Nothing here that skipped this step turned
+    # out to be right.
     if entries:
         seen = status_effect_indices(out)
         wanted = [wire for wire, *_ in entries]
@@ -1211,10 +1265,11 @@ def status_effect_indices(state: bytes | None = None) -> list[int]:
     """Every effect index a 0x004F carries, in order."""
     body = (state or tick_state())[3:]
     count = status_effect_count(state)
+    stride = _stride(state)
     return [
         _read_bits(
             body,
-            EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS * index + IN_ELEMENT_INDEX,
+            EFFECT_ELEMENT_BIT + stride * index + IN_ELEMENT_INDEX,
             EFFECT_INDEX_BITS,
         )
         for index in range(count)
@@ -1226,7 +1281,7 @@ def status_effect_track(state: bytes | None = None, index: int = 0) -> int:
     body = (state or tick_state())[3:]
     return _read_bits(
         body,
-        EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS * index + IN_ELEMENT_TRACK,
+        EFFECT_ELEMENT_BIT + _stride(state) * index + IN_ELEMENT_TRACK,
         IN_ELEMENT_TRACK_BITS,
     )
 
@@ -1235,5 +1290,22 @@ def status_effect_actor(state: bytes | None = None) -> bytes:
     """Who a 0x004F is addressed to."""
     body = (state or tick_state())[3:]
     count = status_effect_count(state)
-    at = EFFECT_ELEMENT_BIT + EFFECT_ELEMENT_BITS * count
+    at = EFFECT_ELEMENT_BIT + _stride(state) * count
     return _read_bits(body, at, EFFECT_ACTOR_BITS).to_bytes(4, "little")
+
+
+def _stride(state: bytes | None) -> int:
+    """How long one element is in *state*.
+
+    The recording's own is 669 bits because it carries vectors; one built here is 477
+    because it does not. Told apart by the message's length rather than assumed, since
+    reading an element at the wrong stride is exactly the mistake that made the client
+    report costume_halloween_2023_pumpkin_helmet_angry_warrior.
+    """
+    if state is None:
+        return EFFECT_ELEMENT_BITS
+    count = status_effect_count(state)
+    if count <= 0:
+        return BUILT_ELEMENT_BITS
+    room = len(state[3:]) * 8 - EFFECT_ELEMENT_BIT - EFFECT_ACTOR_BITS - 8
+    return EFFECT_ELEMENT_BITS if room // count >= EFFECT_ELEMENT_BITS else BUILT_ELEMENT_BITS

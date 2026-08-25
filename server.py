@@ -1492,7 +1492,7 @@ def serve(
     creature_damage: float = 0.0,
     status_effects: bool = True,
     force_effects: bool = False,
-    animated_effects: bool = False,
+    animated_effects: bool = True,
     tough_mob: float = 0.0,
     tough_mobs: int = 1,
     creature_skill: int = 440,
@@ -1796,13 +1796,15 @@ def main() -> None:
         help="how many creatures --tough-mob applies to (default 1)",
     )
     parser.add_argument(
-        "--animated-effects",
-        action="store_true",
+        "--no-animated-effects",
+        dest="animated_effects",
+        action="store_false",
         help=(
-            "also send effects the client animates — the stun, the poison, the "
-            "movement-speed buff, the armour break. Off because the effect element is "
-            "copied from a recording of an effect with no animation, so an animated "
-            "one sends the client's sequencer into a FixedArray it cannot index"
+            "hold back the effects the client animates — the stun, the poison, the "
+            "movement-speed buff, the armour break. They are sent by default now that "
+            "an element ends before the float3 vectors it used to inherit from the "
+            "tutorial dungeon's heal; this is the switch if the sequencer still "
+            "objects"
         ),
     )
     parser.add_argument(

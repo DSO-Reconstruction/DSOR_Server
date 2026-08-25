@@ -190,13 +190,15 @@ class Rules:
     #: debuff_dot_poison both read C:0.0. This server has no talents, so faithfully
     #: they never fire. A testing switch, not fidelity, which is why it is off.
     force_effects: bool = False
-    #: Whether to send effects the client animates. Off, because the element's tail is
-    #: copied from an effect that has no animation at all, so an animated one sends the
-    #: sequencer into a FixedArray it cannot index. Fifteen of the warrior's effects
-    #: have no animation and those work — the life leech, warshout's damage buffs,
-    #: battlecry's three debuffs. The stun, the poison, the movement-speed buff and the
-    #: armour break all have one, and all wait for the tail to be understood.
-    animated_effects: bool = False
+    #: Whether to send effects the client animates — the stun, the poison, the
+    #: movement-speed buff, the armour break.
+    #:
+    #: On again. It was off while the element was a copy of the tutorial heal's, which
+    #: carries float3 vectors an animated effect had no business inheriting: handing
+    #: them over sent the client's sequencer into a FixedArray it could not index.
+    #: Elements are built now and end before the vectors, so there is nothing borrowed
+    #: left in them.
+    animated_effects: bool = True
     #: Which class's skills a modifier may name. One class per world for now, because
     #: this server serves one character.
     character_class: str = "warrior"
