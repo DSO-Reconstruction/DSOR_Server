@@ -140,3 +140,66 @@ def test_the_table_is_filtered_to_the_served_map():
     """
     assert all(key.startswith("a0001") for key in MONSTERS)
     assert 10 < len(MONSTERS) < 100
+
+
+def test_one_creature_can_be_toughened_without_touching_the_rest():
+    """For watching a skill work at all.
+
+    Everything in the tutorial dungeon holds 24 points and a level 100 warrior hits
+    for 16800, so nothing survives long enough to see an animation, let alone an area
+    skill hit three things. Forcing a figure through mob_max_health would flatten
+    every creature; this does not.
+    """
+    import server
+    from dsor.mapdata import servable_points
+    from dsor.recorded import monster_library
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    world = service.world
+    world.populate_from_map(servable_points(set(monster_library())), 0.0)
+
+    chosen = world.toughen(100_000.0, 2)
+    assert len(chosen) == 2
+    for actor in chosen:
+        creature = world.creatures[actor]
+        assert creature.health == creature.max_health == 100_000.0
+        # Champions first, because they are the ones worth staring at.
+        assert "champion" in creature.blueprint
+
+    others = {
+        c.max_health for a, c in world.creatures.items() if a not in chosen
+    }
+    assert others == {2.0, 24.0}, "everything else keeps its own template's number"
+
+
+def test_a_toughened_creature_survives_a_level_100_blow():
+    import server
+    from dsor.gameplay import Position
+    from dsor.mapdata import servable_points
+    from dsor.recorded import monster_library
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    world = service.world
+    world.rules.mob_damage = 16800.0
+    world.populate_from_map(servable_points(set(monster_library())), 0.0)
+    actor = world.toughen(100_000.0)[0]
+
+    creature = world.creatures[actor]
+    creature.described = True
+    sender = ("127.0.0.1", 1)
+    player = world.player(sender)
+    player.in_world = True
+    player.level = 100
+    player.position = Position(creature.position.x, 0, creature.position.y)
+
+    world.resolve_attack(sender, None)
+    assert creature.health == 100_000.0 - 16800.0
+    assert creature.alive, "six blows, not one"
+
+
+def test_toughening_with_nothing_alive_says_so():
+    import server
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    service.rules.mobs = 0
+    assert service.world.toughen(100_000.0) == []

@@ -1491,6 +1491,8 @@ def serve(
     mob_near: float = 0.0,
     creature_damage: float = 0.0,
     status_effects: bool = True,
+    tough_mob: float = 0.0,
+    tough_mobs: int = 1,
     creature_skill: int = 440,
     mob_despawn: bool = False,
     mob_first_command: bool = False,
@@ -1587,6 +1589,8 @@ def serve(
             usable = servable_points(set(monster_library()))
             service.world.populate_from_map(usable, mob_health)
             service.rules.mobs = len(usable)
+            if tough_mob:
+                service.world.toughen(tough_mob, max(1, tough_mobs))
             missing = sorted(
                 {name for name, *_ in SPAWN_POINTS}
                 - {name for name, *_ in usable}
@@ -1768,6 +1772,24 @@ def main() -> None:
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
         ),
+    )
+    parser.add_argument(
+        "--tough-mob",
+        type=float,
+        default=0.0,
+        metavar="HP",
+        help=(
+            "give one creature this much health, champions first, so a skill can be "
+            "watched. Everything else keeps its own template's number, unlike "
+            "--mob-health. See also --tough-mobs"
+        ),
+    )
+    parser.add_argument(
+        "--tough-mobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="how many creatures --tough-mob applies to (default 1)",
     )
     parser.add_argument(
         "--no-status-effects",
@@ -2078,6 +2100,8 @@ def main() -> None:
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
         status_effects=args.status_effects,
+        tough_mob=args.tough_mob,
+        tough_mobs=args.tough_mobs,
         creature_skill=args.creature_skill,
         mob_despawn=args.mob_despawn,
         mob_first_command=args.mob_first_command,

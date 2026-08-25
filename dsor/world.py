@@ -1336,6 +1336,44 @@ class World:
         """
         return float(self.rules.player_max or hit_points_at(level))
 
+    def toughen(self, health: float, count: int = 1) -> list[bytes]:
+        """Give *count* creatures *health*, and return which ones got it.
+
+        For watching a skill work. Every creature in the tutorial dungeon holds 24
+        points and a level 100 warrior hits for 16800, so nothing survives long enough
+        to see an animation play, let alone an area skill hit three things.
+
+        Champions first, because they are the ones worth staring at, then whatever
+        else is standing. The rest of the world keeps its own numbers -- forcing a
+        figure on every creature through ``mob_max_health`` would, and this does not.
+
+        A caution that belongs with it: the client knows each creature's health from
+        its own monster table, so a figure that disagrees may be drawn oddly. Serving
+        60 where the table said 24 was once read as a heal. The blow now carries this
+        creature's max as well as its current health, which the earlier attempt did
+        not, so it has a better chance -- but it is still a number the client can
+        contradict, and that is the trade for being able to see anything at all.
+        """
+        def rank(creature: "Creature") -> tuple[int, bytes]:
+            champion = "champion" in (creature.blueprint or "")
+            return (0 if champion else 1, creature.actor)
+
+        chosen = sorted(
+            (c for c in self._ready().creatures.values() if c.alive),
+            key=rank,
+        )[:count]
+        for creature in chosen:
+            creature.health = health
+            creature.max_health = health
+            log.info(
+                "%s: entity %s (%s) now holds %.0f health",
+                self.name,
+                creature.actor.hex(" "),
+                creature.blueprint or "recorded",
+                health,
+            )
+        return [creature.actor for creature in chosen]
+
     def creature_health(self, blueprint: str | None, fallback: float) -> float:
         """The health *blueprint* starts with, from the client's monster table.
 

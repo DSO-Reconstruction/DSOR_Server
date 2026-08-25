@@ -110,6 +110,8 @@ class Console:
             "xp <amount>            grant experience to everyone in the world\n"
             "level <n>              set everyone's level outright\n"
             "revive                 refill everyone's health\n"
+            "tough <hp> [n]         give n creatures that much health, champions "
+            "first\n"
             "kill                   kill every live creature, drops and all\n"
             "reset                  every creature alive again, ground cleared\n"
             "attrs [text]           attribute ids, filtered by name\n"
@@ -248,6 +250,17 @@ class Console:
             player.max_health = player.health
             healed.append(f"{player.address} {was:.0f} -> {player.health:.0f}")
         return "\n".join(healed) or "nobody in the world"
+
+    def _do_tough(self, health: str, count: str = "1") -> str:
+        world = self.service.world
+        chosen = world.toughen(float(health), int(count))
+        if not chosen:
+            return "no live creature to toughen"
+        return "\n".join(
+            f"{actor.hex(' ')}  {world.creatures[actor].blueprint or 'recorded'}"
+            f"  {world.creatures[actor].max_health:.0f} hp"
+            for actor in chosen
+        )
 
     def _do_kill(self) -> str:
         world = self.service.world
