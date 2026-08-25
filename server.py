@@ -390,6 +390,10 @@ class Service:
         #: Clients already sent the character roster, so a repeated ready signal
         #: does not send it twice.
         self.record_sent: set[tuple[str, int]] = set()
+        #: Datagrams a second accepted from one peer, and what each has sent this
+        #: second. A flood from one address should cost that address and nobody else.
+        self.peer_rate = 400
+        self._peer_seen: dict[tuple[str, int], tuple[int, int]] = {}
         #: How many 0x010B queries each endpoint has asked, since the two recorded
         #: answers differ and are not interchangeable.
         self.queries_seen: dict[tuple[str, int], int] = {}
@@ -1169,6 +1173,34 @@ class Service:
             total,
         )
 
+    def within_rate(self, sender) -> bool:
+        """Whether this peer is inside its datagram budget for the current second.
+
+        A flood from one address should cost that address and nobody else. The client
+        sends about twenty-five movement records a second, so the default of four
+        hundred passes ordinary play by a wide margin and still bounds what one peer
+        can make this server do.
+
+        Counted in whole seconds rather than a sliding window: a window is more
+        accurate and this is a bound, not a measurement.
+        """
+        if not self.peer_rate:
+            return True
+        second = int(time.monotonic())
+        seen, at = self._peer_seen.get(sender, (0, second))
+        if at != second:
+            seen, at = 0, second
+        seen += 1
+        self._peer_seen[sender] = (seen, at)
+        if seen == self.peer_rate + 1:
+            log.warning(
+                "%s: %s is over %d datagrams a second; dropping the rest",
+                self.name,
+                sender,
+                self.peer_rate,
+            )
+        return seen <= self.peer_rate
+
     def _on_game_message(self, connection: Connection, message, sender) -> None:
         """Log a Drakensang message by name rather than as raw bytes.
 
@@ -1367,7 +1399,9 @@ class Service:
             # reports the same place back.
             mover = self.world.player(sender)
             moved = decode_client_movement(game.body)
-            mover.position = moved.position
+            # Checked, not taken. See dsor/trust.py: this was
+            # "mover.position = moved.position", straight from the datagram.
+            self.world.accept_movement(sender, moved.position)
             # Which way the player is facing, for an arc skill to be an arc.
             #
             # The second byte, not the first, and the difference is the whole bug.
@@ -1496,6 +1530,9 @@ def serve(
     force_effects: bool = False,
     animated_effects: bool = False,
     player_health: float = 0.0,
+    enforce: bool = True,
+    pickup_range: float = 12.0,
+    peer_rate: int = 400,
     tough_mob: float = 0.0,
     tough_mobs: int = 1,
     creature_skill: int = 440,
@@ -1586,6 +1623,9 @@ def serve(
         service.rules.force_effects = force_effects
         service.rules.animated_effects = animated_effects
         service.rules.player_max = int(player_health)
+        service.rules.enforce = enforce
+        service.rules.pickup_range = pickup_range
+        service.peer_rate = peer_rate
         service.rules.mob_despawn = mob_despawn
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
@@ -1679,6 +1719,8 @@ def serve(
                 # connected player to one bad message is worse than carrying on with
                 # a loud complaint, and a crash during play-testing hides everything
                 # that would have come after it.
+                if not service.within_rate(sender):
+                    continue
                 try:
                     service.handle(raw, sender)
                 except Exception:
@@ -1779,6 +1821,35 @@ def main() -> None:
             "entity records from the tutorial dungeon with only their position "
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--trust-client",
+        dest="enforce",
+        action="store_false",
+        help=(
+            "believe whatever the client says about where it is, which skill it used, "
+            "how often and what it picked up. For replaying a capture, not for running "
+            "a service — see dsor/trust.py for what is checked and why each tolerance "
+            "is as loose as it is"
+        ),
+    )
+    parser.add_argument(
+        "--pickup-range",
+        type=float,
+        default=12.0,
+        metavar="U",
+        help="how far a player may be from an item and still pick it up, world units",
+    )
+    parser.add_argument(
+        "--peer-rate",
+        type=int,
+        default=400,
+        metavar="N",
+        help=(
+            "datagrams a second accepted from one peer before the rest are dropped. "
+            "The client sends about 25 movement records a second, so 400 is generous; "
+            "0 turns the limit off"
         ),
     )
     parser.add_argument(
@@ -2145,6 +2216,9 @@ def main() -> None:
         force_effects=args.force_effects,
         animated_effects=args.animated_effects,
         player_health=args.player_health,
+        enforce=args.enforce,
+        pickup_range=args.pickup_range,
+        peer_rate=args.peer_rate,
         tough_mob=args.tough_mob,
         tough_mobs=args.tough_mobs,
         creature_skill=args.creature_skill,

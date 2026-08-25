@@ -68,6 +68,7 @@ from dsor import effects
 from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
 from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
+from dsor.trust import Claims, movement_is_plausible, off_cooldown
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -218,6 +219,14 @@ class Rules:
     #: Which class's skills a modifier may name. One class per world for now, because
     #: this server serves one character.
     character_class: str = "warrior"
+    #: Whether to check what the client claims: where it is, which skill it used, how
+    #: often, what it cost, and what it may pick up. Off is for debugging a capture,
+    #: not for running a service.
+    enforce: bool = True
+    #: How far a player may be from an item and still pick it up, in world units.
+    #: Ours: the client has an AutoPickupRange somewhere but not in _Globals, so this
+    #: is a bound rather than the game's own.
+    pickup_range: float = 12.0
     #: Whether a killed creature's body is removed at once.
     mob_despawn: bool = False
     #: What one creature blow takes off, and how often one lands. Both ours.
@@ -393,6 +402,11 @@ class Player:
     #: This player's own actor id, four bytes as the wire wants it. Assigned on
     #: arrival from the world's actor space.
     actor: bytes = PLAYER_ACTOR
+    #: What this player has claimed lately, and what the server owes them. See
+    #: :mod:`dsor.trust` for why each limit is as loose as it is.
+    claims: Claims = field(default_factory=Claims)
+    #: When their last movement record was accepted, on the monotonic clock.
+    seen_at: float = 0.0
     position: Position | None = None
     health: float = 0.0
     max_health: float = 0.0
@@ -1560,6 +1574,94 @@ class World:
         """The seventh field's value, or None to keep what a real server sends."""
         return None if self.rules.effect_stack < 0 else self.rules.effect_stack
 
+    # ── what the client is not taken at its word for ─────────────────────────
+
+    def accept_movement(self, sender: Address, position: Position) -> bool:
+        """Take the client's word for where it is, or refuse this record.
+
+        Refusing means keeping the last position the server did believe, which is a
+        snap-back on the server side only -- nothing is sent to correct the client,
+        because a correction on a lost datagram would fight the network rather than a
+        cheat.
+        """
+        player = self.player(sender)
+        now = time.monotonic()
+        before, seen = player.position, player.seen_at
+        player.seen_at = now
+        if before is None or not self.rules.enforce:
+            player.position = position
+            return True
+        travelled = before.distance_to(position)
+        allowance = player.claims.spend_allowance(now)
+        if movement_is_plausible(travelled, now - seen, allowance):
+            player.position = position
+            return True
+        player.claims.offences += 1
+        log.warning(
+            "%s: %s claimed %.0f wire units in %.0f ms (offence %d); keeping %s",
+            self.name,
+            sender,
+            travelled,
+            (now - seen) * 1000.0,
+            player.claims.offences,
+            before,
+        )
+        return False
+
+    def player_skills(self, sender: Address) -> set[int]:
+        """Every skill this player actually has, by wire index.
+
+        Built from the same two rules the skill book's ownership bits are set from, so
+        what the server grants and what it accepts agree by construction. Getting
+        those out of step would refuse every skill in the game.
+        """
+        from dsor.skillbook import skill_index, up_to_level
+
+        wanted: set[int] = set()
+        for name in self.rules.granted_skills:
+            found = skill_index(name)
+            if found is not None:
+                wanted.add(found)
+        if self.rules.grant_up_to_level:
+            wanted |= up_to_level(self.rules.grant_up_to_level)
+        return wanted
+
+    def may_use(self, sender: Address, wire: int | None) -> str | None:
+        """Why this player may not use skill *wire*, or None if they may.
+
+        Three things the server used to take on trust: that the character has the
+        skill, that it is off cooldown, and that the resource is there. A client could
+        send earthquake at level one, every tick, for free.
+        """
+        if not self.rules.enforce or wire is None:
+            return None
+        used = skill_at(wire)
+        if used is None:
+            return f"there is no skill {wire}"
+        owned = self.player_skills(sender)
+        if owned and wire not in owned:
+            return f"{used.id} is not unlocked"
+        player = self.player(sender)
+        now = time.monotonic()
+        if not off_cooldown(player.claims.used_at.get(wire), used.cool_down, now):
+            return f"{used.id} is on cooldown for another {used.cool_down:.1f}s"
+        cost = used.resource_cost * self.resource_pool(sender)
+        if cost > player.resource + 1e-6:
+            return f"{used.id} costs {cost:.0f} and only {player.resource:.0f} is left"
+        return None
+
+    def note_use(self, sender: Address, wire: int | None, used: Skill | None) -> None:
+        """Remember that a skill was used, for the cooldown and for a leap's budget."""
+        if wire is None:
+            return
+        player = self.player(sender)
+        now = time.monotonic()
+        player.claims.used_at[wire] = now
+        if used is not None and used.lands_where_it_ends:
+            # A leap or a charge genuinely moves the player, and by more than a speed
+            # check would ever allow. Using one buys exactly its own range.
+            player.claims.travel(used.attack_range, now)
+
     def resource_pool(self, sender: Address) -> float:
         """How much rage this player can hold, from the client's own level table.
 
@@ -2148,6 +2250,11 @@ class World:
         aim: int | None = None,
     ) -> list[tuple[Address, bytes]]:
         """A player has swung skill *wire* toward *aim*: resolve it and send."""
+        refusal = self.may_use(sender, wire)
+        if refusal is not None:
+            log.warning("%s: %s refused: %s", self.name, sender, refusal)
+            return []
+        self.note_use(sender, wire, skill_at(wire))
         self.resolve_attack(sender, wire, aim)
         return self._drain()
 
@@ -2205,6 +2312,25 @@ class World:
         if not self.rules.allow_pickup:
             log.info("%s: %s asked for item %s, and pickup is off",
                      self.name, sender, actor.hex(" "))
+            return []
+        standing = self.player(sender).position
+        lying = self.dropped.get(actor)
+        if (
+            self.rules.enforce
+            and standing is not None
+            and lying is not None
+            and Position(
+                int(lying[0] * WORLD_SCALE), 0, int(lying[2] * WORLD_SCALE)
+            ).distance_to(standing)
+            > self.rules.pickup_range * WORLD_SCALE
+        ):
+            self.player(sender).claims.offences += 1
+            log.warning(
+                "%s: %s asked for item %s from too far away",
+                self.name,
+                sender,
+                actor.hex(" "),
+            )
             return []
         if actor not in self.dropped:
             log.info("%s: %s asked for item %s, which is not lying here",
