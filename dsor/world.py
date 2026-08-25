@@ -198,7 +198,12 @@ class Rules:
     #: them over sent the client's sequencer into a FixedArray it could not index.
     #: Elements are built now and end before the vectors, so there is nothing borrowed
     #: left in them.
-    animated_effects: bool = True
+    animated_effects: bool = False
+    #: What to put in the effect element's seventh 32-bit field, or -1 to keep the 100
+    #: a real server sends. A dial, not a setting: it is the prime suspect for the
+    #: sequencer assertion that holds animated effects back, and it has been read wrong
+    #: twice already, so it is something to try rather than something known.
+    effect_stack: int = -1
     #: Which class's skills a modifier may name. One class per world for now, because
     #: this server serves one character.
     character_class: str = "warrior"
@@ -1417,6 +1422,10 @@ class World:
         else:
             holder.effects = value
 
+    def _stack(self) -> int | None:
+        """The seventh field's value, or None to keep what a real server sends."""
+        return None if self.rules.effect_stack < 0 else self.rules.effect_stack
+
     def resource_pool(self, sender: Address) -> float:
         """How much rage this player can hold, from the client's own level table.
 
@@ -1812,6 +1821,7 @@ class World:
                         for wire, parameters, seconds in live
                     ],
                     PLAYER_ACTOR,
+                    stack=self._stack(),
                 ),
                 sender,
             )
@@ -1830,6 +1840,7 @@ class World:
                         for wire, parameters, seconds in on_it
                     ],
                     creature.actor,
+                    stack=self._stack(),
                 ),
                 sender,
             )

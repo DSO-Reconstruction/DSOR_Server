@@ -30,6 +30,8 @@ SETTABLE: dict[str, Callable[[str], object]] = {
     "creature_damage": float,
     "creature_skill": int,
     "strike_interval": float,
+    "effect_stack": int,
+    "animated_effects": bool,
     "reach": float,
     "reach_slack": float,
     "mob_speed": int,

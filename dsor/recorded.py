@@ -1166,10 +1166,28 @@ NO_VECTORS = 0xFF
 BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
 
 
+#: Which of the eight 32-bit fields carries 100 in every real message, where the
+#: effects it describes have a MaxStackSize of 1.
+#:
+#: The prime suspect for the sequencer assertion, and stated as a suspect rather than
+#: a finding, because this field has already been read wrong twice:
+#:
+#:     Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
+#:
+#: If the client sizes that array by an effect's MaxStackSize and indexes it by this
+#: field, then 100 into an array of one is exactly the failure. It would also explain
+#: why the recording never tripped it: a0001_tutorial_heal_on_low_health has no
+#: sequence, so the array is never built and never indexed.
+#:
+#: Unproven. ``effect_stack`` on the rules is the dial for testing it.
+EFFECT_STACK_FIELD = 6
+
+
 def status_effects_message(
     entries: list[tuple[int, list[float], int, float]],
     actor: bytes,
     state: bytes | None = None,
+    stack: int | None = None,
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
@@ -1216,6 +1234,8 @@ def status_effects_message(
         integers[EFFECT_START_TICK_FIELD] = start_tick & 0xFFFFFFFF
         integers[EFFECT_END_TICK_FIELD] = (start_tick + span) & 0xFFFFFFFF
         integers[EFFECT_DURATION_FIELD] = span & 0xFFFFFFFF
+        if stack is not None:
+            integers[EFFECT_STACK_FIELD] = stack & 0xFFFFFFFF
         for value in integers:
             push(value, 32)
 

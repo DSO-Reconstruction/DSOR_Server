@@ -1492,7 +1492,7 @@ def serve(
     creature_damage: float = 0.0,
     status_effects: bool = True,
     force_effects: bool = False,
-    animated_effects: bool = True,
+    animated_effects: bool = False,
     tough_mob: float = 0.0,
     tough_mobs: int = 1,
     creature_skill: int = 440,
@@ -1796,15 +1796,14 @@ def main() -> None:
         help="how many creatures --tough-mob applies to (default 1)",
     )
     parser.add_argument(
-        "--no-animated-effects",
-        dest="animated_effects",
-        action="store_false",
+        "--animated-effects",
+        action="store_true",
         help=(
-            "hold back the effects the client animates — the stun, the poison, the "
-            "movement-speed buff, the armour break. They are sent by default now that "
-            "an element ends before the float3 vectors it used to inherit from the "
-            "tutorial dungeon's heal; this is the switch if the sequencer still "
-            "objects"
+            "also send the effects the client animates — the stun, the poison, the "
+            "movement-speed buff, the armour break. Off: removing the borrowed float3 "
+            "vectors was not enough, and the client still asserts in its sequencer on "
+            "a FixedArray of TrackSequencer. The prime suspect is the seventh 32-bit "
+            "field, which carries 100 where MaxStackSize is 1"
         ),
     )
     parser.add_argument(
