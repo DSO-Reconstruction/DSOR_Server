@@ -270,7 +270,11 @@ def test_one_effect_at_the_recorded_values_reproduces_the_recording():
 
     fields = status_effect_fields()
     built = status_effects_message(
-        [(1350, [0.0] * 5, fields[3], 1.0)], b"\x15\x00\x01\x00"
+        [(1350, [0.0] * 5, fields[3], 1.0)],
+        b"\x15\x00\x01\x00",
+        # track_index=None leaves the sequencer field as recorded. Zero is what is
+        # actually sent, for the reason in the next test.
+        track_index=None,
     )
     assert built == tick_state()
 
@@ -587,3 +591,40 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
     # character at all.
     assert all(a == "LocationEffect" for a, _ in promised["defiance"])
     assert not world._entries(by_id("defiance"), victim=False)
+
+
+def test_the_sequencer_field_is_zeroed_because_two_crashed_the_client():
+    """The recorded effect has no animation. Every one worth sending does.
+
+        Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
+        expression: this->elements && (index >= 0) && (index < this->size)
+
+    a0001_tutorial_heal_on_low_health has no StartSequence and no animation, so the
+    client never entered the sequencer path and never used the field. debuff_cc_stun
+    plays stun_loop, debuff_dot_poison plays poisoned_loop and poisoned_tick,
+    skill_warshout_buff_movementspeed plays warrior05_loop -- those do enter it, and
+    index a FixedArray with the 2 copied out of an effect that had no tracks.
+
+    Zero rather than two: the first track of a non-empty array. Supported by the crash
+    and proved by nothing, which is why it is a constant and why the recorded value can
+    be put back.
+    """
+    from dsor.recorded import status_effect_track, status_effects_message
+
+    assert status_effect_track() == 2, "what the recording carries"
+
+    sent = status_effects_message(
+        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 41230, 5.0)],
+        b"\x86\x00\x01\x00",
+    )
+    assert status_effect_track(sent) == 0
+
+    # And the effects in question really do have sequences, unlike the recorded one.
+    assert effects.by_id("a0001_tutorial_heal_on_low_health").start_sequence == ""
+    for name in (
+        "debuff_cc_stun",
+        "debuff_dot_poison",
+        "skill_warshout_buff_movementspeed",
+        "skill_laceratingstrike_debuff_armor",
+    ):
+        assert effects.by_id(name).start_sequence, name

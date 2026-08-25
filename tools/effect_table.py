@@ -29,7 +29,7 @@ HEADER_COMMENT = (
 FIELDS = [
     "Id", "StatusEffectDuration", "StatusEffectTickRate", "MaxStackSize",
     "StartModifiers", "TickModifiers", "StopModifiers", "DoneModifiers",
-    "ExclusiveGroup", "Groups",
+    "ExclusiveGroup", "Groups", "StartSequence", "TickSequence", "StartAnimation",
 ]
 
 
@@ -311,6 +311,12 @@ class Effect:
     done_modifiers: str
     exclusive_group: str
     groups: str
+    #: The animation the client plays for this effect, and the reason the sequencer
+    #: field matters: a0001_tutorial_heal_on_low_health has none, so the recording
+    #: never exercised that path, and every effect worth sending does have one.
+    start_sequence: str
+    tick_sequence: str
+    start_animation: str
 
     @cached_property
     def starts(self) -> tuple[Modifier, ...]:
@@ -356,11 +362,13 @@ EFFECTS: dict[int, Effect] = {{}}''')
     print()
     print("for _row in [")
     for row in rows:
-        (wire, eid, duration, rate, stack, start, tick, stop, done, excl, groups) = row
+        (wire, eid, duration, rate, stack, start, tick, stop, done, excl, groups,
+         start_seq, tick_seq, start_anim) = row
         print(
             f"    ({wire}, {text(eid)!r}, {num(duration)!r}, {num(rate)!r},"
             f" {whole(stack)}, {text(start)!r}, {text(tick)!r}, {text(stop)!r},"
-            f" {text(done)!r}, {text(excl)!r}, {text(groups)!r}),"
+            f" {text(done)!r}, {text(excl)!r}, {text(groups)!r},"
+            f" {text(start_seq)!r}, {text(tick_seq)!r}, {text(start_anim)!r}),"
         )
     print("]:")
     print("    EFFECTS[_row[0]] = Effect(*_row)")
