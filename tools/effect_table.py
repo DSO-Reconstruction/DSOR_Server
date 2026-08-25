@@ -330,6 +330,24 @@ class Effect:
     def changes_anything(self) -> bool:
         return bool(self.starts or self.ticks)
 
+    @property
+    def animated(self) -> bool:
+        """Whether the client plays a sequence or an animation for this effect.
+
+        The recorded element this server copies belongs to
+        a0001_tutorial_heal_on_low_health, which has none of the three -- so replaying
+        it never entered the sequencer, and the vectors in the element's tail were
+        never used. An animated effect does enter it, with a tail copied from an effect
+        that had no tracks and no position for them, and the client asserts:
+
+            Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
+
+        Zeroing the field that looked like a track index made it worse, because that
+        field is a length discriminator -- see dsor/recorded.py. So an animated effect
+        is held back until the tail is understood, rather than sent and crashed on.
+        """
+        return bool(self.start_sequence or self.tick_sequence or self.start_animation)
+
     def servable(self, known_skills: frozenset[str] = frozenset()) -> bool:
         """Whether every modifier is one this server can serve.
 

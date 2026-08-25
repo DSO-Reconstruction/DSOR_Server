@@ -17,6 +17,10 @@ from dsor.world import World
 def a_player():
     world = World(name="t")
     world.rules.mobs = 0
+    # The animated ones too, so these exercise the whole pipeline. The server holds
+    # them back by default — see test_an_animated_effect_is_held_back — and the two
+    # tests about that restriction turn this off again.
+    world.rules.animated_effects = True
     sender = ("127.0.0.1", 1)
     player = world.player(sender)
     player.position = Position(0, 0, 0)
@@ -272,9 +276,6 @@ def test_one_effect_at_the_recorded_values_reproduces_the_recording():
     built = status_effects_message(
         [(1350, [0.0] * 5, fields[3], 1.0)],
         b"\x15\x00\x01\x00",
-        # track_index=None leaves the sequencer field as recorded. Zero is what is
-        # actually sent, for the reason in the next test.
-        track_index=None,
     )
     assert built == tick_state()
 
@@ -582,6 +583,7 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
         promised.setdefault(skill, set()).add((attribute, effect_id))
 
     world = World(name="t")
+    world.rules.animated_effects = True
     served = {
         entry.effect for entry in world._entries(by_id("warshout"), victim=False)
     }
@@ -593,38 +595,96 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
     assert not world._entries(by_id("defiance"), victim=False)
 
 
-def test_the_sequencer_field_is_zeroed_because_two_crashed_the_client():
-    """The recorded effect has no animation. Every one worth sending does.
+def test_the_eight_bit_field_is_a_length_discriminator_not_a_track_index():
+    """A reading that was wrong, and the experiment that refuted it.
 
-        Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
-        expression: this->elements && (index >= 0) && (index < this->size)
+    Writing 0 there was meant to fix a sequencer assertion. It desynchronised the
+    client instead: it read the first effect of a two-effect message correctly and the
+    second as costume_halloween_2023_pumpkin_helmet_angry_warrior, then found a garbage
+    actor and reported "invalid command ending in multi command 79".
 
-    a0001_tutorial_heal_on_low_health has no StartSequence and no animation, so the
-    client never entered the sequencer path and never used the field. debuff_cc_stun
-    plays stun_loop, debuff_dot_poison plays poisoned_loop and poisoned_tick,
-    skill_warshout_buff_movementspeed plays warrior05_loop -- those do enter it, and
-    index a FixedArray with the 2 copied out of an effect that had no tracks.
+    The disassembly said why, and it was there to be read before the experiment:
 
-    Zero rather than two: the first track of a non-empty array. Supported by the crash
-    and proved by nothing, which is why it is a constant and why the recorded value can
-    be put back.
+        cmp byte ptr [rbx + 0x38], 0
+        cmp dword ptr [rbx + 0x3c], -1     ; skip the vector block entirely
+        cmp dword ptr [rbx + 0x3c], 0      ; two vectors or three
+
+    [rbx+0x3c] is this field and it chooses how many float3 vectors follow. Change it
+    and the element changes length, so everything after it lands at the wrong bit.
     """
     from dsor.recorded import status_effect_track, status_effects_message
 
-    assert status_effect_track() == 2, "what the recording carries"
+    assert status_effect_track() == 2
 
+    # Copied verbatim, with no option to do otherwise.
     sent = status_effects_message(
-        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 41230, 5.0)],
-        b"\x86\x00\x01\x00",
+        [(effects.wire_of("skill_frenzyshout_buff_lifeleech"), [0.2] * 5, 41230, 10.0)],
+        b"\x15\x00\x01\x00",
     )
-    assert status_effect_track(sent) == 0
+    assert status_effect_track(sent) == 2
 
-    # And the effects in question really do have sequences, unlike the recorded one.
-    assert effects.by_id("a0001_tutorial_heal_on_low_health").start_sequence == ""
+
+def test_an_animated_effect_is_held_back():
+    """The other half of the same tail, and still unsolved.
+
+    The recorded element belongs to a0001_tutorial_heal_on_low_health, which has no
+    sequence and no animation, so replaying it never entered the sequencer and the
+    vectors in its tail were never used. An animated effect does enter it, with a tail
+    that has no tracks and no position for them, and the client asserts on a FixedArray.
+
+    So animated effects wait. Fifteen of the warrior's have no animation, and those are
+    the ones served.
+    """
+    from dsor.skills import by_id
+
+    assert not effects.by_id("skill_frenzyshout_buff_lifeleech").animated
     for name in (
         "debuff_cc_stun",
         "debuff_dot_poison",
         "skill_warshout_buff_movementspeed",
         "skill_laceratingstrike_debuff_armor",
     ):
-        assert effects.by_id(name).start_sequence, name
+        assert effects.by_id(name).animated, name
+
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.animated_effects = False
+    served = {
+        entry.effect for entry in world._entries(by_id("warshout"), victim=False)
+    }
+    assert "skill_warshout_buff_damage" in served
+    assert "skill_warshout_buff_movementspeed" not in served, "animated, held back"
+
+    # And the switch lets them through for whoever wants to retest the sequencer.
+    world.rules.animated_effects = True
+    served = {
+        entry.effect for entry in world._entries(by_id("warshout"), victim=False)
+    }
+    assert "skill_warshout_buff_movementspeed" in served
+
+
+def test_what_survives_the_filters_is_still_worth_having():
+    """The life leech, warshout's damage buffs and battlecry's three debuffs."""
+    from dsor.skills import by_id
+
+    world, sender = a_player()
+    world.rules.force_effects = True
+    world.rules.animated_effects = False
+
+    assert {
+        e.effect for e in world._entries(by_id("frenzyshout"), victim=False)
+    } == {"skill_frenzyshout_buff_lifeleech"}
+    assert {
+        e.effect for e in world._entries(by_id("warshout"), victim=False)
+    } == {
+        "skill_warshout_buff_damage",
+        "skill_warshout_buff_angrystrike",
+        "skill_warshout_buff_mightybash",
+    }
+    assert {
+        e.effect for e in world._entries(by_id("battlecry"), victim=True)
+    } == {
+        "skill_battlecry_debuff_movementspeed",
+        "skill_battlecry_debuff_resistance",
+        "skill_battlecry_debuff_attackspeed",
+    }

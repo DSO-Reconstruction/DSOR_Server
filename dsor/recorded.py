@@ -954,27 +954,25 @@ IN_ELEMENT_PARAMETERS = EFFECT_PARAMETERS_BIT - EFFECT_ELEMENT_BIT
 #: the count, so a modifier that reads only $0 gets it and the rest stay zero.
 EFFECT_PARAMETERS = 5
 
-#: The 8-bit field just past the parameter array, and the single bit before it.
+#: The 8-bit field just past the parameter array, and the bit before it.
 #:
-#: It reads 2 in the recording, and 2 is what crashed the client the moment a
-#: *sequenced* effect was sent:
+#: **Not a track index. A length discriminator.** It reads 2 in the recording, and
+#: writing 0 there desynchronised the client's parse: it read the first effect of a
+#: two-effect message correctly and the second as
+#: ``costume_halloween_2023_pumpkin_helmet_angry_warrior``, then found a garbage actor
+#: id and reported "invalid command ending in multi command 79".
 #:
-#:     Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
-#:     expression: this->elements && (index >= 0) && (index < this->size)
+#: The disassembly says why, and it was there to be read before the experiment:
 #:
-#: The recorded effect is a0001_tutorial_heal_on_low_health and it has no sequence at
-#: all -- no StartSequence, no animation -- so the client never entered the sequencer
-#: path and never used this field as an index. Every effect worth sending does have
-#: one: debuff_cc_stun plays stun_loop, debuff_dot_poison plays poisoned_loop and
-#: poisoned_tick, skill_warshout_buff_movementspeed plays warrior05_loop,
-#: skill_laceratingstrike_debuff_armor plays warrior_armordamage. Those enter the path,
-#: index a FixedArray with the 2 copied out of an effect that had no tracks at all, and
-#: assert.
+#:     cmp byte ptr [rbx + 0x38], 0
+#:     cmp dword ptr [rbx + 0x3c], -1     ; skip the vector block entirely
+#:     cmp dword ptr [rbx + 0x3c], 0      ; two vectors or three
 #:
-#: So it is written as zero: the first track of a non-empty array rather than the third
-#: of an array that may hold one. That is a reading the crash supports and nothing
-#: proves -- the field could be a count or a stack size instead -- which is why it is a
-#: named constant and why ``track_index`` can put the recorded value back.
+#: ``[rbx+0x3c]`` is this field, and it chooses how many float3 vectors follow. Change
+#: it and the element changes length, so every element after it lands at the wrong bit.
+#:
+#: So it is copied verbatim and there is no option to do otherwise. The earlier
+#: sequencer crash it was meant to fix is a different problem in the same tail.
 IN_ELEMENT_TRACK = IN_ELEMENT_PARAMETERS + 32 * EFFECT_PARAMETERS + 1
 IN_ELEMENT_TRACK_BITS = 8
 
@@ -1122,7 +1120,6 @@ def status_effects_message(
     entries: list[tuple[int, list[float], int, float]],
     actor: bytes,
     state: bytes | None = None,
-    track_index: int = 0,
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
@@ -1177,10 +1174,6 @@ def status_effects_message(
                 IN_ELEMENT_PARAMETERS + 32 * index,
                 int.from_bytes(struct.pack("<f", value), "little"),
                 32,
-            )
-        if track_index is not None:
-            _write_bits(
-                element, IN_ELEMENT_TRACK, track_index, IN_ELEMENT_TRACK_BITS
             )
         for index in range(EFFECT_ELEMENT_BITS):
             bits.append((element[index >> 3] >> (7 - (index & 7))) & 1)

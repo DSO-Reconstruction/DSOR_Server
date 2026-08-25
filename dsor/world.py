@@ -190,6 +190,13 @@ class Rules:
     #: debuff_dot_poison both read C:0.0. This server has no talents, so faithfully
     #: they never fire. A testing switch, not fidelity, which is why it is off.
     force_effects: bool = False
+    #: Whether to send effects the client animates. Off, because the element's tail is
+    #: copied from an effect that has no animation at all, so an animated one sends the
+    #: sequencer into a FixedArray it cannot index. Fifteen of the warrior's effects
+    #: have no animation and those work — the life leech, warshout's damage buffs,
+    #: battlecry's three debuffs. The stun, the poison, the movement-speed buff and the
+    #: armour break all have one, and all wait for the tail to be understood.
+    animated_effects: bool = False
     #: Which class's skills a modifier may name. One class per world for now, because
     #: this server serves one character.
     character_class: str = "warrior"
@@ -1363,6 +1370,7 @@ class World:
             for entry in candidates
             if (found := effects.by_id(entry.effect)) is not None
             and found.servable(self.class_skills)
+            and (self.rules.animated_effects or not found.animated)
         )
 
     @property
