@@ -1653,10 +1653,30 @@ def serve(
                     continue
                 service = services[key.fileobj]
                 raw, sender = service.socket.recvfrom(2048)
-                # No blanket try/except here on purpose: during protocol
-                # bring-up a silent exception is indistinguishable from a client
-                # that stopped answering, and that costs days.
-                service.handle(raw, sender)
+                # Caught, and *loudly*. The original note here said there was no
+                # blanket try/except on purpose, because during protocol bring-up a
+                # silent exception is indistinguishable from a client that stopped
+                # answering, and that costs days. That reasoning stands and this
+                # keeps it: the traceback and the offending datagram both go to the
+                # log at ERROR, so nothing is hidden.
+                #
+                # What changed is the cost of the alternative. One unexpected byte
+                # took the whole server down mid-session — a movement record reading
+                # 0x59 in a field this server insisted could only be 0 or 0x40, which
+                # was a client correctly reporting a 40% movement buff. Losing every
+                # connected player to one bad message is worse than carrying on with
+                # a loud complaint, and a crash during play-testing hides everything
+                # that would have come after it.
+                try:
+                    service.handle(raw, sender)
+                except Exception:
+                    log.exception(
+                        "%s: %s sent %d bytes this server could not handle: %s",
+                        service.name,
+                        sender,
+                        len(raw),
+                        raw.hex(" "),
+                    )
             now = time.monotonic()
             if now >= next_tick:
                 next_tick = now + 1.0 / tick_hz

@@ -51,8 +51,17 @@ POSITION_SIZE = 6
 #: Body length of the client's movement message (0x8B, opcode 0x005F).
 CLIENT_MOVEMENT_SIZE = 15
 
-#: Value of byte 6 while the character is moving. The only other value observed
-#: is 0, and byte 6 is never anything else.
+#: Byte 6 is a **speed**, not a flag, and zero means standing still.
+#:
+#: 0x40 is the walking speed and for a long time it was the only non-zero value in
+#: any capture, so this was modelled as a two-valued flag and anything else was
+#: refused outright. That refusal took the server down the first time a status effect
+#: actually worked: a warrior under warshout's 40% movement buff reported 0x59, and
+#: 0x40 x 1.4 is 89.6 -- 0x59 is 89. The client had applied the buff and was saying
+#: so, and the decoder called it impossible.
+#:
+#: So the name is kept for the walking speed it is, and any non-zero value means
+#: moving.
 MOVING = 0x40
 
 #: Bytes 12..14. Constant across 21,259 messages from three independent sessions,
@@ -134,6 +143,10 @@ class ClientMovement:
     """
 
     position: Position
+    #: Byte 6, the character's own speed. 0x40 walking, 0 standing still, and higher
+    #: under a movement buff -- 0x59 for a warrior under warshout, which is 0x40 times
+    #: 1.4. Kept as the raw byte because it is the raw byte that carries the buff.
+    speed: int
     moving: bool
     direction: tuple[int, int]
     #: Byte 9. Advances by a few units per message *even while stationary*, so it
@@ -155,12 +168,10 @@ def decode_client_movement(body: bytes) -> ClientMovement:
         raise ValueError(
             f"client movement body is {CLIENT_MOVEMENT_SIZE} bytes, got {len(body)}"
         )
-    flag = body[6]
-    if flag not in (0, MOVING):
-        raise ValueError(f"unexpected move flag {flag:#02x}; only 0 and 0x40 seen")
     return ClientMovement(
         position=decode_position(body, 0),
-        moving=flag == MOVING,
+        speed=body[6],
+        moving=body[6] != 0,
         direction=(body[7], body[8]),
         tick=body[9],
         counter=body[10],
@@ -174,7 +185,7 @@ def encode_client_movement(movement: ClientMovement) -> bytes:
     return b"".join(
         [
             encode_position(movement.position),
-            bytes([MOVING if movement.moving else 0]),
+            bytes([movement.speed]),
             bytes(movement.direction),
             bytes([movement.tick, movement.counter, movement.unknown]),
             movement.trailer,

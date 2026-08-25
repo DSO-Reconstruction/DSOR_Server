@@ -276,6 +276,7 @@ def test_the_facing_comes_from_the_body_byte_not_the_movement_byte():
 
     at_rest = ClientMovement(
         position=Position(100, 0, 200),
+        speed=0,
         moving=False,
         direction=(0, 185),  # the shape 128,389 real records take
         tick=7,

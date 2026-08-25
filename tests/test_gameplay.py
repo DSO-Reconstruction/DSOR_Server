@@ -98,13 +98,41 @@ def test_position_read_past_the_end_is_refused():
         decode_position(b"\x00\x01\x02")
 
 
-def test_unknown_move_flag_is_refused():
-    """Only 0 and 0x40 were ever seen. Anything else means the layout shifted, and
-    quietly treating it as "not moving" would hide that."""
+def test_byte_six_is_a_speed_and_a_buffed_one_is_accepted():
+    """It was modelled as a flag with two values, and that took the server down.
+
+    0x40 walking and 0 standing still were the only values in any capture, so anything
+    else was refused outright. Then a status effect worked for the first time: a
+    warrior under warshout's 40% movement buff reported 0x59, and 0x40 times 1.4 is
+    89.6 -- 0x59 is 89. The client had applied the buff and was saying so in every
+    movement record, and the decoder called it impossible and raised.
+
+    So the crash was the evidence the buff had landed.
+    """
     body = bytearray(encode_position(Position(1, 2, 3)) + bytes(9))
-    body[6] = 0x20
-    with pytest.raises(ValueError, match="move flag"):
-        decode_client_movement(bytes(body))
+
+    body[6] = 0x59
+    buffed = decode_client_movement(bytes(body))
+    assert buffed.speed == 0x59
+    assert buffed.moving, "moving, and faster than walking"
+    assert round(0x40 * 1.4) == 0x5A and int(0x40 * 1.4) == 0x59
+
+    body[6] = 0x40
+    walking = decode_client_movement(bytes(body))
+    assert walking.speed == 0x40 and walking.moving
+
+    body[6] = 0
+    still = decode_client_movement(bytes(body))
+    assert still.speed == 0 and not still.moving
+
+
+def test_a_speed_survives_a_round_trip():
+    """The speed is re-encoded as itself, not flattened back to 0x40."""
+    body = bytearray(encode_position(Position(1, 2, 3)) + bytes(9))
+    for speed in (0, 0x40, 0x59, 0xFF):
+        body[6] = speed
+        movement = decode_client_movement(bytes(body))
+        assert encode_client_movement(movement) == bytes(body), hex(speed)
 
 
 def test_wrong_body_length_is_refused():
