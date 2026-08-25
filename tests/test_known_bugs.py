@@ -1391,3 +1391,35 @@ def test_death_is_final_until_something_revives_you():
     world.pending_hits.append((0.0, here, creature.actor))
     world.land_hits()
     assert victim.health == 0.0, "the dead are not killed twice"
+
+
+def test_a_creature_with_no_attack_never_strikes():
+    """The phantom damage at the spawn point had a name.
+
+    a0001_tutorial_movement_target stands eight units from where a player arrives and
+    its only skill is monster_selfkill: a practice dummy that kills itself, with no
+    attack at all. Serving every creature the same strike and letting it chase meant
+    the dummy walked over and hit, invisibly. The undead mage champion lists no skills
+    either.
+
+    A creature now strikes only with what its own blueprint gives it.
+    """
+    from dsor.mapdata import MONSTER_SKILLS, attack_skill
+
+    assert MONSTER_SKILLS["a0001_tutorial_movement_target"] == [("monster_selfkill", 1)]
+    assert attack_skill("a0001_tutorial_movement_target") is None
+    assert attack_skill("a0001_champion_undead_mage_01") is None
+    assert attack_skill("a0001_gen_anderworld_creature") == 440
+    # The healing champion has two skills and the first usable one is taken.
+    assert attack_skill("a0001_champion_anderworld_creature_healing") == 440
+    assert attack_skill("nothing_like_it") is None
+
+    from dsor.mapdata import SPAWN_POINTS, servable_points
+    from dsor.recorded import monster_library
+    from dsor.world import World
+
+    world = World()
+    world.populate_from_map(servable_points(set(monster_library())), 12.0)
+    dummies = [c for c in world.creatures.values() if c.attack_skill is None]
+    assert dummies, "the dummy and the mage are in the map's table"
+    assert all(c.blueprint for c in dummies)

@@ -92,3 +92,48 @@ def servable_points(library: set[str]) -> list[tuple[str, float, float, float]]:
     the two minions, and getting those needs a capture in which they appear.
     """
     return [point for point in SPAWN_POINTS if point[0] in library]
+
+#: What each blueprint can actually do, from ``_Template_Monster.Skills``.
+#:
+#: This is what stopped the phantom damage at the spawn point. The tutorial's
+#: movement target stands eight units from where a player arrives, and its only skill
+#: is ``monster_selfkill`` — it is a practice dummy that kills itself, with no attack
+#: at all. Serving every creature the same strike and letting it chase meant the dummy
+#: walked over and hit, invisibly and unanswerably. The undead mage champion has no
+#: skills listed either.
+#:
+#: So a creature strikes only if its own blueprint gives it something to strike with.
+MONSTER_SKILLS: dict[str, list[tuple[str, int]]] = {
+    'a0001_champion_anderworld_creature_healing': [('AnderworldCreatureStrike', 2), ('AnderworldCreatureShot', 1)],
+    'a0001_champion_anderworld_creature_openexit': [('AnderworldCreatureStrike', 2), ('AnderworldCreatureShot', 1)],
+    'a0001_champion_undead_mage_01': [],
+    'a0001_gen_anderworld_creature': [('AnderworldCreatureStrike', 1)],
+    'a0001_gen_anderworld_creature_1st_encounter': [('AnderworldCreatureStrike', 1)],
+    'a0001_gen_anderworld_creature_1st_loot': [('AnderworldCreatureStrike', 1)],
+    'a0001_gen_anderworld_creature_2nd_loot': [('AnderworldCreatureStrike', 1)],
+    'a0001_gen_anderworld_creature_healthglobe': [('AnderworldCreatureStrike', 1)],
+    'a0001_normal_anderworld_minion_01': [],
+    'a0001_tutorial_movement_target': [('monster_selfkill', 1)],
+}
+
+#: The wire index of each skill those blueprints name. Zero-based, as the wire wants:
+#: ``angrystrike`` is row 1839 and the client sends 1838.
+SKILL_IDS: dict[str, int] = {
+    'AnderworldCreatureShot': 439,
+    'AnderworldCreatureStrike': 440,
+    'monster_selfkill': 1356,
+}
+
+#: Skills that are not an attack, whatever else they are.
+NOT_AN_ATTACK = frozenset({"monster_selfkill"})
+
+
+def attack_skill(blueprint: str) -> int | None:
+    """The wire index of the skill *blueprint* attacks with, or None if it cannot."""
+    for name, _level in MONSTER_SKILLS.get(blueprint, ()):
+        if name in NOT_AN_ATTACK:
+            continue
+        found = SKILL_IDS.get(name)
+        if found is not None:
+            return found
+    return None

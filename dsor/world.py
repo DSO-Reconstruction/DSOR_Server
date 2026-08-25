@@ -60,6 +60,7 @@ from dsor.gameplay import (
     with_motion,
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
+from dsor.mapdata import attack_skill
 from dsor.recorded import (
     combat_ready_mobs,
     entity_descriptions,
@@ -243,6 +244,10 @@ class Creature:
     #: Where the map says it stands, in the description frame. Kept because that is
     #: the frame a description carries, and converting loses precision.
     described_at: tuple[float, float, float] | None = None
+    #: The wire index of the skill it strikes with, or None if its blueprint gives it
+    #: none. The tutorial's movement target has only monster_selfkill, and the undead
+    #: mage champion has nothing at all — neither should ever hit anybody.
+    attack_skill: int | None = None
     #: Whether the client has been sent its description. Until it has, the client
     #: has no entity for the actor and nothing addressed to it can be drawn.
     described: bool = False
@@ -435,6 +440,7 @@ class World:
                 max_health=max_health,
                 blueprint=blueprint,
                 described_at=(x, elevation, y),
+                attack_skill=attack_skill(blueprint),
             )
         self._place_from_descriptions()
 
@@ -978,6 +984,12 @@ class World:
         if position is None:
             return
         def near(actor: bytes) -> bool:
+            creature = self.creature(actor)
+            if creature is not None and creature.blueprint and not creature.attack_skill:
+                # No attack in its own blueprint, so it never strikes. The movement
+                # target's only skill is monster_selfkill and it stands eight units
+                # from where a player arrives: it walked over and hit, invisibly.
+                return False
             where = self.wire_position(actor)
             return where is not None and (
                 position.distance_to(where) <= self.rules.creature_hit_range * WORLD
@@ -1048,7 +1060,10 @@ class World:
             TargetSkill(
                 attacker=int.from_bytes(attacker, "little"),
                 target=int.from_bytes(PLAYER_ACTOR, "little"),
-                skill_id=self.rules.creature_skill,
+                skill_id=(
+                    (self.creature(attacker).attack_skill if self.creature(attacker) else None)
+                    or self.rules.creature_skill
+                ),
                 heading=heading,
                 start_tick=now + self.rules.skill_lead,
                 hit_frame=self.rules.creature_hit_frame,
