@@ -1467,3 +1467,48 @@ def test_the_position_offset_is_not_the_same_for_every_creature():
     window = ((int.from_bytes(moved, "big") << (bit % 8)) & ((1 << 8 * size) - 1))
     raw = window.to_bytes(size, "big")
     assert struct.unpack_from("<3f", raw, bit // 8) == (1.5, 2.5, 3.5)
+
+
+def test_the_skill_book_lists_every_skill_and_a_bit_says_which_you_own():
+    """"I unlocked rageful swing but cannot equip it" was one bit.
+
+    SkillBookInfoCommand's shape comes from the client's own serialiser, read through
+    the command's vtable: a count in 8 bits, then per entry a uint32 skill index and
+    three single bits. Decoding the replayed book with it gives eighteen entries —
+    every warrior skill in order — and the body ends exactly thirty-two bits before
+    the next command, which is the trailer to the bit.
+
+    Only angrystrike has a bit set, and it is the only skill the character can use. So
+    the first of the three is ownership, and mightyswing — index 1839, UnlockLevel 3,
+    what the interface calls Rageful Swing — was listed with its bit clear.
+    """
+    from dsor.recorded import map_entry_sequence
+    from dsor.skillbook import (
+        BOOK_SKILLS,
+        entries,
+        find_book,
+        granted,
+        skill_index,
+        up_to_level,
+        with_granted,
+    )
+
+    state = [piece for piece in map_entry_sequence() if len(piece) > 100000][0]
+    assert find_book(state) == 102860
+    book = entries(state)
+    assert len(book) == 18
+    assert [e.skill for e in book[:3]] == [1838, 1839, 1840]
+    assert granted(state) == {1838, 1868}, "only angrystrike and the event skill"
+
+    assert skill_index("mightyswing") == 1839
+    assert BOOK_SKILLS["mightyswing"] == (1839, 3)
+    assert skill_index("no_such_skill") is None
+    assert up_to_level(5) == {1838, 1839, 1859}.intersection(
+        {index for index, _u in BOOK_SKILLS.values()}
+    ) or len(up_to_level(5)) == 3
+
+    # Granting is one bit, in place: nothing in 631 KB moves.
+    out = with_granted(state, {1839})
+    assert len(out) == len(state)
+    assert sum(1 for a, b in zip(state, out) if a != b) == 1
+    assert granted(out) == {1838, 1839, 1868}

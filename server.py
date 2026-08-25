@@ -62,6 +62,7 @@ from dsor.combat import (
 from dsor.world import Rules, World
 from dsor.console import Console
 from dsor.mapdata import SPAWN_POINTS, servable_points
+from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -330,6 +331,8 @@ class Service:
         #: What the world does, and what it currently is. Rules are set once from
         #: the command line; state changes every tick.
         self.rules = Rules()
+        #: The player state with the skill book patched, built once.
+        self._granted_state: bytes | None = None
         self.world = World(rules=self.rules)
         #: Wire recorder, or None. Shared between services so one file holds the
         #: whole session across all three tiers, in one frame numbering.
@@ -806,6 +809,36 @@ class Service:
                 connection.elapsed_ms() // GAME_TICK_MS
             )
 
+    def _with_granted_skills(self, state: bytes) -> bytes:
+        """The player state, with the skill book's ownership bits set.
+
+        One bit per skill, in place, so nothing in a 631 KB message moves. Cached
+        because patching it on every login would mean walking it again for nothing.
+        """
+        wanted: set[int] = set()
+        for name in self.rules.granted_skills:
+            found = skill_index(name)
+            if found is None:
+                log.warning("%s: no skill named %r in the book", self.name, name)
+            else:
+                wanted.add(found)
+        if self.rules.grant_up_to_level:
+            wanted |= up_to_level(self.rules.grant_up_to_level)
+        if not wanted:
+            return state
+        if self._granted_state is None:
+            self._granted_state = with_granted(state, wanted)
+            log.info(
+                "%s: granted %d skill(s) in the book: %s",
+                self.name,
+                len(wanted),
+                ", ".join(sorted(
+                    name for name, (index, _u) in BOOK_SKILLS.items()
+                    if index in wanted
+                )),
+            )
+        return self._granted_state
+
     def _announce_vicinity(self, connection: Connection, sender) -> None:
         """Tell the client which actors are near it.
 
@@ -1180,6 +1213,8 @@ class Service:
             # says otherwise, and it is the authority.
             mapped = any(c.blueprint for c in self.world._ready().creatures.values())
             for index, piece in enumerate(map_entry_sequence()):
+                if index == 2:
+                    piece = self._with_granted_skills(piece)
                 if mapped and index == 4:
                     # The recorded vicinity announcement names the six creatures of
                     # the session it came from. Sent alongside the map's own spawn
@@ -1371,6 +1406,8 @@ def serve(
     mob_template: str | None = None,
     mob_swap: str | None = None,
     map_spawns: bool = False,
+    granted_skills: list[str] | None = None,
+    grant_up_to_level: int = 0,
     kill_experience: int = 17,
     mob_chase: bool = True,
     mob_speed: int | None = None,
@@ -1445,6 +1482,8 @@ def serve(
         service.rules.mob_first_command = mob_first_command
         service.rules.mob_template = mob_template
         service.rules.mob_swap = mob_swap
+        service.rules.granted_skills = list(granted_skills or [])
+        service.rules.grant_up_to_level = grant_up_to_level
         if map_spawns and role == "map":
             usable = servable_points(set(monster_library()))
             service.world.populate_from_map(usable, mob_health)
@@ -1648,6 +1687,21 @@ def main() -> None:
         default=17,
         metavar="N",
         help="experience awarded per kill, 0 for none. A real award carried 17",
+    )
+    parser.add_argument(
+        "--grant-skill",
+        dest="granted_skills",
+        metavar="NAME",
+        action="append",
+        help="mark a skill as owned in the replayed book. Repeat or comma-separate. "
+        "mightyswing is what the interface calls Rageful Swing",
+    )
+    parser.add_argument(
+        "--grant-skills-to-level",
+        type=int,
+        default=0,
+        metavar="N",
+        help="grant every listed skill a character of level N has unlocked",
     )
     parser.add_argument(
         "--map-spawns",
@@ -1886,6 +1940,11 @@ def main() -> None:
         mob_template=args.mob_template,
         mob_swap=args.mob_swap,
         map_spawns=args.map_spawns,
+        granted_skills=[
+            name for entry in (args.granted_skills or [])
+            for name in entry.split(",") if name
+        ],
+        grant_up_to_level=args.grant_skills_to_level,
         kill_experience=args.kill_experience,
         mob_chase=args.mob_chase,
         mob_speed=args.mob_speed,

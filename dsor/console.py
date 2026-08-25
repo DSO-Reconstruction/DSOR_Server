@@ -168,18 +168,70 @@ class Console:
         return f"drops: {len(wanted)} blueprint(s) per kill"
 
     def _do_xp(self, amount: str) -> str:
-        grant = int(amount)
-        touched = 0
-        for player in self.service.world.inhabitants():
-            player.experience += grant
-            touched += 1
-        return f"granted {grant} to {touched} player(s); it shows on the next kill"
+        """Grant experience and tell the client at once.
+
+        An earlier version only moved the number and left the client to find out on
+        the next kill, which made it useless for testing the thing it was for.
+        """
+        return self._grant(int(amount))
 
     def _do_level(self, level: str) -> str:
-        value = int(level)
+        """Put the player at the floor of *level*, experience and all.
+
+        Setting the level alone leaves the bar describing a different character: the
+        client is told a level and a pair of thresholds together, so both have to move.
+        """
+        from dsor.combat import level_bounds
+
+        floor, _ceiling = level_bounds(int(level))
+        lines = []
         for player in self.service.world.inhabitants():
-            player.level = value
-        return f"level set to {value}; damage follows on the next blow"
+            player.experience = floor
+            lines.append(self._announce(player))
+        return "\n".join(lines) or "nobody in the world"
+
+    def _grant(self, amount: int) -> str:
+        lines = []
+        for player in self.service.world.inhabitants():
+            player.experience += amount
+            lines.append(self._announce(player))
+        return "\n".join(lines) or "nobody in the world"
+
+    def _announce(self, player) -> str:
+        """Send the client this player's experience, level and damage."""
+        from dsor.combat import (
+            damage_at,
+            encode_player_level,
+            encode_xp_changed,
+            hit_points_at,
+            level_bounds,
+            level_for,
+        )
+
+        world = self.service.world
+        actor = int.from_bytes(world.PLAYER_ACTOR, "little") if hasattr(
+            world, "PLAYER_ACTOR"
+        ) else int.from_bytes(bytes([0x15, 0x00, 0x01, 0x00]), "little")
+        level = level_for(player.experience)
+        levelled = level != player.level
+        player.level = level
+        messages = [
+            (
+                player.address,
+                encode_xp_changed(
+                    player.experience, actor, level=level, levelled=levelled
+                ),
+            )
+        ]
+        if levelled:
+            messages.append((player.address, encode_player_level(level, actor)))
+        self.service._ship(messages)
+        floor, ceiling = level_bounds(level)
+        return (
+            f"{player.address} level {level} xp {player.experience} "
+            f"({floor}-{ceiling}) damage {damage_at(level)} "
+            f"hp {hit_points_at(level)}"
+        )
 
     def _do_revive(self) -> str:
         """Bring the dead back, and top up the living.

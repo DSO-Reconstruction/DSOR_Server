@@ -210,6 +210,12 @@ class Rules:
     mob_swap: str | None = None
     #: Send the recorded vicinity announcement before a creature is asked about.
     announce_vicinity: bool = True
+    #: Skills to mark as owned in the replayed skill book, by name, or a level to
+    #: grant everything unlocked at. The book lists all eighteen warrior skills and a
+    #: single bit per entry says which the character has — a skill the client shows as
+    #: unlocked but refuses to place is one whose bit is clear.
+    granted_skills: list[str] = field(default_factory=list)
+    grant_up_to_level: int = 0
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
     #: Whether to answer a pickup at all.
