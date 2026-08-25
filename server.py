@@ -61,7 +61,7 @@ from dsor.combat import (
 )
 from dsor.world import Rules, World
 from dsor.console import Console
-from dsor.mapdata import SPAWN_POINTS
+from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
 from dsor.gameplay import (
@@ -868,11 +868,15 @@ class Service:
             # bits from its end, so both can be rewritten without understanding what
             # lies between.
             library = monster_library()
-            base = library.get(mapped.blueprint) or next(iter(library.values()))
+            base = library.get(mapped.blueprint)
+            if base is None:
+                log.warning(
+                    "%s: no whole description for %s, refusing to rename one",
+                    self.name, mapped.blueprint,
+                )
+                return
             try:
                 built = with_actor(base, handle)
-                if mapped.blueprint not in library:
-                    built = with_template(built, mapped.blueprint)
                 built = with_library_spawn(built, *mapped.described_at)
             except ValueError as error:
                 log.warning("%s: %s", self.name, error)
@@ -1432,9 +1436,17 @@ def serve(
         service.rules.mob_template = mob_template
         service.rules.mob_swap = mob_swap
         if map_spawns and role == "map":
-            service.world.populate_from_map(SPAWN_POINTS, mob_health)
-            service.rules.mobs = len(SPAWN_POINTS)
-            log.info("map spawns: %d creature(s)", len(SPAWN_POINTS))
+            usable = servable_points(set(monster_library()))
+            service.world.populate_from_map(usable, mob_health)
+            service.rules.mobs = len(usable)
+            missing = sorted(
+                {name for name, *_ in SPAWN_POINTS}
+                - {name for name, *_ in usable}
+            )
+            log.info(
+                "map spawns: %d of %d point(s); no whole description for %s",
+                len(usable), len(SPAWN_POINTS), ", ".join(missing) or "nothing",
+            )
         service.rules.kill_experience = kill_experience
         service.rules.mob_chase = mob_chase
         if mob_speed is not None:

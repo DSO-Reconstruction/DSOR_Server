@@ -73,3 +73,22 @@ NPCS: list[tuple[str, float, float, float]] = [
 def blueprints() -> set[str]:
     """Every creature blueprint the map wants spawned."""
     return {name for name, *_ in SPAWN_POINTS}
+
+
+def servable_points(library: set[str]) -> list[tuple[str, float, float, float]]:
+    """The spawn points whose blueprint this server has a whole description for.
+
+    Renaming a description to a blueprint it was not captured as does **not** work,
+    and this project had already written that down before building on top of it: the
+    command's second field is a composite array, copied verbatim from whichever
+    creature was captured, so the name resolves and the appearance does not belong to
+    it. Worse, an arbitrary donor was being picked — sometimes a creature from the
+    third map — and the client answered with a decode failure:
+
+        Could not decode command ID 42 ... DecodeCommand returned invalid ptr
+
+    So the unservable points are dropped rather than served wrong. Twenty-two of the
+    twenty-five, including all three champions; what is lost is the health globe and
+    the two minions, and getting those needs a capture in which they appear.
+    """
+    return [point for point in SPAWN_POINTS if point[0] in library]

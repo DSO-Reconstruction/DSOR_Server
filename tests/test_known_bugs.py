@@ -1339,9 +1339,25 @@ def test_the_world_can_be_filled_from_the_map_data():
         assert creature.position.x or creature.position.y
         assert actor_id(creature.record) == creature.actor
 
-    # Seven of the ten blueprints are extracted; the rest are served by renaming.
+    # Only blueprints with a whole description are servable. Renaming one does not
+    # work — the command's second field is a composite array belonging to whichever
+    # creature was captured — and serving a renamed arbitrary donor drew a decode
+    # failure from the client: "Could not decode command ID 42".
+    from dsor.mapdata import servable_points
+
     library = set(monster_library())
     assert len(blueprints() & library) == 7
+    usable = servable_points(library)
+    assert len(usable) == 20, len(usable)
+    assert all(name in library for name, *_ in usable)
+    assert sum(1 for name, *_ in usable if "champion" in name) == 2
+    # Lost: the health globe, the minions, and one of the three champions.
+    lost = {name for name, *_ in SPAWN_POINTS} - {name for name, *_ in usable}
+    assert lost == {
+        "a0001_champion_anderworld_creature_openexit",
+        "a0001_gen_anderworld_creature_healthglobe",
+        "a0001_normal_anderworld_minion_01",
+    }
 
 
 def test_death_is_final_until_something_revives_you():
