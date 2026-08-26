@@ -193,11 +193,14 @@ class Rules:
     #: Whether a skill's status effects are served at all. The buff is a rewritten
     #: recording, so if it ever upsets the client this is the switch.
     status_effects: bool = True
-    #: Whether to apply the effect entries whose chance is zero. Those are gated
-    #: behind an item, a talent or a set bonus, and the warrior's stun and poison are
-    #: among them — laceratingstrike's debuff_cc_stun and mightybash's
-    #: debuff_dot_poison both read C:0.0. This server has no talents, so faithfully
-    #: they never fire. A testing switch, not fidelity, which is why it is off.
+    #: Whether to apply the effect entries whose chance is zero.
+    #:
+    #: Off, and a capture settled why. Those entries are gated behind an item, a talent
+    #: or a set bonus, and a capture of the live service in which every warrior skill
+    #: was cast contains none of them -- debuff_cc_stun and debuff_dot_poison are not
+    #: sent for laceratingstrike or mightybash there either. Forcing them puts effects
+    #: on an actor that no real server ever puts there, which is exactly what "tu mets
+    #: n'importe quel effet n'importe ou" describes.
     force_effects: bool = False
     #: Whether to send effects the client animates — the stun, the poison, the
     #: movement-speed buff, the armour break.
@@ -544,6 +547,15 @@ class World:
     _next_effect: int = 0
     #: Effect sets already reported as unservable, so the log says it once.
     _said: set = field(default_factory=set)
+    #: The effect list last sent for each actor. A status effect command is an *event*,
+    #: not a state to repeat: the live service sent 91 of them for 37 skills in one
+    #: session, two or three per cast, where this server sent one per actor per tick.
+    #:
+    #: Ten a second is not merely wasteful, it is wrong -- the client tries to *add*
+    #: each one and says so: "Failed to add actor effect
+    #: (debuff_dot_poison_triggerExplosion). Effect already present!", once per tick,
+    #: for every chained effect.
+    _last_sent: dict[bytes, tuple] = field(default_factory=dict)
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
     stepped_tick: int = 0
@@ -1681,7 +1693,14 @@ class World:
         from dsor.recorded import status_effects_message
 
         if not live:
+            self._last_sent.pop(holder_actor, None)
             return None
+        # Only when it changes. Which effects are on an actor is the state; sending it
+        # again does not restate it, it asks for it a second time.
+        signature = tuple(sorted((wire, seconds) for wire, _p, seconds in live))
+        if self._last_sent.get(holder_actor) == signature:
+            return None
+        self._last_sent[holder_actor] = signature
         # Every effect goes, not only the ones a capture holds an element for. One with
         # no captured element is built from the corpus constants -- see
         # dsor.recorded.built_element -- which reproduces 22 of the 26 real elements of

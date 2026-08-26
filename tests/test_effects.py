@@ -1222,3 +1222,76 @@ def test_every_effect_can_be_served_now_even_without_a_capture():
     )
     assert status_effect_count(sent) == 2
     assert status_effect_indices(sent) == wires
+
+
+def test_an_effect_command_is_sent_on_change_and_not_every_tick():
+    """"Failed to add actor effect ... Effect already present!", ten times a second.
+
+    Which effects are on an actor is state, and sending it again does not restate it --
+    the client tries to *add* each one and refuses the duplicate, loudly, for every
+    chained effect a skill pulls in.
+
+    The live service sent 91 status effect commands for 37 casts in one session, two or
+    three per cast. This server sent one per actor per tick.
+    """
+    from dsor.recorded import status_effect_count, tick_state
+    from dsor.skills import wire_of
+
+    world, sender = a_player()
+    world.player(sender).server_tick = 41230
+    world.resolve_attack(sender, wire_of("warshout"))
+    world._drain()
+
+    recorded = tick_state()
+    sent = 0
+    for step in range(100):
+        world.player(sender).server_tick = 41230 + step
+        world._tick_pair(sender)
+        for _address, payload in world._drain():
+            if payload[1:3] != b"\x4f\x00" or payload == recorded:
+                continue
+            if status_effect_count(payload) > 0:
+                sent += 1
+    assert sent == 1, f"{sent} commands for one unchanging set of effects"
+
+
+def test_a_change_is_sent_and_an_expiry_clears_the_memory():
+    import time
+
+    from dsor.recorded import status_effect_count, tick_state
+    from dsor.skills import wire_of
+
+    world, sender = a_player()
+    player = world.player(sender)
+    player.server_tick = 41230
+    recorded = tick_state()
+
+    def effect_commands():
+        world._tick_pair(sender)
+        return [
+            payload
+            for _a, payload in world._drain()
+            if payload[1:3] == b"\x4f\x00"
+            and payload != recorded
+            and status_effect_count(payload) > 0
+        ]
+
+    world.resolve_attack(sender, wire_of("warshout"))
+    world._drain()
+    assert len(effect_commands()) == 1, "the new set goes out"
+    assert effect_commands() == [], "and is not repeated"
+
+    # A second skill changes the set, so it goes out again.
+    world.resolve_attack(sender, wire_of("frenzyshout"))
+    world._drain()
+    assert len(effect_commands()) == 1
+
+    # And when everything expires the memory is cleared, so the next cast is a change.
+    player.buffs = [
+        (wire, parameters, time.monotonic() - 1.0, seconds)
+        for wire, parameters, _expires, seconds in player.buffs
+    ]
+    assert effect_commands() == [], "nothing running, nothing sent"
+    world.resolve_attack(sender, wire_of("warshout"))
+    world._drain()
+    assert len(effect_commands()) == 1, "a fresh cast is a change again"

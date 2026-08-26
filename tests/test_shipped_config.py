@@ -246,3 +246,20 @@ def test_warshouts_movement_buff_survives_the_shipped_rules(rules):
     from dsor import effects
 
     assert element(effects.wire_of("skill_warshout_buff_movementspeed")) is not None
+
+
+def test_the_config_does_not_force_effects_no_real_server_sends(rules):
+    """force_effects applies the entries whose chance is zero.
+
+    Those are gated behind an item, a talent or a set bonus, and a capture of the live
+    service in which every warrior skill was cast contains none of them: debuff_cc_stun
+    and debuff_dot_poison are not sent for laceratingstrike or mightybash there either.
+
+    Forcing them puts effects on actors no real server puts them on, and the client
+    answers with "Failed to add actor effect ... Effect already present!" for the chained
+    ones. A testing switch, and not for the file somebody is asked to play on.
+    """
+    assert not rules.force_effects, (
+        "force_effects is on, which applies talent-gated effects the live service does "
+        "not send"
+    )
