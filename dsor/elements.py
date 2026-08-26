@@ -59,6 +59,10 @@ ELEMENTS: dict[int, tuple[int, bytes]] = {
     6212: (477, bytes.fromhex('4418f6000100301a0000190000003619000000000000fa000000640000000800010010500000000000000000000000000000000000000000000007f8')),  # item_qaizah_rh_weapon_saber_spawn
 }
 
+#: The element lent to an effect that has none of its own. See above for
+#: why it is borrowed rather than built. Taken from warrior_warshout_block_strength_buff.
+DONOR: tuple[int, bytes] = (669, bytes.fromhex('1c14490101000000000019000000361e000000000000000000006400000008000100305000000cdccccbe000040c00000803e0000000000000000814d4c84a0000064215abba51fce8129a100001020b62d475f0'))
+
 
 def element(wire: int) -> tuple[int, bytes] | None:
     """The real element for *wire*, or None if no capture contained one."""

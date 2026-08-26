@@ -156,6 +156,36 @@ ELEMENTS: dict[int, tuple[int, bytes]] = {{''')
         span, bits = found[index]
         print(f"    {index}: ({span}, bytes.fromhex({bits.hex()!r})),  # {names.get(index, '?')}")
     print("}")
+
+    # A donor: the element to lend to an effect that has none of its own.
+    #
+    # Building one from corpus constants was the previous answer and it is weaker than
+    # this. The vector-carrying form is the majority -- 93 of 119 real elements -- and
+    # its constants differ from the other form's: field 2 is 75 in 58 of them where the
+    # 477-bit form is unanimously 25, and fields 1 and 5 are zero in 63 of them where
+    # the other form carries real ticks. Choosing between those by counting is how the
+    # last three readings of these fields went wrong.
+    #
+    # So an effect with no element of its own borrows a real one whole. Every field this
+    # server does not understand -- the vectors, field 2, the flags -- then carries a
+    # value the live service actually sent, and only the index, the ticks and the
+    # parameters are written.
+    #
+    # The one chosen is the commonest vector-carrying element in the capture.
+    donors = [
+        (index, span, bits)
+        for index, (span, bits) in found.items()
+        if span == 669
+    ]
+    if donors:
+        index, span, bits = donors[0]
+        print()
+        print("#: The element lent to an effect that has none of its own. See above for")
+        print(f"#: why it is borrowed rather than built. Taken from {names.get(index, '?')}.")
+        print(f"DONOR: tuple[int, bytes] = ({span}, bytes.fromhex({bits.hex()!r}))")
+    else:
+        print()
+        print("DONOR: tuple[int, bytes] | None = None")
     print('''
 
 def element(wire: int) -> tuple[int, bytes] | None:

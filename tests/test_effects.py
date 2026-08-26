@@ -1303,3 +1303,103 @@ def test_a_change_is_sent_and_an_expiry_clears_the_memory():
     world.resolve_attack(sender, wire_of("warshout"))
     world._drain()
     assert len(effect_commands()) == 1, "a fresh cast is a change again"
+
+
+def test_an_effect_without_an_element_borrows_a_real_one_whole():
+    """Building from corpus constants was the previous answer, and this is stronger.
+
+    The vector-carrying form is the majority -- 93 of 119 real elements -- and its
+    constants differ from the 477-bit form's: field 2 is 75 in 58 of them where the other
+    is unanimously 25, and fields 1 and 5 are zero in 63 where the other carries real
+    ticks. Choosing between those by counting is how the last three readings of these
+    fields went wrong.
+
+    So the element is borrowed whole and only the index, the ticks, the caster, the
+    instance and the parameters are written. Everything else -- the vectors above all --
+    carries a value the live service sent.
+    """
+    import struct
+
+    from dsor.elements import DONOR, element
+    from dsor.recorded import borrowed_element, element_parameters
+    from raknet.bitstream import BitReader
+
+    wire = effects.wire_of("skill_laceratingstrike_debuff_armor")
+    assert element(wire) is None, "this one has no element of its own"
+
+    span, donor = DONOR
+    assert span == 669, "the majority form, which carries vectors"
+
+    lent_span, lent = borrowed_element(
+        wire, 41230, 5.0, [-0.5, 0.0, 0.0, 0.0, 0.0],
+        source=b"\x08\x00\x01\x00", instance=0x00010200,
+    )
+    assert lent_span == span
+
+    def read(bits):
+        reader = BitReader(bits, 0)
+        index = reader.read_uint(16)
+        integers = [reader.read_uint(32) for _ in range(8)]
+        flags = [reader.read_bool() for _ in range(4)]
+        count = reader.read_uint(32)
+        parameters = [
+            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+            for _ in range(count)
+        ]
+        reader.read_bool()
+        tail = reader.read_uint(8)
+        vectors = [
+            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+            for _ in range(6)
+        ]
+        return index, integers, flags, parameters, tail, vectors
+
+    was = read(donor)
+    now = read(lent)
+    assert now[0] == wire, "the index is the borrower's"
+    assert now[1][3] == 41230 and now[1][1] == 41230 + 125, "and the ticks"
+    assert now[1][7] == int.from_bytes(b"\x08\x00\x01\x00", "little"), "and the caster"
+    assert now[3][0] == pytest.approx(-0.5), "and the parameters"
+    # Everything else is the donor's, the vectors included.
+    assert now[2] == was[2], "the flags"
+    assert now[4] == was[4] == 2, "the tail, which says vectors follow"
+    assert now[5] == was[5], "the vectors"
+    assert now[1][2] == was[1][2], "field 2, whichever of 25, 50 or 75 it is"
+    assert now[1][6] == was[1][6] == 100
+
+
+def test_every_promised_effect_of_every_warrior_skill_goes_out():
+    """The end of it: what the descriptions name is what is sent."""
+    from dsor.recorded import status_effect_count, status_effect_indices
+    from dsor.skills import of_class
+
+    world, sender = a_player()
+    world.player(sender).level = 104
+    world.player(sender).server_tick = 41230
+
+    for skill in of_class("warrior"):
+        promised = effects.promised_by(skill.wire, "UserEffect")
+        if not promised:
+            continue
+        world.player(sender).buffs = []
+        world._last_sent.clear()
+        world.player(sender).resource = world.resource_pool(sender)
+        world.resolve_attack(sender, skill.wire)
+        world._drain()
+        world._tick_pair(sender)
+        state = next(
+            (p for _a, p in world._drain() if p[1:3] == b"\x4f\x00"), None
+        )
+        assert state is not None, skill.id
+        sent = {effects.effect(w).id for w in status_effect_indices(state)}
+        # Everything promised that changes something. The two that do not are taunt
+        # auras carrying no modifier at all -- like defiance's, their work is in the
+        # aura mechanism and cannot be put on an actor.
+        wanted = {
+            name
+            for name in promised
+            if (found := effects.by_id(name)) is not None and found.changes_anything
+        }
+        assert wanted <= sent, f"{skill.id}: {wanted - sent} missing"
+        for name in set(promised) - wanted:
+            assert name.endswith("_aura"), f"{skill.id}: {name} dropped and not an aura"

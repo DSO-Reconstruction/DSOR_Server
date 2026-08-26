@@ -1234,6 +1234,67 @@ def element_parameters(bits: bytes) -> tuple[int, int]:
     return reader.position, count
 
 
+def borrowed_element(
+    wire: int,
+    start_tick: int,
+    seconds: float,
+    parameters: list[float] | None = None,
+    source: bytes | None = None,
+    instance: int = 0,
+) -> tuple[int, bytes] | None:
+    """A real element lent to *wire*, which has none of its own.
+
+    Building one from corpus constants was the previous answer and this is stronger.
+    The vector-carrying form is the majority -- 93 of 119 real elements -- and its
+    constants differ from the other form's: field 2 is 75 in 58 of them where the
+    477-bit form is unanimously 25, and fields 1 and 5 are zero in 63 of them where the
+    other form carries real ticks. Choosing between those by counting is exactly how
+    the last three readings of these fields went wrong.
+
+    So the element is borrowed whole and only the index, the ticks, the caster, the
+    instance handle and the parameters are written. The vectors, field 2 and the flags
+    carry values the live service sent.
+    """
+    from dsor.elements import DONOR
+
+    if DONOR is None:
+        return None
+    span, bits = DONOR
+    out = bytearray(bits)
+    _write_bits(out, IN_ELEMENT_INDEX, wire, EFFECT_INDEX_BITS)
+    span_ticks = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
+    for field, value in (
+        (EFFECT_START_TICK_FIELD, start_tick),
+        (EFFECT_END_TICK_FIELD, start_tick + span_ticks),
+        (EFFECT_DURATION_FIELD, span_ticks),
+    ):
+        _write_bits(out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32)
+    if source is not None:
+        _write_bits(
+            out,
+            IN_ELEMENT_FIELDS + 32 * EFFECT_SOURCE_FIELD,
+            int.from_bytes(source, "little"),
+            32,
+        )
+    if instance:
+        _write_bits(
+            out,
+            IN_ELEMENT_FIELDS + 32 * EFFECT_INSTANCE_FIELD,
+            instance & 0xFFFFFFFF,
+            32,
+        )
+    if parameters:
+        at, count = element_parameters(bits)
+        for index, value in enumerate(parameters[:count]):
+            _write_bits(
+                out,
+                at + 32 * index,
+                int.from_bytes(struct.pack("<f", value), "little"),
+                32,
+            )
+    return span, bytes(out)
+
+
 def real_element(
     wire: int,
     start_tick: int,
@@ -1420,11 +1481,13 @@ def status_effects_message(
             copy = real_element(wire, start_tick, seconds, parameters)
         else:
             # No capture holds one, which is true of all but 34 of the game's 6703
-            # effects. Built from the corpus constants instead.
-            copy = built_element(
+            # effects. A real element is lent to it instead.
+            lent = borrowed_element(
                 wire, start_tick, seconds, parameters, source, instance
             )
-            span = BUILT_ELEMENT_BITS
+            if lent is None:
+                continue
+            span, copy = lent
             if instance:
                 instance += 1
         for index in range(span):
