@@ -70,6 +70,7 @@ from dsor.quickslots import QUICK_SLOTS, decode as decode_quick_slots
 from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
+from dsor.titles import title_of
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
@@ -1465,7 +1466,11 @@ class Service:
                 "%s: %s used %s (%s) aiming %s via %s",
                 self.name,
                 sender,
-                known.id if known else f"unknown skill {wire}",
+                # The name the player sees, then the id. Logging only the id is how
+                # "Dragon Hide" came to be investigated as `defiance` -- which is
+                # actually called "Banner of War" -- for weeks.
+                f"{title_of(known.id)} ({known.id})" if known
+                else f"unknown skill {wire}",
                 f"{known.targeting} {known.hit_range:g}u x{known.damage_modifier:g}"
                 if known
                 else "no template",

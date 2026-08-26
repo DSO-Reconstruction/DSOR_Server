@@ -258,9 +258,14 @@ def test_all_of_a_skills_effects_travel_now():
     from dsor.skills import by_id
 
     world, sender = a_player()
-    # granted_by is now the tooltip's own list, so ctfdropflag and the item and talent
-    # entries never enter it: warshout's description names exactly four.
-    assert len(effects.granted_by(wire_of("warshout"))) == 4
+    # granted_by is the union of the tooltip's list and the C:1.0 entries, so it also
+    # names ctfdropflag -- certain, and PvP capture-the-flag machinery. The union is
+    # what recovers Ground Breaker's stun and Bloody Wild Swing's bleed, which the
+    # tooltip is silent about; the noise it lets in is dropped by servable() one step
+    # later, which is why the server's own list below is still exactly four.
+    assert len(effects.granted_by(wire_of("warshout"))) == 5
+    assert "ctfdropflag" in {e.effect for e in effects.granted_by(wire_of("warshout"))}
+    assert not effects.by_id("ctfdropflag").servable(world.class_skills)
     granted = world._entries(by_id("warshout"), victim=False)
     assert [entry.effect for entry in granted] == [
         "skill_warshout_buff_movementspeed",

@@ -1303,8 +1303,9 @@ def real_element(
     start_tick: int,
     seconds: float,
     parameters: list[float] | None = None,
+    instance: int = 0,
 ) -> bytes | None:
-    """A real element for *wire*, with only its three tick fields rewritten.
+    """A real element for *wire*, with its ticks, parameters and instance rewritten.
 
     None when no capture contains one, which is the honest answer: three attempts at
     *building* an element each got a field wrong, and each wrong reading was a
@@ -1327,6 +1328,27 @@ def real_element(
     ):
         _write_bits(
             out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
+        )
+
+    # The instance, which has to be written and was not. Field 0 identifies one
+    # application of an effect, and the client's HandleStatusEffectCommand searches the
+    # actor's existing effects for one whose +0x10c matches it: on a hit it calls
+    # UpdateTimingOfEffectAtIndex instead of adding anything.
+    #
+    # Copied from the captures the field *collides*. debuff_cc_stun and
+    # skill_laceratingstrike_debuff_armor both carry 66058; warshout's angrystrike and
+    # mightybash buffs both carry 66057; frenzyshout's life leech shares 66066 with one
+    # of angrystrike's; twenty effects share 65546. So Ground Breaker sent a stun and an
+    # armour break, the client added the first and read the second as "extend the one
+    # you already have", and exactly one of the two ever appeared. Every skill granting
+    # more than one effect was quietly losing some -- which is what "les effets sont
+    # melanges" describes.
+    #
+    # Zero leaves the captured value alone, for callers that only want the ticks.
+    if instance:
+        _write_bits(
+            out, IN_ELEMENT_FIELDS + 32 * EFFECT_INSTANCE_FIELD,
+            instance & 0xFFFFFFFF, 32,
         )
 
     # And the parameters, from the skill's own template rather than the capture's.
@@ -1431,7 +1453,7 @@ def built_element(
 
 
 def status_effects_message(
-    entries: list[tuple[int, list[float], int, float]],
+    entries: list[tuple],
     actor: bytes,
     state: bytes | None = None,
     stack: int | None = None,
@@ -1441,8 +1463,13 @@ def status_effects_message(
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
-    *entries* is (effect wire, parameters, start tick, seconds) apiece. An empty list
-    says "nothing is on you", which is how an effect is taken away.
+    *entries* is (effect wire, parameters, start tick, seconds) apiece, optionally with
+    a fifth field: that element's own instance handle. An empty list says "nothing is on
+    you", which is how an effect is taken away.
+
+    The instance has to differ between entries. The client identifies an application of
+    an effect by it, and two entries carrying the same one mean "extend that one", not
+    "add both" -- see :func:`real_element`.
 
     Built field by field now, not copied. The five integers whose meaning is not
     established keep the values a real server sent -- 65546, 0, 0, 100, 0 -- and the
@@ -1490,7 +1517,12 @@ def status_effects_message(
     push(0, 32)
     sent = 0
     travelled: list[int] = []
-    for wire, parameters, start_tick, seconds in entries:
+    for entry in entries:
+        # Four fields, or five with the element's own instance handle. Per entry rather
+        # than one for the message: two effects in the same 0x004F must not share it,
+        # or the client reads the second as an update of the first.
+        wire, parameters, start_tick, seconds = entry[:4]
+        own = entry[4] if len(entry) > 4 else 0
         # A real element, spliced. The parameters are the capture's own too: rewriting
         # them is safe -- their layout is established -- but the effect's own recorded
         # values are what the live service paired with the rest of the element, so they
@@ -1498,7 +1530,7 @@ def status_effects_message(
         found = real_bits(wire)
         if found is not None:
             span, _stored = found
-            copy = real_element(wire, start_tick, seconds, parameters)
+            copy = real_element(wire, start_tick, seconds, parameters, own)
         elif not lend:
             # Nothing real to send, so nothing is sent. Silence is honest here and a
             # borrowed element is not: the client answers a forgery exactly the way it
@@ -1507,7 +1539,7 @@ def status_effects_message(
             continue
         else:
             lent = borrowed_element(
-                wire, start_tick, seconds, parameters, source, instance
+                wire, start_tick, seconds, parameters, source, own or instance
             )
             if lent is None:
                 continue

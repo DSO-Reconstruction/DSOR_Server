@@ -1068,12 +1068,26 @@ def _certain(
         return ()
     out = []
     for entry in parse_entries(packed[which]):
-        # The tooltip decides, when the skill has one. C: is not the chance it looks
-        # like: see PROMISED above.
-        if promised:
-            if entry.effect not in promised:
-                continue
-        elif not (entry.certain or gated):
+        # The union of the two statements the client makes, not one or the other.
+        #
+        # An entry applies if the tooltip names it *or* its chance is 1.0. Both are
+        # the client's own words about the same skill and they cover different
+        # ground: the tooltip names effects whose C: reads 0.0 (Ground Breaker's
+        # armour break, Rageful Swing's damage debuff), and C:1.0 marks effects the
+        # tooltip does not bother to mention (Ground Breaker's *stun*, Bloody Wild
+        # Swing's bleed, Charge's stun).
+        #
+        # Making the tooltip the sole authority was a half-fix that then subtracted.
+        # It was introduced to stop C: being read as a chance -- which it is not --
+        # and it did stop that, but it also threw away every certain effect the
+        # tooltip is silent about: five of the warrior's, including the stun that is
+        # the whole point of Ground Breaker. Adding on the tooltip's word is right;
+        # removing on its silence is not.
+        #
+        # The noise this lets in is already handled downstream: ctfdropflag carries a
+        # PVPEventModifier and fails servable(), and skill_battlecry_impact_visualizer
+        # changes nothing and fails changes_anything.
+        if not (gated or entry.certain or entry.effect in promised):
             continue
         found = BY_ID.get(entry.effect)
         if found is None or not found.changes_anything:

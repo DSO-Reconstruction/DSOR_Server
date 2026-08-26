@@ -69,6 +69,7 @@ from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
 from dsor.afflictions import UNAFFECTED, Condition, condition_of
 from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
+from dsor.titles import title_of
 from dsor.trust import Claims, movement_is_plausible, off_cooldown
 from dsor.recorded import (
     combat_ready_mobs,
@@ -561,6 +562,9 @@ class World:
     #: How many effect applications this world has handed out. See
     #: :meth:`_effect_instance`.
     _next_effect: int = 0
+    #: (actor, effect wire) -> the instance handle naming that application. See
+    #: _instance_of; copying the captured handle instead is what mixed effects up.
+    _instances: dict[tuple[bytes, int], int] = field(default_factory=dict)
     #: Effect sets already reported as unservable, so the log says it once.
     _said: set = field(default_factory=set)
     #: The effect list last sent for each actor. A status effect command is an *event*,
@@ -1303,7 +1307,7 @@ class World:
                 "%s: %s used %s (%s, x%.2f), whose effect this server does not model",
                 self.name,
                 sender,
-                used.id,
+                f"{title_of(used.id)} ({used.id})",
                 used.targeting,
                 used.damage_modifier,
             )
@@ -1867,9 +1871,20 @@ class World:
     ) -> list[tuple[int, tuple[float, ...], float]]:
         """Whatever is still running on *holder*, dropping what has expired."""
         now = time.monotonic()
-        kept = [entry for entry in self._held(holder) if entry[2] > now]
-        if len(kept) != len(self._held(holder)):
+        held = self._held(holder)
+        kept = [entry for entry in held if entry[2] > now]
+        if len(kept) != len(held):
             self._set_held(holder, kept)
+            # And forget the instance handles of what has ended, so the next cast is a
+            # new application rather than an extension of one already over. Keeping
+            # them would make a re-cast arrive as "update the timing of the effect you
+            # no longer have", which the client answers by doing nothing.
+            actor = getattr(holder, "actor", None)
+            if actor is not None:
+                running = {entry[0] for entry in kept}
+                for wire, _p, _e, _s in held:
+                    if wire not in running:
+                        self._instances.pop((actor, wire), None)
         return [(wire, parameters, seconds) for wire, parameters, _, seconds in kept]
 
     def condition(self, holder) -> Condition:
@@ -1894,6 +1909,25 @@ class World:
             holder.buffs = value
         else:
             holder.effects = value
+
+    def _instance_of(self, actor: bytes, wire: int) -> int:
+        """The handle naming *wire*'s application to *actor*: one per pair, and stable.
+
+        Stable matters in both directions. Two different effects must never share a
+        handle -- the client reads a repeat as "extend the one you have" and drops the
+        second, which is how a stun and an armour break arrived as one effect. And one
+        effect re-sent must keep its handle, so a second message about it updates the
+        timing instead of stacking a duplicate the client then complains about.
+
+        Cleared when the effect stops running, in live_effects, so a fresh cast is a
+        fresh application rather than an extension of one that already ended.
+        """
+        key = (actor, wire)
+        held = self._instances.get(key)
+        if held is None:
+            held = self._effect_instance()
+            self._instances[key] = held
+        return held
 
     def _effect_instance(self) -> int:
         """A handle for one application of an effect.
@@ -1952,7 +1986,13 @@ class World:
         # the warrior's 27 promised effects, against the one that used to work.
         return status_effects_message(
             [
-                (wire, list(parameters), tick, seconds)
+                (
+                    wire,
+                    list(parameters),
+                    tick,
+                    seconds,
+                    self._instance_of(holder_actor, wire),
+                )
                 for wire, parameters, seconds in live
             ],
             holder_actor,
