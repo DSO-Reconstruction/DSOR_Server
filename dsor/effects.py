@@ -746,6 +746,66 @@ SKILL_EFFECTS: dict[int, tuple[str, str]] = {
     1945: ('', ''),  # ultimate_windmill_def
 }
 
+#: What each skill's tooltip says it does: (kind, effect id) per skill wire
+#: index. UserEffect on the caster, VictimEffect on the victim,
+#: LocationEffect on the ground. The authority on which effects a skill has.
+PROMISED: dict[int, tuple[tuple[str, str], ...]] = {
+    1906: (('LocationEffect', 'skill_grenade_damage_aura'),),  # Grenade
+    1903: (('LocationEffect', 'skill_heavyshot_explosion_aura'),),  # HeavyShot
+    1914: (('LocationEffect', 'skill_hoverjump_buff_damage_aura'),),  # HoverJump
+    1900: (('UserEffect', 'skill_irondwarf_transform'),),  # IronDwarf
+    1918: (('UserEffect', 'skill_irondwarf_buff_frenzy'),),  # IronDwarfPrimarySkill
+    1912: (('UserEffect', 'skill_jackinthebox_minion'),),  # JackInTheBox
+    1328: (('VictimEffect', 'mage_burn'),),  # MageGuardianFireballShot
+    1904: (('VictimEffect', 'skill_positionbomb_debuff_armor'),),  # PositionBombShot
+    1915: (('LocationEffect', 'skill_ShrapnelShot_damage_aura'),),  # ShrapnelShot
+    1901: (('UserEffect', 'skill_simpleshot_buff_frenzy_attackspeed'),),  # SimpleShot
+    1911: (('UserEffect', 'skill_steamconductor_buff_heal_OverTime'), ('UserEffect', 'skill_steamconductor_buff_movementspeed')),  # SteamConductor
+    1907: (('LocationEffect', 'skill_trail_aura'),),  # Trail
+    1908: (('UserEffect', 'dwarf_summon_visualizer_CombatTurret'),),  # TurretCombat
+    1913: (('UserEffect', 'dwarf_summon_visualizer_CoveringFireTurret'),),  # TurretCoveringFire
+    1910: (('UserEffect', 'dwarf_summon_visualizer_MachineGunTurret'),),  # TurretMachineGun
+    1909: (('UserEffect', 'dwarf_summon_visualizer_TeslaTurret'),),  # TurretTesla
+    1716: (('VictimEffect', 'ranger_mark'), ('VictimEffect', 'woodwraith_root')),  # WoodwraithRootStomp
+    1889: (('UserEffect', 'skill_adrenalin_buff_movementspeed'),),  # adrenalin
+    1838: (('UserEffect', 'skill_angrystrike_buff_frenzy_attackspeed'), ('UserEffect', 'skill_angrystrike_buff_frenzy_movementspeed')),  # angrystrike
+    1876: (('VictimEffect', 'skill_arcanecharge_heal_on_hit'),),  # arcanecharge
+    1872: (('LocationEffect', 'skill_arcanevortex_aura'),),  # arcanevortex
+    1845: (('UserEffect', 'skill_battlecry_taunt_aura'), ('VictimEffect', 'skill_battlecry_debuff_attackspeed'), ('VictimEffect', 'skill_battlecry_debuff_movementspeed'), ('VictimEffect', 'skill_battlecry_debuff_resistance')),  # battlecry
+    1890: (('VictimEffect', 'skill_birdofprey_reduce_damage'),),  # birdofprey
+    1850: (('LocationEffect', 'skill_defiance_buff_creators_aura'), ('LocationEffect', 'skill_defiance_enemies_damage_buff_aura'), ('LocationEffect', 'skill_defiance_enemies_movement_aura')),  # defiance
+    589: (('VictimEffect', 'dwarf_all_cdreset'),),  # dwarf_CombatTowerTurret
+    591: (('LocationEffect', 'dwarf_coveringfire_aura'), ('VictimEffect', 'dwarf_coveringfire_armor_buff_talent'), ('VictimEffect', 'dwarf_coveringfire_faster_movement'), ('VictimEffect', 'dwarf_coveringfire_resistance_buff_talent')),  # dwarf_CoveringFireTurret
+    592: (('VictimEffect', 'dwarf_machinegun_reduce_damage'),),  # dwarf_MachineGunTurretSustained
+    593: (('UserEffect', 'dwarf_tesla_aura'),),  # dwarf_TeslaTurret
+    1852: (('LocationEffect', 'skill_earthquake_aura'), ('LocationEffect', 'skill_earthquake_shockwave_aura')),  # earthquake
+    1849: (('VictimEffect', 'skill_enragingleap_buff_attackspeed'),),  # enragingleap
+    1886: (('LocationEffect', 'skill_explosiveshot_explosion_aura'),),  # explosiveshot
+    1846: (('UserEffect', 'skill_frenzyshout_buff_armor'), ('UserEffect', 'skill_frenzyshout_buff_lifeleech'), ('UserEffect', 'skill_frenzyshout_buff_resistance')),  # frenzyshout
+    1859: (('VictimEffect', 'skill_frostnova_debuff_resist_ice'), ('VictimEffect', 'skill_frostnova_explosion_aura')),  # frostnova
+    1866: (('VictimEffect', 'skill_frostwind_buff_frostnova_damage'), ('VictimEffect', 'skill_frostwind_buff_iceball_damage')),  # frostwind
+    1897: (('UserEffect', 'skill_hornetcloud_aura'),),  # hornetcloud
+    1877: (('VictimEffect', 'skill_arcanecharge_heal_on_hit'), ('VictimEffect', 'skill_icecharge_buff_armor')),  # icecharge
+    1888: (('UserEffect', 'skill_jump_buff_attackspeed'),),  # jump
+    1848: (('VictimEffect', 'skill_laceratingstrike_debuff_armor'), ('VictimEffect', 'skill_laceratingstrike_debuff_resistance')),  # laceratingstrike
+    1861: (('VictimEffect', 'skill_lightningstrike_lightningnova_aura'),),  # lightningstrike
+    1855: (('VictimEffect', 'skill_magicmissile_heal_on_kill'),),  # magicmissile
+    1842: (('VictimEffect', 'skill_mighty360_debuff_taunt'),),  # mighty360
+    1885: (('VictimEffect', 'skill_mightyshot_buff_movement_speed'),),  # mightyshot
+    1894: (('VictimEffect', 'skill_mightystab_buff_attackspeed'),),  # mightystab
+    1839: (('VictimEffect', 'buff_resourceonhit'), ('VictimEffect', 'skill_mightyswing_debuff_reduce_damage')),  # mightyswing
+    1875: (('VictimEffect', 'skill_mindcontrol_effect'),),  # mindcontrol
+    1949: (('VictimEffect', 'minionskill_coveringfireturret_buff_armor'), ('VictimEffect', 'minionskill_coveringfireturret_buff_attackspeed'), ('VictimEffect', 'minionskill_coveringfireturret_buff_resistance')),  # minionskill_coveringfireturret
+    1947: (('VictimEffect', 'minionskill_machinegunturret_debuff_armor'),),  # minionskill_machinegunturret
+    1893: (('UserEffect', 'skill_packofwolves_minion'),),  # packofwolves
+    1847: (('VictimEffect', 'skill_seismicslam_debuff_armor'),),  # seismicslam
+    1854: (('UserEffect', 'skill_spikedshield_taunt_aura'), ('UserEffect', 'warrior_spikedShield_buff')),  # spikedShield
+    1898: (('UserEffect', 'skill_summontree_minion'),),  # summontree
+    1860: (('UserEffect', 'skill_teleport_buff_movementspeed'),),  # teleport
+    1844: (('UserEffect', 'skill_warshout_buff_angrystrike'), ('UserEffect', 'skill_warshout_buff_damage'), ('UserEffect', 'skill_warshout_buff_mightybash'), ('UserEffect', 'skill_warshout_buff_movementspeed')),  # warshout
+    1883: (('VictimEffect', 'skill_whirlwind_buff_skill_damage'),),  # whirlwind
+}
+
 
 #: Every effect by template id.
 BY_ID: dict[str, Effect] = {e.id: e for e in EFFECTS.values()}
@@ -764,6 +824,20 @@ def wire_of(name: str) -> int | None:
     return None if found is None else found.wire
 
 
+def promised_by(skill_wire: int, kind: str) -> tuple[str, ...]:
+    """The effect ids the skill's own tooltip names for *kind*.
+
+    ``UserEffect``, ``VictimEffect`` or ``LocationEffect``. Empty when the skill has no
+    token of that kind, which for a great many skills means it advertises no effect at
+    all -- mightybash's tooltip names only a damage range, so it promises no stun.
+    """
+    return tuple(
+        effect_id
+        for token_kind, effect_id in PROMISED.get(skill_wire, ())
+        if token_kind == kind
+    )
+
+
 def granted_by(skill_wire: int) -> tuple[Entry, ...]:
     """The effects the skill at *skill_wire* puts on its user.
 
@@ -771,12 +845,18 @@ def granted_by(skill_wire: int) -> tuple[Entry, ...]:
     skill's list is mostly entries with a chance of 0.0 -- item procs, talents,
     set bonuses -- so warshout names sixteen effects and grants three.
     """
-    return _certain(SKILL_EFFECTS.get(skill_wire), 0)
+    return _certain(
+        SKILL_EFFECTS.get(skill_wire), 0,
+        promised=promised_by(skill_wire, "UserEffect"),
+    )
 
 
 def inflicted_by(skill_wire: int) -> tuple[Entry, ...]:
     """The effects the skill at *skill_wire* puts on its victims."""
-    return _certain(SKILL_EFFECTS.get(skill_wire), 1)
+    return _certain(
+        SKILL_EFFECTS.get(skill_wire), 1,
+        promised=promised_by(skill_wire, "VictimEffect"),
+    )
 
 
 def anything_by(skill_wire: int, victim: bool = False) -> tuple[Entry, ...]:
@@ -793,13 +873,21 @@ def anything_by(skill_wire: int, victim: bool = False) -> tuple[Entry, ...]:
 
 
 def _certain(
-    packed: tuple[str, str] | None, which: int, gated: bool = False
+    packed: tuple[str, str] | None,
+    which: int,
+    gated: bool = False,
+    promised: tuple[str, ...] = (),
 ) -> tuple[Entry, ...]:
     if packed is None:
         return ()
     out = []
     for entry in parse_entries(packed[which]):
-        if not (entry.certain or gated):
+        # The tooltip decides, when the skill has one. C: is not the chance it looks
+        # like: see PROMISED above.
+        if promised:
+            if entry.effect not in promised:
+                continue
+        elif not (entry.certain or gated):
             continue
         found = BY_ID.get(entry.effect)
         if found is None or not found.changes_anything:

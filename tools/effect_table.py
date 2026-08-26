@@ -437,6 +437,43 @@ EFFECTS: dict[int, Effect] = {{}}''')
     for wire, sid, user, victim in grants:
         print(f"    {wire}: ({text(user)!r}, {text(victim)!r}),  # {sid}")
     print("}")
+
+    # What each skill's own tooltip says it does.
+    #
+    # This is the authority, and the C: field is not. A skill's effect list carries a
+    # chance that reads like one and is not: seismicslam's armour break, which its
+    # description names, is C:0.0, while the debuff_cc_stun it does *not* name is C:1.0
+    # -- and laceratingstrike is the other way round. Filtering on C therefore served
+    # the stun that is not promised and dropped the armour break that is, which is
+    # exactly the inversion that was reported twice.
+    #
+    # _Template_LocaleToken says which effect each piece of a description reads from,
+    # so a token of type SkillEffect names an effect the skill advertises. UserEffect
+    # goes on the caster, VictimEffect on what it hits, LocationEffect on the ground --
+    # and that last one cannot be served at all without NewLocationEffectCommand.
+    tokens = db.execute(
+        "SELECT DISTINCT Param1Id, Param1Attr, Param2Id FROM _Template_LocaleToken"
+        " WHERE TokenType = 'SkillEffect' AND Param1Id <> '' AND Param2Id <> ''"
+    ).fetchall()
+    by_skill: dict[str, set] = {}
+    for skill, kind, effect_id in tokens:
+        by_skill.setdefault(skill, set()).add((kind, effect_id))
+    wire_of_skill = {
+        row[1]: row[0]
+        for row in db.execute("SELECT rowid - 1, Id FROM _Template_Skill")
+    }
+    print()
+    print("#: What each skill's tooltip says it does: (kind, effect id) per skill wire")
+    print("#: index. UserEffect on the caster, VictimEffect on the victim,")
+    print("#: LocationEffect on the ground. The authority on which effects a skill has.")
+    print("PROMISED: dict[int, tuple[tuple[str, str], ...]] = {")
+    for skill in sorted(by_skill):
+        wire = wire_of_skill.get(skill)
+        if wire is None:
+            continue
+        pairs = tuple(sorted(by_skill[skill]))
+        print(f"    {wire}: {pairs!r},  # {skill}")
+    print("}")
     print('''
 
 #: Every effect by template id.
@@ -456,6 +493,20 @@ def wire_of(name: str) -> int | None:
     return None if found is None else found.wire
 
 
+def promised_by(skill_wire: int, kind: str) -> tuple[str, ...]:
+    """The effect ids the skill's own tooltip names for *kind*.
+
+    ``UserEffect``, ``VictimEffect`` or ``LocationEffect``. Empty when the skill has no
+    token of that kind, which for a great many skills means it advertises no effect at
+    all -- mightybash's tooltip names only a damage range, so it promises no stun.
+    """
+    return tuple(
+        effect_id
+        for token_kind, effect_id in PROMISED.get(skill_wire, ())
+        if token_kind == kind
+    )
+
+
 def granted_by(skill_wire: int) -> tuple[Entry, ...]:
     """The effects the skill at *skill_wire* puts on its user.
 
@@ -463,12 +514,18 @@ def granted_by(skill_wire: int) -> tuple[Entry, ...]:
     skill's list is mostly entries with a chance of 0.0 -- item procs, talents,
     set bonuses -- so warshout names sixteen effects and grants three.
     """
-    return _certain(SKILL_EFFECTS.get(skill_wire), 0)
+    return _certain(
+        SKILL_EFFECTS.get(skill_wire), 0,
+        promised=promised_by(skill_wire, "UserEffect"),
+    )
 
 
 def inflicted_by(skill_wire: int) -> tuple[Entry, ...]:
     """The effects the skill at *skill_wire* puts on its victims."""
-    return _certain(SKILL_EFFECTS.get(skill_wire), 1)
+    return _certain(
+        SKILL_EFFECTS.get(skill_wire), 1,
+        promised=promised_by(skill_wire, "VictimEffect"),
+    )
 
 
 def anything_by(skill_wire: int, victim: bool = False) -> tuple[Entry, ...]:
@@ -485,13 +542,21 @@ def anything_by(skill_wire: int, victim: bool = False) -> tuple[Entry, ...]:
 
 
 def _certain(
-    packed: tuple[str, str] | None, which: int, gated: bool = False
+    packed: tuple[str, str] | None,
+    which: int,
+    gated: bool = False,
+    promised: tuple[str, ...] = (),
 ) -> tuple[Entry, ...]:
     if packed is None:
         return ()
     out = []
     for entry in parse_entries(packed[which]):
-        if not (entry.certain or gated):
+        # The tooltip decides, when the skill has one. C: is not the chance it looks
+        # like: see PROMISED above.
+        if promised:
+            if entry.effect not in promised:
+                continue
+        elif not (entry.certain or gated):
             continue
         found = BY_ID.get(entry.effect)
         if found is None or not found.changes_anything:

@@ -214,9 +214,18 @@ def test_the_switch_turns_the_whole_thing_off():
     assert status_effect_index(world._drain()[0][1]) == 1350
 
 
-def test_a_skill_that_grants_nothing_leaves_the_state_alone():
+def test_a_skill_whose_tooltip_promises_nothing_grants_nothing():
+    """mightybash is the example, and the answer to "je mets le headbut, le mob n'est
+    pas stun": its description names a damage range and no effect at all.
+
+    The C: field that made this server send a stun anyway is not the chance it looks
+    like -- seismicslam's armour break, which its description does name, is C:0.0 while
+    the stun it does not name is C:1.0.
+    """
+    assert effects.promised_by(wire_of("mightybash"), "VictimEffect") == ()
+    assert effects.promised_by(wire_of("mightybash"), "UserEffect") == ()
     world, sender = a_player()
-    world.resolve_attack(sender, wire_of("angrystrike"))
+    world.resolve_attack(sender, wire_of("mightybash"))
     assert world.player(sender).buffs == []
 
 
@@ -245,10 +254,9 @@ def test_all_of_a_skills_effects_travel_now():
     from dsor.skills import by_id
 
     world, sender = a_player()
-    # granted_by is the skill's own list, before this server decides what it can
-    # serve: it still holds ctfdropflag, a capture-the-flag flag with no place in a
-    # dungeon. The world's own filter is what settles the four.
-    assert len(effects.granted_by(wire_of("warshout"))) == 5
+    # granted_by is now the tooltip's own list, so ctfdropflag and the item and talent
+    # entries never enter it: warshout's description names exactly four.
+    assert len(effects.granted_by(wire_of("warshout"))) == 4
     granted = world._entries(by_id("warshout"), victim=False)
     assert [entry.effect for entry in granted] == [
         "skill_warshout_buff_movementspeed",
