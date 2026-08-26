@@ -1062,3 +1062,58 @@ def test_the_whole_path_sends_the_buff_with_the_sign_the_template_gives():
     count = reader.read_uint(32)
     first = struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
     assert first == pytest.approx(0.4), f"sent {first}, the template says 0.4"
+
+
+def test_dragon_hide_is_six_auras_and_none_of_them_heal():
+    """Asked three times whether defiance heals, and the answer is no, with evidence.
+
+    Following every effect reachable from defiance -- including the ones named by other
+    effects rather than by the skill, which an earlier check missed -- reaches 57 of them
+    and not one contains CurrHealthPoints. Its own six are all Groups=Aura and carry no
+    modifiers at all, so what they do lives in the aura mechanism and the numbers come
+    from the skill's own $0, $1 and $2:
+
+        skill_defiance_enemies_movement_aura        $0 = -0.4
+        skill_defiance_enemies_damage_buff_aura     $1 = 0.02, $2 = 0.05
+        skill_defiance_buff_creators_aura           $0 = -1.0
+
+    Which is why serving it through the actor's effect list does nothing: an aura is not
+    on an actor. It needs NewLocationEffectCommand 0x003C, and there is no encoder for
+    that.
+
+    The heal is a talent. Every healing effect in the warrior's tree says so in its own
+    name -- warrior_healing_talent, warrior_battlecry_healing_talent,
+    warrior_talent_ta_mighty360_heal, skill_spikedshield_heal -- and the one that is not
+    talent-named, warrior_block_heal, heals on a block that defiance does not grant: it
+    modifies no Block, no Armor and no Resistance anywhere.
+    """
+    from dsor.skills import wire_of
+
+    # Nothing lands on the actor, which is what this server can send.
+    assert effects.granted_by(wire_of("defiance")) == ()
+    assert effects.inflicted_by(wire_of("defiance")) == ()
+
+    for name in (
+        "skill_defiance_enemies_movement_aura",
+        "skill_defiance_enemies_damage_buff_aura",
+        "skill_defiance_buff_creators_aura",
+    ):
+        aura = effects.by_id(name)
+        assert aura is not None, name
+        assert aura.groups == "Aura", name
+        assert not aura.starts and not aura.ticks, f"{name} carries no modifier"
+        assert not aura.changes_anything, name
+
+    # And the heals are elsewhere, named for what gates them.
+    for name in (
+        "warrior_healing_talent",
+        "warrior_battlecry_healing_talent",
+        "warrior_talent_ta_mighty360_heal",
+    ):
+        healer = effects.by_id(name)
+        if healer is None:
+            continue
+        assert "CurrHealthPoints" in (
+            healer.start_modifiers + healer.tick_modifiers
+        ), name
+        assert "talent" in name
