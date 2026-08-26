@@ -27,7 +27,9 @@ save_every = 30.0
 [rules]
 start_level = 100
 grant_up_to_level = 100
-player_max = 6000
+# 0 means the level table: 225 at level 1, 450000 at 100. 6000 was a testing figure
+# chosen so a life leech had something to give back, and it read as being stuck at 6k.
+player_max = 0
 mob_first_command = true
 
 # What one peer may ask of the server, and what it is not taken at its word for.
@@ -58,3 +60,7 @@ drop_templates = [
 # figure, chosen so a player at 6000 health actually loses some and a life leech has
 # something to give back.
 creature_damage = 250.0
+# What the player hits for, overriding the level curve's 21000 at level 100. Forcing a
+# creature's health instead is what made the mobs look like they had none: the client
+# knows each one holds 24 from its own table, so 200000 is a figure it contradicts.
+mob_damage = 8.0

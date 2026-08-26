@@ -66,6 +66,7 @@ from dsor.console import Console
 from dsor import config
 from dsor import identity as whois
 from dsor.combat import decode_skill_use
+from dsor.quickslots import QUICK_SLOTS, decode as decode_quick_slots
 from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
@@ -403,6 +404,9 @@ class Service:
         #: every login, so a character saved under any of them is saved nowhere.
         self.store: Store | None = None
         self.who: dict[tuple[str, int], whois.Identity] = {}
+        #: What each peer last reported on its action bar, so a change is logged once
+        #: rather than a hundred and eighty times.
+        self._bar: dict[tuple[str, int], dict[int, str]] = {}
         #: How many 0x010B queries each endpoint has asked, since the two recorded
         #: answers differ and are not interchangeable.
         self.queries_seen: dict[tuple[str, int], int] = {}
@@ -1401,6 +1405,30 @@ class Service:
             self._set_clock(sender)
             self._ship(self.world.enter(sender))
             log.info("%s: %s entered the world at %s", self.name, sender, spawn)
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode == QUICK_SLOTS
+        ):
+            # Logged rather than answered. The live service never replies to one
+            # either -- 1991 from the client and not a single reply -- so the
+            # repetition is the client keeping the server informed, not retrying. What
+            # it says is worth seeing: a bar with one skill on it is why every other
+            # skill appeared not to work.
+            bar = decode_quick_slots(game.body)
+            if bar is not None and self._bar.get(sender) != bar.filled:
+                self._bar[sender] = bar.filled
+                log.info(
+                    "%s: %s has %d of %d quick slots filled: %s",
+                    self.name,
+                    sender,
+                    len(bar.filled),
+                    len(bar),
+                    ", ".join(f"{i}={n}" for i, n in sorted(bar.filled.items()))
+                    or "none",
+                )
             return
 
         if (
