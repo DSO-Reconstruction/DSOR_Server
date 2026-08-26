@@ -32,8 +32,19 @@ from dsor.gameplay import WALK_UNITS_PER_TICK, WORLD_SCALE
 #: Milliseconds in one game tick, as the movement codec uses.
 TICK_MS = 40.0
 
-#: Wire units a walking character covers in a second: six a tick, twenty-five ticks.
-WALK_UNITS_PER_SECOND = WALK_UNITS_PER_TICK * (1000.0 / TICK_MS)
+#: Wire units a *player* covers in a second, measured from their own records.
+#:
+#: Not WALK_UNITS_PER_TICK. That six is a creature's step, measured on creatures, and
+#: using it for the player made this check three to eight times too tight: 2506 real
+#: moving records give a median step of 57 wire units, p90 83, p99 142 and a largest of
+#: 1146. At twenty-five records a second the median is about 1425 units a second, where
+#: the creature figure said 150.
+#:
+#: Getting this wrong refused 670 legitimate moves in one session.
+PLAYER_STEP_MEDIAN = 57.0
+PLAYER_STEP_LARGEST = 1146.0
+RECORDS_PER_SECOND = 1000.0 / TICK_MS
+WALK_UNITS_PER_SECOND = PLAYER_STEP_MEDIAN * RECORDS_PER_SECOND
 
 #: How much faster than a walk a character is allowed to travel and still be believed.
 #:
@@ -44,9 +55,13 @@ WALK_UNITS_PER_SECOND = WALK_UNITS_PER_TICK * (1000.0 / TICK_MS)
 SPEED_CEILING = 3.0
 
 #: Wire units always allowed regardless of elapsed time, so that a burst of records
-#: arriving together after a stall is not read as a teleport. Roughly a third of a
-#: second of walking.
-LAG_SLACK = 50.0
+#: arriving together after a stall is not read as a teleport.
+#:
+#: The largest single step in 2506 real records. Any one record is therefore always
+#: allowed and what this bounds is *sustained* speed -- crossing the map -- rather than
+#: one odd step, which is the thing worth bounding and the thing that can be bounded
+#: without a navmesh.
+LAG_SLACK = PLAYER_STEP_LARGEST
 
 #: How long a leap or a charge is allowed to have moved the player, in seconds.
 #:

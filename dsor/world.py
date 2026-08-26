@@ -239,6 +239,12 @@ class Rules:
     #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
     #: the messages that says where the client put them.
     first_slot: int = 2
+    #: Whether an implausible move is *refused* as well as counted. Off, and the
+    #: reason is in accept_movement: the position this server keeps is the one it
+    #: echoes back, so refusing drags the client to a stale one and every honest record
+    #: after it measures as a jump. Correcting a player needs a model of where they
+    #: could be, and there is no collision data here.
+    refuse_movement: bool = False
     #: How far a player may be from an item and still pick it up, in world units.
     #: Ours: the client has an AutoPickupRange somewhere but not in _Globals, so this
     #: is a bound rather than the game's own.
@@ -1611,17 +1617,35 @@ class World:
         if movement_is_plausible(travelled, now - seen, allowance):
             player.position = position
             return True
+
         player.claims.offences += 1
-        log.warning(
-            "%s: %s claimed %.0f wire units in %.0f ms (offence %d); keeping %s",
-            self.name,
-            sender,
-            travelled,
-            (now - seen) * 1000.0,
-            player.claims.offences,
-            before,
-        )
-        return False
+        # Counted, and then **taken anyway** unless something is set that says
+        # otherwise. Refusing was worse than not checking at all.
+        #
+        # The position this server keeps is the one it echoes back in the next tick's
+        # entity update, so keeping a stale one drags the client to it. And once one
+        # record is refused the anchor is stale, so the next honest record measures as
+        # a huge jump and is refused too: 670 refusals in one session, the claimed
+        # distance shrinking each time as the client was pulled back. A rollback loop,
+        # caused entirely by the correction.
+        #
+        # There is no honest correction available here. Correcting a player needs a
+        # model of where they *could* be, and this server has no collision data and no
+        # navigation mesh -- it does not know a wall from a corridor. So the offence
+        # count is the evidence and the client keeps its position.
+        if player.claims.offences in (1, 10, 100) or player.claims.offences % 1000 == 0:
+            log.warning(
+                "%s: %s claimed %.0f wire units in %.0f ms (offence %d)",
+                self.name,
+                sender,
+                travelled,
+                (now - seen) * 1000.0,
+                player.claims.offences,
+            )
+        if self.rules.refuse_movement:
+            return False
+        player.position = position
+        return True
 
     def player_skills(self, sender: Address) -> set[int]:
         """Every skill this player actually has, by wire index.

@@ -40,9 +40,14 @@ def test_a_burst_after_a_stall_is_not_read_as_a_teleport():
     assert reachable(0.0) == LAG_SLACK
 
 
-def test_a_leap_buys_an_allowance_the_size_of_its_own_range():
-    """enragingleap has an attack range of 10 world units — 1280 wire units in one
-    step — so a plain speed check would refuse every leap in the game."""
+def test_a_leap_buys_an_allowance_for_sustained_travel():
+    """enragingleap crosses 10 world units, which is 1280 wire units in one step.
+
+    A single step of that size is allowed outright now, because the slack is the
+    largest step in 2506 real records — what this bounds is *sustained* speed, which is
+    the only thing boundable without a navigation mesh. The allowance still matters for
+    a leap followed immediately by running.
+    """
     from dsor.gameplay import WORLD_SCALE
     from dsor.skills import by_id
 
@@ -50,11 +55,14 @@ def test_a_leap_buys_an_allowance_the_size_of_its_own_range():
     assert leap.lands_where_it_ends and leap.attack_range == 10.0
 
     jump = leap.attack_range * WORLD_SCALE
-    assert not movement_is_plausible(jump, 0.04), "not without the allowance"
+    assert movement_is_plausible(jump, 0.04), "one step of any size is allowed"
 
+    # A leap and then half a second of running is not, without the allowance.
+    both = jump + WALK_UNITS_PER_SECOND * 0.5
+    assert not movement_is_plausible(both, 0.04)
     claims = Claims()
     claims.travel(leap.attack_range, now=100.0)
-    assert movement_is_plausible(jump, 0.04, claims.spend_allowance(100.0))
+    assert movement_is_plausible(both, 0.04, claims.spend_allowance(100.0))
 
 
 def test_an_allowance_expires():
@@ -103,16 +111,54 @@ def a_player_in_a_world():
     return service, world, sender
 
 
-def test_a_teleport_is_refused_and_the_last_believed_position_kept():
-    """It was "mover.position = moved.position", straight from the datagram."""
+def test_a_teleport_is_counted_and_then_taken_anyway():
+    """Refusing was worse than not checking, and this is why.
+
+    The position the server keeps is the one it echoes back in the next tick, so
+    keeping a stale one drags the client to it. And once one record is refused the
+    anchor is stale, so the next honest record measures as a huge jump and is refused
+    too: 670 refusals in one session, the claimed distance shrinking each time as the
+    client was pulled back. A rollback loop caused entirely by the correction.
+
+    There is no honest correction available: it needs a model of where the player
+    could be, and this server has no collision data and no navigation mesh.
+    """
     from dsor.gameplay import Position
 
     _service, world, sender = a_player_in_a_world()
     world.player(sender).seen_at = __import__("time").monotonic()
 
+    far = Position(50_000, 0, 50_000)
+    assert world.accept_movement(sender, far), "taken"
+    assert world.player(sender).position == far, "so nothing drags the client back"
+    assert world.player(sender).claims.offences == 1, "and counted"
+
+
+def test_refusing_can_be_switched_on_for_whoever_has_a_model():
+    from dsor.gameplay import Position
+
+    _service, world, sender = a_player_in_a_world()
+    world.rules.refuse_movement = True
+    world.player(sender).seen_at = __import__("time").monotonic()
     assert not world.accept_movement(sender, Position(50_000, 0, 50_000))
-    assert world.player(sender).position == Position(0, 0, 0), "kept"
-    assert world.player(sender).claims.offences == 1
+    assert world.player(sender).position == Position(0, 0, 0)
+
+
+def test_the_speed_bound_is_the_players_own_and_not_a_creatures():
+    """WALK_UNITS_PER_TICK is six, measured on creatures. Using it for the player made
+    this three to eight times too tight and refused 670 legitimate moves.
+
+    2506 real moving records: median step 57 wire units, p90 83, p99 142, largest 1146.
+    """
+    from dsor.trust import PLAYER_STEP_LARGEST, PLAYER_STEP_MEDIAN
+
+    assert PLAYER_STEP_MEDIAN == 57.0
+    assert WALK_UNITS_PER_SECOND == 57.0 * 25
+    # Every one of the refusals that produced the rollback loop now passes.
+    for travelled, ms in ((1200, 62), (532, 79), (258, 63), (146, 150), (142, 40)):
+        assert movement_is_plausible(travelled, ms / 1000.0), (travelled, ms)
+    # And the slack is the largest step seen, so any single record is allowed.
+    assert movement_is_plausible(PLAYER_STEP_LARGEST, 0.0)
 
 
 def test_an_ordinary_step_is_believed():
