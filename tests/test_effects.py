@@ -263,16 +263,19 @@ def test_all_of_a_skills_effects_travel_now():
     world._drain()
     world._tick_pair(sender)
     state = world._drain()[0][1]
-    # Of the four warshout grants, the capture contains a real element for two. Only
-    # those are sent, and the message says so rather than claiming four.
+    # All four go out: two spliced from the capture and two built from the corpus
+    # constants. Sending only what the capture held is what made three of warshout's
+    # four vanish.
     from dsor.recorded import servable_effects
 
-    have, missing = servable_effects(
+    have, built = servable_effects(
         effects.wire_of(entry.effect) for entry in granted
     )
-    assert len(have) == 2 and len(missing) == 2
-    assert status_effect_count(state) == len(have)
-    assert set(status_effect_indices(state)) == set(have)
+    assert len(have) == 2 and len(built) == 2, "two of each, in this capture"
+    assert status_effect_count(state) == 4
+    assert set(status_effect_indices(state)) == {
+        effects.wire_of(entry.effect) for entry in granted
+    }
 
 
 def test_the_grammar_reads_the_recording_field_for_field():
@@ -680,17 +683,23 @@ def test_elements_are_copied_off_the_wire_and_not_built():
     assert len(changed) <= 12, f"{len(changed)} bytes changed, expected the ticks only"
 
 
-def test_an_effect_with_no_captured_element_is_not_sent_and_is_named():
-    """An effect silently dropped is how six commits went by with the stun and the
-    poison appearing to be served.
+def test_an_effect_with_no_captured_element_is_built_rather_than_dropped():
+    """It used to be dropped, and that is why nothing arrived.
 
-    And they are absent for a reason worth knowing: a capture of the live service with
-    every warrior skill cast does not contain them either. They are talent-gated there
-    too, so the real service never sends them for laceratingstrike or mightybash.
+    Thirty-four effects were captured and the game has 6703, so "only what the capture
+    holds" meant almost nothing. One without a captured element is built from the corpus
+    constants instead -- and a captured one is still preferred, because it also carries
+    the vectors and whatever field 4's few non-zero values mean.
     """
-    from dsor.recorded import servable_effects, status_effects_message
+    from dsor.elements import element
+    from dsor.recorded import (
+        servable_effects,
+        status_effect_count,
+        status_effect_indices,
+        status_effects_message,
+    )
 
-    have, missing = servable_effects(
+    captured, built = servable_effects(
         effects.wire_of(name)
         for name in (
             "skill_warshout_buff_movementspeed",
@@ -699,22 +708,25 @@ def test_an_effect_with_no_captured_element_is_not_sent_and_is_named():
             "debuff_dot_poison",
         )
     )
-    assert [effects.effect(w).id for w in have] == [
+    assert [effects.effect(w).id for w in captured] == [
         "skill_warshout_buff_movementspeed",
         "skill_frenzyshout_buff_armor",
     ]
-    assert [effects.effect(w).id for w in missing] == [
+    assert [effects.effect(w).id for w in built] == [
         "debuff_cc_stun",
         "debuff_dot_poison",
     ]
 
+    # All four go out, two spliced and two built.
+    wires = captured + built
     sent = status_effects_message(
-        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 100, 5.0)],
+        [(w, [0.4, 0.0, 0.0, 0.0, 0.0], 41230, 5.0) for w in wires],
         b"\x86\x00\x01\x00",
+        source=b"\x08\x00\x01\x00",
+        instance=0x00010200,
     )
-    from dsor.recorded import status_effect_count
-
-    assert status_effect_count(sent) == 0, "not claimed as sent"
+    assert status_effect_count(sent) == 4
+    assert status_effect_indices(sent) == wires
 
 
 def test_an_animated_effect_can_be_held_back():
@@ -1117,3 +1129,96 @@ def test_dragon_hide_is_six_auras_and_none_of_them_heal():
             healer.start_modifiers + healer.tick_modifiers
         ), name
         assert "talent" in name
+
+
+def test_a_built_element_reproduces_the_real_ones_it_can_be_checked_against():
+    """The test that makes building elements defensible again.
+
+    Three earlier readings of these fields each came from the one sample in front of me
+    and each was wrong. The constants a built element uses now come from the 26 real
+    elements of the 477-bit form, and this rebuilds every one of them from its own ticks,
+    parameters, caster and instance handle, and compares field by field.
+
+    Twenty-two come back identical. The four that do not differ in field 4 alone, which
+    is zero in 22 of the 26 and small and unexplained in the rest -- so the remaining
+    unknown is one field, bounded, rather than a shrug.
+    """
+    import struct
+
+    from dsor.elements import ELEMENTS
+    from dsor.recorded import built_element
+    from raknet.bitstream import BitReader
+
+    def read(bits):
+        reader = BitReader(bits, 0)
+        index = reader.read_uint(16)
+        integers = [reader.read_uint(32) for _ in range(8)]
+        flags = [reader.read_bool() for _ in range(4)]
+        if not flags[3]:
+            return index, integers, flags, None, None
+        count = reader.read_uint(32)
+        parameters = [
+            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+            for _ in range(count)
+        ]
+        reader.read_bool()
+        tail = reader.read_uint(8)
+        return index, integers, flags, parameters, tail
+
+    same = differ = 0
+    fields_that_differ = set()
+    for wire, (span, bits) in ELEMENTS.items():
+        if span != 477:
+            continue
+        index, integers, flags, parameters, tail = read(bits)
+        assert index == wire and tail == 0xFF
+        made = built_element(
+            wire,
+            start_tick=integers[3],
+            seconds=(integers[1] - integers[3]) / 25 if integers[1] else 0.04,
+            parameters=parameters,
+            source=integers[7].to_bytes(4, "little"),
+            instance=integers[0],
+        )
+        _i, mine, myflags, _p, _t = read(made)
+        if mine == integers and myflags == flags:
+            same += 1
+        else:
+            differ += 1
+            fields_that_differ |= {
+                i for i, (a, b) in enumerate(zip(mine, integers)) if a != b
+            }
+
+    assert same + differ >= 13, "the committed corpus holds the 477-bit form"
+    assert same >= differ * 3, f"{same} identical against {differ} not"
+    assert fields_that_differ <= {4}, (
+        f"fields {sorted(fields_that_differ)} differ, expected only 4"
+    )
+
+
+def test_every_effect_can_be_served_now_even_without_a_capture():
+    """34 effects were captured and the game has 6703.
+
+    An effect with no captured element is built rather than dropped, so the answer to
+    "no effect at all" is no longer "the capture does not have it".
+    """
+    from dsor.recorded import (
+        status_effect_count,
+        status_effect_indices,
+        status_effects_message,
+    )
+
+    # debuff_cc_stun and debuff_dot_poison have no captured element.
+    from dsor.elements import element
+
+    wires = [effects.wire_of("debuff_cc_stun"), effects.wire_of("debuff_dot_poison")]
+    assert all(element(w) is None for w in wires)
+
+    sent = status_effects_message(
+        [(w, [0.4, 0.0, 0.0, 0.0, 0.0], 41230, 5.0) for w in wires],
+        b"\x86\x00\x01\x00",
+        source=b"\x08\x00\x01\x00",
+        instance=0x00010200,
+    )
+    assert status_effect_count(sent) == 2
+    assert status_effect_indices(sent) == wires

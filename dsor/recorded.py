@@ -1288,6 +1288,84 @@ def real_element(
     return bytes(out)
 
 
+#: What a built element carries, taken from the 26 real elements of the 477-bit form
+#: rather than from one sample. Each figure is unanimous or near-unanimous across them:
+#:
+#:   field 2   25          26 of 26
+#:   field 4   0           22 of 26
+#:   field 6   100         26 of 26
+#:   field 7   the caster  26 of 26
+#:   flags     F,F,F,T     22 of 26
+#:   tail      -1          26 of 26   (so no vectors)
+#:   5 parameters          26 of 26
+#:
+#: Three earlier readings of these fields were each taken from the one sample in front
+#: of me and each was wrong. A figure unanimous over twenty-six is a different kind of
+#: claim -- and the test that settles it rebuilds all twenty-six and compares them byte
+#: for byte with what came off the wire.
+BUILT_RATE = 25
+BUILT_SPARE = 0
+BUILT_HUNDRED = 100
+BUILT_FLAGS = (False, False, False, True)
+BUILT_PARAMETERS = 5
+
+
+def built_element(
+    wire: int,
+    start_tick: int,
+    seconds: float,
+    parameters: list[float] | None = None,
+    source: bytes | None = None,
+    instance: int = 0,
+) -> bytes:
+    """An element for *wire*, built from the corpus constants. 477 bits.
+
+    Used when no capture contains a real element for the effect, which is most of them:
+    34 were captured and the game has 6703. Splicing a real one is still preferred where
+    there is one, because it also carries the fields this does not reproduce -- the
+    vectors, and whatever field 4's few non-zero values mean.
+    """
+    bits: list[int] = []
+
+    def push(value: int, count: int, little_endian: bool = True) -> None:
+        if count % 8 == 0 and little_endian:
+            for byte in value.to_bytes(count // 8, "little"):
+                bits.extend((byte >> (7 - i)) & 1 for i in range(8))
+        else:
+            bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
+
+    span = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
+    push(wire, EFFECT_INDEX_BITS)
+    integers = [0] * 8
+    integers[EFFECT_INSTANCE_FIELD] = instance & 0xFFFFFFFF
+    integers[EFFECT_END_TICK_FIELD] = (start_tick + span) & 0xFFFFFFFF
+    integers[EFFECT_RATE_FIELD] = BUILT_RATE
+    integers[EFFECT_START_TICK_FIELD] = start_tick & 0xFFFFFFFF
+    integers[4] = BUILT_SPARE
+    integers[EFFECT_DURATION_FIELD] = span & 0xFFFFFFFF
+    integers[6] = BUILT_HUNDRED
+    integers[EFFECT_SOURCE_FIELD] = (
+        int.from_bytes(source, "little") if source else 0
+    )
+    for value in integers:
+        push(value, 32)
+    for flag in BUILT_FLAGS:
+        push(1 if flag else 0, 1)
+    push(BUILT_PARAMETERS, 32)
+    padded = list(parameters or [])[:BUILT_PARAMETERS]
+    padded += [0.0] * (BUILT_PARAMETERS - len(padded))
+    for value in padded:
+        push(int.from_bytes(struct.pack("<f", value), "little"), 32)
+    push(0, 1)
+    push(NO_VECTORS, 8)
+
+    out = bytearray((len(bits) + 7) // 8)
+    for index, bit in enumerate(bits):
+        if bit:
+            out[index >> 3] |= 1 << (7 - (index & 7))
+    return bytes(out)
+
+
 def status_effects_message(
     entries: list[tuple[int, list[float], int, float]],
     actor: bytes,
@@ -1329,16 +1407,26 @@ def status_effects_message(
 
     from dsor.elements import element as real_bits
 
-    servable = [e for e in entries if real_bits(e[0]) is not None]
     push(flag, 1)
-    push(len(servable), 32)
-    for wire, parameters, start_tick, seconds in servable:
+    push(len(entries), 32)
+    for wire, parameters, start_tick, seconds in entries:
         # A real element, spliced. The parameters are the capture's own too: rewriting
         # them is safe -- their layout is established -- but the effect's own recorded
         # values are what the live service paired with the rest of the element, so they
         # are left alone unless a caller insists.
-        span, _bits = real_bits(wire)
-        copy = real_element(wire, start_tick, seconds, parameters)
+        found = real_bits(wire)
+        if found is not None:
+            span, _stored = found
+            copy = real_element(wire, start_tick, seconds, parameters)
+        else:
+            # No capture holds one, which is true of all but 34 of the game's 6703
+            # effects. Built from the corpus constants instead.
+            copy = built_element(
+                wire, start_tick, seconds, parameters, source, instance
+            )
+            span = BUILT_ELEMENT_BITS
+            if instance:
+                instance += 1
         for index in range(span):
             bits.append((copy[index >> 3] >> (7 - (index & 7))) & 1)
 
@@ -1357,9 +1445,9 @@ def status_effects_message(
     out = original[:3] + bytes(body)
     # Read it back, every element of it. Nothing here that skipped this step turned
     # out to be right.
-    if servable:
+    if entries:
         seen = status_effect_indices(out)
-        wanted = [wire for wire, *_ in servable]
+        wanted = [wire for wire, *_ in entries]
         if seen != wanted:
             raise ValueError(f"wrote effects {wanted} and read back {seen}")
     return out

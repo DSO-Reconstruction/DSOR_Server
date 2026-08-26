@@ -1678,17 +1678,21 @@ class World:
         what happens when the caller sends whatever the encoder returns without asking
         whether it holds anything.
         """
-        from dsor.recorded import servable_effects, status_effects_message
+        from dsor.recorded import status_effects_message
 
-        have, _missing = servable_effects(wire for wire, _p, _s in live)
-        if not have:
+        if not live:
             return None
-        wanted = set(have)
+        # Every effect goes, not only the ones a capture holds an element for. One with
+        # no captured element is built from the corpus constants -- see
+        # dsor.recorded.built_element -- which reproduces 22 of the 26 real elements of
+        # that form byte for byte and differs from the other four in one field.
+        #
+        # This used to send only what had a real element, which is why nothing arrived:
+        # 34 effects were captured and the game has 6703.
         return status_effects_message(
             [
                 (wire, list(parameters), tick, seconds)
                 for wire, parameters, seconds in live
-                if wire in wanted
             ],
             holder_actor,
             stack=self._stack(),
@@ -2336,23 +2340,6 @@ class World:
         else:
             # The recorded state, which carries one real effect, rather than an empty
             # command. What is running but cannot be drawn is named once.
-            if live:
-                from dsor.recorded import servable_effects
-
-                _have, missing = servable_effects(wire for wire, _p, _s in live)
-                key = tuple(sorted(missing))
-                if key and key not in self._said:
-                    self._said.add(key)
-                    log.info(
-                        "%s: %d effect(s) running with no captured element, so not "
-                        "drawn: %s",
-                        self.name,
-                        len(missing),
-                        ", ".join(
-                            (effects.effect(w).id if effects.effect(w) else str(w))
-                            for w in key
-                        ),
-                    )
             self._emit(tick_state(), sender)
         for creature in self._ready().creatures.values():
             if not creature.effects:
