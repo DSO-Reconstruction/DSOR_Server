@@ -422,10 +422,16 @@ def test_the_buff_is_stamped_with_the_clock_the_server_announces():
     assert fields[3] == 41230, "starts now"
     assert fields[1] == 41230 + span, "ends ten seconds from now"
     assert fields[5] == span, "and says how long it runs"
-    # The five this server does not understand are left exactly as recorded.
+    # Field 2 is 25 now, and field 7 the caster: a capture of the live service
+    # carrying fourteen animated effects settled both. What is still copied from the
+    # recording is 4 and 6 -- and 6 is 100 in every element anywhere, real or recorded.
+    from dsor.recorded import EFFECT_RATE
+
+    assert fields[2] == EFFECT_RATE == 25
     recorded = status_effect_fields()
-    for index in (0, 2, 4, 6, 7):
+    for index in (4, 6):
         assert fields[index] == recorded[index], index
+    assert recorded[6] == 100
 
 
 def test_twenty_five_ticks_is_one_second():

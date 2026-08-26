@@ -207,7 +207,7 @@ class Rules:
     #: them over sent the client's sequencer into a FixedArray it could not index.
     #: Elements are built now and end before the vectors, so there is nothing borrowed
     #: left in them.
-    animated_effects: bool = False
+    animated_effects: bool = True
     #: What to put in the effect element's seventh 32-bit field, or -1 to keep the 100
     #: a real server sends. A dial, not a setting: it is the prime suspect for the
     #: sequencer assertion that holds animated effects back, and it has been read wrong
@@ -528,6 +528,9 @@ class World:
     _timings: dict[tuple, tuple[int, int, float, float]] = field(
         default_factory=dict
     )
+    #: How many effect applications this world has handed out. See
+    #: :meth:`_effect_instance`.
+    _next_effect: int = 0
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
     stepped_tick: int = 0
@@ -1570,6 +1573,18 @@ class World:
         else:
             holder.effects = value
 
+    def _effect_instance(self) -> int:
+        """A handle for one application of an effect.
+
+        Real elements carry 65768 to 65894 in a single session while the actors in it
+        are 0x00010002 and 0x00010008, so the handles come from the same numbering as
+        actors and simply rise. Taken from this world's actor space for that reason,
+        and never given back: a handle that came round again would name two
+        applications.
+        """
+        self._next_effect += 1
+        return (0x00010000 | 0x0200) + self._next_effect
+
     def _stack(self) -> int | None:
         """The seventh field's value, or None to keep what a real server sends."""
         return None if self.rules.effect_stack < 0 else self.rules.effect_stack
@@ -2195,6 +2210,10 @@ class World:
                     ],
                     player.actor,
                     stack=self._stack(),
+                    # Who applied it. Zero was copied from a tutorial heal that the
+                    # world applies rather than an actor, and actor 0 does not exist.
+                    source=player.actor,
+                    instance=self._effect_instance(),
                 ),
                 sender,
             )
@@ -2214,6 +2233,8 @@ class World:
                     ],
                     creature.actor,
                     stack=self._stack(),
+                    source=player.actor,
+                    instance=self._effect_instance(),
                 ),
                 sender,
             )

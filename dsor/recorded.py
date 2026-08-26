@@ -930,6 +930,28 @@ EFFECT_END_TICK_FIELD = 1
 EFFECT_START_TICK_FIELD = 3
 EFFECT_DURATION_FIELD = 5
 
+#: An instance handle, in the same 0x0001xxxx space as an actor id and rising. Real
+#: elements carry 65768 to 65894 in one session while the actors in it are 0x00010002
+#: and 0x00010008, so it is allocated from the same numbering and is not an actor.
+EFFECT_INSTANCE_FIELD = 0
+
+#: Twenty-five in every animated element measured -- fourteen of them, across
+#: debuff_cc_charge, FrenzyShout, warshout's and seismicslam's buffs and the ranger's
+#: auras. The recorded tutorial heal is the only element anywhere carrying 0 here,
+#: which is exactly why copying it was the wrong thing to copy.
+EFFECT_RATE_FIELD = 2
+EFFECT_RATE = 25
+
+#: **Who applied the effect.** Every animated element measured carries the caster's
+#: actor here -- 0x00010008, the player, on effects addressed to 0x00010002, a monster.
+#:
+#: This server wrote zero, copied from a tutorial heal that carries zero because the
+#: world applies it rather than an actor. Actor 0 does not exist, and a client that
+#: looks up the source to play an animation from it and finds nothing is the best
+#: explanation there is for
+#: Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[].
+EFFECT_SOURCE_FIELD = 7
+
 #: Game ticks per second: 25, at 40 ms a tick.
 EFFECT_TICKS_PER_SECOND = 25
 
@@ -1181,12 +1203,14 @@ BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
 #:
 #:     Util::FixedArray<Core::Ptr<Sequencer::TrackSequencer>>::operator[](int)
 #:
-#: If the client sizes that array by an effect's MaxStackSize and indexes it by this
-#: field, then 100 into an array of one is exactly the failure. It would also explain
-#: why the recording never tripped it: a0001_tutorial_heal_on_low_health has no
-#: sequence, so the array is never built and never indexed.
+#: **Refuted.** A capture of the live service carrying fourteen animated effects has
+#: 100 in this field in every one of them -- debuff_cc_charge with a MaxStackSize of 50,
+#: FrenzyShout with 1, warshout's block buff with 10. A stack index would not be
+#: constant across those. It is something else that happens to be a round number.
 #:
-#: Unproven. ``effect_stack`` on the rules is the dial for testing it.
+#: What the same capture *did* settle is field 7: it carries the caster's actor, and
+#: this server was writing zero there. ``effect_stack`` stays as a dial but it is
+#: pointed at the wrong field, and the guess it was built to test is closed.
 EFFECT_STACK_FIELD = 6
 
 
@@ -1195,6 +1219,8 @@ def status_effects_message(
     actor: bytes,
     state: bytes | None = None,
     stack: int | None = None,
+    source: bytes | None = None,
+    instance: int = 0,
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
@@ -1243,6 +1269,15 @@ def status_effects_message(
         integers[EFFECT_DURATION_FIELD] = span & 0xFFFFFFFF
         if stack is not None:
             integers[EFFECT_STACK_FIELD] = stack & 0xFFFFFFFF
+        # The three fields the real service fills that the recorded tutorial heal does
+        # not. See the constants above: 25 is in every animated element measured, the
+        # source is the caster, and the instance handle rises.
+        integers[EFFECT_RATE_FIELD] = EFFECT_RATE
+        if source is not None:
+            integers[EFFECT_SOURCE_FIELD] = int.from_bytes(source, "little")
+        if instance:
+            integers[EFFECT_INSTANCE_FIELD] = instance & 0xFFFFFFFF
+            instance += 1
         for value in integers:
             push(value, 32)
 

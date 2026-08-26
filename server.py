@@ -1609,7 +1609,7 @@ def serve(
     creature_damage: float = 0.0,
     status_effects: bool = True,
     force_effects: bool = False,
-    animated_effects: bool = False,
+    animated_effects: bool = True,
     player_health: float = 0.0,
     enforce: bool = True,
     characters: str = "characters.sqlite",
@@ -2034,14 +2034,15 @@ def main() -> None:
         help="how many creatures --tough-mob applies to (default 1)",
     )
     parser.add_argument(
-        "--animated-effects",
-        action="store_true",
+        "--no-animated-effects",
+        dest="animated_effects",
+        action="store_false",
         help=(
-            "also send the effects the client animates — the stun, the poison, the "
-            "movement-speed buff, the armour break. Off: removing the borrowed float3 "
-            "vectors was not enough, and the client still asserts in its sequencer on "
-            "a FixedArray of TrackSequencer. The prime suspect is the seventh 32-bit "
-            "field, which carries 100 where MaxStackSize is 1"
+            "hold back the effects the client animates — the stun, the poison, the "
+            "movement-speed buff, the armour break. They are sent by default now that "
+            "a capture of the live service has shown what the element's own fields "
+            "carry: 25 in field 2 and the caster's actor in field 7, where this "
+            "server wrote zero"
         ),
     )
     parser.add_argument(
