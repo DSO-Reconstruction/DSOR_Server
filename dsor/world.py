@@ -239,6 +239,11 @@ class Rules:
     #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
     #: the messages that says where the client put them.
     first_slot: int = 2
+    #: How far apart two creatures stand when they have both arrived, in world units.
+    #: They used to have no separation at all and twenty of them stood on one point --
+    #: the same problem clear_of_other_drops solves for items on the ground, which was
+    #: solved there and not here.
+    mob_spacing: float = 1.6
     #: Whether an implausible move is *refused* as well as counted. Off, and the
     #: reason is in accept_movement: the position this server keeps is the one it
     #: echoes back, so refusing drags the client to a stale one and every honest record
@@ -863,6 +868,36 @@ class World:
         )
 
 
+    def _standing_room(self, centre: Position, count: int) -> list[Position]:
+        """*count* places around *centre*, in rings, nearest ring first.
+
+        One ring is not enough, and getting that wrong twice is instructive. With no
+        ring at all, twenty creatures stopped mob_stop units from the player and stood
+        on one point. With a single ring wide enough to space twenty of them properly,
+        they stood 5.1 units out -- past their own AttackRange of 2 and hit range of
+        2.25 -- so they surrounded the player and never struck. That is the same trap as
+        "stopping at 3.5 put the creature outside its own reach".
+        
+        So the inner ring is at mob_stop, where a creature can actually reach, and holds
+        as many as fit at mob_spacing apart -- eight of them at these numbers, which is
+        about what fits round a person. The rest queue on further rings and wait for a
+        gap, which is what a crowd does.
+        """
+        places: list[Position] = []
+        ring = 0
+        while len(places) < count:
+            radius = self.rules.mob_stop + ring * self.rules.mob_spacing
+            circumference = 2 * math.pi * radius
+            fits = max(1, int(circumference / self.rules.mob_spacing))
+            wanted = min(fits, count - len(places))
+            places.extend(
+                ring_positions(
+                    centre, wanted, max(1, round(radius * WORLD_SCALE))
+                )
+            )
+            ring += 1
+        return places[:count]
+
     def advance_creatures(self, tick: int) -> None:
         """Move every creature one step, and remember how to say so.
 
@@ -888,6 +923,32 @@ class World:
             for player in self.players.values()
             if player.in_world and player.position is not None
         ]
+        # Where each creature is heading, which is *not* the player's own feet.
+        #
+        # Every creature that arrived stopped mob_stop units from the player, and
+        # nothing kept them apart from each other, so twenty of them stood on one
+        # point -- "tous les mobs spawn au meme endroit". They spawn twenty units
+        # apart; they converge. Each gets its own place on a ring instead, evenly
+        # spaced, its slot fixed by its position in the creature order so it does not
+        # swap places from tick to tick.
+        #
+        # The same problem was already solved for items on the ground and not for
+        # creatures: clear_of_other_drops exists because two items sharing a place
+        # stack and a stack crashes the client.
+        chasing: dict[int, list[Creature]] = {}
+        for creature in announced:
+            if not standing:
+                continue
+            nearest = min(
+                range(len(standing)),
+                key=lambda i: creature.position.distance_squared_to(standing[i]),
+            )
+            chasing.setdefault(nearest, []).append(creature)
+        slot: dict[bytes, Position] = {}
+        for index, group in chasing.items():
+            for creature, place in zip(group, self._standing_room(standing[index], len(group))):
+                slot[creature.actor] = place
+
         elapsed = max(1, tick - self.stepped_tick)
         self.stepped_tick = tick
         reach = self.rules.mob_stop * WORLD_SCALE
@@ -902,15 +963,19 @@ class World:
             # The nearest player in the world. With one player this is the player, so
             # nothing about the single-player behaviour changes.
             position = min(standing, key=here.distance_squared_to)
-            span = here.distance_to(position)
+            # Faced toward the player, but walking to its own place on the ring around
+            # them. Facing the ring slot instead would have creatures looking past the
+            # player once they arrived.
             heading = heading_to(position.x - here.x, position.y - here.y)
-            if span > aggro:
+            target = slot.get(creature.actor, position)
+            span = here.distance_to(target)
+            if here.distance_to(position) > aggro:
                 # Out of range: leave it exactly as it stands, facing as it was. A
                 # heading here would turn every creature on the map toward the player
                 # from across the zone.
                 placed.append(with_motion(template, here, tick, speed=0))
                 continue
-            if span <= reach + self.rules.mob_speed * elapsed:
+            if span <= self.rules.mob_speed * elapsed:
                 # Arrived: stand and face the player. Clamping the step to the
                 # distance remaining left the creature always a fraction outside,
                 # announcing a walk it never finished — "elles s'arretent loin et
@@ -921,11 +986,11 @@ class World:
                     with_motion(template, here, tick, speed=0, heading=heading)
                 )
                 continue
-            step = min(self.rules.mob_speed * elapsed, span - reach)
+            step = min(self.rules.mob_speed * elapsed, span)
             moved = Position(
-                x=here.x + round((position.x - here.x) * step / span),
+                x=here.x + round((target.x - here.x) * step / span),
                 elevation=position.elevation,
-                y=here.y + round((position.y - here.y) * step / span),
+                y=here.y + round((target.y - here.y) * step / span),
             )
             creature.position = moved
             placed.append(

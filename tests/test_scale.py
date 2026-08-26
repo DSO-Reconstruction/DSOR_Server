@@ -2,11 +2,14 @@
 
 import time
 
+import pytest
+
 import server
 from dsor.actors import RECORDED_PLAYER, decode
 from dsor.gameplay import Position
 from dsor.mapdata import servable_points
 from dsor.recorded import monster_library
+from dsor.gameplay import WORLD_SCALE as WORLD
 from dsor.world import Creature, World
 
 
@@ -149,3 +152,101 @@ def test_two_thousand_players_tick_inside_the_frame_budget():
     world.tick()
     took = time.perf_counter() - start
     assert took < 0.100, f"{took * 1000:.0f} ms a tick for 2000 players"
+
+
+def converge(world, sender, ticks=3000):
+    """Let every creature in the world walk in and settle."""
+    world.rules.mob_aggro = 400.0
+    player = world.players[sender]
+    for step in range(ticks):
+        player.server_tick = 5000 + step
+        world.tick()
+    return [c.position for c in world.creatures.values() if c.alive]
+
+
+def a_crowded_world():
+    from dsor.mapdata import servable_points
+    from dsor.recorded import monster_library
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    world = service.world
+    usable = servable_points(set(monster_library()))
+    world.populate_from_map(usable, 0.0)
+    # What serve() sets. Without it entity_update drops every creature, which is a trap
+    # worth naming: a test that forgets it sees an empty world and blames the wrong
+    # thing.
+    world.rules.mobs = len(usable)
+    for creature in world.creatures.values():
+        creature.described = True
+    sender = ("127.0.0.1", 1)
+    player = world.player(sender)
+    player.position = Position(0, 0, 0)
+    player.in_world = True
+    player.health = 450_000.0
+    player.max_health = 450_000.0
+    player.level = 104
+    return service, world, sender
+
+
+def test_creatures_that_converge_do_not_end_up_on_one_point():
+    """"tous les mobs spawn au meme endroit" — they do not spawn there, they arrive.
+
+    Every creature that reached the player stopped mob_stop units from them and nothing
+    kept them apart from each other, so twenty of them stood on one point. The same
+    problem clear_of_other_drops solves for items on the ground, solved there and not
+    here.
+    """
+    import itertools
+
+    _service, world, sender = a_crowded_world()
+    spawned = {(c.position.x, c.position.y) for c in world.creatures.values()}
+    assert len(spawned) == len(world.creatures), "distinct before they move, too"
+
+    settled = converge(world, sender)
+    assert len(settled) >= 15
+    assert len({(p.x, p.y) for p in settled}) == len(settled), "no two on one point"
+
+    closest = min(
+        a.distance_to(b) for a, b in itertools.combinations(settled, 2)
+    )
+    assert closest > world.rules.mob_spacing * WORLD * 0.9, (
+        f"nearest pair {closest / WORLD:.2f} apart, wanted {world.rules.mob_spacing}"
+    )
+
+
+def test_enough_of_them_get_close_enough_to_strike():
+    """The other half, and the trap that a single wide ring walks straight into.
+
+    A ring wide enough to space twenty creatures properly puts them 5.1 units out, past
+    their own AttackRange of 2 — so they surround the player and never strike. That is
+    the same fault as "stopping at 3.5 put the creature outside its own reach".
+    """
+    _service, world, sender = a_crowded_world()
+    settled = converge(world, sender)
+    here = Position(0, 0, 0)
+    reach = 2.25 * WORLD
+    within = [p for p in settled if p.distance_to(here) <= reach]
+    assert len(within) >= 5, f"only {len(within)} could reach the player"
+    # And the queue behind is further out rather than piled on the inner ring.
+    assert max(p.distance_to(here) for p in settled) > reach
+
+
+def test_the_inner_ring_sits_at_the_stop_distance():
+    _service, world, _sender = a_crowded_world()
+    places = world._standing_room(Position(0, 0, 0), 20)
+    assert len(places) == 20
+    here = Position(0, 0, 0)
+    nearest = min(p.distance_to(here) for p in places)
+    assert nearest == pytest.approx(world.rules.mob_stop * WORLD, rel=0.02)
+    # Ring by ring, not one ring: the furthest is further than the stop distance.
+    assert max(p.distance_to(here) for p in places) > world.rules.mob_stop * WORLD
+
+
+def test_one_creature_still_walks_straight_at_the_player():
+    """A ring of one is the stop distance, so nothing about a single creature changes."""
+    _service, world, _sender = a_crowded_world()
+    places = world._standing_room(Position(0, 0, 0), 1)
+    assert len(places) == 1
+    assert places[0].distance_to(Position(0, 0, 0)) == pytest.approx(
+        world.rules.mob_stop * WORLD, rel=0.02
+    )
