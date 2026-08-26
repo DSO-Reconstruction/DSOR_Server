@@ -906,21 +906,26 @@ def test_a_player_who_leaves_takes_their_poison_with_them():
     assert not world.pending_dots
 
 
-def test_the_location_effect_family_is_kept_and_reads_its_shape():
+def test_the_location_effect_family_is_kept():
     """The third list, which two earlier conclusions said had nothing to send.
 
     LocationStatusEffects is where earthquake and defiance keep everything they do, and
     a capture of the live service with every warrior skill cast contains the commands:
-    NewLocationEffectCommand 0x003C, LocationEffectInfoCommand 0x003E and
-    DiscardLocationEffectCommand 0x003D. Sixteen of sixteen name SphereEffect.
+    NewLocationEffectCommand 0x003C twice, LocationEffectInfoCommand 0x003E fourteen
+    times and DiscardLocationEffectCommand 0x003D four times.
+
+    The string they carry is read as a string and nothing more. Calling it a shape was
+    an over-read: the same string appears in ItemUpdateCommand and StatusEffectCommand
+    in the same capture, and the client binary has SphereEffect once with no BoxEffect,
+    CylinderEffect or ConeEffect anywhere -- a shape selector would have siblings.
     """
     from dsor.recorded import (
         LOCATION_EFFECT_DISCARD,
         LOCATION_EFFECT_INFO,
         LOCATION_EFFECT_NEW,
-        LOCATION_EFFECT_SHAPE,
+        LOCATION_EFFECT_STRING,
         location_effect,
-        location_effect_shape,
+        location_effect_string,
     )
 
     for name, opcode in (
@@ -933,11 +938,11 @@ def test_the_location_effect_family_is_kept_and_reads_its_shape():
         assert int.from_bytes(message[1:3], "little") == opcode, name
         assert len(message) > 300, name
 
-    assert location_effect_shape(location_effect(LOCATION_EFFECT_NEW)) == (
-        LOCATION_EFFECT_SHAPE
+    assert location_effect_string(location_effect(LOCATION_EFFECT_NEW)) == (
+        LOCATION_EFFECT_STRING
     )
-    assert location_effect_shape(location_effect(LOCATION_EFFECT_INFO)) == (
-        LOCATION_EFFECT_SHAPE
+    assert location_effect_string(location_effect(LOCATION_EFFECT_INFO)) == (
+        LOCATION_EFFECT_STRING
     )
     # And something that is not one of these says so rather than guessing.
-    assert location_effect_shape(bytes([0x85, 0x5F, 0x00]) + bytes(20)) is None
+    assert location_effect_string(bytes([0x85, 0x5F, 0x00]) + bytes(20)) is None

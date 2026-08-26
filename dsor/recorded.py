@@ -1384,24 +1384,36 @@ def _stride(state: bytes | None) -> int:
 # There is. A capture of the live service with every warrior skill cast contains the
 # commands, and they are a family of three:
 #
-#   0x003C NewLocationEffectCommand       05 00 | 01 00 | 0c 00 "SphereEffect" | ...
-#   0x003E LocationEffectInfoCommand      07 00 | 00 00 00 00 | 01 00 | 0c 00 "Sphere…"
-#   0x003D DiscardLocationEffectCommand   06 00 | 01 00 | 00 00 00 00 | ff 3e 00 | ...
+#   0x003C NewLocationEffectCommand        2 messages
+#   0x003E LocationEffectInfoCommand      14
+#   0x003D DiscardLocationEffectCommand    4
 #
-# Every one names ``SphereEffect`` -- sixteen of sixteen -- so the leading fields are an
-# instance id and the shape to draw. They are large, 341 to 1165 bytes, which says they
-# carry the effect's graphics as well as its geometry.
+# Their bodies begin with a small integer and a length-prefixed string, and in this
+# capture that string is always ``SphereEffect``:
 #
-# What is kept here is one of each, so the samples are not lost with the capture. What
-# is *not* here is an encoder: the bodies are only read as far as the shape name, and
-# inventing the rest is how the skill command came to be 26 bytes of a 64-byte message.
+#   0x003C   05 00 | 01 00 | 0c 00 "SphereEffect" | ...
+#   0x003E   07 00 | 00 00 00 00 | 01 00 | 0c 00 "SphereEffect" | ...
+#
+# **What that string denotes is not established**, and an earlier note here called it
+# "the shape to draw", which the evidence does not support. Two things refute it. The
+# same string appears in ItemUpdateCommand and StatusEffectCommand payloads in the same
+# capture, so it is not particular to a location effect. And the client binary contains
+# ``SphereEffect`` exactly once and no BoxEffect, CylinderEffect or ConeEffect at all --
+# a shape selector would have siblings.
+#
+# The bodies run 341 to 1165 bytes, so they carry a good deal more than a position.
+#
+# What is kept here is one of each, so the samples outlive the capture. What is *not*
+# here is an encoder, and not much of a decoder either: inventing the rest is how the
+# skill command came to be 26 bytes of a 64-byte message.
 
 LOCATION_EFFECT_NEW = "location_effect_003c.bin"
 LOCATION_EFFECT_INFO = "location_effect_003e.bin"
 LOCATION_EFFECT_DISCARD = "location_effect_003d.bin"
 
-#: The shape every location effect in the capture names.
-LOCATION_EFFECT_SHAPE = "SphereEffect"
+#: The string every location effect in the capture carries. What it denotes is not
+#: established -- see above; it is not a shape name, whatever it looks like.
+LOCATION_EFFECT_STRING = "SphereEffect"
 
 
 def location_effect(name: str) -> bytes:
@@ -1409,12 +1421,12 @@ def location_effect(name: str) -> bytes:
     return payload(name)
 
 
-def location_effect_shape(message: bytes) -> str | None:
-    """The shape a location effect command names, or None if it names none.
+def location_effect_string(message: bytes) -> str | None:
+    """The leading length-prefixed string, or None if there is not one.
 
-    Read by scanning the first bytes for a length-prefixed printable string rather
-    than from a fixed offset, because the three commands in the family put it in
-    three different places -- offset 4 in the new one, 6 in the info one.
+    Named for what it is rather than for what it might mean. Read by scanning the
+    first bytes rather than from a fixed offset, because the three commands in the
+    family put it in different places -- offset 4 in the new one, 6 in the info one.
     """
     body = message[3:]
     for at in range(0, 12):
