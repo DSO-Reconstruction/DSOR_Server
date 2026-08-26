@@ -201,3 +201,48 @@ def test_a_creature_can_reach_the_player_and_strike(rules):
     world.pending_hits = [(0.0,) + e[1:] for e in world.pending_hits]
     world.land_hits()
     assert world.player(sender).health < before, "nothing reached the player"
+
+
+def test_the_config_does_not_hold_back_the_effects_it_can_serve(rules):
+    """The two rules fought each other and the config lost.
+
+    animated_effects was turned off when elements were *built*, because an animated one
+    then carried no vectors and sent the client's sequencer into a FixedArray it could
+    not index. Elements are copied off the wire now, so that reason is gone -- and the
+    rule was holding back precisely the effects a real element exists for. Seven of the
+    34 captured elements are animated, warshout's movement-speed buff among them, and
+    every one of those was being dropped.
+
+    Which showed as "je n'ai toujours pas d'effet" with the server cheerfully logging
+    that it had granted three of warshout's four.
+    """
+    from dsor.elements import ELEMENTS
+    from dsor import effects
+
+    animated = [
+        effects.effect(wire).id
+        for wire in ELEMENTS
+        if effects.effect(wire) is not None and effects.effect(wire).animated
+    ]
+    assert animated, "some captured elements are animated"
+    assert rules.animated_effects, (
+        f"animated_effects is off, which drops {len(animated)} effects that have a real "
+        f"element: {', '.join(sorted(animated)[:4])}..."
+    )
+
+
+def test_warshouts_movement_buff_survives_the_shipped_rules(rules):
+    """The one effect that was reported working once, then held back for six commits."""
+    from dsor.elements import element
+    from dsor.skills import by_id
+
+    service = server.Service(port=30000, name="t", role="map", map_name="a0001")
+    service.rules = rules
+    granted = {
+        entry.effect
+        for entry in service.world._entries(by_id("warshout"), victim=False)
+    }
+    assert "skill_warshout_buff_movementspeed" in granted
+    from dsor import effects
+
+    assert element(effects.wire_of("skill_warshout_buff_movementspeed")) is not None
