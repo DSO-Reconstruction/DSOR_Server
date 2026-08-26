@@ -17,6 +17,12 @@ advertise = "172.20.0.1"
 verbose = true
 console_port = 2199
 
+# Characters are saved here, keyed on the account id the client already sends in its
+# 0x8A -- not on an address, a RakNet GUID or a session id, all of which are new every
+# run. Empty turns saving off, which is what to do when replaying a capture.
+characters = "characters.sqlite"
+save_every = 30.0
+
 # Everything a player arrives with. These used to be a 428-character command line.
 [rules]
 start_level = 100

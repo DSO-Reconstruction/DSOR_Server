@@ -64,7 +64,9 @@ from dsor.combat import (
 from dsor.world import Rules, World
 from dsor.console import Console
 from dsor import config
+from dsor import identity as whois
 from dsor.combat import decode_skill_use
+from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.mapdata import SPAWN_POINTS, servable_points
@@ -395,6 +397,12 @@ class Service:
         #: second. A flood from one address should cost that address and nobody else.
         self.peer_rate = 400
         self._peer_seen: dict[tuple[str, int], tuple[int, int]] = {}
+        #: Where characters are kept, and who each peer says it is. The identity comes
+        #: out of the 0x8A the client already sends -- see dsor.identity -- because an
+        #: address changes, a RakNet GUID is new every run and a session id is new
+        #: every login, so a character saved under any of them is saved nowhere.
+        self.store: Store | None = None
+        self.who: dict[tuple[str, int], whois.Identity] = {}
         #: How many 0x010B queries each endpoint has asked, since the two recorded
         #: answers differ and are not interchangeable.
         self.queries_seen: dict[tuple[str, int], int] = {}
@@ -744,6 +752,16 @@ class Service:
             self._queue(connection, connection.build_connected_pong(client_time), sender, reliability=Reliability.UNRELIABLE, )
 
         elif message_id == 0x8A:  # noqa: PLR2004 - documented in dsor.messages
+            found = whois.parse(message.payload)
+            if found is not None and self.who.get(sender) != found:
+                self.who[sender] = found
+                log.info(
+                    "%s: %s is account %d%s",
+                    self.name,
+                    sender,
+                    found.account,
+                    f" character {found.character}" if found.character else "",
+                )
             # The client has announced itself and is waiting. Observed reply from
             # the real login service, in this order: a bare 0x88, then the handoff.
             # Without them the client pings for 30 s and reconnects for ever, which
@@ -755,7 +773,9 @@ class Service:
         elif message_id == MessageID.DISCONNECTION_NOTIFICATION:
             connection.state = State.CLOSED
             self.connections.pop(sender, None)
+            self.persist(sender)
             self.world.forget(sender)
+            self.who.pop(sender, None)
             self.record_sent.discard(sender)
             log.info("%s: %s disconnected", self.name, sender)
 
@@ -1174,6 +1194,64 @@ class Service:
             total,
         )
 
+    def persist(self, sender) -> bool:
+        """Write this peer's character out, and say whether there was one to write.
+
+        Called on the way out and on a timer, because a session that ends by the
+        client vanishing -- which is how most of them end over UDP -- never sends a
+        disconnect.
+        """
+        found = self.who.get(sender)
+        player = self.world.players.get(sender) if self.store else None
+        if self.store is None or found is None or player is None:
+            return False
+        self.store.save(
+            key=found.key,
+            account=found.account,
+            character=found.character,
+            level=player.level,
+            experience=player.experience,
+            health=player.health,
+            max_health=player.max_health,
+            resource=player.resource,
+            position=(
+                (player.position.x, player.position.elevation, player.position.y)
+                if player.position
+                else None
+            ),
+            map_name=self.map_name,
+        )
+        return True
+
+    def restore(self, sender) -> bool:
+        """Put a saved character back, and say whether one was found.
+
+        A saved character wins over --start-level and the config file, because that is
+        the whole point of saving one: those two are what a *new* character arrives
+        with.
+        """
+        found = self.who.get(sender)
+        if self.store is None or found is None:
+            return False
+        saved = self.store.load(found.key)
+        if saved is None:
+            return False
+        player = self.world.player(sender)
+        player.level = saved.level
+        player.experience = saved.experience
+        player.max_health = saved.max_health or player.max_health
+        player.health = saved.health or player.max_health
+        player.resource = saved.resource
+        log.info(
+            "%s: %s restored at level %d with %d experience (save %d)",
+            self.name,
+            sender,
+            saved.level,
+            saved.experience,
+            saved.saves,
+        )
+        return True
+
     def within_rate(self, sender) -> bool:
         """Whether this peer is inside its datagram budget for the current second.
 
@@ -1293,7 +1371,8 @@ class Service:
             entrant = self.world.player(sender)
             entrant.position = spawn
             entrant.in_world = True
-            if self.rules.start_level > 1 and not entrant.experience:
+            restored = self.restore(sender)
+            if not restored and self.rules.start_level > 1 and not entrant.experience:
                 entrant.experience = level_bounds(self.rules.start_level)[0]
                 entrant.level = level_for(entrant.experience)
                 if entrant.level != self.rules.start_level:
@@ -1533,6 +1612,8 @@ def serve(
     animated_effects: bool = False,
     player_health: float = 0.0,
     enforce: bool = True,
+    characters: str = "characters.sqlite",
+    save_every: float = 30.0,
     pickup_range: float = 12.0,
     peer_rate: int = 400,
     tough_mob: float = 0.0,
@@ -1714,6 +1795,14 @@ def serve(
     tick_hz = 10.0
     next_tick = time.monotonic() + 1.0 / tick_hz
 
+    store = None
+    if characters:
+        store = Store(characters)
+        log.info("characters kept in %s (%d already)", store.path, store.count)
+        for service in services.values():
+            service.store = store
+    next_save = time.monotonic() + save_every
+
     try:
         while True:
             busy = any(
@@ -1757,6 +1846,16 @@ def serve(
                 for service in services.values():
                     if service.role == "map":
                         service.game_tick()
+            if store is not None and now >= next_save:
+                next_save = now + save_every
+                written = sum(
+                    1
+                    for service in services.values()
+                    for peer in list(service.world.players)
+                    if service.persist(peer)
+                )
+                if written:
+                    log.debug("saved %d character(s)", written)
             for service in services.values():
                 # Top up before flushing, so a quiet queue spends its budget on
                 # whatever is still unacknowledged rather than idling.
@@ -1852,6 +1951,27 @@ def main() -> None:
             "entity records from the tutorial dungeon with only their position "
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--characters",
+        metavar="PATH",
+        default="characters.sqlite",
+        help=(
+            "SQLite file characters are saved in, keyed on the account id the client "
+            "already sends. Empty turns saving off, which is what to do when replaying "
+            "a capture: a replay would write the recorded character over a real one"
+        ),
+    )
+    parser.add_argument(
+        "--save-every",
+        type=float,
+        default=30.0,
+        metavar="S",
+        help=(
+            "seconds between saves of everyone in a world. Most sessions over UDP end "
+            "by the client vanishing rather than disconnecting, so waiting for a "
+            "goodbye loses the session"
         ),
     )
     parser.add_argument(
@@ -2276,6 +2396,8 @@ def main() -> None:
         animated_effects=args.animated_effects,
         player_health=args.player_health,
         enforce=args.enforce,
+        characters=args.characters,
+        save_every=args.save_every,
         pickup_range=args.pickup_range,
         peer_rate=args.peer_rate,
         tough_mob=args.tough_mob,

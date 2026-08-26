@@ -19,3 +19,8 @@ __pycache__/
 .pytest_cache/
 /scratch/
 /tmp/
+
+# Saved characters are the operator's own data, and the file is a live database.
+characters.sqlite
+characters.sqlite-wal
+characters.sqlite-shm
