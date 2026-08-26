@@ -23,6 +23,13 @@ console_port = 2199
 characters = "characters.sqlite"
 save_every = 30.0
 
+# Punching bags, so an effect can be watched playing out. The client's own monster table
+# says these creatures hold 24, so a forced figure is one it can contradict and the
+# health bar may read oddly -- that is the trade for having something that survives a
+# blow of 21000. Zero turns it off.
+tough_mob = 5000000.0
+tough_mobs = 4
+
 # Everything a player arrives with. These used to be a 428-character command line.
 [rules]
 start_level = 100
@@ -60,7 +67,3 @@ drop_templates = [
 # figure, chosen so a player at 6000 health actually loses some and a life leech has
 # something to give back.
 creature_damage = 250.0
-# What the player hits for, overriding the level curve's 21000 at level 100. Forcing a
-# creature's health instead is what made the mobs look like they had none: the client
-# knows each one holds 24 from its own table, so 200000 is a figure it contradicts.
-mob_damage = 8.0
