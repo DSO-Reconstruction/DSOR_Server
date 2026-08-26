@@ -26,6 +26,32 @@ on most are usable from Arch directly.
 
 ## The three layers
 
+### The short version, for the Windows VM
+
+`hookcap.py` lives in this repository, on the Linux side. Running it *from* the VM
+means reaching it through the share, and there is a wrapper that does exactly that —
+`hook-dso.ps1`. In the VM:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 -SocketOnly
+```
+
+That attaches to a running `dro_client64.exe`, captures UDP payloads only, and writes
+`session-<timestamp>.jsonl` into `\\host.lan\Data\dso-capture` — which is
+`~/dso-capture` on the Linux side, where the analysis tools already look.
+
+`-SocketOnly` is the mode to use for anything about *what* the server sends. The
+default also hooks the serialisation entry point, which is for working out how a
+message is laid out and is much noisier.
+
+Add `-Spawn -CmdFile \\host.lan\Data\dso\cmd.txt` to launch the client under Frida
+instead of attaching to one already running. That is the only way to see the login
+sequence: the handshake, the 0x8A credential and the server handoff happen in the first
+seconds and never again.
+
+`-ShowArgs` prints the command line the launcher passed the running client, which is
+how you find those arguments rather than guessing them.
+
 ### 1. Socket capture — always works, no addresses needed
 
 ```bash

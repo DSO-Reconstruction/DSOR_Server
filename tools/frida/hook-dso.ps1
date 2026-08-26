@@ -20,24 +20,24 @@
 
 .EXAMPLE
     # Preuve que Frida s'attache et que les hooks socket se declenchent.
-    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1 -SocketOnly
+    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 -SocketOnly
 
 .EXAMPLE
     # Lire les arguments que le lanceur passe au client (jeu en cours d execution).
-    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1 -ShowArgs
+    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 -ShowArgs
 
 .EXAMPLE
     # Rejouer la ligne de commande du lanceur, en pointant le client sur ton serveur.
-    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1 -Spawn `
+    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 -Spawn `
         -CmdFile \\host.lan\Data\dso\cmd.txt -LoginIp 192.168.1.50:2190
 
 .EXAMPLE
     # Capture complete depuis le lancement, sequence de login incluse.
-    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1 -Spawn -SpawnArgs '--token','abc'
+    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 -Spawn -SpawnArgs '--token','abc'
 
 .EXAMPLE
     # Le jeu tourne deja: on ne verra que le gameplay en regime etabli.
-    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\hook-dso.ps1
+    powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1
 #>
 [CmdletBinding()]
 param(
