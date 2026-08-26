@@ -364,10 +364,10 @@ class Service:
         self.shop_price: float | None = None
         #: What the world does, and what it currently is. Rules are set once from
         #: the command line; state changes every tick.
-        self.rules = Rules()
+        self._rules = Rules()
         #: The player state with the skill book patched, built once.
         self._granted_state: bytes | None = None
-        self.world = World(rules=self.rules)
+        self.world = World(rules=self._rules)
         #: Wire recorder, or None. Shared between services so one file holds the
         #: whole session across all three tiers, in one frame numbering.
         self.capture = capture
@@ -1255,6 +1255,22 @@ class Service:
             saved.saves,
         )
         return True
+
+    @property
+    def rules(self) -> Rules:
+        """The rules this service serves, which are the world's own object.
+
+        A property rather than an attribute because the two were separate references
+        to one object: mutating ``service.rules.foo`` reached the world, and *replacing*
+        ``service.rules`` silently did not. That is a fault that costs a whole
+        test cycle to find, since everything keeps working except the one thing that
+        was set.
+        """
+        return self.world.rules
+
+    @rules.setter
+    def rules(self, value: Rules) -> None:
+        self.world.rules = value
 
     def within_rate(self, sender) -> bool:
         """Whether this peer is inside its datagram budget for the current second.
