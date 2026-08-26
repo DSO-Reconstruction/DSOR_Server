@@ -1371,3 +1371,57 @@ def _stride(state: bytes | None) -> int:
         return BUILT_ELEMENT_BITS
     room = len(state[3:]) * 8 - EFFECT_ELEMENT_BIT - EFFECT_ACTOR_BITS - 8
     return EFFECT_ELEMENT_BITS if room // count >= EFFECT_ELEMENT_BITS else BUILT_ELEMENT_BITS
+
+
+# ── location effects, the third list ────────────────────────────────────────
+#
+# ``LocationStatusEffects`` is where earthquake and defiance -- Dragon Hide -- keep
+# everything they do, and this server serves none of it. That was recorded as a gap
+# twice, first as "la zone qui tape ne s'affiche pas" and then as Dragon Hide having no
+# effect, and both times the conclusion was that a location effect is an aura on the
+# ground rather than on an actor and there was nothing to send.
+#
+# There is. A capture of the live service with every warrior skill cast contains the
+# commands, and they are a family of three:
+#
+#   0x003C NewLocationEffectCommand       05 00 | 01 00 | 0c 00 "SphereEffect" | ...
+#   0x003E LocationEffectInfoCommand      07 00 | 00 00 00 00 | 01 00 | 0c 00 "Sphere…"
+#   0x003D DiscardLocationEffectCommand   06 00 | 01 00 | 00 00 00 00 | ff 3e 00 | ...
+#
+# Every one names ``SphereEffect`` -- sixteen of sixteen -- so the leading fields are an
+# instance id and the shape to draw. They are large, 341 to 1165 bytes, which says they
+# carry the effect's graphics as well as its geometry.
+#
+# What is kept here is one of each, so the samples are not lost with the capture. What
+# is *not* here is an encoder: the bodies are only read as far as the shape name, and
+# inventing the rest is how the skill command came to be 26 bytes of a 64-byte message.
+
+LOCATION_EFFECT_NEW = "location_effect_003c.bin"
+LOCATION_EFFECT_INFO = "location_effect_003e.bin"
+LOCATION_EFFECT_DISCARD = "location_effect_003d.bin"
+
+#: The shape every location effect in the capture names.
+LOCATION_EFFECT_SHAPE = "SphereEffect"
+
+
+def location_effect(name: str) -> bytes:
+    """One recorded location effect command, whole."""
+    return payload(name)
+
+
+def location_effect_shape(message: bytes) -> str | None:
+    """The shape a location effect command names, or None if it names none.
+
+    Read by scanning the first bytes for a length-prefixed printable string rather
+    than from a fixed offset, because the three commands in the family put it in
+    three different places -- offset 4 in the new one, 6 in the info one.
+    """
+    body = message[3:]
+    for at in range(0, 12):
+        length = int.from_bytes(body[at : at + 2], "little")
+        if not 4 <= length <= 40 or at + 2 + length > len(body):
+            continue
+        text = body[at + 2 : at + 2 + length]
+        if all(32 <= c < 127 for c in text):
+            return text.decode("ascii")
+    return None
