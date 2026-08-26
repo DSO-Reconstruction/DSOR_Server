@@ -31,6 +31,14 @@ FIELDS = [
     "Id", "StatusEffectDuration", "StatusEffectTickRate", "MaxStackSize",
     "StartModifiers", "TickModifiers", "StopModifiers", "DoneModifiers",
     "ExclusiveGroup", "Groups", "StartSequence", "TickSequence", "StartAnimation",
+    # The aura columns, without which a location effect is an empty container. Every
+    # aura this project needed carries no modifiers of its own: skill_earthquake_aura
+    # has none, and what it does lives in AuraEffectId -- a *semicolon-separated
+    # list* of the effects it puts on whatever stands inside it. Reading the aura and
+    # stopping there is why earthquake and defiance looked like effects that did
+    # nothing: the crater's stun is skill_earthquake_shockwave_aura's AuraEffectId,
+    # and Dragon Hide's free skills are skill_defiance_buff_creators_aura's.
+    "AuraEffectId", "AuraRadius", "AuraTargets",
 ]
 
 
@@ -65,6 +73,27 @@ def referenced(db) -> set[str]:
                 head = entry.split(",")[0].strip()
                 if head:
                     names.add(head)
+
+    # And whatever those reach through their auras, transitively. An aura carries no
+    # modifiers of its own -- its work is the effects named in AuraEffectId -- and
+    # those leaves are named by no skill, so stopping at the skills' own lists left
+    # skill_earthquake_dmg, skill_earthquake_shockwave_dmg and Dragon Hide's two
+    # resource effects out of the table entirely. Every one of them is the whole of
+    # what its skill actually does.
+    chain = dict(
+        (row[0], row[1] or "")
+        for row in db.execute("SELECT Id, AuraEffectId FROM _Template_StatusEffect")
+    )
+    frontier = set(names)
+    while frontier:
+        reached = set()
+        for name in frontier:
+            for leaf in chain.get(name, "").split(";"):
+                leaf = leaf.strip()
+                if leaf and leaf not in names:
+                    reached.add(leaf)
+        names |= reached
+        frontier = reached
     return names
 
 
@@ -336,6 +365,27 @@ class Effect:
     start_sequence: str
     tick_sequence: str
     start_animation: str
+    #: The effects this aura puts on whatever stands inside it, as the column holds
+    #: them: a semicolon-separated list of effect ids. See :attr:`aura_effects`.
+    aura_effect_ids: str = ""
+    #: How wide the aura reaches, in world units. 2.15 for earthquake's own aura,
+    #: 3.0 for its shockwave, 5.75 for Dragon Hide.
+    aura_radius: float = 0.0
+    #: Who it reaches: Creator, Enemies, Allies.
+    aura_targets: str = ""
+
+    @property
+    def aura_effects(self) -> tuple[str, ...]:
+        """The ids in :attr:`aura_effect_ids`, split.
+
+        A single-value column that is sometimes a list is exactly the shape that gets
+        read as one name and found missing: looking up the whole of
+        ``"skill_earthquake_dmg;skill_earthquake_debuff_movementspeed"`` finds
+        nothing, and nothing is what earthquake did.
+        """
+        return tuple(
+            part.strip() for part in self.aura_effect_ids.split(";") if part.strip()
+        )
 
     @cached_property
     def starts(self) -> tuple[Modifier, ...]:
@@ -413,12 +463,13 @@ EFFECTS: dict[int, Effect] = {{}}''')
     print("for _row in [")
     for row in rows:
         (wire, eid, duration, rate, stack, start, tick, stop, done, excl, groups,
-         start_seq, tick_seq, start_anim) = row
+         start_seq, tick_seq, start_anim, aura_ids, aura_radius, aura_targets) = row
         print(
             f"    ({wire}, {text(eid)!r}, {num(duration)!r}, {num(rate)!r},"
             f" {whole(stack)}, {text(start)!r}, {text(tick)!r}, {text(stop)!r},"
             f" {text(done)!r}, {text(excl)!r}, {text(groups)!r},"
-            f" {text(start_seq)!r}, {text(tick_seq)!r}, {text(start_anim)!r}),"
+            f" {text(start_seq)!r}, {text(tick_seq)!r}, {text(start_anim)!r},"
+            f" {text(aura_ids)!r}, {num(aura_radius)!r}, {text(aura_targets)!r}),"
         )
     print("]:")
     print("    EFFECTS[_row[0]] = Effect(*_row)")
@@ -436,6 +487,21 @@ EFFECTS: dict[int, Effect] = {{}}''')
     print("SKILL_EFFECTS: dict[int, tuple[str, str]] = {")
     for wire, sid, user, victim in grants:
         print(f"    {wire}: ({text(user)!r}, {text(victim)!r}),  # {sid}")
+    print("}")
+
+    # And the third list, which no earlier version of this table carried. A skill's
+    # LocationStatusEffects is what it lays on the ground: earthquake's crater and
+    # Dragon Hide's are both entirely here, which is why both looked inert.
+    places = db.execute(
+        "SELECT rowid - 1, Id, LocationStatusEffects"
+        " FROM _Template_Skill WHERE CharClass <> '' AND LocationStatusEffects <> ''"
+        " ORDER BY rowid"
+    ).fetchall()
+    print()
+    print("#: What each class skill lays on the ground, by skill wire index.")
+    print("SKILL_LOCATIONS: dict[int, str] = {")
+    for wire, sid, where in places:
+        print(f"    {wire}: {text(where)!r},  # {sid}")
     print("}")
 
     # What each skill's own tooltip says it does.

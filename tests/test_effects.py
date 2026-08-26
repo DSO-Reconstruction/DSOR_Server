@@ -200,8 +200,12 @@ def test_a_buff_stops_when_it_runs_out():
 
     world._drain()
     world._tick_pair(sender)
-    state = world._drain()[0][1]
-    assert status_effect_index(state) == 1350, "back to the recording"
+    # And nothing is sent. It used to fall back on the recorded 0x004F, which puts the
+    # tutorial dungeon's heal on the player 25 times a second -- 1823 of the 1836
+    # status-effect commands one session sent, against 91 for the whole of a live
+    # session. Each is an add for an effect already present, and since a 0x004F is an
+    # actor's whole effect list, the replay also wiped the buff applied a tick earlier.
+    assert not [p for _a, p in world._drain() if p[1:3] == b"\x4f\x00"]
 
 
 def test_the_switch_turns_the_whole_thing_off():
@@ -211,7 +215,7 @@ def test_the_switch_turns_the_whole_thing_off():
     assert world.player(sender).buffs == []
     world._drain()
     world._tick_pair(sender)
-    assert status_effect_index(world._drain()[0][1]) == 1350
+    assert not [p for _a, p in world._drain() if p[1:3] == b"\x4f\x00"]
 
 
 def test_a_skill_whose_tooltip_promises_nothing_grants_nothing():
@@ -279,7 +283,9 @@ def test_all_of_a_skills_effects_travel_now():
     have, built = servable_effects(
         effects.wire_of(entry.effect) for entry in granted
     )
-    assert len(have) == 2 and len(built) == 2, "two of each, in this capture"
+    # All four have a real element now. Reading the element table from every capture
+    # rather than one is what did it: 76 effects instead of 34.
+    assert len(have) == 4 and not built, "all four are captured now"
     assert status_effect_count(state) == 4
     assert set(status_effect_indices(state)) == {
         effects.wire_of(entry.effect) for entry in granted
@@ -393,31 +399,54 @@ def test_no_empty_status_effect_command_is_ever_sent():
             assert status_effect_count(payload) > 0, "an empty command went out"
 
 
-def test_nothing_a_warrior_inflicts_can_be_drawn_yet():
-    """Two separate reasons that between them cover every warrior debuff.
+def test_what_a_warrior_inflicts_can_be_drawn_now():
+    """The count that says how much of the warrior is actually served.
 
-    debuff_dot_poison and debuff_cc_stun have no captured element: a capture of the live
-    service with every warrior skill cast does not contain them, because they are
-    talent-gated there too. And debuff_cc_charge, which *is* in the capture, is refused
-    by the skill-reference check -- its modifiers name chainlightning, lightningstrike
-    and balllightning, which a warrior does not have.
+    It used to be one -- warshout's movement speed, the single effect the operator ever
+    saw land -- and the reason was not the mechanic but the element table: it was read
+    from one capture, which held 34 effects and none of the warrior's debuffs. Read
+    from all of them it holds 76, and the stun, the poison and both armour breaks are
+    among the new ones.
 
-    So the mechanic is served and the drawing is not, and the log says which once.
+    What is still missing is a clean set, and knowing which is the point of this test:
+    five LocationEffects (defiance's three, earthquake's two) need a message this server
+    has no encoder for, and the rest are taunt auras with no real element anywhere.
     """
     from dsor.elements import element
-    from dsor.skills import by_id
+    from dsor.skills import of_class, wire_of as skill_wire
 
-    world, _sender = a_player()
-    world.rules.force_effects = True
-    inflicted = world._entries(by_id("mightybash"), victim=True)
-    assert inflicted, "the skill does inflict something"
-    assert all(element(effects.wire_of(e.effect)) is None for e in inflicted)
+    have, missing = [], []
+    for skill in of_class("warrior"):
+        for kind, name in effects.PROMISED.get(skill_wire(skill.id), ()):
+            try:
+                where = element(effects.wire_of(name))
+            except Exception:
+                where = None
+            (have if where else missing).append((kind, name))
 
-    assert element(effects.wire_of("debuff_cc_charge")) is not None, "captured"
-    from dsor.skills import of_class
+    assert len(have) == 14, sorted(name for _k, name in have)
+    for name in (
+        "skill_laceratingstrike_debuff_armor",
+        "skill_seismicslam_debuff_armor",
+        "skill_mightyswing_debuff_reduce_damage",
+        "skill_warshout_buff_movementspeed",
+        "skill_frenzyshout_buff_armor",
+    ):
+        assert any(n == name for _k, n in have), name
 
-    warrior = frozenset(sk.id for sk in of_class("warrior"))
-    assert not effects.by_id("debuff_cc_charge").servable(warrior), "names mage skills"
+    # Every one still missing is a location effect or an aura, not a debuff.
+    assert all(
+        kind == "LocationEffect" or "aura" in name or "taunt" in name
+        or name == "buff_resourceonhit"
+        or name.startswith("skill_battlecry_debuff")
+        or name == "skill_enragingleap_buff_attackspeed"
+        for kind, name in missing
+    ), sorted(missing)
+    assert sum(1 for kind, _n in missing if kind == "LocationEffect") == 5
+
+    # And the two the game itself puts on a monster, which this server also inflicts.
+    assert element(effects.wire_of("debuff_cc_stun")) is not None
+    assert element(effects.wire_of("debuff_dot_poison")) is not None
 
 
 def test_the_pool_is_a_hundred_and_the_arithmetic_comes_out_exact():
@@ -691,13 +720,19 @@ def test_elements_are_copied_off_the_wire_and_not_built():
     assert len(changed) <= 12, f"{len(changed)} bytes changed, expected the ticks only"
 
 
-def test_an_effect_with_no_captured_element_is_built_rather_than_dropped():
-    """It used to be dropped, and that is why nothing arrived.
+def test_an_effect_with_no_captured_element_is_left_out():
+    """The opposite of what this test used to say, and the opposite is what works.
 
-    Thirty-four effects were captured and the game has 6703, so "only what the capture
-    holds" meant almost nothing. One without a captured element is built from the corpus
-    constants instead -- and a captured one is still preferred, because it also carries
-    the vectors and whatever field 4's few non-zero values mean.
+    It used to assert that an effect with no captured element is *built* from corpus
+    constants rather than dropped, on the reasoning that 34 captured effects against
+    the game's 6703 made "only what is captured" mean almost nothing. The client
+    disagreed in the quietest way there is: HandleStatusEffect has three bail-outs
+    that return without a word, a forged or borrowed element takes one of them, and
+    the effect neither drew nor complained.
+
+    Two things changed. The table is read from every capture now, so the four effects
+    below are all real -- the stun and the poison among them. And anything still
+    missing is left out of the message instead of being faked.
     """
     from dsor.elements import element
     from dsor.recorded import (
@@ -707,7 +742,7 @@ def test_an_effect_with_no_captured_element_is_built_rather_than_dropped():
         status_effects_message,
     )
 
-    captured, built = servable_effects(
+    wires = [
         effects.wire_of(name)
         for name in (
             "skill_warshout_buff_movementspeed",
@@ -715,26 +750,32 @@ def test_an_effect_with_no_captured_element_is_built_rather_than_dropped():
             "skill_frenzyshout_buff_armor",
             "debuff_dot_poison",
         )
-    )
-    assert [effects.effect(w).id for w in captured] == [
-        "skill_warshout_buff_movementspeed",
-        "skill_frenzyshout_buff_armor",
     ]
-    assert [effects.effect(w).id for w in built] == [
-        "debuff_cc_stun",
-        "debuff_dot_poison",
-    ]
+    captured, built = servable_effects(wires)
+    assert captured == wires and not built, "all four are real now"
 
-    # All four go out, two spliced and two built.
-    wires = captured + built
     sent = status_effects_message(
         [(w, [0.4, 0.0, 0.0, 0.0, 0.0], 41230, 5.0) for w in wires],
         b"\x86\x00\x01\x00",
-        source=b"\x08\x00\x01\x00",
+        source=b"\x86\x00\x01\x00",
         instance=0x00010200,
     )
     assert status_effect_count(sent) == 4
     assert status_effect_indices(sent) == wires
+
+    # And one with nothing real behind it travels only if lending is asked for.
+    absent = effects.wire_of("skill_battlecry_debuff_resistance")
+    assert element(absent) is None
+    quiet = status_effects_message(
+        [(absent, [0.0], 41230, 5.0)], b"\x86\x00\x01\x00",
+        source=b"\x86\x00\x01\x00", instance=0x00010200,
+    )
+    assert status_effect_count(quiet) == 0, "not faked"
+    loud = status_effects_message(
+        [(absent, [0.0], 41230, 5.0)], b"\x86\x00\x01\x00",
+        source=b"\x86\x00\x01\x00", instance=0x00010200, lend=True,
+    )
+    assert status_effect_count(loud) == 1, "unless lending is asked for"
 
 
 def test_an_animated_effect_can_be_held_back():
@@ -1019,9 +1060,11 @@ def test_the_location_effect_family_is_kept():
 def test_a_copied_element_gets_the_template_s_parameters_not_the_capture_s():
     """The difference between a buff and a debuff, and it showed as one.
 
-    The captured element for skill_warshout_buff_movementspeed carries $0 = -0.4 where
-    the skill's own template says +0.4, so copying it whole gave a forty percent *slow*.
-    The effect applied perfectly and in the wrong direction.
+    An earlier captured element for skill_warshout_buff_movementspeed carried $0 = -0.4
+    where the skill's own template says +0.4, so copying it whole gave a forty percent
+    *slow*. The effect applied perfectly and in the wrong direction. The element table
+    is read from every capture now and the newest one carries +0.4, so the test writes a
+    third value instead of relying on the capture disagreeing.
 
     Parameters are safe to write, unlike the rest of the element: their layout is a
     32-bit count and that many float32, which is established. So the rule is copy what
@@ -1042,15 +1085,15 @@ def test_a_copied_element_gets_the_template_s_parameters_not_the_capture_s():
         struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
         for _ in range(count)
     ]
-    assert original[0] == pytest.approx(-0.4), "what the wire carried"
+    assert original[0] != pytest.approx(0.25), "the capture carries something else"
 
-    written = real_element(wire, 41230, 10.0, [0.4, 0.0, 0.0, 0.0, 0.0])
+    written = real_element(wire, 41230, 10.0, [0.25, 0.0, 0.0, 0.0, 0.0])
     reader = BitReader(written, at)
     now = [
         struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
         for _ in range(count)
     ]
-    assert now[0] == pytest.approx(0.4), "what the template says"
+    assert now[0] == pytest.approx(0.25), "what the template says"
 
 
 def test_the_whole_path_sends_the_buff_with_the_sign_the_template_gives():
@@ -1139,7 +1182,7 @@ def test_dragon_hide_is_six_auras_and_none_of_them_heal():
         assert "talent" in name
 
 
-def test_a_built_element_reproduces_the_real_ones_it_can_be_checked_against():
+def test_a_built_element_does_not_reproduce_the_real_ones():
     """The test that makes building elements defensible again.
 
     Three earlier readings of these fields each came from the one sample in front of me
@@ -1197,39 +1240,57 @@ def test_a_built_element_reproduces_the_real_ones_it_can_be_checked_against():
                 i for i, (a, b) in enumerate(zip(mine, integers)) if a != b
             }
 
+    # This used to demand that building reproduce almost every real element, on a
+    # corpus of 13. Against the 31 the full set of captures gives, it does not: the
+    # "constants" it writes hold for most elements and not all -- across the whole
+    # table field 2 is 25 in 49 of 76 and 0 in 24, and field 6 is 100 in 68 and
+    # something small in the other eight.
+    #
+    # That is why a built element is no longer sent. The test keeps the measurement
+    # rather than the demand, because the measurement is the argument for the policy.
     assert same + differ >= 13, "the committed corpus holds the 477-bit form"
-    assert same >= differ * 3, f"{same} identical against {differ} not"
-    assert fields_that_differ <= {4}, (
-        f"fields {sorted(fields_that_differ)} differ, expected only 4"
+    assert differ, "and building does not reproduce all of them"
+    assert fields_that_differ <= {1, 2, 4, 5, 6}, (
+        f"fields {sorted(fields_that_differ)} differ"
+    )
+    assert 3 not in fields_that_differ and 7 not in fields_that_differ, (
+        "the start tick and the actor are written, so they always match"
     )
 
 
-def test_every_effect_can_be_served_now_even_without_a_capture():
-    """34 effects were captured and the game has 6703.
+def test_the_stun_and_the_poison_are_real_now():
+    """The two effects the operator kept asking for, and why they never showed.
 
-    An effect with no captured element is built rather than dropped, so the answer to
-    "no effect at all" is no longer "the capture does not have it".
+    They were served by lending another effect's element, because the element table was
+    read from a single capture -- the one taken with every warrior skill cast, which
+    holds 34 effects and neither of these. Both are in the older tutorial sessions,
+    addressed to actors 0x10085..0x1008c, so the live service does put them on monsters
+    and the examples were on disk the whole time.
     """
+    from dsor.elements import ELEMENTS, element
     from dsor.recorded import (
         status_effect_count,
+        status_effect_fields,
         status_effect_indices,
         status_effects_message,
     )
 
-    # debuff_cc_stun and debuff_dot_poison have no captured element.
-    from dsor.elements import element
-
+    assert len(ELEMENTS) >= 76, "read from every capture, not one"
     wires = [effects.wire_of("debuff_cc_stun"), effects.wire_of("debuff_dot_poison")]
-    assert all(element(w) is None for w in wires)
+    assert all(element(w) is not None for w in wires), "real, not lent"
 
+    monster = b"\x86\x00\x01\x00"
     sent = status_effects_message(
         [(w, [0.4, 0.0, 0.0, 0.0, 0.0], 41230, 5.0) for w in wires],
-        b"\x86\x00\x01\x00",
-        source=b"\x08\x00\x01\x00",
+        monster,
+        source=monster,
         instance=0x00010200,
     )
     assert status_effect_count(sent) == 2
     assert status_effect_indices(sent) == wires
+    # Field 7 is the actor the effect is on, not the caster: it equals the addressed
+    # actor in all 568 monster-addressed elements the captures hold.
+    assert status_effect_fields(sent)[7] == int.from_bytes(monster, "little")
 
 
 def test_an_effect_command_is_sent_on_change_and_not_every_tick():
@@ -1306,7 +1367,11 @@ def test_a_change_is_sent_and_an_expiry_clears_the_memory():
 
 
 def test_an_effect_without_an_element_borrows_a_real_one_whole():
-    """Building from corpus constants was the previous answer, and this is stronger.
+    """What lending does when it is asked for, which by default it is not.
+
+    Kept because the mechanism is how the emptiness of a borrowed element was
+    established: the client accepts such a message, draws nothing and says nothing.
+    Rules.lend_elements is off for that reason, and this test only pins the encoder.
 
     The vector-carrying form is the majority -- 93 of 119 real elements -- and its
     constants differ from the 477-bit form's: field 2 is 75 in 58 of them where the other
@@ -1324,7 +1389,10 @@ def test_an_effect_without_an_element_borrows_a_real_one_whole():
     from dsor.recorded import borrowed_element, element_parameters
     from raknet.bitstream import BitReader
 
-    wire = effects.wire_of("skill_laceratingstrike_debuff_armor")
+    # laceratingstrike's armour break used to be the example here. It has a real
+    # element now, so the example moved to one that still has none -- battlecry's
+    # resistance debuff, which no capture holds.
+    wire = effects.wire_of("skill_battlecry_debuff_resistance")
     assert element(wire) is None, "this one has no element of its own"
 
     span, donor = DONOR
@@ -1390,7 +1458,16 @@ def test_every_promised_effect_of_every_warrior_skill_goes_out():
         state = next(
             (p for _a, p in world._drain() if p[1:3] == b"\x4f\x00"), None
         )
-        assert state is not None, skill.id
+        if state is None:
+            # Nothing servable, so nothing is sent -- battlecry, whose one promised
+            # user effect is a taunt aura with no real element anywhere. Silence is the
+            # right answer; the recorded 0x004F this used to fall back on put the
+            # tutorial heal on the player instead.
+            from dsor.elements import element
+
+            for name in promised:
+                assert element(effects.wire_of(name)) is None, f"{skill.id}: {name}"
+            continue
         sent = {effects.effect(w).id for w in status_effect_indices(state)}
         # Everything promised that changes something. The two that do not are taunt
         # auras carrying no modifier at all -- like defiance's, their work is in the
@@ -1403,3 +1480,81 @@ def test_every_promised_effect_of_every_warrior_skill_goes_out():
         assert wanted <= sent, f"{skill.id}: {wanted - sent} missing"
         for name in set(promised) - wanted:
             assert name.endswith("_aura"), f"{skill.id}: {name} dropped and not an aura"
+
+
+def test_a_debuff_reaches_the_creature_it_is_put_on():
+    """The end-to-end check that was missing while nothing worked.
+
+    Every earlier test of the victim side stopped at ``creature.effects`` -- the
+    bookkeeping -- or at "the count is not zero". None of them asked whether the effect
+    that reached the wire was the one the skill promises, addressed to the creature,
+    carrying an element the live service actually sent. That gap is how three warrior
+    debuffs could be inflicted, logged, encoded and still draw nothing for weeks: they
+    had no real element, so they were served a borrowed one, and the client discards a
+    borrowed element without a word.
+    """
+    from dsor.elements import element
+    from dsor.gameplay import Position
+    from dsor.recorded import status_effect_indices, walk_elements
+    from dsor.skills import by_id, of_class
+    from dsor.world import Creature, World
+
+    empty = World(name="t")
+    empty.rules.mobs = 0
+
+    checked = 0
+    for skill in of_class("warrior"):
+        # Driven by the path the server actually takes, not by PROMISED directly.
+        # stuncharge is the reason: it has no tooltip row at all, so PROMISED is empty
+        # for it, and its stun comes from the C:1.0 fallback instead. Reading the
+        # tooltip table here would have tested everything except the stun.
+        promised = [
+            entry.effect
+            for entry in empty._entries(skill, victim=True)
+            if element(effects.wire_of(entry.effect)) is not None
+        ]
+        if not promised:
+            continue
+
+        world, sender = a_player()
+        world.player(sender).level = 104
+        world.player(sender).server_tick = 41230
+        actor = b"\x86\x00\x01\x00"
+        world.creatures[actor] = Creature(
+            actor=actor,
+            record=b"",
+            position=Position(0, 0, 0),
+            health=5_000_000.0,
+            max_health=5_000_000.0,
+            blueprint="a0001_gen_anderworld_creature",
+            described=True,
+        )
+        world.inflict_effects(actor, by_id(skill.id))
+        world._drain()
+        world._tick_pair(sender)
+
+        addressed = [
+            payload for _a, payload in world._drain() if payload[1:3] == b"\x4f\x00"
+        ]
+        mine = [p for p in addressed if walk_elements(p)[1] == int.from_bytes(actor, "little")]
+        assert mine, f"{skill.id}: nothing addressed to the creature"
+        sent = {effects.effect(w).id for w in status_effect_indices(mine[0])}
+        assert set(promised) <= sent, f"{skill.id}: {set(promised) - sent} missing"
+
+        # And every element that travelled is a real one, byte for byte apart from the
+        # fields this server rewrites: the index, the three ticks, the instance, the
+        # actor and the parameters.
+        found, _actor = walk_elements(mine[0])
+        for index, _at, span in found:
+            real = element(index)
+            assert real is not None, f"{skill.id}: effect {index} has no real element"
+            assert real[0] == span, f"{skill.id}: effect {index} changed length"
+        checked += 1
+
+    assert checked >= 6, f"only {checked} warrior skills had a servable victim effect"
+    # And the stun among them, which is the one that was asked for by name.
+    assert element(effects.wire_of("debuff_cc_stun")) is not None
+    assert any(
+        entry.effect == "debuff_cc_stun"
+        for entry in empty._entries(by_id("stuncharge"), victim=True)
+    ), "stuncharge stuns"

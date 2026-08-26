@@ -66,6 +66,7 @@ from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
 from dsor import effects
 from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
+from dsor.afflictions import UNAFFECTED, Condition, condition_of
 from dsor.monsters import Monster, monster
 from dsor.skills import Skill, skill as skill_at
 from dsor.trust import Claims, movement_is_plausible, off_cooldown
@@ -332,6 +333,18 @@ class Rules:
     start_level: int = 0
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
+    #: Whether the effects on an actor change the simulation: a stun stops a
+    #: creature moving and swinging, an armour break raises the damage it takes, a
+    #: damage debuff lowers the damage it deals. Off, every effect was decoration.
+    honour_effects: bool = True
+
+    #: Whether to hand an effect with no captured element one belonging to another
+    #: effect. Off, and it should stay off: the client accepts such a message and
+    #: draws nothing, so the only thing lending buys is the illusion of coverage.
+    #: It exists as a switch because turning it on is how the emptiness of a
+    #: borrowed element was established in the first place.
+    lend_elements: bool = False
+
     #: Whether to answer a pickup at all.
     #:
     #: Answering replays the recorded inventory, which carries the layout of every
@@ -397,6 +410,9 @@ class Creature:
     #: Whether the client has been told to delete this entity. A corpse that has had
     #: its time is discarded once, not once per tick.
     discarded: bool = False
+    #: What its effects do to it, recomputed once a tick in advance_creatures rather
+    #: than at each of the three places that need it. See dsor.afflictions.
+    condition: "Condition" = UNAFFECTED
 
     @classmethod
     def from_record(cls, record: bytes, max_health: float) -> "Creature":
@@ -881,6 +897,27 @@ class World:
             where.y / WORLD + dz,
         )
 
+    def wire_of_described(self, where: tuple[float, float, float]) -> Position:
+        """The inverse of :meth:`described_position`, frame offset and all.
+
+        Needed because a dropped item is remembered in the descriptions' frame — the
+        drop message wants it that way — while every distance is measured on the wire.
+        Multiplying by the scale and stopping there loses the constant offset, which
+        is 31.18 units of z on the tutorial map: about 3,991 wire units, against a
+        pickup bound of 1,536. That is how every pickup came to be refused as "too
+        far away" while the item lay at the player's feet, and it is the same
+        two-frames mistake :meth:`wire_position` was written to end.
+        """
+        # Reading it back through described_position derives the offset if it has not
+        # been derived yet, so the two directions can never disagree.
+        self.described_position(Position(0, 0, 0))
+        dx, dy, dz = self.frame_offset or (0.0, 0.0, 0.0)
+        return Position(
+            int((where[0] - dx) * WORLD),
+            int((where[1] - dy) * WORLD),
+            int((where[2] - dz) * WORLD),
+        )
+
 
     def _standing_room(self, centre: Position, count: int) -> list[Position]:
         """*count* places around *centre*, in rings, nearest ring first.
@@ -971,7 +1008,12 @@ class World:
         placed = []
         for creature in announced:
             template, here = creature.record, creature.position
-            if not standing:
+            # What is on it, translated into mechanics, once a tick. Sending a stun to
+            # the client changed nothing on its own: the client owns the *player's*
+            # movement and this server owns a creature's, so a stunned creature kept
+            # walking and kept swinging straight through it.
+            creature.condition = self.condition(creature)
+            if not standing or not creature.condition.moves:
                 placed.append(with_motion(template, here, tick, speed=0))
                 continue
             # The nearest player in the world. With one player this is the player, so
@@ -989,7 +1031,8 @@ class World:
                 # from across the zone.
                 placed.append(with_motion(template, here, tick, speed=0))
                 continue
-            if span <= self.rules.mob_speed * elapsed:
+            pace = self.rules.mob_speed * creature.condition.speed
+            if span <= pace * elapsed:
                 # Arrived: stand and face the player. Clamping the step to the
                 # distance remaining left the creature always a fraction outside,
                 # announcing a walk it never finished — "elles s'arretent loin et
@@ -1000,7 +1043,7 @@ class World:
                     with_motion(template, here, tick, speed=0, heading=heading)
                 )
                 continue
-            step = min(self.rules.mob_speed * elapsed, span)
+            step = min(pace * elapsed, span)
             moved = Position(
                 x=here.x + round((target.x - here.x) * step / span),
                 elevation=position.elevation,
@@ -1248,8 +1291,14 @@ class World:
             # because the whole effect lives in status effects: battlecry debuffs
             # movement speed, resistance and attack speed for five seconds, and
             # earthquake lays an aura on the ground that does its damage over eight.
-            # This server models neither, so it says so rather than serving a blow of
-            # zero that reads as a bug.
+            #
+            # The aura is served now. earthquake's crater stuns and burns everything
+            # inside 3.0 units and slows everything inside 2.15; Dragon Hide makes
+            # every skill free for ten seconds. Both were "not modelled" because the
+            # skill's third effect list was never read.
+            self.lay_auras(sender, used)
+            if effects.SKILL_LOCATIONS.get(used.wire):
+                return
             log.info(
                 "%s: %s used %s (%s, x%.2f), whose effect this server does not model",
                 self.name,
@@ -1260,6 +1309,7 @@ class World:
             )
             return
 
+        self.lay_auras(sender, used)
         targets = self.victims_of(sender, used, aim)
         if not targets:
             log.info(
@@ -1286,7 +1336,11 @@ class World:
         dealt = 0.0
         for target in targets:
             struck = self.creatures[target]
-            left = max(0.0, struck.health - blow)
+            # An armour break is worth what it changes. Each creature's own condition,
+            # so two standing side by side take different damage from one swing --
+            # which is the whole point of having broken one's armour.
+            hit_for = blow * struck.condition.damage_taken
+            left = max(0.0, struck.health - hit_for)
             struck.health = left
 
             # The blow, generated. A creature has no health message of its own —
@@ -1303,7 +1357,7 @@ class World:
                     Hit(
                         victim=int.from_bytes(target, "little"),
                         attacker=player,
-                        damage=int(blow),
+                        damage=int(hit_for),
                         victim_health=int(left),
                         victim_max_health=int(struck.max_health),
                         # The attacker, which for the player's own blow is the
@@ -1321,15 +1375,15 @@ class World:
                 sender,
             )
             self.inflict_effects(target, used)
-            self.start_dots(sender, target, used, blow)
-            dealt += blow
+            self.start_dots(sender, target, used, hit_for)
+            dealt += hit_for
             log.info(
                 "%s: %s hit entity %s with %s for %.0f, %.1f left",
                 self.name,
                 sender,
                 target.hex(" "),
                 used.id if used else "an unknown skill",
-                blow,
+                hit_for,
                 left,
             )
             if left <= 0.0:
@@ -1486,7 +1540,9 @@ class World:
         if used is None:
             return False
         pool = self.resource_pool(sender)
-        change = (used.resource_gain - used.resource_cost) * pool
+        # Dragon Hide's ResourceCost:-1.0,relative,player_skills makes it zero.
+        cost = used.resource_cost * self.condition(self.player(sender)).resource_cost
+        change = (used.resource_gain - cost) * pool
         if not change:
             return False
         player = self.player(sender)
@@ -1575,6 +1631,166 @@ class World:
             ", ".join(entry.effect for entry in inflicted),
         )
 
+    def regenerate(self, player) -> None:
+        """The resource an effect gives back each tick.
+
+        Dragon Hide's ``SkillResourceRegeneration:5.0,absolute`` -- five a second, so
+        a fifth of that per tick at 25 ticks to the second. The other half of that
+        skill is the free skills, in spend_resource.
+        """
+        rate = self.condition(player).resource_regen
+        if not rate:
+            return
+        pool = self.resource_pool(player.address)
+        player.resource = max(0.0, min(pool, player.resource + rate * GAME_TICK_MS / 1000.0))
+
+    def lay_auras(self, sender: Address, used: Skill | None) -> None:
+        """Apply what *used* lays on the ground, to whoever is standing in it.
+
+        The third of a skill's three effect lists, and the one no earlier version of
+        this server read at all. ``earthquake`` and ``defiance`` (Dragon Hide) put
+        *everything* they do here, which is exactly why both looked inert: earthquake's
+        crater is ``skill_earthquake_aura`` and ``skill_earthquake_shockwave_aura``, and
+        Dragon Hide's is ``skill_defiance_buff_creators_aura``.
+
+        An aura carries no modifiers itself. Its work is the semicolon-separated list
+        in ``AuraEffectId``, and those leaves are named by no skill -- so they were not
+        even in the effect table until it learned to close the chain. Read through:
+
+            skill_earthquake_shockwave_aura   radius 3.0, Enemies
+              -> debuff_cc_stun              ActorFeature:off,Movement,RegularSkills
+              -> skill_earthquake_shockwave_dmg  CurrHealthPointsDmg:$0,...,Fire
+
+        So the crater stuns and burns, in a radius of its own that has nothing to do
+        with the skill's hit range. The aura's own reach is used, not the skill's.
+
+        ``Creator`` auras go on the caster and ``Enemies`` auras on the creatures
+        inside them. No location effect message is sent -- ``NewLocationEffectCommand``
+        has no encoder -- so the ground itself is not drawn. What each actor receives is
+        an ordinary 0x004F, which is how the stun gets its icon and its animation.
+        """
+        if used is None or not self.rules.status_effects:
+            return
+        laid = effects.parse_entries(effects.SKILL_LOCATIONS.get(used.wire, ""))
+        for entry in laid:
+            if not entry.certain:
+                continue
+            aura = effects.by_id(entry.effect)
+            if aura is None or not aura.aura_effects:
+                continue
+            # No servable() filter here. That check is about what is safe to *send*
+            # -- a modifier naming a skill the character lacks made the client assert
+            # -- and it belongs on the sending path, which is where it now lives.
+            # Applying it here dropped skill_defiance_buff_skill_costs, which carries a
+            # StopStatusEffect and a DisableImmunityGroup, and which is the half of
+            # Dragon Hide that makes every skill free.
+            leaves = [
+                found
+                for name in aura.aura_effects
+                if (found := effects.by_id(name)) is not None
+                and found.changes_anything
+            ]
+            if not leaves:
+                continue
+            if aura.aura_targets == "Creator":
+                self._stand_in_aura(sender, self.player(sender), entry, aura, leaves)
+                continue
+            for target in self.in_aura(sender, aura.aura_radius):
+                self._stand_in_aura(sender, target, entry, aura, leaves)
+                self._burn_in_aura(sender, target, entry, aura, leaves)
+
+    def in_aura(self, sender: Address, radius: float) -> list["Creature"]:
+        """Every live creature within *radius* world units of the caster.
+
+        The aura's own radius, measured on the wire like every other distance here --
+        2.15 for earthquake's crater against a hit range of 2.25, and 3.0 for its
+        shockwave.
+        """
+        standing = self.player(sender).position
+        if standing is None or radius <= 0.0:
+            return []
+        limit = (radius * WORLD_SCALE) ** 2
+        out = []
+        for creature in self._ready().engageable():
+            where = self.wire_position(creature.actor)
+            if where is not None and where.distance_squared_to(standing) <= limit:
+                out.append(creature)
+        return out
+
+    def _burn_in_aura(self, sender: Address, target, entry, aura, leaves) -> None:
+        """The damage an aura's leaves do, through the machinery a poison already uses.
+
+        ``skill_earthquake_dmg`` is ``CurrHealthPointsDmg:$1,relative,Fire`` on both
+        start and tick, and earthquake's own entry supplies ``$1 = -2.0``. Relative to
+        what is not written down anywhere in this database, so the base is the
+        character's own damage and the factor is the size of that number -- twice a
+        blow per tick, over the eight seconds the aura lasts. It is a stated model like
+        the resistance one, not a measurement.
+        """
+        base = self.rules.mob_damage or damage_at(self.player(sender).level)
+        now = time.monotonic()
+        for leaf in leaves:
+            per_tick = 0.0
+            for modifier in leaf.starts + leaf.ticks:
+                if modifier.attribute != "CurrHealthPointsDmg":
+                    continue
+                value = entry.substitutions.get(modifier.value, 0.0)
+                per_tick = max(per_tick, abs(value) * base)
+            if per_tick <= 0.0:
+                continue
+            interval = leaf.tick_rate or aura.tick_rate or 1.0
+            seconds = entry.duration or aura.duration or leaf.duration or 1.0
+            ticks = max(1, int(seconds / interval))
+            self.pending_dots.append(
+                (now + interval, sender, target.actor, per_tick, ticks, interval)
+            )
+            log.info(
+                "%s: %s burns entity %s with %s, %.0f a tick every %.1fs for %d",
+                self.name,
+                sender,
+                target.actor.hex(" "),
+                leaf.id,
+                per_tick,
+                interval,
+                ticks,
+            )
+
+    def _stand_in_aura(self, sender: Address, holder, entry, aura, leaves) -> None:
+        """Put an aura's leaf effects on one actor, with the aura's own duration."""
+        now = time.monotonic()
+        fresh = {leaf.id for leaf in leaves}
+        held = self._held(holder)
+        kept = [
+            item
+            for item in held
+            if item[2] > now
+            and (found := effects.effect(item[0])) is not None
+            and found.id not in fresh
+        ]
+        for leaf in leaves:
+            # The leaf's own duration is the last word, not the aura's. earthquake's
+            # shockwave entry reads D:0.0 and so does the aura, and falling back to a
+            # flat one second gave the crater's stun a fifth of the five seconds
+            # debuff_cc_stun asks for.
+            seconds = entry.duration or aura.duration or leaf.duration or 1.0
+            kept.append(
+                (
+                    leaf.wire,
+                    tuple(entry.substitutions.get(f"${i}", 0.0) for i in range(5)),
+                    now + seconds,
+                    seconds,
+                )
+            )
+        self._set_held(holder, kept)
+        log.info(
+            "%s: %s laid %s on %s (%s)",
+            self.name,
+            sender,
+            aura.id,
+            getattr(holder, "actor", b"").hex(" ") or "the caster",
+            ", ".join(leaf.id for leaf in leaves),
+        )
+
     def _entries(self, used: Skill, victim: bool):
         """The effect entries to apply, honouring ``force_effects``.
 
@@ -1656,6 +1872,18 @@ class World:
             self._set_held(holder, kept)
         return [(wire, parameters, seconds) for wire, parameters, _, seconds in kept]
 
+    def condition(self, holder) -> Condition:
+        """What the effects on *holder* do to the simulation.
+
+        The other half of an effect. ``_effect_message`` tells the client an effect is
+        on an actor and the client draws it; this says what the server must do about
+        it, which for a creature is everything -- the server owns its movement, its
+        swings and the damage on both sides.
+        """
+        if not self.rules.honour_effects:
+            return UNAFFECTED
+        return condition_of(self.live_effects(holder))
+
     @staticmethod
     def _held(holder):
         return holder.buffs if hasattr(holder, "buffs") else holder.effects
@@ -1692,6 +1920,17 @@ class World:
         """
         from dsor.recorded import status_effects_message
 
+        # What is safe to send. A modifier that reaches into a skill's definition or
+        # spawns an actor made the client assert, so it is filtered here -- on the
+        # sending path -- rather than where an effect is put on an actor. The two are
+        # not the same question: this server computes an effect's mechanics itself, and
+        # something it must not *describe* it can still honour.
+        live = [
+            entry
+            for entry in live
+            if (found := effects.effect(entry[0])) is not None
+            and found.servable(self.class_skills)
+        ]
         if not live:
             self._last_sent.pop(holder_actor, None)
             return None
@@ -1701,13 +1940,16 @@ class World:
         if self._last_sent.get(holder_actor) == signature:
             return None
         self._last_sent[holder_actor] = signature
-        # Every effect goes, not only the ones a capture holds an element for. One with
-        # no captured element is built from the corpus constants -- see
-        # dsor.recorded.built_element -- which reproduces 22 of the 26 real elements of
-        # that form byte for byte and differs from the other four in one field.
+        # Only what a capture holds a real element for, unless lend_elements says
+        # otherwise. Forging an element, or lending one effect's to another, made the
+        # client take one of the three silent bail-outs in HandleStatusEffect: the
+        # effect neither drew nor complained, which is the whole shape of the bug that
+        # cost this project the most time.
         #
-        # This used to send only what had a real element, which is why nothing arrived:
-        # 34 effects were captured and the game has 6703.
+        # What made that affordable is that the element table is no longer read from a
+        # single capture. Read from all twelve it holds 76 effects instead of 34, and
+        # among the new ones are the stun, the poison and both armour breaks -- 14 of
+        # the warrior's 27 promised effects, against the one that used to work.
         return status_effects_message(
             [
                 (wire, list(parameters), tick, seconds)
@@ -1717,6 +1959,7 @@ class World:
             stack=self._stack(),
             source=holder_actor,
             instance=self._effect_instance(),
+            lend=self.rules.lend_elements,
         )
 
     def _stack(self) -> int | None:
@@ -2020,11 +2263,15 @@ class World:
                 # target's only skill is monster_selfkill and it stands eight units
                 # from where a player arrives: it walked over and hit, invisibly.
                 continue
+            if not creature.condition.acts:
+                # Stunned, so it does not swing. Without this the stun was purely
+                # decorative: the icon appeared and the creature kept hitting.
+                continue
             hit_frame, unblock_frame, reach, cooldown = self.creature_timing(
                 creature.actor
             )
             # The cheap test first, and the one that skips the most.
-            if now - creature.last_struck < cooldown:
+            if now - creature.last_struck < cooldown / creature.condition.haste:
                 continue
             where = self.wire_position(creature.actor)
             if where is None:
@@ -2282,6 +2529,12 @@ class World:
             used = self.creature_skill(attacker)
             if used is not None:
                 blow *= used.damage_modifier
+            # And what is on the creature. mightyswing's debuff is Damage:-0.05,
+            # relative, Min and Max -- five percent off everything it hits for, which
+            # is small and is the real value the wire carries.
+            striking = self.creature(attacker)
+            if striking is not None:
+                blow *= striking.condition.damage_dealt
             left = max(0.0, victim.health - blow)
             victim.health = left
             # One message, not two. This used to replay a recorded blow *and* send a
@@ -2356,10 +2609,18 @@ class World:
         message = self._effect_message(player.actor, live, player.server_tick) if live else None
         if message is not None:
             self._emit(message, sender)
-        else:
-            # The recorded state, which carries one real effect, rather than an empty
-            # command. What is running but cannot be drawn is named once.
-            self._emit(tick_state(), sender)
+        # And nothing when there is nothing. This used to fall back on the *recorded*
+        # 0x004F, which puts a0001_tutorial_heal_on_low_health on the player -- 25
+        # times a second, every tick with no buff running. Measured against the live
+        # service on the same map: it sent 91 status-effect commands in a whole session
+        # with every skill cast, and this server sent 1836, of which 1823 were that one
+        # replayed effect. Each is an *add* for an effect already present, which is the
+        # "Failed to add actor effect ... Effect already present!" flood, and a 0x004F
+        # carries an actor's whole effect list -- so the next tick's replay also wiped
+        # whatever buff had just been applied.
+        #
+        # An effect that ends needs no message either: its element carries the tick it
+        # stops at, and the client expires it on its own clock.
         for creature in self._ready().creatures.values():
             if not creature.effects:
                 continue
@@ -2388,6 +2649,7 @@ class World:
         )
         self.advance_creatures(clock)
         for player in self.inhabitants():
+            self.regenerate(player)
             self._tick_pair(player.address)
         self.creatures_strike()
         self.land_hits()
@@ -2476,9 +2738,7 @@ class World:
             self.rules.enforce
             and standing is not None
             and lying is not None
-            and Position(
-                int(lying[0] * WORLD_SCALE), 0, int(lying[2] * WORLD_SCALE)
-            ).distance_to(standing)
+            and self.wire_of_described(lying).distance_to(standing)
             > self.rules.pickup_range * WORLD_SCALE
         ):
             self.player(sender).claims.offences += 1

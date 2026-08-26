@@ -24,10 +24,13 @@ The bytes are the user's own session, captured from their own account.
 
 from __future__ import annotations
 
+import logging
 import struct
 
 from functools import lru_cache
 from pathlib import Path
+
+log = logging.getLogger("effects")
 
 DATA = Path(__file__).parent / "data"
 
@@ -1434,6 +1437,7 @@ def status_effects_message(
     stack: int | None = None,
     source: bytes | None = None,
     instance: int = 0,
+    lend: bool = False,
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
@@ -1450,6 +1454,15 @@ def status_effects_message(
 
     Addressing it to a creature is what puts a stun or a poison on one: the actor at
     the end is the only thing that decides who an effect lands on.
+
+    An effect with no captured element of its own is **skipped** unless *lend* is set.
+    Lending one effect's element to another was the long detour of this project: the
+    client's HandleStatusEffect has three bail-outs that return without a word, and a
+    borrowed element takes one of them, so the effect neither appeared nor complained.
+    The way out was not a better forgery. It was extracting elements from *every*
+    capture instead of one -- the stun, the poison and the armour break are all in the
+    older tutorial sessions, addressed to actors 0x10085..0x1008c, and reading a single
+    session is what made them look unattainable.
     """
     import struct
 
@@ -1469,7 +1482,14 @@ def status_effects_message(
     from dsor.elements import element as real_bits
 
     push(flag, 1)
-    push(len(entries), 32)
+    # The count goes in after the elements, not before them. Writing it from
+    # len(entries) and then skipping an effect with no element left the message
+    # claiming one more than it carried, and the reader ran off the end -- which is
+    # exactly the kind of message the client answers by bailing out in silence.
+    count_at = len(bits)
+    push(0, 32)
+    sent = 0
+    travelled: list[int] = []
     for wire, parameters, start_tick, seconds in entries:
         # A real element, spliced. The parameters are the capture's own too: rewriting
         # them is safe -- their layout is established -- but the effect's own recorded
@@ -1479,9 +1499,13 @@ def status_effects_message(
         if found is not None:
             span, _stored = found
             copy = real_element(wire, start_tick, seconds, parameters)
+        elif not lend:
+            # Nothing real to send, so nothing is sent. Silence is honest here and a
+            # borrowed element is not: the client answers a forgery exactly the way it
+            # answers nothing at all, without a word either way.
+            log.debug("effect %d has no captured element; not sent", wire)
+            continue
         else:
-            # No capture holds one, which is true of all but 34 of the game's 6703
-            # effects. A real element is lent to it instead.
             lent = borrowed_element(
                 wire, start_tick, seconds, parameters, source, instance
             )
@@ -1492,8 +1516,12 @@ def status_effects_message(
                 instance += 1
         for index in range(span):
             bits.append((copy[index >> 3] >> (7 - (index & 7))) & 1)
+        sent += 1
+        travelled.append(wire)
 
-
+    for offset, byte in enumerate(sent.to_bytes(4, "little")):
+        for bit in range(8):
+            bits[count_at + offset * 8 + bit] = (byte >> (7 - bit)) & 1
 
     push(int.from_bytes(actor, "little"), EFFECT_ACTOR_BITS)
     push(0xFF, 8)
@@ -1508,11 +1536,10 @@ def status_effects_message(
     out = original[:3] + bytes(body)
     # Read it back, every element of it. Nothing here that skipped this step turned
     # out to be right.
-    if entries:
+    if travelled:
         seen = status_effect_indices(out)
-        wanted = [wire for wire, *_ in entries]
-        if seen != wanted:
-            raise ValueError(f"wrote effects {wanted} and read back {seen}")
+        if seen != travelled:
+            raise ValueError(f"wrote effects {travelled} and read back {seen}")
     return out
 
 

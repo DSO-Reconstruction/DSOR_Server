@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """Extract real status effect elements from a capture, verbatim.
 
-    python3 tools/element_table.py ~/dso-capture/session-<stamp>.jsonl > dsor/elements.py
+    python3 tools/element_table.py ~/dso-capture/session-*.jsonl > dsor/elements.py
+
+Give it *every* capture. Taking them from one was a mistake that cost several rounds: the
+skills capture holds 34 effects and none on a monster, so the stun, the poison and the
+armour break looked as though the live service never sent them. The older tutorial
+captures address monsters 11 distinct actors wide and carry all three.
 
 Three attempts at building an element from scratch each got a field wrong -- the
 sequencer field read as a track index, then as a stack size, then field 2 written as a
@@ -96,7 +101,7 @@ def slice_bits(body, start, span):
     return bytes(out)
 
 
-def main(capture: str, database: str) -> None:
+def main(captures: list[str], database: str) -> None:
     names = {
         row[0] - 1: row[1]
         for row in sqlite3.connect(f"file:{database}?mode=ro", uri=True).execute(
@@ -104,28 +109,36 @@ def main(capture: str, database: str) -> None:
         )
     }
     found = {}
-    for line in pathlib.Path(capture).read_text(errors="ignore").splitlines():
-        try:
-            record = json.loads(line)
-        except Exception:
-            continue
-        if not record.get("from_server") or "hex" not in record:
-            continue
-        try:
-            raw = bytes.fromhex(record["hex"])
-            _header, offset = parse_datagram_header(raw)
-            frames = parse_frames(raw, offset)
-        except Exception:
-            continue
-        for frame in frames:
-            payload = frame.payload
-            if frame.split_count is not None or len(payload) < 4:
-                continue
-            if payload[0] != 0x85 or payload[1:3] != (0x004F).to_bytes(2, "little"):
-                continue
-            body = payload[3:]
-            for index, start, span in elements(body):
-                found.setdefault(index, (span, slice_bits(body, start, span)))
+    for capture in captures:
+      for line in pathlib.Path(capture).read_text(errors="ignore").splitlines():
+          try:
+              record = json.loads(line)
+          except Exception:
+              continue
+          if not record.get("from_server") or "hex" not in record:
+              continue
+          try:
+              raw = bytes.fromhex(record["hex"])
+              _header, offset = parse_datagram_header(raw)
+              frames = parse_frames(raw, offset)
+          except Exception:
+              continue
+          for frame in frames:
+              payload = frame.payload
+              if frame.split_count is not None or len(payload) < 4:
+                  continue
+              if payload[0] != 0x85 or payload[1:3] != (0x004F).to_bytes(2, "little"):
+                  continue
+              body = payload[3:]
+              for index, start, span in elements(body):
+                  # Last capture wins, not the first. An effect present in several
+                  # sessions has several real elements and they differ -- field 2 is
+                  # 0 in the tutorial sessions and 25 in the recent one for the same
+                  # warshout buff -- so the choice is not free. The newest capture is
+                  # the one taken on this client build by this account, and its
+                  # warshout element is the one the operator has confirmed working, so
+                  # give the captures in chronological order and let the last speak.
+                  found[index] = (span, slice_bits(body, start, span))
 
     print(f'''"""Real status effect elements, copied bit for bit off the wire.
 
@@ -200,6 +213,6 @@ def known() -> frozenset[int]:
 
 if __name__ == "__main__":
     main(
-        sys.argv[1],
-        sys.argv[2] if len(sys.argv) > 2 else str(pathlib.Path.home() / "dso/db/db_static.sqlite"),
+        [a for a in sys.argv[1:] if a.endswith(".jsonl")],
+        str(pathlib.Path.home() / "dso/db/db_static.sqlite"),
     )

@@ -260,3 +260,32 @@ def test_one_peer_flooding_costs_only_that_peer():
 
     service.peer_rate = 0
     assert all(service.within_rate(noisy) for _ in range(100)), "0 turns it off"
+
+
+def test_an_item_at_your_feet_can_be_taken():
+    """The regression that let four pickups in a row be refused.
+
+    A dropped item is remembered in the descriptions' frame, which is the wire frame
+    divided by the scale *and shifted by a constant* — 31.18 units of z on the
+    tutorial map. Converting it back with the scale alone left the item 3,991 wire
+    units away against a bound of 1,536, so every pickup was refused as "too far
+    away" while the item lay underfoot. Nothing caught it: the older tests either
+    assert a refusal or run with a player who has no position at all, which skips the
+    check entirely.
+
+    So this stands the player exactly where the item is and insists on success.
+    """
+    from dsor.gameplay import Position
+
+    _service, world, sender = a_player_in_a_world()
+    assert world.rules.enforce, "the check has to be on for this to mean anything"
+    standing = Position(-169, 0, 10225)
+    world.player(sender).position = standing
+    actor = world.actors.take_bytes()
+    # Where the drop would record it, through the same conversion the drop uses.
+    world.dropped[actor] = world.described_position(standing)
+    assert world.wire_of_described(world.dropped[actor]).distance_to(standing) < 2.0, (
+        "the two conversions must be inverses"
+    )
+    assert world.pick_up(sender, actor), "an item underfoot is refused"
+    assert world.player(sender).claims.offences == 0
