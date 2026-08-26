@@ -24,6 +24,8 @@ The bytes are the user's own session, captured from their own account.
 
 from __future__ import annotations
 
+import struct
+
 from functools import lru_cache
 from pathlib import Path
 
@@ -1214,7 +1216,30 @@ BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
 EFFECT_STACK_FIELD = 6
 
 
-def real_element(wire: int, start_tick: int, seconds: float) -> bytes | None:
+def element_parameters(bits: bytes) -> tuple[int, int]:
+    """Where a copied element's parameter array is, as (first bit, how many).
+
+    (0, 0) when it has none -- the 276-bit form ends before them.
+    """
+    from raknet.bitstream import BitReader
+
+    reader = BitReader(bits, 0)
+    reader.read_uint(16)
+    for _ in range(8):
+        reader.read_uint(32)
+    flags = [reader.read_bool() for _ in range(4)]
+    if not flags[3]:
+        return 0, 0
+    count = reader.read_uint(32)
+    return reader.position, count
+
+
+def real_element(
+    wire: int,
+    start_tick: int,
+    seconds: float,
+    parameters: list[float] | None = None,
+) -> bytes | None:
     """A real element for *wire*, with only its three tick fields rewritten.
 
     None when no capture contains one, which is the honest answer: three attempts at
@@ -1239,7 +1264,28 @@ def real_element(wire: int, start_tick: int, seconds: float) -> bytes | None:
         _write_bits(
             out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
         )
-    return bytes(out[: (span + 7) // 8]) if span % 8 == 0 else bytes(out)
+
+    # And the parameters, from the skill's own template rather than the capture's.
+    #
+    # This is the difference between a buff and a debuff. The captured element for
+    # skill_warshout_buff_movementspeed carries $0 = -0.4 where the skill's template
+    # says +0.4, and copying it whole gave a *forty percent slow* -- the effect applied
+    # perfectly and in the wrong direction.
+    #
+    # Safe to write, unlike the rest: the parameter array's layout is established, a
+    # 32-bit count and that many float32, which is more than can be said for the eight
+    # integers or the vectors. So the rule is copy what is not understood and write what
+    # is.
+    if parameters:
+        at, count = element_parameters(bits)
+        for index, value in enumerate(parameters[:count]):
+            _write_bits(
+                out,
+                at + 32 * index,
+                int.from_bytes(struct.pack("<f", value), "little"),
+                32,
+            )
+    return bytes(out)
 
 
 def status_effects_message(
@@ -1292,7 +1338,7 @@ def status_effects_message(
         # values are what the live service paired with the rest of the element, so they
         # are left alone unless a caller insists.
         span, _bits = real_bits(wire)
-        copy = real_element(wire, start_tick, seconds)
+        copy = real_element(wire, start_tick, seconds, parameters)
         for index in range(span):
             bits.append((copy[index >> 3] >> (7 - (index & 7))) & 1)
 

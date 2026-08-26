@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from dsor import effects
 from dsor.gameplay import Position
 from dsor.recorded import (
@@ -992,3 +994,71 @@ def test_the_location_effect_family_is_kept():
     )
     # And something that is not one of these says so rather than guessing.
     assert location_effect_string(bytes([0x85, 0x5F, 0x00]) + bytes(20)) is None
+
+
+def test_a_copied_element_gets_the_template_s_parameters_not_the_capture_s():
+    """The difference between a buff and a debuff, and it showed as one.
+
+    The captured element for skill_warshout_buff_movementspeed carries $0 = -0.4 where
+    the skill's own template says +0.4, so copying it whole gave a forty percent *slow*.
+    The effect applied perfectly and in the wrong direction.
+
+    Parameters are safe to write, unlike the rest of the element: their layout is a
+    32-bit count and that many float32, which is established. So the rule is copy what
+    is not understood and write what is.
+    """
+    import struct
+
+    from dsor.elements import element
+    from dsor.recorded import element_parameters, real_element
+    from raknet.bitstream import BitReader
+
+    wire = effects.wire_of("skill_warshout_buff_movementspeed")
+    _span, captured = element(wire)
+    at, count = element_parameters(captured)
+    assert count == 5
+    reader = BitReader(captured, at)
+    original = [
+        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+        for _ in range(count)
+    ]
+    assert original[0] == pytest.approx(-0.4), "what the wire carried"
+
+    written = real_element(wire, 41230, 10.0, [0.4, 0.0, 0.0, 0.0, 0.0])
+    reader = BitReader(written, at)
+    now = [
+        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+        for _ in range(count)
+    ]
+    assert now[0] == pytest.approx(0.4), "what the template says"
+
+
+def test_the_whole_path_sends_the_buff_with_the_sign_the_template_gives():
+    from dsor.recorded import status_effect_indices, walk_elements
+    from dsor.skills import wire_of as skill_wire
+    import struct
+    from raknet.bitstream import BitReader
+
+    world, sender = a_player()
+    world.player(sender).server_tick = 41230
+    world.resolve_attack(sender, skill_wire("warshout"))
+    world._drain()
+    world._tick_pair(sender)
+    state = next(
+        payload for _a, payload in world._drain() if payload[1:3] == b"\x4f\x00"
+    )
+    found, _actor = walk_elements(state)
+    body = state[3:]
+    wanted = effects.wire_of("skill_warshout_buff_movementspeed")
+    speed = next((f for f in found if f[0] == wanted), None)
+    assert speed is not None, "the movement buff was not sent"
+
+    reader = BitReader(body, speed[1])
+    reader.read_uint(16)
+    for _ in range(8):
+        reader.read_uint(32)
+    flags = [reader.read_bool() for _ in range(4)]
+    assert flags[3]
+    count = reader.read_uint(32)
+    first = struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+    assert first == pytest.approx(0.4), f"sent {first}, the template says 0.4"
