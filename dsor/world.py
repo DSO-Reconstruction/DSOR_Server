@@ -1667,6 +1667,35 @@ class World:
         self._next_effect += 1
         return (0x00010000 | 0x0200) + self._next_effect
 
+    def _effect_message(
+        self, holder_actor: bytes, live, tick: int
+    ) -> bytes | None:
+        """A 0x004F for *live*, or None when there is nothing to say.
+
+        None matters. Sending one with a count of zero is a message that says nothing,
+        and the client answers every one of them with "Received empty
+        StatusEffectCommand!" -- a flood of them, once per creature per tick, which is
+        what happens when the caller sends whatever the encoder returns without asking
+        whether it holds anything.
+        """
+        from dsor.recorded import servable_effects, status_effects_message
+
+        have, _missing = servable_effects(wire for wire, _p, _s in live)
+        if not have:
+            return None
+        wanted = set(have)
+        return status_effects_message(
+            [
+                (wire, list(parameters), tick, seconds)
+                for wire, parameters, seconds in live
+                if wire in wanted
+            ],
+            holder_actor,
+            stack=self._stack(),
+            source=holder_actor,
+            instance=self._effect_instance(),
+        )
+
     def _stack(self) -> int | None:
         """The seventh field's value, or None to keep what a real server sends."""
         return None if self.rules.effect_stack < 0 else self.rules.effect_stack
@@ -2301,16 +2330,22 @@ class World:
         # at tick 176 while the client was in the tens of thousands, and it was over
         # before it arrived.
         live = self.live_effects(player)
-        if live:
-            from dsor.recorded import servable_effects
+        message = self._effect_message(player.actor, live, player.server_tick) if live else None
+        if message is not None:
+            self._emit(message, sender)
+        else:
+            # The recorded state, which carries one real effect, rather than an empty
+            # command. What is running but cannot be drawn is named once.
+            if live:
+                from dsor.recorded import servable_effects
 
-            _have, missing = servable_effects(wire for wire, _p, _s in live)
-            if missing:
+                _have, missing = servable_effects(wire for wire, _p, _s in live)
                 key = tuple(sorted(missing))
-                if key not in self._said:
+                if key and key not in self._said:
                     self._said.add(key)
                     log.info(
-                        "%s: %s running but with no captured element, so not drawn: %s",
+                        "%s: %d effect(s) running with no captured element, so not "
+                        "drawn: %s",
                         self.name,
                         len(missing),
                         ", ".join(
@@ -2318,22 +2353,6 @@ class World:
                             for w in key
                         ),
                     )
-            self._emit(
-                status_effects_message(
-                    [
-                        (wire, list(parameters), player.server_tick, seconds)
-                        for wire, parameters, seconds in live
-                    ],
-                    player.actor,
-                    stack=self._stack(),
-                    # Who applied it. Zero was copied from a tutorial heal that the
-                    # world applies rather than an actor, and actor 0 does not exist.
-                    source=player.actor,
-                    instance=self._effect_instance(),
-                ),
-                sender,
-            )
-        else:
             self._emit(tick_state(), sender)
         for creature in self._ready().creatures.values():
             if not creature.effects:
@@ -2341,19 +2360,14 @@ class World:
             on_it = self.live_effects(creature)
             if not on_it:
                 continue
-            self._emit(
-                status_effects_message(
-                    [
-                        (wire, list(parameters), player.server_tick, seconds)
-                        for wire, parameters, seconds in on_it
-                    ],
-                    creature.actor,
-                    stack=self._stack(),
-                    source=player.actor,
-                    instance=self._effect_instance(),
-                ),
-                sender,
+            message = self._effect_message(
+                creature.actor, on_it, player.server_tick
             )
+            if message is None:
+                # Nothing this server has a real element for. Saying nothing is the
+                # right answer; an empty command is not.
+                continue
+            self._emit(message, sender)
         self._emit(self.entity_update(player.position, player.server_tick), sender)
 
     def tick(self) -> list[tuple[Address, bytes]]:

@@ -344,10 +344,17 @@ def test_a_stun_and_a_poison_are_gated_behind_talents_and_can_be_forced():
     ]
 
 
-def test_an_inflicted_effect_is_addressed_to_the_creature():
-    """Which actor the message names is the only thing that decides who it lands on."""
+def test_no_empty_status_effect_command_is_ever_sent():
+    """"Received empty StatusEffectCommand!" over and over, once per creature per tick.
+
+    Filtering to the effects a real element exists for happens inside the encoder, and
+    the callers sent whatever it returned without asking whether it held anything. A
+    command with a count of zero is a message that says nothing, and the client says so
+    every time.
+    """
     from dsor.gameplay import Position
-    from dsor.recorded import status_effect_actor, status_effect_indices
+    from dsor.recorded import status_effect_count
+    from dsor.skills import by_id
     from dsor.world import Creature
 
     world, sender = a_player()
@@ -362,34 +369,42 @@ def test_an_inflicted_effect_is_addressed_to_the_creature():
         described=True,
     )
     world.rules.force_effects = True
-    # debuff_cc_charge is what mightybash really inflicts and the capture has a real
-    # element for it. The poison it also names has none, on the live service either.
-    world.inflict_effects(actor, __import__("dsor.skills", fromlist=["by_id"]).by_id("mightybash"))
-    assert world.creatures[actor].effects, "something landed on it"
+    world.inflict_effects(actor, by_id("mightybash"))
+    assert world.creatures[actor].effects, "something is on the creature"
 
     world._drain()
-    world._tick_pair(sender)
-    sent = [payload for _address, payload in world._drain()]
-    addressed = [p for p in sent if len(p) > 3 and p[1:3] == b"\x4f\x00"]
-    assert any(status_effect_actor(p) == actor for p in addressed), "on the creature"
-    on_creature = next(p for p in addressed if status_effect_actor(p) == actor)
-    carried = status_effect_indices(on_creature)
+    for _ in range(5):
+        world._tick_pair(sender)
+    for _address, payload in world._drain():
+        if payload[1:3] == b"\x4f\x00":
+            assert status_effect_count(payload) > 0, "an empty command went out"
 
-    # Addressed to the creature, and empty -- which is the honest state of every
-    # warrior debuff, for two separate reasons that happen to cover all of them.
-    #
-    # debuff_dot_poison and debuff_cc_stun have no captured element: a capture of the
-    # live service with every warrior skill cast does not contain them, because they are
-    # talent-gated there too. And debuff_cc_charge, which *is* in the capture, is refused
-    # by the skill-reference check -- its modifiers name chainlightning, lightningstrike
-    # and balllightning, which a warrior does not have.
-    #
-    # So the mechanic is served here and the drawing is not, and the log says so once
-    # rather than leaving it to be discovered on a screen.
+
+def test_nothing_a_warrior_inflicts_can_be_drawn_yet():
+    """Two separate reasons that between them cover every warrior debuff.
+
+    debuff_dot_poison and debuff_cc_stun have no captured element: a capture of the live
+    service with every warrior skill cast does not contain them, because they are
+    talent-gated there too. And debuff_cc_charge, which *is* in the capture, is refused
+    by the skill-reference check -- its modifiers name chainlightning, lightningstrike
+    and balllightning, which a warrior does not have.
+
+    So the mechanic is served and the drawing is not, and the log says which once.
+    """
     from dsor.elements import element
+    from dsor.skills import by_id
 
-    assert all(element(w) is not None for w in carried)
-    assert carried == [], "nothing a warrior inflicts is both servable and captured"
+    world, _sender = a_player()
+    world.rules.force_effects = True
+    inflicted = world._entries(by_id("mightybash"), victim=True)
+    assert inflicted, "the skill does inflict something"
+    assert all(element(effects.wire_of(e.effect)) is None for e in inflicted)
+
+    assert element(effects.wire_of("debuff_cc_charge")) is not None, "captured"
+    from dsor.skills import of_class
+
+    warrior = frozenset(sk.id for sk in of_class("warrior"))
+    assert not effects.by_id("debuff_cc_charge").servable(warrior), "names mage skills"
 
 
 def test_the_pool_is_a_hundred_and_the_arithmetic_comes_out_exact():
