@@ -172,9 +172,14 @@ def test_the_buff_rides_the_tick_state_while_it_lasts():
 
     world._tick_pair(sender)
     state = world._drain()[0][1]
-    carried = status_effect_index(state)
-    assert effects.effect(carried).id == "skill_warshout_buff_movementspeed"
-    assert abs(status_effect_parameters(state)[0] - 0.4) < 1e-6
+    # warshout's movement-speed buff has a real element in the capture, so it is the
+    # one that can be served. Its parameters are the capture's own, not ours: rewriting
+    # them is safe but the values a real server paired with the rest of the element are
+    # better evidence than a number from the template.
+    assert effects.effect(status_effect_index(state)).id in {
+        "skill_warshout_buff_movementspeed",
+        "skill_warshout_buff_damage",
+    }
 
 
 def test_a_buff_stops_when_it_runs_out():
@@ -256,10 +261,16 @@ def test_all_of_a_skills_effects_travel_now():
     world._drain()
     world._tick_pair(sender)
     state = world._drain()[0][1]
-    assert status_effect_count(state) == 4
-    assert [effects.effect(w).id for w in status_effect_indices(state)] == [
-        entry.effect for entry in granted
-    ]
+    # Of the four warshout grants, the capture contains a real element for two. Only
+    # those are sent, and the message says so rather than claiming four.
+    from dsor.recorded import servable_effects
+
+    have, missing = servable_effects(
+        effects.wire_of(entry.effect) for entry in granted
+    )
+    assert len(have) == 2 and len(missing) == 2
+    assert status_effect_count(state) == len(have)
+    assert set(status_effect_indices(state)) == set(have)
 
 
 def test_the_grammar_reads_the_recording_field_for_field():
@@ -351,6 +362,8 @@ def test_an_inflicted_effect_is_addressed_to_the_creature():
         described=True,
     )
     world.rules.force_effects = True
+    # debuff_cc_charge is what mightybash really inflicts and the capture has a real
+    # element for it. The poison it also names has none, on the live service either.
     world.inflict_effects(actor, __import__("dsor.skills", fromlist=["by_id"]).by_id("mightybash"))
     assert world.creatures[actor].effects, "something landed on it"
 
@@ -360,8 +373,23 @@ def test_an_inflicted_effect_is_addressed_to_the_creature():
     addressed = [p for p in sent if len(p) > 3 and p[1:3] == b"\x4f\x00"]
     assert any(status_effect_actor(p) == actor for p in addressed), "on the creature"
     on_creature = next(p for p in addressed if status_effect_actor(p) == actor)
-    names = [effects.effect(w).id for w in status_effect_indices(on_creature)]
-    assert "debuff_dot_poison" in names
+    carried = status_effect_indices(on_creature)
+
+    # Addressed to the creature, and empty -- which is the honest state of every
+    # warrior debuff, for two separate reasons that happen to cover all of them.
+    #
+    # debuff_dot_poison and debuff_cc_stun have no captured element: a capture of the
+    # live service with every warrior skill cast does not contain them, because they are
+    # talent-gated there too. And debuff_cc_charge, which *is* in the capture, is refused
+    # by the skill-reference check -- its modifiers name chainlightning, lightningstrike
+    # and balllightning, which a warrior does not have.
+    #
+    # So the mechanic is served here and the drawing is not, and the log says so once
+    # rather than leaving it to be discovered on a screen.
+    from dsor.elements import element
+
+    assert all(element(w) is not None for w in carried)
+    assert carried == [], "nothing a warrior inflicts is both servable and captured"
 
 
 def test_the_pool_is_a_hundred_and_the_arithmetic_comes_out_exact():
@@ -605,68 +633,71 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
     assert not world._entries(by_id("defiance"), victim=False)
 
 
-def test_the_eight_bit_field_ends_the_element_and_leaves_the_vectors_out():
-    """A field read three ways, two of them wrong.
+def test_elements_are_copied_off_the_wire_and_not_built():
+    """Three attempts at building one each got a field wrong.
 
-    First it looked like a track index, and writing 0 there was meant to fix a
-    sequencer assertion. It desynchronised the client instead: it read the first effect
-    of a two-effect message correctly and the second as
-    costume_halloween_2023_pumpkin_helmet_angry_warrior, found a garbage actor id
-    3175926989, and reported "invalid command ending in multi command 79". The
-    disassembly had already said it chooses how many float3 vectors follow.
+    The 8-bit field past the parameters was read as a track index, then as a stack
+    size; field 2 was written as a constant 25 when 185 of 365 real elements carry 50 or
+    75. Each was a correlation that held over the sample I looked at and not the next.
 
-    Then it was copied verbatim, which kept the parse right and kept the tutorial
-    heal's vectors on every effect.
-
-    Deserialize settles it: the byte is read with movsx, so 0xFF is -1, and -1 together
-    with a false bool before it *ends the element*. So an element can be built with no
-    vectors at all, which is what the sequencer needed -- nothing borrowed for it to
-    index.
+    So an element is copied from one the live service sent for the same effect, and only
+    the three tick fields are rewritten. Every other field carries a value a real server
+    chose.
     """
-    from dsor.recorded import (
-        BUILT_ELEMENT_BITS,
-        EFFECT_ELEMENT_BITS,
-        NO_VECTORS,
-        status_effect_indices,
-        status_effect_track,
-        status_effects_message,
-    )
+    from dsor.elements import ELEMENTS, element
+    from dsor.recorded import real_element, servable_effects
 
-    assert NO_VECTORS == 0xFF, "-1 as a signed byte"
-    assert BUILT_ELEMENT_BITS == 477
-    assert EFFECT_ELEMENT_BITS == 669, "what the recording's own element costs"
-    assert EFFECT_ELEMENT_BITS - BUILT_ELEMENT_BITS == 192, "six floats of vectors"
+    # The three lengths are exactly the three forms the grammar describes: 276 bits
+    # with no parameters, 477 with parameters and no vectors, 669 with vectors.
+    assert {span for span, _bits in ELEMENTS.values()} == {276, 477, 669}
 
-    sent = status_effects_message(
-        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 41230, 5.0)],
-        b"\x86\x00\x01\x00",
-    )
-    assert status_effect_track(sent) == NO_VECTORS
-    assert status_effect_indices(sent) == [effects.wire_of("debuff_cc_stun")]
+    wire = effects.wire_of("skill_warshout_buff_movementspeed")
+    span, original = element(wire)
+    assert span == 669, "this one carries vectors"
+
+    copy = real_element(wire, start_tick=41230, seconds=10.0)
+    assert copy is not None
+    # Only the tick fields differ from what came off the wire.
+    changed = [i for i in range(len(original)) if original[i] != copy[i]]
+    assert changed, "the ticks were written"
+    assert len(changed) <= 12, f"{len(changed)} bytes changed, expected the ticks only"
 
 
-def test_several_built_elements_stay_aligned():
-    """The mistake that produced a halloween pumpkin, guarded against directly."""
-    from dsor.recorded import (
-        status_effect_actor,
-        status_effect_count,
-        status_effect_indices,
-        status_effects_message,
-    )
+def test_an_effect_with_no_captured_element_is_not_sent_and_is_named():
+    """An effect silently dropped is how six commits went by with the stun and the
+    poison appearing to be served.
 
-    wires = [
+    And they are absent for a reason worth knowing: a capture of the live service with
+    every warrior skill cast does not contain them either. They are talent-gated there
+    too, so the real service never sends them for laceratingstrike or mightybash.
+    """
+    from dsor.recorded import servable_effects, status_effects_message
+
+    have, missing = servable_effects(
         effects.wire_of(name)
         for name in (
-            "debuff_dot_poison",
+            "skill_warshout_buff_movementspeed",
             "debuff_cc_stun",
-            "skill_laceratingstrike_debuff_armor",
+            "skill_frenzyshout_buff_armor",
+            "debuff_dot_poison",
         )
+    )
+    assert [effects.effect(w).id for w in have] == [
+        "skill_warshout_buff_movementspeed",
+        "skill_frenzyshout_buff_armor",
     ]
-    actor = b"\x86\x00\x01\x00"
-    sent = status_effects_message([(w, [0.3] * 5, 41230, 5.0) for w in wires], actor)
-    assert status_effect_count(sent) == 3
-    assert status_effect_indices(sent) == wires, "every one at its own offset"
-    assert status_effect_actor(sent) == actor, "and the actor after all three"
+    assert [effects.effect(w).id for w in missing] == [
+        "debuff_cc_stun",
+        "debuff_dot_poison",
+    ]
+
+    sent = status_effects_message(
+        [(effects.wire_of("debuff_cc_stun"), [0.0] * 5, 100, 5.0)],
+        b"\x86\x00\x01\x00",
+    )
+    from dsor.recorded import status_effect_count
+
+    assert status_effect_count(sent) == 0, "not claimed as sent"
 
 
 def test_an_animated_effect_can_be_held_back():

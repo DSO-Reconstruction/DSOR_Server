@@ -542,6 +542,8 @@ class World:
     #: How many effect applications this world has handed out. See
     #: :meth:`_effect_instance`.
     _next_effect: int = 0
+    #: Effect sets already reported as unservable, so the log says it once.
+    _said: set = field(default_factory=set)
     #: The last tick the creatures were stepped on, so a step can be scaled by how
     #: much game time actually passed rather than by how often this is called.
     stepped_tick: int = 0
@@ -1594,6 +1596,15 @@ class World:
         # And whatever the switch says, never an effect whose modifiers reach into a
         # skill's definition or spawn an actor. Applied to the unforced path too,
         # because a skill's own list can name one.
+        # Everything the skill grants stays on the player, because an effect has two
+        # halves and only one of them needs the client. The mechanic is served here --
+        # frenzyshout's life leech heals, a damage-over-time ticks -- and needs no
+        # element at all. What needs a real element is the client's own arithmetic and
+        # its icon, and status_effects_message sends only the effects it has one for.
+        #
+        # Collapsing the two was a mistake worth naming: filtering here removed the
+        # life leech, which this server computes itself and which never needed an
+        # element.
         return tuple(
             entry
             for entry in candidates
@@ -2291,6 +2302,22 @@ class World:
         # before it arrived.
         live = self.live_effects(player)
         if live:
+            from dsor.recorded import servable_effects
+
+            _have, missing = servable_effects(wire for wire, _p, _s in live)
+            if missing:
+                key = tuple(sorted(missing))
+                if key not in self._said:
+                    self._said.add(key)
+                    log.info(
+                        "%s: %s running but with no captured element, so not drawn: %s",
+                        self.name,
+                        len(missing),
+                        ", ".join(
+                            (effects.effect(w).id if effects.effect(w) else str(w))
+                            for w in key
+                        ),
+                    )
             self._emit(
                 status_effects_message(
                     [

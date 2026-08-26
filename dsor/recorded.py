@@ -1214,6 +1214,34 @@ BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
 EFFECT_STACK_FIELD = 6
 
 
+def real_element(wire: int, start_tick: int, seconds: float) -> bytes | None:
+    """A real element for *wire*, with only its three tick fields rewritten.
+
+    None when no capture contains one, which is the honest answer: three attempts at
+    *building* an element each got a field wrong, and each wrong reading was a
+    correlation that held over the sample I looked at. Copying one the live service sent
+    for the same effect leaves every field this server does not understand carrying a
+    value a real server chose.
+    """
+    from dsor.elements import element
+
+    found = element(wire)
+    if found is None:
+        return None
+    span, bits = found
+    out = bytearray(bits)
+    span_ticks = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
+    for field, value in (
+        (EFFECT_START_TICK_FIELD, start_tick),
+        (EFFECT_END_TICK_FIELD, start_tick + span_ticks),
+        (EFFECT_DURATION_FIELD, span_ticks),
+    ):
+        _write_bits(
+            out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
+        )
+    return bytes(out[: (span + 7) // 8]) if span % 8 == 0 else bytes(out)
+
+
 def status_effects_message(
     entries: list[tuple[int, list[float], int, float]],
     actor: bytes,
@@ -1253,46 +1281,22 @@ def status_effects_message(
         else:
             bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
 
+    from dsor.elements import element as real_bits
+
+    servable = [e for e in entries if real_bits(e[0]) is not None]
     push(flag, 1)
-    push(len(entries), 32)
-    for wire, parameters, start_tick, seconds in entries:
-        if not 0 <= wire < 1 << EFFECT_INDEX_BITS:
-            raise ValueError(
-                f"an effect index is {EFFECT_INDEX_BITS} bits, and {wire} does not fit"
-            )
-        push(wire, EFFECT_INDEX_BITS)
+    push(len(servable), 32)
+    for wire, parameters, start_tick, seconds in servable:
+        # A real element, spliced. The parameters are the capture's own too: rewriting
+        # them is safe -- their layout is established -- but the effect's own recorded
+        # values are what the live service paired with the rest of the element, so they
+        # are left alone unless a caller insists.
+        span, _bits = real_bits(wire)
+        copy = real_element(wire, start_tick, seconds)
+        for index in range(span):
+            bits.append((copy[index >> 3] >> (7 - (index & 7))) & 1)
 
-        span = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
-        integers = list(grammar["integers"])
-        integers[EFFECT_START_TICK_FIELD] = start_tick & 0xFFFFFFFF
-        integers[EFFECT_END_TICK_FIELD] = (start_tick + span) & 0xFFFFFFFF
-        integers[EFFECT_DURATION_FIELD] = span & 0xFFFFFFFF
-        if stack is not None:
-            integers[EFFECT_STACK_FIELD] = stack & 0xFFFFFFFF
-        # The three fields the real service fills that the recorded tutorial heal does
-        # not. See the constants above: 25 is in every animated element measured, the
-        # source is the caster, and the instance handle rises.
-        integers[EFFECT_RATE_FIELD] = EFFECT_RATE
-        if source is not None:
-            integers[EFFECT_SOURCE_FIELD] = int.from_bytes(source, "little")
-        if instance:
-            integers[EFFECT_INSTANCE_FIELD] = instance & 0xFFFFFFFF
-            instance += 1
-        for value in integers:
-            push(value, 32)
 
-        for value in grammar["flags"][:3]:
-            push(1 if value else 0, 1)
-        push(1, 1)  # +0x24: the parameters follow
-
-        push(EFFECT_PARAMETERS, 32)
-        padded = list(parameters[:EFFECT_PARAMETERS])
-        padded += [0.0] * (EFFECT_PARAMETERS - len(padded))
-        for value in padded:
-            push(int.from_bytes(struct.pack("<f", value), "little"), 32)
-
-        push(0, 1)            # +0x38 false, and
-        push(NO_VECTORS, 8)   # +0x3c = -1, which ends the element
 
     push(int.from_bytes(actor, "little"), EFFECT_ACTOR_BITS)
     push(0xFF, 8)
@@ -1307,12 +1311,27 @@ def status_effects_message(
     out = original[:3] + bytes(body)
     # Read it back, every element of it. Nothing here that skipped this step turned
     # out to be right.
-    if entries:
+    if servable:
         seen = status_effect_indices(out)
-        wanted = [wire for wire, *_ in entries]
+        wanted = [wire for wire, *_ in servable]
         if seen != wanted:
             raise ValueError(f"wrote effects {wanted} and read back {seen}")
     return out
+
+
+def servable_effects(wires) -> tuple[list[int], list[int]]:
+    """Split *wires* into those a real element exists for, and those it does not.
+
+    The caller needs both: the first to send, the second to say out loud. An effect
+    silently dropped is how six commits went by with the stun and the poison appearing
+    to be sent.
+    """
+    from dsor.elements import element
+
+    have, missing = [], []
+    for wire in wires:
+        (have if element(wire) is not None else missing).append(wire)
+    return have, missing
 
 
 def status_effect_count(state: bytes | None = None) -> int:
@@ -1323,37 +1342,65 @@ def status_effect_count(state: bytes | None = None) -> int:
     return BitReader(body, 1).read_uint(32)
 
 
+def walk_elements(state: bytes | None = None) -> tuple[list[tuple[int, int, int]], int]:
+    """Every element as (effect index, first bit, bit span), and the trailing actor.
+
+    Walked rather than strided. The readers here used to divide the message length by
+    the count, which was right only while every element this server produced had the
+    same length -- and stopped being right the moment real elements were spliced in,
+    since those are 276, 477 or 669 bits. It showed as two different effects reading
+    back as the same one twice.
+    """
+    from raknet.bitstream import BitReader
+
+    body = (state or tick_state())[3:]
+    reader = BitReader(body, 0)
+    total = len(body) * 8
+    reader.read_bool()
+    count = reader.read_uint(32)
+    found: list[tuple[int, int, int]] = []
+    for _ in range(count):
+        start = reader.position
+        index = reader.read_uint(16)
+        for _ in range(8):
+            reader.read_uint(32)
+        flags = [reader.read_bool() for _ in range(4)]
+        if flags[3]:
+            parameters = reader.read_uint(32)
+            if parameters > 16:
+                break
+            for _ in range(parameters):
+                reader.read_uint(32)
+            reader.read_bool()
+            tail = reader.read_uint(8)
+            signed = tail - 256 if tail > 127 else tail
+            if signed != -1:
+                if reader.position + 192 > total:
+                    break
+                reader.read_bits(192)
+        found.append((index, start, reader.position - start))
+    actor = reader.read_uint(32) if reader.position + 32 <= total else 0
+    return found, actor
+
+
 def status_effect_indices(state: bytes | None = None) -> list[int]:
     """Every effect index a 0x004F carries, in order."""
     body = (state or tick_state())[3:]
-    count = status_effect_count(state)
-    stride = _stride(state)
-    return [
-        _read_bits(
-            body,
-            EFFECT_ELEMENT_BIT + stride * index + IN_ELEMENT_INDEX,
-            EFFECT_INDEX_BITS,
-        )
-        for index in range(count)
-    ]
+    return [index for index, _at, _span in walk_elements(state)[0]]
 
 
 def status_effect_track(state: bytes | None = None, index: int = 0) -> int:
     """The 8-bit field past the *index*-th effect's parameters. 2 in the recording."""
     body = (state or tick_state())[3:]
-    return _read_bits(
-        body,
-        EFFECT_ELEMENT_BIT + _stride(state) * index + IN_ELEMENT_TRACK,
-        IN_ELEMENT_TRACK_BITS,
-    )
+    found, _actor = walk_elements(state)
+    at = found[index][1] + IN_ELEMENT_TRACK
+    return _read_bits(body, at, IN_ELEMENT_TRACK_BITS)
 
 
 def status_effect_actor(state: bytes | None = None) -> bytes:
     """Who a 0x004F is addressed to."""
     body = (state or tick_state())[3:]
-    count = status_effect_count(state)
-    at = EFFECT_ELEMENT_BIT + _stride(state) * count
-    return _read_bits(body, at, EFFECT_ACTOR_BITS).to_bytes(4, "little")
+    return walk_elements(state)[1].to_bytes(4, "little")
 
 
 def _stride(state: bytes | None) -> int:
