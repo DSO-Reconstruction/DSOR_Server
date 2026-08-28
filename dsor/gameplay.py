@@ -44,6 +44,7 @@ from __future__ import annotations
 import math
 import struct
 from dataclasses import dataclass
+from raknet.payload import respan
 
 #: int16 x, int16 elevation, int16 y
 POSITION_SIZE = 6
@@ -610,7 +611,7 @@ def with_motion(
     if heading is not None:
         out[HEADING_OFFSET] = heading % HEADING_UNITS
         out[HEADING_GOAL_OFFSET] = heading % HEADING_UNITS
-    return bytes(out)
+    return respan(record, bytes(out))
 
 
 # ── actor stats ─────────────────────────────────────────────────────────────
@@ -716,4 +717,4 @@ def with_spawn(
         raise ValueError(f"description too short: {len(description)} bytes")
     out = bytearray(description)
     struct.pack_into("<fff", out, offset, x, elevation, y)
-    return bytes(out)
+    return respan(description, bytes(out))

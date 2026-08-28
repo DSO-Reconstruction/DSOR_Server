@@ -224,14 +224,31 @@ def test_the_captured_handles_really_do_collide():
         reader = BitReader(bits, 0)
         reader.read_uint(16)
         seen[[reader.read_uint(32) for _ in range(8)][0]].append(wire)
-    shared = {k: v for k, v in seen.items() if len(v) > 1}
-    assert shared, "the captured elements no longer collide, so this test is stale"
+    # The stun and the armour break no longer share one: those two handles came from
+    # elements the broken walk had fabricated, and the corrected grammar does not
+    # produce them. The collision was real when it was measured and the rewrite is
+    # still required -- captured handles are captured, and nothing stops two of them
+    # coinciding -- so what this pins now is that no two effects sent together can
+    # share one, whatever the table happens to hold.
+    from dsor.recorded import status_effects_message, walk_elements
 
-    stun = effects.wire_of("debuff_cc_stun")
-    armour = effects.wire_of("skill_laceratingstrike_debuff_armor")
-    assert any(stun in v and armour in v for v in shared.values()), (
-        "the stun and the armour break used to share a handle"
+    monster = b"\x86\x00\x01\x00"
+    pair = [
+        effects.wire_of("debuff_cc_stun"),
+        effects.wire_of("skill_seismicslam_debuff_armor"),
+    ]
+    sent = status_effects_message(
+        [(w, [0.0] * 5, 41230, 5.0, 66100 + i) for i, w in enumerate(pair)],
+        monster,
+        source=monster,
     )
+    found, _actor = walk_elements(sent, strict=True)
+    handles = []
+    for _index, at, _span in found:
+        reader = BitReader(sent[3:], at)
+        reader.read_uint(16)
+        handles.append([reader.read_uint(32) for _ in range(8)][0])
+    assert len(set(handles)) == len(handles) == 2, handles
 
 
 def test_re_sending_an_effect_keeps_its_handle_and_a_fresh_cast_does_not():

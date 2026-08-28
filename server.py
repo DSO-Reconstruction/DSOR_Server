@@ -1706,6 +1706,32 @@ def serve(
     itself, so it cannot be detected and must be given.
     """
     sessions = Sessions()
+    # The client's own database, into memory, before anything asks it a question. Said
+    # out loud either way: with it the server knows all 6703 status effects and all
+    # 7985 creatures, without it 458 and 23 -- and the difference is whether a skill
+    # outside the warrior's eighteen does anything at all.
+    from dsor import database
+    from dsor import effects as effect_table
+    from dsor import monsters as monster_table
+
+    if database.available():
+        log.info(
+            "%s in memory: %d status effects, %d creatures, %d skills with effects",
+            database.STATIC,
+            effect_table.LOADED,
+            monster_table.LOADED,
+            len(effect_table.SKILL_EFFECTS),
+        )
+    else:
+        log.warning(
+            "no %s in %s: falling back on the generated tables, which know %d of "
+            "6703 status effects and %d of 7985 creatures. Copy the client's "
+            "export_win32/db/static.db4 there -- tools/bundle.py extracts it.",
+            database.STATIC,
+            database.DATA,
+            len(effect_table.EFFECTS),
+            len(monster_table.MONSTERS),
+        )
     capture = Capture(capture_path) if capture_path else None
     if capture is not None:
         log.info("recording every datagram to %s", capture_path)

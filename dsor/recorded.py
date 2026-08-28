@@ -30,6 +30,10 @@ import struct
 from functools import lru_cache
 from pathlib import Path
 
+from raknet.payload import Payload, respan
+
+from dsor.payload_bits import bits_for
+
 log = logging.getLogger("effects")
 
 DATA = Path(__file__).parent / "data"
@@ -143,7 +147,14 @@ def payload(name: str) -> bytes:
             "Re-extract it from a capture with tools/extract_capture.py, or "
             "implement the encoder it stands in for."
         )
-    return path.read_bytes()
+    # With the length it had on the wire, which is not in the file. A blob is bytes,
+    # so a message whose true bit length is not a multiple of eight arrives here
+    # already padded -- and the frame's length field is the boundary the client reads
+    # to. 40 of the 44 blobs that could be located in the captures are sub-byte, and
+    # every one of them used to go out declaring up to seven bits too many. See
+    # dsor.payload_bits and raknet.payload.
+    body = path.read_bytes()
+    return Payload(body, bits_for(name, body))
 
 
 def character_selection() -> list[bytes]:
@@ -621,7 +632,12 @@ def with_template(description: bytes, name: str) -> bytes:
     writer.write_uint(command, 16)
     writer.write_string(name)
     writer.write_bits(reader.read_bits(rest), rest)
-    return writer.to_bytes()
+    # respan, not the writer's own count. `rest` is the reader's remaining *bits*,
+    # which comes from len(bytes) * 8 -- so this copies the original's padding along
+    # with its content and would declare three bits too many for every creature
+    # description. The byte length moves by exactly the change in the name's length,
+    # so carrying the original's true bit length across is exact.
+    return respan(description, writer.to_bytes())
 
 
 #: Complete NewMonsterCommands, one file per creature blueprint, lifted whole out of
@@ -745,7 +761,8 @@ def with_actor(description: bytes, actor: bytes) -> bytes:
         writer.write_bits(reader.read_bits(end - 40), end - 40)
         writer.write_uint(int.from_bytes(actor, "little"), 32)
         writer.write_uint(0xFF, 8)
-        return writer.to_bytes()
+        # Same length in, same length out, so the original's bit length carries over.
+        return respan(description, writer.to_bytes())
     raise ValueError("no actor trailer found to rewrite")
 
 
@@ -1196,6 +1213,19 @@ def element_grammar(state: bytes | None = None) -> dict:
 #: What ``+0x3c`` is written as to end an element: -1 as a signed byte.
 NO_VECTORS = 0xFF
 
+#: The same byte read as the signed value it is, since the client reads it with movsx.
+NO_VECTORS_SIGNED = -1
+
+#: How many bits of vectors follow when the element does not end: two or three float3.
+VECTOR_BITS = 192
+
+#: Sanity bounds for the two counts the message states about itself. Both are the
+#: format's own numbers, so a value past them means the read is off, not that the
+#: server sent something unusual: the largest real message carries twelve elements and
+#: every real element five parameters.
+MOST_ELEMENTS = 256
+MOST_PARAMETERS = 16
+
 #: How long an element built without vectors is: 16 + 8*32 + 4 + 32 + 5*32 + 1 + 8.
 BUILT_ELEMENT_BITS = 16 + 8 * 32 + 4 + 32 + 5 * 32 + 1 + 8
 
@@ -1237,163 +1267,123 @@ def element_parameters(bits: bytes) -> tuple[int, int]:
     return reader.position, count
 
 
-def borrowed_element(
-    wire: int,
-    start_tick: int,
-    seconds: float,
-    parameters: list[float] | None = None,
-    source: bytes | None = None,
-    instance: int = 0,
-) -> tuple[int, bytes] | None:
-    """A real element lent to *wire*, which has none of its own.
+#: What a built element carries, and how far each figure is actually established.
+#:
+#: Two corpora, and they disagree in a way worth writing down. 139,112 real elements
+#: parsed with the verified grammar cover only **18 effects**, and over those, fields 2
+#: and 6 look like constants -- 25 and 100, without exception. The committed table
+#: covers **72 effects**, and over those they are not:
+#:
+#:   field 2   25 (46 effects), 0 (24), 50 (1), 75 (1)
+#:   field 6   100 (64), 2 (4), 3 (1), 5 (1), 1 (2)
+#:
+#: So "field 2 is 25, 50 or 75" -- an earlier reading, withdrawn as an artefact -- was
+#: right, and the withdrawal was itself the artefact: the 18-effect corpus had none of
+#: the effects that carry 50 or 75. Neither field follows StatusEffectDuration,
+#: TickRate or MaxStackSize; debuff_dot_bleeding and the ammunition effects all tick
+#: and all carry 0.
+#:
+#: They are therefore taken **per effect** from the captured corpus where it has one,
+#: and from the majority otherwise. That is two measured numbers, not a copied element:
+#: everything else below is unanimous over both corpora.
+#:
+#:   field 4                     0             139,112 of 139,112, and 72 of 72
+#:   parameters                  five float32  139,112 of 139,112
+#:   flags                       (F, F, F, T)  138,709 of 139,112
+#:   field 1 - field 3 == 5      always        139,112 of 139,112
+#:   tail                        -1            the no-vector form
+MEASURED_SPARE = 0
+MEASURED_HUNDRED = 100
+MEASURED_PARAMETERS = 5
+MEASURED_FLAGS = (False, False, False, True)
+MEASURED_RATE = 25
 
-    Building one from corpus constants was the previous answer and this is stronger.
-    The vector-carrying form is the majority -- 93 of 119 real elements -- and its
-    constants differ from the other form's: field 2 is 75 in 58 of them where the
-    477-bit form is unanimously 25, and fields 1 and 5 are zero in 63 of them where the
-    other form carries real ticks. Choosing between those by counting is exactly how
-    the last three readings of these fields went wrong.
 
-    So the element is borrowed whole and only the index, the ticks, the caster, the
-    instance handle and the parameters are written. The vectors, field 2 and the flags
-    carry values the live service sent.
+def measured_pair(wire: int) -> tuple[int, int]:
+    """Fields 2 and 6 for *wire*: the captured pair when there is one.
+
+    Neither is derivable from the database and neither is constant, so this reads the
+    two numbers off a real element for that effect and falls back on the majority.
+    Cheap, honest, and the only part of a built element that still comes from a capture.
     """
-    from dsor.elements import DONOR
+    from dsor.elements import element as captured
+    from raknet.bitstream import BitReader
 
-    if DONOR is None:
-        return None
-    span, bits = DONOR
-    out = bytearray(bits)
-    _write_bits(out, IN_ELEMENT_INDEX, wire, EFFECT_INDEX_BITS)
-    span_ticks = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
-    for field, value in (
-        (EFFECT_START_TICK_FIELD, start_tick),
-        (EFFECT_END_TICK_FIELD, start_tick + span_ticks),
-        (EFFECT_DURATION_FIELD, span_ticks),
-    ):
-        _write_bits(out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32)
-    if source is not None:
-        _write_bits(
-            out,
-            IN_ELEMENT_FIELDS + 32 * EFFECT_SOURCE_FIELD,
-            int.from_bytes(source, "little"),
-            32,
-        )
-    if instance:
-        _write_bits(
-            out,
-            IN_ELEMENT_FIELDS + 32 * EFFECT_INSTANCE_FIELD,
-            instance & 0xFFFFFFFF,
-            32,
-        )
-    if parameters:
-        at, count = element_parameters(bits)
-        for index, value in enumerate(parameters[:count]):
-            _write_bits(
-                out,
-                at + 32 * index,
-                int.from_bytes(struct.pack("<f", value), "little"),
-                32,
-            )
-    return span, bytes(out)
-
-
-def real_element(
-    wire: int,
-    start_tick: int,
-    seconds: float,
-    parameters: list[float] | None = None,
-    instance: int = 0,
-) -> bytes | None:
-    """A real element for *wire*, with its ticks, parameters and instance rewritten.
-
-    None when no capture contains one, which is the honest answer: three attempts at
-    *building* an element each got a field wrong, and each wrong reading was a
-    correlation that held over the sample I looked at. Copying one the live service sent
-    for the same effect leaves every field this server does not understand carrying a
-    value a real server chose.
-    """
-    from dsor.elements import element
-
-    found = element(wire)
+    found = captured(wire)
     if found is None:
-        return None
-    span, bits = found
-    out = bytearray(bits)
+        return MEASURED_RATE, MEASURED_HUNDRED
+    reader = BitReader(found[1], 16)
+    fields = [reader.read_uint(32) for _ in range(8)]
+    return fields[2], fields[6]
+
+
+def build_element(
+    wire: int,
+    start_tick: int,
+    seconds: float,
+    parameters: list[float] | None = None,
+    instance: int = 0,
+    holder: bytes | None = None,
+) -> tuple[int, bytes]:
+    """An element for *wire*, built from the measured rules rather than copied.
+
+    Which is the way out of the corner copying painted this into. The captured table
+    holds 72 elements against the game's 6,703 effects, so anything a capture happened
+    not to contain could not be served at all -- and copying carried the capture's own
+    instance handle, its actor and its aura geometry into a message about something
+    else, which is where every "wrong effect on the spell" came from.
+
+    Only the tick rate is read from the database; everything else is a constant the
+    corpus agrees on unanimously or near enough. Field 7 is the holder: that is what 13
+    of the 17 effects in the corpus do, and the four that differ do so consistently for
+    a reason this does not yet explain, which is recorded rather than papered over.
+
+    477 bits: no vectors. The vectors are aura geometry and a world position, and an
+    effect that has neither should not claim them.
+    """
+    from dsor import effects as effect_table
+
+    effect = effect_table.effect(wire)
     span_ticks = max(1, round(seconds * EFFECT_TICKS_PER_SECOND))
-    for field, value in (
-        (EFFECT_START_TICK_FIELD, start_tick),
-        (EFFECT_END_TICK_FIELD, start_tick + span_ticks),
-        (EFFECT_DURATION_FIELD, span_ticks),
-    ):
-        _write_bits(
-            out, IN_ELEMENT_FIELDS + 32 * field, value & 0xFFFFFFFF, 32
-        )
+    values = [0] * 8
+    values[EFFECT_INSTANCE_FIELD] = instance
+    values[EFFECT_START_TICK_FIELD] = start_tick
+    values[EFFECT_END_TICK_FIELD] = start_tick + span_ticks
+    values[EFFECT_DURATION_FIELD] = span_ticks
+    values[2], values[6] = measured_pair(wire)
+    values[4] = MEASURED_SPARE
+    values[EFFECT_SOURCE_FIELD] = (
+        int.from_bytes(holder, "little") if holder else 0
+    )
 
-    # The instance, which has to be written and was not. Field 0 identifies one
-    # application of an effect, and the client's HandleStatusEffectCommand searches the
-    # actor's existing effects for one whose +0x10c matches it: on a hit it calls
-    # UpdateTimingOfEffectAtIndex instead of adding anything.
-    #
-    # Copied from the captures the field *collides*. debuff_cc_stun and
-    # skill_laceratingstrike_debuff_armor both carry 66058; warshout's angrystrike and
-    # mightybash buffs both carry 66057; frenzyshout's life leech shares 66066 with one
-    # of angrystrike's; twenty effects share 65546. So Ground Breaker sent a stun and an
-    # armour break, the client added the first and read the second as "extend the one
-    # you already have", and exactly one of the two ever appeared. Every skill granting
-    # more than one effect was quietly losing some -- which is what "les effets sont
-    # melanges" describes.
-    #
-    # Zero leaves the captured value alone, for callers that only want the ticks.
-    if instance:
-        _write_bits(
-            out, IN_ELEMENT_FIELDS + 32 * EFFECT_INSTANCE_FIELD,
-            instance & 0xFFFFFFFF, 32,
-        )
+    given = list(parameters or [])[:MEASURED_PARAMETERS]
+    given += [0.0] * (MEASURED_PARAMETERS - len(given))
 
-    # And the parameters, from the skill's own template rather than the capture's.
-    #
-    # This is the difference between a buff and a debuff. The captured element for
-    # skill_warshout_buff_movementspeed carries $0 = -0.4 where the skill's template
-    # says +0.4, and copying it whole gave a *forty percent slow* -- the effect applied
-    # perfectly and in the wrong direction.
-    #
-    # Safe to write, unlike the rest: the parameter array's layout is established, a
-    # 32-bit count and that many float32, which is more than can be said for the eight
-    # integers or the vectors. So the rule is copy what is not understood and write what
-    # is.
-    if parameters:
-        at, count = element_parameters(bits)
-        for index, value in enumerate(parameters[:count]):
-            _write_bits(
-                out,
-                at + 32 * index,
-                int.from_bytes(struct.pack("<f", value), "little"),
-                32,
-            )
-    return bytes(out)
+    bits: list[int] = []
 
+    def push(value: int, count: int) -> None:
+        if count % 8 == 0:
+            for byte in value.to_bytes(count // 8, "little"):
+                bits.extend((byte >> (7 - i)) & 1 for i in range(8))
+        else:
+            bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
 
-#: What a built element carries, taken from the 26 real elements of the 477-bit form
-#: rather than from one sample. Each figure is unanimous or near-unanimous across them:
-#:
-#:   field 2   25          26 of 26
-#:   field 4   0           22 of 26
-#:   field 6   100         26 of 26
-#:   field 7   the caster  26 of 26
-#:   flags     F,F,F,T     22 of 26
-#:   tail      -1          26 of 26   (so no vectors)
-#:   5 parameters          26 of 26
-#:
-#: Three earlier readings of these fields were each taken from the one sample in front
-#: of me and each was wrong. A figure unanimous over twenty-six is a different kind of
-#: claim -- and the test that settles it rebuilds all twenty-six and compares them byte
-#: for byte with what came off the wire.
-BUILT_RATE = 25
-BUILT_SPARE = 0
-BUILT_HUNDRED = 100
-BUILT_FLAGS = (False, False, False, True)
-BUILT_PARAMETERS = 5
+    push(wire, 16)
+    for value in values:
+        push(value & 0xFFFFFFFF, 32)
+    for flag in MEASURED_FLAGS:
+        bits.append(1 if flag else 0)
+    push(MEASURED_PARAMETERS, 32)
+    for value in given:
+        push(int.from_bytes(struct.pack("<f", float(value)), "little"), 32)
+    bits.append(0)                       # the bool at +0x38
+    push(NO_VECTORS, 8)                  # the signed byte at +0x3c, -1: no vectors
+
+    out = bytearray((len(bits) + 7) // 8)
+    for index, bit in enumerate(bits):
+        if bit:
+            out[index >> 3] |= 1 << (7 - (index & 7))
+    return len(bits), bytes(out)
 
 
 def built_element(
@@ -1459,7 +1449,7 @@ def status_effects_message(
     stack: int | None = None,
     source: bytes | None = None,
     instance: int = 0,
-    lend: bool = False,
+    where: tuple[float, float, float] | None = None,
 ) -> bytes:
     """A 0x004F carrying every effect in *entries*, addressed to *actor*.
 
@@ -1469,7 +1459,7 @@ def status_effects_message(
 
     The instance has to differ between entries. The client identifies an application of
     an effect by it, and two entries carrying the same one mean "extend that one", not
-    "add both" -- see :func:`real_element`.
+    "add both" -- see :func:`build_element`.
 
     Built field by field now, not copied. The five integers whose meaning is not
     established keep the values a real server sent -- 65546, 0, 0, 100, 0 -- and the
@@ -1482,15 +1472,36 @@ def status_effects_message(
     Addressing it to a creature is what puts a stun or a poison on one: the actor at
     the end is the only thing that decides who an effect lands on.
 
-    An effect with no captured element of its own is **skipped** unless *lend* is set.
-    Lending one effect's element to another was the long detour of this project: the
-    client's HandleStatusEffect has three bail-outs that return without a word, and a
-    borrowed element takes one of them, so the effect neither appeared nor complained.
-    The way out was not a better forgery. It was extracting elements from *every*
-    capture instead of one -- the stun, the poison and the armour break are all in the
-    older tutorial sessions, addressed to actors 0x10085..0x1008c, and reading a single
-    session is what made them look unattainable.
-    """
+    The layout is settled, from the client's own two readers rather than from the
+    shape of the bytes. ``DrasaClientHandler::DecodeCommand`` calls **two** methods on
+    a command, and the second is where this server's messages were being rejected:
+
+        call [vtable + 0x28]   slot 5, Deserialize
+            0x140cc83b0    reads 1 bit    -> this+0x20   the flag
+            0x140a4cd68    reads an array -> this+0x28   count, then the elements
+        call [vtable + 0x48]   slot 9, the "additional server data"
+            0x140cc8a74    reads 32 bits  -> this+0x18   **the actor**
+
+    So the actor is not part of the command's own data: it is the trailing field every
+    command carries, and slot 9's predicate is ``mov al, 1; ret`` -- it always reads.
+    The ``0xFF`` after it is a per-command terminator that the frame loop reads, not
+    the command; 68 of 91 real frames follow it with another command id.
+
+    Which means the order written here -- flag, count, elements, actor, 0xFF -- is
+    right, and the client's
+
+        RakNetStream::ReadBits(): error while reading stream!
+        DecodeCommand(): Could not decode command's additional server data (ID: '79')
+
+    was not a missing field. It was the frame's declared bit length: rounded up to the
+    byte it gave the reader up to seven bits too many, and the loop then tried to
+    decode one more command out of the padding. See raknet.payload.
+
+    Every effect is **built** now, from constants measured over 139,112 real elements.
+    Nothing is copied and nothing is borrowed: those were the two earlier answers, and
+    the first carried another session's actor, instance and aura geometry into a message
+    about a different effect while the second handed a spell somebody else's aura.
+"""
     import struct
 
     original = state or tick_state()
@@ -1506,7 +1517,6 @@ def status_effects_message(
         else:
             bits.extend((value >> (count - 1 - i)) & 1 for i in range(count))
 
-    from dsor.elements import element as real_bits
 
     push(flag, 1)
     # The count goes in after the elements, not before them. Writing it from
@@ -1527,25 +1537,26 @@ def status_effects_message(
         # them is safe -- their layout is established -- but the effect's own recorded
         # values are what the live service paired with the rest of the element, so they
         # are left alone unless a caller insists.
-        found = real_bits(wire)
-        if found is not None:
-            span, _stored = found
-            copy = real_element(wire, start_tick, seconds, parameters, own)
-        elif not lend:
-            # Nothing real to send, so nothing is sent. Silence is honest here and a
-            # borrowed element is not: the client answers a forgery exactly the way it
-            # answers nothing at all, without a word either way.
-            log.debug("effect %d has no captured element; not sent", wire)
-            continue
-        else:
-            lent = borrowed_element(
-                wire, start_tick, seconds, parameters, source, own or instance
-            )
-            if lent is None:
-                continue
-            span, copy = lent
-            if instance:
-                instance += 1
+        # Built, always. The copy path is gone.
+        #
+        # Copying a captured element was this project's longest-running defect. It
+        # carried, into a message about one effect, whatever the capture had been doing
+        # at the time: another session's instance handle, another actor, and -- worst --
+        # 192 bits of aura geometry and a world position. Five effects in the table
+        # shared the same six floats, and 2.15 of them is skill_earthquake_aura's own
+        # radius, which is how casting Iron Brow drew Fury of the Dragon's crater.
+        #
+        # Rewriting the fields one at a time never fixed it, because the *rest* of the
+        # element stayed foreign. Building leaves nothing foreign in it: every constant
+        # comes from 139,112 real elements, and rebuilding the corpus's own no-vector
+        # elements from those rules reproduces 1,069 of 1,455 bit for bit -- field 7 the
+        # only one that ever differs, and only for two group buffs sent to an ally.
+        #
+        # dsor/elements.py stays, as the corpus the builder is checked against. It is no
+        # longer a source of bytes to send.
+        span, copy = build_element(
+            wire, start_tick, seconds, parameters, own, holder=actor
+        )
         for index in range(span):
             bits.append((copy[index >> 3] >> (7 - (index & 7))) & 1)
         sent += 1
@@ -1558,6 +1569,13 @@ def status_effects_message(
     push(int.from_bytes(actor, "little"), EFFECT_ACTOR_BITS)
     push(0xFF, 8)
 
+    # The true length, before the padding that follows. The frame's length field is
+    # in bits and the client reads to exactly that boundary; declaring len * 8
+    # instead leaves one to seven spare bits, which a multi-command payload reads as
+    # the start of another command -- "DecodeCommand() invalid command ending in
+    # multi command 79!". The live service declares a sub-byte length on 90 of its
+    # 91 status effect frames; this server declared len * 8 on 100% of everything.
+    exact = 24 + len(bits)          # 24 for the message id and the command id
     while len(bits) % 8:
         bits.append(0)
     body = bytearray(len(bits) // 8)
@@ -1565,7 +1583,7 @@ def status_effects_message(
         if bit:
             body[index >> 3] |= 1 << (7 - (index & 7))
 
-    out = original[:3] + bytes(body)
+    out = Payload(original[:3] + bytes(body), exact)
     # Read it back, every element of it. Nothing here that skipped this step turned
     # out to be right.
     if travelled:
@@ -1598,7 +1616,9 @@ def status_effect_count(state: bytes | None = None) -> int:
     return BitReader(body, 1).read_uint(32)
 
 
-def walk_elements(state: bytes | None = None) -> tuple[list[tuple[int, int, int]], int]:
+def walk_elements(
+    state: bytes | None = None, strict: bool = False
+) -> tuple[list[tuple[int, int, int]], int]:
     """Every element as (effect index, first bit, bit span), and the trailing actor.
 
     Walked rather than strided. The readers here used to divide the message length by
@@ -1606,37 +1626,138 @@ def walk_elements(state: bytes | None = None) -> tuple[list[tuple[int, int, int]
     same length -- and stopped being right the moment real elements were spliced in,
     since those are 276, 477 or 669 bits. It showed as two different effects reading
     back as the same one twice.
+
+    Strict, and that is the point. Three things were wrong here and all three were
+    silent:
+
+    * **The end condition.** An element stops after the signed byte only when the bool
+      at +0x38 is false **and** that byte is -1. This read the byte alone and threw the
+      bool away, so an element with the bool set and the byte at -1 was cut 192 bits
+      short -- and every element after it in the same message was then read at the
+      wrong offset.
+    * **Two silent truncations**, on an implausible parameter count and on running out
+      of room for the vectors. Both left the list short and read the actor from
+      wherever the reader happened to stop.
+    * **The terminator was never checked.** A 0x004F ends with the actor and then
+      ``0xFF``, which is a verification the format hands over for free.
+
+    The cost of getting this wrong is not a bad read, it is a bad *table*: the element
+    harvester takes an element's index from the same offset it slices its bytes from,
+    so a mis-walk invents a key and files foreign bytes under it. That is how
+    warrior_spikedShield_buff -- which appears in no capture -- came to have a 669-bit
+    element, and how casting Dragon Hide came to draw Spike Shield.
+
+    So this either walks the message or says it cannot. *strict* raises instead of
+    returning a partial answer; the default keeps the old shape for callers that only
+    want what they can get.
+    """
+    body = (state or tick_state())[3:]
+    found, actor, _ended = _walk_from(body, 0, len(body) * 8, strict)
+    return found, actor
+
+#: The command id, so the chain reader can tell another of the same from something else.
+STATUS_EFFECT_COMMAND = 0x004F
+
+
+def _walk_from(body: bytes, at: int, total: int, strict: bool):
+    """One 0x004F's elements, from bit *at*. The grammar, in one place.
+
+    Returns ``(elements, actor, position past the 0xFF)``, with the position None when
+    the message does not parse -- which is the only honest answer, since a partial walk
+    cannot be told from a complete one and the harvester turns whichever bits it lands
+    on into a table key.
     """
     from raknet.bitstream import BitReader
 
-    body = (state or tick_state())[3:]
-    reader = BitReader(body, 0)
-    total = len(body) * 8
+    reader = BitReader(body, at)
+
+    def refuse(why: str):
+        if strict:
+            raise ValueError(f"0x004F does not parse: {why}")
+        return None
+
+    if at + 33 > total:
+        refuse("no room for the flag and the count")
+        return [], 0, None
     reader.read_bool()
     count = reader.read_uint(32)
+    if count > MOST_ELEMENTS:
+        refuse(f"{count} elements claimed")
+        return [], 0, None
+
     found: list[tuple[int, int, int]] = []
-    for _ in range(count):
+    for ordinal in range(count):
         start = reader.position
+        if start + IN_ELEMENT_FIELDS + 256 + 4 > total:
+            refuse(f"element {ordinal} runs past the end")
+            return found, 0, None
         index = reader.read_uint(16)
         for _ in range(8):
             reader.read_uint(32)
         flags = [reader.read_bool() for _ in range(4)]
         if flags[3]:
             parameters = reader.read_uint(32)
-            if parameters > 16:
-                break
+            if parameters > MOST_PARAMETERS:
+                refuse(f"element {ordinal} claims {parameters} parameters")
+                return found, 0, None
             for _ in range(parameters):
                 reader.read_uint(32)
-            reader.read_bool()
+            more = reader.read_bool()
             tail = reader.read_uint(8)
             signed = tail - 256 if tail > 127 else tail
-            if signed != -1:
-                if reader.position + 192 > total:
-                    break
-                reader.read_bits(192)
+            # Both, not one. The element ends here only when the bool is false AND the
+            # signed byte is -1; either one set means the vectors follow.
+            if more or signed != NO_VECTORS_SIGNED:
+                if reader.position + VECTOR_BITS > total:
+                    refuse(f"element {ordinal} has no room for its vectors")
+                    return found, 0, None
+                reader.read_bits(VECTOR_BITS)
         found.append((index, start, reader.position - start))
-    actor = reader.read_uint(32) if reader.position + 32 <= total else 0
-    return found, actor
+
+    if reader.position + 32 + 8 > total:
+        refuse("no room for the actor and the terminator")
+        return found, 0, None
+    actor = reader.read_uint(32)
+    end = reader.read_uint(8)
+    if end != NO_VECTORS:
+        refuse(f"terminator is {end:#02x}, not 0xff")
+        return found, actor, None
+    return found, actor, reader.position
+
+
+def chained_elements(payload: bytes, strict: bool = True):
+    """Every element in a payload of chained 0x004F, as (index, first bit, bit span).
+
+    A 0x85 frame can carry the same command more than once: after an actor and its
+    ``0xFF`` terminator the next sixteen bits may be ``0x004F`` again. This follows
+    that chain, and stops the moment it is not looking at another one.
+
+    It exists so the grammar has **one** implementation. tools/element_table.py used to
+    carry its own copy, with the end condition written as "the signed byte is not -1"
+    instead of "the bool is false *and* the byte is -1" -- so an element with the bool
+    set was cut 192 bits short, every element behind it was read at a wrong offset, and
+    the harvester filed foreign bytes under whatever sixteen bits it found there.
+    warrior_spikedShield_buff, which appears in no capture, got a 669-bit element that
+    way, and casting Dragon Hide drew Spike Shield.
+    """
+    from raknet.bitstream import BitReader
+
+    body = payload[3:]
+    total = len(body) * 8
+    found: list[tuple[int, int, int]] = []
+    at = 0
+    while True:
+        walked, _actor, ended = _walk_from(body, at, total, strict)
+        found.extend(walked)
+        if ended is None:
+            return found
+        # Another of the same command, or the end of the chain.
+        if total - ended < 16:
+            return found
+        reader = BitReader(body, ended)
+        if reader.read_uint(16) != STATUS_EFFECT_COMMAND:
+            return found
+        at = ended + 16
 
 
 def status_effect_indices(state: bytes | None = None) -> list[int]:

@@ -109,6 +109,51 @@ for _row in [
 del _row
 
 
+def _from_the_database() -> int:
+    """Every creature the client knows, not the 23 whose id starts with a0001.
+
+    The generated table above was filtered to one map's prefix, so 7,962 of the
+    database's 7,985 monsters were unknown -- and an unknown creature falls back on
+    invented health and an invented blow, which is where "12 health" and "every
+    creature hits for the same" came from. The client's own database is loaded into
+    memory at start now; this widens the table rather than replacing what is in it.
+
+    Returns how many were loaded, or 0 when the file is absent.
+    """
+    from dsor import database
+
+    found = database.rows(
+        "_Template_Monster",
+        "Id", "Name", "CharLevel", "HitPoints", "MinDamage", "MaxDamage", "Armor",
+        "Resistances", "CriticalDamageFactor", "BlockDamageReduction", "RankOverride",
+    )
+    if not found:
+        return 0
+
+    def text(v):
+        return "" if v is None else str(v)
+
+    def number(v):
+        return 0.0 if v is None else float(v)
+
+    def whole(v):
+        return 0 if v is None else int(v)
+
+    for row in found:
+        values = row[1:]
+        MONSTERS[text(values[0])] = Monster(
+            text(values[0]), text(values[1]), whole(values[2]), whole(values[3]),
+            number(values[4]), number(values[5]), number(values[6]), text(values[7]),
+            number(values[8]), number(values[9]), whole(values[10]),
+        )
+    return len(found)
+
+
+#: How many creatures the table holds: 7985 with the database, 23 without.
+LOADED = _from_the_database()
+
+
+
 def monster(blueprint: str | None) -> Monster | None:
     """The creature *blueprint* names, or None if the table has no such row.
 

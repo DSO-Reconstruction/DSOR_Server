@@ -18,6 +18,8 @@ begins at absolute bit 223 counting MSB-first from byte zero.
 
 from __future__ import annotations
 
+from .payload import Payload
+
 
 class BitReader:
     """Reads fields of arbitrary bit width from a buffer.
@@ -149,16 +151,29 @@ class BitWriter:
         self.write_uint(len(raw), length_bits)
         self.write_bytes(raw)
 
-    def to_bytes(self) -> bytes:
-        """Pad the final byte with zeros and return the buffer.
+    def to_bytes(self) -> "Payload":
+        """Pad the final byte with zeros and return the buffer, bit length attached.
 
         Padding is unavoidable — a buffer is bytes — so a message whose bit length
         is not a multiple of eight cannot be reproduced from bytes alone. That is
         why frames carry a length in *bits*.
+
+        Which this used to say and then throw away. A plain ``bytes`` came back, the
+        frame builder had nothing better than ``len * 8``, and every message this
+        server built declared up to seven bits more than it held. Measured against
+        the live service: its HitCommand frames declare a sub-byte length in 98 of
+        98, its status effect frames in 90 of 91, and this server declared ``len * 8``
+        for 100% of every command. The spare bits sit at the end of the frame, and a
+        multi-command payload is decoded command after command until the stream runs
+        out — so the client reads them as one more command and says
+        "DecodeCommand() invalid command ending in multi command 79!".
+
+        A :class:`~raknet.payload.Payload` *is* bytes, so nothing that treats the
+        result as bytes changes; the frame builder is the only thing that looks.
         """
         padded = self._bits + [0] * (-len(self._bits) % 8)
         out = bytearray(len(padded) // 8)
         for index, bit in enumerate(padded):
             if bit:
                 out[index >> 3] |= 1 << (7 - (index & 7))
-        return bytes(out)
+        return Payload(bytes(out), len(self._bits))

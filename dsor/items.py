@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import struct
 from pathlib import Path
+from raknet.payload import respan
 
 #: Bit offset of the item's actor id: past the 0x85 message id and the command id.
 ACTOR_BIT = 24
@@ -63,7 +64,14 @@ def item_drop() -> bytes:
 
 
 def _write_bits(buf: bytes, offset: int, payload: bytes) -> bytes:
-    """Return *buf* with *payload* written at bit *offset*."""
+    """Return *buf* with *payload* written at bit *offset*.
+
+    Same length in, same length out -- so *buf*'s own bit length carries over. It has
+    to be carried explicitly: a bytearray copy gives plain ``bytes`` back and loses
+    the length the message had on the wire, and the frame would then declare
+    ``len * 8``. This is the primitive every field rewrite goes through, so getting it
+    here covers all of them.
+    """
     out = bytearray(buf)
     for index, byte in enumerate(payload):
         for bit in range(8):
@@ -74,7 +82,7 @@ def _write_bits(buf: bytes, offset: int, payload: bytes) -> bytes:
                 out[byte_at] |= mask
             else:
                 out[byte_at] &= 0xFF & ~mask
-    return bytes(out)
+    return respan(buf, bytes(out))
 
 
 def _read_bits(buf: bytes, offset: int, count: int) -> bytes:
@@ -356,7 +364,7 @@ def with_taken_template(reply: bytes, template: str) -> bytes:
     stream = _bits(reply)
     head = stream[:bit]
     tail = stream[bit + 16 + 8 * old :]
-    return _bytes(head + _bits(len(raw).to_bytes(2, "little")) + _bits(raw) + tail)
+    return respan(reply, _bytes(head + _bits(len(raw).to_bytes(2, "little")) + _bits(raw) + tail))
 
 
 #: Where the inventory command's body starts inside the recorded reply: past the
@@ -448,4 +456,4 @@ def with_single_allocation(reply: bytes, actor: bytes, slot: int) -> bytes:
     head = stream[:at]
     tail = stream[at + 32 + 64 * count :]
     entry = _bits(actor) + _bits((slot & 0xFFFFFFFF).to_bytes(4, "little"))
-    return _bytes(head + _bits((1).to_bytes(4, "little")) + entry + tail)
+    return respan(reply, _bytes(head + _bits((1).to_bytes(4, "little")) + entry + tail))

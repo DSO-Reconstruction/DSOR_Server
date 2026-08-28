@@ -994,6 +994,85 @@ PROMISED: dict[int, tuple[tuple[str, str], ...]] = {
 
 
 #: Every effect by template id.
+def _from_the_database() -> int:
+    """Replace the generated tables with the client's own, when it is there.
+
+    The generated ones are a snapshot taken through a filter -- 458 of the database's
+    6,703 status effects, being those a class skill names plus what their auras reach.
+    Everything else was unknown to this server, which cannot serve five classes, and a
+    snapshot also drifts against elements extracted from a different build.
+
+    Loading is safe on the index question: the wire index is ``rowid - 1``, the rowids
+    of every table used here run 1..N with no gaps, and index 1350 comes back as
+    ``a0001_tutorial_heal_on_low_health`` -- which is the effect the recorded 0x004F
+    carries. So this widens the table without moving anything already in it.
+
+    Returns how many effects were loaded, or 0 when the file is absent and the
+    generated tables stand.
+    """
+    from dsor import database
+
+    columns = (
+        "Id", "StatusEffectDuration", "StatusEffectTickRate", "MaxStackSize",
+        "StartModifiers", "TickModifiers", "StopModifiers", "DoneModifiers",
+        "ExclusiveGroup", "Groups", "StartSequence", "TickSequence",
+        "StartAnimation", "AuraEffectId", "AuraRadius", "AuraTargets",
+    )
+    found = database.rows("_Template_StatusEffect", *columns)
+    if not found:
+        return 0
+
+    def text(value):
+        return "" if value is None else str(value)
+
+    def number(value):
+        return 0.0 if value is None else float(value)
+
+    for row in found:
+        index, values = row[0], row[1:]
+        EFFECTS[index] = Effect(
+            index,
+            text(values[0]),
+            number(values[1]),
+            number(values[2]),
+            0 if values[3] is None else int(values[3]),
+            *(text(v) for v in values[4:13]),
+            text(values[13]),
+            number(values[14]),
+            text(values[15]),
+        )
+
+    # The three lists a skill carries, and the tooltip's own word on what it does.
+    for index, user, victim in database.rows(
+        "_Template_Skill", "UserStatusEffects", "VictimStatusEffects"
+    ):
+        SKILL_EFFECTS[index] = (text(user), text(victim))
+    for index, where in database.rows("_Template_Skill", "LocationStatusEffects"):
+        if text(where):
+            SKILL_LOCATIONS[index] = text(where)
+
+    held = database.connection()
+    tokens = held.execute(
+        "SELECT DISTINCT Param1Id, Param1Attr, Param2Id FROM _Template_LocaleToken"
+        " WHERE TokenType = 'SkillEffect' AND Param1Id <> '' AND Param2Id <> ''"
+    ).fetchall()
+    wire_of_skill = {
+        row[1]: row[0] - database.ROW_TO_INDEX
+        for row in held.execute("SELECT rowid, Id FROM _Template_Skill")
+    }
+    promised: dict[int, set] = {}
+    for skill, kind, effect_id in tokens:
+        wire = wire_of_skill.get(skill)
+        if wire is not None:
+            promised.setdefault(wire, set()).add((kind, effect_id))
+    for wire, pairs in promised.items():
+        PROMISED[wire] = tuple(sorted(pairs))
+    return len(found)
+
+
+#: How many effects the tables actually hold: 6703 with the database, 458 without.
+LOADED = _from_the_database()
+
 BY_ID: dict[str, Effect] = {e.id: e for e in EFFECTS.values()}
 
 

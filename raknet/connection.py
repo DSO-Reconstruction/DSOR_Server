@@ -35,6 +35,7 @@ from .datagram import (
     parse_datagram_header,
 )
 from .frame import Frame, build_frame, parse_frames
+from .payload import bits_of
 from .offline import UDP_IPV4_OVERHEAD
 
 #: Widest frame header we may emit: flags(1) + bit length(2) + reliable(3)
@@ -335,6 +336,7 @@ class Connection:
     def _split(
         self, payload: bytes, reliability: Reliability, channel: int, budget: int
     ) -> list[Frame]:
+        total_bits = bits_of(payload)
         chunks = [payload[i : i + budget] for i in range(0, len(payload), budget)]
         split_id = self._next_split_id
         self._next_split_id = (self._next_split_id + 1) % 0x10000
@@ -343,8 +345,12 @@ class Connection:
         ordering_index = self._take_ordering_index(channel)
         frames = []
         for index, chunk in enumerate(chunks):
+            # Only the last piece can be short of a byte: the ones before it are
+            # whole chunks of the payload, so their bit length is exactly their size.
+            before = index * budget
             frame = Frame(
                 payload=chunk,
+                bit_length=min(len(chunk) * 8, total_bits - before * 8),
                 reliability=reliability,
                 ordering_index=ordering_index if reliability.has_ordering_index else None,
                 ordering_channel=channel,
@@ -360,7 +366,16 @@ class Connection:
     def _make_frame(
         self, payload: bytes, reliability: Reliability, channel: int
     ) -> Frame:
-        frame = Frame(payload=payload, reliability=reliability, ordering_channel=channel)
+        frame = Frame(
+            payload=payload,
+            reliability=reliability,
+            ordering_channel=channel,
+            # The payload's own bit length when it knows one. Declaring len * 8 for
+            # everything is what left one to seven spare bits at the end of every
+            # frame this server sent, which a multi-command reader takes for the
+            # start of another command. See raknet.payload.
+            bit_length=bits_of(payload),
+        )
         if reliability.has_reliable_index:
             frame.reliable_index = self._take_reliable_index()
         if reliability.has_sequencing_index:

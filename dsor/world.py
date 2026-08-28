@@ -64,7 +64,7 @@ from dsor.gameplay import (
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor.mapdata import attack_skill
-from dsor import effects
+from dsor import effects, location
 from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
 from dsor.afflictions import UNAFFECTED, Condition, condition_of
 from dsor.monsters import Monster, monster
@@ -338,13 +338,6 @@ class Rules:
     #: creature moving and swinging, an armour break raises the damage it takes, a
     #: damage debuff lowers the damage it deals. Off, every effect was decoration.
     honour_effects: bool = True
-
-    #: Whether to hand an effect with no captured element one belonging to another
-    #: effect. Off, and it should stay off: the client accepts such a message and
-    #: draws nothing, so the only thing lending buys is the illusion of coverage.
-    #: It exists as a switch because turning it on is how the emptiness of a
-    #: borrowed element was established in the first place.
-    lend_elements: bool = False
 
     #: Whether to answer a pickup at all.
     #:
@@ -1669,12 +1662,23 @@ class World:
         with the skill's hit range. The aura's own reach is used, not the skill's.
 
         ``Creator`` auras go on the caster and ``Enemies`` auras on the creatures
-        inside them. No location effect message is sent -- ``NewLocationEffectCommand``
-        has no encoder -- so the ground itself is not drawn. What each actor receives is
-        an ordinary 0x004F, which is how the stun gets its icon and its animation.
+        inside them. What each actor receives is an ordinary 0x004F, which is how the
+        stun gets its icon and its animation.
+
+        The ground itself is drawn by a separate command, and this is where it is sent.
+        ``dsor.location.for_skill`` builds a 0x003E from the same ``LocationEffects``
+        column this method reads for the mechanics, so the two cannot disagree about
+        which effects a skill places. It is the answer to "je lance fury of the dragon
+        j'ai aucun VFX" and "banner of war pas de vfx juste le drapeau": earthquake and
+        defiance are the only two warrior skills with that column, and they are exactly
+        the two whose visuals were missing -- because neither grants a status effect at
+        all, so the 0x004F path had nothing to say about them.
         """
         if used is None or not self.rules.status_effects:
             return
+        ground = location.for_skill(used.wire)
+        if ground is not None:
+            self._emit(ground, sender)
         laid = effects.parse_entries(effects.SKILL_LOCATIONS.get(used.wire, ""))
         for entry in laid:
             if not entry.certain:
@@ -1974,17 +1978,18 @@ class World:
         if self._last_sent.get(holder_actor) == signature:
             return None
         self._last_sent[holder_actor] = signature
-        # Only what a capture holds a real element for, unless lend_elements says
-        # otherwise. Forging an element, or lending one effect's to another, made the
-        # client take one of the three silent bail-outs in HandleStatusEffect: the
-        # effect neither drew nor complained, which is the whole shape of the bug that
-        # cost this project the most time.
-        #
-        # What made that affordable is that the element table is no longer read from a
-        # single capture. Read from all twelve it holds 76 effects instead of 34, and
-        # among the new ones are the stun, the poison and both armour breaks -- 14 of
-        # the warrior's 27 promised effects, against the one that used to work.
-        return status_effects_message(
+        # Every effect, built rather than copied. The captured table held 72 elements
+        # against the game's 6,703 effects, so copying could serve almost nothing and
+        # borrowing served the wrong thing: an element carries an instance handle, an
+        # actor and 192 bits of aura geometry, and copying them into a message about
+        # another effect is how casting Iron Brow drew Fury of the Dragon's crater.
+        # Built, then checked for emptiness before it goes. status_effects_message
+        # skips an effect it has no real element for, so a list of nothing-servable
+        # produces a message whose count is zero -- and the client answers every one
+        # of those with "Received empty StatusEffectCommand!", which its log shows ten
+        # times in one session. The count is only known after the elements are laid
+        # out, so this cannot be decided before building.
+        built = status_effects_message(
             [
                 (
                     wire,
@@ -1999,8 +2004,21 @@ class World:
             stack=self._stack(),
             source=holder_actor,
             instance=self._effect_instance(),
-            lend=self.rules.lend_elements,
+            # Where the effect is placed. The element's vectors carry a world position
+            # and the visualiser reads it; leaving the capture's own leaves the effect
+            # wherever that session happened to be.
+            where=self.described_position(self.wire_position(holder_actor)),
         )
+        from dsor.recorded import status_effect_count
+
+        if status_effect_count(built) == 0:
+            self._last_sent.pop(holder_actor, None)
+            log.debug(
+                "%s: nothing servable for %s, so nothing sent",
+                self.name, holder_actor.hex(" "),
+            )
+            return None
+        return built
 
     def _stack(self) -> int | None:
         """The seventh field's value, or None to keep what a real server sends."""

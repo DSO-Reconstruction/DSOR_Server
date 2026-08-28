@@ -132,14 +132,30 @@ def test_every_creature_the_map_can_spawn_is_in_the_table_or_knowingly_absent():
     assert absent == {"a0001_normal_anderworld_minion_01"}
 
 
-def test_the_table_is_filtered_to_the_served_map():
-    """7985 creatures is 1.3 MB of generated Python. This is the a0001 subset.
+def test_every_creature_is_known_when_the_database_is_there():
+    """The generated table is the a0001 subset; the database is all of them.
 
-    The same choice dsor/mapdata.py makes, with the same consequence: serving a new
-    map means regenerating with its prefix.
+    7985 creatures is 1.3 MB of generated Python, so the committed table was filtered
+    to one map's prefix -- and a creature outside it fell back on invented health and
+    an invented blow. The client's own static.db4 is loaded into memory at start now,
+    which widens the table to every creature in the game and makes serving a second
+    map a matter of having the file rather than regenerating a module.
     """
-    assert all(key.startswith("a0001") for key in MONSTERS)
-    assert 10 < len(MONSTERS) < 100
+    from dsor import database
+    from dsor.monsters import LOADED, monster
+
+    if database.available():
+        assert LOADED == 7985 == len(MONSTERS)
+        assert not all(key.startswith("a0001") for key in MONSTERS)
+        # A creature from another map, which the filtered table could never answer.
+        elsewhere = next(k for k in MONSTERS if k.startswith("a0002"))
+        assert monster(elsewhere) is not None
+    else:
+        assert LOADED == 0
+        assert all(key.startswith("a0001") for key in MONSTERS)
+        assert 10 < len(MONSTERS) < 100
+    # Either way the served map's own creatures are right.
+    assert monster("a0001_gen_anderworld_creature").hit_points == 24
 
 
 def test_one_creature_can_be_toughened_without_touching_the_rest():

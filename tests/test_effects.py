@@ -643,11 +643,20 @@ def test_dragon_hide_puts_its_effects_on_a_place_not_on_an_actor():
     assert aura.groups == "Aura"
     assert not aura.starts and not aura.ticks, "an aura carries no modifier itself"
 
-    # And what the aura *does* is in an effect this table does not carry, because the
-    # generator collects what the class skills name and nothing collects what an
-    # effect names in turn. A second gap, recorded rather than papered over: nested
-    # effects are invisible here.
-    assert effects.by_id("skill_defiance_buff_resource") is None
+    # And what the aura *does* used to be invisible here: the generator collected what
+    # the class skills name and nothing collected what an effect names in turn, so a
+    # nested effect was simply absent -- 458 of the database's 6703. The client's own
+    # database is loaded into memory now and the gap is closed.
+    from dsor import database
+
+    nested = effects.by_id("skill_defiance_buff_resource")
+    if database.available():
+        assert nested is not None, "the database carries every effect"
+        assert effects.LOADED == 6703
+        assert nested.start_modifiers, "and its modifiers with it"
+    else:
+        assert nested is None, "without the file, the generated snapshot stands"
+        assert effects.LOADED == 0
 
 
 def test_the_tooltips_own_tokens_agree_with_what_is_served():
@@ -694,37 +703,6 @@ def test_the_tooltips_own_tokens_agree_with_what_is_served():
     assert all(a == "LocationEffect" for a, _ in promised["defiance"])
     assert not world._entries(by_id("defiance"), victim=False)
 
-
-def test_elements_are_copied_off_the_wire_and_not_built():
-    """Three attempts at building one each got a field wrong.
-
-    The 8-bit field past the parameters was read as a track index, then as a stack
-    size; field 2 was written as a constant 25 when 185 of 365 real elements carry 50 or
-    75. Each was a correlation that held over the sample I looked at and not the next.
-
-    So an element is copied from one the live service sent for the same effect, and only
-    the three tick fields are rewritten. Every other field carries a value a real server
-    chose.
-    """
-    from dsor.elements import ELEMENTS, element
-    from dsor.recorded import real_element, servable_effects
-
-    # The three lengths are exactly the three forms the grammar describes: 276 bits
-    # with no parameters, 477 with parameters and no vectors, 669 with vectors.
-    assert {span for span, _bits in ELEMENTS.values()} == {276, 477, 669}
-
-    wire = effects.wire_of("skill_warshout_buff_movementspeed")
-    span, original = element(wire)
-    assert span == 669, "this one carries vectors"
-
-    copy = real_element(wire, start_tick=41230, seconds=10.0)
-    assert copy is not None
-    # Only the tick fields differ from what came off the wire.
-    changed = [i for i in range(len(original)) if original[i] != copy[i]]
-    assert changed, "the ticks were written"
-    assert len(changed) <= 12, f"{len(changed)} bytes changed, expected the ticks only"
-
-
 def test_an_effect_with_no_captured_element_is_left_out():
     """The opposite of what this test used to say, and the opposite is what works.
 
@@ -768,19 +746,27 @@ def test_an_effect_with_no_captured_element_is_left_out():
     assert status_effect_count(sent) == 4
     assert status_effect_indices(sent) == wires
 
-    # And one with nothing real behind it travels only if lending is asked for.
+    # And one with nothing captured is **built**, not dropped and not borrowed.
+    #
+    # Dropping it meant 72 of the game's 6,703 effects could ever be served; borrowing
+    # meant a spell drew another spell's aura. Building is the third option, and it
+    # became available only once the constants were measured over the whole corpus
+    # rather than off whichever handful was in front of me: 1,069 of the corpus's 1,455
+    # no-vector elements are reproduced bit for bit from them.
     absent = effects.wire_of("skill_battlecry_debuff_resistance")
-    assert element(absent) is None
-    quiet = status_effects_message(
-        [(absent, [0.0], 41230, 5.0)], b"\x86\x00\x01\x00",
-        source=b"\x86\x00\x01\x00", instance=0x00010200,
+    assert element(absent) is None, "nothing captured for this one"
+    built = status_effects_message(
+        [(absent, [-0.1, 0.0, 0.0, 0.0, 0.0], 41230, 5.0, 66400)],
+        b"\x86\x00\x01\x00",
+        source=b"\x86\x00\x01\x00",
     )
-    assert status_effect_count(quiet) == 0, "not faked"
-    loud = status_effects_message(
-        [(absent, [0.0], 41230, 5.0)], b"\x86\x00\x01\x00",
-        source=b"\x86\x00\x01\x00", instance=0x00010200, lend=True,
-    )
-    assert status_effect_count(loud) == 1, "unless lending is asked for"
+    assert status_effect_count(built) == 1
+    from dsor.recorded import walk_elements
+
+    found, actor = walk_elements(built, strict=True)
+    assert [i for i, _a, _s in found] == [absent]
+    assert found[0][2] == 477, "the no-vector form"
+    assert actor == int.from_bytes(b"\x86\x00\x01\x00", "little")
 
 
 def test_an_animated_effect_can_be_held_back():
@@ -1061,46 +1047,6 @@ def test_the_location_effect_family_is_kept():
     # And something that is not one of these says so rather than guessing.
     assert location_effect_string(bytes([0x85, 0x5F, 0x00]) + bytes(20)) is None
 
-
-def test_a_copied_element_gets_the_template_s_parameters_not_the_capture_s():
-    """The difference between a buff and a debuff, and it showed as one.
-
-    An earlier captured element for skill_warshout_buff_movementspeed carried $0 = -0.4
-    where the skill's own template says +0.4, so copying it whole gave a forty percent
-    *slow*. The effect applied perfectly and in the wrong direction. The element table
-    is read from every capture now and the newest one carries +0.4, so the test writes a
-    third value instead of relying on the capture disagreeing.
-
-    Parameters are safe to write, unlike the rest of the element: their layout is a
-    32-bit count and that many float32, which is established. So the rule is copy what
-    is not understood and write what is.
-    """
-    import struct
-
-    from dsor.elements import element
-    from dsor.recorded import element_parameters, real_element
-    from raknet.bitstream import BitReader
-
-    wire = effects.wire_of("skill_warshout_buff_movementspeed")
-    _span, captured = element(wire)
-    at, count = element_parameters(captured)
-    assert count == 5
-    reader = BitReader(captured, at)
-    original = [
-        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
-        for _ in range(count)
-    ]
-    assert original[0] != pytest.approx(0.25), "the capture carries something else"
-
-    written = real_element(wire, 41230, 10.0, [0.25, 0.0, 0.0, 0.0, 0.0])
-    reader = BitReader(written, at)
-    now = [
-        struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
-        for _ in range(count)
-    ]
-    assert now[0] == pytest.approx(0.25), "what the template says"
-
-
 def test_the_whole_path_sends_the_buff_with_the_sign_the_template_gives():
     from dsor.recorded import status_effect_indices, walk_elements
     from dsor.skills import wire_of as skill_wire
@@ -1186,83 +1132,6 @@ def test_dragon_hide_is_six_auras_and_none_of_them_heal():
         ), name
         assert "talent" in name
 
-
-def test_a_built_element_does_not_reproduce_the_real_ones():
-    """The test that makes building elements defensible again.
-
-    Three earlier readings of these fields each came from the one sample in front of me
-    and each was wrong. The constants a built element uses now come from the 26 real
-    elements of the 477-bit form, and this rebuilds every one of them from its own ticks,
-    parameters, caster and instance handle, and compares field by field.
-
-    Twenty-two come back identical. The four that do not differ in field 4 alone, which
-    is zero in 22 of the 26 and small and unexplained in the rest -- so the remaining
-    unknown is one field, bounded, rather than a shrug.
-    """
-    import struct
-
-    from dsor.elements import ELEMENTS
-    from dsor.recorded import built_element
-    from raknet.bitstream import BitReader
-
-    def read(bits):
-        reader = BitReader(bits, 0)
-        index = reader.read_uint(16)
-        integers = [reader.read_uint(32) for _ in range(8)]
-        flags = [reader.read_bool() for _ in range(4)]
-        if not flags[3]:
-            return index, integers, flags, None, None
-        count = reader.read_uint(32)
-        parameters = [
-            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
-            for _ in range(count)
-        ]
-        reader.read_bool()
-        tail = reader.read_uint(8)
-        return index, integers, flags, parameters, tail
-
-    same = differ = 0
-    fields_that_differ = set()
-    for wire, (span, bits) in ELEMENTS.items():
-        if span != 477:
-            continue
-        index, integers, flags, parameters, tail = read(bits)
-        assert index == wire and tail == 0xFF
-        made = built_element(
-            wire,
-            start_tick=integers[3],
-            seconds=(integers[1] - integers[3]) / 25 if integers[1] else 0.04,
-            parameters=parameters,
-            source=integers[7].to_bytes(4, "little"),
-            instance=integers[0],
-        )
-        _i, mine, myflags, _p, _t = read(made)
-        if mine == integers and myflags == flags:
-            same += 1
-        else:
-            differ += 1
-            fields_that_differ |= {
-                i for i, (a, b) in enumerate(zip(mine, integers)) if a != b
-            }
-
-    # This used to demand that building reproduce almost every real element, on a
-    # corpus of 13. Against the 31 the full set of captures gives, it does not: the
-    # "constants" it writes hold for most elements and not all -- across the whole
-    # table field 2 is 25 in 49 of 76 and 0 in 24, and field 6 is 100 in 68 and
-    # something small in the other eight.
-    #
-    # That is why a built element is no longer sent. The test keeps the measurement
-    # rather than the demand, because the measurement is the argument for the policy.
-    assert same + differ >= 13, "the committed corpus holds the 477-bit form"
-    assert differ, "and building does not reproduce all of them"
-    assert fields_that_differ <= {1, 2, 4, 5, 6}, (
-        f"fields {sorted(fields_that_differ)} differ"
-    )
-    assert 3 not in fields_that_differ and 7 not in fields_that_differ, (
-        "the start tick and the actor are written, so they always match"
-    )
-
-
 def test_the_stun_and_the_poison_are_real_now():
     """The two effects the operator kept asking for, and why they never showed.
 
@@ -1280,7 +1149,11 @@ def test_the_stun_and_the_poison_are_real_now():
         status_effects_message,
     )
 
-    assert len(ELEMENTS) >= 76, "read from every capture, not one"
+    # 72, down from 76: four entries were fabrications the corrected grammar no longer
+    # produces, and two more (warrior_spikedShield_buff, frenzyshout's life leech) came
+    # back as the 477-bit elements the captures actually hold instead of invented 669s.
+    # Fewer and true beats more and wrong.
+    assert len(ELEMENTS) >= 72, "read from every capture, not one"
     wires = [effects.wire_of("debuff_cc_stun"), effects.wire_of("debuff_dot_poison")]
     assert all(element(w) is not None for w in wires), "real, not lent"
 
@@ -1369,77 +1242,6 @@ def test_a_change_is_sent_and_an_expiry_clears_the_memory():
     world.resolve_attack(sender, wire_of("warshout"))
     world._drain()
     assert len(effect_commands()) == 1, "a fresh cast is a change again"
-
-
-def test_an_effect_without_an_element_borrows_a_real_one_whole():
-    """What lending does when it is asked for, which by default it is not.
-
-    Kept because the mechanism is how the emptiness of a borrowed element was
-    established: the client accepts such a message, draws nothing and says nothing.
-    Rules.lend_elements is off for that reason, and this test only pins the encoder.
-
-    The vector-carrying form is the majority -- 93 of 119 real elements -- and its
-    constants differ from the 477-bit form's: field 2 is 75 in 58 of them where the other
-    is unanimously 25, and fields 1 and 5 are zero in 63 where the other carries real
-    ticks. Choosing between those by counting is how the last three readings of these
-    fields went wrong.
-
-    So the element is borrowed whole and only the index, the ticks, the caster, the
-    instance and the parameters are written. Everything else -- the vectors above all --
-    carries a value the live service sent.
-    """
-    import struct
-
-    from dsor.elements import DONOR, element
-    from dsor.recorded import borrowed_element, element_parameters
-    from raknet.bitstream import BitReader
-
-    # laceratingstrike's armour break used to be the example here. It has a real
-    # element now, so the example moved to one that still has none -- battlecry's
-    # resistance debuff, which no capture holds.
-    wire = effects.wire_of("skill_battlecry_debuff_resistance")
-    assert element(wire) is None, "this one has no element of its own"
-
-    span, donor = DONOR
-    assert span == 669, "the majority form, which carries vectors"
-
-    lent_span, lent = borrowed_element(
-        wire, 41230, 5.0, [-0.5, 0.0, 0.0, 0.0, 0.0],
-        source=b"\x08\x00\x01\x00", instance=0x00010200,
-    )
-    assert lent_span == span
-
-    def read(bits):
-        reader = BitReader(bits, 0)
-        index = reader.read_uint(16)
-        integers = [reader.read_uint(32) for _ in range(8)]
-        flags = [reader.read_bool() for _ in range(4)]
-        count = reader.read_uint(32)
-        parameters = [
-            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
-            for _ in range(count)
-        ]
-        reader.read_bool()
-        tail = reader.read_uint(8)
-        vectors = [
-            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
-            for _ in range(6)
-        ]
-        return index, integers, flags, parameters, tail, vectors
-
-    was = read(donor)
-    now = read(lent)
-    assert now[0] == wire, "the index is the borrower's"
-    assert now[1][3] == 41230 and now[1][1] == 41230 + 125, "and the ticks"
-    assert now[1][7] == int.from_bytes(b"\x08\x00\x01\x00", "little"), "and the caster"
-    assert now[3][0] == pytest.approx(-0.5), "and the parameters"
-    # Everything else is the donor's, the vectors included.
-    assert now[2] == was[2], "the flags"
-    assert now[4] == was[4] == 2, "the tail, which says vectors follow"
-    assert now[5] == was[5], "the vectors"
-    assert now[1][2] == was[1][2], "field 2, whichever of 25, 50 or 75 it is"
-    assert now[1][6] == was[1][6] == 100
-
 
 def test_every_promised_effect_of_every_warrior_skill_goes_out():
     """The end of it: what the descriptions name is what is sent."""
@@ -1546,14 +1348,14 @@ def test_a_debuff_reaches_the_creature_it_is_put_on():
         sent = {effects.effect(w).id for w in status_effect_indices(mine[0])}
         assert set(promised) <= sent, f"{skill.id}: {set(promised) - sent} missing"
 
-        # And every element that travelled is a real one, byte for byte apart from the
-        # fields this server rewrites: the index, the three ticks, the instance, the
-        # actor and the parameters.
-        found, _actor = walk_elements(mine[0])
+        # And every element that travelled is **built**: 477 bits, no vectors, no
+        # aura geometry from anybody else's capture. That last part is the fix. Five
+        # effects in the captured table carried the same six floats, and 2.15 of them
+        # is skill_earthquake_aura's own radius -- which is how casting Iron Brow drew
+        # Fury of the Dragon's crater. Copying is gone.
+        found, _actor = walk_elements(mine[0], strict=True)
         for index, _at, span in found:
-            real = element(index)
-            assert real is not None, f"{skill.id}: effect {index} has no real element"
-            assert real[0] == span, f"{skill.id}: effect {index} changed length"
+            assert span == 477, f"{skill.id}: effect {index} is {span} bits, not built"
         checked += 1
 
     assert checked >= 6, f"only {checked} warrior skills had a servable victim effect"
@@ -1563,3 +1365,115 @@ def test_a_debuff_reaches_the_creature_it_is_put_on():
         entry.effect == "debuff_cc_stun"
         for entry in empty._entries(by_id("stuncharge"), victim=True)
     ), "stuncharge stuns"
+
+
+def test_the_captured_corpus_is_now_a_yardstick_and_not_a_source():
+    """dsor/elements.py stays, but nothing is sent from it any more.
+
+    It held 72 elements against the game's 6,703 effects, so copying could serve almost
+    nothing -- and what it did serve carried the capture's own instance handle, actor and
+    192 bits of aura geometry into a message about a different effect. Five of the 72
+    shared the same six floats, and 2.15 of them is skill_earthquake_aura's radius,
+    which is how casting Iron Brow drew Fury of the Dragon's crater.
+
+    Rewriting those fields one at a time never fixed it: the rest of the element stayed
+    foreign. So the copy path is gone, and the table's job is to *check* the builder.
+    """
+    import struct
+
+    from dsor.elements import ELEMENTS
+    from dsor.recorded import EFFECT_TICKS_PER_SECOND, build_element
+    from raknet.bitstream import BitReader
+
+    assert ELEMENTS, "the corpus is still committed"
+    assert not hasattr(__import__("dsor.recorded", fromlist=["x"]), "real_element")
+    assert not hasattr(__import__("dsor.recorded", fromlist=["x"]), "borrowed_element")
+
+    checked = matched = 0
+    for wire, (span, bits) in ELEMENTS.items():
+        if span != 477:
+            continue                      # only the no-vector form is built
+        reader = BitReader(bits, 0)
+        reader.read_uint(16)
+        fields = [reader.read_uint(32) for _ in range(8)]
+        flags = tuple(reader.read_bool() for _ in range(4))
+        if not flags[3]:
+            continue
+        count = reader.read_uint(32)
+        params = [
+            struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+            for _ in range(count)
+        ]
+        holder = fields[7].to_bytes(4, "little")
+        seconds = fields[5] / EFFECT_TICKS_PER_SECOND
+        _n, built = build_element(
+            wire, fields[3], seconds, params, fields[0], holder
+        )
+        checked += 1
+        if bytes(built) == bytes(bits):
+            matched += 1
+    assert checked >= 10, f"only {checked} no-vector elements to check against"
+    # Two thirds rebuilt byte for byte. Every one that does not is a known minority
+    # variant, and each is named rather than chased:
+    #
+    #   the third flag set   403 of 139,112 real elements, 0.29%
+    #   field 4 == 15        1 of 76
+    #   field 1 == 0         an effect with no end tick
+    #
+    # The builder writes the majority in each case, which is a stated choice.
+    assert matched >= checked * 2 // 3, f"{matched} of {checked} rebuilt exactly"
+
+
+def test_the_parameters_come_from_the_template_by_construction():
+    """Not by rewriting a copy, which is how a +0.4 speed buff became a 40% slow.
+
+    A captured element for skill_warshout_buff_movementspeed carries $0 = -0.4 where
+    the skill's own template says +0.4. Copying it whole applied the effect perfectly
+    and in the wrong direction. Building takes the parameters as given and there is
+    nothing else in the element to disagree with them.
+    """
+    import struct
+
+    from dsor import effects
+    from dsor.recorded import build_element
+    from raknet.bitstream import BitReader
+
+    wire = effects.wire_of("skill_warshout_buff_movementspeed")
+    _span, built = build_element(wire, 41230, 10.0, [0.4, 0.0, 0.0, 0.0, 0.0], 1,
+                                 b"\x15\x00\x01\x00")
+    reader = BitReader(built, 16 + 32 * 8 + 4 + 32)
+    got = struct.unpack("<f", reader.read_uint(32).to_bytes(4, "little"))[0]
+    assert got == pytest.approx(0.4), "the template's sign, not the capture's"
+
+
+def test_the_switch_silences_every_skill_the_operator_tests():
+    """The discriminating experiment for "je lance dragon hide j'ai spike shield".
+
+    With the switch off this server puts nothing on any actor and sends no 0x004F at
+    all -- not for the player, not for a creature, not for an aura. So if those two
+    effects still appear on screen, they do not come from this server's effect code,
+    and the search moves elsewhere. That is the whole point of asserting it here
+    rather than reasoning about it: the four flag checks sit on the *application*
+    paths, and it is the emptiness of the wire that matters, not their placement.
+    """
+    for name in (
+        "frenzyshout",       # Dragon Hide
+        "spikedShield",      # Spike Shield
+        "warshout",          # Furious Battle Cry -- grants Power of Smash
+        "seismicslam",       # Ground Breaker
+        "laceratingstrike",  # Iron Brow
+        "earthquake",        # Fury of the Dragon
+        "battlecry",         # Outburst
+        "defiance",          # Banner of War
+    ):
+        world, sender = a_player()
+        world.rules.status_effects = False
+        creature = next(iter(world._ready().creatures.values()), None)
+        world.resolve_attack(sender, wire_of(name))
+        assert world.player(sender).buffs == [], name
+        if creature is not None:
+            assert not creature.effects, name
+        world._drain()
+        world._tick_pair(sender)
+        sent = [p for _a, p in world._drain() if p[1:3] == b"\x4f\x00"]
+        assert not sent, f"{name} sent {len(sent)} status-effect command(s)"

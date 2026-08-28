@@ -54,41 +54,32 @@ class Reader:
         return int.from_bytes(bytes(self.bits(8) for _ in range(count // 8)), "little")
 
 
-def elements(body):
-    """Every element in a payload of chained 0x004F, as (index, first bit, bit span)."""
-    reader = Reader(body)
-    total = len(body) * 8
-    found = []
-    while True:
-        reader.bits(1)
-        count = reader.uint(32)
-        if not 0 <= count <= 64:
-            return found
-        for _ in range(count):
-            start = reader.at
-            index = reader.uint(16)
-            for _ in range(8):
-                reader.uint(32)
-            flags = [reader.bits(1) for _ in range(4)]
-            if flags[3]:
-                parameters = reader.uint(32)
-                if parameters > 16:
-                    return found
-                for _ in range(parameters):
-                    reader.uint(32)
-                reader.bits(1)
-                tail = reader.bits(8)
-                signed = tail - 256 if tail > 127 else tail
-                if signed != -1:
-                    if reader.at + VECTOR_BITS > total:
-                        return found
-                    reader.bits(VECTOR_BITS)
-            found.append((index, start, reader.at - start))
-        reader.uint(32)
-        if reader.bits(8) != 0xFF or total - reader.at < 24:
-            return found
-        if reader.uint(16) != 0x004F:
-            return found
+def elements(payload):
+    """Every element in a 0x004F, as (index, first bit, bit span).
+
+    One line, deliberately. This function used to be a second copy of the grammar and
+    the copy was wrong in two ways that fed each other:
+
+    * its end condition read "the signed byte is not -1" instead of "the bool at +0x38
+      is false **and** that byte is -1", so an element with the bool set was cut 192
+      bits short and everything behind it was read at a wrong offset;
+    * it then looped, treating whatever followed as another chained 0x004F whenever the
+      next sixteen bits happened to read 0x4F -- which, after a mis-walk, they sometimes
+      did.
+
+    Together those invented elements out of neighbouring commands' bytes and filed them
+    under whatever sixteen bits sat at the wrong offset. warrior_spikedShield_buff,
+    which appears in no capture at all, got a 669-bit element that way; casting Dragon
+    Hide drew Spike Shield.
+
+    Measured after the fix: 86,477 of 86,477 real 0x004F messages parse end to end with
+    the 0xFF terminator verified, and **none** of them carries a second chained command.
+    So there was nothing for the loop to find in the first place.
+    """
+    from dsor.recorded import walk_elements
+
+    found, _actor = walk_elements(payload, strict=True)
+    return found
 
 
 def slice_bits(body, start, span):
@@ -109,6 +100,10 @@ def main(captures: list[str], database: str) -> None:
         )
     }
     found = {}
+    seen: dict[int, list[tuple[int, bytes]]] = {}
+    skipped = 0
+    import collections as _c
+    refused = _c.Counter()
     for capture in captures:
       for line in pathlib.Path(capture).read_text(errors="ignore").splitlines():
           try:
@@ -130,15 +125,52 @@ def main(captures: list[str], database: str) -> None:
               if payload[0] != 0x85 or payload[1:3] != (0x004F).to_bytes(2, "little"):
                   continue
               body = payload[3:]
-              for index, start, span in elements(body):
-                  # Last capture wins, not the first. An effect present in several
-                  # sessions has several real elements and they differ -- field 2 is
-                  # 0 in the tutorial sessions and 25 in the recent one for the same
-                  # warshout buff -- so the choice is not free. The newest capture is
-                  # the one taken on this client build by this account, and its
-                  # warshout element is the one the operator has confirmed working, so
-                  # give the captures in chronological order and let the last speak.
-                  found[index] = (span, slice_bits(body, start, span))
+
+              # The shared grammar, strict: it either walks the whole message with
+              # its 0xFF terminator verified, or it refuses. A refusal means the read
+              # is off, and a partial walk cannot be told from a complete one -- so
+              # nothing from it is harvested.
+              #
+              # Which replaces two earlier attempts. The first was a majority vote on
+              # the span, and that was patching: it assumed most parses were right, and
+              # its own output showed spans splitting 2-2 for one effect -- a parser
+              # contradicting itself, which a vote cannot see. The second gated on the
+              # frame's declared bit length, which is a real proof but only for a frame
+              # carrying nothing else. The terminator check is the proof the format
+              # itself offers, and it holds for 86,477 of 86,477 real messages.
+              try:
+                  walked = elements(payload)
+              except ValueError as unparsed:
+                  refused[str(unparsed)[:60]] += 1
+                  skipped += 1
+                  continue
+              for index, start, span in walked:
+                  # Chronological captures, so the newest observation of an effect wins:
+                  # it is the one taken on this client build by this account.
+                  seen.setdefault(index, []).append(
+                      (span, slice_bits(body, start, span))
+                  )
+
+    # Every sample came from a message the grammar walked whole, so a disagreement
+    # between samples of one effect is information rather than parser noise. Reported,
+    # not voted away: if it happens the grammar is still incomplete, and that is worth
+    # knowing rather than smoothing over.
+    import collections
+
+    disagree = 0
+    for index, samples in seen.items():
+        spans = collections.Counter(span for span, _bits in samples)
+        if len(spans) > 1:
+            disagree += 1
+            print(f"# {index}: spans differ {dict(spans)}", file=sys.stderr)
+        found[index] = samples[-1]
+    print(
+        f"{len(found)} effects from {sum(len(v) for v in seen.values())} observations; "
+        f"{skipped} messages refused; {disagree} effects whose samples disagree",
+        file=sys.stderr,
+    )
+    for why, n in refused.most_common(5):
+        print(f"# refused {n}x: {why}", file=sys.stderr)
 
     print(f'''"""Real status effect elements, copied bit for bit off the wire.
 

@@ -24,3 +24,8 @@ __pycache__/
 characters.sqlite
 characters.sqlite-wal
 characters.sqlite-shm
+
+# The client's own database, loaded into memory at start. 69 MB of Bigpoint's data:
+# it belongs in data/ on the operator's machine and not in this repository.
+/data/*.db4
+/data/*.sqlite
