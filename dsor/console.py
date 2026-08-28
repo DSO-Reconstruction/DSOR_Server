@@ -33,7 +33,6 @@ SETTABLE: dict[str, Callable[[str], object]] = {
     "effect_stack": int,
     "first_slot": int,
     "slot_capacity": int,
-    "animated_effects": bool,
     "reach": float,
     "reach_slack": float,
     "mob_speed": int,

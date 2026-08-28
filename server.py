@@ -1656,9 +1656,6 @@ def serve(
     mob_damage: float = 0.0,
     mob_near: float = 0.0,
     creature_damage: float = 0.0,
-    status_effects: bool = True,
-    force_effects: bool = False,
-    animated_effects: bool = True,
     player_health: float = 0.0,
     enforce: bool = True,
     characters: str = "characters.sqlite",
@@ -1706,30 +1703,23 @@ def serve(
     itself, so it cannot be detected and must be given.
     """
     sessions = Sessions()
-    # The client's own database, into memory, before anything asks it a question. Said
-    # out loud either way: with it the server knows all 6703 status effects and all
-    # 7985 creatures, without it 458 and 23 -- and the difference is whether a skill
-    # outside the warrior's eighteen does anything at all.
+    # The client's own database, into memory, before anything asks it a question. It is
+    # the client's own export_win32/db/static.db4, a plain SQLite file: 197 tables and
+    # 148,265 rows, and a row's wire index is its rowid minus one.
     from dsor import database
-    from dsor import effects as effect_table
     from dsor import monsters as monster_table
 
     if database.available():
         log.info(
-            "%s in memory: %d status effects, %d creatures, %d skills with effects",
-            database.STATIC,
-            effect_table.LOADED,
-            monster_table.LOADED,
-            len(effect_table.SKILL_EFFECTS),
+            "%s in memory: %d creatures", database.STATIC, monster_table.LOADED
         )
     else:
         log.warning(
             "no %s in %s: falling back on the generated tables, which know %d of "
-            "6703 status effects and %d of 7985 creatures. Copy the client's "
-            "export_win32/db/static.db4 there -- tools/bundle.py extracts it.",
+            "7985 creatures. Copy the client's export_win32/db/static.db4 there -- "
+            "tools/bundle.py extracts it.",
             database.STATIC,
             database.DATA,
-            len(effect_table.EFFECTS),
             len(monster_table.MONSTERS),
         )
     capture = Capture(capture_path) if capture_path else None
@@ -1777,9 +1767,6 @@ def serve(
         service.rules.mob_near = mob_near
         service.rules.creature_damage = creature_damage
         service.rules.creature_skill = creature_skill
-        service.rules.status_effects = status_effects
-        service.rules.force_effects = force_effects
-        service.rules.animated_effects = animated_effects
         service.rules.player_max = int(player_health)
         service.rules.enforce = enforce
         service.rules.pickup_range = pickup_range
@@ -2109,18 +2096,6 @@ def main() -> None:
         help="how many creatures --tough-mob applies to (default 1)",
     )
     parser.add_argument(
-        "--no-animated-effects",
-        dest="animated_effects",
-        action="store_false",
-        help=(
-            "hold back the effects the client animates — the stun, the poison, the "
-            "movement-speed buff, the armour break. They are sent by default now that "
-            "a capture of the live service has shown what the element's own fields "
-            "carry: 25 in field 2 and the caster's actor in field 7, where this "
-            "server wrote zero"
-        ),
-    )
-    parser.add_argument(
         "--force-effects",
         action="store_true",
         help=(
@@ -2129,16 +2104,6 @@ def main() -> None:
             "among them: laceratingstrike's debuff_cc_stun and mightybash's "
             "debuff_dot_poison both read C:0.0, so faithfully they never fire without "
             "a talent this server does not model. A testing switch, not fidelity"
-        ),
-    )
-    parser.add_argument(
-        "--no-status-effects",
-        dest="status_effects",
-        action="store_false",
-        help=(
-            "do not serve a skill's status effects. They travel as a rewritten "
-            "recording of the per-tick 0x004F, so this is the switch if that upsets "
-            "the client"
         ),
     )
     parser.add_argument(
@@ -2467,9 +2432,6 @@ def main() -> None:
         mob_damage=args.mob_damage,
         mob_near=args.mob_near,
         creature_damage=args.creature_damage,
-        status_effects=args.status_effects,
-        force_effects=args.force_effects,
-        animated_effects=args.animated_effects,
         player_health=args.player_health,
         enforce=args.enforce,
         characters=args.characters,

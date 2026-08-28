@@ -44,16 +44,6 @@ mob_first_command = true
 enforce = true
 pickup_range = 12.0
 
-# Effects. Elements are copied off the wire now rather than built, so an animated one
-# carries the vectors and the fields a real server paired with it -- which is why
-# animated_effects was holding back exactly the effects that *can* be served. Seven of
-# the 34 captured elements are animated, warshout's movement speed among them.
-status_effects = true
-# Off: the zero-chance entries are talent and item gated, and a capture of the live
-# service with every warrior skill cast contains none of them. Forcing them puts effects
-# on actors that no real server puts there.
-force_effects = false
-animated_effects = true
 
 # Shop and inventory. first_slot is 2 because the client already fills cells 0 and 1,
 # and dropping an item into an occupied cell is refused with "Storage slot is occupied".
