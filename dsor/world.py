@@ -65,6 +65,11 @@ from dsor.gameplay import (
 from dsor.items import item_drop, item_taken, with_drop, with_taken
 from dsor import effect_titles, effects, measured, statuseffect, vitals
 
+#: How long after arriving the level is stated a second time, in seconds.
+#: The replayed player state is a level-1 character's, so the interface starts
+#: there, and one message at map entry may land before it is listening.
+LEVEL_AGAIN = 6.0
+
 #: Where effect instance handles start. The live service was measured
 #: handing out 66,052 to 66,066 in one session, in the same 0x1xxxx space
 #: actors live in.
@@ -597,6 +602,7 @@ class World:
     _sent: dict = field(default_factory=dict)
     #: Which actors have been told their level, so it is sent once.
     _levelled: dict = field(default_factory=dict)
+    _entered_at: dict = field(default_factory=dict)
     _handles: dict = field(default_factory=dict)
     _next_handle: int = 0
     #: The creatures' effect messages for this tick, built once.
@@ -1178,9 +1184,17 @@ class World:
             # the choice flip between creatures standing close together. That is what
             # looked like damage being shared between them.
             latched = self.player(sender).target
-            if latched is not None and latched in alive:
+            # Still latched only while it is still in reach. Holding it whatever the
+            # distance is what "ca reste focus sur l'ancien meme s'il est loin" was:
+            # the first creature struck stayed the target for the rest of the session,
+            # so a swing at something standing in front kept landing on whatever had
+            # walked off behind. The latch is there to stop the choice flipping between
+            # two creatures standing together, and that reason expires the moment the
+            # one held is out of range.
+            if latched is not None and latched in within:
                 return [latched]
             if not within:
+                self.player(sender).target = None
                 return []
             target = min(within, key=distance)
             self.player(sender).target = target
@@ -2305,6 +2319,11 @@ class World:
             and (message := self.effect_message(creature, clock)) is not None
         ]
         for player in self.inhabitants():
+            # The level, once more, a few seconds after arriving. See announce_level.
+            entered = self._entered_at.get(player.address)
+            if entered is not None and time.monotonic() - entered >= LEVEL_AGAIN:
+                del self._entered_at[player.address]
+                self.announce_level(player.address, again=True)
             self._tick_pair(player.address)
         self.creatures_strike()
         self.land_hits()
@@ -2322,18 +2341,32 @@ class World:
         correct the whole time. See dsor/vitals.py.
         """
         self.announce_level(sender)
+        self._entered_at[sender] = time.monotonic()
         self._tick_pair(sender)
         return self._drain()
 
-    def announce_level(self, sender: Address) -> None:
-        """Tell the client what level this player's actor is."""
+    def announce_level(self, sender: Address, again: bool = False) -> None:
+        """Tell the client what level this player's actor is.
+
+        *again* resends a level already sent. The replayed player state is a level-1
+        character's, so the interface starts from that and the level it shows is
+        whatever last told it otherwise. Sending once at map entry may land before the
+        interface is up, and there is nothing to acknowledge it, so it is repeated a
+        few seconds in -- see LEVEL_AGAIN_TICKS.
+        """
         player = self.player(sender)
         level = player.level or self.rules.start_level or 1
-        if self._levelled.get(player.actor) == level:
+        if not again and self._levelled.get(player.actor) == level:
             return
         self._levelled[player.actor] = level
         self._emit(vitals.player_level(level, player.actor), sender)
-        log.info("%s: %s is level %d", self.name, player.actor.hex(), level)
+        log.info(
+            "%s: %s is level %d%s",
+            self.name,
+            player.actor.hex(),
+            level,
+            " (again)" if again else "",
+        )
 
     def attack(
         self,

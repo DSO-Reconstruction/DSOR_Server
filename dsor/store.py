@@ -16,6 +16,8 @@ loaded.
 
 from __future__ import annotations
 
+import logging
+
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -24,7 +26,9 @@ from pathlib import Path
 #: The schema this code expects. A stored file that says anything else is migrated
 #: forward, or refused if it is from the future -- a newer server's file opened by an
 #: older one would be quietly half-read otherwise.
-SCHEMA = 1
+log = logging.getLogger("store")
+
+SCHEMA = 2
 
 CREATE = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -45,10 +49,27 @@ CREATE TABLE IF NOT EXISTS characters (
     y          INTEGER,
     map_name   TEXT,
     seen_at    REAL    NOT NULL DEFAULT 0,
-    saves      INTEGER NOT NULL DEFAULT 0
+    saves      INTEGER NOT NULL DEFAULT 0,
+    -- The action bar, as the client itself reported it: one skill id per slot,
+    -- separated by newlines, an empty line for an empty slot. Schema 2.
+    quickslots TEXT
 );
 CREATE INDEX IF NOT EXISTS characters_account ON characters (account);
 """
+
+
+def _slots_from(text: str | None) -> tuple[str | None, ...] | None:
+    """The action bar as stored: one id a line, an empty line for an empty slot."""
+    if not text:
+        return None
+    return tuple(line or None for line in text.split("\n"))
+
+
+def _slots_to(slots) -> str | None:
+    """The other way. None when there is no bar to store."""
+    if not slots:
+        return None
+    return "\n".join(name or "" for name in slots)
 
 
 @dataclass(frozen=True)
@@ -67,6 +88,9 @@ class Saved:
     map_name: str | None
     seen_at: float
     saves: int
+    #: The action bar the client last reported, slot by slot. None for a character
+    #: saved before schema 2, or one whose client has not reported one yet.
+    quickslots: tuple[str | None, ...] | None = None
 
 
 class Store:
@@ -101,8 +125,20 @@ class Store:
                 f"{self.path} was written by a newer server (schema {found}, this one "
                 f"understands {SCHEMA}). Half-reading it would lose characters."
             )
-        # Nothing to migrate yet. When there is, it goes here, one step per version,
-        # and this comment is the reminder that a migration is code and not a hope.
+        if found < 2:
+            # Schema 2 adds the action bar. CREATE only makes a table that is not
+            # there, so an existing file needs the column added -- a migration is code
+            # and not a hope.
+            columns = {
+                row[1] for row in self.db.execute("PRAGMA table_info(characters)")
+            }
+            if "quickslots" not in columns:
+                self.db.execute("ALTER TABLE characters ADD COLUMN quickslots TEXT")
+            log.info("%s: migrated to schema 2 (the action bar)", self.path)
+        if found != SCHEMA:
+            self.db.execute(
+                "UPDATE meta SET value = ? WHERE key = 'schema'", (str(SCHEMA),)
+            )
 
     def close(self) -> None:
         self.db.close()
@@ -130,6 +166,9 @@ class Store:
             map_name=row["map_name"],
             seen_at=row["seen_at"],
             saves=row["saves"],
+            quickslots=_slots_from(
+                row["quickslots"] if "quickslots" in row.keys() else None
+            ),
         )
 
     def save(
@@ -144,6 +183,7 @@ class Store:
         resource: float,
         position: tuple[int, int, int] | None = None,
         map_name: str | None = None,
+        quickslots=None,
     ) -> None:
         """Write a character, replacing whatever was there.
 
@@ -155,8 +195,8 @@ class Store:
             """
             INSERT INTO characters
                 (id, account, character, level, experience, health, max_health,
-                 resource, x, elevation, y, map_name, seen_at, saves)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 resource, x, elevation, y, map_name, seen_at, quickslots, saves)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             ON CONFLICT (id) DO UPDATE SET
                 account = excluded.account,
                 character = excluded.character,
@@ -170,11 +210,15 @@ class Store:
                 y = excluded.y,
                 map_name = excluded.map_name,
                 seen_at = excluded.seen_at,
+                -- Only when there is one to write. A save from a moment before the
+                -- client has reported its bar must not erase the bar already stored.
+                quickslots = COALESCE(excluded.quickslots, characters.quickslots),
                 saves = characters.saves + 1
             """,
             (
                 key, account, character, level, experience, health, max_health,
                 resource, x, elevation, y, map_name, time.time(),
+                _slots_to(quickslots),
             ),
         )
 

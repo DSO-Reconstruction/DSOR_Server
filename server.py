@@ -421,6 +421,7 @@ class Service:
         #: What each peer last reported on its action bar, so a change is logged once
         #: rather than a hundred and eighty times.
         self._bar: dict[tuple[str, int], dict[int, str]] = {}
+        self._bar_slots: dict = {}
         #: How many 0x010B queries each endpoint has asked, since the two recorded
         #: answers differ and are not interchangeable.
         self.queries_seen: dict[tuple[str, int], int] = {}
@@ -890,61 +891,71 @@ class Service:
         if connection is not None:
             player.server_tick = connection.elapsed_ms() // GAME_TICK_MS
 
-    def _with_granted_skills(self, state: bytes) -> bytes:
-        """The player state, with the skill book's ownership bits set.
+    def _with_granted_skills(self, state: bytes, sender=None) -> bytes:
+        """The player state, with the skill book's ownership bits set and the bar filled.
 
-        One bit per skill, in place, so nothing in a 631 KB message moves. Cached
-        because patching it on every login would mean walking it again for nothing.
+        The book's bits are one bit each, changed in place, so nothing in a 631 KB
+        message moves and the result can be cached: patching it per login would be
+        walking it again for nothing. The bar cannot be cached the same way -- it is
+        this character's, read from the store -- so it is applied after.
         """
-        wanted: set[int] = set()
-        for name in self.rules.granted_skills:
-            found = skill_index(name)
-            if found is None:
-                log.warning("%s: no skill named %r in the book", self.name, name)
-            else:
-                wanted.add(found)
-        if self.rules.grant_up_to_level:
-            wanted |= up_to_level(
-                self.rules.grant_up_to_level, self.rules.character_class
-            )
-        if not wanted:
-            return self._with_action_bar(state)
         if self._granted_state is None:
-            self._granted_state = self._with_action_bar(with_granted(state, wanted))
-            log.info(
-                "%s: granted %d skill(s) in the book: %s",
-                self.name,
-                len(wanted),
-                ", ".join(sorted(
-                    name for name, (index, _u) in BOOK_SKILLS.items()
-                    if index in wanted
-                )),
-            )
-        return self._granted_state
+            wanted: set[int] = set()
+            for name in self.rules.granted_skills:
+                found = skill_index(name)
+                if found is None:
+                    log.warning("%s: no skill named %r in the book", self.name, name)
+                else:
+                    wanted.add(found)
+            if self.rules.grant_up_to_level:
+                wanted |= up_to_level(
+                    self.rules.grant_up_to_level, self.rules.character_class
+                )
+            if not wanted:
+                self._granted_state = state
+            else:
+                self._granted_state = with_granted(state, wanted)
+                log.info(
+                    "%s: granted %d skill(s) in the book: %s",
+                    self.name,
+                    len(wanted),
+                    ", ".join(sorted(
+                        name for name, (index, _u) in BOOK_SKILLS.items()
+                        if index in wanted
+                    )),
+                )
+        return self._with_action_bar(self._granted_state, sender)
 
-    def _with_action_bar(self, state: bytes) -> bytes:
-        """The player state, with the action bar filled.
+    def _with_action_bar(self, state: bytes, sender=None) -> bytes:
+        """The player state, with the action bar this character last arranged.
 
         The bar is not the book. Granting a skill in the book tells the client the
         character owns it; the bar is what it can press, and the recorded state has one
-        slot filled -- ``angrystrike`` -- with sixteen empty. The client reported that
-        same single entry in all 180 QuickSlotsCommand messages of one session, and the
-        live service answers none of them, so the bar comes from here or nowhere.
+        slot filled -- ``angrystrike`` -- with sixteen empty. So every login started
+        from that one slot again, whatever had been dragged onto the bar before.
 
-        Unlike the book's ownership bits this changes the message's length, because a
-        filled slot is longer than the four bytes an empty one takes. The stream is read
-        sequentially and states no offsets, and the frame layer takes the declared bit
-        length from the payload, so growth is carried through -- that is the assumption,
-        and the first thing to suspect if the client refuses the state.
+        **What is written back is what the client itself reported.** The client owns the
+        bar and sends it in a QuickSlotsCommand -- 180 times in one session -- and the
+        live service never answers one, so storing what it says and serving it back is
+        the only way a bar survives a restart. It is also the safe way to fill it:
+        composing a bar here with seventeen skills of this server's choosing walked off
+        the end of the client's own UI slot array and killed it with
+
+            Util::FixedArray<Core::Ptr<UI::Slot>>::operator[](int)
+
+        A bar the client sent is by construction one it can draw.
         """
-        if not self.rules.fill_action_bar:
+        if not self.rules.fill_action_bar or sender is None:
             return state
-        skills = bar_skills(
-            self.rules.character_class, self.rules.grant_up_to_level or 1
-        )
-        if not skills:
+        found = self.who.get(sender)
+        if self.store is None or found is None:
             return state
-        return with_skills(state, skills)
+        saved = self.store.load(found.key)
+        if saved is None or not saved.quickslots:
+            return state
+        if not any(saved.quickslots):
+            return state
+        return with_skills(state, list(saved.quickslots))
 
     def _announce_vicinity(self, connection: Connection, sender) -> None:
         """Tell the client which actors are near it.
@@ -1272,6 +1283,7 @@ class Service:
                 else None
             ),
             map_name=self.map_name,
+            quickslots=self._bar_slots.get(sender),
         )
         return True
 
@@ -1425,7 +1437,7 @@ class Service:
             mapped = any(c.blueprint for c in self.world._ready().creatures.values())
             for index, piece in enumerate(map_entry_sequence()):
                 if index == 2:
-                    piece = self._with_granted_skills(piece)
+                    piece = self._with_granted_skills(piece, sender)
                 if mapped and index == 4:
                     # The recorded vicinity announcement names the six creatures of
                     # the session it came from. Sent alongside the map's own spawn
@@ -1484,6 +1496,13 @@ class Service:
             bar = decode_quick_slots(game.body)
             if bar is not None and self._bar.get(sender) != bar.filled:
                 self._bar[sender] = bar.filled
+                # And kept, so the next login has the bar this one arranged. The
+                # client owns the bar and reports it; the live service never answers
+                # one, so storing what it says and serving it back is the only way a
+                # bar survives a restart. Writing back what the client itself sent is
+                # also the safe way to fill it: composing one here with seventeen
+                # skills walked off the end of the client's UI slot array.
+                self._bar_slots[sender] = bar.slots
                 log.info(
                     "%s: %s has %d of %d quick slots filled: %s",
                     self.name,

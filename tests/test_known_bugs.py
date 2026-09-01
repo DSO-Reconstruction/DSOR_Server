@@ -1584,3 +1584,48 @@ def test_every_skill_command_counts_as_a_swing():
     # The ranged family too, so a bullet skill is at least seen and logged.
     assert {0x0048, 0x004A, 0x004B} <= set(server.SKILL_OPCODES)
     assert server.SKILL_OPCODES[0x0046] == "SkillCommand"
+
+
+def test_the_latched_target_is_dropped_once_it_walks_out_of_reach():
+    """"si je tape un ennemi ca tape pas le bon, ca reste focus sur l'ancien meme s'il
+    est loin".
+
+    A single-target skill latches its victim so the choice does not flip between two
+    creatures standing together. The latch was held whatever the distance, so the first
+    creature struck stayed the target for the rest of the session and a swing at
+    something in front kept landing on whatever had wandered off behind.
+    """
+    from dsor.gameplay import Position
+    from dsor.skills import wire_of
+    from dsor.world import World, skill_at
+
+    world = World()
+    world.rules.mobs = 3
+    world._ready()
+    where = ("1.2.3.4", 5)
+    player = world.player(where)
+    player.in_world = True
+    for creature in world.creatures.values():
+        creature.described = True
+    near, far = list(world.creatures.values())[:2]
+    player.position = Position(
+        x=near.position.x, elevation=near.position.elevation, y=near.position.y
+    )
+    used = skill_at(wire_of("angrystrike"))
+    assert not used.area, "angrystrike takes one victim"
+
+    first = world.victims_of(where, used)
+    assert first == [near.actor]
+    assert player.target == near.actor
+
+    # It walks off. Far enough that no reach or slack reaches it.
+    near.position = Position(
+        x=near.position.x + 500_000, elevation=near.position.elevation, y=near.position.y
+    )
+    again = world.victims_of(where, used)
+    assert again != [near.actor], "the latch must not survive the distance"
+    if again:
+        assert again[0] in {c.actor for c in world.creatures.values()}
+        struck = world.creature(again[0])
+        assert struck is not None
+        assert struck.actor != near.actor
