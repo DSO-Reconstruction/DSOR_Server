@@ -72,6 +72,7 @@ from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.titles import title_of
 from dsor.mapdata import SPAWN_POINTS, servable_points
+from dsor.actionbar import bar_skills, with_skills
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
@@ -887,9 +888,9 @@ class Service:
                 self.rules.grant_up_to_level, self.rules.character_class
             )
         if not wanted:
-            return state
+            return self._with_action_bar(state)
         if self._granted_state is None:
-            self._granted_state = with_granted(state, wanted)
+            self._granted_state = self._with_action_bar(with_granted(state, wanted))
             log.info(
                 "%s: granted %d skill(s) in the book: %s",
                 self.name,
@@ -900,6 +901,30 @@ class Service:
                 )),
             )
         return self._granted_state
+
+    def _with_action_bar(self, state: bytes) -> bytes:
+        """The player state, with the action bar filled.
+
+        The bar is not the book. Granting a skill in the book tells the client the
+        character owns it; the bar is what it can press, and the recorded state has one
+        slot filled -- ``angrystrike`` -- with sixteen empty. The client reported that
+        same single entry in all 180 QuickSlotsCommand messages of one session, and the
+        live service answers none of them, so the bar comes from here or nowhere.
+
+        Unlike the book's ownership bits this changes the message's length, because a
+        filled slot is longer than the four bytes an empty one takes. The stream is read
+        sequentially and states no offsets, and the frame layer takes the declared bit
+        length from the payload, so growth is carried through -- that is the assumption,
+        and the first thing to suspect if the client refuses the state.
+        """
+        if not self.rules.fill_action_bar:
+            return state
+        skills = bar_skills(
+            self.rules.character_class, self.rules.grant_up_to_level or 1
+        )
+        if not skills:
+            return state
+        return with_skills(state, skills)
 
     def _announce_vicinity(self, connection: Connection, sender) -> None:
         """Tell the client which actors are near it.

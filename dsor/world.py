@@ -195,6 +195,14 @@ class Rules:
     #: hundred at every level. Ten was written here and it is why nothing appeared to
     #: happen: warshout's ResourceGain of 0.6 put six points on a bar of a hundred.
     player_resource: float = 0.0
+    #: Whether to fill the action bar with the class's skills.
+    #:
+    #: The bar is not the book. Granting a skill in the book tells the client the
+    #: character owns it; the bar is what it can press. The recorded state has one slot
+    #: filled -- angrystrike -- and sixteen empty, the client reported that same single
+    #: entry in all 180 QuickSlotsCommand messages of one session, and the live service
+    #: answers none of them. So the bar comes from the served state or from nowhere.
+    fill_action_bar: bool = True
     #: What to put in the effect element's seventh 32-bit field, or -1 to keep the 100
     #: a real server sends. A dial, not a setting: it is the prime suspect for the
     #: sequencer assertion that holds animated effects back, and it has been read wrong
