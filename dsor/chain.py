@@ -43,7 +43,17 @@ from raknet.bitstream import BitReader
 from raknet.payload import bits_of
 
 #: The container.
+#: The chained container, which the **server** sends. Each command in it ends with a
+#: 32-bit actor and a 0xFF, and several follow one another.
 MULTI = 0x85
+
+#: The single container, which the **client** sends. It is not the same shape: one
+#: command id and its body, with *no* actor and *no* terminator -- ``8b 25 00 00`` is a
+#: whole payload in four bytes. Measured over 494,348 client payloads: 0x8B leads every
+#: one of them, and this walker read none, because it looks for a tail that does not
+#: exist on that side. So there is nothing to walk in a 0x8B: the id is bytes 1 and 2,
+#: little-endian, and the body is everything after.
+SINGLE = 0x8B
 
 #: The id past which DecodeCommand refuses: ``cmp r9w, 0x177 / jb``.
 MOST_COMMANDS = 0x177
@@ -276,3 +286,16 @@ def summary(payload: bytes) -> str:
     return f"{len(found)} command(s): {', '.join(parts)}" + (
         f"; {left} bits unaccounted" if left else "; whole payload accounted"
     )
+
+
+def single(payload: bytes) -> tuple[int, bytes] | None:
+    """The id and body of a client's 0x8B payload, or None if it is not one.
+
+    There is no walking to do. The client sends one command per payload with no actor
+    and no terminator, which is why :func:`walk` -- built for the server's chained
+    0x85 -- accounted for 0 of 4,000 client payloads even when told to accept the
+    leading byte. Two containers, two shapes.
+    """
+    if len(payload) < 3 or payload[0] != SINGLE:
+        return None
+    return payload[1] | (payload[2] << 8), payload[3:]

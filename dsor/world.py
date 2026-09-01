@@ -63,6 +63,12 @@ from dsor.gameplay import (
     with_motion,
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
+from dsor import effect_titles, effects, measured, statuseffect
+
+#: Where effect instance handles start. The live service was measured
+#: handing out 66,052 to 66,066 in one session, in the same 0x1xxxx space
+#: actors live in.
+FIRST_HANDLE = 0x10200
 from dsor.mapdata import attack_skill
 from dsor.actors import ActorSpace, RECORDED_PLAYER, encode as encode_actor
 from dsor.monsters import Monster, monster
@@ -343,6 +349,7 @@ class Creature:
     record: bytes
     #: Where it stands now, in wire units. Starts where it was recorded.
     position: Position
+
     health: float
     max_health: float
     #: The blueprint this creature is, when it comes from the map's own spawn table
@@ -373,6 +380,10 @@ class Creature:
     #: What its effects do to it, recomputed once a tick in advance_creatures rather
     #: than at each of the three places that need it. See dsor.afflictions.
 
+    #: What is running on it: (effect wire, parameters, when it started, seconds,
+    #: causer actor). One list, because a 0x004F carries an actor's whole set and
+    #: sending a subset is a message that says "only these", wiping the rest.
+    running: list = field(default_factory=list)
     @classmethod
     def from_record(cls, record: bytes, max_health: float) -> "Creature":
         return cls(
@@ -443,6 +454,10 @@ class Player:
     #: what time it is.
     server_tick: int = 0
 
+    #: What is running on it: (effect wire, parameters, when it started, seconds,
+    #: causer actor). One list, because a 0x004F carries an actor's whole set and
+    #: sending a subset is a message that says "only these", wiping the rest.
+    running: list = field(default_factory=list)
     @property
     def alive(self) -> bool:
         return self.health > 0.0
@@ -554,6 +569,11 @@ class World:
     #: this id anywhere, 90001 becomes 24465 and the lookup cannot succeed.
     next_item_id: int = 40000
     #: Messages produced by the current call, waiting to be handed back.
+    _sent: dict = field(default_factory=dict)
+    _handles: dict = field(default_factory=dict)
+    _next_handle: int = 0
+    #: The creatures' effect messages for this tick, built once.
+    _creature_effects: list = field(default_factory=list)
     _outbox: list[tuple[Address, bytes]] = field(default_factory=list)
 
     # ── what comes out ───────────────────────────────────────────────────────
@@ -1188,6 +1208,7 @@ class World:
         """
         used = skill_at(wire)
         if used is not None and not travelled:
+            self.grant_effects(sender, used)
             if self.spend_resource(sender, used):
                 self.report_vitals(sender)
         if used is not None and not travelled and used.hit_frame > 0:
@@ -1230,7 +1251,7 @@ class World:
             # earthquake lays an aura on the ground that does its damage over eight.
             #
             log.info(
-                "%s: %s used %s (%s, x%.2f), whose effect this server does not model",
+                "%s: %s used %s (%s, x%.2f)",
                 self.name,
                 sender,
                 f"{title_of(used.id)} ({used.id})",
@@ -1304,6 +1325,7 @@ class World:
                 sender,
             )
 
+            self.inflict_effects(target, used, self.player(sender).actor)
             dealt += hit_for
             log.info(
                 "%s: %s hit entity %s with %s for %.0f, %.1f left",
@@ -1542,7 +1564,9 @@ class World:
             if found is not None:
                 wanted.add(found)
         if self.rules.grant_up_to_level:
-            wanted |= up_to_level(self.rules.grant_up_to_level)
+            wanted |= up_to_level(
+                self.rules.grant_up_to_level, self.rules.character_class
+            )
         return wanted
 
     def may_use(self, sender: Address, wire: int | None) -> str | None:
@@ -1978,6 +2002,198 @@ class World:
 
     # ── the tick ─────────────────────────────────────────────────────────────
 
+    # ---------------------------------------------------------------- effects
+
+    def _source_handle(self) -> int:
+        """A handle for one grant: every effect from a single cast shares it.
+
+        Read off the live service's own Dragon Hide message. Its three elements carry
+        field 7 as 65544, 65544 and 65557: armour and resistance, which come from the
+        skill, share a value, and the life leech, which comes from the talent, has its
+        own. So field 7 is not the actor -- it names *what granted the effect*, and two
+        effects from one cast name the same thing.
+
+        This server had the actor there, which is the one field that differed from the
+        official message once everything else matched.
+        """
+        self._next_handle += 1
+        return FIRST_HANDLE + self._next_handle
+
+    def grant_effects(self, sender: Address, used: "Skill | None") -> None:
+        """Put on the caster whatever the skill's UserStatusEffects column names.
+
+        The C:1.0 entries, which is a measurement and not a policy: 1,581 real casts
+        were pulled out of the captures and the effects the real server added were read
+        off the wire, and for frenzyshout the C:1.0 set is exactly the three effects it
+        was measured applying. The C:0.0 entries fired only on the recorded character,
+        who had the talents that unlock them.
+        """
+        if used is None:
+            return
+        player = self.player(sender)
+        source = self._source_handle()
+        for entry in effects.granted_by(used.wire):
+            self._start(player, entry, causer=source)
+
+    def inflict_effects(self, target: bytes, used: "Skill | None", causer: bytes) -> None:
+        """Put on the victim whatever VictimStatusEffects names."""
+        if used is None:
+            return
+        creature = self.creature(target)
+        if creature is None:
+            return
+        source = self._source_handle()
+        for entry in effects.inflicted_by(used.wire):
+            self._start(creature, entry, causer=source)
+
+    def _start(self, holder, entry, causer: int) -> None:
+        """Begin one effect on *holder*, replacing it if it is already running."""
+        found = effects.by_id(entry.effect)
+        if found is None:
+            return
+        if found.talent_gated:
+            # A talent's variant of the effect, and this character has no talents. Its
+            # column entry says C:1.0, so the chance field does not gate it -- see
+            # dsor.effects.TALENT_MARK for why the displayed name does.
+            return
+        seconds = effects.seconds_of(entry)
+        if seconds <= 0.0:
+            # Nothing to run and nothing to expire. warshout's ctfdropflag is the
+            # example, and it is the one C:1.0 entry the captures never show applied.
+            return
+        holder.running = [r for r in holder.running if r[0] != found.wire]
+        holder.running.append(
+            (found.wire, entry.substitutions, time.monotonic(), seconds, causer)
+        )
+        log.info(
+            "%s: %s on %s for %.1fs%s",
+            self.name,
+            entry.effect,
+            holder.actor.hex(),
+            seconds,
+            " (vfx %s)" % found.sequence if found.sequence else "",
+        )
+
+    def _handle(self, actor: bytes, wire: int) -> int:
+        """A stable handle for one effect instance on one actor.
+
+        The client keys "add this effect" against "extend the one already running" on
+        this number, so two different effects on one actor must not share it and the
+        same effect must keep it while it runs. Handed out from a counter rather than
+        derived, because a derivation that collides is a silent bug: two effects with
+        one handle made the client read the second as an extension of the first.
+
+        The measured handles sit in the same 0x1xxxx space as actors -- 66,052 to
+        66,066 across one session -- which is why this counts from there.
+        """
+        key = (actor, wire)
+        found = self._handles.get(key)
+        if found is None:
+            self._next_handle += 1
+            found = FIRST_HANDLE + self._next_handle
+            self._handles[key] = found
+        return found
+
+    def running_on(self, holder) -> list:
+        """What is still running on *holder*, the expired dropped."""
+        now = time.monotonic()
+        holder.running = [r for r in holder.running if r[2] + r[3] > now]
+        return holder.running
+
+    def effect_message(self, holder, tick: int) -> bytes | None:
+        """A 0x004F for *holder*, or None when nothing is running on it.
+
+        None matters: an empty command is answered with "Received empty
+        StatusEffectCommand!", and a 0x004F carries the actor's *whole* set, so sending
+        one with nothing in it says every effect has ended.
+        """
+        # The cheap test first. Almost every actor almost always has nothing running,
+        # and this is called once per player and once per creature per tick -- 2,000
+        # players put the tick 1 ms over its 100 ms budget without it.
+        if not holder.running:
+            if self._sent:
+                self._sent.pop(holder.actor, None)
+            return None
+        live = self.running_on(holder)
+        if not live:
+            self._sent.pop(holder.actor, None)
+            return None
+        # Only when it changes. Which effects are on an actor is state; sending it
+        # again does not restate it, it asks the client to add them a second time --
+        # and the client answers "Failed to add actor effect ... Effect already
+        # present!".
+        signature = tuple(sorted((wire, round(seconds, 2)) for wire, _p, _s, seconds, _c in live))
+        if self._sent.get(holder.actor) == signature:
+            return None
+        self._sent[holder.actor] = signature
+        mine = int.from_bytes(holder.actor, "little")
+        elements = []
+        for wire, parameters, started, seconds, causer in live:
+            duration = int(round(seconds * statuseffect.RATE))
+            elements.append(
+                statuseffect.Element(
+                    index=wire,
+                    # Field 0 is a handle for this effect *instance* and field 7 is
+                    # the actor the effect is on. Measured on the 7 captures that are
+                    # certainly the live service's and nothing else: field 0 is never
+                    # the message's actor, in 394 of 394 elements, and it is unique
+                    # within a message in 186 of 190; field 7 is the message's actor in
+                    # 265 of 394.
+                    #
+                    # This was the wrong way round until the captures were split by
+                    # source. The emulator-written half of the corpus had field 0
+                    # holding the actor, because that is what the old code put there,
+                    # so measuring across everything measured this server's own
+                    # mistake.
+                    instance=self._handle(holder.actor, wire),
+                    # Field 7: what granted the effect, not who holds it. See
+                    # _source_handle.
+                    holder=causer,
+                    start=tick,
+                    end=tick + duration,
+                    duration=duration,
+                    second=measured.second_of(wire),
+                    sixth=measured.sixth_of(wire),
+                    # The third flag tracks whether field 7 is the message's own
+                    # actor. In the live service's Dragon Hide message it is clear for
+                    # armour and resistance, whose field 7 is the skill's handle, and
+                    # set for the life leech, whose field 7 is the actor. Field 7 here
+                    # is always a grant handle and never the actor, so it is clear --
+                    # which is what the two elements this server sends carry.
+                    flags=(False, False, False, True),
+                    parameters=list(parameters),
+                    more=bool(measured.more_of(wire)),
+                    byte=measured.tail_of(wire),
+                    vectors=list(measured.vectors_of(wire)),
+                )
+            )
+        # Every message, with the names the client displays. Without this there was no
+        # way to compare what went out against what was on the screen, and the answer
+        # to "je lance dragon hide j'ai power of smash" turned out to be that a 0x004F
+        # carries an actor's *whole* set: warshout's buffs last ten seconds, so a
+        # frenzyshout cast seven seconds later travels with them still in the list --
+        # and warshout's are the only two of the seven with a displayed name, so they
+        # are the only two the buff bar can label.
+        log.info(
+            "%s: 0x004F to %s carries %d: %s",
+            self.name,
+            holder.actor.hex(),
+            len(elements),
+            ", ".join(
+                "%s%s %.1fs"
+                % (
+                    found.id if found else "?",
+                    " [%s]" % effect_titles.effect_title(found.id) if found and effect_titles.effect_title(found.id) else "",
+                    element.duration / statuseffect.RATE,
+                )
+                for element in elements
+                if (found := effects.by_wire(element.index)) or True
+            ),
+        )
+        return statuseffect.encode(
+            statuseffect.StatusEffects(actor=mine, elements=elements)
+        )
+
     def _tick_pair(self, sender: Address) -> None:
         """One tick for one player: the 0x004F state, then its position update.
 
@@ -1987,6 +2203,12 @@ class World:
         player = self.player(sender)
         if player.position is None:
             return
+        # The order matters: the real server sends the 0x004F before the position.
+        message = self.effect_message(player, player.server_tick)
+        if message is not None:
+            self._emit(message, sender)
+        for message in self._creature_effects:
+            self._emit(message, sender)
         self._emit(self.entity_update(player.position, player.server_tick), sender)
 
     def tick(self) -> list[tuple[Address, bytes]]:
@@ -2000,6 +2222,16 @@ class World:
             (p.server_tick for p in self.inhabitants() if p.server_tick), 0
         )
         self.advance_creatures(clock)
+        # Once for the world, not once per player. Which effects are on a creature does
+        # not depend on who is looking, and rebuilding them per player made a tick
+        # O(players x creatures) -- 101 ms for two thousand players against a 100 ms
+        # budget, which the scale test caught.
+        self._creature_effects = [
+            message
+            for creature in self._ready().creatures.values()
+            if creature.running
+            and (message := self.effect_message(creature, clock)) is not None
+        ]
         for player in self.inhabitants():
             self._tick_pair(player.address)
         self.creatures_strike()

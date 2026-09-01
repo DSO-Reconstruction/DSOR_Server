@@ -119,6 +119,19 @@ def rows(table: str, *columns: str) -> list[tuple]:
     held = connection()
     if held is None:
         return []
+    # Checked against the table, because SQLite will not complain. A double-quoted
+    # name it does not recognise as a column is taken as a *string literal* -- so
+    # asking for "Duration" on a table whose column is StatusEffectDuration returned
+    # the word "Duration" for all 6,703 rows instead of an error. Silent wrong data is
+    # worse than a stack trace.
+    known = set(columns_of(table))
+    unknown = [name for name in columns if name not in known]
+    if unknown:
+        raise KeyError(
+            f"{table} has no column {', '.join(unknown)}"
+            + (f" -- did you mean {sorted(n for n in known if unknown[0].lower() in n.lower())}?"
+               if any(unknown[0].lower() in n.lower() for n in known) else "")
+        )
     picked = ", ".join(f'"{name}"' for name in columns)
     try:
         return [

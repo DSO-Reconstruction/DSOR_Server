@@ -883,7 +883,9 @@ class Service:
             else:
                 wanted.add(found)
         if self.rules.grant_up_to_level:
-            wanted |= up_to_level(self.rules.grant_up_to_level)
+            wanted |= up_to_level(
+                self.rules.grant_up_to_level, self.rules.character_class
+            )
         if not wanted:
             return state
         if self._granted_state is None:

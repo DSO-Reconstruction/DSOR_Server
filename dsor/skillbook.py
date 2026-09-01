@@ -121,9 +121,12 @@ def granted(message: bytes) -> set[int]:
     return {entry.skill for entry in entries(message) if entry.owned}
 
 
-#: The skills the replayed book lists, by name, with the level that unlocks each.
-#: Taken from the book itself crossed with _Template_Skill, so a name here is one the
-#: client will accept — mightyswing is what the interface calls Rageful Swing.
+#: The warrior's skills, kept as the fallback for a machine without the database. It
+#: matches _Template_Skill exactly -- all 18 entries, same indices, same unlock levels --
+#: which is how the database read below was checked. It covers one class of five, and
+#: that is the reason for the read: "if you make 1 class work without hardcoding spells,
+#: all of the classes will be done". The database has 108 skills across warrior, mage,
+#: ranger, dwarf and niwalk.
 BOOK_SKILLS: dict[str, tuple[int, int]] = {
     'angrystrike': (1838, 1),
     'mightyswing': (1839, 3),
@@ -152,8 +155,45 @@ def skill_index(name: str) -> int | None:
     return None if found is None else found[0]
 
 
-def up_to_level(level: int) -> set[int]:
-    """Every listed skill a character of *level* has unlocked."""
+def of_class(character_class: str = "") -> dict[str, tuple[int, int]]:
+    """``name -> (wire index, unlock level)`` for one class, from the database.
+
+    Falls back on :data:`BOOK_SKILLS` -- the warrior's, hard-coded -- when the database
+    is absent, which is how the tests run. The two were compared: for the warrior they
+    agree on all eighteen entries, indices and unlock levels alike.
+
+    A skill whose UnlockLevel is missing or unparseable is treated as level zero, which
+    is what the database itself uses for the event skills that are always listed.
+    """
+    from dsor import database
+
+    rows = database.rows("_Template_Skill", "Id", "CharClass", "UnlockLevel")
+    if not rows:
+        return dict(BOOK_SKILLS)
+    found: dict[str, tuple[int, int]] = {}
+    for index, name, owner, unlock in rows:
+        if not name or not owner:
+            continue
+        if character_class and owner != character_class:
+            continue
+        try:
+            level = int(unlock) if unlock not in (None, "") else 0
+        except (TypeError, ValueError):
+            level = 0
+        found[name] = (index, level)
+    return found or dict(BOOK_SKILLS)
+
+
+def up_to_level(level: int, character_class: str = "warrior") -> set[int]:
+    """Every skill of *character_class* a character of *level* has unlocked.
+
+    This is the whole of "you just send the available ones to the player based on the
+    character level": the book lists a class's skills and one bit per entry says whether
+    the character owns it, so unlocking a skill is setting that bit for every entry the
+    level reaches.
+    """
     return {
-        index for _name, (index, unlock) in BOOK_SKILLS.items() if unlock <= level
+        index
+        for _name, (index, unlock) in of_class(character_class).items()
+        if unlock <= level
     }
