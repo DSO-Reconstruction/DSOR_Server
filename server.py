@@ -75,6 +75,7 @@ from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
 from dsor.charlist import with_progress
 from dsor.playerstate import with_progress as with_player_progress
+from dsor.currency import with_andermant
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
@@ -938,7 +939,15 @@ class Service:
         pressing Play. Two 32-bit fields, in place, past the end of the map string --
         measured against the live service's own 0x001D. See dsor/playerstate.py.
         """
-        if not self.rules.roster_level or self.store is None or sender is None:
+        if sender is None:
+            return state
+        if not self.rules.roster_level:
+            if self.rules.andermant:
+                return with_andermant(state, self.rules.andermant)
+            return state
+        if self.store is None:
+            if self.rules.andermant:
+                return with_andermant(state, self.rules.andermant)
             return state
         found = self.who.get(sender)
         if found is None:
@@ -949,7 +958,10 @@ class Service:
             if not others:
                 return state
             saved = max(others, key=lambda row: row.level)
-        return with_player_progress(state, saved.level, saved.experience)
+        state = with_player_progress(state, saved.level, saved.experience)
+        if self.rules.andermant:
+            state = with_andermant(state, self.rules.andermant)
+        return state
 
     def _with_action_bar(self, state: bytes, sender=None) -> bytes:
         """The player state, with the action bar this character last arranged.

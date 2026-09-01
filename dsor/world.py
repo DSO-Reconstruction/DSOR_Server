@@ -217,6 +217,16 @@ class Rules:
     #: seeing it at all means the client is not drawing this message.
     probe_effect: str = ""
 
+    #: How much andermant to write into the replayed player state. Zero leaves it as
+    #: recorded, which is 600.
+    #:
+    #: The offset for this is a single measurement against a single recording -- the only
+    #: 600 in the first 300,000 bits with a clean neighbourhood, matching what the
+    #: operator sees on screen. That reasoning has been wrong twice this session, so the
+    #: writer refuses unless the field still reads 600, and this is the switch to turn it
+    #: off if the client dislikes it. See dsor/currency.py.
+    andermant: int = 0
+
     #: Whether to write the saved level and experience into the replayed roster.
     #:
     #: On, now that the fields are measured rather than guessed: five characters, four

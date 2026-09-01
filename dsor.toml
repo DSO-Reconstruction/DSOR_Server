@@ -34,6 +34,10 @@ tough_mobs = 4
 [rules]
 start_level = 100
 grant_up_to_level = 100
+# Andermant written into the replayed player state. 0 keeps the recorded 600.
+# The offset is one measurement against one recording; the writer refuses unless
+# the field still reads 600. See dsor/currency.py.
+andermant = 9999999
 # Off: filling the seventeen slots made the client assert inside
 # FixedArray<Ptr<UI::Slot>>::operator[] -- the UI slot array is not
 # seventeen long, or the growth broke the read. See dsor/actionbar.py.
