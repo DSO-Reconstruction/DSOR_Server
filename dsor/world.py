@@ -217,6 +217,15 @@ class Rules:
     #: seeing it at all means the client is not drawing this message.
     probe_effect: str = ""
 
+    #: Whether to write the saved level and experience into the replayed roster.
+    #:
+    #: On, now that the fields are measured rather than guessed: five characters, four
+    #: of them the live service's own, put the experience 256 bits and the level 288
+    #: bits past the end of the entry's map string. A first attempt wrote sixteen bits
+    #: 145 bits before the name and broke the login; that field is 1 in the service's
+    #: level-100 characters as well as in the level-1 recording.
+    roster_level: bool = True
+
     #: Whether to fill the action bar with the class's skills.
     #:
     #: The bar is not the book. Granting a skill in the book tells the client the

@@ -73,7 +73,7 @@ from dsor.skills import skill as skill_at
 from dsor.titles import title_of
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
-from dsor.charlist import with_level
+from dsor.charlist import with_progress
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
@@ -1235,23 +1235,32 @@ class Service:
         )
 
     def _with_saved_level(self, roster: bytes, sender) -> bytes:
-        """The roster with this account's saved level on it, if there is one."""
-        if self.store is None:
+        """The roster with this account's saved level and experience on it.
+
+        The offsets are measured on five characters -- the live service's four and the
+        recording's one -- and written bit by bit, because the fields are not byte
+        aligned: the entries carry their name and map inline, so where the level lands
+        depends on how long those are. See dsor/charlist.py.
+
+        An earlier version wrote sixteen bits 145 bits before the name, on the strength
+        of a 1 found there in the recording, and broke the login. That field is 1 in the
+        live service's level-100 characters too.
+        """
+        if not self.rules.roster_level or self.store is None:
             return roster
         found = self.who.get(sender)
         if found is None:
             return roster
         saved = self.store.load(found.key)
         if saved is None:
-            # No character saved under the chosen key yet. The roster is pushed before
-            # a character has been chosen, so the account's own row is the one to look
-            # at -- the highest level it has, since the screen lists them all and this
-            # only writes the first.
+            # The roster is pushed before a character has been chosen, so the account's
+            # own rows are what there is to go on. The highest level of them, since this
+            # writes the first entry only.
             others = self.store.characters_of(found.account)
             if not others:
                 return roster
             saved = max(others, key=lambda row: row.level)
-        return with_level(roster, saved.level)
+        return with_progress(roster, saved.level, saved.experience)
 
     def _release_character(self, connection: Connection, game, sender) -> None:
         """Grant the client's request to start the game.

@@ -1,97 +1,188 @@
-"""The character selection screen, and putting the saved level on it.
+"""The character selection screen: the level and experience it shows.
 
-Saving a character server-side does nothing for what the selection screen shows,
-because that screen is drawn from a replayed recording: ``character_list.bin``, the
-``0x0087`` the character service sends. The recorded character is level 1, so every
-login showed level 1 however much this server had stored -- "tu sauvegardes rien vu que
-tu rejoues une connexion au debut".
+Saving a character server-side does nothing for this screen, because it is drawn from a
+replayed recording. The recorded character is level 1 with no experience, so every login
+showed level 1 however much had been stored -- "tu sauvegardes rien vu que tu rejoues une
+connexion au debut donc ca remet tjrs niveau 1 meme dans l'ecran de perso".
 
-The message is small and its head is byte-aligned::
+**Measured, on five characters.** A capture of the live service's own roster, taken from
+the client's launch so the login was visible, carries four characters; the recording
+carries one. The two messages have the same shape, and each entry reads:
 
-    24 bits   0x84, then the command id 0x0087
-    u16       how many characters, 1 in the recording
-    u32       the character id      111886222
-    u32       the account id        112162098
-    ...
-    bit 168   u16, the level        1
-    ...
-    bit 233   u16 length + the name "balenciagas"
-    bit 353   the map, "a0001_start_tutorial_dun"
+    u16 length + the character's name
+    u16 length + the map it is in
+    256 bits
+    u32   the experience
+    u32   the level
 
-Only the level is written. The fields around it are not identified -- 0x2923 and 0x8000
-follow it and nothing here knows what they mean -- and rewriting a field whose meaning
-is a guess is how a player state gets corrupted rather than corrected.
+    AmateurDeCombat   882246499   100
+    MeufAGrosSeins    882260621   100
+    FilleMineur       882269671   100
+    BgTimide             128322    18
+    balenciagas               0     1     (the recording, and what the screen showed)
 
-The write is guarded: it happens only when the sixteen bits at that offset already read
-as a plausible level, and only when the name is where it should be. A patcher that
-writes into the wrong place on a slightly different recording would corrupt the message
-silently, which is worse than a screen showing the wrong number.
+Both fields are counted from the *end of the map string*, because that is the last thing
+before them whose position can be found: the entries are back to back and their lengths
+follow their names, so nothing before the map is at a fixed offset from the start of the
+message.
+
+**The level is stored, not derived.** 882,246,499 experience reads as level 104 through
+this server's own curve and the roster says 100, so the real ceiling is 100 and the curve
+is wrong above it. Which is the other reason to write the level rather than compute it.
+
+An earlier version of this module wrote sixteen bits 145 bits *before* the name, having
+found a 1 there in the recording and taken it for the level. It is 1 in the live
+service's level-100 character too. Writing 104 into it broke the login. The lesson is in
+the guard below: a field is not identified by one value in one recording that happens to
+match what is on the screen.
 """
 
 from __future__ import annotations
 
 import logging
+import struct
 
 from raknet.bitstream import BitReader
 
 log = logging.getLogger("charlist")
 
-#: Where the level sits, in bits from the start of the payload.
-LEVEL_AT = 168
+#: Where the two fields sit, in bits past the end of the entry's map string.
+EXPERIENCE_REL = 256
+LEVEL_REL = 288
 
-#: Its width.
-LEVEL_BITS = 16
+#: Their width.
+FIELD_BITS = 32
 
-#: Where the name's length prefix sits, used to check the layout before writing.
-NAME_AT = 233
-
-#: The name in the recording, and its length.
-RECORDED_NAME = "balenciagas"
-
-#: The levels the curve runs to.
+#: The levels the live service was measured using. 100 is the ceiling: a character with
+#: 882,246,499 experience reads 100 there, while this server's curve says 104.
 LOWEST_LEVEL = 1
-HIGHEST_LEVEL = 110
+HIGHEST_LEVEL = 100
+
+#: A name or a map longer than this means the walk has lost the boundary.
+LONGEST_STRING = 64
+
+#: The first entry's name length prefix, in bits from the start of the payload. The
+#: header before it is fixed: 0x84, the command id, the operation, and two 32-bit ids.
+FIRST_NAME_AT = 233
 
 
-def level_of(message: bytes) -> int | None:
-    """The level the message states, or None when the layout is not the recorded one."""
-    if len(message) * 8 < NAME_AT + 16:
-        return None
+def _string(blob: bytes, at: int) -> tuple[str, int] | None:
+    """The length-prefixed string at bit *at*, and where it ends."""
     try:
-        level = BitReader(message, LEVEL_AT).read_uint(LEVEL_BITS)
-        reader = BitReader(message, NAME_AT)
+        reader = BitReader(blob, at)
         length = reader.read_uint(16)
-        if length != len(RECORDED_NAME):
+        if not 1 <= length <= LONGEST_STRING:
             return None
-        name = bytes(reader.read_uint(8) for _ in range(length)).decode("ascii")
+        raw = bytes(reader.read_uint(8) for _ in range(length))
+        return raw.decode("ascii"), reader.position
     except (IndexError, ValueError, UnicodeDecodeError):
         return None
-    if name != RECORDED_NAME:
-        return None
-    if not LOWEST_LEVEL <= level <= HIGHEST_LEVEL:
-        return None
-    return level
 
 
-def with_level(message: bytes, level: int) -> bytes:
-    """*message* with the character's level set to *level*.
+def entries(blob: bytes) -> list[dict]:
+    """Every character in the roster: its name, map, level, experience and offsets.
 
-    Returns it unchanged, and says so, when the layout is not the one this was measured
-    against. Sixteen bits written in place, so nothing moves and no length changes.
+    Walks forward from the first name, since the entries are back to back. Stops at the
+    first thing that does not read as one, and returns what it had -- a roster this
+    cannot walk to the end is one to leave alone rather than half-rewrite.
     """
-    found = level_of(message)
-    if found is None:
-        log.warning(
-            "character list is not the recorded layout -- leaving the level alone"
+    found: list[dict] = []
+    at = FIRST_NAME_AT
+    total = len(blob) * 8
+    while at < total:
+        got = _string(blob, at)
+        if got is None:
+            break
+        name, after_name = got
+        got_map = _string(blob, after_name)
+        if got_map is None:
+            break
+        where, after_map = got_map
+        if after_map + LEVEL_REL + FIELD_BITS > total:
+            break
+        try:
+            experience = BitReader(blob, after_map + EXPERIENCE_REL).read_uint(FIELD_BITS)
+            level = BitReader(blob, after_map + LEVEL_REL).read_uint(FIELD_BITS)
+        except (IndexError, ValueError):
+            break
+        if not LOWEST_LEVEL <= level <= HIGHEST_LEVEL:
+            break
+        found.append(
+            {
+                "name": name,
+                "map": where,
+                "level": level,
+                "experience": experience,
+                "experience_at": after_map + EXPERIENCE_REL,
+                "level_at": after_map + LEVEL_REL,
+                "name_at": at,
+            }
         )
-        return message
+        # The next entry begins where this one's trailing block ends. Measured constant
+        # across the four official entries: 834 bits from the end of the map to the next
+        # name's length prefix.
+        at = after_map + TRAILER_BITS
+    return found
+
+
+#: From the end of one entry's map string to the next entry's name length prefix.
+#: 505 -> 1339, 1603 -> 2437, 2677 -> 3511 in the official roster: 834 every time.
+TRAILER_BITS = 834
+
+
+def _write_uint(out: bytearray, at: int, value: int, count: int) -> None:
+    """Write *count* bits of *value* at bit *at*, the mirror of BitReader.read_uint.
+
+    Bit by bit, because these fields are not byte aligned: the entries carry their
+    strings inline, so where a field lands depends on how long the character's name and
+    map are. In the recording the experience sits at bit 801 and in the live service's
+    roster at 761 -- neither a multiple of eight. A byte-level splice would have written
+    into the neighbours.
+
+    The reader takes multi-byte values low byte first, each byte most significant bit
+    first, so this does the same.
+    """
+    for index in range(count // 8):
+        byte = (value >> (8 * index)) & 0xFF
+        for bit in range(8):
+            position = at + index * 8 + bit
+            mask = 1 << (7 - bit)
+            if byte & mask:
+                out[position // 8] |= 1 << (7 - position % 8)
+            else:
+                out[position // 8] &= ~(1 << (7 - position % 8)) & 0xFF
+
+
+def with_progress(blob: bytes, level: int, experience: int) -> bytes:
+    """*blob* with the first character's level and experience set.
+
+    Only the first: the recording holds one character, and which of several a saved
+    progress belongs to is not something this can know. Sixty-four bits written in
+    place, so nothing moves and no length changes.
+
+    Returns the message unchanged, and says so, when it cannot be walked -- the guard
+    that the previous version of this module lacked.
+    """
+    found = entries(blob)
+    if not found:
+        log.warning("roster does not read as one -- leaving it alone")
+        return blob
+    first = found[0]
     wanted = max(LOWEST_LEVEL, min(HIGHEST_LEVEL, int(level)))
-    if found == wanted:
-        return message
-    out = bytearray(message)
-    # The field is byte-aligned at bit 168, which is byte 21.
-    at = LEVEL_AT // 8
-    out[at] = wanted & 0xFF
-    out[at + 1] = (wanted >> 8) & 0xFF
-    log.info("character list: level %d -> %d", found, wanted)
+    if first["level"] == wanted and first["experience"] == experience:
+        return blob
+    out = bytearray(blob)
+    for at, value in (
+        (first["experience_at"], max(0, min(0xFFFFFFFF, int(experience)))),
+        (first["level_at"], wanted),
+    ):
+        _write_uint(out, at, value, FIELD_BITS)
+    log.info(
+        "roster: %s level %d -> %d, experience %d -> %d",
+        first["name"],
+        first["level"],
+        wanted,
+        first["experience"],
+        experience,
+    )
     return bytes(out)
