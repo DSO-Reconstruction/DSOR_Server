@@ -19,6 +19,21 @@ commands are declared. Enumerating only `Commands::` misses 83 of them.
 
 `•` marks the ones this server currently reads or writes.
 
+Three that lost their mark are worth naming, because the knowledge outlived the code.
+`0x003C`, `0x003D` and `0x003E` had a codec that round-tripped the recorded payloads to
+the byte — header, then per entry a 16-bit index, a flag, a length-prefixed shape class,
+345 bits of geometry, a length-prefixed effect name and 460 bits, with the split fixed by
+the fact that only it leaves the last entry ending exactly where the actor begins. They
+carry **no position**: neither the recording caster's wire coordinates nor their described
+form appears anywhere in the payload, in any byte order or bit alignment, and the actor is
+0 — the client places them from the skill use it sent itself. The module went out with the
+rest of the effects code when it was rebuilt; the layout is in the git history under
+"Read the client's own asset bundles".
+
+`0x0080 CurrencyChangedCommand` appears in no capture, because a currency only changes
+when something is spent or earned. The account's andermant travels in the roster instead,
+at 160 bits past an entry's map string — see the README.
+
 
 ## Commands — 282
 
@@ -131,7 +146,7 @@ commands are declared. Enumerating only `Commands::` misses 83 of them.
 | `0x007D` | XPChangedCommand | • |
 | `0x007E` | GroupXPChangedCommand | • |
 | `0x007F` | HonorPointsChangedCommand |  |
-| `0x0080` | CurrencyChangedCommand | • |
+| `0x0080` | CurrencyChangedCommand |  |
 | `0x0081` | ShowDeathDialogCommand |  |
 | `0x0082` | TimedOffersInfoCommand |  |
 | `0x0083` | TimedChallengesInfoCommand | • |
@@ -386,7 +401,7 @@ commands are declared. Enumerating only `Commands::` misses 83 of them.
 
 | id | command | |
 |---|---|---|
-| `0x003C` | NewLocationEffectCommand | • |
+| `0x003C` | NewLocationEffectCommand |  |
 | `0x003D` | DiscardLocationEffectCommand |  |
 | `0x003E` | LocationEffectInfoCommand |  |
 | `0x003F` | NewTrapCommand |  |

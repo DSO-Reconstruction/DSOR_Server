@@ -101,6 +101,66 @@ the fault class that costs a manual round trip to find otherwise.
 each named after its symptom and carrying the measurement that settled it. Several
 of them exist because the obvious reading of a capture was wrong.
 
+## Capturing the live service, usefully
+
+A capture answers the question it was made for and no other, so decide the question
+first. Two mistakes cost whole rounds here.
+
+**Capture from the client's launch, not by attaching to a running one.**
+`-SocketOnly` attaches to a client that is already up, so the login, the character
+roster and the player initialisation are already past — and those carry the level, the
+experience, the andermant and the inventory. `-Spawn` launches the client under Frida
+and follows the launcher down to it:
+
+```
+powershell -ExecutionPolicy Bypass -File \\host.lan\Data\dsor-server\tools\frida\hook-dso.ps1 `
+    -Spawn -CmdFile \\host.lan\Data\dso\cmd.txt -OutDir \\host.lan\Data\dso-capture\une-question
+```
+
+The session token in `cmd.txt` expires, so refresh it from a normal launch and run this
+straight after. `-OutDir` into its own directory: there are 161 `session-*.jsonl` in
+`~/dso-capture` and the timestamp in the name comes from the Windows clock, which is
+hours off the host's.
+
+**Isolate what you want to measure.** Casting two skills within ten seconds puts both
+sets of effects in one message, because a `StatusEffectCommand` carries an actor's whole
+list — which is how "casting Dragon Hide shows Power of Smash" was misdiagnosed for a
+week. Thirty seconds between casts, and nothing else in between.
+
+**Write down what the screen said.** A level, a character's name, an amount of
+andermant: given a value, a field can be found *by its value* in a bit-packed message of
+631 KB. Without one, the method is to spot a plausible pattern and conclude, and that
+broke the login twice. The andermant's offset came from one line — "dans l'autre capture
+j'etais a 4814 andermant" — against a dump that had been sitting unread for hours.
+
+## Measuring against the live service and not against yourself
+
+Half of the 144 captures in `~/dso-capture` are **this server's own output**. Any
+measurement taken across all of them measures this server's mistakes back as ground
+truth: the status effect table's wire index was verified that way for weeks, once
+against 41 candidate offsets, and was wrong the whole time.
+
+`tools/effect_tables.py` classifies a capture before reading it, by two markers:
+`a0001_tutorial_heal_on_low_health` was replayed on the player by the old emulator 25
+times a second, while `skill_frenzyshout_buff_lifeleech` and warshout's named buffs only
+ever came from the live service. A capture bearing the first is dropped, even if it also
+bears the second.
+
+## Reading the client itself
+
+`dso/DSOClient/dlcache/dro_client64.exe` carries every function signature as a plain
+string — `bool __cdecl Skills::SkillTemplate::AddEffect(...)` and so on — along with the
+file and line of every assertion. That makes it searchable without symbols:
+
+* find a diagnostic string with `pefile`, then find the `lea reg, [rip+disp]` that
+  resolves to it by scanning `.text` for `48 8d` / `4c 8d` with `mod=00, rm=101`;
+* disassemble around it with `capstone`. Full analysis in radare2 on a 21 MB binary
+  times out; the targeted scan takes seconds.
+
+This is how the status effect handler's control flow, its four rejection messages, its
+five-tick clock tolerance and its silent per-element skip were established. See the
+README.
+
 ## When a capture disagrees with this repository
 
 Trust the capture, and check three things before trusting your reading of it.

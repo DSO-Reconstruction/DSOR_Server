@@ -3,11 +3,14 @@
 Notes on the Drakensang Online network protocol, written while building a server
 the retail client will talk to.
 
-The client logs in, is dispatched to the character service, is shown its character,
-is granted the game, returns to the login server, is dispatched to a map server and
-enters the world. Creatures spawn around it, walk toward it, strike it with an
-animation, take damage, die and drop loot. Experience is awarded and levels are
-granted. The shop shows whatever this server decides, at whatever price.
+The client logs in, is dispatched to the character service, is shown its character
+at the level and experience it was last saved with, is granted the game, returns to the
+login server, is dispatched to a map server and enters the world. Creatures spawn around
+it, walk toward it, strike it with an animation, take damage, die and drop loot.
+Experience is awarded and levels are granted. Skills put status effects on their caster
+and their victims, with the visual effect, animation and icon the client draws from its
+own database. The action bar survives a restart. The shop shows whatever this server
+decides, at whatever price.
 
 Four sources feed these notes:
 
@@ -16,9 +19,14 @@ Four sources feed these notes:
 * **the client's binary**, a native Windows x64 build. Command ids come from
   walking the Nebula3 Rtti registration to the id getter at vtable slot 3
   (`tools/command_ids.py`); function bounds come from the PE exception table;
-* **the client's database**, `db_static.sqlite`. `_Template_Skill` and
-  `_Template_Monster` hold the numbers that govern combat — hit frames, ranges,
-  cooldowns, damage types, which skills a monster carries.
+* **the client's database**, `static.db4` — plain SQLite despite the extension, 197
+  tables and 148,265 rows, loaded into memory at startup (`dsor/database.py`).
+  `_Template_Skill` and `_Template_Monster` hold the numbers that govern combat — hit
+  frames, ranges, cooldowns, damage types, which skills a monster carries;
+  `_Template_StatusEffect` holds every effect and the sequence, animation and icon the
+  client draws for it. A row's wire index is **not** the same expression for every
+  table, and getting that wrong cost more than anything else here — see
+  [the wire index](#the-wire-index-of-an-effect-is-rowid--15).
 
 Guesses say they are guesses. Ideas that turned out to be wrong are kept under
 **Refuted** rather than deleted, because most of them are plausible enough to be
@@ -590,6 +598,70 @@ Index 6 is what populates the world, the player's own actor included. Skipping i
 produces a client that reaches the map, finds an empty zone, and dies on the
 assertion that its local player actor is valid.
 
+## The wire index of an effect is `rowid + 15`
+
+The client turns the 16 bits at the head of a status effect element into a template
+through `StatusEffectManager::StatusEffectTableRowToId(int)`, which indexes its own
+`effectInfos` array. `Load()` resizes that array to `_Template_StatusEffect`'s own row
+count before filling it, so it is one entry per row and not compacted — but the array
+the wire indexes begins **sixteen entries before the table's first row**.
+
+Measured on a capture of the live service with each cast isolated by thirty seconds:
+
+```
+5184 5185 5194  skill_frenzyshout_buff_{armor,resistance,lifeleech}
+5169 5542       warrior_spikedShield_buff, _armor_trigger
+5165 5166 5168 5518 5519 6212   warshout's six
+5158            skill_seismicslam_debuff_armor
+```
+
+Eleven correspondences, every one of them `rowid + 15`. Read with `rowid - 1` the same
+capture claims Dragon Hide applies daily-challenge blessings and Spike Shield applies a
+frostnova debuff. It is not a sort: sorting the table by `Id` matches 0 of 11.
+
+**The conventions are per table.** `_Template_Skill` is `rowid - 1`, and that one is
+confirmed by the *client's* traffic rather than by anything served here — 1,581 real casts
+carrying 1838 for angrystrike, 1846 for frenzyshout, 1854 for spikedShield. Only the
+status effect table is shifted, so `dsor/database.py` keeps a per-table offset.
+
+`rowid - 1` survived every check for weeks because the checks ran over captures that are
+for the most part **this emulator's own traffic** — half of 144 captures are. This server
+had written those indices itself with `rowid - 1`, so reading them back the same way
+returned the names it had put in. One check even tested 41 candidate offsets and declared
+`rowid - 1` uniquely best. The error was only ever visible against traffic this server
+did not write.
+
+## What the client does with a status effect
+
+Read out of `dro_client64.exe`, which carries every function signature as a plain string.
+The handler at `+0x34cca5`:
+
+```
+type check                        -> "called with command of wrong type"
+[command+0x18] != invalid actor   -> "InvalidActorId for effect host actor"
+ClientActorManager::Instance()
+look the actor up by id           -> "unknown actor (id: %u | effects: %s)"
+zero elements                     -> "Received empty StatusEffectCommand!"
+per element, create an instance
+instance null                     -> next element, AND NOTHING LOGGED
+```
+
+That last line is why the client's own logs are silent while nothing appears on screen.
+
+Creation is gated on a clock comparison at `+0x34cf54` — create only if
+`|now - end| <= 5` ticks, or `now < end`, or `start == end`, where 5.0 is a float in
+`.rdata` and *now* is the client's clock, not the server's. And the creation function in
+`statuseffectmanager.cc` asserts `causer.isvalid()`, `effectTemplate->IsValid()`,
+`0 < causerLevel` and `MaxActorLevel >= causerLevel`. The third of those is what sent this
+server looking for `0x007C PlayerLevelUpdateCommand`, which it had never sent.
+
+The fourth element flag, at `[element+0x24]`, is tested before the parameters are read:
+clear, and the element is skipped.
+
+`tools/frida/hook-dso.ps1 -Effets` installs three hooks on that path — the handler, the
+row-to-id resolution and the instance creation — so what the client makes of a message can
+be read from inside it rather than inferred.
+
 ## The character list record
 
 The list is written with RakNet's `BitStream`, which packs a boolean into one bit,
@@ -622,13 +694,24 @@ Each character is a length-prefixed name, a length-prefixed last-map name, then 
 
 | block offset | width | notes |
 |---|---|---|
-| +0 | u32 | unexplained; 0, 1 and 2 seen |
-| +64 | u32 | the only per-character number not accounted for; candidate for a model or appearance parameter |
+| +0 | u32 | unexplained; 0, 1, 2 and 3 seen, one per entry |
+| +64 | u32 | still unaccounted for |
 | +96 | u32 | the character id |
-| +160 | u32 | **the class** — 600 warrior, 719 mage, and equal for two mages of different levels |
-| +256 | u32 | experience candidate |
-| +288 | u32 | level candidate |
+| +160 | u32 | **the account's andermant.** 4,814 in all four characters of one live account and 600 in the recording — which is what the operator saw on the live service and on this server. It was read here as "the class" on the strength of one value per account; being equal for two mages of different levels is equally consistent with a currency, and a currency is what it is |
+| +256 | u32 | **the experience.** 882,246,499 / 882,260,621 / 882,269,671 / 128,322 across four live characters, 0 in the recording |
+| +288 | u32 | **the level.** 100, 100, 100, 18, and 1 in the recording. 128,322 experience reads level 18 through this server's own curve as well, and 882 million reads 104 where the roster says 100 — so the level is *stored*, and the curve is wrong above 100 |
 | +320 | 512 bits | a 4×4 float matrix, byte-identical across every sample: a 180° yaw with no translation |
+
+The entries are back to back and their strings are inline, so the fields are counted
+from **the end of the entry's map string** and nothing else works: the live service's
+level sits at bit 1274 and the recording's at 1314, exactly the 40 bits by which the two
+map names differ. From the end of one map to the next name's length prefix is 834 bits,
+constant across four entries.
+
+The same two numbers appear again in the 631 KB player state, which is what the *game*
+reads while the roster feeds the selection screen — level and experience 210 and 242
+bits past that message's own map string. Writing one and not the other is why the level
+was right on the screen and back to 1 after pressing Play.
 
 After the last character comes one global equipment list: a 32-bit count, then per
 entry a length-prefixed template name, 20 zero bytes and one set bit. There is
@@ -715,6 +798,29 @@ same idea rediscovered later.
   approximate offset forgives, writing does not — the creatures stopped appearing.
 * Filtering attacks by the client's own 1.75-unit reach refuses **every** blow, and so
   does 6. See the two coordinate frames above.
+* The status effect table's wire index is **not** `rowid - 1`. It is `rowid + 15`, and
+  the wrong value was confirmed repeatedly against captures that are mostly this
+  server's own output, where these very indices had been written with `rowid - 1`.
+  Sending 5168 and 5169 for Dragon Hide made the client show "Power of Smash" and
+  "Spike Shield", which are the rows sixteen earlier — reported accurately, and for
+  weeks, before it was believed.
+* Bit 168 of the roster is **not** the level. It reads 1 in the recording, which is a
+  level-1 character, and 1 in the live service's level-100 characters as well. Writing
+  104 into it broke the login.
+* The andermant is **not** in the player state. A single 600 found there matched the
+  amount on screen and writing it changed nothing; the amount is in the roster, at
+  `map_end + 160`, and it is the account's rather than the character's.
+* The client's clock must **not** be taken forward-only. It starts again near zero on a
+  new session, so a monotonic rule kept the previous session's value — 35,278 against
+  the client's 10,000 — and scheduled every effect a thousand seconds ahead.
+* This server's tick was **not** 5,561 ticks behind the client's. That figure came from
+  one capture holding two sessions, comparing the first's low tick with the second's
+  high one. Element by element at the same moment it was never more than about thirty
+  out.
+* Filling the action bar's seventeen slots **kills the client**:
+  `Util::FixedArray<Core::Ptr<UI::Slot>>::operator[]`. The declared count is seventeen
+  and the UI's array is not. What can be written back safely is what the client itself
+  reported.
 * Throttling the event schedule to the real service's measured six fragments a second
   fixes the crash it causes and replaces it with a worse symptom: everything behind it
   in the ordered stream waits for it, so the client sits on "loading data" for ninety
@@ -731,6 +837,22 @@ same idea rediscovered later.
 * **Character appearance.** The selection screen draws a character with neither
   hair nor equipment. Neither the roster nor the event schedule carries
   appearance data.
+* **Stats other than movement speed.** They are carried by
+  `0x007B ActorStatsUpdateCommand`, read as `(u32 attribute id, u32 zero, float32
+  value)` — one id observed, 2757733, its value walking 66 → 60.2 → 54.4 → 48.6 → 42.9
+  as skills were cast. One id out of however many exist, and inventing the others would
+  be putting numbers on the wire to see what happens.
+* **Talents**, and with them a skill's upgraded behaviour. `0x011A`, `0x011B` and
+  `0x011D` are named and appear in no capture, so the state travels inside the player
+  initialisation. `_Template_SkillTalent` has the data: 156 rows with a
+  `SkillTemplateId` and the effects each grants.
+* **Equipment and inventory.** The live service's roster carries 29 item records after
+  the four character entries — a length-prefixed template id and its stats, the record
+  length varying with the item, so items carry enchantments and gems inline. The player
+  state carries 368 distinct item ids. Both are variable-length, which is why the
+  fixed-width level, experience and andermant were written first.
+* **Ground Breaker's shape.** It stuns on this server and the operator reports an area
+  effect where there should be none.
 * **The chat service on 2191**, which carries only a handshake and one channel
   identifier in every capture so far.
 
@@ -745,6 +867,17 @@ same idea rediscovered later.
 * **The database and the binary before the wire.** Six combat numbers were
   invented here and every one had a visible symptom; all six sit in one row of
   `_Template_Skill`.
+* **Measuring against traffic this server did not write.** Half of the 144 captures
+  are this emulator's own output. Every measurement taken across all of them measured
+  this server's mistakes back as ground truth, and the wire index survived weeks of
+  checks that way. A capture of the live service made *for* one question — each cast
+  isolated, the login included — settled in an afternoon what a month of inference had
+  not.
+* **A value the operator can read off the screen.** 600 andermant, 4,814 andermant, a
+  character's name, a level: given one, a field can be found *by its value* in a
+  bit-packed message. Without one, the method is to spot a plausible pattern and
+  conclude, which broke the login twice. The 4,814 was already sitting in a dump taken
+  hours earlier and went past unremarked because nothing had said what to look for.
 * **Comparing whole messages, not prefixes.** A check here once reported a command
   reproduced "byte for byte" after comparing 26 bytes chosen by hand. The command
   is 64 bytes, and the eight missing fields were why creature attacks never
@@ -756,6 +889,16 @@ same idea rediscovered later.
 server.py               the three tiers
 raknet/                 datagrams, frames, reliability, the bit-level stream
 dsor/                   message shapes, the character record, the event schedule
+dsor/database.py        the client's own static.db4, in memory, with the per-table
+                        wire-index offsets
+dsor/effects.py         the status effect and skill tables, all five classes
+dsor/statuseffect.py    the 0x004F codec: every real message re-encodes byte for byte
+dsor/measured.py        generated: what the live service put in an element, per effect
+dsor/chain.py           walking the commands chained inside one payload
+dsor/charlist.py        the roster's level, experience and andermant
+dsor/playerstate.py     the same level and experience where the game reads them
+dsor/actionbar.py       reading the action bar, and writing back what the client sent
+dsor/vitals.py          PlayerLevelUpdateCommand, which the effect path needs
 dsor/data/              messages still replayed rather than generated
 tools/command_ids.py    command ids, recovered from the client binary by name
 docs/commands.md        all 365 of them, by namespace
