@@ -203,6 +203,18 @@ SCHEDULE_FRAGMENTS_PER_SECOND = 250.0
 #: and a movement window outside the client's clock moves nothing at all, silently.
 GAME_TICK_MS = 40
 
+#: Where the client's own game tick sits in a movement command's body: four bytes,
+#: little-endian. Found by looking for the field that only ever rises -- it does so in
+#: 22,648 of 22,648 records of one session, from 428 to 29,130.
+CLIENT_TICK_AT = 9
+
+
+def client_tick(body: bytes) -> int | None:
+    """The client's game tick, from a movement command body, or None."""
+    if len(body) < CLIENT_TICK_AT + 4:
+        return None
+    return int.from_bytes(body[CLIENT_TICK_AT:CLIENT_TICK_AT + 4], "little")
+
 #: The player's own actor id, as every recorded stats update carries it.
 PLAYER_ACTOR = bytes([0x15, 0x00, 0x01, 0x00])
 
@@ -863,12 +875,20 @@ class Service:
                 self._queue(connection, payload, address)
 
     def _set_clock(self, sender) -> None:
-        """Tell the world what time this player's connection thinks it is."""
+        """A clock for a player whose client has not stated one yet.
+
+        Only until the client does. Its movement commands carry its own game tick and
+        that is the clock its status effect handler compares against, so once one has
+        arrived this must not write over it -- least of all downwards, which would put
+        every running effect in the past at a stroke. Measured over one session, this
+        counter ended 5,561 ticks behind the client's.
+        """
+        player = self.world.player(sender)
+        if player.server_tick:
+            return
         connection = self.connections.get(sender)
         if connection is not None:
-            self.world.player(sender).server_tick = (
-                connection.elapsed_ms() // GAME_TICK_MS
-            )
+            player.server_tick = connection.elapsed_ms() // GAME_TICK_MS
 
     def _with_granted_skills(self, state: bytes) -> bytes:
         """The player state, with the skill book's ownership bits set.
@@ -1555,6 +1575,15 @@ class Service:
             # reports the same place back.
             mover = self.world.player(sender)
             moved = decode_client_movement(game.body)
+            # The client's own game tick. Its status effect handler compares an
+            # element against its own clock -- create only if |now - end| <= 5 ticks,
+            # or now < end, or start == end -- so that is the clock to write, and it
+            # states it in every movement command.
+            #
+            # This server's own counter was in fact close: element by element against
+            # the client's clock at the same moment, never more than about thirty out.
+            # Taking the client's removes the question rather than answers it.
+            self.world.accept_clock(sender, client_tick(game.body))
             # Checked, not taken. See dsor/trust.py: this was
             # "mover.position = moved.position", straight from the datagram.
             self.world.accept_movement(sender, moved.position)

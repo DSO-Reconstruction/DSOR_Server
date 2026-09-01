@@ -63,7 +63,7 @@ from dsor.gameplay import (
     with_motion,
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
-from dsor import effect_titles, effects, measured, statuseffect
+from dsor import effect_titles, effects, measured, statuseffect, vitals
 
 #: Where effect instance handles start. The live service was measured
 #: handing out 66,052 to 66,066 in one session, in the same 0x1xxxx space
@@ -195,6 +195,23 @@ class Rules:
     #: hundred at every level. Ten was written here and it is why nothing appeared to
     #: happen: warshout's ResourceGain of 0.6 put six points on a bar of a hundred.
     player_resource: float = 0.0
+    #: A diagnostic: an extra effect added to whatever a skill grants.
+    #:
+    #: It exists because refining the message stopped paying. The database is
+    #: byte-identical to the client's own, md5 included; the wire index mapping is
+    #: uniquely best at rowid-1 (11 name agreements against 0 contradictions, every
+    #: other shift worse); the message is field-for-field the same as the live
+    #: service's for this skill; and neither the traffic nor the replayed blobs carry
+    #: the effect the operator sees. So the question is no longer which field is wrong.
+    #:
+    #: Set it to an unmistakable effect -- debuff_cc_stun is "Stunned", with its own
+    #: animation and icon, and no warrior self-buff produces it -- and one cast tells
+    #: three things apart. Seeing it alongside the skill's own effects means these
+    #: messages are rendered and the stray icon comes from elsewhere. Seeing it and not
+    #: the skill's own means the effects are rendered but the skill's are wrong. Not
+    #: seeing it at all means the client is not drawing this message.
+    probe_effect: str = ""
+
     #: Whether to fill the action bar with the class's skills.
     #:
     #: The bar is not the book. Granting a skill in the book tells the client the
@@ -578,6 +595,8 @@ class World:
     next_item_id: int = 40000
     #: Messages produced by the current call, waiting to be handed back.
     _sent: dict = field(default_factory=dict)
+    #: Which actors have been told their level, so it is sent once.
+    _levelled: dict = field(default_factory=dict)
     _handles: dict = field(default_factory=dict)
     _next_handle: int = 0
     #: The creatures' effect messages for this tick, built once.
@@ -1467,6 +1486,8 @@ class World:
             )
             if levelled:
                 earner.level = level
+                if earner.address is not None:
+                    self.announce_level(earner.address)
                 self._emit(
                     encode_player_level(
                         level, int.from_bytes(self.player(sender).actor, "little")
@@ -1506,6 +1527,29 @@ class World:
         before = player.resource
         player.resource = max(0.0, min(pool, before + change))
         return player.resource != before
+
+    def accept_clock(self, sender: Address, tick: int | None) -> None:
+        """Adopt the client's own game tick as this player's clock, as it stands.
+
+        The client's status effect handler compares an element against its *own* clock,
+        so that is the clock to write. Its movement commands carry it.
+
+        **Not forward-only.** That was tried and it is wrong: the client's clock starts
+        again at nearly zero on a new session, and a rule that refuses to go back kept
+        the previous session's value -- 35,278 while the client was at 10,000, which
+        schedules every effect a thousand seconds into the future and shows nothing at
+        all. Taking the tick as it comes cannot drift, because it is not this server's
+        clock in the first place.
+
+        The reason for the forward-only rule was a measurement error worth naming: one
+        capture held two sessions, and comparing the first session's low tick with the
+        second's high one made this server look 5,561 ticks behind. Element by element
+        against the client's clock at the same moment, it was never more than about
+        thirty out.
+        """
+        if tick is None or tick <= 0 or tick > 0x7FFFFFFF:
+            return
+        self.player(sender).server_tick = tick
 
     def accept_movement(self, sender: Address, position: Position) -> bool:
         """Take the client's word for where it is, or refuse this record.
@@ -2042,6 +2086,21 @@ class World:
         source = self._source_handle()
         for entry in effects.granted_by(used.wire):
             self._start(player, entry, causer=source)
+        if self.rules.probe_effect:
+            # The diagnostic. See Rules.probe_effect.
+            found = effects.by_id(self.rules.probe_effect)
+            if found is None:
+                log.warning(
+                    "%s: no effect named %r to probe with",
+                    self.name,
+                    self.rules.probe_effect,
+                )
+            else:
+                self._start(
+                    player,
+                    effects.Entry(found.id, 1.0, 5.0, None, (0.0,) * 5),
+                    causer=source,
+                )
 
     def inflict_effects(self, target: bytes, used: "Skill | None", causer: bytes) -> None:
         """Put on the victim whatever VictimStatusEffects names."""
@@ -2059,7 +2118,7 @@ class World:
         found = effects.by_id(entry.effect)
         if found is None:
             return
-        if found.talent_gated:
+        if found.talent_gated and found.id != self.rules.probe_effect:
             # A talent's variant of the effect, and this character has no talents. Its
             # column entry says C:1.0, so the chance field does not gate it -- see
             # dsor.effects.TALENT_MARK for why the displayed name does.
@@ -2141,34 +2200,32 @@ class World:
             elements.append(
                 statuseffect.Element(
                     index=wire,
-                    # Field 0 is a handle for this effect *instance* and field 7 is
-                    # the actor the effect is on. Measured on the 7 captures that are
-                    # certainly the live service's and nothing else: field 0 is never
-                    # the message's actor, in 394 of 394 elements, and it is unique
-                    # within a message in 186 of 190; field 7 is the message's actor in
-                    # 265 of 394.
+                    # Field 0 is a handle for this effect *instance*, never the actor
+                    # -- 394 of 394 measured elements -- and unique within a message in
+                    # 186 of 190. Field 7 is the actor the effect is on: the message's
+                    # own actor in 265 of 394.
                     #
-                    # This was the wrong way round until the captures were split by
-                    # source. The emulator-written half of the corpus had field 0
-                    # holding the actor, because that is what the old code put there,
-                    # so measuring across everything measured this server's own
-                    # mistake.
+                    # Field 7 was briefly a "grant handle" here, read off a single
+                    # official Dragon Hide message whose armour and resistance elements
+                    # shared a value that was not the actor. Per effect the majority is
+                    # the other way: that same effect carries the actor in 18 of its 34
+                    # measured elements and warshout's mightybash buff in 12 of 12. One
+                    # sample was fitted and the majority thrown away.
                     instance=self._handle(holder.actor, wire),
-                    # Field 7: what granted the effect, not who holds it. See
-                    # _source_handle.
-                    holder=causer,
+                    holder=mine,
                     start=tick,
                     end=tick + duration,
                     duration=duration,
                     second=measured.second_of(wire),
                     sixth=measured.sixth_of(wire),
-                    # The third flag tracks whether field 7 is the message's own
-                    # actor. In the live service's Dragon Hide message it is clear for
-                    # armour and resistance, whose field 7 is the skill's handle, and
-                    # set for the life leech, whose field 7 is the actor. Field 7 here
-                    # is always a grant handle and never the actor, so it is clear --
-                    # which is what the two elements this server sends carry.
-                    flags=(False, False, False, True),
+                    # Per effect, from the table, and not from a rule about the
+                    # context: skill_frenzyshout_buff_armor carries (0,0,0,1) in all 34
+                    # of its measured elements and
+                    # skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all four
+                    # of its, while whether field 7 is the actor predicts neither.
+                    flags=tuple(
+                        bool(bit) for bit in measured.FLAGS.get(wire, (0, 0, 0, 1))
+                    ),
                     parameters=list(parameters),
                     more=bool(measured.more_of(wire)),
                     byte=measured.tail_of(wire),
@@ -2248,9 +2305,28 @@ class World:
         return self._drain()
 
     def enter(self, sender: Address) -> list[tuple[Address, bytes]]:
-        """The first tick pair a player gets, on arrival."""
+        """The first tick pair a player gets, on arrival, and its level.
+
+        The level first, and it is not decoration. The client's status effect handler
+        creates each effect through a function that asserts ``0 < causerLevel``, and
+        when the instance is not created it advances to the next element and logs
+        nothing. So an actor whose level the client never learned can receive no status
+        effect at all -- which is what "rien n'apparait" was, with the message itself
+        correct the whole time. See dsor/vitals.py.
+        """
+        self.announce_level(sender)
         self._tick_pair(sender)
         return self._drain()
+
+    def announce_level(self, sender: Address) -> None:
+        """Tell the client what level this player's actor is."""
+        player = self.player(sender)
+        level = player.level or self.rules.start_level or 1
+        if self._levelled.get(player.actor) == level:
+            return
+        self._levelled[player.actor] = level
+        self._emit(vitals.player_level(level, player.actor), sender)
+        log.info("%s: %s is level %d", self.name, player.actor.hex(), level)
 
     def attack(
         self,

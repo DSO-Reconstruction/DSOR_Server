@@ -173,17 +173,16 @@ def test_dragon_hide_applies_nothing_belonging_to_another_skill():
 # ------------------------------------------------------------- the two actor fields
 
 
-def test_field_zero_is_the_instance_and_field_seven_is_the_grant():
-    """Both are handles, and neither is the actor.
+def test_field_zero_is_a_handle_and_field_seven_is_the_actor():
+    """Field 0 is never the actor -- 394 of 394 measured elements -- and is unique
+    within a message in 186 of 190. Field 7 is the actor the effect is on, in 265 of
+    394, and per effect: skill_frenzyshout_buff_armor carries it in 18 of its 34
+    elements, warshout's mightybash buff in 12 of 12.
 
-    Taken from the live service's own Dragon Hide message, whose three elements carry
-    field 7 as 65544, 65544 and 65557: armour and resistance come from the skill and
-    share a value, the life leech comes from the talent and has its own. So field 7
-    names what granted the effect. Field 0 is never the actor -- 394 of 394 elements --
-    and is unique within a message in 186 of 190.
-
-    This server had the actor in field 7, and once every other field matched the
-    official message that was the only one left over.
+    Field 7 was briefly a "grant handle" here, fitted to one official Dragon Hide
+    message whose armour and resistance elements shared a value that was not the actor.
+    That is the minority reading of that very effect, and taking it threw the majority
+    away.
     """
     world, messages = cast("frenzyshout")
     got = messages[0]
@@ -191,25 +190,9 @@ def test_field_zero_is_the_instance_and_field_seven_is_the_grant():
     assert got.actor == mine
     handles = {element.instance for element in got.elements}
     assert len(handles) == len(got.elements), "two effects must not share a handle"
-    grants = {element.holder for element in got.elements}
-    assert len(grants) == 1, "one cast grants one handle, shared by its effects"
     for element in got.elements:
-        assert element.instance != mine
-        assert element.holder != mine
-        assert element.instance != element.holder
-
-
-def test_two_casts_get_two_grant_handles():
-    world, where = a_world()
-    world.resolve_attack(where, wire_of("frenzyshout"))
-    world.resolve_attack(where, wire_of("frenzyshout"), travelled=True)
-    first = {e.holder for e in _sent_elements(world)}
-    world.resolve_attack(where, wire_of("warshout"))
-    world.resolve_attack(where, wire_of("warshout"), travelled=True)
-    world._sent.clear()
-    both = {e.holder for e in _sent_elements(world)}
-    assert len(both) == 2, "each cast names its own grant"
-    assert first <= both
+        assert element.instance != mine, "field 0 is a handle, not the actor"
+        assert element.holder == mine, "field 7 is the actor the effect is on"
 
 
 def test_a_debuff_is_addressed_to_the_creature():
@@ -221,20 +204,29 @@ def test_a_debuff_is_addressed_to_the_creature():
     got = messages[0]
     assert got.actor == theirs
     for element in got.elements:
-        assert element.holder != theirs, "field 7 is the grant, not the actor"
+        assert element.holder == theirs
         assert element.instance != theirs
 
 
-def test_a_handle_is_stable_while_the_effect_runs():
-    """The client keys "add" against "extend" on it, so it must not change under a
-    running effect and must differ between two effects on one actor."""
-    world, where = a_world()
-    world.resolve_attack(where, wire_of("frenzyshout"))
-    first = {e.index: e.instance for e in
-             [x for x in _sent_elements(world)]}
-    world._sent.clear()
-    second = {e.index: e.instance for e in [x for x in _sent_elements(world)]}
-    assert first and first == second
+def test_the_flags_come_from_the_measured_table_per_effect():
+    """Not from a rule about the context, which is what they were and it was wrong.
+
+    skill_frenzyshout_buff_armor carries (0,0,0,1) in all 34 of its measured elements
+    and skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all four of its, while
+    whether field 7 is the message's actor predicts neither -- armour's is the actor 18
+    times and is not 16 times, with the same flags throughout.
+    """
+    from dsor import measured
+
+    for skill, near in (("frenzyshout", False), ("laceratingstrike", True)):
+        _world, messages = cast(skill, near=near)
+        assert messages, skill
+        for element in messages[0].elements:
+            want = measured.FLAGS.get(element.index, (0, 0, 0, 1))
+            assert tuple(int(b) for b in element.flags) == tuple(want), (
+                skill,
+                element.index,
+            )
 
 
 def _sent_elements(world):
@@ -243,17 +235,6 @@ def _sent_elements(world):
             got = se.decode(payload)
             if got is not None:
                 yield from got.elements
-
-
-def test_the_third_flag_is_clear_because_field_seven_is_never_the_actor():
-    """In the live service's Dragon Hide message the third flag is clear for armour and
-    resistance, whose field 7 is the skill's handle, and set for the life leech, whose
-    field 7 is the actor. Field 7 here is always a grant handle, so it is clear."""
-    for skill, near in (("frenzyshout", False), ("laceratingstrike", True)):
-        _world, messages = cast(skill, near=near)
-        assert messages, skill
-        for element in messages[0].elements:
-            assert tuple(int(b) for b in element.flags) == (0, 0, 0, 1), skill
 
 
 # ------------------------------------------------------------------ the clock

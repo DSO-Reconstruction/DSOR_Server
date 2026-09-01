@@ -44,6 +44,14 @@ MORE: dict[int, int] = {1270: 0, 1316: 0, 4762: 0, 4763: 0, 5141: 1, 5142: 1, 51
 #: The same, caused.
 MORE_CAUSED: dict[int, int] = {1270: 1, 1316: 0, 5142: 1, 5149: 1, 5153: 1, 5168: 0, 5169: 0, 5502: 1, 5739: 1}
 
+#: The four flags, per effect. Measured per effect and not derived from context:
+#: skill_frenzyshout_buff_armor carries (0,0,0,1) in all 34 of its measured
+#: elements while skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all
+#: four of its, and whether field 7 is the message's own actor does not predict
+#: either -- armour's field 7 is the actor 18 times and is not 16 times, with the
+#: same flags throughout.
+FLAGS: dict[int, tuple] = {1270: (0, 0, 0, 1), 1316: (0, 0, 0, 1), 4762: (0, 0, 1, 1), 4763: (0, 0, 1, 1), 5141: (0, 0, 1, 1), 5142: (0, 0, 1, 1), 5143: (0, 0, 1, 1), 5149: (0, 0, 1, 1), 5150: (0, 0, 0, 1), 5152: (0, 0, 0, 1), 5153: (0, 0, 0, 1), 5168: (0, 0, 0, 1), 5169: (0, 0, 0, 1), 5178: (0, 0, 1, 1), 5502: (0, 0, 0, 1), 5739: (0, 0, 1, 1)}
+
 #: The two float3 behind the parameters. Identical to the bit across five
 #: different captures, so it is a constant and not the position it was once
 #: taken for. The aura effects are the exception, and they are below.
@@ -57,38 +65,32 @@ PER_EFFECT_VECTORS: dict[int, tuple] = {
 }
 
 
-# The two halves above split on whether field 7 is the message's own actor. They are
-# read through these, so a caller does not have to know which half an effect landed in.
+# Read through these so a caller does not have to know which half an effect landed in.
 
 
 def second_of(wire: int, default: int = 25) -> int:
-    """Field 2 for *wire*."""
     if wire in SECOND_CAUSED:
         return SECOND_CAUSED[wire]
     return SECOND.get(wire, default)
 
 
 def sixth_of(wire: int, default: int = 100) -> int:
-    """Field 6."""
     if wire in SIXTH_CAUSED:
         return SIXTH_CAUSED[wire]
     return SIXTH.get(wire, default)
 
 
 def tail_of(wire: int, default: int = 2) -> int:
-    """The signed byte behind the parameters. -1 means the element carries no vectors."""
     if wire in TAIL:
         return TAIL[wire]
     return TAIL_CAUSED.get(wire, default)
 
 
 def more_of(wire: int, default: int = 1) -> int:
-    """The flag in front of that byte."""
     if wire in MORE:
         return MORE[wire]
     return MORE_CAUSED.get(wire, default)
 
 
 def vectors_of(wire: int) -> tuple:
-    """The two float3, which only an aura's differ in."""
     return PER_EFFECT_VECTORS.get(wire, VECTORS)

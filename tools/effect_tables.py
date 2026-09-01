@@ -203,6 +203,16 @@ def main(argv: list[str]) -> int:
             out[index] = collections.Counter(values).most_common(1)[0][0]
         return dict(sorted(out.items()))
 
+    def flags_per_effect():
+        out = {}
+        seen_flags = collections.defaultdict(collections.Counter)
+        for (index, _has), entries in seen.items():
+            for entry in entries:
+                seen_flags[index][tuple(entry["flags"])] += 1
+        for index in sorted(seen_flags):
+            out[index] = seen_flags[index].most_common(1)[0][0]
+        return out
+
     samples: dict[int, int] = collections.Counter()
     for (index, _has), entries in seen.items():
         samples[index] += len(entries)
@@ -256,6 +266,14 @@ def main(argv: list[str]) -> int:
         "",
         "#: The same, caused.",
         f"MORE_CAUSED: dict[int, int] = {pick('more', True)!r}",
+        "",
+        "#: The four flags, per effect. Measured per effect and not derived from context:",
+        "#: skill_frenzyshout_buff_armor carries (0,0,0,1) in all 34 of its measured",
+        "#: elements while skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all",
+        "#: four of its, and whether field 7 is the message's own actor does not predict",
+        "#: either -- armour's field 7 is the actor 18 times and is not 16 times, with the",
+        "#: same flags throughout.",
+        f"FLAGS: dict[int, tuple] = {flags_per_effect()!r}",
     ]
     everything = collections.Counter()
     for entries in seen.values():
