@@ -73,6 +73,7 @@ from dsor.skills import skill as skill_at
 from dsor.titles import title_of
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
+from dsor.charlist import with_level
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
@@ -1216,6 +1217,13 @@ class Service:
             record = record[:2]
         total = 0
         for index, piece in enumerate(record):
+            if index == 0:
+                # The level the selection screen shows. Saving a character does
+                # nothing for this on its own: the screen is drawn from the replayed
+                # roster, whose character is level 1, so every login showed level 1
+                # however much had been stored. Sixteen bits in place, guarded so a
+                # recording with a different layout is left alone.
+                piece = self._with_saved_level(piece, sender)
             total += self._queue(connection, piece, sender, slow=index >= 2)
         self.record_sent.add(sender)
         log.info(
@@ -1225,6 +1233,25 @@ class Service:
             sender,
             total,
         )
+
+    def _with_saved_level(self, roster: bytes, sender) -> bytes:
+        """The roster with this account's saved level on it, if there is one."""
+        if self.store is None:
+            return roster
+        found = self.who.get(sender)
+        if found is None:
+            return roster
+        saved = self.store.load(found.key)
+        if saved is None:
+            # No character saved under the chosen key yet. The roster is pushed before
+            # a character has been chosen, so the account's own row is the one to look
+            # at -- the highest level it has, since the screen lists them all and this
+            # only writes the first.
+            others = self.store.characters_of(found.account)
+            if not others:
+                return roster
+            saved = max(others, key=lambda row: row.level)
+        return with_level(roster, saved.level)
 
     def _release_character(self, connection: Connection, game, sender) -> None:
         """Grant the client's request to start the game.
