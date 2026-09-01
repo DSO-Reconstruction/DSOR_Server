@@ -63,7 +63,7 @@ from dsor.gameplay import (
     with_motion,
 )
 from dsor.items import item_drop, item_taken, with_drop, with_taken
-from dsor import effect_titles, effects, measured, statuseffect, vitals
+from dsor import effect_titles, effects, location, measured, statuseffect, vitals
 
 #: How long after arriving the level is stated a second time, in seconds.
 #: The replayed player state is a level-1 character's, so the interface starts
@@ -235,6 +235,10 @@ class Rules:
     #: 145 bits before the name and broke the login; that field is 1 in the service's
     #: level-100 characters as well as in the level-1 recording.
     roster_level: bool = True
+
+    #: Whether to draw what a skill puts on the ground. Nine skills of the four playable
+    #: classes place only ground effects and do nothing at all without it.
+    location_effects: bool = True
 
     #: Whether to fill the action bar with the class's skills.
     #:
@@ -1269,6 +1273,7 @@ class World:
         used = skill_at(wire)
         if used is not None and not travelled:
             self.grant_effects(sender, used)
+            self.place_ground_effects(sender, used)
             if self.spend_resource(sender, used):
                 self.report_vitals(sender)
         if used is not None and not travelled and used.hit_frame > 0:
@@ -2134,6 +2139,35 @@ class World:
                     effects.Entry(found.id, 1.0, 5.0, None, (0.0,) * 5),
                     causer=source,
                 )
+
+    def place_ground_effects(self, sender: Address, used: "Skill | None") -> None:
+        """Draw whatever the skill puts on the ground.
+
+        Nine skills of the four playable classes place *only* ground effects and so did
+        nothing at all without this: the warrior's Fury of the Dragon and Banner of War,
+        the mage's arcanevortex, and five of the dwarf's. Fourteen use one at all.
+
+        The command carries no position -- neither the recording caster's wire
+        coordinates nor their described form appears anywhere in the payload, in any byte
+        order or bit alignment, and the actor is 0 -- so the client places these from the
+        skill use it sent itself. Which is why this has no position to get wrong.
+
+        The entries come from the same ``LocationStatusEffects`` column the mechanics
+        read, so the two cannot disagree about what a skill places.
+        """
+        if used is None or not self.rules.location_effects:
+            return
+        message = location.for_skill(used.wire)
+        if message is None:
+            return
+        self._emit(message, sender)
+        log.info(
+            "%s: %s draws %d ground effect(s) for %s",
+            self.name,
+            sender,
+            len(location.placed_by(used.wire)),
+            used.id,
+        )
 
     def inflict_effects(self, target: bytes, used: "Skill | None", causer: bytes) -> None:
         """Put on the victim whatever VictimStatusEffects names."""
