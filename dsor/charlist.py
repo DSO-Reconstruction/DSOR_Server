@@ -47,6 +47,11 @@ from raknet.bitstream import BitReader
 log = logging.getLogger("charlist")
 
 #: Where the two fields sit, in bits past the end of the entry's map string.
+#: The andermant is the account's, not the character's: all four characters of the live
+#: service's roster carry 4,814 and the recording's one carries 600 -- which is exactly
+#: what the operator saw on the live service and on this server. Two independent values,
+#: each matching what was on screen, and one of them identical across four entries.
+ANDERMANT_REL = 160
 EXPERIENCE_REL = 256
 LEVEL_REL = 288
 
@@ -107,12 +112,15 @@ def entries(blob: bytes) -> list[dict]:
             break
         if not LOWEST_LEVEL <= level <= HIGHEST_LEVEL:
             break
+        andermant = BitReader(blob, after_map + ANDERMANT_REL).read_uint(FIELD_BITS)
         found.append(
             {
                 "name": name,
                 "map": where,
                 "level": level,
                 "experience": experience,
+                "andermant": andermant,
+                "andermant_at": after_map + ANDERMANT_REL,
                 "experience_at": after_map + EXPERIENCE_REL,
                 "level_at": after_map + LEVEL_REL,
                 "name_at": at,
@@ -184,5 +192,36 @@ def with_progress(blob: bytes, level: int, experience: int) -> bytes:
         wanted,
         first["experience"],
         experience,
+    )
+    return bytes(out)
+
+
+#: A ceiling, so a typo cannot write something the client reads as negative.
+MOST_ANDERMANT = 999_999_999
+
+
+def with_andermant(blob: bytes, amount: int) -> bytes:
+    """*blob* with the account's andermant set to *amount*, in every entry.
+
+    Every entry, because it is the account's and not the character's: the live service's
+    four characters all carry 4,814. Writing it into one and not the others would make the
+    selection screen disagree with itself.
+    """
+    found = entries(blob)
+    if not found:
+        log.warning("roster does not read as one -- not touching the andermant")
+        return blob
+    wanted = max(0, min(MOST_ANDERMANT, int(amount)))
+    if all(entry["andermant"] == wanted for entry in found):
+        return blob
+    out = bytearray(blob)
+    for entry in found:
+        _write_uint(out, entry["andermant_at"], wanted, FIELD_BITS)
+    log.info(
+        "roster: andermant %d -> %d in %d entr%s",
+        found[0]["andermant"],
+        wanted,
+        len(found),
+        "y" if len(found) == 1 else "ies",
     )
     return bytes(out)

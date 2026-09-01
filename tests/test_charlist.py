@@ -94,3 +94,55 @@ def test_a_message_of_another_shape_is_left_alone():
     for other in (b"", b"\x00" * 400, roster()[:40], roster()[::-1]):
         assert charlist.entries(other) == []
         assert charlist.with_progress(other, 50, 1000) == other
+
+
+# ------------------------------------------------------------------ the andermant
+
+
+def test_the_andermant_is_the_account_s_and_not_the_character_s():
+    """Measured on two screens and four entries.
+
+    The live service's roster carries 4,814 for all four of its characters and the
+    recording carries 600 for its one -- which is exactly what the operator reported
+    seeing on the live service and on this server. Two independent values, each matching
+    a screen, and one of them identical across four entries.
+
+    A first attempt put it in the player state, on a single 600 found there. Writing that
+    changed nothing on screen, which is how the wrong field was ruled out.
+    """
+    found = charlist.entries(roster())
+    assert len(found) == 1
+    assert found[0]["andermant"] == 600
+    assert charlist.ANDERMANT_REL == 160
+
+
+def test_writing_the_andermant_leaves_the_level_and_experience_alone():
+    raw = roster()
+    out = charlist.with_andermant(raw, 9999999)
+    got = charlist.entries(out)[0]
+    assert got["andermant"] == 9999999
+    assert (got["level"], got["experience"]) == (1, 0)
+    assert got["name"] == "balenciagas"
+    assert len(out) == len(raw)
+    assert len([i for i in range(len(raw)) if raw[i] != out[i]]) == 3
+
+
+def test_the_andermant_goes_into_every_entry():
+    """It is the account's, so writing it into one entry and not the others would make
+    the selection screen disagree with itself."""
+    raw = roster()
+    out = charlist.with_andermant(raw, 4242)
+    assert [e["andermant"] for e in charlist.entries(out)] == [4242]
+
+
+def test_the_andermant_is_clamped_and_a_repeat_is_a_no_op():
+    assert charlist.entries(
+        charlist.with_andermant(roster(), 10**12)
+    )[0]["andermant"] == charlist.MOST_ANDERMANT
+    once = charlist.with_andermant(roster(), 500)
+    assert charlist.with_andermant(once, 500) == once
+
+
+def test_a_roster_that_cannot_be_walked_keeps_its_andermant():
+    for other in (b"", b"\x00" * 400, roster()[::-1]):
+        assert charlist.with_andermant(other, 5000) == other

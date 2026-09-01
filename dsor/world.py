@@ -220,11 +220,11 @@ class Rules:
     #: How much andermant to write into the replayed player state. Zero leaves it as
     #: recorded, which is 600.
     #:
-    #: The offset for this is a single measurement against a single recording -- the only
-    #: 600 in the first 300,000 bits with a clean neighbourhood, matching what the
-    #: operator sees on screen. That reasoning has been wrong twice this session, so the
-    #: writer refuses unless the field still reads 600, and this is the switch to turn it
-    #: off if the client dislikes it. See dsor/currency.py.
+    #: It lives in the *roster*, not in the player state, and it is the account's rather
+    #: than the character's: all four characters of the live service's roster carry 4,814
+    #: while the recording's one carries 600 -- exactly what the operator saw on the live
+    #: service and on this server. Two independent values, each matching a screen, one of
+    #: them identical across four entries. See dsor/charlist.py.
     andermant: int = 0
 
     #: Whether to write the saved level and experience into the replayed roster.
