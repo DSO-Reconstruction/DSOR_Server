@@ -41,7 +41,7 @@ fill_action_bar = false
 # Diagnostic: an unmistakable extra effect on every cast. "Stunned",
 # with its own animation and icon, which no warrior self-buff produces.
 # See Rules.probe_effect. Empty to turn it off.
-probe_effect = "debuff_cc_stun"
+probe_effect = ""
 # 0 means the level table: 225 at level 1, 450000 at 100. 6000 was a testing figure
 # chosen so a life leech had something to give back, and it read as being stuck at 6k.
 player_max = 0

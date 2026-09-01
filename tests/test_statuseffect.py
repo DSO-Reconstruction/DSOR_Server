@@ -208,13 +208,13 @@ def test_a_debuff_is_addressed_to_the_creature():
         assert element.instance != theirs
 
 
-def test_the_flags_come_from_the_measured_table_per_effect():
-    """Not from a rule about the context, which is what they were and it was wrong.
+def test_the_fourth_flag_is_always_set():
+    """The one the client tests at ``[element+0x24]``.
 
-    skill_frenzyshout_buff_armor carries (0,0,0,1) in all 34 of its measured elements
-    and skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all four of its, while
-    whether field 7 is the message's actor predicts neither -- armour's is the actor 18
-    times and is not 16 times, with the same flags throughout.
+    Clear, it jumps past the parameters and skips the element -- read out of the
+    handler's disassembly. An element built here always carries its parameters, so the
+    bit has to be set whatever a truncated sample in the measured table happens to say.
+    The first three come from the table, per effect.
     """
     from dsor import measured
 
@@ -222,19 +222,11 @@ def test_the_flags_come_from_the_measured_table_per_effect():
         _world, messages = cast(skill, near=near)
         assert messages, skill
         for element in messages[0].elements:
-            want = measured.FLAGS.get(element.index, (0, 0, 0, 1))
-            assert tuple(int(b) for b in element.flags) == tuple(want), (
-                skill,
-                element.index,
-            )
-
-
-def _sent_elements(world):
-    for _address, payload in world.tick():
-        if payload[:3] == bytes([se.MULTI, 0x4F, 0x00]):
-            got = se.decode(payload)
-            if got is not None:
-                yield from got.elements
+            bits = tuple(int(b) for b in element.flags)
+            assert bits[3] == 1, (skill, element.index)
+            want = measured.FLAGS.get(element.index)
+            if want is not None:
+                assert bits[:3] == tuple(want)[:3], (skill, element.index)
 
 
 # ------------------------------------------------------------------ the clock

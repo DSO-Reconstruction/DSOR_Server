@@ -16,13 +16,29 @@ by however many rows were inserted between them, and the symptom is a skill show
 another skill's effect.
 
     **The index convention lives here and nowhere else.** A row's wire index is
-    ``rowid - 1``: the client loads the table into a zero-based array while SQLite
-    numbers from one. Confirmed against the recording, whose single effect reads 1350
-    on the wire and is row 1351, ``a0001_tutorial_heal_on_low_health``; and against the
-    tutorial captures, where the monster debuffs come out as laceratingstrike's,
-    mightyswing's and seismicslam's own -- while ``rowid`` unshifted turns
-    ``debuff_dot_poison`` into ``debuff_movementspeed_relative`` and
-    ``skill_mightyswing_debuff_reduce_damage`` into a mage talent.
+    ``rowid + 15``. The client's ``effectInfos`` array is sized to the table's own row
+    count and filled in order -- ``StatusEffectManager::Load()`` does exactly that, and
+    ``StatusEffectTableRowToId`` indexes it directly -- but the array the wire indexes
+    has sixteen entries in front of the table's first row.
+
+    Measured, and only measurable against traffic this server did not write. A capture
+    of the live service in which the operator cast Dragon Hide three times, Spike Shield
+    once, Furious Battle Cry once and Ground Breaker once gives eleven index-to-effect
+    correspondences, and every one of them is ``rowid + 15``:
+
+        wire 5184, 5185, 5194  ->  skill_frenzyshout_buff_armor, _resistance, _lifeleech
+        wire 5169, 5542        ->  warrior_spikedShield_buff, _armor_trigger
+        wire 5165, 5518, 5166, 5168, 5519, 6212 -> warshout's six
+        wire 5158              ->  skill_seismicslam_debuff_armor
+
+    It was ``rowid - 1`` here for a long time, and the checks that confirmed it were
+    circular: they ran over captures that are for the most part *this emulator's own
+    traffic*, where these very indices had been written with ``rowid - 1``, so reading
+    them back the same way returned the names that had been put in. Half of the 144
+    captures are this server's. The error is worth stating plainly because it produced,
+    for weeks, exactly the symptom the operator kept reporting: sending 5168 and 5169
+    for Dragon Hide made the client show "Power of Smash" and "Spike Shield", which are
+    the effects sixteen rows earlier.
 
 The generated modules stay as the fallback for a machine without the file -- the tests
 run that way -- and as the record of how each table was read. When the database is
@@ -50,8 +66,27 @@ ELSEWHERE = (
     pathlib.Path.home() / "dso/db/db_static.sqlite",
 )
 
-#: A row's wire index is its rowid minus this. One place, so it cannot drift.
-ROW_TO_INDEX = 1
+#: A row's wire index is its rowid minus this. One place per table, so it cannot drift.
+#:
+#: **It is not the same for every table.** Each one becomes an array on the client and
+#: the array the wire indexes need not begin at the table's first row.
+#:
+#: ``_Template_Skill`` is ``rowid - 1``, and that one is confirmed by the *client's* own
+#: traffic rather than by anything this server wrote: over 1,581 real casts the skill
+#: command carries 1838 for angrystrike, 1846 for frenzyshout, 1854 for spikedShield,
+#: which are those rows' rowids minus one.
+#:
+#: ``_Template_StatusEffect`` is ``rowid + 15``. See the module docstring.
+DEFAULT_ROW_TO_INDEX = 1
+
+ROW_TO_INDEX: dict[str, int] = {
+    "_Template_StatusEffect": -15,
+}
+
+
+def offset_of(table: str) -> int:
+    """How much to subtract from a rowid to get *table*'s wire index."""
+    return ROW_TO_INDEX.get(table, DEFAULT_ROW_TO_INDEX)
 
 _lock = threading.Lock()
 _memory: sqlite3.Connection | None = None
@@ -134,8 +169,9 @@ def rows(table: str, *columns: str) -> list[tuple]:
         )
     picked = ", ".join(f'"{name}"' for name in columns)
     try:
+        shift = offset_of(table)
         return [
-            (row[0] - ROW_TO_INDEX, *row[1:])
+            (row[0] - shift, *row[1:])
             for row in held.execute(f'SELECT rowid, {picked} FROM "{table}"')
         ]
     except sqlite3.Error as problem:

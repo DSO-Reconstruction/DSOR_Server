@@ -2223,8 +2223,15 @@ class World:
                     # of its measured elements and
                     # skill_laceratingstrike_debuff_armor carries (0,0,1,1) in all four
                     # of its, while whether field 7 is the actor predicts neither.
-                    flags=tuple(
-                        bool(bit) for bit in measured.FLAGS.get(wire, (0, 0, 0, 1))
+                    # The first three from the table, the fourth always set. The
+                    # fourth is the one the client tests at [element+0x24]: clear, it
+                    # jumps past the parameters and skips the element. An element built
+                    # here always carries its parameters, so it has to be set --
+                    # whatever a truncated sample in the table happens to say.
+                    flags=(
+                        *(bool(bit) for bit in
+                          measured.FLAGS.get(wire, (0, 0, 0, 1))[:3]),
+                        True,
                     ),
                     parameters=list(parameters),
                     more=bool(measured.more_of(wire)),
