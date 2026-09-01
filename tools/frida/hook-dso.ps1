@@ -64,6 +64,20 @@ param(
     # Skip the offset hook and capture UDP payloads only.
     [switch]$SocketOnly,
 
+    # Watch what the client does with a status effect, instead of the stream hook.
+    #
+    # Three points on the path that decides, read out of this build of
+    # dro_client64.exe and given module-relative because ASLR moves the base:
+    #
+    #   0x34cca5  ClientStatusEffectManager's StatusEffectCommand handler
+    #   0x34ee58  StatusEffectManager::StatusEffectTableRowToId(int) -- args[1] is
+    #             the row index, so this says which effect the client understood
+    #   0x98404c  the effect instance creation -- a null return means the element
+    #             is dropped, and the client logs nothing at all when it is
+    #
+    # Cast one skill and the four possible outcomes name four different causes.
+    [switch]$Effets,
+
     # Launch the client under Frida instead of attaching to a running one.
     # This is what makes the login sequence visible: the handshake, the 0x8A
     # credential, the 0x84 server handoff and the map load all happen in the
@@ -317,7 +331,19 @@ if ($Spawn) {
     $arguments = @($hookcap, 'capture', '--target', $Target, '-o', $session, '--stacks', $stacks, '--calls', $calls)
 }
 
-if (-not $SocketOnly) {
+if ($Effets) {
+    # :ret on the two that matter for their return value -- the resolved id and
+    # whether an instance was created at all.
+    $specs = @(
+        'dro_client64.exe+0x34cca5:handler:args=2',
+        'dro_client64.exe+0x34ee58:rowToId:args=2:ret',
+        'dro_client64.exe+0x98404c:createInstance:args=4:ret'
+    )
+    foreach ($spec in $specs) {
+        $arguments += @('--hook', $spec)
+        Write-Host "  hook     : $spec"
+    }
+} elseif (-not $SocketOnly) {
     # args=3 covers (this, buffer, length) for a __thiscall member: Frida's args[0]
     # is the implicit this pointer, so the payload is args[1]. dump=1 hexdumps it.
     $spec = "dro_client64.exe+${Offset}:${HookName}:args=3:dump=1:${HookFlags}"
