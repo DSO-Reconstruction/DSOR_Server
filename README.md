@@ -774,7 +774,20 @@ and the operator reported the two consequences for weeks:
   of it carry 2,616,196 and 2,639,085 for the same actor.
 
 Both are gone because the command is now decoded, edited and re-encoded rather than
-spliced. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
+spliced.
+
+**Which cell an item goes into.** Two more of the operator's reports, and the client is
+the only thing that could have settled either. Cells **below fourteen are the equipment
+slots** in this message: "si je drop 10 items j'en equippe 9 le 10eme sera au slot 14" —
+ten pickups, nine of them worn, the tenth in the bag. The first bag cell is therefore 14,
+where it had been 2, inferred from a level 1 character's login inventory. And the reply
+carries **only** the picked-up item's cell: the recorded message also places an item of
+its own session in cell 0, and passing that on tells the client to move whatever the
+player has there, which took the equipped sword off the character.
+
+The cell handed out is now the lowest free one rather than the next one up, which is what
+the live service does — cell 70 for one pickup and 147 for the next, and 147 was the
+lowest cell that inventory had free. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
 begins, 352 bits before the allocations it meant — and it happened to be well-formed
 there, which is why it was never caught by anything the client said.
 

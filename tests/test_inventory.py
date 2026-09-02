@@ -196,3 +196,46 @@ def test_an_item_carries_at_most_a_byte_of_statistics():
     item.statistics = [inventory.Statistic("a", 1.0, 0, 0, 0)] * 256
     with pytest.raises(ValueError):
         inventory.encode(inventory.Inventory(items=[item], scalars=(0,) * 8))
+
+
+def test_the_reply_places_only_the_item_that_was_picked_up():
+    """Three bugs the operator reported in one message, and one cause each.
+
+    * "il se met au 3eme slot de mon inventaire alors que le 1er etait vide" -- cells
+      below fourteen are the equipment slots, so cell 2 was never a bag cell.
+    * "l'epee se desequippe" -- the recorded reply places an item of its own session in
+      cell 0, and carrying that across moves whatever the player has there.
+    * "a chaque fois que je drop un item meme si les slots sont libres il me fait +1" --
+      the cell was a counter that only went up.
+    """
+    from dsor.world import World
+
+    recorded = item_taken()
+    before, _ends = inventory.decode(recorded)
+    assert before.placements == [(0x00010001, 0), (0x00010004, 1)]
+
+    reply = inventory.picked_up(recorded, 0x000104D2, slot=14)
+    after, _ends = inventory.decode(reply)
+    assert after.placements == [(0x000104D2, 14)]
+
+    world = World()
+    world.rules.enforce = False
+    here = ("1.2.3.4", 5)
+    assert world.rules.first_slot == 14, "past the fourteen a character wears"
+    assert world.free_cell() == 14
+
+    handed = []
+    for index in range(4):
+        actor = bytes([0x50 + index, 0x00, 0x01, 0x00])
+        world.dropped[actor] = (0.0, 0.0, 0.0)
+        out = world.pick_up(here, actor)
+        got, _ends = inventory.decode(out[0][1])
+        assert len(got.placements) == 1, got.placements
+        handed.append(got.placements[0][1])
+    assert handed == [14, 15, 16, 17]
+
+    # A cell that comes free is handed out again, lowest first, which is what the live
+    # service does: cell 70 for one pickup and 147 -- its lowest free cell -- for the
+    # next.
+    world.cells.discard(15)
+    assert world.free_cell() == 15

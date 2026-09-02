@@ -132,7 +132,7 @@ class Console:
             f"players        {len(world.players)} known, "
             f"{len(world.inhabitants())} in the world",
             f"ground         {len(world.dropped)} item(s) lying",
-            f"next actor     0x{world.next_item:02x}   next cell {world.next_slot}",
+            f"next actor     0x{world.next_item:02x}   next cell {world.free_cell()}",
             f"drops          {', '.join(world.rules.drop_templates) or '(recorded)'}",
         ]
         for player in world.players.values():

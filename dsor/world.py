@@ -290,22 +290,21 @@ class Rules:
     #: often, what it cost, and what it may pick up. Off is for debugging a capture,
     #: not for running a service.
     enforce: bool = True
-    #: How many bag cells there are to hand out. Read off the storage descriptors in
-    #: both messages, which carry 5 and 6. Beyond this a pickup is refused rather
-    #: than allowed to land outside the grid.
-    slot_capacity: int = 5
-    #: The first cell to hand out.
+    #: How many bag cells there are to hand out, counting from zero. A bound rather
+    #: than a measurement: the live service's character holds 152 items in cells
+    #: running to 161, so the real bag is at least that big, and this leaves 32 cells
+    #: past :attr:`first_slot` before a pickup is refused.
+    slot_capacity: int = 46
+    #: The first cell to hand out, and a number the operator measured for us.
     #:
-    #: Not zero. The character's login inventory carries two items and **no**
-    #: allocations, so those two are placed by the client itself — at the first free
-    #: cells, evidently — and claiming cell 0 draws its own assertion by name:
-    #:
-    #:   *** NEBULA ASSERTION ***  programmer says: Storage slot is occupied
-    #:   Game::Inventory::AddItemAtStorageSlot(...)
-    #:
-    #: Two items at login, so two cells gone. Inferred, not read: there is nothing in
-    #: the messages that says where the client put them.
-    first_slot: int = 2
+    #: Two, once, inferred from a level 1 character's login inventory carrying two
+    #: items and no placements. It was wrong in a way only the client could show:
+    #: below fourteen these cells are the **equipment** slots, so every pickup put the
+    #: item on the character rather than in the bag, and the entry for cell 0 took the
+    #: equipped sword with it. The operator reported it exactly -- "si je drop 10
+    #: items j'en equippe 9 le 10eme sera au slot 14" -- which puts the boundary at
+    #: fourteen, and a character wears fourteen things.
+    first_slot: int = 14
     #: How far apart two creatures stand when they have both arrived, in world units.
     #: They used to have no separation at all and twenty of them stood on one point --
     #: the same problem clear_of_other_drops solves for items on the ground, which was
@@ -654,7 +653,12 @@ class World:
     #: the character's own login inventory allocates **no** bag slots at all — its
     #: sword and shield are equipped, and equipment is not in this table. So the
     #: cells are free, and they are few.
-    next_slot: int = -1
+    #: The bag cells handed out this session. A set rather than a counter, because a
+    #: counter only ever goes up: the operator picked ten items into ten rising cells
+    #: with the low ones free, which is what "meme si les slots sont libres il me fait
+    #: +1" describes. The live service hands out the lowest free cell -- 70 for one
+    #: pickup and 147 for the next, and 147 was the lowest free cell it had.
+    cells: set[int] = field(default_factory=set)
     #: Items lying on the ground, by actor: where each one lies. Positions matter
     #: beyond bookkeeping — two items in the same place stack, and a stack crashes
     #: the client, so a new drop is nudged clear of the ones already down.
@@ -905,7 +909,7 @@ class World:
         self.loot.clear()
         self.templates.clear()
         self.next_item = 0x40
-        self.next_slot = -1
+        self.cells.clear()
 
     def inhabitants(self) -> list[Player]:
         return [p for p in self.players.values() if p.in_world]
@@ -2536,6 +2540,17 @@ class World:
         self.resolve_attack(sender, wire, aim)
         return self._drain()
 
+    def free_cell(self) -> int | None:
+        """The lowest bag cell not handed out yet, or None when the bag is full.
+
+        Lowest free rather than next: the live service put one pickup in cell 70 and
+        the one after it in 147, and 147 was the lowest cell that inventory had free.
+        """
+        for cell in range(self.rules.first_slot, self.rules.slot_capacity):
+            if cell not in self.cells:
+                return cell
+        return None
+
     def blueprint_for(self, index: int) -> str | None:
         """The blueprint the *index*-th drop leaves, cycling through the rules."""
         names = self.rules.drop_templates
@@ -2654,9 +2669,8 @@ class World:
             log.info("%s: %s asked for item %s, which is not lying here",
                      self.name, sender, actor.hex(" "))
             return []
-        if self.next_slot < 0:
-            self.next_slot = self.rules.first_slot
-        if self.next_slot >= self.rules.slot_capacity:
+        slot = self.free_cell()
+        if slot is None:
             log.info(
                 "%s: %s asked for item %s and the bag is full at %d cells",
                 self.name, sender, actor.hex(" "), self.rules.slot_capacity,
@@ -2665,8 +2679,7 @@ class World:
         where = self.dropped.pop(actor)
         blueprint = self.templates.pop(actor, None)
         rolled = self.loot.pop(actor, None)
-        slot = self.next_slot
-        self.next_slot += 1
+        self.cells.add(slot)
         player = self.player(sender)
         now = datetime.now()
         self._emit(

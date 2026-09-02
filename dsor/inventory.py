@@ -516,15 +516,15 @@ def picked_up(
             )
         got.scalars = tuple(scalars)
     if slot is not None:
-        got.placements = [
-            (actor if item == was else item, cell) for item, cell in got.placements
-        ]
-        if not any(item == actor for item, _cell in got.placements):
-            got.placements.append((actor, slot))
-        else:
-            got.placements = [
-                (item, slot if item == actor else cell)
-                for item, cell in got.placements
-            ]
+        # **Only** the item that was picked up. The recorded reply also places an item
+        # of its own session -- 0x00010001 in cell 0 -- and carrying that across tells
+        # the client to move whatever the player has there, which took the equipped
+        # sword off the character. The operator reported it as "l'epee se desequippe".
+        #
+        # An earlier version of this file replaced the whole dictionary for exactly
+        # that reason and was right about it; what it got wrong was the offset, writing
+        # at bit 1,412 where the array it meant begins 352 bits later. Rebuilding the
+        # message from a decode keeps the intent and loses the bug.
+        got.placements = [(actor, slot)]
     out = rebuild(payload, got, at)
     return with_discarded(out, actor)

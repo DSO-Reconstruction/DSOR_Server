@@ -1151,11 +1151,13 @@ def test_each_pickup_lands_in_its_own_inventory_slot():
     is what says which cell holds which item — read out of the client's own decoder,
     and confirmed by a walk that lands exactly on the command's terminator.
 
-    It also names an item belonging to the session the reply came from, which is left
-    where it is: the message is a *merge*, so a placement this server does not
-    understand is none of its business. What used to happen instead was that the whole
-    dictionary was replaced by one entry written at bit 1,412 — the place the
-    allocation array was *believed* to start, 352 bits before it actually does.
+    The reply carries **only** the picked-up item's cell. The recorded message also
+    places an item of its own session, 0x00010001 in cell 0, and carrying that across
+    tells the client to move whatever the player has there -- which took the equipped
+    sword off the character. The operator reported it as "l'epee se desequippe", and
+    an earlier version of this file replaced the whole dictionary for exactly that
+    reason: it was right about the intent and wrong about the offset, writing at bit
+    1,412 where the array it meant begins 352 bits later.
     """
     from dsor.inventory import decode, picked_up
     from dsor.items import item_taken
@@ -1168,11 +1170,10 @@ def test_each_pickup_lands_in_its_own_inventory_slot():
     seen = set()
     for offset in range(3):
         actor = 0x00010042 + offset
-        reply = picked_up(recorded, actor, slot=11 + offset)
-        placed = dict(decode(reply)[0].placements)
-        assert placed[actor] == 11 + offset, placed
-        assert placed[0x00010001] == 0, "another item's cell is left alone"
-        seen.add(11 + offset)
+        reply = picked_up(recorded, actor, slot=14 + offset)
+        placed = decode(reply)[0].placements
+        assert placed == [(actor, 14 + offset)], placed
+        seen.add(14 + offset)
     assert len(seen) == 3, "no two pickups share a slot"
 
     world = World()
@@ -1185,7 +1186,7 @@ def test_each_pickup_lands_in_its_own_inventory_slot():
         actor = bytes([0x41 + index, 0, 1, 0])
         world.dropped[actor] = (0.0, 0.0, 0.0)
         assert world.pick_up(here, actor), f"cell {index} should be free"
-    assert world.next_slot == world.rules.slot_capacity
+    assert world.free_cell() is None, "and then the bag is full"
     assert free >= 1, "at least one cell has to be handed out"
     overflow = bytes([0x60, 0, 1, 0])
     world.dropped[overflow] = (0.0, 0.0, 0.0)
@@ -1236,19 +1237,19 @@ def test_the_counters_survive_a_tick():
     world.rules.mobs = 2
     world._ready()
     world.next_item = 0x55
-    world.next_slot = 7
+    world.cells.add(14)
     world.templates[bytes([0x55, 0, 1, 0])] = "something"
 
     for _ in range(20):
         world.age_corpses()
 
     assert world.next_item == 0x55, "actor ids must not be handed out twice"
-    assert world.next_slot == 7, "the bag cell must keep advancing"
+    assert world.cells == {14}, "and a cell already handed out stays handed out"
     assert world.templates, "and the world must remember what it dropped"
 
     # Leaving does reset them.
     world.forget(("1.2.3.4", 5))
-    assert world.next_slot == -1 and world.next_item == 0x40
+    assert world.cells == set() and world.next_item == 0x40
     assert not world.templates
 
 
