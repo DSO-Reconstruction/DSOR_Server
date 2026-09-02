@@ -214,9 +214,9 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
     before, _ends = inventory.decode(recorded)
     assert before.placements == [(0x00010001, 0), (0x00010004, 1)]
 
-    reply = inventory.picked_up(recorded, 0x000104D2, slot=14, into="placements")
+    reply = inventory.picked_up(recorded, 0x000104D2, slot=2, into="placements")
     after, _ends = inventory.decode(reply)
-    assert after.placements == [(0x000104D2, 14)]
+    assert after.placements == [(0x000104D2, 2)]
     assert after.slots == [], "and the other collections are cleared"
 
     # One collection at a time, and only ``slots`` states a list of cells -- the one
@@ -236,8 +236,13 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
     world = World()
     world.rules.enforce = False
     here = ("1.2.3.4", 5)
-    assert world.rules.first_slot == 14, "past the fourteen a character wears"
-    assert world.free_cell() == 14
+    # The bag's first cell, and the bag is where the operator saw the item land:
+    # "il se met au 3eme slot de mon inventaire alors que le 1er etait vide" -- cell 2
+    # of the bag with cell 0 free. The equipment slot numbers are a different space
+    # entirely; see dsor.equipment.WORN.
+    assert world.rules.first_slot == 0
+    assert world.rules.bag_layout == "placements"
+    assert world.free_cell() == 0
 
     handed = []
     for index in range(4):
@@ -249,10 +254,10 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
         assert len(written) == 1, written
         cell = written[0][1]
         handed.append(cell[0] if isinstance(cell, list) else cell)
-    assert handed == [14, 15, 16, 17]
+    assert handed == [0, 1, 2, 3]
 
     # A cell that comes free is handed out again, lowest first, which is what the live
     # service does: cell 70 for one pickup and 147 -- its lowest free cell -- for the
     # next.
-    world.cells.discard(15)
-    assert world.free_cell() == 15
+    world.cells.discard(1)
+    assert world.free_cell() == 1

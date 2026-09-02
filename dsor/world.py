@@ -304,17 +304,20 @@ class Rules:
     #: per rebuild:
     #:
     #:     set bag_layout equipment
-    bag_layout: str = "slots"
-    #: The first cell to hand out, and a number the operator measured for us.
+    bag_layout: str = "placements"
+    #: The first cell to hand out.
     #:
-    #: Two, once, inferred from a level 1 character's login inventory carrying two
-    #: items and no placements. It was wrong in a way only the client could show:
-    #: below fourteen these cells are the **equipment** slots, so every pickup put the
-    #: item on the character rather than in the bag, and the entry for cell 0 took the
-    #: equipped sword with it. The operator reported it exactly -- "si je drop 10
-    #: items j'en equippe 9 le 10eme sera au slot 14" -- which puts the boundary at
-    #: fourteen, and a character wears fourteen things.
-    first_slot: int = 14
+    #: Zero, and the road here was longer than it should have been. It was 2 first,
+    #: inferred from a level 1 character's login inventory carrying two items and no
+    #: placements. Then 14, from reading "si je drop 10 items j'en equippe 9 le 10eme
+    #: sera au slot 14" as a measurement of where the equipment ends -- which it was
+    #: not. The operator's own words in the same sentence say what it is: "il se met au
+    #: 3eme slot de mon inventaire alors que le 1er etait vide". Cell 2, third cell of
+    #: the **bag**. The dictionary was right and the first cell was free.
+    #:
+    #: What the equipment slot numbers are is settled separately and elsewhere: see
+    #: :data:`dsor.equipment.WORN`, read off the client's own ordered table.
+    first_slot: int = 0
     #: How far apart two creatures stand when they have both arrived, in world units.
     #: They used to have no separation at all and twenty of them stood on one point --
     #: the same problem clear_of_other_drops solves for items on the ground, which was

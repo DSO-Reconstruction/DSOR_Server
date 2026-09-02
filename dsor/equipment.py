@@ -82,25 +82,44 @@ SLOTS: tuple[str, ...] = (
     "JewelTrinketSlot",
 )
 
-#: The slots a character wears, which is what the live service's inventory command maps
-#: fourteen items into. The count matches; the *order* does not follow from anything read
-#: so far, so this names them without claiming an index for each.
+#: The slots a character wears, **in the client's own order**, so the index of each is
+#: the number the wire carries.
+#:
+#: Not inferred: the client holds them as an ordered, 16-byte-aligned table of strings
+#: at ``+0x11a73f0``, one after another with no gaps. And the live service's inventory
+#: command agrees on the spot -- its equipment map holds fourteen entries whose slot
+#: numbers are 0 to 14 with **6 missing**, and 6 is ``LeftHandSlot``: the character was
+#: holding a two-handed weapon, so there was nothing in the off hand.
+#:
+#: It also explains the error the operator saw when a cell of 14 was written. Slot 14 is
+#: ``RuneTrinketSlot``, whose widget in ``inventory.bxml`` draws with the torso's icon
+#: category -- and the client said exactly that: "Slot in window Inventory has icon
+#: category RingSlot;Crafting; not being set (slot categories: TorsoSlot;)".
 WORN = (
     "HelmetSlot",
+    "ShoulderSlot",
     "TorsoSlot",
     "GlovesSlot",
     "BootsSlot",
-    "ShoulderSlot",
-    "BeltSlot",
-    "CloakSlot",
-    "AmuletSlot",
-    "RingSlot",
     "RightHandSlot",
     "LeftHandSlot",
-    "EmblemSlot",
-    "AmmoSlot",
+    "RingSlot",
+    "AmuletSlot",
+    "BeltSlot",
     "WeaponModSlot",
+    "AmmoSlot",
+    "CloakSlot",
+    "ConsumableSlot",
+    "RuneTrinketSlot",
+    "JewelTrinketSlot",
+    "EmblemSlot",
+    "AncientTrinketSlot",
 )
+
+
+def worn_index(slot: str) -> int | None:
+    """The number the wire uses for *slot*, or None for one nothing is worn in."""
+    return WORN.index(slot) if slot in WORN else None
 
 #: Rarities, worst to best. From ``MinItemRarity``/``MaxItemRarity`` and
 #: ``DefaultRarity``; ``Set`` appears only as a default and sits outside the ladder.

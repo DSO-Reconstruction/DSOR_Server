@@ -57,9 +57,13 @@ enforce = true
 pickup_range = 12.0
 
 
-# Shop and inventory. first_slot is 2 because the client already fills cells 0 and 1,
-# and dropping an item into an occupied cell is refused with "Storage slot is occupied".
-first_slot = 2
+# Shop and inventory. first_slot was 2 because claiming cell 0 drew "Storage slot is
+# occupied" from the client -- and that was self-inflicted: the pickup reply also carried
+# the recorded session's own placement, 0x00010001 in cell 0, so this server occupied
+# cell 0 itself and then asked for it. With that placement gone the bag starts empty, and
+# the operator says so: "il se met au 3eme slot de mon inventaire alors que le 1er etait
+# vide".
+first_slot = 0
 slot_capacity = 20
 drop_templates = [
     "warrior_mythic_rh_sword_01",

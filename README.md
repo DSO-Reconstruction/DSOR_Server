@@ -731,9 +731,9 @@ reader calls, one per member.
 |---|---|---|
 | `+0x20` | array of `ItemInfo` | the records being merged |
 | `+0x30` | dict of id → array of int8 | **item → the cells it occupies**, storage 1. The first place the client looks, and the only one that can state two cells |
-| `+0x58` | dict of id → u32 | item → one cell, **storage 0** |
+| `+0x58` | dict of id → u32 | item → one cell, **storage 0 — the backpack**. 152 entries live, cells to 161 |
 | `+0x80` | dict of id → u32 | item → one cell, storage 2. Empty in every sample |
-| `+0xa8` | dict of id → u32 | item → one cell, storage 3 |
+| `+0xa8` | dict of id → u32 | item → one cell, storage 3 — **the equipment**, keyed by the slot numbering in `dsor.equipment.WORN` |
 | `+0xd0` | dict of id → u32 | item → one cell, storage 4. Empty in every sample |
 | `+0xf8`, `+0x118`, `+0x138` | arrays of u32 | ids; `+0x138` holds the cell a new item goes to |
 | `+0x158` | array of id pairs | empty in the recorded reply, one pair in one live reply, none in the other |
@@ -804,17 +804,28 @@ in a fixed order and writes the storage it found into the location it fills:
 +0x180   storage 7     an array, searched by value
 ```
 
-So `+0x58` is **storage zero**, and the operator's measurement says what storage zero is:
-"si je drop 10 items j'en equippe 9 le 10eme sera au slot 14". It is the character.
-Writing into `+0xa8` instead made the item vanish, which fits: storage 3 is somewhere the
-bag is not.
-
 `+0x30` is the one the client searches **first** and the only one whose value is a list —
 `slots[0]` becomes the primary cell and `slots[1]` the secondary, which is how an item
-occupying two cells is stated, and the live service's pickup replies carry 23 entries
-there. That is where a picked-up item's cell goes now. Which storage number is the
-backpack is still a rule (`set bag_layout …` from the console) because nothing read so far
-says, but the order and the shape are no longer guesses. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
+occupying two cells is stated.
+
+**Storage 0 is the backpack, and it always was.** Reading "si je drop 10 items j'en
+equippe 9 le 10eme sera au slot 14" as a statement about equipment slots cost two rounds
+of the operator's time: `+0x58` was moved to `+0xa8`, where the item vanished, then to
+`+0x30`, where the client said
+
+```
+Slot in window Inventory has icon category RingSlot;Crafting;
+not being set (slot categories: TorsoSlot;)
+```
+
+The same sentence contains the answer: "il se met au 3eme slot de mon **inventaire** alors
+que le 1er etait vide". Cell 2, third cell of the bag, first cell free. `+0x58` was right;
+what was wrong was the first cell (2, on an inference) and the foreign placement that
+unequipped the sword. Both of those are separately fixed, and the first cell is 0.
+
+The error message paid for itself anyway, because it dated the equipment numbering — see
+"What an item is". Slot 14 is `RuneTrinketSlot`, whose widget in `inventory.bxml` draws
+with the torso's icon category, which is exactly what the client complained about. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
 begins, 352 bits before the allocations it meant — and it happened to be well-formed
 there, which is why it was never caught by anything the client said.
 
@@ -938,6 +949,16 @@ ItemRiftForce (100), MaxSkillResource (34), Block (22), XPGain (14), Speed (13),
 (12), DropAmount (10), SkillResourceRegeneration (6), HealthPointsRegeneration (5),
 CriticalValue (5) and four rarer. So a character's stats are the sum of their items'
 enchantments in those names, and that is the answer to how the stats work.
+
+**The eighteen slots a character wears, in order.** The client holds them as an ordered,
+16-byte-aligned table of strings at `+0x11a73f0`, so the index of each is the number the
+wire carries: HelmetSlot, ShoulderSlot, TorsoSlot, GlovesSlot, BootsSlot, RightHandSlot,
+LeftHandSlot, RingSlot, AmuletSlot, BeltSlot, WeaponModSlot, AmmoSlot, CloakSlot,
+ConsumableSlot, RuneTrinketSlot, JewelTrinketSlot, EmblemSlot, AncientTrinketSlot.
+
+The live capture confirms it on the spot. Its equipment map holds fourteen entries whose
+slot numbers run 0 to 14 with **6 missing** — and 6 is `LeftHandSlot`, so that character
+was holding a two-handed weapon and had nothing in the off hand.
 
 **What the wire carries.** An item record names its rolled enchantments and gives each a
 value between 0 and 1 — the roll, not the result. The torso carried `item_block_torso` at
