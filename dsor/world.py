@@ -304,7 +304,7 @@ class Rules:
     #: per rebuild:
     #:
     #:     set bag_layout equipment
-    bag_layout: str = "equipment"
+    bag_layout: str = "slots"
     #: The first cell to hand out, and a number the operator measured for us.
     #:
     #: Two, once, inferred from a level 1 character's login inventory carrying two

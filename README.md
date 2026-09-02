@@ -730,11 +730,11 @@ reader calls, one per member.
 | member | shape | what it is |
 |---|---|---|
 | `+0x20` | array of `ItemInfo` | the records being merged |
-| `+0x30` | dict of id → array of int8 | per storage, its shape |
-| `+0x58` | dict of id → u32 | **item → cell in the bag.** 152 entries live, cells up to 161 |
-| `+0x80` | dict of id → u32 | empty in every sample |
-| `+0xa8` | dict of id → u32 | **item → the slot it is worn in.** Exactly fourteen entries in both live replies, values 0–14, against a character's fourteen equipment slots |
-| `+0xd0` | dict of id → u32 | empty in every sample |
+| `+0x30` | dict of id → array of int8 | **item → the cells it occupies**, storage 1. The first place the client looks, and the only one that can state two cells |
+| `+0x58` | dict of id → u32 | item → one cell, **storage 0** |
+| `+0x80` | dict of id → u32 | item → one cell, storage 2. Empty in every sample |
+| `+0xa8` | dict of id → u32 | item → one cell, storage 3 |
+| `+0xd0` | dict of id → u32 | item → one cell, storage 4. Empty in every sample |
 | `+0xf8`, `+0x118`, `+0x138` | arrays of u32 | ids; `+0x138` holds the cell a new item goes to |
 | `+0x158` | array of id pairs | empty in the recorded reply, one pair in one live reply, none in the other |
 | `+0x180` | array of u32 | 60-odd consecutive ids |
@@ -787,7 +787,34 @@ player has there, which took the equipped sword off the character.
 
 The cell handed out is now the lowest free one rather than the next one up, which is what
 the live service does — cell 70 for one pickup and 147 for the next, and 147 was the
-lowest cell that inventory had free. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
+lowest cell that inventory had free.
+
+**Which collection the cell goes in, and what "storage 0" is.** `+0x58` was the obvious
+choice — 152 entries in the live reply against `+0xa8`'s fourteen — and it is wrong, in a
+way the client states outright. `ClientInventoryManager::LocateItem` at `+0x1fea1c`, the
+function whose assertion started this whole thread, looks an item up in five collections
+in a fixed order and writes the storage it found into the location it fills:
+
+```
++0x30    storage 1     dict of item -> the cells it occupies
++0x80    storage 2     dict of item -> one cell
++0xa8    storage 3     dict of item -> one cell
++0xd0    storage 4     dict of item -> one cell
++0x58    storage 0     dict of item -> one cell
++0x180   storage 7     an array, searched by value
+```
+
+So `+0x58` is **storage zero**, and the operator's measurement says what storage zero is:
+"si je drop 10 items j'en equippe 9 le 10eme sera au slot 14". It is the character.
+Writing into `+0xa8` instead made the item vanish, which fits: storage 3 is somewhere the
+bag is not.
+
+`+0x30` is the one the client searches **first** and the only one whose value is a list —
+`slots[0]` becomes the primary cell and `slots[1]` the secondary, which is how an item
+occupying two cells is stated, and the live service's pickup replies carry 23 entries
+there. That is where a picked-up item's cell goes now. Which storage number is the
+backpack is still a rule (`set bag_layout …` from the console) because nothing read so far
+says, but the order and the shape are no longer guesses. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
 begins, 352 bits before the allocations it meant — and it happened to be well-formed
 there, which is why it was never caught by anything the client said.
 

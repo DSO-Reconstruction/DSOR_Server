@@ -8,7 +8,7 @@ constructor that plants the vtable at ``0x14115fcd8``; slot 5 of that vtable -- 
 the grammar:
 
     array<ItemInfo>            +0x20    the records being merged
-    dict<u32, array<int8>>     +0x30    per storage, its shape
+    dict<u32, array<int8>>     +0x30    item -> the cells it occupies
     dict<u32, u32>             +0x58    item -> slot in the bag
     dict<u32, u32>             +0x80
     dict<u32, u32>             +0xa8    item -> equipment slot
@@ -294,7 +294,7 @@ class Inventory:
     """
 
     items: list[Item] = field(default_factory=list)
-    shapes: list[tuple[int, list[int]]] = field(default_factory=list)
+    slots: list[tuple[int, list[int]]] = field(default_factory=list)
     placements: list[tuple[int, int]] = field(default_factory=list)
     eightieth: list[tuple[int, int]] = field(default_factory=list)
     equipment: list[tuple[int, int]] = field(default_factory=list)
@@ -328,7 +328,7 @@ def decode(payload: bytes, at: int = BODY_AT) -> tuple[Inventory, int]:
     got.items = [_read_item(reader) for _ in range(count())]
     for _ in range(count()):
         key = reader.read_uint(32)
-        got.shapes.append((key, [_read_signed(reader) for _ in range(count())]))
+        got.slots.append((key, [_read_signed(reader) for _ in range(count())]))
     for name in ("placements", "eightieth", "equipment", "two_hundred_eighth"):
         setattr(
             got,
@@ -366,8 +366,8 @@ def encode(got: Inventory) -> BitWriter:
     count(got.items)
     for item in got.items:
         _write_item(writer, item)
-    count(got.shapes)
-    for key, shape in got.shapes:
+    count(got.slots)
+    for key, shape in got.slots:
         writer.write_uint(key, 32)
         count(shape)
         for value in shape:
@@ -450,30 +450,37 @@ def with_discarded(payload: bytes, actor: int) -> Payload:
     return Payload(_to_bytes(spliced), bits_of(payload))
 
 
-#: The four dictionaries of the same shape, in the order the command carries them.
+#: Where an item's cell can be stated, and the storage each one means.
 #:
-#: ``MergeInventoryLayouts`` at ``+0x1fee40`` treats all four identically -- it fetches
-#: each in turn and hands it to the same merge at ``+0x200c28`` -- so they are one
-#: layout per *storage* rather than four different kinds of thing. Which storage each
-#: one is has not been read out of the client, and the two sources disagree about it:
+#: Read out of ``ClientInventoryManager::LocateItem`` at ``+0x1fea1c``, which is the
+#: function whose assertion started all of this. It looks the item up in five
+#: collections in a fixed order and writes a number into the location it fills, and that
+#: number is the storage:
 #:
-#: * in the live service's replies ``placements`` holds 152 entries with cells up to 161
-#:   and ``equipment`` holds 14 with cells 0 to 14, and the item the player picked up is
-#:   in ``placements`` -- which reads as bag and worn, in that order;
-#: * writing into ``placements`` in *this* server's reply put the item **on** the
-#:   character for every cell below fourteen, which the operator measured: "si je drop
-#:   10 items j'en equippe 9 le 10eme sera au slot 14".
+#:     +0x30    storage 1     dict of item -> the cells it occupies
+#:     +0x80    storage 2     dict of item -> one cell
+#:     +0xa8    storage 3     dict of item -> one cell
+#:     +0xd0    storage 4     dict of item -> one cell
+#:     +0x58    storage 0     dict of item -> one cell
+#:     +0x180   storage 7     an array, searched by value
 #:
-#: Both are observations, so something else must select the storage -- most likely the
-#: pair in ``allocations``, which the live service's first pickup sets to
-#: ``(item, 0x00010090)`` while naming the same 0x00010090 in ``three_hundred_twelfth``,
-#: and which this server leaves empty. Until that is read, which dictionary to write is
-#: a **rule** rather than a constant, so it can be changed against a running client
-#: instead of guessed at here.
-LAYOUTS = ("placements", "eightieth", "equipment", "two_hundred_eighth")
+#: So ``+0x58`` -- the one this server wrote into for weeks -- is **storage zero**, and
+#: the operator's measurement says what storage zero is: "si je drop 10 items j'en
+#: equippe 9 le 10eme sera au slot 14". It is the character.
+#:
+#: ``+0x30`` is the one the client looks in **first**, and it is the only one whose
+#: value is a list: ``slots[0]`` becomes the primary cell and ``slots[1]`` the secondary,
+#: which is how an item that occupies two cells is stated. The live service's pickup
+#: replies carry 23 entries there.
+#:
+#: Which of them is the backpack is still a rule rather than a constant, because the
+#: tag numbers are the client's own and nothing read so far says which number the
+#: backpack has. But the order is no longer a guess, and neither is the shape.
+LAYOUTS = ("slots", "eightieth", "equipment", "two_hundred_eighth", "placements")
 
-#: Where a picked-up item's cell goes by default.
-DEFAULT_LAYOUT = "placements"
+#: Where a picked-up item's cell goes by default: the collection the client searches
+#: first, and the only one that can state more than one cell.
+DEFAULT_LAYOUT = "slots"
 
 #: Index of the current health among the trailing scalars, and of the value that
 #: travels beside it.
@@ -553,6 +560,13 @@ def picked_up(
         # message from a decode keeps the intent and loses the bug.
         for name in LAYOUTS:
             setattr(got, name, [])
-        setattr(got, into or DEFAULT_LAYOUT, [(actor, slot)])
+        wanted = into or DEFAULT_LAYOUT
+        # ``+0x30`` states a *list* of cells per item, the first of which the client
+        # takes as the primary. The other four state one cell.
+        setattr(
+            got,
+            wanted,
+            [(actor, [slot])] if wanted == "slots" else [(actor, slot)],
+        )
     out = rebuild(payload, got, at)
     return with_discarded(out, actor)

@@ -164,7 +164,7 @@ def test_rewriting_one_field_leaves_every_other_byte_alone():
     before, _at = inventory.decode(raw)
     reply = inventory.picked_up(raw, 0x000104D2, template="gem_ruby_e")
     after, _at = inventory.decode(reply)
-    assert after.shapes == before.shapes
+    assert after.slots == before.slots
     assert after.equipment == before.equipment
     assert after.names == before.names
     assert after.allocations == before.allocations
@@ -217,10 +217,10 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
     reply = inventory.picked_up(recorded, 0x000104D2, slot=14, into="placements")
     after, _ends = inventory.decode(reply)
     assert after.placements == [(0x000104D2, 14)]
-    assert after.equipment == [], "and the other layouts are cleared"
+    assert after.slots == [], "and the other collections are cleared"
 
-    # Which of the four the cell goes into is a rule, because the two sources disagree
-    # and both are observations -- see dsor.inventory.LAYOUTS.
+    # One collection at a time, and only ``slots`` states a list of cells -- the one
+    # the client searches first, whose first entry it takes as the primary cell.
     for name in inventory.LAYOUTS:
         only = inventory.decode(
             inventory.picked_up(recorded, 0x000104D2, slot=14, into=name)
@@ -230,7 +230,8 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
             for layout in inventory.LAYOUTS
             if getattr(only, layout)
         }
-        assert written == {name: [(0x000104D2, 14)]}, written
+        wanted = [14] if name == "slots" else 14
+        assert written == {name: [(0x000104D2, wanted)]}, written
 
     world = World()
     world.rules.enforce = False
@@ -246,7 +247,8 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
         got, _ends = inventory.decode(out[0][1])
         written = getattr(got, world.rules.bag_layout)
         assert len(written) == 1, written
-        handed.append(written[0][1])
+        cell = written[0][1]
+        handed.append(cell[0] if isinstance(cell, list) else cell)
     assert handed == [14, 15, 16, 17]
 
     # A cell that comes free is handed out again, lowest first, which is what the live

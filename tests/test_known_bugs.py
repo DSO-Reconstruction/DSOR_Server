@@ -1171,8 +1171,10 @@ def test_each_pickup_lands_in_its_own_inventory_slot():
     for offset in range(3):
         actor = 0x00010042 + offset
         reply = picked_up(recorded, actor, slot=14 + offset)
-        placed = decode(reply)[0].placements
-        assert placed == [(actor, 14 + offset)], placed
+        # Into the collection the client searches first -- see dsor.inventory.LAYOUTS,
+        # where the five and the storage each one means are read off LocateItem.
+        placed = decode(reply)[0].slots
+        assert placed == [(actor, [14 + offset])], placed
         seen.add(14 + offset)
     assert len(seen) == 3, "no two pickups share a slot"
 
