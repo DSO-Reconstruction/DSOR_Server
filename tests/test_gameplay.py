@@ -853,88 +853,111 @@ def test_a_pickup_is_answered_for_an_item_that_is_lying_there():
     Which refutes two things asserted here before it: that a successful pickup might
     need no reply at all, and that the real server never sends a DiscardItemCommand.
     """
-    from dsor.items import _read_bits, item_taken, with_taken
+    from dsor.inventory import decode, discarded
+    from dsor.items import item_taken
     from dsor.world import World
 
     recorded = item_taken()
     assert len(recorded) > 8000, "the inventory travels with it"
-    assert _read_bits(recorded, 24, 4) == bytes([0x04, 0x00, 0x01, 0x00])
-    moved = with_taken(recorded, bytes([0x41, 0x00, 0x01, 0x00]))
-    assert len(moved) == len(recorded)
-    assert _read_bits(moved, 24, 4) == bytes([0x41, 0x00, 0x01, 0x00])
-
-    changed = {i for i, (a, b) in enumerate(zip(recorded, moved)) if a != b}
-    # Byte 3 is the discarded actor; bits 145..177 straddle bytes 18 and 19.
-    # Byte 3 is the ground removal, 18-19 the inventory record, 188-189 the slot
-    # allocation. Two of the three are not byte-aligned, so which bytes move depends
-    # on the value written.
-    assert 2 <= len(changed) <= 8, sorted(changed)
+    assert discarded(recorded) == 0x00010004
+    _got, ends = decode(recorded)
+    # The proof the walk is right: it lands on the actor and the 0xFF that end every
+    # command, and the 803 bits behind them are the trailing StatusEffectCommand and
+    # the blob's byte padding.
+    assert len(recorded) * 8 - ends == 803
 
     world = World()
+    world.rules.enforce = False
     here = ("1.2.3.4", 5)
     lying = bytes([0x41, 0x00, 0x01, 0x00])
     assert world.pick_up(here, lying) == [], "nothing has been dropped yet"
-    world.dropped[lying] = 0x41
+    world.dropped[lying] = (12.0, -6.0, 34.0)
+    world.templates[lying] = "gem_ruby_e"
     out = world.pick_up(here, lying)
     assert len(out) == 1 and out[0][0] == here
-    assert _read_bits(out[0][1], 24, 4) == lying
+    assert discarded(out[0][1]) == 0x00010041
     assert world.pick_up(here, lying) == [], "and it cannot be taken twice"
 
 
-def test_a_taken_item_is_renamed_everywhere_it_is_mentioned():
-    """Three places, and the third is the one the client asserted on.
+def test_a_taken_item_is_the_item_that_was_taken():
+    """Not the sword the reply happens to have been recorded with.
 
-    The recorded reply names its item in the DiscardItemCommand, in the inventory's
-    first record, and in the allocation table that says which slot holds it. Missing
-    the last drew a Nebula assertion by name:
-
-        InvalidIndex != outItemWithLocation.primarySlotIdx
-        ClientInventoryManager::LocateItem(...)
-
-    The offsets are searched for and read back rather than computed. A first attempt
-    computed them and got the sign of the bit shift wrong, which wrote the actor two
-    bits early — into whatever field lay there.
+    The record is rebuilt rather than replayed: its actor, its blueprint, the place it
+    lay, the moment it was taken. Replaying it is why the bag showed
+    ``warrior_base_rh_sword_speedAttack_damage`` whatever the ground had shown -- and
+    the ground shows a mace, because the two recordings are of different items.
     """
-    from dsor.items import _read_bits, item_taken, taken_actor_bits, with_taken
+    from dsor.inventory import decode, picked_up
+    from dsor.items import drop_template, item_drop, item_taken
 
     recorded = item_taken()
-    sites = taken_actor_bits(recorded)
-    assert sites == [24, 145, 1508], sites
-    for bit in sites:
-        assert _read_bits(recorded, bit, 4) == bytes([0x04, 0x00, 0x01, 0x00])
-
-    moved = with_taken(recorded, bytes([0x42, 0x00, 0x01, 0x00]))
-    assert len(moved) == len(recorded)
-    assert taken_actor_bits(moved) == [], "no mention of the old item survives"
-    for bit in sites:
-        assert _read_bits(moved, bit, 4) == bytes([0x42, 0x00, 0x01, 0x00])
-
-
-def test_the_taken_record_names_its_own_blueprint():
-    """The item record carries its template, bit-misaligned, at bit 515.
-
-    A byte-level search of the 8.4 KB reply finds no item names at all, which is why
-    the inventory was taken for a message that referenced items purely by number.
-    It is not: the record names its blueprint, and so do 247 further strings in a
-    name table further along. All of them sit at arbitrary bit offsets.
-
-    The recorded name is a sword — exactly what appeared in the bag when only the
-    actor was rewritten.
-    """
-    from dsor.items import (
-        RECORDED_TAKEN_TEMPLATE,
-        _find_string,
-        item_taken,
-        with_taken,
-    )
-
-    recorded = item_taken()
-    assert RECORDED_TAKEN_TEMPLATE == "warrior_base_rh_sword_speedAttack_damage"
-    assert _find_string(recorded, RECORDED_TAKEN_TEMPLATE) == 515
+    was, _ends = decode(recorded)
+    assert was.items[0].template == "warrior_base_rh_sword_speedAttack_damage"
+    assert drop_template(item_drop()) == "warrior_base_rh_mace_speedAttack_damage"
 
     helmet = "warrior_base_helmet_critical_healthpoints_speedMovement"
-    moved = with_taken(recorded, bytes([0x42, 0x00, 0x01, 0x00]), template=helmet)
-    assert _find_string(moved, RECORDED_TAKEN_TEMPLATE) is None
-    assert _find_string(moved, helmet) == 515
-    # Longer name, longer message: the reader takes the length from the prefix.
-    assert len(moved) == len(recorded) + len(helmet) - len(RECORDED_TAKEN_TEMPLATE)
+    reply = picked_up(
+        recorded,
+        0x00010042,
+        template=helmet,
+        where=(12.0, -6.0, 34.0),
+        stamped=(2026, 9, 2, 11, 4, 35),
+    )
+    got, _ends = decode(reply)
+    assert len(got.items) == 1
+    only = got.items[0]
+    assert only.id == 0x00010042
+    assert only.template == helmet
+    assert only.position == (12.0, -6.0, 34.0)
+    assert only.stamped == (2026, 9, 2, 11, 4, 35)
+    # A longer name makes a longer message, and it still reads back.
+    assert len(reply) > len(recorded)
+    assert discarded_of(reply) == 0x00010042
+
+
+def discarded_of(reply):
+    from dsor.inventory import discarded
+
+    return discarded(reply)
+
+
+def test_a_pickup_no_longer_hands_the_client_a_level_1_health_bar():
+    """The scalar at index 6 is the player's current health.
+
+    Bracketed against the live service: the second pickup in ``officiel4`` carries
+    2,634,612.5 there, and the two ActorStatsUpdateCommand messages either side of it
+    carry 2,616,196 and 2,639,085 for the same actor -- the inventory's figure sits
+    between them. The recorded reply carries 236.13, a level 1 character's, and
+    replaying it collapsed the bar on every single pickup.
+    """
+    import struct
+
+    from dsor.inventory import HEALTH, decode, picked_up
+    from dsor.items import item_taken
+    from dsor.world import World
+
+    def health_in(reply: bytes) -> float:
+        scalars = decode(reply)[0].scalars
+        return struct.unpack("<f", scalars[HEALTH].to_bytes(4, "little"))[0]
+
+    recorded = item_taken()
+    assert round(health_in(recorded), 2) == 236.13, "what the recording carries"
+    assert health_in(picked_up(recorded, 0x00010042, health=450000.0)) == 450000.0
+
+    world = World()
+    world.rules.enforce = False
+    here = ("1.2.3.4", 5)
+    player = world.player(here)
+    player.level, player.health = 100, 448_000.0
+    lying = bytes([0x43, 0x00, 0x01, 0x00])
+    world.dropped[lying] = (0.0, 0.0, 0.0)
+    out = world.pick_up(here, lying)
+    assert health_in(out[0][1]) == 448_000.0
+
+    # And with nothing measured yet, the level table's figure rather than 236.
+    world = World()
+    world.rules.enforce = False
+    world.player(here).level = 100
+    world.dropped[lying] = (0.0, 0.0, 0.0)
+    out = world.pick_up(here, lying)
+    assert health_in(out[0][1]) == world.player_health(100)

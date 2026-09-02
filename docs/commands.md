@@ -34,6 +34,17 @@ rest of the effects code when it was rebuilt; the layout is in the git history u
 when something is spent or earned. The account's andermant travels in the roster instead,
 at 160 bits past an entry's map string — see the README.
 
+`0x0054 InventoryInfoCommand` is read field by field now rather than replayed, and the
+grammar came out of the client's own decoder: `Commands::InventoryInfoCommand` registers
+its `Rtti` with the fourcc `'IvIC'`, whose creator reaches a constructor that plants the
+vtable at `0x14115fcd8`, and slot 5 of that vtable is a flat run of reader calls — twelve
+count-prefixed collections then nine scalars. Two of the collections are named: the
+dictionary at `+0x58` maps an item to its cell in the bag, and the one at `+0xa8` maps an
+item to the slot it is *worn* in, which has exactly fourteen entries in the live capture
+against a character's fourteen equipment slots. The last two scalars are the player's
+current health and current resource — the same pair `0x007B` carries. See
+`dsor/inventory.py`.
+
 
 ## Commands — 282
 
@@ -82,7 +93,7 @@ at 160 bits past an entry's map string — see the README.
 | `0x002B` | DiscardMonsterCommand | • |
 | `0x002C` | MonsterUpdateCommand |  |
 | `0x002D` | NewItemCommand | • |
-| `0x002E` | DiscardItemCommand |  |
+| `0x002E` | DiscardItemCommand | • |
 | `0x002F` | ItemInfoCommand |  |
 | `0x0030` | ItemUpdateCommand |  |
 | `0x0031` | SalvageCommand | • |
@@ -103,7 +114,7 @@ at 160 bits past an entry's map string — see the README.
 | `0x0051` | QuickSlotsCommand |  |
 | `0x0052` | QuickbarInfoCommand |  |
 | `0x0053` | LockQuickbarCommand |  |
-| `0x0054` | InventoryInfoCommand |  |
+| `0x0054` | InventoryInfoCommand | • |
 | `0x0055` | InventoryCommand |  |
 | `0x0056` | GemRemovalResponseCommand |  |
 | `0x0057` | CurrencyConversionCommand |  |
@@ -118,7 +129,7 @@ at 160 bits past an entry's map string — see the README.
 | `0x0061` | TravelCommand |  |
 | `0x0062` | RespawnCommand |  |
 | `0x0063` | LogoutCommand |  |
-| `0x0064` | PickupItemCommand |  |
+| `0x0064` | PickupItemCommand | • |
 | `0x0065` | PickupInfoCommand |  |
 | `0x0066` | EncounterCommand |  |
 | `0x0067` | TalkCommand |  |

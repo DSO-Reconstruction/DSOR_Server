@@ -718,6 +718,66 @@ entry a length-prefixed template name, 20 zero bytes and one set bit. There is
 exactly **one** such list even when two characters exist, and entries carry no owner
 — so the record cannot bind gear to a character except by position.
 
+## The inventory
+
+`0x0054 InventoryInfoCommand`, and the item records inside it. Read out of the client's
+own decoder rather than fitted to a capture: `Commands::InventoryInfoCommand` registers
+its `Rtti` at `+0xabefc` with the fourcc `'IvIC'`, its creator reaches a constructor that
+plants the vtable at `0x14115fcd8`, and slot 5 of that vtable — the slot
+`DrasaClientHandler::DecodeCommand` calls for a command's own fields — is a flat run of
+reader calls, one per member.
+
+| member | shape | what it is |
+|---|---|---|
+| `+0x20` | array of `ItemInfo` | the records being merged |
+| `+0x30` | dict of id → array of int8 | per storage, its shape |
+| `+0x58` | dict of id → u32 | **item → cell in the bag.** 152 entries live, cells up to 161 |
+| `+0x80` | dict of id → u32 | empty in every sample |
+| `+0xa8` | dict of id → u32 | **item → the slot it is worn in.** Exactly fourteen entries in both live replies, values 0–14, against a character's fourteen equipment slots |
+| `+0xd0` | dict of id → u32 | empty in every sample |
+| `+0xf8`, `+0x118`, `+0x138` | arrays of u32 | ids; `+0x138` holds the cell a new item goes to |
+| `+0x158` | array of id pairs | empty in the recorded reply, one pair in one live reply, none in the other |
+| `+0x180` | array of u32 | 60-odd consecutive ids |
+| `+0x1a0` | array of strings | 247 template names in one, quest keys in the other |
+| `+0x1c0` … `+0x1d4` | 6 × u32 | unaccounted for |
+| `+0x1d8` | float | **the player's current health** |
+| `+0x1dc` | float | **the player's current resource** |
+| `+0x1e0` | 1 bit | always set |
+
+Every count is 32 bits and the client refuses one above 1,000,000 (`cmp ecx, 0xf4240`),
+so this server holds itself to the same ceiling.
+
+An `ItemInfo` is variable-length — four strings and two counted arrays inside it — which
+is why no fixed offset into this message means anything. Three of its fields are named:
+the blueprint, the position it lay at while on the ground, and six trailing `u32` that
+are a **date**: the gem picked up during the live capture carries 2026‑09‑01 22:34:08 and
+the ammunition the character already had carries 2025‑10‑12 11:40:51.
+
+The proof that the transcription is right is that the walk lands, to the bit, on the
+32-bit actor and the `0xFF` that end every command: the live service's two pickup replies
+are 126,808 and 127,768 bits long and the walk ends at 126,768 and 127,728. A layout one
+bit out does not arrive there — it dies inside a string with an absurd length, which is
+what every earlier reading of this message did.
+
+**What not knowing it cost.** The reply to a pickup used to be replayed with its fields
+found by searching for the recorded item's actor and by arithmetic on the command header,
+and the operator reported the two consequences for weeks:
+
+* *"dans l'inventaire j'ai pas le bon item"* — the item record was replayed whole and
+  only its name was ever rewritten, and only when a blueprint was configured. So the
+  ground showed the drop recording's mace and the bag showed the pickup recording's
+  sword.
+* *"ça me baisse ma vie a 200"* — `+0x1d8` is the player's current health, and the reply
+  was recorded from a **level 1** character. Every pickup told the client the player had
+  236 health. That the scalar is the health is measured, not inferred: the second live
+  reply carries 2,634,612.5 there and the `ActorStatsUpdateCommand` messages either side
+  of it carry 2,616,196 and 2,639,085 for the same actor.
+
+Both are gone because the command is now decoded, edited and re-encoded rather than
+spliced. The splice also wrote its own array at bit 1,412 — which is where `+0x58`
+begins, 352 bits before the allocations it meant — and it happened to be well-formed
+there, which is why it was never caught by anything the client said.
+
 ## The event schedule
 
 `0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
@@ -826,31 +886,46 @@ same idea rediscovered later.
   in the ordered stream waits for it, so the client sits on "loading data" for ninety
   eight seconds. The real service did exactly that and its player waited forty-nine
   seconds after clicking. Delay the start instead.
+* `0x007B ActorStatsUpdateCommand` is **not** `(attribute id, zero, value)`. It is the
+  current health and the current resource, which `dsor/gameplay.py` already had from the
+  client's own setters — the first eight bytes go to `SetHealthPoints`, the four after
+  them to `SetSkillResource` — and the live service says it out loud: over one session
+  its 248 messages for the player's actor hold a first field that plateaus at 2,757,733
+  and falls under fire, and a float that starts at 115.6348, drops as skills are cast,
+  touches 0.0000 once, and climbs back to 115.6348 every time. 2,757,733 was written down
+  here as "one attribute id observed" and is the character's full health.
+* The reply to a pickup does **not** need its own allocation array. The recorded reply
+  carries none, and of the live service's two pickups one names a cell and the other
+  names nothing at all — both put the item in the bag. The assertion that provoked the
+  belief (`InvalidIndex != outItemWithLocation.primarySlotIdx`) was answered by the
+  dictionary at `+0x58`, which is a different field 352 bits earlier.
 
 ## Open
 
 * **Collision and pathing.** Creatures walk straight at the player and through
   walls. Nothing here reads the map's navigation data.
-* **Loot pickup.** `ItemInfoCommand` and `DiscardItemCommand` are named, but the
-  loot is still replayed with another session's coordinates, so it cannot be
-  picked up.
+* **What an item actually is.** A pickup now puts the right blueprint in the bag at the
+  right cell, but the record around it is still the recording's: the same `kind`, the
+  same empty statistics list, the same rarity. A dropped item has no stats of its own
+  because nothing here generates any — `_Template_Item` is where they would come from.
 * **Character appearance.** The selection screen draws a character with neither
   hair nor equipment. Neither the roster nor the event schedule carries
   appearance data.
-* **Stats other than movement speed.** They are carried by
-  `0x007B ActorStatsUpdateCommand`, read as `(u32 attribute id, u32 zero, float32
-  value)` — one id observed, 2757733, its value walking 66 → 60.2 → 54.4 → 48.6 → 42.9
-  as skills were cast. One id out of however many exist, and inventing the others would
-  be putting numbers on the wire to see what happens.
+* **Stats other than health and resource.** `0x007B ActorStatsUpdateCommand` carries
+  those two and nothing else — see Refuted, where the "attribute id" reading of its
+  first field is retired. Everything else a character has (armour, resistances, the
+  critical rate, the movement speed the operator watched change) has to travel
+  somewhere else, and no capture has been searched for it yet.
 * **Talents**, and with them a skill's upgraded behaviour. `0x011A`, `0x011B` and
   `0x011D` are named and appear in no capture, so the state travels inside the player
   initialisation. `_Template_SkillTalent` has the data: 156 rows with a
   `SkillTemplateId` and the effects each grants.
-* **Equipment and inventory.** The live service's roster carries 29 item records after
-  the four character entries — a length-prefixed template id and its stats, the record
-  length varying with the item, so items carry enchantments and gems inline. The player
-  state carries 368 distinct item ids. Both are variable-length, which is why the
-  fixed-width level, experience and andermant were written first.
+* **Equipment and inventory, saved.** The command that carries them is read and written
+  now — see "The inventory" — but nothing persists: the bag is whatever the recorded
+  reply holds plus what was picked up this session, and it resets when the server does.
+  The live service's roster carries 29 item records after the four character entries and
+  the player state carries 368 distinct item ids; both are variable-length, which is why
+  the fixed-width level, experience and andermant were written first.
 * **Ground Breaker's shape.** It stuns on this server and the operator reports an area
   effect where there should be none.
 * **The chat service on 2191**, which carries only a handshake and one channel
@@ -899,6 +974,7 @@ dsor/charlist.py        the roster's level, experience and andermant
 dsor/playerstate.py     the same level and experience where the game reads them
 dsor/actionbar.py       reading the action bar, and writing back what the client sent
 dsor/vitals.py          PlayerLevelUpdateCommand, which the effect path needs
+dsor/inventory.py       the 0x0054 codec: both live replies re-encode byte for byte
 dsor/data/              messages still replayed rather than generated
 tools/command_ids.py    command ids, recovered from the client binary by name
 docs/commands.md        all 365 of them, by namespace

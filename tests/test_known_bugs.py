@@ -1145,31 +1145,33 @@ def test_two_items_never_drop_on_the_same_spot():
 
 
 def test_each_pickup_lands_in_its_own_inventory_slot():
-    """The recorded reply always allocates slot 1, so two pickups stacked.
+    """The recorded reply always places its item in cell 1, so two pickups stacked.
 
-    Stacking crashes the client. Array 3 of the inventory command is the allocation
-    table — (item actor, slot) pairs — decoded from the client's own serialiser and
-    confirmed by a walk that lands exactly on the command's terminator.
+    Stacking crashes the client. The dictionary at ``+0x58`` of the inventory command
+    is what says which cell holds which item — read out of the client's own decoder,
+    and confirmed by a walk that lands exactly on the command's terminator.
 
-    The recorded table also allocates a second item belonging to the session it came
-    from, which is what moved the player's equipped sword into the bag. Only the
-    picked-up item is allocated now.
+    It also names an item belonging to the session the reply came from, which is left
+    where it is: the message is a *merge*, so a placement this server does not
+    understand is none of its business. What used to happen instead was that the whole
+    dictionary was replaced by one entry written at bit 1,412 — the place the
+    allocation array was *believed* to start, 352 bits before it actually does.
     """
-    from dsor.items import allocations, item_taken, with_taken
+    from dsor.inventory import decode, picked_up
+    from dsor.items import item_taken
     from dsor.world import World
 
     recorded = item_taken()
-    assert allocations(recorded) == [
-        (bytes([0x01, 0x00, 0x01, 0x00]), 0),
-        (bytes([0x04, 0x00, 0x01, 0x00]), 1),
-    ]
+    got, _ends = decode(recorded)
+    assert got.placements == [(0x00010001, 0), (0x00010004, 1)]
 
     seen = set()
     for offset in range(3):
-        actor = bytes([0x42 + offset, 0x00, 0x01, 0x00])
-        reply = with_taken(recorded, actor, slot=11 + offset)
-        pairs = allocations(reply)
-        assert pairs == [(actor, 11 + offset)], pairs
+        actor = 0x00010042 + offset
+        reply = picked_up(recorded, actor, slot=11 + offset)
+        placed = dict(decode(reply)[0].placements)
+        assert placed[actor] == 11 + offset, placed
+        assert placed[0x00010001] == 0, "another item's cell is left alone"
         seen.add(11 + offset)
     assert len(seen) == 3, "no two pickups share a slot"
 

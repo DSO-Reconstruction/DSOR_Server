@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from datetime import datetime
 from dataclasses import dataclass, field
 
 from dsor.combat import (
@@ -62,8 +63,16 @@ from dsor.gameplay import (
     ring_positions,
     with_motion,
 )
-from dsor.items import item_drop, item_taken, with_drop, with_taken
-from dsor import effect_titles, effects, location, measured, statuseffect, vitals
+from dsor.items import drop_template, item_drop, item_taken, with_drop
+from dsor import (
+    effect_titles,
+    effects,
+    inventory,
+    location,
+    measured,
+    statuseffect,
+    vitals,
+)
 
 #: How long after arriving the level is stated a second time, in seconds.
 #: The replayed player state is a level-1 character's, so the interface starts
@@ -1486,7 +1495,13 @@ class World:
                 lying = self.actors.take_bytes()
                 where = self.clear_of_other_drops(described)
                 self.dropped[lying] = where
-                self.templates[lying] = blueprint
+                # What the 0x002D actually names, not what the rule asked for. With
+                # no blueprint configured the drop keeps the recording's own -- a
+                # mace -- and the pickup reply used to keep *its* recording's, a
+                # sword. The two recordings are of different items, so the ground
+                # showed one thing and the bag another, which is what the operator
+                # reported as "j'ai pas le bon item".
+                self.templates[lying] = blueprint or drop_template(item_drop())
                 self.drops += 1
                 self._emit(
                     with_drop(item_drop(), lying, where, template=blueprint), sender
@@ -2520,21 +2535,32 @@ class World:
                 self.name, sender, actor.hex(" "), self.rules.slot_capacity,
             )
             return []
-        del self.dropped[actor]
+        where = self.dropped.pop(actor)
         blueprint = self.templates.pop(actor, None)
         slot = self.next_slot
         self.next_slot += 1
+        player = self.player(sender)
+        now = datetime.now()
         self._emit(
-            with_taken(
+            inventory.picked_up(
                 item_taken(),
-                actor,
+                int.from_bytes(actor, "little"),
                 template=blueprint,
+                where=where,
+                stamped=(now.year, now.month, now.day, now.hour, now.minute, now.second),
                 slot=slot,
+                # The two that used to be replayed, and the reason a pickup collapsed
+                # the health bar: the recorded reply was taken from a level 1
+                # character and its scalars carry that character's 236 health.
+                health=player.health or self.player_health(player.level),
+                beside=player.resource or None,
             ),
             sender,
         )
-        log.info("%s: %s picked up item %s into cell %d of %d",
-                 self.name, sender, actor.hex(" "), slot, self.rules.slot_capacity)
+        log.info("%s: %s picked up %s as item %s into cell %d of %d, health %.0f",
+                 self.name, sender, blueprint or "the recorded blueprint",
+                 actor.hex(" "), slot, self.rules.slot_capacity,
+                 player.health or self.player_health(player.level))
         return self._drain()
 
     def smite_all(self, sender: Address) -> list[tuple[Address, bytes]]:

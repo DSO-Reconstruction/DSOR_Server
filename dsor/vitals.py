@@ -34,10 +34,18 @@ The layouts, from the service's own bytes::
              u32, u32 zero, float32 value, actor, terminator
 
 The 0x007B samples carry 75.0, 80.0, 85.0, 90.0 and 95.0 with a varying first field, so
-it is a value changing over time rather than a table of attributes. What it names is not
-established, which is why only the level is sent for now: the level is what the assert
-reads, and sending a stat whose meaning is a guess would be putting a number on the wire
-to see what happens.
+it is a value changing over time rather than a table of attributes. Which is exactly what
+it is, and :func:`dsor.gameplay.encode_actor_vitals` already had it from the client's own
+setters -- the first eight bytes go to ``SetHealthPoints`` and the four after them to
+``SetSkillResource``. The live service says the same thing out loud: over one session
+its 248 messages for the player's actor hold a first field that plateaus at 2,757,733
+and falls under fire, and a float that starts at 115.6348, drops as skills are cast,
+touches 0.0000 once, and climbs back to 115.6348 every time. A current health and a
+current resource, nothing else.
+
+Only the level is sent from here, because the level is what the assert reads and the
+vitals have their own encoder. This module is kept for the level and for the record of
+what the stats command is.
 """
 
 from __future__ import annotations
