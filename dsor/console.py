@@ -32,6 +32,7 @@ SETTABLE: dict[str, Callable[[str], object]] = {
     "strike_interval": float,
     "effect_stack": int,
     "first_slot": int,
+    "bag_layout": str,
     "slot_capacity": int,
     "reach": float,
     "reach_slack": float,

@@ -214,9 +214,23 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
     before, _ends = inventory.decode(recorded)
     assert before.placements == [(0x00010001, 0), (0x00010004, 1)]
 
-    reply = inventory.picked_up(recorded, 0x000104D2, slot=14)
+    reply = inventory.picked_up(recorded, 0x000104D2, slot=14, into="placements")
     after, _ends = inventory.decode(reply)
     assert after.placements == [(0x000104D2, 14)]
+    assert after.equipment == [], "and the other layouts are cleared"
+
+    # Which of the four the cell goes into is a rule, because the two sources disagree
+    # and both are observations -- see dsor.inventory.LAYOUTS.
+    for name in inventory.LAYOUTS:
+        only = inventory.decode(
+            inventory.picked_up(recorded, 0x000104D2, slot=14, into=name)
+        )[0]
+        written = {
+            layout: getattr(only, layout)
+            for layout in inventory.LAYOUTS
+            if getattr(only, layout)
+        }
+        assert written == {name: [(0x000104D2, 14)]}, written
 
     world = World()
     world.rules.enforce = False
@@ -230,8 +244,9 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
         world.dropped[actor] = (0.0, 0.0, 0.0)
         out = world.pick_up(here, actor)
         got, _ends = inventory.decode(out[0][1])
-        assert len(got.placements) == 1, got.placements
-        handed.append(got.placements[0][1])
+        written = getattr(got, world.rules.bag_layout)
+        assert len(written) == 1, written
+        handed.append(written[0][1])
     assert handed == [14, 15, 16, 17]
 
     # A cell that comes free is handed out again, lowest first, which is what the live

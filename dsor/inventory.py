@@ -450,6 +450,31 @@ def with_discarded(payload: bytes, actor: int) -> Payload:
     return Payload(_to_bytes(spliced), bits_of(payload))
 
 
+#: The four dictionaries of the same shape, in the order the command carries them.
+#:
+#: ``MergeInventoryLayouts`` at ``+0x1fee40`` treats all four identically -- it fetches
+#: each in turn and hands it to the same merge at ``+0x200c28`` -- so they are one
+#: layout per *storage* rather than four different kinds of thing. Which storage each
+#: one is has not been read out of the client, and the two sources disagree about it:
+#:
+#: * in the live service's replies ``placements`` holds 152 entries with cells up to 161
+#:   and ``equipment`` holds 14 with cells 0 to 14, and the item the player picked up is
+#:   in ``placements`` -- which reads as bag and worn, in that order;
+#: * writing into ``placements`` in *this* server's reply put the item **on** the
+#:   character for every cell below fourteen, which the operator measured: "si je drop
+#:   10 items j'en equippe 9 le 10eme sera au slot 14".
+#:
+#: Both are observations, so something else must select the storage -- most likely the
+#: pair in ``allocations``, which the live service's first pickup sets to
+#: ``(item, 0x00010090)`` while naming the same 0x00010090 in ``three_hundred_twelfth``,
+#: and which this server leaves empty. Until that is read, which dictionary to write is
+#: a **rule** rather than a constant, so it can be changed against a running client
+#: instead of guessed at here.
+LAYOUTS = ("placements", "eightieth", "equipment", "two_hundred_eighth")
+
+#: Where a picked-up item's cell goes by default.
+DEFAULT_LAYOUT = "placements"
+
 #: Index of the current health among the trailing scalars, and of the value that
 #: travels beside it.
 #:
@@ -473,6 +498,7 @@ def picked_up(
     where: tuple[float, float, float] | None = None,
     stamped: tuple[int, int, int, int, int, int] | None = None,
     slot: int | None = None,
+    into: str | None = None,
     health: float | None = None,
     beside: float | None = None,
     statistics: list[Statistic] | None = None,
@@ -525,6 +551,8 @@ def picked_up(
         # that reason and was right about it; what it got wrong was the offset, writing
         # at bit 1,412 where the array it meant begins 352 bits later. Rebuilding the
         # message from a decode keeps the intent and loses the bug.
-        got.placements = [(actor, slot)]
+        for name in LAYOUTS:
+            setattr(got, name, [])
+        setattr(got, into or DEFAULT_LAYOUT, [(actor, slot)])
     out = rebuild(payload, got, at)
     return with_discarded(out, actor)

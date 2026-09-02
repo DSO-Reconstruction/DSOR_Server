@@ -295,6 +295,16 @@ class Rules:
     #: running to 161, so the real bag is at least that big, and this leaves 32 cells
     #: past :attr:`first_slot` before a pickup is refused.
     slot_capacity: int = 46
+    #: Which of the inventory command's four same-shaped dictionaries a picked-up
+    #: item's cell is written into. One of :data:`dsor.inventory.LAYOUTS`.
+    #:
+    #: A rule and not a constant because the two sources disagree and both are
+    #: observations -- see that constant for the pair. Settable from the console, so
+    #: the four can be tried against a running client in one session rather than one
+    #: per rebuild:
+    #:
+    #:     set bag_layout equipment
+    bag_layout: str = "equipment"
     #: The first cell to hand out, and a number the operator measured for us.
     #:
     #: Two, once, inferred from a level 1 character's login inventory carrying two
@@ -2690,6 +2700,7 @@ class World:
                 where=where,
                 stamped=(now.year, now.month, now.day, now.hour, now.minute, now.second),
                 slot=slot,
+                into=self.rules.bag_layout,
                 statistics=rolled.statistics if rolled is not None else None,
                 level=rolled.level if rolled is not None else None,
                 tier=rolled.tier if rolled is not None else None,
@@ -2701,9 +2712,9 @@ class World:
             ),
             sender,
         )
-        log.info("%s: %s picked up %s as item %s into cell %d of %d, health %.0f",
+        log.info("%s: %s picked up %s as item %s into %s cell %d of %d, health %.0f",
                  self.name, sender, blueprint or "the recorded blueprint",
-                 actor.hex(" "), slot, self.rules.slot_capacity,
+                 actor.hex(" "), self.rules.bag_layout, slot, self.rules.slot_capacity,
                  player.health or self.player_health(player.level))
         return self._drain()
 
