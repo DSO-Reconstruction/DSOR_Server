@@ -2240,8 +2240,10 @@ class World:
             return
         seconds = effects.seconds_of(entry)
         if seconds <= 0.0:
-            # Nothing to run and nothing to expire. warshout's ctfdropflag is the
-            # example, and it is the one C:1.0 entry the captures never show applied.
+            # Nothing to run and nothing to expire. warshout's ctfdropflag used to be
+            # the example here, and it was wrong: its duration is in the column's DP
+            # field, which the parser dropped, and the live service applies it for ten
+            # seconds. See dsor.effects.seconds_of.
             return
         holder.running = [r for r in holder.running if r[0] != found.wire]
         holder.running.append(

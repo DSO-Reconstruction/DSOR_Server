@@ -111,10 +111,52 @@ class Entry:
     delay: float | None
     #: ``$0``..``$4``, which become the element's parameters.
     substitutions: tuple[float, ...]
+    #: ``DP:`` seconds. The most common field in these columns after ``C`` and the
+    #: second most common overall -- 2,741 uses against ``On:``'s 693 -- and it was
+    #: being dropped.
+    #:
+    #: What it *means* is not settled. It equals ``D`` in 2,504 of the 2,697 entries
+    #: that carry both, and where they differ it is smaller and the effect is crowd
+    #: control: ``debuff_cc_stun`` is ``D:5.0,DP:1.5`` and ``debuff_cc_petrify`` is
+    #: ``D:5.0,DP:3.0``, which reads either as "1.5 seconds of stun inside a 5-second
+    #: immunity" or as "shortened in player-versus-player".
+    #:
+    #: What *is* settled is what to do when there is no ``D`` at all, which is 24
+    #: entries. warshout's ``ctfdropflag`` is one, at ``DP:10.0``, and the live service
+    #: puts it on the player for **250 ticks** -- ten seconds exactly, in the same
+    #: message as the buffs beside it. So DP is a duration here, and dropping it is why
+    #: this server never applied that effect.
+    duration_pvp: float | None = None
+    #: ``TR:`` seconds between ticks. 377 entries say 1.0, 105 say 0.0.
+    tick_rate: float | None = None
+    #: ``On:`` -- the event that applies it instead of the cast, lowercased. See
+    #: :func:`triggered`.
+    trigger: str | None = None
+    #: ``OFF:`` -- the event that ends it, lowercased. 27 entries carry one.
+    until: str | None = None
 
     @property
     def certain(self) -> bool:
         return self.chance >= CERTAIN
+
+    @property
+    def triggered(self) -> bool:
+        """Whether an event applies it rather than the cast.
+
+        693 entries across the client's skill table carry one, and the vocabulary is
+        small: ``skillstart`` (384), ``kill`` (141), ``hit`` (106), ``hitmarked`` (23),
+        ``hitcritical`` (13), ``hitfrost`` (8), ``lock`` (5), ``summonsdead`` (5),
+        ``hitmagecharged`` (4), ``hithostile`` (2), ``hitally`` (2).
+
+        Nothing raises these yet, and the reason is a measurement rather than laziness:
+        **638 of the 693 name an effect belonging to an item, an item set, ammunition, a
+        rune, food, a skill book or a talent**, none of which this server models. Of the
+        55 that remain, all but a handful are boss and monster skills. For the warrior's
+        ten skills the count of trigger entries that a character with no gear and no
+        talents should receive is **zero** -- so firing them would not add what the game
+        does, it would add another character's equipment.
+        """
+        return self.trigger is not None
 
 
 def _number(text: str) -> float | None:
@@ -144,22 +186,45 @@ def parse_entries(column: str | None) -> tuple[Entry, ...]:
         if not name:
             continue
         chance, duration, delay = 1.0, None, None
+        persistent = rate = None
+        trigger = until = None
         substitutions = [0.0] * 5
         for field in parts[1:]:
             key, _, value = field.partition(":")
             key, value = key.strip(), value.strip()
-            if key == "C":
+            # Case-insensitively: the same column writes both ``On:`` and ``ON:``, and
+            # ``skillstart`` and ``SkillStart``, 101 times against 592.
+            upper = key.upper()
+            if upper == "C":
                 chance = _number(value) if _number(value) is not None else 1.0
-            elif key == "D":
+            elif upper == "D":
                 duration = _number(value)
-            elif key == "DE":
+            elif upper == "DP":
+                persistent = _number(value)
+            elif upper == "DE":
                 delay = _number(value)
+            elif upper == "TR":
+                rate = _number(value)
+            elif upper == "ON":
+                trigger = value.lower() or None
+            elif upper == "OFF":
+                until = value.lower() or None
             elif re.fullmatch(r"\$\d", key):
                 index = int(key[1])
                 if index < len(substitutions):
                     substitutions[index] = _number(value) or 0.0
         found.append(
-            Entry(name, chance, duration, delay, tuple(substitutions))
+            Entry(
+                name,
+                chance,
+                duration,
+                delay,
+                tuple(substitutions),
+                duration_pvp=persistent,
+                tick_rate=rate,
+                trigger=trigger,
+                until=until,
+            )
         )
     return tuple(found)
 
@@ -252,8 +317,17 @@ def placed_by(skill_wire: int, certain_only: bool = True) -> tuple[Entry, ...]:
 
 
 def seconds_of(entry: Entry) -> float:
-    """How long *entry* lasts: its own ``D:`` if it has one, else the effect's."""
+    """How long *entry* lasts: ``D:``, else ``DP:``, else the effect's own.
+
+    The ``DP:`` step is measured, not a guess at precedence. 24 entries carry ``DP``
+    and no ``D``, warshout's ``ctfdropflag`` among them at ``DP:10.0``, and the live
+    service puts that effect on the player for 250 ticks -- ten seconds, in the same
+    message as the buffs beside it. Without this step it lasted zero seconds and was
+    never sent, which this project had written down as the service not applying it.
+    """
     if entry.duration is not None:
         return entry.duration
+    if entry.duration_pvp is not None:
+        return entry.duration_pvp
     found = by_id(entry.effect)
     return found.duration if found is not None else 0.0

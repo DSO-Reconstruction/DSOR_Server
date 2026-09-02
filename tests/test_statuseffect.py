@@ -91,12 +91,18 @@ def test_a_reading_that_misses_the_actor_is_refused():
             "skill_frenzyshout_buff_armor": (10.0, 0.2),
             "skill_frenzyshout_buff_resistance": (10.0, 0.2),
         }),
-        # Measured: 42 casts of warshout, these four.
+        # Measured on the live service in officiel4: every one of these arrives at
+        # **250 ticks**, ten seconds, fourteen elements out of fourteen.
+        #
+        # mightybash was written down here as 1.0 second, and that figure came from
+        # this server rather than from the service: its column reads
+        # ``C:1.0,DP:10.0,DP:10.0`` -- ``DP`` twice and no ``D`` -- so a parser that
+        # dropped ``DP`` fell back to the effect table's own 1.0. The service says 10.
         ("warshout", {
             "skill_warshout_buff_movementspeed": (10.0, 0.4),
             "skill_warshout_buff_damage": (10.0, 0.3),
             "skill_warshout_buff_angrystrike": (10.0, 0.15),
-            "skill_warshout_buff_mightybash": (1.0, -0.05),
+            "skill_warshout_buff_mightybash": (10.0, -0.05),
         }),
     ],
 )
@@ -269,15 +275,30 @@ def test_the_same_state_is_not_sent_twice():
     assert again == [], "the unchanged state was restated"
 
 
-def test_an_effect_with_no_duration_is_not_applied():
-    """warshout's ctfdropflag is C:1.0 with no duration, and the captures never show it
-    applied -- 42 casts, four effects each time, never that one."""
-    entries = effects.granted_by(wire_of("warshout"))
-    assert any(e.effect == "ctfdropflag" for e in entries)
+def test_an_effect_whose_only_duration_is_dp_is_still_applied():
+    """warshout's ctfdropflag, which this server used to drop.
+
+    Its column entry is ``C:1.0,DP:10.0,TR:1.0`` -- no ``D`` -- and its own row in the
+    effect table says 0.0 seconds, so a parser that read only ``D`` gave it no duration
+    and never sent it. That was written down here as the service not applying it, on the
+    strength of 42 casts in captures that were this server's own traffic.
+
+    The live service applies it: fourteen elements in officiel4, every one at **250
+    ticks**, arriving in the same message as the buffs beside it.
+    """
+    entries = {entry.effect: entry for entry in effects.granted_by(wire_of("warshout"))}
+    flag = entries["ctfdropflag"]
+    assert (flag.duration, flag.duration_pvp, flag.tick_rate) == (None, 10.0, 1.0)
+    assert effects.by_id("ctfdropflag").duration == 0.0, "and nothing in its own row"
+    assert effects.seconds_of(flag) == 10.0
+
     _world, messages = cast("warshout")
-    names = {effects.by_wire(e.index).id for e in messages[0].elements}
-    assert "ctfdropflag" not in names
-    assert len(names) == 4
+    seen = {
+        effects.by_wire(element.index).id: element.duration
+        for element in messages[0].elements
+    }
+    assert seen["ctfdropflag"] == 250, "what the service put on the wire"
+    assert len(seen) == 5
 
 
 # ---------------------------------------------------------------- the visuals

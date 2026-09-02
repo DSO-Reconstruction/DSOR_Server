@@ -804,6 +804,63 @@ item template name and nothing else.
 Everything after that is the status effect path that was already there, which is why this
 was a small change. It also means the other 2,597 usable items work by the same route.
 
+## What a skill's effect column says
+
+The format is `name,C:1.0,D:8.0,DP:8.0,DE:1.0,TR:1.0,$0:-0.4,On:Hit;name,...`, and for a
+long time this server read four of those fields and dropped the rest. The dropped ones
+are the common ones: `DP` appears 2,741 times across the client's skill table and `TR`
+550, against `DE`'s 345.
+
+| field | uses | what it is |
+|---|---|---|
+| `C` | 3,500 | the chance on the cast. 1.0 is applied, 0.0 needs something else |
+| `DP` | 2,741 | a duration — see below |
+| `D` | 2,731 | the duration, overriding the effect's own row |
+| `$0`…`$4` | 2,010 | the element's parameters. A `$n` naming a variable rather than a number contributes zero, which is what a character with no talent to set it has |
+| `ON` / `On` | 693 | the event that applies it instead of the cast |
+| `TR` | 550 | seconds between ticks. 377 entries say 1.0 |
+| `DE` | 345 | seconds before it starts |
+| `OZ` / `OX` / `OY` | 308 | an offset, on ground effects. Still unread |
+| `OFF` | 27 | the event that ends it |
+
+**`DP` against `D`.** They are equal in 2,504 of the 2,697 entries carrying both, and
+where they differ `DP` is smaller and the effect is crowd control: `debuff_cc_stun` is
+`D:5.0,DP:1.5` and `debuff_cc_petrify` is `D:5.0,DP:3.0`. That reads either as a short
+effect inside a long immunity or as one shortened in player-versus-player, and this
+project has no way to tell yet.
+
+What it *can* tell is what to do when there is no `D` at all, which is 24 entries.
+warshout's `ctfdropflag` is one, at `DP:10.0`, and its own row in the effect table says
+0.0 seconds — so reading only `D` gave it no duration and it was never sent. The README
+used to explain that as the service not applying it, measured over "42 casts, four
+effects each time, never that one". **Those 42 casts were this server's own traffic.**
+The live service applies it: fourteen elements in `officiel4`, every one at 250 ticks,
+in the same message as the buffs beside it.
+
+The same correction lands on `skill_warshout_buff_mightybash`, whose column reads
+`C:1.0,DP:10.0,DP:10.0` — `DP` twice and no `D`. It was written down here as lasting one
+second, which is the effect table's figure and what this server produced. The service
+sends 250 ticks, fourteen times out of fourteen.
+
+**The `On:` triggers are read and deliberately not raised.** The vocabulary is eleven
+events and closed: `skillstart` (384), `kill` (141), `hit` (106), `hitmarked` (23),
+`hitcritical` (13), `hitfrost` (8), `lock` (5), `summonsdead` (5), `hitmagecharged` (4),
+`hithostile` (2), `hitally` (2). Both the key and the value vary in case — `ON:SkillStart`
+592 times and `On:skillstart` 101 — so a case-sensitive parser reads one in seven.
+
+Raising them would be a mistake, and the measurement says so rather than an opinion:
+**638 of the 693 name an effect belonging to a piece of gear, an item set, ammunition, a
+rune, food, a skill book or a talent**, none of which this server models. Of the 55 that
+remain, all but a handful are boss and monster skills. For the warrior's ten skills the
+number of trigger entries that a character with no gear and no talents should receive is
+**zero** — `earthquake` alone names 25 `ammunition_damage_*_activate_minion_*` entries at
+`On:SkillStart`. Firing them would not add what the game does, it would add another
+character's equipment.
+
+Which is also why "26 of the 82 skills place no effects", written here earlier, was an
+artefact of the query and not a fact about the game: `granted_by` keeps the `C:1.0`
+entries, and everything else in those columns is waiting on an event or on gear.
+
 ## The event schedule
 
 `0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
@@ -926,12 +983,14 @@ same idea rediscovered later.
   belief (`InvalidIndex != outItemWithLocation.primarySlotIdx`) was answered by the
   dictionary at `+0x58`, which is a different field 352 bits earlier.
 * "26 of the 82 skills place no effects" was an artefact of the query, not a fact about
-  the game. `granted_by` keeps only the `C:1.0` entries, and the live service applies the
-  `C:0.0` ones too — they carry an `On:` qualifier instead. `angrystrike` reads as
-  placing nothing and its column names ten effects, three of them real:
-  `warrior_talent_damage_dealer_cooldown_reduction` fires `On:HitCritical` and appeared
-  **518 times** in one captured session. So the count of what a skill does depends on
-  events this server does not raise, not on the column being empty.
+  the game — see "What a skill's effect column says".
+* warshout's `ctfdropflag` is **not** an effect the live service declines to apply. It
+  was never applied *here*, because its duration is in the column's `DP` field and the
+  parser dropped it. The service sends it for 250 ticks. The 42 casts that supported the
+  old claim were this server's own traffic.
+* `skill_warshout_buff_mightybash` does not last one second. That figure is the effect
+  table's own and what this server produced; its column says `DP:10.0` twice and no `D`,
+  and the service sends ten seconds.
 
 ## Open
 
@@ -949,11 +1008,14 @@ same idea rediscovered later.
   first field is retired. Everything else a character has (armour, resistances, the
   critical rate, the movement speed the operator watched change) has to travel
   somewhere else, and no capture has been searched for it yet.
-* **The `On:` and `OFF:` triggers.** An effect entry can say `On:Hit`, `On:HitCritical`,
-  `On:SkillStart`, `On:kill` or `OFF:SkillStartExceptAngryStrike`, and
-  `dsor.effects.parse_entries` drops all of them. Until they are parsed and raised, a
-  skill applies only what it applies on the cast itself — which is most of what a
-  warrior's rotation actually does. This is the largest single gap in combat now.
+* **What a character owns**, which is what the `On:` triggers turned out to depend on.
+  They are parsed now and not raised, because 638 of the 693 belong to gear, an item set,
+  ammunition, a rune, food, a skill book or a talent. So the gap is not the events: it is
+  that this server has no model of equipment, sets or talents to gate them with. Until it
+  does, raising them adds another character's kit.
+* **`OZ`, `OX` and `OY`**, 308 uses, on ground effects — `earthquake`'s entries all carry
+  `OZ:-2.5`. Almost certainly the offset from the caster at which the effect is drawn,
+  which is the one thing the ground-effect command does not carry.
 * **The creatures of a real dungeon.** `pw001_01_grimmagstone_01_dun` spawned
   `pw001_01_normal_skeleton_warrior_heroic` (40 descriptions),
   `pw001_03_normal_minispider_heroic` (12), `pw001_01_normal_skeleton_archer_heroic` (3)
