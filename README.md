@@ -861,6 +861,65 @@ Which is also why "26 of the 82 skills place no effects", written here earlier, 
 artefact of the query and not a fact about the game: `granted_by` keeps the `C:1.0`
 entries, and everything else in those columns is waiting on an event or on gear.
 
+## What an item is, and how the stats work
+
+The three things the operator kept asking about — the `On:` triggers that cannot be
+raised, the stats that never change, the inventory that does not persist — all wait on
+the same missing piece, and the client ships it whole in two tables.
+
+`_Template_Item` says what an item **is**. The torso picked up during `officiel4`:
+
+```
+SlotType          TorsoSlot
+CharClass         warrior
+ItemCategory      Armor
+BaseEnchantments  item_base_armor_torso;item_base_block_torso;
+                  item_base_speed_movement_torso
+MinDropLevel 1    MaxDropLevel 200    RequiredLevel 1
+```
+
+`_Template_Enchantment` says what a statistic **does**, and its `Modifiers` column is
+the whole vocabulary of a character's numbers:
+
+```
+<Attribute>:<value>[|<max>],<absolute|relative>[&<condition>][,<qualifier>...]
+```
+
+Settled across all 4,108 rows: 2,562 modifiers carry an attribute and a mode, 1,270 add
+one qualifier, 270 add five (the damage types), 6 add two. Eight hang a condition off the
+mode with an ampersand — `relative&emperorgold`, `relative&rarityunique` — rare enough
+for a spot check to miss and enough to break a parser that compares the field to
+`relative`.
+
+**There are 24 attributes in the whole game.** ItemDamage (969 uses), ItemResistance
+(755), ItemArmor (494), MaxHealthPoints (349), ItemCritical (292), ItemSpeed (290),
+ItemCriticalValue (235), ItemHealthPoints (178), ItemBlockValue (158), Resistance (155),
+ItemRiftForce (100), MaxSkillResource (34), Block (22), XPGain (14), Speed (13), Critical
+(12), DropAmount (10), SkillResourceRegeneration (6), HealthPointsRegeneration (5),
+CriticalValue (5) and four rarer. So a character's stats are the sum of their items'
+enchantments in those names, and that is the answer to how the stats work.
+
+**What the wire carries.** An item record names its rolled enchantments and gives each a
+value between 0 and 1 — the roll, not the result. The torso carried `item_block_torso` at
+0.8079 and `item_armor_torso` at 0.8210. The base enchantments its template names are
+**not** in the record; they are implied. So reading an item takes both tables, and the
+record alone is not enough. Two record fields also got names from it: `+0x0c` is the item
+**level**, 125 on that torso and the same 125 in each of its statistics, and `+0x38` is a
+**tier**, 5 there and again 5 in each statistic.
+
+**Where this stops, on purpose.** A modifier that states a range interpolates:
+`ItemArmor:0.599|1.498,absolute` at a roll of 0.8210 is 1.33708 per level of the item,
+and the base torso enchantments all read that way. A modifier that states one value —
+`ItemArmor:0.204,relative` — does not say what the roll does to it, and there are two
+readings, so asking for it raises instead of picking one. The tier's meaning is likewise
+unproven, so a dropped item's tier is zero rather than a made-up curve.
+
+**What it already changes.** A kill used to leave the recording's mace, every kill,
+forever. It now leaves a real item of the player's own class and level, with statistics
+its template can actually carry — `item_speed_attack_shoulders` on shoulders,
+`item_resistance_fire_gloves` on gloves — and the pickup reply describes the same item the
+drop named. Seeded by the drop count, so the same kill leaves the same thing twice.
+
 ## The event schedule
 
 `0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
@@ -996,10 +1055,14 @@ same idea rediscovered later.
 
 * **Collision and pathing.** Creatures walk straight at the player and through
   walls. Nothing here reads the map's navigation data.
-* **What an item actually is.** A pickup now puts the right blueprint in the bag at the
-  right cell, but the record around it is still the recording's: the same `kind`, the
-  same empty statistics list, the same rarity. A dropped item has no stats of its own
-  because nothing here generates any — `_Template_Item` is where they would come from.
+* **A character's own equipment.** Items are read and generated now — see "What an item
+  is" — but what the player *wears* still comes from the recorded player state, so the
+  fourteen equipment slots hold another character's gear and no stat this server computes
+  reaches the client. The next step is the `+0xa8` dictionary: fill it with items this
+  server made, and the triggers, the stats and the saved inventory all unlock together.
+* **How a rolled statistic becomes a number.** The range case is resolved; the
+  single-value case and the tier are not, and neither is how many statistics an item of a
+  given rarity may carry — a dropped item gets two, which is what the live torso had.
 * **Character appearance.** The selection screen draws a character with neither
   hair nor equipment. Neither the roster nor the event schedule carries
   appearance data.
@@ -1081,6 +1144,7 @@ dsor/actionbar.py       reading the action bar, and writing back what the client
 dsor/vitals.py          PlayerLevelUpdateCommand, which the effect path needs
 dsor/inventory.py       the 0x0054 codec: both live replies re-encode byte for byte
 dsor/usable.py          using an item by name, which is how a mount is summoned
+dsor/equipment.py       what an item is, and the 24 attributes stats are made of
 dsor/data/              messages still replayed rather than generated
 tools/command_ids.py    command ids, recovered from the client binary by name
 tools/session_report.py what happened in a capture: casts, effects, creatures, loot

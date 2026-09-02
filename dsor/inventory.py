@@ -155,14 +155,17 @@ class Item:
     twentieth: int = 0
     twenty_eighth: int = 0
     named: str = "none"
-    twelve: int = 1
+    #: The item's level. 125 on the torso the operator picked up, and the same 125
+    #: appears in every one of that record's statistics -- which is what named it.
+    level: int = 1
     thirtieth: int = 0
     fifty_second: int = 0
     flags: tuple[int, int, int] = (0, 0, 1)
     second_name: str = ""
     position: tuple[float, float, float] = (0.0, 0.0, 0.0)
     third_name: str = ""
-    fifty_sixth: int = 0
+    #: A tier. 5 on that torso, and again the same 5 in each of its statistics.
+    tier: int = 0
     fourth_name: str = ""
     statistics: list[Statistic] = field(default_factory=list)
     names: list[str] = field(default_factory=list)
@@ -181,7 +184,7 @@ def _read_item(reader: BitReader) -> Item:
     twentieth = reader.read_uint(32)
     twenty_eighth = reader.read_uint(32)
     named = _read_string(reader)
-    twelve = reader.read_uint(32)
+    level = reader.read_uint(32)
     thirtieth = reader.read_uint(32)
     fifty_second = reader.read_uint(32)
     first_flag = reader.read_bits(1)
@@ -190,7 +193,7 @@ def _read_item(reader: BitReader) -> Item:
     second_name = _read_string(reader)
     position = (_read_float(reader), _read_float(reader), _read_float(reader))
     third_name = _read_string(reader)
-    fifty_sixth = reader.read_uint(32)
+    tier = reader.read_uint(32)
     fourth_name = _read_string(reader)
     third_flag = reader.read_bits(1)
     statistics = []
@@ -217,14 +220,14 @@ def _read_item(reader: BitReader) -> Item:
         twentieth=twentieth,
         twenty_eighth=twenty_eighth,
         named=named,
-        twelve=twelve,
+        level=level,
         thirtieth=thirtieth,
         fifty_second=fifty_second,
         flags=(first_flag, second_flag, third_flag),
         second_name=second_name,
         position=position,
         third_name=third_name,
-        fifty_sixth=fifty_sixth,
+        tier=tier,
         fourth_name=fourth_name,
         statistics=statistics,
         names=names,
@@ -253,7 +256,7 @@ def _write_item(writer: BitWriter, item: Item) -> None:
     writer.write_uint(item.twentieth, 32)
     writer.write_uint(item.twenty_eighth, 32)
     _write_string(writer, item.named)
-    writer.write_uint(item.twelve, 32)
+    writer.write_uint(item.level, 32)
     writer.write_uint(item.thirtieth, 32)
     writer.write_uint(item.fifty_second, 32)
     writer.write_bits(item.flags[0], 1)
@@ -263,7 +266,7 @@ def _write_item(writer: BitWriter, item: Item) -> None:
     for value in item.position:
         _write_float(writer, value)
     _write_string(writer, item.third_name)
-    writer.write_uint(item.fifty_sixth, 32)
+    writer.write_uint(item.tier, 32)
     _write_string(writer, item.fourth_name)
     writer.write_bits(item.flags[2], 1)
     writer.write_bits(len(item.statistics), 8)
@@ -472,6 +475,9 @@ def picked_up(
     slot: int | None = None,
     health: float | None = None,
     beside: float | None = None,
+    statistics: list[Statistic] | None = None,
+    level: int | None = None,
+    tier: int | None = None,
     at: int = BODY_AT,
 ) -> Payload:
     """The recorded reply, made to be about *actor* instead of what it recorded.
@@ -496,6 +502,9 @@ def picked_up(
         template=template if template is not None else first.template,
         position=where if where is not None else first.position,
         stamped=stamped if stamped is not None else first.stamped,
+        statistics=first.statistics if statistics is None else list(statistics),
+        level=first.level if level is None else level,
+        tier=first.tier if tier is None else tier,
     )
     if health is not None or beside is not None:
         scalars = list(got.scalars)

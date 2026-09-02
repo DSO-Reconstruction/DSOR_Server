@@ -28,6 +28,7 @@ import math
 import time
 from datetime import datetime
 from dataclasses import dataclass, field
+from random import Random
 
 from dsor.combat import (
     Hit,
@@ -67,6 +68,7 @@ from dsor.items import drop_template, item_drop, item_taken, with_drop
 from dsor import (
     effect_titles,
     effects,
+    equipment,
     inventory,
     location,
     measured,
@@ -114,6 +116,21 @@ WORLD = WORLD_SCALE
 
 #: A player is identified by the address its datagrams come from.
 Address = tuple[str, int]
+
+
+@dataclass
+class Loot:
+    """What one dropped item is: a real template and real rolled statistics.
+
+    Kept beside the item on the ground so the pickup reply describes the same thing the
+    drop message named. They used to come from two different recordings, which is how
+    the ground showed a mace and the bag showed a sword.
+    """
+
+    template: str
+    level: int
+    tier: int
+    statistics: list["inventory.Statistic"]
 
 
 @dataclass
@@ -393,6 +410,21 @@ class Rules:
     #: which is untidy but touches nothing. Neither is right; building the inventory
     #: is what would be.
     allow_pickup: bool = True
+    #: Which item categories a kill may leave, when no blueprint is configured. The
+    #: rest of what `_Template_Item` holds is quest items, ingredients, recipes and
+    #: skins, which are not what a monster drops.
+    loot_categories: tuple[str, ...] = ("Armor", "Weapon", "Jewelry")
+    #: How many rolled statistics a dropped item carries. Two, which is what the torso
+    #: the operator picked up on the live service had. How many an item may have is not
+    #: established.
+    loot_statistics: int = 2
+    #: The tier written into a dropped item and its statistics. The live service's torso
+    #: says 5 at item level 125 and nothing read so far explains the figure, so this
+    #: stays at zero rather than inventing a curve.
+    loot_tier: int = 0
+    #: Whether a kill with no configured blueprint leaves a real item of the player's
+    #: class and level, rolled out of the client's own tables.
+    real_loot: bool = True
     #: Blueprints to drop, cycled through one per kill, or empty to keep the
     #: recorded one. Anything in the client's _Template_Item; a name it cannot
     #: resolve creates nothing at all, exactly as an unknown monster blueprint does.
@@ -627,6 +659,9 @@ class World:
     #: beyond bookkeeping — two items in the same place stack, and a stack crashes
     #: the client, so a new drop is nudged clear of the ones already down.
     dropped: dict[bytes, tuple[float, float, float]] = field(default_factory=dict)
+    #: What each item lying there is worth: its level, tier and rolled statistics.
+    #: Only for the items this server generated; a configured blueprint has none.
+    loot: dict[bytes, "Loot"] = field(default_factory=dict)
     #: What each item lying there is, so the pickup names the same thing the drop
     #: did. Cycling blueprints without this put a different item in the bag from the
     #: one on the ground.
@@ -867,6 +902,7 @@ class World:
         for lying in self.dropped:
             self.actors.give_back(int.from_bytes(lying, "little"))
         self.dropped.clear()
+        self.loot.clear()
         self.templates.clear()
         self.next_item = 0x40
         self.next_slot = -1
@@ -1494,6 +1530,18 @@ class World:
             # out rather than piled up: two items in the same place stack, and a
             # stack crashes the client.
             for blueprint in self.rules.drop_templates or [None]:
+                # A real item of the player's class and level when no blueprint is
+                # configured, rather than the recording's mace for every kill until
+                # the end of time. Seeded by the drop count so it is reproducible.
+                rolled = None
+                if blueprint is None and self.rules.real_loot:
+                    rolled = self.roll_loot(
+                        self.player(sender).level,
+                        self.rules.character_class,
+                        self.drops,
+                    )
+                    if rolled is not None:
+                        blueprint = rolled.template
                 # From the world's space, not a counter masked to one byte. Items
                 # are the ones that grow without bound, and two of them once claimed
                 # the same actor -- which showed as a picked-up item arriving as the
@@ -1508,6 +1556,8 @@ class World:
                 # showed one thing and the bag another, which is what the operator
                 # reported as "j'ai pas le bon item".
                 self.templates[lying] = blueprint or drop_template(item_drop())
+                if rolled is not None:
+                    self.loot[lying] = rolled
                 self.drops += 1
                 self._emit(
                     with_drop(item_drop(), lying, where, template=blueprint), sender
@@ -2491,6 +2541,48 @@ class World:
         names = self.rules.drop_templates
         return names[index % len(names)] if names else None
 
+    def roll_loot(self, level: int, character_class: str, seed: int) -> "Loot | None":
+        """One real item for a character of *character_class* at *level*.
+
+        Real in the sense that every part of it comes from the client's own tables: the
+        template from ``_Template_Item`` filtered by class, slot and drop level, and the
+        statistics from ``_Template_Enchantment`` filtered by what that template can
+        carry. Before this, every kill left the same mace, because the mace was the one
+        item in a recording.
+
+        Deterministic from *seed*, so a drop can be tested and so the same kill leaves
+        the same thing twice.
+        """
+        if not equipment.loaded():
+            return None
+        wanted = [
+            found
+            for found in equipment.droppable(level, character_class)
+            if found.category in self.rules.loot_categories
+        ]
+        if not wanted:
+            return None
+        random = Random(seed)
+        chosen = wanted[random.randrange(len(wanted))]
+        candidates = equipment.rolled_for(chosen.template, level)
+        rolled: list[inventory.Statistic] = []
+        # Two, which is what the torso the operator picked up on the live service
+        # carried. How many an item may have is not established -- it plainly depends
+        # on the rarity, and nothing read so far says how.
+        for candidate in random.sample(candidates, min(self.rules.loot_statistics,
+                                                       len(candidates))):
+            rolled.append(
+                inventory.Statistic(
+                    name=candidate.id,
+                    value=random.random(),
+                    kind=self.rules.loot_tier,
+                    third=self.rules.loot_tier,
+                    fourth=level,
+                )
+            )
+        return Loot(template=chosen.template, level=level,
+                    tier=self.rules.loot_tier, statistics=rolled)
+
     def clear_of_other_drops(
         self, where: tuple[float, float, float]
     ) -> tuple[float, float, float]:
@@ -2572,6 +2664,7 @@ class World:
             return []
         where = self.dropped.pop(actor)
         blueprint = self.templates.pop(actor, None)
+        rolled = self.loot.pop(actor, None)
         slot = self.next_slot
         self.next_slot += 1
         player = self.player(sender)
@@ -2584,6 +2677,9 @@ class World:
                 where=where,
                 stamped=(now.year, now.month, now.day, now.hour, now.minute, now.second),
                 slot=slot,
+                statistics=rolled.statistics if rolled is not None else None,
+                level=rolled.level if rolled is not None else None,
+                tier=rolled.tier if rolled is not None else None,
                 # The two that used to be replayed, and the reason a pickup collapsed
                 # the health bar: the recorded reply was taken from a level 1
                 # character and its scalars carry that character's 236 health.
