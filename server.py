@@ -71,7 +71,7 @@ from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.titles import title_of
-from dsor import usable
+from dsor import inventory, usable
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
 from dsor.charlist import with_andermant, with_progress
@@ -267,6 +267,10 @@ PICKUP_ITEM_OPCODE = 0x0064
 #: What the client sends to use an item by name -- a mount, among 2,862 others. Its
 #: class in the client's Rtti is UseStickerBookItemCommand, which is not what it does.
 USE_ITEM_OPCODE = 0x0135
+
+#: ``InventoryCommand``, which appears in no capture and is only logged. See the branch
+#: that handles it for why it is worth hearing about.
+INVENTORY_OPCODE = 0x0055
 
 #: The client's own god mode. Handled for completeness, but **this client will never
 #: send any of it**: the -godmode switch sets one byte at offset 0x1a9d of a config
@@ -1644,6 +1648,28 @@ class Service:
             and len(game.body) >= 4
         ):
             self._ship(self.world.pick_up(sender, game.body[:4]))
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode == INVENTORY_OPCODE
+        ):
+            # The client taking an item out of the cell it was in -- equipping one, in
+            # every sample. Logging the body is what found it: it appears in no capture,
+            # and the two the operator produced while putting on two rings were 17
+            # bytes each, naming an item this server had just handed out. The grammar
+            # then came out of InventoryCommand::Decode; see dsor.inventory.moved.
+            log.info(
+                "%s: %s sent InventoryCommand, %d bytes: %s",
+                self.name, sender, len(game.body), game.body[:64].hex(" "),
+            )
+            found = inventory.moved(game.body)
+            if found is not None:
+                item, operation = found
+                self.world.item_moved(
+                    sender, item.to_bytes(4, "little"), operation
+                )
             return
 
         if (

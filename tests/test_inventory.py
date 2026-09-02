@@ -259,5 +259,54 @@ def test_the_reply_places_only_the_item_that_was_picked_up():
     # A cell that comes free is handed out again, lowest first, which is what the live
     # service does: cell 70 for one pickup and 147 -- its lowest free cell -- for the
     # next.
-    world.cells.discard(1)
+    del world.bag[1]
     assert world.free_cell() == 1
+
+
+def test_equipping_an_item_frees_the_cell_it_came_from():
+    """The client says so, in a command that appears in no capture.
+
+    The operator picked an item into cell 0, put it on, picked another, and it went to
+    cell 1 with cell 0 empty -- because the only thing this server heard about was its
+    own pickups. Logging the unread command is what produced the evidence: two bodies of
+    17 bytes while two items were equipped, each naming an item this server had just
+    handed out, each carrying operation 1.
+
+        00 01 01 00  01  00 00 00 00  00 00 00 00  00 00 00 00
+
+    Its grammar then came out of ``InventoryCommand::Decode`` at ``+0x96713c``: a u32
+    item, an int8 operation the client checks against 34, an array that is empty in
+    every sample, and two zero uint32. Seventeen bytes exactly.
+    """
+    from dsor.world import World
+
+    body = bytes([0x00, 0x01, 0x01, 0x00, inventory.EQUIP]) + bytes(12)
+    assert len(body) == inventory.MOVE_ITEM_SIZE
+    assert inventory.moved(body) == (0x00010100, 1)
+    assert inventory.moved(b"") is None
+
+    world = World()
+    world.rules.enforce = False
+    here = ("1.2.3.4", 5)
+    world.player(here).in_world = True
+
+    first = bytes([0x00, 0x01, 0x01, 0x00])
+    world.dropped[first] = (0.0, 0.0, 0.0)
+    world.templates[first] = "all_unique_ring_pw_death"
+    assert world.pick_up(here, first)
+    assert set(world.bag) == {0}
+    assert world.free_cell() == 1
+
+    world.item_moved(here, first, inventory.EQUIP)
+    assert world.bag == {}, "the ring is on the character now"
+    assert world.free_cell() == 0, "so the next pickup takes cell 0"
+
+    second = bytes([0x01, 0x01, 0x01, 0x00])
+    world.dropped[second] = (0.0, 0.0, 0.0)
+    world.templates[second] = "warrior_base_gloves_speedAttack_critical_resistanceAll"
+    out = world.pick_up(here, second)
+    assert inventory.decode(out[0][1])[0].placements == [(0x00010101, 0)]
+
+    # An item this server never placed is reported and changes nothing.
+    world.item_moved(here, bytes([0x99, 0x01, 0x01, 0x00]), inventory.EQUIP)
+    assert set(world.bag) == {0}

@@ -111,3 +111,58 @@ def test_the_switch_refuses():
 def test_other_mounts_resolve_the_same_way(template, effect):
     item = usable.by_template(template)
     assert item is not None and item.effect == effect and item.is_mount
+
+
+def test_using_an_item_frees_the_cell_it_was_in():
+    """Because the client empties it without being told.
+
+    The operator asked for exactly this: "une fois que j'utilise un item et qu'il
+    disparait et que j'en recupere un si la place est vide il peut aller a l'endroit
+    vide". So the bag is a map of cell to item here, not a set of cells handed out --
+    a set never forgets, and a forgotten cell is one no later pickup can use.
+    """
+    from dsor.world import World
+
+    world = World()
+    world.rules.enforce = False
+    here = ("1.2.3.4", 5)
+    player = world.player(here)
+    player.in_world = True
+
+    # Three pickups into the first three cells, the middle one a mount.
+    for index, template in enumerate(("gem_ruby_e", MANTICORE, "lockpick")):
+        actor = bytes([0x60 + index, 0x00, 0x01, 0x00])
+        world.dropped[actor] = (0.0, 0.0, 0.0)
+        world.templates[actor] = template
+        assert world.pick_up(here, actor)
+    assert {cell: held[1] for cell, held in world.bag.items()} == {
+        0: "gem_ruby_e",
+        1: MANTICORE,
+        2: "lockpick",
+    }
+    assert world.free_cell() == 3
+
+    world.use_item(here, MANTICORE)
+    assert 1 not in world.bag, "the cell the mount was in"
+    assert world.free_cell() == 1, "and the next pickup takes it"
+
+    actor = bytes([0x70, 0x00, 0x01, 0x00])
+    world.dropped[actor] = (0.0, 0.0, 0.0)
+    world.templates[actor] = "gem_ruby_e"
+    world.pick_up(here, actor)
+    assert world.bag[1] == (actor, "gem_ruby_e")
+    assert world.free_cell() == 3, "and the bag is contiguous again"
+
+
+def test_using_something_that_is_not_in_the_bag_frees_nothing():
+    """A mount summoned from the recorded login inventory, for instance."""
+    from dsor.world import World
+
+    world = World()
+    world.rules.enforce = False
+    here = ("1.2.3.4", 5)
+    world.player(here).in_world = True
+    world.bag[0] = (bytes([0x61, 0, 1, 0]), "gem_ruby_e")
+    world.use_item(here, MANTICORE)
+    assert set(world.bag) == {0}
+    assert world.empty_cell_of("no_such_template") is None

@@ -666,12 +666,15 @@ class World:
     #: the character's own login inventory allocates **no** bag slots at all — its
     #: sword and shield are equipped, and equipment is not in this table. So the
     #: cells are free, and they are few.
-    #: The bag cells handed out this session. A set rather than a counter, because a
-    #: counter only ever goes up: the operator picked ten items into ten rising cells
-    #: with the low ones free, which is what "meme si les slots sont libres il me fait
-    #: +1" describes. The live service hands out the lowest free cell -- 70 for one
-    #: pickup and 147 for the next, and 147 was the lowest free cell it had.
-    cells: set[int] = field(default_factory=set)
+    #: What this server has put in each bag cell: ``cell -> (actor, blueprint)``.
+    #:
+    #: A map and not a counter, and not a set either. A counter only ever goes up, which
+    #: is what "meme si les slots sont libres il me fait +1" described. A set never
+    #: forgets, which is what the operator asked about next: "une fois que j'utilise un
+    #: item et qu'il disparait et que j'en recupere un si la place est vide il peut
+    #: aller a l'endroit vide". Using an item empties its cell on the client, so this
+    #: has to empty it here too, and it can only do that if it knows what is where.
+    bag: dict[int, tuple[bytes, str]] = field(default_factory=dict)
     #: Items lying on the ground, by actor: where each one lies. Positions matter
     #: beyond bookkeeping — two items in the same place stack, and a stack crashes
     #: the client, so a new drop is nudged clear of the ones already down.
@@ -922,7 +925,7 @@ class World:
         self.loot.clear()
         self.templates.clear()
         self.next_item = 0x40
-        self.cells.clear()
+        self.bag.clear()
 
     def inhabitants(self) -> list[Player]:
         return [p for p in self.players.values() if p.in_world]
@@ -2249,9 +2252,11 @@ class World:
         source = self._source_handle()
         for entry in entries:
             self._start(player, entry, causer=source)
+        emptied = self.empty_cell_of(template)
         log.info(
-            "%s: %s used %s -> %s",
+            "%s: %s used %s -> %s%s",
             self.name, sender, template, ", ".join(e.effect for e in entries),
+            f", cell {emptied} is free again" if emptied is not None else "",
         )
         return self._drain()
 
@@ -2560,7 +2565,47 @@ class World:
         the one after it in 147, and 147 was the lowest cell that inventory had free.
         """
         for cell in range(self.rules.first_slot, self.rules.slot_capacity):
-            if cell not in self.cells:
+            if cell not in self.bag:
+                return cell
+        return None
+
+    def item_moved(self, sender: Address, actor: bytes, operation: int) -> None:
+        """The client has taken *actor* out of the cell it was in.
+
+        Equipping is the case that brought this in. The operator picked an item into
+        cell 0, put it on, picked another, and it went to cell 1 with cell 0 empty --
+        because the only two things this server heard about were its own pickups.
+
+        It hears about this one: the client sends an ``InventoryCommand`` naming the
+        item every time one moves. Every operation is treated the same, because only
+        one value has been seen and every operation in this message relocates or
+        consumes an item; the code is logged so a second value gets noticed rather than
+        silently lumped in with the first.
+        """
+        for cell, (held, template) in list(self.bag.items()):
+            if held != actor:
+                continue
+            del self.bag[cell]
+            log.info(
+                "%s: %s moved %s (operation %d), cell %d is free again",
+                self.name, sender, template or actor.hex(" "), operation, cell,
+            )
+            return
+        log.info(
+            "%s: %s moved item %s (operation %d), which this server did not place",
+            self.name, sender, actor.hex(" "), operation,
+        )
+
+    def empty_cell_of(self, template: str) -> int | None:
+        """Forget the lowest cell holding *template*, and say which it was.
+
+        Because the client empties it without being told. Using an item consumes it --
+        the operator watched one disappear -- and a cell this server still believes is
+        occupied is a cell no later pickup can use.
+        """
+        for cell in sorted(self.bag):
+            if self.bag[cell][1] == template:
+                del self.bag[cell]
                 return cell
         return None
 
@@ -2692,7 +2737,7 @@ class World:
         where = self.dropped.pop(actor)
         blueprint = self.templates.pop(actor, None)
         rolled = self.loot.pop(actor, None)
-        self.cells.add(slot)
+        self.bag[slot] = (actor, blueprint or "")
         player = self.player(sender)
         now = datetime.now()
         self._emit(

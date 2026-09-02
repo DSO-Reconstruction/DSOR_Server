@@ -432,6 +432,44 @@ def rebuild(payload: bytes, got: Inventory, at: int = BODY_AT) -> Payload:
     return Payload(_to_bytes(spliced), bits_of(payload) + len(fresh) - (ends - at))
 
 
+#: ``InventoryCommand``, 0x0055, which the client sends when an item leaves the cell it
+#: was in. Equipping one is the case that matters, and it appears in no capture -- it was
+#: found by logging the body and then reading the client's decoder for it.
+MOVE_ITEM = 0x0055
+
+#: Its grammar, from ``InventoryCommand::Decode`` at ``+0x96713c``:
+#:
+#:     +0x20   u32           the item
+#:     +0x24   int8          an operation, checked against 34 in the client
+#:     +0x28   array         a count and that many elements -- empty in every sample
+#:     +0x48   u32           zero in every sample
+#:     +0x4c   u32           zero in every sample
+#:
+#: Which comes to 17 bytes with an empty array, and 17 bytes is exactly what the client
+#: sent twice while the operator equipped two items:
+#:
+#:     00 01 01 00  01  00 00 00 00  00 00 00 00  00 00 00 00
+#:     01 01 01 00  01  00 00 00 00  00 00 00 00  00 00 00 00
+#:
+#: Both name an item this server had just handed out, and both carry operation 1.
+MOVE_ITEM_SIZE = 17
+
+#: What the client sent for an equip. One of at most 34 the enum allows; the rest have
+#: not been seen, so nothing here treats this value as special.
+EQUIP = 1
+
+
+def moved(body: bytes) -> tuple[int, int] | None:
+    """The item and the operation in a 0x0055, or None if it is not one.
+
+    Only the first two fields, because they are the two that are established and the
+    two that matter: which item left, and by what means.
+    """
+    if len(body) < 5:
+        return None
+    return int.from_bytes(body[:4], "little"), body[4]
+
+
 def discarded(payload: bytes) -> int:
     """The item the leading ``DiscardItemCommand`` takes off the ground."""
     return BitReader(payload, DISCARDED_AT).read_uint(32)

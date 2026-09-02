@@ -1239,19 +1239,19 @@ def test_the_counters_survive_a_tick():
     world.rules.mobs = 2
     world._ready()
     world.next_item = 0x55
-    world.cells.add(14)
+    world.bag[14] = (bytes([0x55, 0, 1, 0]), "something")
     world.templates[bytes([0x55, 0, 1, 0])] = "something"
 
     for _ in range(20):
         world.age_corpses()
 
     assert world.next_item == 0x55, "actor ids must not be handed out twice"
-    assert world.cells == {14}, "and a cell already handed out stays handed out"
+    assert set(world.bag) == {14}, "and a cell already filled stays filled"
     assert world.templates, "and the world must remember what it dropped"
 
     # Leaving does reset them.
     world.forget(("1.2.3.4", 5))
-    assert world.cells == set() and world.next_item == 0x40
+    assert world.bag == {} and world.next_item == 0x40
     assert not world.templates
 
 
