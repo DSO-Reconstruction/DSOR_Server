@@ -273,7 +273,7 @@ current health and current resource — the same pair `0x007B` carries. See
 | `0x0132` | UpdateStickerbookFavoritePosCommand |  |
 | `0x0133` | AddStickerbookFromInventoryCommand |  |
 | `0x0134` | UpgradeStickerbookItemCommand |  |
-| `0x0135` | UseStickerBookItemCommand |  |
+| `0x0135` | UseStickerBookItemCommand | • |
 | `0x0136` | GameCurrencyChangedCommand |  |
 | `0x0137` | RecipeBookInfoCommand |  |
 | `0x0138` | RecipeUpdateCommand |  |

@@ -119,15 +119,23 @@ def _bits(value: float) -> int:
     return int.from_bytes(struct.pack("<f", value), "little")
 
 
-def decode(payload: bytes, at: int = 24) -> StatusEffects | None:
+def decode(
+    payload: bytes, at: int = 24, ends: int | None = None
+) -> StatusEffects | None:
     """Read a 0x004F, or None when the reading does not land on the actor.
 
     None rather than a partial answer. The grammar has no way to check itself from the
-    inside, so "it ended where the payload ends" is the whole of the evidence, and a
-    reading that ends anywhere else is wrong however sensible its fields look.
+    inside, so "it ended where it had to" is the whole of the evidence, and a reading
+    that ends anywhere else is wrong however sensible its fields look.
+
+    *ends* is that bit, for a command that is **not** the last in its payload:
+    :func:`dsor.chain.walk` knows where each command in a chain finishes, and without
+    being told, this refused every chained one. Measured on the live service's own
+    traffic, that was 1,712 of 2,833 status effect elements in a single session --
+    unreadable for no better reason than that something followed them.
     """
     reader = BitReader(payload, at)
-    total = len(payload) * 8
+    total = len(payload) * 8 if ends is None else ends
     try:
         header = reader.read_uint(1)
         count = reader.read_uint(32)
@@ -167,8 +175,12 @@ def decode(payload: bytes, at: int = 24) -> StatusEffects | None:
         actor = reader.read_uint(32)
         if reader.read_uint(8) != TERMINATOR:
             return None
-        # Byte-buffered, so up to seven bits of padding may follow.
-        if total - reader.position > 7:
+        if ends is None:
+            # Byte-buffered, so up to seven bits of padding may follow.
+            if total - reader.position > 7:
+                return None
+        elif reader.position != total:
+            # Told exactly where the command ends, so nothing is allowed to be left.
             return None
     except Exception:
         return None

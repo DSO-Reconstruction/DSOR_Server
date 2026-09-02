@@ -71,6 +71,7 @@ from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.titles import title_of
+from dsor import usable
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
 from dsor.charlist import with_andermant, with_progress
@@ -262,6 +263,10 @@ SKILL_OPCODES_UNHANDLED = {
 #: Commands::PickupItemCommand. The client sends the item's actor id and nothing
 #: else — four bytes, the shortest request in the protocol.
 PICKUP_ITEM_OPCODE = 0x0064
+
+#: What the client sends to use an item by name -- a mount, among 2,862 others. Its
+#: class in the client's Rtti is UseStickerBookItemCommand, which is not what it does.
+USE_ITEM_OPCODE = 0x0135
 
 #: The client's own god mode. Handled for completeness, but **this client will never
 #: send any of it**: the -godmode switch sets one byte at offset 0x1a9d of a config
@@ -1639,6 +1644,24 @@ class Service:
             and len(game.body) >= 4
         ):
             self._ship(self.world.pick_up(sender, game.body[:4]))
+            return
+
+        if (
+            self.role == "map"
+            and game.message_id == 0x8B
+            and game.opcode == USE_ITEM_OPCODE
+        ):
+            # How a mount is summoned. The body is a length-prefixed item template
+            # name and the item's own row says what it applies -- see dsor.usable.
+            template = usable.name_in(game.body)
+            if template is None:
+                log.info(
+                    "%s: %s used something with no name in it, %d bytes: %s",
+                    self.name, sender, len(game.body), game.body[:48].hex(" "),
+                )
+                return
+            self._set_clock(sender)
+            self._ship(self.world.use_item(sender, template))
             return
 
         if (

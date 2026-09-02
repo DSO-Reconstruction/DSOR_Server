@@ -71,6 +71,7 @@ from dsor import (
     location,
     measured,
     statuseffect,
+    usable,
     vitals,
 )
 
@@ -379,6 +380,11 @@ class Rules:
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
 
+    #: Whether using an item applies what its template says it applies. A mount is
+    #: the case that matters: the client sends the item's name and the live service
+    #: answers with a summon effect and a ride effect, both of which are in the
+    #: client's own tables.
+    usable_items: bool = True
     #: Whether to answer a pickup at all.
     #:
     #: Answering replays the recorded inventory, which carries the layout of every
@@ -2154,6 +2160,33 @@ class World:
                     effects.Entry(found.id, 1.0, 5.0, None, (0.0,) * 5),
                     causer=source,
                 )
+
+    def use_item(self, sender: Address, template: str) -> list[tuple[Address, bytes]]:
+        """The player used an item by name, which is how a mount is summoned.
+
+        Nothing is guessed from the name: ``_Template_Item.StatusEffectId`` says which
+        effect the item applies, and for a mount the ride is that name with ``cast``
+        swapped for ``ride``. See :mod:`dsor.usable` for the capture this comes from.
+        """
+        if not self.rules.usable_items:
+            log.info("%s: %s used %s, and items are off", self.name, sender, template)
+            return []
+        entries = usable.entries_for(template)
+        if not entries:
+            log.info(
+                "%s: %s used %s, which applies nothing this server can find",
+                self.name, sender, template,
+            )
+            return []
+        player = self.player(sender)
+        source = self._source_handle()
+        for entry in entries:
+            self._start(player, entry, causer=source)
+        log.info(
+            "%s: %s used %s -> %s",
+            self.name, sender, template, ", ".join(e.effect for e in entries),
+        )
+        return self._drain()
 
     def place_ground_effects(self, sender: Address, used: "Skill | None") -> None:
         """Draw whatever the skill puts on the ground.

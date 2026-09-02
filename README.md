@@ -778,6 +778,32 @@ spliced. The splice also wrote its own array at bit 1,412 — which is where `+0
 begins, 352 bits before the allocations it meant — and it happened to be well-formed
 there, which is why it was never caught by anything the client said.
 
+## Mounts, and using an item
+
+There is no mount command. The operator rode a manticore during a capture and it came
+out as three messages:
+
+```
+client   0x0135   1b 00 "mythical_mount_manticore_01"
+server   0x004F   cast_mount_manticore_01,   87 ticks
+server   0x004F   ride_mount_manticore_01,  900,000 ticks
+```
+
+The rest is a column: `_Template_Item.StatusEffectId` names the effect an item applies.
+2,862 of the client's 15,645 items carry one and 265 of those are mounts, so nothing has
+to be inferred from the item's name. The ride is that effect's name with `cast` swapped
+for `ride`, and its 900,000 ticks are 36,000 seconds — ten hours, which is how the game
+says "until you get off".
+
+Two details that would have been wrong if guessed. The duration comes from the **item**,
+not the effect: the manticore item says 3.5 seconds and the effect table says 6.0, and
+the service sent 87 ticks — 3.48 seconds. And the command's class in the client's Rtti is
+`UseStickerBookItemCommand`, which is not what it does; its body is a length-prefixed
+item template name and nothing else.
+
+Everything after that is the status effect path that was already there, which is why this
+was a small change. It also means the other 2,597 usable items work by the same route.
+
 ## The event schedule
 
 `0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
@@ -899,6 +925,13 @@ same idea rediscovered later.
   names nothing at all — both put the item in the bag. The assertion that provoked the
   belief (`InvalidIndex != outItemWithLocation.primarySlotIdx`) was answered by the
   dictionary at `+0x58`, which is a different field 352 bits earlier.
+* "26 of the 82 skills place no effects" was an artefact of the query, not a fact about
+  the game. `granted_by` keeps only the `C:1.0` entries, and the live service applies the
+  `C:0.0` ones too — they carry an `On:` qualifier instead. `angrystrike` reads as
+  placing nothing and its column names ten effects, three of them real:
+  `warrior_talent_damage_dealer_cooldown_reduction` fires `On:HitCritical` and appeared
+  **518 times** in one captured session. So the count of what a skill does depends on
+  events this server does not raise, not on the column being empty.
 
 ## Open
 
@@ -916,6 +949,16 @@ same idea rediscovered later.
   first field is retired. Everything else a character has (armour, resistances, the
   critical rate, the movement speed the operator watched change) has to travel
   somewhere else, and no capture has been searched for it yet.
+* **The `On:` and `OFF:` triggers.** An effect entry can say `On:Hit`, `On:HitCritical`,
+  `On:SkillStart`, `On:kill` or `OFF:SkillStartExceptAngryStrike`, and
+  `dsor.effects.parse_entries` drops all of them. Until they are parsed and raised, a
+  skill applies only what it applies on the cast itself — which is most of what a
+  warrior's rotation actually does. This is the largest single gap in combat now.
+* **The creatures of a real dungeon.** `pw001_01_grimmagstone_01_dun` spawned
+  `pw001_01_normal_skeleton_warrior_heroic` (40 descriptions),
+  `pw001_03_normal_minispider_heroic` (12), `pw001_01_normal_skeleton_archer_heroic` (3)
+  and `pw001_01_normal_undead_mage_heroic` (1). Their descriptions are in the capture;
+  this server still serves the `a0001` tutorial creatures.
 * **Talents**, and with them a skill's upgraded behaviour. `0x011A`, `0x011B` and
   `0x011D` are named and appear in no capture, so the state travels inside the player
   initialisation. `_Template_SkillTalent` has the data: 156 rows with a
@@ -975,8 +1018,10 @@ dsor/playerstate.py     the same level and experience where the game reads them
 dsor/actionbar.py       reading the action bar, and writing back what the client sent
 dsor/vitals.py          PlayerLevelUpdateCommand, which the effect path needs
 dsor/inventory.py       the 0x0054 codec: both live replies re-encode byte for byte
+dsor/usable.py          using an item by name, which is how a mount is summoned
 dsor/data/              messages still replayed rather than generated
 tools/command_ids.py    command ids, recovered from the client binary by name
+tools/session_report.py what happened in a capture: casts, effects, creatures, loot
 docs/commands.md        all 365 of them, by namespace
 tests/                  the suite, including two offline replay harnesses
 tools/frida/            client-side capture: the agent, its driver, the launcher
