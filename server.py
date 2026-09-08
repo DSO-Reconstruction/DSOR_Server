@@ -2482,7 +2482,22 @@ def serve(
                     console.accept()
                     continue
                 service = services[key.fileobj]
-                raw, sender = service.socket.recvfrom(2048)
+                try:
+                    raw, sender = service.socket.recvfrom(2048)
+                except ConnectionResetError:
+                    # Windows only, and it is not this socket that failed. A datagram
+                    # sent earlier reached a port with nothing on it, the machine
+                    # answered ICMP "port unreachable", and Windows reports that as
+                    # WSAECONNRESET on the *next* recvfrom -- on a socket that is not
+                    # connected to anything. Linux discards the ICMP for an unbound
+                    # socket, which is why this loop was written without a guard.
+                    #
+                    # So one client closing its socket took the whole server down a
+                    # datagram later, every other player with it, and the traceback
+                    # named the receive rather than the peer that went away. There is
+                    # nothing to read and no sender to name: carry on, and let the
+                    # connection go through the timeout it was always going to take.
+                    continue
                 # Caught, and *loudly*. The original note here said there was no
                 # blanket try/except on purpose, because during protocol bring-up a
                 # silent exception is indistinguishable from a client that stopped
