@@ -8,11 +8,11 @@ debut donc ca remet tjrs niveau 1 meme dans l'ecran de perso".
 The offsets are measured on five characters. A capture of the live service taken from
 the client's launch, so the login was visible, carries four:
 
-    AmateurDeCombat   882246499  100
-    MeufAGrosSeins    882260621  100
-    FilleMineur       882269671  100
-    BgTimide             128322   18
-    balenciagas               0    1   (the recording)
+    Username   882246499  100
+    Username    882260621  100
+    Username       882269671  100
+    Username             128322   18
+    Username               0    1   (the recording)
 
 Experience 256 bits and level 288 bits past the end of the entry's map string, both
 u32. Counted from the map because the entries carry their strings inline and are back to
@@ -32,6 +32,10 @@ from dsor import charlist
 ROSTER = pathlib.Path(__file__).resolve().parent.parent / "dsor/data/character_list.bin"
 
 
+#: The scrubbed name. Padded to the length of the one it replaced, so nothing in
+#: the capture moved -- see tools/anonymise.py.
+PLAYER = "Username000"
+
 def roster() -> bytes:
     return ROSTER.read_bytes()
 
@@ -39,7 +43,7 @@ def roster() -> bytes:
 def test_the_recorded_roster_reads_as_one_level_one_character():
     found = charlist.entries(roster())
     assert len(found) == 1
-    assert found[0]["name"] == "balenciagas"
+    assert found[0]["name"] == PLAYER
     assert found[0]["map"] == "a0001_start_tutorial_dun"
     assert found[0]["level"] == 1
     assert found[0]["experience"] == 0
@@ -63,7 +67,7 @@ def test_writing_moves_nothing_and_touches_only_the_two_fields():
     # Two 32-bit fields, four bits apart from a byte boundary, so six bytes.
     assert changed == [100, 101, 102, 103, 104, 105]
     kept = charlist.entries(out)[0]
-    assert kept["name"] == "balenciagas"
+    assert kept["name"] == PLAYER
     assert kept["map"] == "a0001_start_tutorial_dun"
 
 
@@ -122,7 +126,7 @@ def test_writing_the_andermant_leaves_the_level_and_experience_alone():
     got = charlist.entries(out)[0]
     assert got["andermant"] == 9999999
     assert (got["level"], got["experience"]) == (1, 0)
-    assert got["name"] == "balenciagas"
+    assert got["name"] == PLAYER
     assert len(out) == len(raw)
     assert len([i for i in range(len(raw)) if raw[i] != out[i]]) == 3
 

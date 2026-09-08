@@ -9,8 +9,8 @@ launch: 1,203,213 bytes there, 631,240 in the recording, and both lay out
 
     u16 length + name | 80 bits | u16 length + map | 210 bits | u32 level | u32 experience
 
-    AmateurDeCombat  a0200_kingscity           100  882246499
-    balenciagas      a0001_start_tutorial_dun    1          0
+    Username  a0200_kingscity           100  882246499
+    Username      a0001_start_tutorial_dun    1          0
 """
 
 import pathlib
@@ -22,6 +22,10 @@ from dsor import playerstate
 STATE = pathlib.Path(__file__).resolve().parent.parent / "dsor/data/zone_content.bin"
 
 
+#: The scrubbed name. Padded to the length of the one it replaced, so nothing in
+#: the capture moved -- see tools/anonymise.py.
+PLAYER = "Username000"
+
 def state() -> bytes:
     return STATE.read_bytes()
 
@@ -29,7 +33,7 @@ def state() -> bytes:
 def test_the_recorded_state_is_a_level_one_character():
     got = playerstate.progress_of(state())
     assert got is not None
-    assert got["name"] == "balenciagas"
+    assert got["name"] == PLAYER
     assert got["map"] == "a0001_start_tutorial_dun"
     assert got["level"] == 1
     assert got["experience"] == 0
@@ -56,7 +60,7 @@ def test_writing_moves_nothing_in_631_kb():
     changed = [i for i in range(len(raw)) if raw[i] != out[i]]
     assert len(changed) == 6, changed
     kept = playerstate.progress_of(out)
-    assert kept["name"] == "balenciagas"
+    assert kept["name"] == PLAYER
     assert kept["map"] == "a0001_start_tutorial_dun"
 
 
