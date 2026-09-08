@@ -134,7 +134,7 @@ ClientPlayerManager: create game entity and actor observer!
 ClientPlayerManager: initialize managers!
 ClientSettingsManager - Client settings loaded for user 111886222 on instance 481!
 ClientPlayerManager: prepare staging system and posteffects!
-Factored local player "balenciagas" with user Id 111886222, actor Id 65557 and game entity Id 138
+Factored local player "Username" with user Id 111886222, actor Id 65557 and game entity Id 138
 ClientPlayerManager: new player setup done!
 ClientPlayerManager: handle quest log info!
 ClientPlayerManager: handle event updates!

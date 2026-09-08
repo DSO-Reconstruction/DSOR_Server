@@ -57,6 +57,51 @@ more reliable mode if Frida objects to anything.
 version control — the `.gitignore` here already excludes `cmd.txt` — and expect to
 refresh it: launch the game once through the official launcher, then `-ShowArgs`.
 
+## Accounts, and playing two clients at once
+
+The client never sends a password. The capture is unambiguous about it: twelve `0x8A`
+messages, one per tier per connection, each carrying an account id (`-accid`) and a
+16-byte session GUID (`-sid`) and nothing else, byte-identical across all twelve of a
+session. So the session id **is** the credential a game server can check, the password
+is checked somewhere off the wire, and the launcher line is how the credential reaches
+the client.
+
+Which means an account has to be issued before it can play. Two ways:
+
+```
+python3 server.py account add Username <password> --character Username --class warrior
+python3 server.py account list
+```
+
+or the sign-up page, which the server starts when `portal_port` is set (it is, in
+`dsor.toml`, on 8080): register, and it hands back the launcher line with `-accid` and
+`-sid` already filled in. It is plain HTTP and binds to the loopback, because a public
+address would put passwords on the wire in the clear.
+
+Both print a launcher line. Take the `-accid` and `-sid` out of it and put them in the
+real one from `cmd.txt`, keeping that file's `-rooturl`, `-cdnurl` and `-rootkey`: those
+are CDN settings and never reach a game server, so they have to stay as the launcher
+made them.
+
+Then:
+
+* **the selection screen shows the account's own characters**, built by
+  `dsor/charlist.py` rather than replayed. An account with no characters falls back to
+  the recorded roster, which is what showed everybody Username.
+* **the name over the head comes from the store**, through `playerstate.with_name`. Two
+  accounts are two names; before this, two clients were both Username.
+* **one account plays from one client.** A second `0x8A` naming an account somebody else
+  is already holding is refused with a `DISCONNECTION_NOTIFICATION` — silence is worse,
+  an ignored client reconnects for ever. A claim a killed client never released expires
+  after `Sessions.linger` seconds, or the account would be locked out until a restart.
+  `--shared-account` turns the rule off.
+* an account the store **does not** know is admitted anyway, which is what keeps the
+  recorded launcher line working. `--require-account` closes that.
+
+Signing in again issues a new `-sid` and the previous launcher line stops working. That
+is the only revocation there is, and it is worth having: the session id is the whole
+credential.
+
 ## Reading what happened
 
 Four artefacts, and each answers a different question.

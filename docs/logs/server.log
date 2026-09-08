@@ -1,4 +1,4 @@
-2026-08-19 11:50:41,113 INFO    recording every datagram to /home/lej/dso-capture/emulateur/session.jsonl
+2026-08-19 11:50:41,113 INFO    recording every datagram to <CAPTURE-PATH-REDACTED>/session.jsonl
 2026-08-19 11:50:41,114 INFO    listening on udp/2190 as DrasaOnlineLoginServer (login)
 2026-08-19 11:50:41,114 INFO    listening on udp/2192 as DrasaCharacterService (character)
 2026-08-19 11:50:41,114 INFO    listening on udp/30000 as DrasaOnlineMapServer (map)
@@ -37,7 +37,7 @@
 2026-08-19 11:51:27,477 DEBUG   DrasaCharacterService: announced game clock 8551
 2026-08-19 11:51:27,484 INFO    DrasaCharacterService: pushed the character list to ('172.20.0.2', 63968) (594 datagrams)
 2026-08-19 11:51:27,839 DEBUG   DrasaCharacterService: message 0x8b (32 bytes)
-2026-08-19 11:51:27,839 INFO    DrasaCharacterService: released ('172.20.0.2', 63968) as 'balenciagas' (2 datagrams)
+2026-08-19 11:51:27,839 INFO    DrasaCharacterService: released ('172.20.0.2', 63968) as 'Username' (2 datagrams)
 2026-08-19 11:51:27,871 INFO    DrasaCharacterService: ('172.20.0.2', 63968) asked for 579 datagram(s) again
 2026-08-19 11:51:30,568 DEBUG   DrasaCharacterService: message 0x15 (1 bytes)
 2026-08-19 11:51:30,568 INFO    DrasaCharacterService: ('172.20.0.2', 63968) disconnected
@@ -149,7 +149,7 @@
 2026-08-19 11:54:51,245 DEBUG   DrasaCharacterService: announced game clock 13618
 2026-08-19 11:54:51,255 INFO    DrasaCharacterService: pushed the character list to ('172.20.0.2', 59002) (594 datagrams)
 2026-08-19 11:54:52,737 INFO    DrasaCharacterService: ('172.20.0.2', 59002) asked for 335 datagram(s) again
-2026-08-19 11:54:53,283 INFO    DrasaCharacterService: released ('172.20.0.2', 59002) as 'balenciagas' (2 datagrams)
+2026-08-19 11:54:53,283 INFO    DrasaCharacterService: released ('172.20.0.2', 59002) as 'Username' (2 datagrams)
 2026-08-19 11:54:54,577 DEBUG   DrasaCharacterService: message 0x15 (1 bytes)
 2026-08-19 11:54:54,578 INFO    DrasaCharacterService: ('172.20.0.2', 59002) disconnected
 2026-08-19 11:54:54,704 INFO    DrasaOnlineLoginServer: handshake 1/2 with ('172.20.0.2', 59003), MTU 1292

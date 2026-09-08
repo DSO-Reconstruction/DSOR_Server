@@ -183,6 +183,19 @@ def _tail_at(bits: _Bits, at: int, total: int) -> int | None:
     # recorded, and :func:`actor_of` says which reading was taken.
     if actor != 0 and min(_swapped(actor) >> 16, actor >> 16) > MOST_ACTOR_PAGES:
         return None
+    # And a low half that is not sixteen set bits, which no actor has. This is the
+    # condition that was missing, and it cost two rounds of testing: a run of 0xFF
+    # bytes inside a body reads as actor 0x0000ffff -- page 0, which is "at most
+    # MOST_ACTOR_PAGES" -- with a terminator behind it. That made a NewPlayerCommand
+    # appear to end 712 bits before it does, and an exact segmentation of a truncated
+    # message is the worst kind of wrong answer: the walk covered the payload, the
+    # client said "RakNetStream::ReadBits(): error while reading stream!", and no
+    # player was ever created.
+    #
+    # Measured before changing it: the loose test found 0x0000ffff tails in both
+    # recorded arrivals and in nothing else this walker is used on.
+    if actor != 0 and (actor & 0xFFFF) == 0xFFFF and (_swapped(actor) & 0xFFFF) == 0:
+        return None
     left = total - (at + TAIL_BITS)
     # The end, or the end plus padding. RakNet's BitStream is byte-buffered: whatever
     # the last write leaves, the stream is rounded up to a byte and the frame's length

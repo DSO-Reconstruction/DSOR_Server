@@ -86,8 +86,14 @@ def test_a_creature_is_moved_once_a_tick_and_not_once_per_viewer():
 
 def test_every_player_is_sent_the_same_creatures():
     """They are the same creatures. Building the records once is what makes that true
-    rather than merely likely."""
+    rather than merely likely.
+
+    With the other players switched off, because their records are appended to the same
+    update and *are* per viewer -- each player is sent everybody but themselves. That
+    they differ is the point of them; see test_multiplayer.
+    """
     world = a_world(players=4)
+    world.rules.remote_players = False
     # tick() returns what it queued and empties the outbox, so take its answer.
     sent = [payload for _address, payload in world.tick()]
     updates = [p for p in sent if p[1:3] == b"\x5f\x00"]
@@ -139,19 +145,55 @@ def test_a_recorded_payload_is_read_from_disk_once():
     assert payload.cache_info().hits >= 500
 
 
+def a_tick(players):
+    """The best of four ticks for that many players, in seconds.
+
+    Best rather than first: this runs alongside the rest of the suite and a single
+    sample picks up whatever else the machine was doing.
+    """
+    world = a_world(players=players)
+    world.tick()
+    world.tick()
+    best = None
+    for _ in range(4):
+        start = time.perf_counter()
+        world.tick()
+        took = time.perf_counter() - start
+        best = took if best is None else min(best, took)
+    return best
+
+
 def test_two_thousand_players_tick_inside_the_frame_budget():
     """Not a benchmark with a number to beat — a guard that the shape stayed linear.
 
-    Measured on this machine: 154.9 ms a tick before these changes and 39.3 ms after,
-    at ten ticks a second. The bound here is loose enough to survive a slower machine
-    and tight enough to fail if the per-viewer work comes back.
+    Measured on this machine, at ten ticks a second: 154.9 ms a tick before any of
+    this, 39.3 ms once the creature records were built once instead of per viewer,
+    **31.9 seconds** when the other players' records were built inside each player's
+    own update, and 61-90 ms with them built once and bounded to eight per viewer.
+
+    That last figure is the feature and not a regression: eight other players in each
+    of two thousand updates is sixteen thousand records a tick however cleverly they
+    are chosen. So the bound is loose enough for that and the *shape* is checked
+    separately below.
     """
-    world = a_world(players=2_000)
-    world.tick()
-    start = time.perf_counter()
-    world.tick()
-    took = time.perf_counter() - start
-    assert took < 0.100, f"{took * 1000:.0f} ms a tick for 2000 players"
+    took = a_tick(2_000)
+    assert took < 0.150, f"{took * 1000:.0f} ms a tick for 2000 players"
+
+
+def test_the_tick_grows_with_the_players_and_not_faster():
+    """The guard the absolute number cannot be: four times the players, not much more
+    than four times the work.
+
+    This is what caught the multiplayer records being built per viewer — a quadratic
+    shape reads as 31.9 seconds at two thousand players and as nothing much at five
+    hundred, so an absolute bound on one size can pass while the shape is wrong.
+    """
+    small = a_tick(500)
+    large = a_tick(2_000)
+    assert large < small * 8, (
+        f"{small * 1000:.0f} ms for 500 players and {large * 1000:.0f} for 2000: "
+        "that is worse than linear"
+    )
 
 
 def converge(world, sender, ticks=3000):

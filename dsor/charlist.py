@@ -15,11 +15,11 @@ carries one. The two messages have the same shape, and each entry reads:
     u32   the experience
     u32   the level
 
-    AmateurDeCombat   882246499   100
-    MeufAGrosSeins    882260621   100
-    FilleMineur       882269671   100
-    BgTimide             128322    18
-    balenciagas               0     1     (the recording, and what the screen showed)
+    Username   882246499   100
+    Username    882260621   100
+    Username       882269671   100
+    Username             128322    18
+    Username               0     1     (the recording, and what the screen showed)
 
 Both fields are counted from the *end of the map string*, because that is the last thing
 before them whose position can be found: the entries are back to back and their lengths
@@ -42,6 +42,7 @@ from __future__ import annotations
 import logging
 import struct
 
+from raknet.payload import Payload, bits_of, respan
 from raknet.bitstream import BitReader
 
 log = logging.getLogger("charlist")
@@ -137,6 +138,18 @@ def entries(blob: bytes) -> list[dict]:
 #: 505 -> 1339, 1603 -> 2437, 2677 -> 3511 in the official roster: 834 every time.
 TRAILER_BITS = 834
 
+#: Where an entry keeps its **own** character id, counted from the end of its map string
+#: like every other field here. The id is on the wire twice -- once at
+#: :data:`CHARACTER_AT` in the header and once per entry -- and writing only the header
+#: leaves the entry claiming the recorded character. Measured on the live four-entry
+#: roster, where every entry's field holds that entry's id:
+#:
+#:     Username 111383506, Username 111396827,
+#:     Username 111423903, Username 111560171
+#:
+#: and the header holds the first of them.
+IDENTITY_REL = 96
+
 
 def _write_uint(out: bytearray, at: int, value: int, count: int) -> None:
     """Write *count* bits of *value* at bit *at*, the mirror of BitReader.read_uint.
@@ -193,7 +206,7 @@ def with_progress(blob: bytes, level: int, experience: int) -> bytes:
         first["experience"],
         experience,
     )
-    return bytes(out)
+    return respan(blob, bytes(out))
 
 
 #: A ceiling, so a typo cannot write something the client reads as negative.
@@ -224,4 +237,186 @@ def with_andermant(blob: bytes, amount: int) -> bytes:
         len(found),
         "y" if len(found) == 1 else "ies",
     )
-    return bytes(out)
+    return respan(blob, bytes(out))
+
+
+#: ``CharacterSelectionCommand``, and the two operations that matter here.
+#:
+#: The exchange, read straight off the capture:
+#:
+#:     server  0x84/0x0087 operation 1   the list, 1,964 bytes
+#:     client  0x8B/0x0087 operation 3   29 bytes: the operation, the chosen character
+#:                                       id at offset 2, then 23 zeroes
+#:     server  0x84/0x0087 operation 5   **the same 29 bytes with byte 0 set to 5**
+#:
+#: That last line is the whole of the grant. This server replayed a recording instead
+#: and read none of the request, so every client that clicked Play was granted the
+#: recorded character -- which is why two sessions were both Username.
+SELECTION = 0x0087
+OPERATION_START_GAME = 3
+OPERATION_GRANTED = 5
+
+#: Where the chosen character id sits in the request, and how long the whole body is.
+CHOSEN_AT = 2
+SELECTION_BODY = 29
+
+#: The container the service answers in: 0x84, not the 0x85 the map server uses.
+SINGLE = 0x84
+
+
+def character_chosen(body: bytes) -> int | None:
+    """The character id a start-game request names, or None if it is not one."""
+    if len(body) < CHOSEN_AT + 4 or body[0] != OPERATION_START_GAME:
+        return None
+    chosen = int.from_bytes(body[CHOSEN_AT : CHOSEN_AT + 4], "little")
+    return chosen or None
+
+
+def grant_character(body: bytes) -> bytes | None:
+    """The grant for a start-game request: the request, with the operation changed.
+
+    Byte for byte what the live service sends. Nothing else in the 29 bytes differs --
+    not the character id, not the 23 zeroes behind it -- which is worth stating because
+    it means there is nothing here to get wrong except reading the request at all.
+    """
+    if character_chosen(body) is None:
+        return None
+    kept = bytearray(body[:SELECTION_BODY])
+    if len(kept) < SELECTION_BODY:
+        kept.extend(bytes(SELECTION_BODY - len(kept)))
+    kept[0] = OPERATION_GRANTED
+    return bytes([SINGLE]) + SELECTION.to_bytes(2, "little") + bytes(kept)
+
+
+#: The header, and the fields in it that belong to the account rather than the
+#: recording. Read off both messages:
+#:
+#:     84 87 00 | 01 00 | 8e 3f ab 06 | 32 75 af 06 | 04 00 00 00 | ...
+#:     ^ 0x84     ^ op 1  ^ character   ^ account     ^ how many
+#:
+#: The number of entries. Worth writing down how nearly this went wrong: the recorded
+#: template holds **4** and only **one** entry walks out of it, which reads exactly like
+#: a slot count -- so it was replayed instead of written, and a one-character roster went
+#: out declaring four. The client read three entries that were not there and died on an
+#: invalid string atom inside ``UI::Element::FindChildElement``.
+#:
+#: The live roster settles it: 4 here and four entries, each one walking cleanly. So the
+#: field is the count, and the template is simply a message the capture cut at 316
+#: bytes --- the same trap as the arrival batch, where an exact-looking segmentation of a
+#: truncated message looked like proof.
+#:
+#: 97 bits sit between it and the first name and are not understood, so they are
+#: replayed.
+OPERATION_LIST = 1
+OPERATION_AT = 24
+CHARACTER_AT = 40
+ACCOUNT_AT = 72
+COUNT_AT = 104
+
+#: What the header is, up to the first name.
+HEADER_BITS = FIRST_NAME_AT
+
+
+def _bits(blob: bytes) -> str:
+    """*blob* as bits, to its **declared** length and not its byte length.
+
+    The roster is 316 bytes and declares 2,525 bits, so the last three are padding. A
+    rebuild that copies them declares 2,528, and the client reads three spare bits as
+    the start of another command.
+    """
+    whole = "".join(f"{byte:08b}" for byte in blob)
+    return whole[: bits_of(blob)]
+
+
+def _packed(bits: str) -> bytes:
+    pad = -len(bits) % 8
+    return int(bits + "0" * pad, 2).to_bytes((len(bits) + pad) // 8, "big")
+
+
+def _field(value: int, count: int = FIELD_BITS) -> str:
+    """*value* as the wire writes it: low byte first, each byte most significant first."""
+    return "".join(f"{byte:08b}" for byte in value.to_bytes(count // 8, "little"))
+
+
+def _string_bits(text: str) -> str:
+    raw = text.encode("ascii")
+    if not 1 <= len(raw) <= LONGEST_STRING:
+        raise ValueError(f"a name is 1 to {LONGEST_STRING} characters, got {len(raw)}")
+    return _field(len(raw), 16) + "".join(f"{byte:08b}" for byte in raw)
+
+
+def build(
+    blob: bytes,
+    characters: list[dict],
+    account: int,
+    andermant: int | None = None,
+    slots: int | None = None,
+) -> Payload:
+    """A roster listing *characters*, built over the recording's own bits.
+
+    Each character is a dict of ``name``, ``map``, ``level``, ``experience``.
+
+    What is written: the header's character id, account id and count, then per entry the
+    name, the map, its **own** character id, the level, the experience and the andermant.
+    The id goes in twice because the wire carries it twice, and writing only the header
+    is what made the selection screen assert -- see :data:`IDENTITY_REL`.
+
+    *slots* overrides the count, which is only useful for rebuilding the template: its
+    own header declares four characters and carries one. What is replayed: the 97
+    header bits nobody here understands, and the 834-bit trailer behind every entry --
+    which holds, among other things, a 4x4 float matrix that is byte-identical in all
+    five recorded characters. Inventing 834 bits would be the same mistake as inventing
+    a skill command's tail.
+
+    The recording's own entry rebuilds to the recording's own bytes --- given its own
+    inconsistent count back through *slots* --- which is the test that this writes what
+    it means to and nothing else.
+    """
+    if not characters:
+        raise ValueError("a roster needs at least one character")
+    stream = _bits(blob)
+    template = entries(blob)
+    if not template:
+        raise ValueError("the recorded roster does not walk, so there is no template")
+    first = template[0]
+    trailer = stream[first["name_at"] :]
+    # From the end of one entry's map string, TRAILER_BITS to the next name.
+    trailer_from = _string(blob, first["name_at"])
+    assert trailer_from is not None
+    _name, after_name = trailer_from
+    got_map = _string(blob, after_name)
+    assert got_map is not None
+    _map, after_map = got_map
+    tail = stream[after_map : after_map + TRAILER_BITS]
+
+    head = stream[:HEADER_BITS]
+    head = (
+        head[:OPERATION_AT]
+        + _field(OPERATION_LIST, 16)
+        + _field(int(characters[0].get("character", 0)))
+        + _field(account)
+        + _field(len(characters) if slots is None else int(slots))
+        + head[COUNT_AT + FIELD_BITS :]
+    )
+
+    body = ""
+    for character in characters:
+        kept = tail
+        for offset, value in (
+            (IDENTITY_REL, int(character.get("character", 0))),
+            (ANDERMANT_REL, andermant if andermant is not None else first["andermant"]),
+            (EXPERIENCE_REL, int(character["experience"])),
+            (LEVEL_REL, max(LOWEST_LEVEL, min(HIGHEST_LEVEL, int(character["level"])))),
+        ):
+            kept = kept[:offset] + _field(int(value)) + kept[offset + FIELD_BITS :]
+        body += _string_bits(str(character["name"]))
+        body += _string_bits(str(character["map"]))
+        body += kept
+
+    # And what follows the last entry, which is the account's one global equipment
+    # list: a 32-bit count, then per item a length-prefixed template name, twenty zero
+    # bytes and a set bit. There is exactly one of these however many characters there
+    # are, and its entries carry no owner -- so it cannot bind gear to a character
+    # except by position, and it is replayed rather than rebuilt.
+    whole = head + body + stream[after_map + TRAILER_BITS :]
+    return Payload(_packed(whole), len(whole))

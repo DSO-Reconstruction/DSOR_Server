@@ -243,3 +243,33 @@ def test_a_datagram_sequence_is_assigned_when_it_is_sent_not_when_it_is_built():
     # Sealing them now continues from there, in the order they go out.
     sealed = [connection.seal(frame) for frame in frames]
     assert sequences_of(sealed) == list(range(1, len(frames) + 1))
+
+
+def test_the_retain_buffer_holds_the_largest_arrival_this_server_serves():
+    """Kingshill's batch is 1,170,448 bytes and 1024 datagrams was not enough.
+
+    A split message never completes if one piece is missing, so a buffer that wraps
+    mid-arrival strands a fragment for ever: the client asked for datagrams that had
+    already been evicted, the NewPlayerCommand never finished, and no character was
+    created. The log said it out loud -- "3 datagram(s) asked for were no longer
+    retained" -- and the screen said it as a stuck camera.
+    """
+    connection = make_connection()
+    needed = -(-1_170_448 // (MTU - MAX_FRAME_HEADER))
+    assert connection.retain > needed * 2, (
+        f"{needed} datagrams to carry the batch, {connection.retain} retained"
+    )
+
+
+def test_a_big_message_stays_retained_until_it_is_acknowledged():
+    """Which is what makes the ceiling affordable: it only fills while in flight."""
+    connection = make_connection()
+    connection.state = State.CONNECTED
+    # Big enough to split into more datagrams than the old ceiling of 1024 held for
+    # Kingshill, and small enough to keep the test quick.
+    sent = connection.send_message(bytes(2_000 * (MTU - MAX_FRAME_HEADER)))
+    assert len(sent) > 1024
+    assert connection.unacknowledged == len(sent)
+    assert connection.unacknowledged <= connection.retain, (
+        "the buffer wrapped and a fragment can no longer be resent"
+    )

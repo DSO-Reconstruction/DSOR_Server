@@ -16,6 +16,8 @@ import pytest
 
 from dsor import inventory
 from dsor.items import item_taken
+from raknet.bitstream import BitReader
+from raknet.payload import bits_of
 
 DATA = pathlib.Path(__file__).resolve().parent.parent / "dsor/data"
 
@@ -310,3 +312,154 @@ def test_equipping_an_item_frees_the_cell_it_came_from():
     # An item this server never placed is reported and changes nothing.
     world.item_moved(here, bytes([0x99, 0x01, 0x01, 0x00]), inventory.EQUIP)
     assert set(world.bag) == {0}
+
+
+def test_a_pickup_reply_built_from_nothing():
+    """259 bytes stating the item, against 8.4 KB replaying somebody else's bag.
+
+    The body has been provably right for a while -- `encode` reproduces both of the
+    live service's replies bit for bit -- and what it never had was the framing:
+    `0x85`, the id, the body, the actor, the terminator. So the whole answer to a
+    pickup is now written here, and what it states is only what is known.
+    """
+    from dsor.chain import walk
+    from raknet.payload import bits_of
+
+    item = inventory.Item(
+        id=0x00010041,
+        template="all_unique_ring_pw_death",
+        level=100,
+        position=(1.0, 2.0, 3.0),
+        stamped=(2026, 9, 2, 14, 0, 0),
+        statistics=[inventory.Statistic("item_block_ring", 0.65, 0, 0, 100)],
+    )
+    reply = inventory.taken(
+        item, 0, 0x00010015, health=450_000.0, resource=100.0
+    )
+    assert len(reply) < 400, f"{len(reply)} bytes, against item_taken.bin's 8464"
+
+    found, leftover = walk(reply, most=6)
+    assert leftover == 0
+    assert [command.id for command in found] == [
+        inventory.DISCARD_ITEM,
+        inventory.INVENTORY_INFO,
+    ]
+    assert inventory.discarded(reply) == item.id
+
+    got, ends = inventory.decode(reply)
+    assert bits_of(reply) - ends == 40, "the actor and the terminator"
+    assert len(got.items) == 1
+    only = got.items[0]
+    assert (only.id, only.template, only.level) == (item.id, item.template, 100)
+    assert only.stamped == item.stamped
+    assert [line.name for line in only.statistics] == ["item_block_ring"]
+    assert got.slots == [(item.id, [0])]
+    assert got.placements == [] and got.equipment == []
+    assert struct.unpack("<f", got.scalars[inventory.HEALTH].to_bytes(4, "little"))[0] == 450_000.0
+    # Nothing of anybody else's: no 247 strings, no foreign placements.
+    assert got.names == []
+    assert got.allocations == []
+
+
+def test_the_built_reply_states_only_what_is_known():
+    """And the module says which fields it leaves alone."""
+    assert "kind" in inventory.OPAQUE and "thirtieth" in inventory.OPAQUE
+    item = inventory.Item(id=1, template="x")
+    for name in inventory.OPAQUE:
+        assert hasattr(item, name), name
+    reply = inventory.taken(item, 0, 0x00010015)
+    only = inventory.decode(reply)[0].items[0]
+    for name in inventory.OPAQUE:
+        assert getattr(only, name) == getattr(item, name), name
+
+
+def test_the_world_builds_it_and_the_switch_replays_it():
+    from dsor.world import World
+
+    def once(built: bool) -> bytes:
+        world = World()
+        world.rules.mobs = 1
+        world._ready()
+        world.rules.enforce = False
+        world.rules.built_pickup = built
+        here = ("1.2.3.4", 5)
+        player = world.player(here)
+        player.in_world, player.level, player.health = True, 100, 450_000.0
+        world.smite_all(here)
+        actor = next(iter(world.dropped))
+        return world.pick_up(here, actor)[0][1]
+
+    small, large = once(True), once(False)
+    assert len(small) < 500 and len(large) > 8000
+    # Both name one item and put it in a cell; only one of them carries a stranger's.
+    for reply in (small, large):
+        got, _ends = inventory.decode(reply)
+        assert len(got.items) == 1
+    assert inventory.decode(large)[0].names, "the replay carries 247 strings"
+    assert not inventory.decode(small)[0].names
+
+
+# --- the client's own arithmetic -------------------------------------------------
+#
+# Transcribed from InventoryInfoCommand::Deserialize at 0x1409671e8: twelve collections,
+# each a 32-bit count bounded by 0xf4240 and then its elements, then six 32-bit scalars,
+# two floats and one single bit. So an empty bag is 12*32 + 6*32 + 2*32 + 1 = 641 body
+# bits, and nothing else. This is the number the codec disagreed with by one, and the
+# client said so:
+#
+#     Received InventoryInfoCommand with unknown or invalid actor id (2155872384)!
+#
+# 2155872384 is 0x80800080, which is the actor 0x00010100 read one bit early.
+
+
+EMPTY_BODY_BITS = 12 * 32 + 6 * 32 + 2 * 32 + 1
+
+
+def test_an_empty_bag_is_the_length_the_client_reads():
+    got = inventory.Inventory(
+        scalars=tuple(list(inventory.LEADING_SCALARS) + [0, 0])
+    )
+    assert len(inventory.encode(got)._bits) == EMPTY_BODY_BITS
+
+
+def test_the_empty_bag_puts_its_actor_where_the_client_looks():
+    """24 bits of framing plus 641 of body: the actor begins at bit 665."""
+    actor = 0x00010100
+    built = inventory.empty(actor, 46, 225.0, 100.0)
+    blob, total = bytes(built), bits_of(built)
+    at = inventory.BODY_AT_ALONE + EMPTY_BODY_BITS
+    assert at == 665
+    assert total == at + inventory.TAIL_BITS
+    assert BitReader(blob, at).read_uint(32) == actor
+    # And the value the client complained about is what reading it one bit early gives,
+    # which is the whole diagnosis: the last scalar is a single bit and it is set, so an
+    # off-by-one read picks that bit up in front of the actor.
+    assert BitReader(blob, at - 1).read_uint(32) == 0x80800080
+    assert BitReader(blob, at - 1).read_bits(1) == 1
+
+
+def test_the_body_is_found_and_not_assumed_in_all_three_shapes():
+    """Three messages, three different offsets, none of them a constant.
+
+    113 in the live service's reply, whose 0x0054 id sits at bits 97 to 112 because the
+    chain is bit-packed; 112 in the chain `taken` builds, which is byte aligned; 24 in a
+    standalone command. Two constants used to stand here and one of them was a bit out.
+    """
+    live = (DATA / OFFICIAL[0][0]).read_bytes()
+    assert inventory.body_at(live) == 113
+    alone = inventory.empty(0x00010100, 46)
+    assert inventory.body_at(alone) == inventory.BODY_AT_ALONE == 24
+    pickup = inventory.taken(
+        inventory.Item(id=0x40, template="mortis_ring_of_death"), 0, 0x00010100
+    )
+    assert inventory.body_at(pickup) == 112
+
+
+def test_a_found_body_has_to_end_on_a_command_boundary():
+    """The offset is accepted because the body closes on an actor and an 0xFF, not
+    because the id was there -- a plausible offset in a bit-packed stream means
+    nothing on its own."""
+    built = bytes(inventory.empty(0x00010100, 46))
+    broken = built[:-1] + bytes([built[-1] ^ 0xFF])
+    with pytest.raises(ValueError, match="boundary"):
+        inventory.body_at(broken)

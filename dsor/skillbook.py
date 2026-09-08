@@ -25,6 +25,9 @@ Swing — listed in the book with its bit at zero.
 
 from __future__ import annotations
 
+from raknet.bitstream import BitWriter
+from raknet.payload import Payload, respan
+
 from dataclasses import dataclass
 
 #: The command this module rewrites.
@@ -70,6 +73,16 @@ def find_book(message: bytes) -> int | None:
     then confirming — the message is bit-packed, so the boundary is not byte-aligned
     and a byte-level search misses it entirely.
     """
+    # A message that *is* a book, rather than one carrying it: there is no terminator
+    # in front of the leading command, so the search below would miss it. The offset
+    # this returns is the terminator's, and entries() reads the count 24 bits later --
+    # so a standalone book answers 0, which puts the count at bit 24, where it is.
+    if (
+        len(message) >= 3
+        and message[0] == MULTI
+        and (message[1] | (message[2] << 8)) == SKILL_BOOK
+    ):
+        return 0
     want = bytes([0xFF, SKILL_BOOK & 0xFF, SKILL_BOOK >> 8])
     size = len(message)
     value = int.from_bytes(message, "big")
@@ -113,7 +126,54 @@ def with_granted(message: bytes, skills: set[int]) -> bytes:
         if entry.skill in skills:
             byte, shift = divmod(entry.owned_bit, 8)
             out[byte] |= 1 << (7 - shift)
-    return bytes(out)
+    return respan(message, bytes(out))
+
+
+#: The container a built book travels in, and what closes it.
+MULTI = 0x85
+TERMINATOR = 0xFF
+
+#: The client writes the count as ``count - 1`` into eight bits and asserts on the
+#: result, so a book of more than 254 entries cannot be stated at all.
+MOST_ENTRIES = 254
+
+
+def encode(skills: list[int], actor: bytes, owned: set[int] | None = None) -> Payload:
+    """A whole ``SkillBookInfoCommand`` listing *skills*, owned by *actor*.
+
+    Built rather than patched, because a trimmed arrival has no book to patch: it sits
+    at bit 102,860 of the tutorial's recorded batch and 9,293,117 of Kingshill's, both
+    far outside the player's own command. On Kingshill the patch never worked either --
+    :func:`entries` reads nothing out of that blob -- so the skills the operator had in
+    that city were the recorded character's.
+
+    The grammar is the one :func:`entries` reads, and the recording agrees field for
+    field: an 8-bit count, then per entry a little-endian uint32 skill index and three
+    single bits of which the **first** is ownership, then the actor and the terminator.
+    The other two are zero in all eighteen recorded entries and are written zero here.
+
+    *owned* says which of *skills* the character has; the default is all of them, which
+    is what a server that grants a list wants to say.
+    """
+    if len(actor) != 4:
+        raise ValueError(f"an actor id is four bytes, got {len(actor)}")
+    if not 0 < len(skills) <= MOST_ENTRIES:
+        raise ValueError(
+            f"a book holds 1 to {MOST_ENTRIES} entries, got {len(skills)}"
+        )
+    has = set(skills) if owned is None else owned
+    writer = BitWriter()
+    writer.write_uint(MULTI, 8)
+    writer.write_uint(SKILL_BOOK, 16)
+    writer.write_uint(len(skills), 8)
+    for skill in skills:
+        writer.write_uint(skill, 32)
+        writer.write_bits(1 if skill in has else 0, 1)
+        writer.write_bits(0, 1)
+        writer.write_bits(0, 1)
+    writer.write_bytes(actor)
+    writer.write_uint(TERMINATOR, 8)
+    return writer.to_bytes()
 
 
 def granted(message: bytes) -> set[int]:

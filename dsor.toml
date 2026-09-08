@@ -23,6 +23,14 @@ console_port = 2199
 characters = "characters.sqlite"
 save_every = 30.0
 
+# The sign-up page. No password ever crosses the game wire -- the capture is
+# unambiguous, twelve 0x8A messages carrying an account id and a session GUID and
+# nothing else -- so the credential has to be issued somewhere off it, and this is that
+# somewhere. It hands back the launcher line with -accid and -sid already in it.
+# Plain HTTP, so portal_bind stays on the loopback.
+portal_port = 8080
+portal_bind = "127.0.0.1"
+
 # Punching bags, so an effect can be watched playing out. The client's own monster table
 # says these creatures hold 24, so a forced figure is one it can contradict and the
 # health bar may read oddly -- that is the trade for having something that survives a

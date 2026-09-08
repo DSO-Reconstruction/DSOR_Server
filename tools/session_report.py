@@ -57,6 +57,28 @@ NOTABLE = {
     0x0087: "chose a character",
 }
 
+def command_names() -> dict[int, str]:
+    """``id -> class name`` out of docs/commands.md, so a report reads in English.
+
+    From the document rather than a second table, because the document is generated
+    from the client's own Rtti by tools/command_ids.py and two copies would drift.
+    """
+    found: dict[int, str] = {}
+    doc = pathlib.Path(__file__).resolve().parent.parent / "docs/commands.md"
+    if not doc.exists():
+        return found
+    for line in doc.read_text(errors="ignore").splitlines():
+        match = re.match(r"\|\s*`0x([0-9A-Fa-f]{4})`\s*\|\s*([A-Za-z0-9_]+)", line)
+        if match:
+            found[int(match.group(1), 16)] = match.group(2)
+    return found
+
+
+#: The commands a map server sends before it starts ticking, in the order the live
+#: service sends them. Printed with ``--arrival``, because "what does the client need to
+#: spawn" is a question this project has answered wrong twice and the capture answers it.
+ARRIVAL = 0x8D
+
 #: Status effects, creature descriptions, the reply to a pickup.
 STATUS_EFFECT = 0x004F
 CREATURE = 0x002A
@@ -179,9 +201,88 @@ def report(path: pathlib.Path) -> dict:
     }
 
 
+def arrival(path: pathlib.Path, most: int = 40) -> list[tuple[str, int, int, str]]:
+    """The batch a map server sends on arrival, command by command.
+
+    Every one of those batches is a single message -- Kingshill's is 1.17 MB and 466
+    chained commands -- so this walks it forward from its first command, taking each
+    end to be the first place a valid ``actor + 0xFF + next id`` tail sits. The walk
+    landing exactly on the payload's last bit is what makes the reading believable.
+
+    What it is for: the arrival's **last** command is ``0x001F PlayerReadyCommand``,
+    seven bytes naming the player's actor, and an arrival without it leaves the client
+    holding a description of a character it never instantiates. That cost a round of
+    testing to find and one line here to see.
+    """
+    from dsor.chain import MOST_ACTOR_PAGES, MOST_COMMANDS
+
+    def window(raw: bytes, at: int, count: int) -> int:
+        first, need = at >> 3, (at % 8 + count + 7) >> 3
+        chunk = raw[first : first + need]
+        if len(chunk) < need:
+            raise IndexError(at)
+        value = int.from_bytes(chunk, "big")
+        return (value >> (need * 8 - (at % 8) - count)) & ((1 << count) - 1)
+
+    def identifier(raw: bytes, at: int) -> int:
+        got = window(raw, at, 16)
+        return ((got & 0xFF) << 8) | (got >> 8)
+
+    def tail(raw: bytes, at: int, total: int) -> int | None:
+        if at + 40 > total or window(raw, at + 32, 8) != 0xFF:
+            return None
+        plain = window(raw, at, 32)
+        swapped = int.from_bytes(plain.to_bytes(4, "big"), "little")
+        actor = 0 if not plain else (
+            swapped if (swapped >> 16) <= MOST_ACTOR_PAGES else plain
+        )
+        if actor and (actor >> 16) > MOST_ACTOR_PAGES:
+            return None
+        if at + 40 == total:
+            return actor
+        if at + 56 > total:
+            return None
+        following = identifier(raw, at + 40)
+        return None if not 0 < following <= MOST_COMMANDS else actor
+
+    names = command_names()
+    biggest = max(
+        (payload for _n, from_server, payload in messages(path)
+         if from_server and payload[:1] == bytes([MULTI]) and len(payload) > 100_000),
+        key=len,
+        default=None,
+    )
+    if biggest is None:
+        return []
+    total = len(biggest) * 8
+    out, at = [], 8
+    while at + 16 < total:
+        command = identifier(biggest, at)
+        if command > MOST_COMMANDS:
+            break
+        probe, end = at + 16, None
+        while probe + 40 <= total:
+            actor = tail(biggest, probe, total)
+            if actor is not None:
+                end = probe + 40
+                out.append((names.get(command, "?"), command, (end - at) // 8, hex(actor)))
+                break
+            probe += 1
+        if end is None:
+            break
+        at = end
+    return out
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("captures", nargs="+", type=pathlib.Path)
+    parser.add_argument(
+        "--arrival",
+        action="store_true",
+        help="take the capture's largest batch apart command by command: what a map "
+        "server sends before it starts ticking, in order",
+    )
     parser.add_argument(
         "--actor",
         type=lambda value: int(value, 0),
@@ -189,6 +290,17 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument("--most", type=int, default=25)
     args = parser.parse_args(argv[1:])
+
+    if args.arrival:
+        for capture in args.captures:
+            found = arrival(capture)
+            print(f"== {capture.name}: {len(found)} commands in the arrival batch")
+            for index, (name, command, size, actor) in enumerate(found):
+                if index < args.most or index >= len(found) - 4:
+                    print(f"   {index:4d} 0x{command:04X} {name:40s} {size:8d} o {actor}")
+                elif index == args.most:
+                    print(f"        ... {len(found) - args.most - 4} more ...")
+        return 0
 
     for capture in args.captures:
         got = report(capture)

@@ -20,6 +20,7 @@ Nothing in the unit tests could see it, because it only shows up in a full flow.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -30,7 +31,11 @@ from raknet.datagram import parse_datagram_header
 from raknet.frame import parse_frames
 from server import Service
 
-CAPTURE = Path("/home/lej/dso-capture/session-20260818-033440.jsonl")
+#: Where the reference captures live. From the environment, or ~/dso-capture, so the
+#: path names no particular machine or user; the test skips when the file is absent,
+#: which is what it does for anyone who has not recorded one.
+CAPTURES = Path(os.environ.get("DSOR_CAPTURES", Path.home() / "dso-capture"))
+CAPTURE = CAPTURES / "session-20260818-033440.jsonl"
 CHARACTER_PORT = 2192
 CLIENT = ("172.20.0.2", 51000)
 

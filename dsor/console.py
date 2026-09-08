@@ -33,6 +33,22 @@ SETTABLE: dict[str, Callable[[str], object]] = {
     "effect_stack": int,
     "first_slot": int,
     "bag_layout": str,
+    # What the currency counter reads, on the selection screen and in the game. Both
+    # come from the server -- the roster charlist.build writes and the replayed player
+    # state -- so this is the only place that changes it. It is read at arrival and when
+    # the roster is built, which means a client already in the world keeps the figure it
+    # was given until it reconnects.
+    "andermant": int,
+    "start_level": int,
+    # The four switches that decide how much of the arrival and the pickup this server
+    # states itself, so the client's true minimum can be found in one session.
+    "arrival_inventory": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "arrival_ready": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "arrival_content": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "arrival_skill_book": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "arrival_quickslots": lambda text: text.lower() in ("1", "true", "yes", "on"),
+    "arrival_bar_slots": int,
+    "built_pickup": lambda text: text.lower() in ("1", "true", "yes", "on"),
     "slot_capacity": int,
     "reach": float,
     "reach_slack": float,
@@ -137,10 +153,26 @@ class Console:
             f"drops          {', '.join(world.rules.drop_templates) or '(recorded)'}",
         ]
         for player in world.players.values():
+            # The actor, the name and the position as well as the numbers, because the
+            # question this answers most often is "why does one player not see the
+            # other", and all three are in the answer: they need distinct actors, the
+            # names the store gave them, and a position each -- player_records skips
+            # anybody whose position is None.
+            where = player.position
             lines.append(
-                f"player         {player.address} level {player.level} "
-                f"xp {player.experience} health {player.health:.0f}"
-                f"/{player.max_health:.0f}"
+                f"player         {player.address} "
+                f"{world.player_name(player)!r} "
+                f"actor {player.actor.hex(' ') if player.actor else '(none)'} "
+                f"{'in world' if player.in_world else 'not in world'} "
+                f"at {f'{where.x},{where.y} h{where.elevation}' if where else '(none)'} "
+                f"level {player.level} xp {player.experience} "
+                f"health {player.health:.0f}/{player.max_health:.0f}"
+            )
+        for player in world.players.values():
+            seen = world.visitor_records(player.address, world.records_tick)
+            lines.append(
+                f"sees           {player.address} is sent {len(seen)} other "
+                f"player record(s)"
             )
         return "\n".join(lines)
 

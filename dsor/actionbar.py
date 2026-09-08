@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 
 from raknet.bitstream import BitReader, BitWriter
+from raknet.payload import Payload
 
 log = logging.getLogger("actionbar")
 
@@ -119,6 +120,46 @@ def _write_record(writer: BitWriter, slots: list[str | None]) -> None:
         writer.write_uint(len(raw), 16)
         for byte in raw:
             writer.write_uint(byte, 8)
+
+
+#: The command the bars travel in, and what closes it.
+MULTI = 0x85
+QUICK_SLOTS_INFO = 0x0050
+TERMINATOR = 0xFF
+
+
+def encode(skills: list[str], actor: bytes, bars: int = BARS) -> Payload:
+    """A whole ``QuickSlotsInfoCommand`` giving every bar *skills*.
+
+    Built rather than patched, and the layout is read rather than assumed. In the
+    recorded batch the skill book's terminator sits at bit 103,554, the next id at
+    103,562 is ``0x0050``, and its body begins at 103,578 with a **uint32 of 10** -- the
+    number of bars -- immediately followed by the ten 680-bit records at
+    :data:`FIRST_BAR`, and then the actor and the terminator. So:
+
+        u32 bars | bars x (u32 17, u32 0, 17 slots) | actor | 0xFF
+
+    which is exactly what :func:`with_skills` has been rewriting in place all along, one
+    command deeper than it knew.
+
+    Filling all seventeen slots kills the client inside
+    ``Util::FixedArray<Core::Ptr<UI::Slot>>::operator[]``, so *skills* is truncated to
+    :data:`SLOTS` and a caller that wants a safe bar passes fewer.
+    """
+    if len(actor) != 4:
+        raise ValueError(f"an actor id is four bytes, got {len(actor)}")
+    if not 0 < bars <= BARS:
+        raise ValueError(f"there are 1 to {BARS} bars, got {bars}")
+    wanted: list[str | None] = list(skills[:SLOTS])
+    writer = BitWriter()
+    writer.write_uint(MULTI, 8)
+    writer.write_uint(QUICK_SLOTS_INFO, 16)
+    writer.write_uint(bars, 32)
+    for _ in range(bars):
+        _write_record(writer, wanted)
+    writer.write_bytes(actor)
+    writer.write_uint(TERMINATOR, 8)
+    return writer.to_bytes()
 
 
 def with_skills(blob: bytes, skills: list[str], start: int = FIRST_BAR) -> bytes:

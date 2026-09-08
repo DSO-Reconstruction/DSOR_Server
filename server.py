@@ -30,6 +30,7 @@ import logging
 import math
 import selectors
 import socket
+import sys
 import time
 
 from dsor.messages import (
@@ -65,17 +66,32 @@ from dsor.world import Rules, World
 from dsor.console import Console
 from dsor import config
 from dsor import identity as whois
+from dsor import portal
+from dsor.portal import LAUNCHER
 from dsor.combat import decode_skill_use
 from dsor.quickslots import QUICK_SLOTS, decode as decode_quick_slots
 from dsor.store import Store
 from dsor.monsters import MONSTERS
 from dsor.skills import skill as skill_at
 from dsor.titles import title_of
-from dsor import inventory, usable
+from dataclasses import replace
+
+from dsor import actionbar, inventory, remote, skillbook, usable
 from dsor.mapdata import SPAWN_POINTS, servable_points
 from dsor.actionbar import bar_skills, with_skills
-from dsor.charlist import with_andermant, with_progress
-from dsor.playerstate import with_progress as with_player_progress
+from dsor.charlist import (
+    build as build_roster,
+    character_chosen,
+    grant_character,
+    with_andermant,
+    with_progress,
+)
+from dsor.playerstate import (
+    ready as player_ready,
+    with_name as with_character_name,
+    with_actor as with_own_actor,
+    with_progress as with_player_progress,
+)
 from dsor.skillbook import BOOK_SKILLS, skill_index, up_to_level, with_granted
 from dsor.protocol import build_service_identity
 from dsor.shop import OPCODE as SHOP_OPCODE, keep_first, set_price
@@ -116,7 +132,8 @@ from dsor.recorded import (
     describable_mobs,
     character_release,
     client_query_reply,
-    map_entry_sequence,
+    map_arrival,
+    zone_actor,
     tick_state,
     character_selection,
     entity_update_template,
@@ -264,6 +281,11 @@ SKILL_OPCODES_UNHANDLED = {
 #: else — four bytes, the shortest request in the protocol.
 PICKUP_ITEM_OPCODE = 0x0064
 
+#: The one map whose creature spawn table and creature descriptions this server has.
+#: Another map's client has never been told those creatures exist, so placing them in
+#: it produces actors it cannot draw and this server cannot be hit.
+TUTORIAL_MAP = "a0001_start_tutorial_dun"
+
 #: What the client sends to use an item by name -- a mount, among 2,862 others. Its
 #: class in the client's Rtti is UseStickerBookItemCommand, which is not what it does.
 USE_ITEM_OPCODE = 0x0135
@@ -354,8 +376,17 @@ class Sessions:
     the address and port change every time.
     """
 
+    #: How long a claim outlives the last 0x8A that refreshed it. A client that is
+    #: killed sends no disconnection -- that is the whole reason presence is also on
+    #: a timer -- so a claim it never released has to expire, or the account is locked
+    #: out until the server restarts. Every 0x8A refreshes, so a live client never
+    #: comes near this.
+    linger: float = 60.0
+
     def __init__(self) -> None:
         self._chosen: set[bytes] = set()
+        #: account -> (owning GUID, when it was last refreshed).
+        self._claims: dict[int, tuple[bytes, float]] = {}
 
     def character_chosen(self, guid: bytes | None) -> bool:
         return guid is not None and guid in self._chosen
@@ -363,6 +394,38 @@ class Sessions:
     def mark_chosen(self, guid: bytes | None) -> None:
         if guid is not None:
             self._chosen.add(guid)
+
+    def claim(self, account: int, guid: bytes | None, now: float | None = None) -> bool:
+        """Take the account for this client, or False if someone else has it.
+
+        Keyed by account and not by character, because the account is what the client
+        announces: the character id only appears in the long form, once selection has
+        happened, and by then the second client is already in.
+
+        The same GUID reclaiming is always allowed, and has to be -- a client crosses
+        all three tiers on one GUID, disconnecting from each in turn, so it releases
+        and retakes its own claim twice per login.
+        """
+        if guid is None:
+            return True
+        now = time.time() if now is None else now
+        held = self._claims.get(account)
+        if held is not None and held[0] != guid and now - held[1] <= self.linger:
+            return False
+        self._claims[account] = (guid, now)
+        return True
+
+    def release(self, account: int | None, guid: bytes | None) -> None:
+        """Give up a claim, if this client is the one holding it."""
+        if account is None or guid is None:
+            return
+        held = self._claims.get(account)
+        if held is not None and held[0] == guid:
+            del self._claims[account]
+
+    def owner(self, account: int) -> bytes | None:
+        held = self._claims.get(account)
+        return None if held is None else held[0]
 
 
 class Service:
@@ -783,6 +846,8 @@ class Service:
 
         elif message_id == 0x8A:  # noqa: PLR2004 - documented in dsor.messages
             found = whois.parse(message.payload)
+            if not self._admitted(connection, found, sender):
+                return
             if found is not None and self.who.get(sender) != found:
                 self.who[sender] = found
                 log.info(
@@ -805,12 +870,77 @@ class Service:
             self.connections.pop(sender, None)
             self.persist(sender)
             self.world.forget(sender)
-            self.who.pop(sender, None)
+            was = self.who.pop(sender, None)
+            if was is not None:
+                self.sessions.release(was.account, connection.client_guid)
             self.record_sent.discard(sender)
             log.info("%s: %s disconnected", self.name, sender)
 
         else:
             self._on_game_message(connection, message, sender)
+
+    def _admitted(self, connection: Connection, found, sender) -> bool:
+        """Whether this identity may connect: the credential, then exclusivity.
+
+        No password crosses the wire -- the capture is unambiguous about that, twelve
+        0x8A messages carrying an account id and a session GUID and nothing else -- so
+        the session id **is** the credential, and checking it means checking it against
+        the one the store last issued.
+
+        Two rules, and the split matters:
+
+        * an account the store knows must present the session the store issued. This is
+          the credential check, and it is always on: an account with a password would be
+          no protection at all if any client could name it and skip the session.
+        * an account the store does not know is admitted unless `Rules.require_account`
+          says otherwise. That is what lets the recorded launcher line still connect,
+          and turning the rule on is what closes the server to accounts it did not
+          issue.
+
+        Refusal is a bare DISCONNECTION_NOTIFICATION and a closed connection. There is
+        no recorded "refused" reply to copy -- the real service never refused anything
+        this server saw -- and silence is worse than a disconnection: a client that is
+        merely ignored pings for thirty seconds and reconnects for ever.
+        """
+        if found is None:
+            if self.rules.require_account:
+                self._refuse(connection, sender, "a 0x8A this server could not read")
+                return False
+            return True
+        known = self.store.account_by_id(found.account) if self.store else None
+        if known is None:
+            if self.rules.require_account:
+                self._refuse(
+                    connection, sender, f"account {found.account} is not on this server"
+                )
+                return False
+        elif not self.store.session_matches(found.account, found.session):
+            self._refuse(
+                connection,
+                sender,
+                f"account {found.account} ({known.name}) presented a session this "
+                "server did not issue",
+            )
+            return False
+        if not self.rules.one_session_per_account:
+            return True
+        if not self.sessions.claim(found.account, connection.client_guid):
+            self._refuse(
+                connection,
+                sender,
+                f"account {found.account} is already playing somewhere else",
+            )
+            return False
+        return True
+
+    def _refuse(self, connection: Connection, sender, why: str) -> None:
+        """Turn a client away, and say why in the log."""
+        log.warning("%s: refused %s: %s", self.name, sender, why)
+        self._queue(connection, bytes([MessageID.DISCONNECTION_NOTIFICATION]), sender)
+        connection.state = State.CLOSED
+        self.connections.pop(sender, None)
+        self.who.pop(sender, None)
+        self.record_sent.discard(sender)
 
     def _authenticate(self, connection: Connection, sender) -> None:
         """Answer a 0x8A the way this tier's real counterpart does.
@@ -911,17 +1041,7 @@ class Service:
         this character's, read from the store -- so it is applied after.
         """
         if self._granted_state is None:
-            wanted: set[int] = set()
-            for name in self.rules.granted_skills:
-                found = skill_index(name)
-                if found is None:
-                    log.warning("%s: no skill named %r in the book", self.name, name)
-                else:
-                    wanted.add(found)
-            if self.rules.grant_up_to_level:
-                wanted |= up_to_level(
-                    self.rules.grant_up_to_level, self.rules.character_class
-                )
+            wanted = self._granted_skills()
             if not wanted:
                 self._granted_state = state
             else:
@@ -935,9 +1055,143 @@ class Service:
                         if index in wanted
                     )),
                 )
-        return self._with_player_progress(
-            self._with_action_bar(self._granted_state, sender), sender
+        # The name **first**, and the order is not a preference: the name is
+        # length-prefixed, so writing it moves the map string, the level, the
+        # experience and the command's own actor. Everything after it is addressed by
+        # walking to it, so they have to be written afterwards or not at all.
+        return self._with_own_actor(
+            self._with_player_progress(
+                self._with_action_bar(
+                    self._with_character_name(self._granted_state, sender), sender
+                ),
+                sender,
+            ),
+            sender,
         )
+
+    def _with_character_name(self, state: bytes, sender=None) -> bytes:
+        """The player state, naming *this* character.
+
+        Nothing wrote this field until now, so the name over every player's head was
+        the recording's -- and the operator, with two clients open, saw two
+        Username. The name comes from the store, which is where a character
+        created with its account keeps it.
+        """
+        if sender is None or not self.rules.character_names:
+            return state
+        found = self.who.get(sender)
+        if found is None or self.store is None:
+            return state
+        saved = self.store.load(found.key)
+        if saved is None or not saved.name:
+            return state
+        self.world.player(sender).name = saved.name
+        return with_character_name(state, saved.name)
+
+    def _granted_skills(self) -> set[int]:
+        """The wire indices this server says the character owns.
+
+        ``granted_skills`` by name plus everything ``grant_up_to_level`` unlocks. One
+        place, because both the patched book and the built one need the same answer and
+        having two would let them disagree.
+        """
+        wanted: set[int] = set()
+        for name in self.rules.granted_skills:
+            found = skill_index(name)
+            if found is None:
+                log.warning("%s: no skill named %r in the book", self.name, name)
+            else:
+                wanted.add(found)
+        if self.rules.grant_up_to_level:
+            wanted |= up_to_level(
+                self.rules.grant_up_to_level, self.rules.character_class
+            )
+        return wanted
+
+    def _skill_book(self, sender) -> bytes | None:
+        """A ``SkillBookInfoCommand`` for this player, or None to send none.
+
+        Which skills a character owns is this server's to say -- ``granted_skills`` and
+        ``grant_up_to_level`` already say it -- and until now it said so by setting one
+        bit per entry inside a recorded command. There is no recorded command to patch
+        in a trimmed arrival, so it is written instead. The grammar is complete: an
+        8-bit count, then per entry a uint32 skill index and three single bits of which
+        the first is ownership, then the actor and the terminator.
+        """
+        if not self.rules.arrival_skill_book:
+            return None
+        wanted = self._granted_skills()
+        if not wanted:
+            return None
+        owned = sorted(wanted)
+        actor = self.world.player(sender).actor
+        message = skillbook.encode(owned, actor)
+        log.info(
+            "%s: %s owns %d skill(s), in a %d-byte book of this server's own",
+            self.name, sender, len(owned), len(message),
+        )
+        return message
+
+    def _quick_slots(self, sender) -> bytes | None:
+        """A ``QuickSlotsInfoCommand`` for this player, or None to send none.
+
+        What the client itself last reported, when there is one: the client owns the bar
+        and sends it in a QuickSlotsCommand the live service never answers, so storing
+        it and serving it back is the only way a bar survives a restart.
+
+        With nothing stored, one skill per cooldown category from the class table --
+        bounded, because filling all seventeen slots kills the client inside
+        ``Util::FixedArray<Core::Ptr<UI::Slot>>::operator[]``.
+        """
+        if not self.rules.arrival_quickslots:
+            return None
+        wanted: list[str] = []
+        found = self.who.get(sender)
+        if found is not None and self.store is not None:
+            saved = self.store.load(found.key)
+            if saved is not None and saved.quickslots:
+                wanted = [name for name in saved.quickslots if name]
+        source = "the client's own"
+        if not wanted:
+            source = "this server's"
+            wanted = bar_skills(
+                self.rules.character_class, self.world.player(sender).level
+            )[: max(0, self.rules.arrival_bar_slots)]
+        if not wanted:
+            return None
+        actor = self.world.player(sender).actor
+        message = actionbar.encode(wanted, actor)
+        log.info(
+            "%s: %s gets %s bar, %d skill(s): %s",
+            self.name, sender, source, len(wanted), ", ".join(wanted),
+        )
+        return message
+
+    def _with_own_actor(self, state: bytes, sender=None) -> bytes:
+        """The player state, belonging to *this* player's actor.
+
+        The one change without which nothing else about a second player works. The
+        recorded state names the actor it was recorded for, so every client handed it
+        believes it **is** that actor -- and with two sessions open each one took the
+        other player's entity for itself. The operator reported it in one sentence:
+        "quand je deplace un client ça me deplace l'autre".
+
+        45 references, found by searching and read back, rewritten on a copy. The
+        offsets are cached because the blob is a constant, so this costs 2 ms per login
+        and nothing per tick. See dsor/playerstate.py.
+        """
+        if sender is None or not self.rules.own_actor:
+            return state
+        try:
+            was = zone_actor(self.map_name or "")
+        except ValueError:
+            log.warning(
+                "%s: no recorded actor for %r, leaving the state as it is",
+                self.name, self.map_name,
+            )
+            return state
+        actor = self.world.player(sender).actor
+        return with_own_actor(state, int.from_bytes(actor, "little"), was=was)
 
     def _with_player_progress(self, state: bytes, sender=None) -> bytes:
         """The player state with this character's level and experience.
@@ -1045,6 +1299,16 @@ class Service:
         that same handle back, which is how each was paired with its creature.
         """
         handle = game.body[:HANDLE_SIZE]
+        # Another player first: their actor is not in the creature table, and without
+        # this the client asks about them forever and draws nothing.
+        described = self.world.describe_player(handle)
+        if described is not None:
+            log.info(
+                "%s: %s asked who %s is, and it is another player (%d message(s))",
+                self.name, sender, handle.hex(" "), len(described),
+            )
+            self._ship([(sender, message) for message in described])
+            return
         # Only creatures this server can see through to the end. Describing one it
         # cannot place, hit or remove produced exactly what it sounds like: a creature
         # standing at full health that no blow could ever reach.
@@ -1251,12 +1515,15 @@ class Service:
         total = 0
         for index, piece in enumerate(record):
             if index == 0:
-                # The level the selection screen shows. Saving a character does
-                # nothing for this on its own: the screen is drawn from the replayed
-                # roster, whose character is level 1, so every login showed level 1
-                # however much had been stored. Sixteen bits in place, guarded so a
-                # recording with a different layout is left alone.
-                piece = self._with_saved_level(piece, sender)
+                # The account's own characters, when there are any: built over the
+                # recording's bits rather than patched into them, so the screen shows
+                # what this server holds instead of the recorded character. Falls back
+                # to patching the level into the recording when the account has no
+                # characters, which is what every login did until now.
+                built = self._roster_for(piece, sender)
+                piece = built if built is not None else self._with_saved_level(
+                    piece, sender
+                )
             total += self._queue(connection, piece, sender, slow=index >= 2)
         self.record_sent.add(sender)
         log.info(
@@ -1300,6 +1567,50 @@ class Service:
             roster = with_andermant(roster, self.rules.andermant)
         return roster
 
+    def _roster_for(self, recorded: bytes, sender) -> bytes | None:
+        """The selection screen for this account, or None to fall back to the recording.
+
+        None rather than an empty roster: an account with no characters has nothing to
+        show, and a client handed a roster with no entries has nothing to click. Making
+        an account **with** a character is what `server.py account add --character`
+        is for.
+        """
+        if not self.rules.built_roster or self.store is None:
+            return None
+        found = self.who.get(sender)
+        if found is None:
+            return None
+        characters = [
+            saved for saved in self.store.characters_of(found.account) if saved.name
+        ]
+        if not characters:
+            return None
+        try:
+            built = build_roster(
+                recorded,
+                [
+                    {
+                        "name": saved.name,
+                        "map": saved.map_name or self.rules.first_map,
+                        "level": saved.level,
+                        "experience": saved.experience,
+                        "character": saved.character or 0,
+                    }
+                    for saved in characters
+                ],
+                found.account,
+                andermant=self.rules.andermant or None,
+            )
+        except ValueError as refused:
+            log.warning("%s: cannot build a roster for %s: %s", self.name, sender, refused)
+            return None
+        log.info(
+            "%s: %s sees %d character(s) of account %d: %s",
+            self.name, sender, len(characters), found.account,
+            ", ".join(f"{s.name} ({s.level})" for s in characters),
+        )
+        return built
+
     def _release_character(self, connection: Connection, game, sender) -> None:
         """Grant the client's request to start the game.
 
@@ -1315,19 +1626,46 @@ class Service:
         The 112-byte 0x84/0x0086 the real service also sent is not here. It answers
         a character-creation command, which the reference session's player happened
         to send; a client selecting an existing character never does.
+
+        **The grant is an echo, and for a long time this ignored the request.** The
+        capture is unambiguous: the client sends 29 bytes -- operation 3, the chosen
+        character id at offset 2, then 23 zeroes -- and the service answers the
+        identical 29 bytes with byte 0 set to 5. This replayed a recording instead,
+        whose character id is the recorded one, so **every client that ever clicked
+        Play became Username**. It was handed the request as an argument and read
+        not one byte of it.
         """
+        chosen = character_chosen(game.body)
+        grant = None
+        if chosen is not None:
+            grant = grant_character(game.body)
+            log.info("%s: %s asked for character %d", self.name, sender, chosen)
+        if grant is None:
+            log.warning(
+                "%s: %s sent a start-game this server cannot read (%d bytes: %s), "
+                "falling back to the recorded grant",
+                self.name, sender, len(game.body), game.body[:32].hex(" "),
+            )
         total = 0
-        for piece in character_release():
+        for index, piece in enumerate(character_release()):
+            if index == 0 and grant is not None:
+                piece = grant
             datagrams = connection.send_message(piece)
             for datagram in datagrams:
                 self._send(datagram, sender)
             total += len(datagrams)
         self.sessions.mark_chosen(connection.client_guid)
+        # And remember which character, so the map tier knows who arrived. Until now
+        # the identity's character half came back to us only because the client echoed
+        # the recorded id we had handed it.
+        found = self.who.get(sender)
+        if chosen is not None and found is not None:
+            self.who[sender] = replace(found, character=chosen)
         log.info(
-            "%s: released %s as %r (%d datagrams)",
+            "%s: released %s as character %s (%d datagrams)",
             self.name,
             sender,
-            CHARACTER_CHOSEN_NAME,
+            chosen if chosen is not None else CHARACTER_CHOSEN_NAME,
             total,
         )
 
@@ -1509,10 +1847,12 @@ class Service:
             # the frame order suggested they came much later; the ordering index
             # says otherwise, and it is the authority.
             mapped = any(c.blueprint for c in self.world._ready().creatures.values())
-            for index, piece in enumerate(map_entry_sequence()):
-                if index == 2:
+            for role, piece in map_arrival(
+                self.map_name, trimmed=self.rules.arrival_content
+            ):
+                if role == "content":
                     piece = self._with_granted_skills(piece, sender)
-                if mapped and index == 4:
+                if mapped and role == "vicinity":
                     # The recorded vicinity announcement names the six creatures of
                     # the session it came from. Sent alongside the map's own spawn
                     # table, the client ends up knowing actors nothing can describe —
@@ -1522,7 +1862,53 @@ class Service:
                     # creature. This server announces its own set instead.
                     continue
                 self._queue(connection, piece, sender)
+            # The skill book, built rather than patched. It lives at bit 102,860 of the
+            # tutorial's batch and 9,293,117 of Kingshill's, so the trimmed arrival does
+            # not contain it -- and on Kingshill the patch never worked anyway:
+            # skillbook.entries() reads nothing out of that blob. So the book the
+            # operator had in that city was the recorded character's, straight off the
+            # wire.
+            book = self._skill_book(sender)
+            if book is not None:
+                self._queue(connection, book, sender)
+            # And the bar, in the command the bars actually live in. with_skills has
+            # been rewriting these ten records in place for months without knowing they
+            # sit inside a 0x0050; building the command is the same records with a
+            # header this server writes itself.
+            bar = self._quick_slots(sender)
+            if bar is not None:
+                self._queue(connection, bar, sender)
             entrant = self.world.player(sender)
+            # And the bag, described. The trimmed arrival carries no inventory command
+            # at all, and a client whose bag was never described crashes the instant it
+            # is opened -- the operator's "si j'ouvre l'inventaire je crash direct".
+            #
+            # What this states is the sizes: ClientInventoryManager::ResizeStorages
+            # reads the command's first five scalars and resizes a storage to each. The
+            # capacity written is this server's own slot_capacity, so the cells the
+            # client draws and the cells a pickup hands out are the same number.
+            if self.rules.arrival_inventory:
+                bag = inventory.empty(
+                    int.from_bytes(entrant.actor, "little"),
+                    self.rules.slot_capacity,
+                    health=entrant.health or self.world.player_health(entrant.level),
+                    resource=entrant.resource or None,
+                )
+                self._queue(connection, bag, sender)
+                log.info(
+                    "%s: %s gets an empty bag of %d cells (%d bytes)",
+                    self.name, sender, self.rules.slot_capacity, len(bag),
+                )
+            # And last, the signal that makes the player exist. It is the last command
+            # of the recorded Kingshill arrival and trimming that arrival cut it off,
+            # which the operator reported as "je n'ai pas l'actor qui spawn". Eight
+            # bytes: the id, no body, the actor, the terminator.
+            if self.rules.arrival_ready:
+                self._queue(connection, player_ready(entrant.actor), sender)
+                log.info(
+                    "%s: %s is ready as actor %s",
+                    self.name, sender, entrant.actor.hex(" "),
+                )
             entrant.position = spawn
             entrant.in_world = True
             restored = self.restore(sender)
@@ -1877,6 +2263,10 @@ def serve(
     mob_stop: float | None = None,
     level_every: int = 34,
     announce_vicinity: bool = True,
+    require_account: bool = False,
+    shared_account: bool = False,
+    portal_port: int = 0,
+    portal_bind: str = "127.0.0.1",
 ) -> None:
     """Run the three tiers the real service is built from.
 
@@ -1917,6 +2307,21 @@ def serve(
     selector = selectors.DefaultSelector()
     services = {}
     console = None
+    portal_http = None
+    if portal_port and characters:
+        portal_http = portal.serve(
+            characters=characters,
+            port=portal_port,
+            bind=portal_bind,
+            host=advertise,
+            game_port=login_port,
+            first_map=map_name,
+        )
+    elif portal_port:
+        log.warning(
+            "--portal-port needs somewhere to put the accounts, and --characters is "
+            "empty. No sign-up page"
+        )
 
     tiers = [
         (login_port, "DrasaOnlineLoginServer", "login"),
@@ -1967,6 +2372,8 @@ def serve(
         service.rules.granted_skills = list(granted_skills or [])
         service.rules.grant_up_to_level = grant_up_to_level
         service.rules.start_level = start_level
+        service.rules.require_account = require_account
+        service.rules.one_session_per_account = not shared_account
         # The file's rules, applied after the options so the file is the source of
         # truth and the options are what you reach for before writing something down.
         # Loud rather than silent about it: a setting quietly ignored is the failure
@@ -1985,6 +2392,17 @@ def serve(
                 len(applied),
                 ", ".join(sorted(applied)),
             )
+        if map_spawns and role == "map" and map_name != TUTORIAL_MAP:
+            # The spawn table and the creature descriptions both belong to the
+            # tutorial. Placing its creatures in another map means describing actors
+            # that map's client has never been told about, which is undrawable and
+            # unhittable -- the same failure as the recorded vicinity announcement.
+            log.warning(
+                "%s: --map-spawns describes %s's creatures and this is %s, so the "
+                "world stays empty",
+                service.name, TUTORIAL_MAP, map_name,
+            )
+            map_spawns = False
         if map_spawns and role == "map":
             usable = servable_points(set(monster_library()))
             service.world.populate_from_map(usable, mob_health)
@@ -2119,11 +2537,88 @@ def serve(
     finally:
         for service in services.values():
             service.socket.close()
+        if portal_http is not None:
+            portal_http.shutdown()
+            portal_http.server_close()
         if capture is not None:
             capture.close()
 
 
+
+def account_command(argv: list[str]) -> int:
+    """``server.py account …`` -- create and list accounts without a browser.
+
+    The portal needs a working store before it is worth debugging over HTTP, and a
+    server with no way to make the first account is a server nobody can log into.
+    """
+    parser = argparse.ArgumentParser(prog="server.py account")
+    parser.add_argument("action", choices=("add", "list"))
+    parser.add_argument("name", nargs="?")
+    parser.add_argument("password", nargs="?")
+    parser.add_argument("--characters", default="characters.sqlite")
+    parser.add_argument("--character", help="a character to create with the account")
+    parser.add_argument("--class", dest="character_class", default="warrior")
+    parser.add_argument("--level", type=int, default=1)
+    parser.add_argument("--map", dest="map_name", default="a0200_kingscity")
+    parser.add_argument("--host", default="127.0.0.1", help="what the client connects to")
+    parser.add_argument("--port", type=int, default=2190)
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    store = Store(args.characters)
+    if args.action == "list":
+        for account in store.accounts():
+            characters = store.characters_of(account.id)
+            print(
+                f"{account.id:>10}  {account.name:<20} "
+                f"{'a session is out' if account.session else 'never signed in':<18} "
+                + ", ".join(
+                    f"{c.name or '?'} ({c.character_class or '?'}, level {c.level})"
+                    for c in characters
+                )
+            )
+        if not store.accounts():
+            print("no accounts yet. server.py account add <name> <password>")
+        return 0
+
+    if not args.name or not args.password:
+        parser.error("add needs a name and a password")
+    try:
+        account = store.add_account(args.name, args.password)
+    except ValueError as refused:
+        print(refused)
+        return 1
+    if args.character:
+        store.add_character(
+            account.id, args.character, args.character_class,
+            level=args.level, map_name=args.map_name,
+        )
+    signed = store.sign_in(args.name, args.password)
+    assert signed is not None
+    _found, session = signed
+    print(f"account {account.id} created for {args.name!r}")
+    print()
+    print("the launcher line, with this account's credential in it:")
+    print()
+    print(
+        LAUNCHER.format(
+            client="C:/path/to/dro_client64.exe",
+            root="httpnz://your-cdn/cdndata",
+            rootkey="0" * 32,
+            host=args.host,
+            port=args.port,
+            account=account.id,
+            session=session,
+        )
+    )
+    print()
+    print("signing in again issues a new -sid and this one stops working.")
+    return 0
+
+
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "account":
+        raise SystemExit(account_command(sys.argv[2:]))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--config",
@@ -2202,6 +2697,44 @@ def main() -> None:
             "entity records from the tutorial dungeon with only their position "
             "rewritten, since the client can only draw what the zone content "
             "declared (at most 8)"
+        ),
+    )
+    parser.add_argument(
+        "--portal-port",
+        type=int,
+        default=0,
+        metavar="PORT",
+        help=(
+            "serve the sign-up page on this port (8080 is the usual choice). It hands "
+            "back the launcher line with a fresh -sid in it, which is the only way a "
+            "credential can reach a client: no password ever crosses the game wire"
+        ),
+    )
+    parser.add_argument(
+        "--portal-bind",
+        default="127.0.0.1",
+        metavar="ADDR",
+        help=(
+            "what the sign-up page listens on (default: 127.0.0.1). It is plain HTTP, "
+            "so a public address would put passwords on the wire in the clear"
+        ),
+    )
+    parser.add_argument(
+        "--require-account",
+        action="store_true",
+        help=(
+            "turn away any account this server did not issue, so only accounts made "
+            "with `account add` may play. An account the store does know is checked "
+            "against its issued session whether this is set or not"
+        ),
+    )
+    parser.add_argument(
+        "--shared-account",
+        action="store_true",
+        help=(
+            "allow one account to be played from two clients at once. Off by default: "
+            "the second client is refused, because two clients on one account are two "
+            "clients driving one character"
         ),
     )
     parser.add_argument(
@@ -2661,6 +3194,10 @@ def main() -> None:
         mob_stop=args.mob_stop,
         level_every=args.level_every,
         announce_vicinity=args.announce_vicinity,
+        require_account=args.require_account,
+        shared_account=args.shared_account,
+        portal_port=args.portal_port,
+        portal_bind=args.portal_bind,
     )
 
 

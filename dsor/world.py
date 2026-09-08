@@ -72,6 +72,7 @@ from dsor import (
     inventory,
     location,
     measured,
+    remote,
     statuseffect,
     usable,
     vitals,
@@ -409,6 +410,92 @@ class Rules:
     #: Whether a dying creature leaves an item where it fell.
     drop_items: bool = True
 
+    #: Whether the arrival ends with a PlayerReadyCommand. It is the last command of
+    #: the recorded Kingshill batch, and without it the client holds a description of a
+    #: character it never instantiates -- no actor spawns.
+    arrival_ready: bool = True
+    #: Whether the arrival's player state is cut down to the player's own command.
+    #:
+    #: Off, and that is a measurement rather than a preference. The ordering indices of
+    #: a real arrival say the leading message is the **whole** batch::
+    #:
+    #:     oi=4   0x001b  InstanceConfigClientInfo        12 B
+    #:     oi=5   0x001d  NewPlayerCommand           1087286 B   (split)
+    #:     oi=6   0x0074  ActorsEnterVicinity            164 B
+    #:
+    #: and then guild status, NewNPC for the map's NPCs, and the rest. So a client is
+    #: given every init follow-up before it is told about a single other actor, and
+    #: 0x0074 comes **after** all of it. Trimmed to 1,359 bytes, this server was sending
+    #: the first of those 466 commands and none of the others; a second player was
+    #: described, acknowledged and never drawn.
+    #:
+    #: It was on for a while, and for a real reason: the batch is one recorded session,
+    #: so replaying it whole puts that session's other characters on the map. Removing
+    #: them one command at a time is the work this flag is waiting on -- see
+    #: STRANGERS in dsor.recorded for why splicing was rejected once already.
+    #:
+    #: On, the trim has to be right to the bit. It was off by 584 (tutorial) and 712
+    #: (Kingshill) for one build, because a run of 0xFF read as an actor; the client
+    #: named the failure. See dsor.recorded._real_tail.
+    arrival_content: bool = False
+    #: Whether the answer to a pickup is built here or replayed. Replayed, it is 8.4 KB
+    #: of a recorded session with six fields rewritten in it; built, it is 259 bytes
+    #: stating only the item, its cell and the player's health and resource.
+    built_pickup: bool = True
+    #: How long a player may send nothing before the world forgets them, in seconds.
+    #: Zero keeps them forever. A client that closes over UDP sends no disconnect, so
+    #: without this a world accumulates people who are not in it -- and announces them
+    #: to everybody who is.
+    idle_timeout: float = 60.0
+    #: Whether an account this server did not issue is turned away. Off, the recorded
+    #: launcher line still connects, which is how every session so far has started; on,
+    #: only accounts made with `server.py account add` may play. An account the store
+    #: **does** know is always checked against the session it was issued, rule or no
+    #: rule -- see Service._admitted.
+    require_account: bool = False
+    #: Whether one account may be played from two clients at once. On, the second is
+    #: refused: "je dois pas pouvoir me connecter 2x avec Username".
+    one_session_per_account: bool = True
+    #: Whether the selection screen is built from the account's own characters. Off,
+    #: it is the recorded roster with a level patched into it, which is what showed
+    #: Username to everybody.
+    built_roster: bool = True
+    #: The map a character created without one starts in.
+    first_map: str = "a0200_kingscity"
+    #: Whether the player state is renamed to the character the store holds. Off, every
+    #: player carries the recorded character's name -- which is what made two clients
+    #: both "Username".
+    character_names: bool = True
+    #: Whether the arrival describes an empty bag. Without one the client has no
+    #: inventory to draw and crashes when it is opened.
+    arrival_inventory: bool = True
+    #: Whether the arrival carries an action bar this server builds, and how many of
+    #: its seventeen slots to fill when the client has never reported one. Bounded
+    #: because filling all seventeen kills the client inside
+    #: Util::FixedArray<Core::Ptr<UI::Slot>>::operator[].
+    arrival_quickslots: bool = True
+    arrival_bar_slots: int = 10
+    #: Whether the arrival carries a skill book this server builds. Off, the client
+    #: gets whatever the trimmed player command happens to say, which is nothing.
+    arrival_skill_book: bool = True
+    #: Whether the replayed player state is rewritten to name each player's own
+    #: actor. Off, every client believes it is the actor the recording named, and two
+    #: clients move each other.
+    own_actor: bool = True
+    #: Whether players can see each other: the vicinity announcement, the description
+    #: the client asks for, the position records, and the goodbye.
+    remote_players: bool = True
+    #: How many other players one position update may carry, once there are more of
+    #: them than this. A bound on the work and not a statement about the game: the
+    #: payload is per viewer, so 2,000 players each shown 24 others is 48,000 records
+    #: a tick however cleverly they are chosen.
+    #:
+    #: Measured on this machine at two thousand players, against a 100 ms tick: 39 ms
+    #: before any of this, **31.9 seconds** with each viewer's records built inside
+    #: their own update, 130 ms with a fresh window sliced per viewer, then 96 with a
+    #: shared block of 12 and 61 with a shared block of 8. Eight is enough for a crowd
+    #: to read as a crowd, and a real answer to a crowd is a spatial index.
+    visible_players: int = 8
     #: Whether using an item applies what its template says it applies. A mount is
     #: the case that matters: the client sends the item's name and the live service
     #: answers with a summon effect and a ride effect, both of which are in the
@@ -527,6 +614,10 @@ class Player:
     """One player in a map instance."""
 
     address: Address
+    #: What the other players' clients draw over their head. Empty until something
+    #: knows it -- the character name lives in the selection command, not here -- and
+    #: :meth:`World.player_name` supplies a distinguishable stand-in meanwhile.
+    name: str = ""
     #: This player's own actor id, four bytes as the wire wants it. Assigned on
     #: arrival from the world's actor space.
     actor: bytes = PLAYER_ACTOR
@@ -666,6 +757,22 @@ class World:
     #: the character's own login inventory allocates **no** bag slots at all — its
     #: sword and shield are equipped, and equipment is not in this table. So the
     #: cells are free, and they are few.
+    #: Every inhabitant's entity record, and the tick it was built for. Once per tick
+    #: rather than once per viewer -- see player_records.
+    records: list[tuple[Address, bytes]] = field(default_factory=list)
+    #: The same, by address, so one player's own record is a lookup and not a scan.
+    #: Rebuilding this dictionary per viewer instead of per tick cost 437 ms of a
+    #: 100 ms budget, which is worse than the problem it was meant to fix.
+    records_by: dict[Address, bytes] = field(default_factory=dict)
+    records_tick: int = -1
+    #: The bounded block a crowd is shown, and the variants for the players inside it.
+    #: Once per tick, so a viewer costs a dictionary lookup rather than a slice.
+    block: list[bytes] = field(default_factory=list)
+    block_without: dict[Address, list[bytes]] = field(default_factory=dict)
+    block_tick: int = -1
+    #: Each player's place in the record list, so a crowded world hands each of them a
+    #: different window rather than the same first few.
+    records_order: dict[Address, int] = field(default_factory=dict)
     #: What this server has put in each bag cell: ``cell -> (actor, blueprint)``.
     #:
     #: A map and not a counter, and not a set either. A counter only ever goes up, which
@@ -895,8 +1002,11 @@ class World:
         what left a player standing on the spot where a creature had died an hour
         earlier, swinging at nothing, with the survivors too far away to notice.
         """
+        self.records_order.pop(address, None)
+        self.records_tick = -1
         leaving = self.players.pop(address, None)
         if leaving is not None:
+            self.farewell(address, leaving.actor)
             self.actors.give_back(int.from_bytes(leaving.actor, "little"))
         self.pending_hits = [h for h in self.pending_hits if h[1] != address]
         self.pending_swings = [s for s in self.pending_swings if s[1] != address]
@@ -1150,7 +1260,12 @@ class World:
         self.placed = placed
 
     def entity_update(
-        self, position, tick: int = 0, trailing: list[bytes] | None = None
+        self,
+        position,
+        tick: int = 0,
+        trailing: list[bytes] | None = None,
+        visitors: list[bytes] | None = None,
+        own: bytes | None = None,
     ) -> bytes:
         """The player's position, and any creatures placed around it.
 
@@ -1160,11 +1275,22 @@ class World:
         message is what tells the client the map contains them, so an invented
         identifier would be an entity it cannot draw.
         """
-        player = with_motion(
+        # *own* is this player's record when the caller already built it. It is not an
+        # optimisation for its own sake: player_records builds every inhabitant's record
+        # once a tick, and building this one a second time here cost 90 ms of a 100 ms
+        # budget at two thousand players.
+        player = own if own is not None else with_motion(
             encode_position(position) + entity_update_template()[6:], position, tick
         )
+        # Other players ride in the same 0x005F as this one's own record. Which is what
+        # makes them exist at all: a position update is how the client first hears of
+        # an actor, and an actor it has never heard of is one it will not draw.
+        beside = list(visitors or [])
+
+        def group(records: list[bytes]) -> bytes:
+            return encode_entity_group_message(records + beside, trailing)
         if not self.rules.mobs:
-            return encode_entity_group_message([player], trailing)
+            return group([player])
 
         # The living, and the recently dead. Dropping a creature from the tick the
         # instant it dies is what made it vanish with no animation: the client was
@@ -1176,7 +1302,7 @@ class World:
         # finished removing it makes it flicker back into existence.
         announced = self._ready().announced()
         if not announced:
-            return encode_entity_group_message([player], trailing)
+            return group([player])
         if self.rules.mob_chase:
             # Serialised, not moved. Moving happens once a tick in advance_creatures;
             # this used to do it here, which meant a creature was moved once per
@@ -1185,7 +1311,7 @@ class World:
             # One creature has one position.
             if self.placed_tick != tick:
                 self.advance_creatures(tick)
-            return encode_entity_group_message([player, *self.placed], trailing)
+            return group([player, *self.placed])
 
         if self.rules.mob_patrol:
             # Beyond what the capture shows: its creatures stood still, 620 of 621
@@ -1209,14 +1335,14 @@ class World:
                         duration=self.rules.tick_duration,
                     )
                 )
-            return encode_entity_group_message([player, *placed])
+            return group([player, *placed])
 
         if not self.rules.mob_radius:
             # Where the capture put them. Their own positions are valid by
             # construction — they stand on ground the map actually has — whereas a
             # ring around the player is a guess, and a creature inside a wall is one
             # the client has every reason to refuse to draw.
-            return encode_entity_group_message(
+            return group(
                 [player, *(with_motion(t, decode_position(t), tick) for t in templates)]
             )
 
@@ -1226,7 +1352,7 @@ class World:
                 templates, ring_positions(position, len(templates), self.rules.mob_radius)
             )
         ]
-        return encode_entity_group_message([player, *placed])
+        return group([player, *placed])
 
 
     def victims_of(
@@ -2470,7 +2596,19 @@ class World:
             self._emit(message, sender)
         for message in self._creature_effects:
             self._emit(message, sender)
-        self._emit(self.entity_update(player.position, player.server_tick), sender)
+        mine = None
+        if self.rules.remote_players:
+            self.player_records(player.server_tick)
+            mine = self.records_by.get(sender)
+        self._emit(
+            self.entity_update(
+                player.position,
+                player.server_tick,
+                visitors=self.visitor_records(sender, player.server_tick),
+                own=mine,
+            ),
+            sender,
+        )
 
     def tick(self) -> list[tuple[Address, bytes]]:
         """Advance the world one tick and return everything it wants sent.
@@ -2478,6 +2616,7 @@ class World:
         Corpses age first, so one killed this tick is still reported once.
         """
         self.age_corpses()
+        self.sweep_idle()
         # Creatures first, once, so every player is sent the same world.
         clock = next(
             (p.server_tick for p in self.inhabitants() if p.server_tick), 0
@@ -2505,6 +2644,184 @@ class World:
         self.land_swings()
         return self._drain()
 
+    def others(self, sender: Address) -> list["Player"]:
+        """Every *other* player who is in the world and has a position."""
+        return [
+            player
+            for address, player in self.players.items()
+            if address != sender and player.in_world and player.position is not None
+        ]
+
+    def player_name(self, player: "Player") -> str:
+        """What to draw over a player's head.
+
+        Their own name when something has told this server one. Otherwise a name built
+        from the actor, because two players on the same account choose the same
+        character and would otherwise both be called the same thing -- which is exactly
+        the case a two-session test is.
+        """
+        return player.name or "Aventurier %d" % int.from_bytes(player.actor, "little")
+
+    def player_records(self, tick: int) -> list[tuple[Address, bytes]]:
+        """Every inhabitant's entity record, built once for the whole tick.
+
+        The record is the 20-byte one the recording carries -- six bytes of position,
+        nine of motion, the actor and the terminator -- with the position and the actor
+        rewritten. Nothing else in it needs to change: it is the same shape a creature
+        travels in.
+
+        Once per tick and not once per viewer, for the same reason the creature effects
+        are: a first version built every other player's record inside each player's own
+        update, and the scale test measured 31.9 **seconds** a tick for two thousand
+        players against a 100 ms budget. One player has one position.
+        """
+        if self.records_tick == tick and self.records:
+            return self.records
+        self.records = [
+            (
+                player.address,
+                with_motion(
+                    encode_position(player.position)
+                    + entity_update_template()[6:15]
+                    + player.actor
+                    + bytes([0xFF]),
+                    player.position,
+                    tick,
+                ),
+            )
+            for player in self.inhabitants()
+            if player.position is not None
+        ]
+        self.records_by = dict(self.records)
+        self.records_tick = tick
+        return self.records
+
+    def visitor_records(self, sender: Address, tick: int) -> list[bytes]:
+        """The other players' records to put in *sender*'s position update.
+
+        Two regimes, and the seam is :attr:`Rules.visible_players`.
+
+        Below it -- every case this server has actually served -- each player is sent
+        everybody else, exactly. Above it they are all sent the *same* bounded block,
+        with the one exception that a player whose own record is inside the block gets a
+        copy without it. That is a worse picture of a crowd than picking each viewer's
+        nearest would be, and it is the only shape whose cost does not grow with the
+        number of viewers: measuring distances per viewer is quadratic, and so is
+        slicing a fresh window per viewer -- 31.9 seconds and 130 ms respectively for
+        two thousand players, against a tick budget of 100. A spatial index is the real
+        answer to a crowd and there is not one here.
+        """
+        if not self.rules.remote_players:
+            return []
+        everybody = self.player_records(tick)
+        if len(everybody) < 2:
+            return []
+        cap = max(0, self.rules.visible_players)
+        if len(everybody) - 1 <= cap:
+            return [record for address, record in everybody if address != sender]
+        if self.block_tick != tick:
+            self.block_tick = tick
+            self.block = [record for _address, record in everybody[:cap]]
+            self.block_without = {
+                address: [r for a, r in everybody[:cap] if a != address]
+                for address, _record in everybody[:cap]
+            }
+        return self.block_without.get(sender, self.block)
+
+    def describe_player(self, actor: bytes) -> list | None:
+        """What to send so the client draws the player at *actor*, or None if nobody is.
+
+        This is the answer to the client's ``ActorRequestCommand``. **Two** messages, not
+        one, and that is the answer to why a second player was never drawn:
+
+            0x0021  NewRemotePlayerCommand   -- who they are
+            0x0022  RemotePlayerInfoCommand  -- what they look like
+
+        The description on its own was accepted, acknowledged and silently useless. The
+        captures settle it by counting: 27 of the first against **62** of the second, and
+        this server sent none of the second. Every other pair in this protocol has the
+        same shape -- 0x0026 NewNPCCommand then 0x0028 NPCInfoCommand.
+        """
+        if not self.rules.remote_players:
+            return None
+        for player in self.players.values():
+            if player.actor == actor:
+                return remote.described(actor, self.player_name(player))
+        return None
+
+    def introduce(self, sender: Address) -> None:
+        """Announce this player to the others, and the others to this one.
+
+        Both directions, because the vicinity announcement is per recipient: it says
+        "these actors are near *you*", and the client answers by asking about the ones
+        it does not know.
+        """
+        if not self.rules.remote_players:
+            return
+        mine = self.player(sender)
+        beside = self.others(sender)
+        if not beside:
+            return
+        self._emit(
+            encode_actors_enter_vicinity(
+                [int.from_bytes(other.actor, "little") for other in beside],
+                int.from_bytes(mine.actor, "little"),
+            ),
+            sender,
+        )
+        for other in beside:
+            self._emit(
+                encode_actors_enter_vicinity(
+                    [int.from_bytes(mine.actor, "little")],
+                    int.from_bytes(other.actor, "little"),
+                ),
+                other.address,
+            )
+        log.info(
+            "%s: %s (%s) and %d other player(s) can see each other",
+            self.name, sender, self.player_name(mine), len(beside),
+        )
+
+    def sweep_idle(self) -> list[Address]:
+        """Forget players who have gone quiet, and say who they were.
+
+        A player who closes their client over UDP sends nothing: the disconnect
+        notification is not guaranteed and usually does not arrive, which is why
+        `persist` runs on a timer as well as on disconnect. Presence needs the same
+        treatment, and without it a world fills with people who are not there -- the
+        operator's second two-client test began with **three** players in it, two of
+        them sessions already closed, and every one of them was announced to the others
+        and drawn.
+
+        The client talks continuously while it is in the world: 2,316 movement commands
+        in one captured session, plus its own StillAliveCommand. So silence for a minute
+        is not a quiet player, it is a gone one.
+        """
+        if self.rules.idle_timeout <= 0:
+            return []
+        now = time.monotonic()
+        gone = [
+            player.address
+            for player in list(self.players.values())
+            if player.seen_at and now - player.seen_at > self.rules.idle_timeout
+        ]
+        for address in gone:
+            log.info(
+                "%s: %s has been quiet for %.0fs, forgetting them",
+                self.name, address, now - self.players[address].seen_at,
+            )
+            self.forget(address)
+        return gone
+
+    def farewell(self, address: Address, actor: bytes) -> None:
+        """Tell everybody still here that this player is gone."""
+        if not self.rules.remote_players:
+            return
+        for other in self.players.values():
+            if other.address == address:
+                continue
+            self._emit(remote.left(actor), other.address)
+
     def enter(self, sender: Address) -> list[tuple[Address, bytes]]:
         """The first tick pair a player gets, on arrival, and its level.
 
@@ -2517,6 +2834,10 @@ class World:
         """
         self.announce_level(sender)
         self._entered_at[sender] = time.monotonic()
+        # Counted as activity from now, so the idle sweep does not evict somebody who
+        # has arrived and not yet moved.
+        self.player(sender).seen_at = time.monotonic()
+        self.introduce(sender)
         self._tick_pair(sender)
         return self._drain()
 
@@ -2740,29 +3061,50 @@ class World:
         self.bag[slot] = (actor, blueprint or "")
         player = self.player(sender)
         now = datetime.now()
-        self._emit(
-            inventory.picked_up(
+        health = player.health or self.player_health(player.level)
+        stamped = (now.year, now.month, now.day, now.hour, now.minute, now.second)
+        if self.rules.built_pickup:
+            record = inventory.Item(
+                id=int.from_bytes(actor, "little"),
+                template=blueprint or drop_template(item_drop()),
+                position=where,
+                stamped=stamped,
+                level=rolled.level if rolled is not None else player.level,
+                tier=rolled.tier if rolled is not None else 0,
+                statistics=list(rolled.statistics) if rolled is not None else [],
+            )
+            answer = inventory.taken(
+                record,
+                slot,
+                int.from_bytes(player.actor, "little"),
+                health=health,
+                resource=player.resource or None,
+                into=self.rules.bag_layout,
+            )
+        else:
+            # The replay, kept behind the rule so the two can be compared against a
+            # running client. It is 8.4 KB of a recorded session -- another character's
+            # sword, his two cell placements and 247 template strings -- with six
+            # fields rewritten inside it.
+            answer = inventory.picked_up(
                 item_taken(),
                 int.from_bytes(actor, "little"),
                 template=blueprint,
                 where=where,
-                stamped=(now.year, now.month, now.day, now.hour, now.minute, now.second),
+                stamped=stamped,
                 slot=slot,
                 into=self.rules.bag_layout,
                 statistics=rolled.statistics if rolled is not None else None,
                 level=rolled.level if rolled is not None else None,
                 tier=rolled.tier if rolled is not None else None,
-                # The two that used to be replayed, and the reason a pickup collapsed
-                # the health bar: the recorded reply was taken from a level 1
-                # character and its scalars carry that character's 236 health.
-                health=player.health or self.player_health(player.level),
+                health=health,
                 beside=player.resource or None,
-            ),
-            sender,
-        )
-        log.info("%s: %s picked up %s as item %s into %s cell %d of %d, health %.0f",
+            )
+        self._emit(answer, sender)
+        log.info("%s: %s picked up %s as item %s into %s cell %d of %d (%d o), health %.0f",
                  self.name, sender, blueprint or "the recorded blueprint",
                  actor.hex(" "), self.rules.bag_layout, slot, self.rules.slot_capacity,
+                 len(answer),
                  player.health or self.player_health(player.level))
         return self._drain()
 

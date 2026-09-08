@@ -129,9 +129,27 @@ class Connection:
         #: if one piece is missing — so without retransmission nothing larger than
         #: a single datagram is deliverable at all.
         self._sent: dict[int, _Retained] = {}
-        #: How many recent datagrams to keep. 1024 covers a 631 KB message twice
-        #: over; keeping everything would grow without bound on a long session.
-        self.retain = 1024
+        #: How many recent datagrams to keep.
+        #:
+        #: A ceiling and not an allocation: an acknowledged datagram is dropped as soon
+        #: as the ACK arrives, so this only fills while a large message is in flight.
+        #:
+        #: 1024 was sized for the tutorial's 631 KB batch and is **too small for
+        #: Kingshill's**, which is 1,170,448 bytes -- about 975 datagrams at this MTU
+        #: for the content alone, before the rest of the arrival and the tick pairs
+        #: that interleave with it. The buffer wrapped mid-arrival and the client asked
+        #: for fragments that had already been evicted::
+        #:
+        #:     WARNING  3 datagram(s) asked for were no longer retained
+        #:
+        #: A split message never completes if one piece is missing, so the
+        #: NewPlayerCommand never finished and the character was never created --- the
+        #: operator saw it as "le perso est pas init j'ai le bug de camera".
+        #:
+        #: 4096 is four times the largest arrival this server serves. Half of a
+        #: 409-fragment message was measured lost between a host and a VM guest, so the
+        #: headroom is not theoretical.
+        self.retain = 4096
         #: How long to wait for an ACK before resending unprompted.
         #:
         #: Waiting for a NAK is not enough, and the reference session says so

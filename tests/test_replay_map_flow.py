@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import collections
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -33,7 +34,11 @@ from server import Service
 
 #: The session six creatures were killed in. Its map port is dynamic, as every map
 #: server's is, so it is discovered rather than named.
-CAPTURE = Path("/home/lej/dso-capture/session-20260820-012227.jsonl")
+#: Where the reference captures live. From the environment, or ~/dso-capture, so the
+#: path names no particular machine or user; the test skips when the file is absent,
+#: which is what it does for anyone who has not recorded one.
+CAPTURES = Path(os.environ.get("DSOR_CAPTURES", Path.home() / "dso-capture"))
+CAPTURE = CAPTURES / "session-20260820-012227.jsonl"
 MAP_NAME = "a0001_start_tutorial_dun"
 CLIENT = ("172.20.0.2", 51000)
 

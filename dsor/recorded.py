@@ -27,10 +27,11 @@ from __future__ import annotations
 import logging
 import struct
 
+import re
 from functools import lru_cache
 from pathlib import Path
 
-from raknet.payload import Payload, respan
+from raknet.payload import Payload, bits_of, respan
 
 from dsor.payload_bits import bits_for
 
@@ -88,7 +89,7 @@ MAP_ENTRY_ACK = "map_enter_ack.bin"
 #: three coherent real sessions either**. So entities are not addressed by this id,
 #: and that hypothesis is recorded here as refuted rather than acted on.
 CHARACTER_CHOSEN_REPLY = "character_chosen_reply.bin"
-CHARACTER_CHOSEN_NAME = "balenciagas"
+CHARACTER_CHOSEN_NAME = "Username"
 
 #: The zone content a map server sends between the acknowledgement and the first
 #: entity update, in this order. Recorded on a0006_grimford_hub, so they belong to
@@ -194,6 +195,302 @@ MAP_ENTRY_SEQUENCE = (
 def map_entry_sequence() -> list[bytes]:
     """Everything a map server sends before it starts ticking."""
     return [payload(name) for name in MAP_ENTRY_SEQUENCE]
+
+
+#: What each servable map's arrival is made of, by role rather than by position.
+#:
+#: By role because the pieces differ per map and the positions used to be magic
+#: numbers: index 2 was the player state and index 4 the vicinity announcement, which
+#: is fine for one map and wrong for two.
+#:
+#: The tutorial's arrival was captured whole. Kingshill's was not -- the hook attaches
+#: after the client has launched, so its acknowledgement and cosmetics were already in
+#: flight -- and they turn out not to be needed: the acknowledgement is **byte
+#: identical** between the tutorial and the hub, and the cosmetics table starts
+#: identically and differs only in how many skins the account owns. Both are
+#: account-wide, not map-specific. What *is* map-specific is the player state, and
+#: Kingshill's is in the same capture at 1,170,448 bytes.
+#:
+#: ``actor`` is the actor the recorded state was captured for, which
+#: :func:`dsor.playerstate.with_actor` rewrites per player. The tutorial's is
+#: 0x00010015 and Kingshill's 0x00022155 -- read off the 868 single-entity position
+#: updates the live service sent for that character on that connection.
+ZONES: dict[str, dict[str, object]] = {
+    "a0001_start_tutorial_dun": {
+        "actor": 0x00010015,
+        "ack": "map_enter_ack.bin",
+        "cosmetics": "zone_cosmetics.bin",
+        "content": "zone_content.bin",
+        "content_bits": 4594,
+        "ready": "zone_ready.bin",
+        "vicinity": "zone_extra.bin",
+    },
+    "a0200_kingscity": {
+        "actor": 0x00022155,
+        "ack": "map_enter_ack.bin",
+        "cosmetics": "zone_cosmetics.bin",
+        "content": "zone_content_kingscity.bin",
+        "content_bits": 10882,
+        # Neither was captured for this map, and the hub's arrival -- captured whole --
+        # sends no 0x00A7 at all. Its own vicinity announcement names actors that live
+        # in it, which this server has no creatures for, so there is nothing honest to
+        # put here.
+        "ready": None,
+        "vicinity": None,
+    },
+}
+
+#: Why the recorded arrival is trimmed rather than spliced.
+#:
+#: Kept because the knowledge outlived the code. Before :func:`player_only`, the 38
+#: ``NewRemotePlayerCommand`` in Kingshill's batch were removed by sending the client a
+#: ``DiscardPlayerCommand`` for each of the 33 actors they named -- M3M3M3, Macdoe,
+#: Eredina, ThorinOakenshiel and thirty more, each confirmed by reading a
+#: length-prefixed name out of the 0x0021 body. Splicing them out of the blob was
+#: rejected on measurement: a forward walk of the batch lands exactly on its last bit,
+#: 9,363,584 of 9,363,584, and yet **fifteen of the fifty-four boundaries inside that
+#: run read as command ids that do not exist**, so the walk resynchronises there and a
+#: splice would have been surgery guided by a map with holes in it.
+#:
+#: Cutting at the *first* command needs neither: bit 8 is the start of the payload and
+#: the end is confirmed two independent ways in :func:`_checked`.
+
+#: The maps a client can be sent to.
+SERVABLE_MAPS = tuple(ZONES)
+
+#: The command a trimmed arrival must consist of, and nothing else.
+NEW_PLAYER = 0x001D
+
+
+def player_only(map_name: str) -> Payload:
+    """*map_name*'s recorded content, cut down to the player's own command.
+
+    The reason this exists, in one measurement: the ``content`` blob is not a player's
+    state. It is the **whole batch** the live map server sent -- 466 chained commands in
+    Kingshill's 1,170,448 bytes -- and the player's own ``NewPlayerCommand`` is the
+    first **1,270** of them. The other 99.9% is one recorded account: its inventory, its
+    equipment, its 57 achievements, its quest log, its currencies, and 38
+    ``NewRemotePlayerCommand`` -- three dozen strangers who were standing in that city
+    when the capture was taken and who then stood in it for everybody this server
+    served. The operator's objection was exactly that, and it was right.
+
+    What survives the cut is what this server has any claim to: the character's name,
+    the map, the level, the experience, and **one** actor reference -- against 124 in
+    the untrimmed blob.
+
+    The cut lands mid-byte (1,271.25 bytes for Kingshill, 501.25 for the tutorial), so
+    the result is a :class:`~raknet.payload.Payload` carrying its bit length. The frame
+    layer reads that and declares it; ``zone_ready.bin`` at 313 bits and
+    ``zone_extra.bin`` at 1,450 have relied on the same thing all along. Rounding up to
+    a whole byte instead would leave spare bits, and a multi-command payload is decoded
+    until its stream runs out: "DecodeCommand() invalid command ending in multi
+    command".
+    """
+    zone = ZONES.get(map_name)
+    if zone is None:
+        raise ValueError(
+            f"no recorded arrival for {map_name!r}. Servable: "
+            + ", ".join(SERVABLE_MAPS)
+        )
+    whole = payload(str(zone["content"]))
+    bits = zone.get("content_bits")
+    if not bits:
+        return whole
+    kept = int(bits)
+    return Payload(whole[: (kept + 7) // 8], kept)
+
+
+#: Every command id the client's Rtti declares, so a boundary is only believed when a
+#: real command follows it. Read from docs/commands.md, which tools/command_ids.py
+#: generates from the binary.
+def _known_command_ids() -> frozenset[int]:
+    found = set()
+    doc = DATA.parent.parent / "docs/commands.md"
+    if doc.exists():
+        for line in doc.read_text(errors="ignore").splitlines():
+            match = re.match(r"\|\s*`0x([0-9A-Fa-f]{4})`", line)
+            if match:
+                found.add(int(match.group(1), 16))
+    return frozenset(found)
+
+
+#: The pages an actor id is actually in. Both recordings use 1 and 2; nothing has ever
+#: been seen outside them.
+ACTOR_PAGES = (1, 2)
+
+#: A low half no real actor has. ``0x0001ffff`` and ``0x003fffff`` both turned up as
+#: "actors" and both were runs of ``0xFF`` inside a body.
+NOT_AN_ACTOR = 0xFFFF
+
+
+_COMMAND_IDS = _known_command_ids()
+
+
+def _sixteen(blob: bytes, at: int) -> int:
+    """Sixteen bits at *at*, byte-swapped: a chained command id."""
+    first, need = at >> 3, (at % 8 + 16 + 7) >> 3
+    chunk = blob[first : first + need]
+    if len(chunk) < need:
+        return -1
+    value = int.from_bytes(chunk, "big") >> (need * 8 - (at % 8) - 16)
+    got = value & 0xFFFF
+    return ((got & 0xFF) << 8) | (got >> 8)
+
+
+def _thirty_two(blob: bytes, at: int) -> int:
+    first, need = at >> 3, (at % 8 + 32 + 7) >> 3
+    chunk = blob[first : first + need]
+    if len(chunk) < need:
+        return -1
+    return (int.from_bytes(chunk, "big") >> (need * 8 - (at % 8) - 32)) & 0xFFFFFFFF
+
+
+def _real_tail(blob: bytes, at: int, total: int) -> int | None:
+    """The actor if a command's tail sits at *at*, by a test that means it.
+
+    Stricter than :func:`dsor.chain._tail_at` in one way that turned out to decide
+    everything: the actor has to be **zero or an actor**. The looser test accepts any
+    32 bits whose page is at most 0xFF, and page 0 is at most 0xFF -- so a run of
+    ``0xFF`` bytes inside a body reads as actor ``0x0000ffff`` followed by a
+    terminator, and it does so 712 bits before the player command really ends.
+
+    The cost of that was a client that would not spawn: the arrival was cut short, the
+    command failed to decode -- "RakNetStream::ReadBits(): error while reading
+    stream!" -- and every command after it was refused for naming an actor the client
+    had never been given.
+    """
+    if at + TAIL_BITS > total:
+        return None
+    if (blob[(at + 32) >> 3] >> (7 - ((at + 32) & 7))) & 1 != 1:
+        return None
+    for offset in range(8):
+        if (blob[(at + 32 + offset) >> 3] >> (7 - ((at + 32 + offset) & 7))) & 1 != 1:
+            return None
+    plain = _thirty_two(blob, at)
+    if plain == 0:
+        return 0
+    swapped = int.from_bytes(plain.to_bytes(4, "big"), "little")
+    for candidate in (swapped, plain):
+        if (candidate >> 16) in ACTOR_PAGES and (candidate & 0xFFFF) != NOT_AN_ACTOR:
+            return candidate
+    return None
+
+
+def first_command_end(blob: bytes, most: int = 40_000) -> int | None:
+    """The bit at which the batch's leading command ends, found rather than assumed.
+
+    A forward scan for the first place a command tail really sits -- see
+    :func:`_real_tail` for what "really" had to come to mean -- followed by a command id
+    the client would accept.
+
+    Applied once from a known start rather than searched for over the whole payload,
+    because :func:`dsor.chain.walk` is exact-coverage backtracking over five to nine
+    million bits and its ``most=`` bound is on the command *count*, so it degrades to a
+    greedy reading on a 466-command batch.
+
+    *most* bounds the scan: the leading command is 4,594 bits in one recording and
+    10,882 in the other, so a cut not found by 40,000 is not there.
+    """
+    total = len(blob) * 8
+    for probe in range(24, min(total - TAIL_BITS, most)):
+        actor = _real_tail(blob, probe, total)
+        if actor is None:
+            continue
+        following = _sixteen(blob, probe + TAIL_BITS)
+        if following in _COMMAND_IDS:
+            return probe + TAIL_BITS
+    return None
+
+
+#: What every command ends with: the actor, then the terminator.
+TAIL_BITS = 40
+
+
+@lru_cache(maxsize=None)
+def _checked(map_name: str) -> Payload:
+    """:func:`player_only`, with the cut proven rather than trusted.
+
+    A ``content_bits`` that is wrong by a bit produces a message the client reads into
+    the middle of something, so it is checked the two ways available: the trimmed
+    payload has to walk as exactly one ``NewPlayerCommand`` ending on its actor and
+    terminator, and the character's own fields have to still be readable inside it.
+    Both are cheap, and both fail loudly.
+    """
+    from dsor import playerstate
+
+    trimmed = player_only(map_name)
+    wanted = ZONES[map_name].get("content_bits")
+    if not wanted:
+        return trimmed
+    # Recompute the boundary and compare, because the constant is an expectation and
+    # the scan is the answer. Checking only that the result walks as one command is
+    # not enough: the tail search has a byte of slack around an actor, so a cut eight
+    # bits either side of the right one still admits an exact segmentation.
+    whole = payload(str(ZONES[map_name]["content"]))
+    ends = first_command_end(whole)
+    if ends != int(wanted):
+        raise ValueError(
+            f"{map_name}: the leading command ends at bit {ends}, not the "
+            f"{wanted} content_bits says"
+        )
+    # Checked with the strict tail test rather than chain.walk, and that is not a
+    # preference. walk accepts an actor in any page up to 0xFF, page 0 included, so it
+    # sees the same false tail 712 bits early and then reads the rest of the command as
+    # a second one -- an exact segmentation of a truncated message, which is the worst
+    # kind of wrong answer.
+    if bits_of(trimmed) != int(wanted):
+        raise ValueError(f"{map_name}: the trim did not take: {bits_of(trimmed)} bits")
+    actor = _real_tail(bytes(trimmed), int(wanted) - TAIL_BITS, int(wanted))
+    if not actor:
+        raise ValueError(
+            f"{map_name}: the trimmed arrival does not end on an actor and a "
+            f"terminator"
+        )
+    if _sixteen(bytes(trimmed), 8) != NEW_PLAYER:
+        raise ValueError(f"{map_name}: the trimmed arrival does not lead with 0x001D")
+    progress = playerstate.progress_of(trimmed)
+    if progress is None or progress["map"] != map_name:
+        raise ValueError(
+            f"{map_name}: the trimmed arrival does not read back as that character's "
+            f"state ({progress})"
+        )
+    return trimmed
+
+#: The order the real map server's ordering indices give.
+ENTRY_ROLES = ("ack", "cosmetics", "content", "ready", "vicinity")
+
+
+def zone_actor(map_name: str) -> int:
+    """The actor *map_name*'s recorded player state was captured for."""
+    zone = ZONES.get(map_name)
+    if zone is None:
+        raise ValueError(f"no recorded arrival for {map_name!r}")
+    return int(zone["actor"])  # type: ignore[arg-type]
+
+
+def map_arrival(map_name: str, trimmed: bool = True) -> list[tuple[str, bytes]]:
+    """``(role, payload)`` for everything *map_name*'s arrival sends, in order.
+
+    A role a map has nothing for is left out rather than filled with another map's,
+    which is the mistake this replaces: serving two maps off one indexed list means the
+    second one gets the first one's pieces.
+    """
+    zone = ZONES.get(map_name)
+    if zone is None:
+        raise ValueError(
+            f"no recorded arrival for {map_name!r}. Servable: "
+            + ", ".join(SERVABLE_MAPS)
+        )
+    out = []
+    for role in ENTRY_ROLES:
+        name = zone.get(role)
+        if not name:
+            continue
+        if role == "content":
+            out.append((role, _checked(map_name) if trimmed else payload(str(name))))
+            continue
+        out.append((role, payload(str(name))))
+    return out
 
 
 #: What the character service sends to release a client, in this order.

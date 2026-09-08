@@ -981,6 +981,107 @@ its template can actually carry — `item_speed_attack_shoulders` on shoulders,
 `item_resistance_fire_gloves` on gloves — and the pickup reply describes the same item the
 drop named. Seeded by the drop count, so the same kill leaves the same thing twice.
 
+## The arrival is 1.3 KB, not 1.17 MB
+
+What this server called "the player state" and served as one opaque blob was not a
+player's state. It was **the whole batch the live map server sent** — 466 chained
+commands in Kingshill's 1,170,448 bytes — and the player's own `NewPlayerCommand` is the
+first **1,270** of them. The other 99.9% was one recorded account: its inventory, its
+equipment, its 57 achievements, its quest log, its currencies, and 38
+`NewRemotePlayerCommand` — three dozen strangers who happened to be standing in that
+city when the capture was taken, and who then stood in it for everybody this server
+served. The operator put it plainly: *"est-ce que je t'ai demandé de rejouer la capture ?
+non … tu dois tout comprendre"*.
+
+So the arrival is cut to that first command.
+
+| | tutorial | Kingshill |
+|---|---|---|
+| the recorded batch | 631,240 bytes | 1,170,448 |
+| the player's own command | **502** | **1,272** |
+| actor references inside it | 1 of 45 | 1 of 124 |
+
+Everything this server has any claim to is inside it: the character's name, the map, the
+level, the experience, and the one actor reference each client needs to know which entity
+it is.
+
+**Where the cut is, and how it is checked.** `content_bits` in `ZONES` states it — 4,010
+and 10,170 — and `first_command_end()` recomputes it from the blob and refuses to serve
+an arrival if the two disagree. Recomputing matters: the tail search has a byte of slack
+around an actor, so a cut eight bits either side of the right one still walks as one
+command and would have passed a walk-only check. The cut lands mid-byte (501.25 and
+1,271.25 bytes), so the result carries its bit length as a `Payload` — the same mechanism
+`zone_ready.bin` (313 bits) and `zone_extra.bin` (1,450) already relied on. Rounding up
+would leave spare bits, and a multi-command payload is decoded until its stream runs out.
+
+**Trimming first meant fixing something else.** `playerstate`, `skillbook` and `charlist`
+all ended their in-place rewrites with `return bytes(out)`, which discards the declared
+bit length. Harmless on a byte-aligned blob and fatal on a trimmed one — so all five go
+through `respan` now. That also fixed a bug already in the tree: `character_list.bin` is
+316 bytes declaring **2,525** bits, and every patched roster went out declaring 2,528.
+
+### What is written instead of patched
+
+Two commands used to be obtained by setting bits inside the recorded batch, and both are
+outside the cut — the skill book sits at bit 102,860 of the tutorial's blob and 9,293,117
+of Kingshill's. On Kingshill neither patch ever worked at all: `find_bars()` returns
+nothing and `entries()` reads no book out of that blob, so the skills the operator had in
+that city were the recorded character's, straight off the wire.
+
+* **`0x0058 SkillBookInfoCommand`** — an 8-bit count, then per entry a little-endian
+  uint32 and three single bits of which the first is ownership. The other two are zero in
+  all eighteen recorded entries. 27 bytes for five skills.
+* **`0x0050 QuickSlotsInfoCommand`** — and finding it settled where the action bar lives.
+  `with_skills` had been rewriting ten 680-bit records at bit 103,610 for months without
+  knowing they sit *inside* a command: the book's terminator is at 103,554, the next id at
+  103,562 is `0x0050`, and its body opens at 103,578 with a uint32 of **10** — the number
+  of bars — immediately followed by those records. So the command is
+  `u32 bars | bars × (u32 17, u32 0, 17 slots) | actor | 0xFF`.
+
+### The pickup reply, built
+
+`inventory.encode` has reproduced both of the live service's replies bit for bit for a
+while; what it never had was the framing. It has it now, and a pickup answers with **259
+bytes** stating the item, its cell and the player's health and resource — against 8.4 KB
+replaying another character's sword, his two cell placements and 247 template strings with
+six fields rewritten inside it.
+
+`OPAQUE` in that module names the sixteen record fields a built item leaves at their
+defaults, with the observed values of two real items beside them, because they are the
+first suspects if the client refuses a built record and each is one field-copy away.
+
+### What makes the player exist
+
+`0x001F PlayerReadyCommand` — command **466 of 466**, the very last thing the recorded
+Kingshill arrival sends. Seven bytes chained, eight standalone, and there is nothing to
+it but the signal: the id, **no body at all**, the actor, the terminator.
+
+```
+1f 00 | 55 21 02 00 | ff
+```
+
+Trimming the arrival to the leading `NewPlayerCommand` cut it off, and the symptom was
+immediate: the client holds a description of a character it never instantiates — *"je
+n'ai pas l'actor qui spawn"*. So the whole of the initialisation that was missing is a
+name and an actor, and it is built here now and sent last, where the service sends it.
+
+`tools/session_report.py --arrival` takes any capture's arrival batch apart command by
+command, so the next time the question is "what does the client need to spawn" the answer
+is a command away rather than a round of testing.
+
+### What this does not do
+
+The 1.3 KB that remains is still a replay. Its grammar is unknown apart from the name, the
+map, the level, the experience and the actor, so generating it is the real end of the
+replay and this is not it. Gone with the batch: the equipment (the character arrives
+naked), the bag (empty, and it fills by picking things up), the quests, the achievements,
+the currencies, the talents, and Kingshill's own NPCs — the client asks for those itself
+with `NPCRequestCommand`, 43 times in one session, and nothing answers yet.
+
+Four rules switch each piece from the console, so the client's true minimum can be found
+in one session rather than one rebuild per attempt: `arrival_content`,
+`arrival_skill_book`, `arrival_quickslots`, `built_pickup`.
+
 ## The event schedule
 
 `0x84/0x00DD`, the largest message in the protocol at 733,774 bytes, is neither
@@ -1116,11 +1217,14 @@ same idea rediscovered later.
 
 * **Collision and pathing.** Creatures walk straight at the player and through
   walls. Nothing here reads the map's navigation data.
-* **A character's own equipment.** Items are read and generated now — see "What an item
-  is" — but what the player *wears* still comes from the recorded player state, so the
-  fourteen equipment slots hold another character's gear and no stat this server computes
-  reaches the client. The next step is the `+0xa8` dictionary: fill it with items this
-  server made, and the triggers, the stats and the saved inventory all unlock together.
+* **A character's own equipment.** The recorded gear is gone with the batch and nothing
+  replaces it, so a character arrives naked. `dsor/equipment.py` has what generating a
+  set needs — the slot numbering, the templates by class and level, the enchantments each
+  can roll — and filling the `+0xa8` dictionary with items this server made is what
+  unlocks the stats and, with them, the `On:` triggers.
+* **The bag does not persist.** `dsor/store.py` is schema 2 and says why: there was
+  nothing to save while the bag was a recording. There is now — `World.bag` is a real
+  map of cell to item — so schema 3 is the next step.
 * **How a rolled statistic becomes a number.** The range case is resolved; the
   single-value case and the tier are not, and neither is how many statistics an item of a
   given rarity may carry — a dropped item gets two, which is what the live torso had.
@@ -1203,7 +1307,8 @@ dsor/charlist.py        the roster's level, experience and andermant
 dsor/playerstate.py     the same level and experience where the game reads them
 dsor/actionbar.py       reading the action bar, and writing back what the client sent
 dsor/vitals.py          PlayerLevelUpdateCommand, which the effect path needs
-dsor/inventory.py       the 0x0054 codec: both live replies re-encode byte for byte
+dsor/inventory.py       the 0x0054 codec: both live replies re-encode byte for byte,
+                        and a pickup reply built from nothing at 259 bytes
 dsor/usable.py          using an item by name, which is how a mount is summoned
 dsor/equipment.py       what an item is, and the 24 attributes stats are made of
 dsor/data/              messages still replayed rather than generated
