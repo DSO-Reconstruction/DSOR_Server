@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DSO Administration</title>
+  <link rel="stylesheet" href="/admin.css">
+  <script type="module" src="/admin.js"></script>
+</head>
+<body>
+  <section id="login-view" class="login-layout">
+    <form id="login-form" method="post" action="/api/login">
+      <p class="product-name">DSO / Administration</p>
+      <h1>Sign in</h1>
+      <p class="muted">Use your game administrator account.</p>
+      <label>Username<input name="username" required maxlength="24" autocomplete="username" autofocus></label>
+      <label>Password<input name="password" type="password" required maxlength="256" autocomplete="current-password"></label>
+      <button type="submit" disabled>Sign in</button>
+      <p id="login-error" class="error-text" role="alert"></p>
+    </form>
+  </section>
+  <div id="app" hidden>
+    <aside class="sidebar">
+      <a class="product-name" href="#status">DSO <span>Administration</span></a>
+      <nav aria-label="Main navigation">
+        <a href="#status">Status</a>
+        <a href="#accounts">Accounts</a>
+        <a href="#characters">Characters</a>
+        <a href="#bookings">Bookings</a>
+        <a href="#events">Events</a>
+        <a href="#items">Item catalog</a>
+        <a href="#sessions">Sessions</a>
+        <a href="#audit">Audit log</a>
+      </nav>
+      <div class="sidebar-footer"><span id="identity"></span><button id="logout" class="text-button">Sign out</button></div>
+    </aside>
+    <main>
+      <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
+      <header class="page-header"><div><h1 id="page-title" tabindex="-1">Status</h1><p id="page-description" class="muted"></p></div><div class="page-actions"><span id="page-actions"></span><button id="refresh" class="secondary">Refresh</button></div></header>
+      <p id="notice" class="notice" role="status" hidden></p>
+      <div id="content" aria-live="polite"></div>
+    </main>
+  </div>
+  <dialog id="confirmation" aria-labelledby="confirmation-title">
+    <h2 id="confirmation-title"></h2><p id="confirmation-message"></p>
+    <div class="form-actions"><button id="confirmation-cancel" class="secondary">Go back</button><button id="confirmation-accept">Confirm</button></div>
+  </dialog>
+</body>
+</html>

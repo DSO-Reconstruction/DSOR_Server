@@ -1,161 +1,164 @@
-## RakNet Notes
+# DSO server production fork
 
--   All strings are prefixed with an unsigned short depicting their length.
--   The offline message id will always be: 00ffff00fefefefefdfdfdfd12345678 (hex) - this series of bytes will be referred to as _Magic_
--   The offline message id is sent with unconnected messages such as unconnected pings and pongs.
--   The GUIDS used by RakNet are 8 bytes long.
--   The first byte is used to identify the type of message.
+Release source with operator-supplied client assets. Requires **64-bit Python 3.12+**;
+the runtime uses only the Python standard library.
 
-## Data Types
+## Run
 
-| Type           | Size | Range           | Notes                                                          |
-| -------------- | ---- | --------------- | -------------------------------------------------------------- |
-| Byte           | 1    | 0-255           | An unsigned integer                                            |
-| Long           | 8    | -2^63 to 2^63-1 | Signed 64 bit integer                                          |
-| Magic          | 16   |                 | 00ffff00fefefefefdfdfdfd12345678 - Will always be those bytes  |
-| Short          | 2    | -32768 to 32767 |                                                                |
-| Unsigned Short | 2    | 0 to 65535      |                                                                |
-| String         | N/A  | N/A             | A string prefixed by a short which depicts the length.         |
-| Boolean        | 1    | 0-1             | 0x00 is False while 0x01 is True                               |
-| Address        | 7    |                 | 1 byte for the ip version 4/6, 4 for the IP and 2 for the port |
-| uint24le       | 3    |                 | 3-byte little-endian unsigned integer                          |
+First add the client assets described in `data/maps/README.txt`,
+`data/navigation/README.txt` and `data/db/README.txt`. The server cannot start
+without the required content. Then, from this directory on Windows:
 
-## Contents
+```powershell
+py -3.12-64 run.py
+```
 
--   [x] Unconnected Pings
--   [x] Unconnected Pongs
--   [x] Open Connection Request 1
--   [x] Open Connection Reply 1
--   [x] Open Connection Request 2
--   [x] Open Connection Reply 2
--   **From here on, the RakNet connection is established and all RakNet messages are contained in a [Frame Set Packet](https://wiki.vg/Raknet_Protocol#Frame_Set_Packet).**
--   [x] Connection Request
--   [x] Connection Request Accepted
--   [x] New Incoming Connection
+`run.bat` also works; `run.bat --log` saves console output under `data/logs/`.
+On Linux use `python3 run.py`. Paths are relative to the package, independent
+of the current working directory. Ctrl+C or SIGTERM requests graceful shutdown.
 
-### Unconnected Pings
+The release launcher defaults to `DSO_REQUIRE_LOGIN=1` and `DSO_DEBUG_VENDOR=0`,
+including on loopback. Explicit environment overrides still take precedence.
+Accounts and characters start empty; register through the game launcher/account
+API and create characters through the normal client flow.
 
-Minecraft Bedrock will send out a message to all listed servers (and the local network) to check if any games are available and retrieve the MOTD from the game. These messages are known as unconnected pings and are structured in this format:
+To accept remote players, set `DSO_HOST=0.0.0.0` and `DSO_PUBLIC_HOST` to the
+address clients can reach before starting. The default bind is `127.0.0.1`.
+The process needs permission to bind UDP port 80 on platforms that restrict it.
 
-`0x01 | client alive time in ms (unsigned long long) | magic | client GUID`
+| Service | Default port |
+| --- | --- |
+| Game authentication gateway | UDP 80 |
+| Login/map handoff | UDP 2190 |
+| Chat | UDP 2191 |
+| Character selection/gameplay | UDP 2192 |
+| Launcher registration/login API | HTTP 8080 |
+| Admin CMS (loopback by default) | HTTP 8081 |
 
-### Unconnected Pongs
+## Configuration and administration
 
-After this message, the server will respond with something called an unconnected pong. The reason these messages are unconnected is because the client has not established a connection to the server. This is the format of an unconnected pong:
+| Variable | Purpose/default |
+| --- | --- |
+| `DSO_HOST` | Game bind address; `127.0.0.1` |
+| `DSO_PUBLIC_HOST` | Client-facing address, especially behind NAT |
+| `DSO_ACCOUNT_HOST`, `DSO_ACCOUNT_PORT` | Account API bind/port; game-dependent bind, 8080 |
+| `DSO_ACCOUNT_SERVICE` | Account API enabled by default |
+| `DSO_ADMIN_HOST`, `DSO_ADMIN_PORT` | CMS bind/port; `127.0.0.1`, 8081 |
+| `DSO_ADMIN_SERVICE` | CMS enabled with the account service by default |
+| `DSO_ADMIN_SECURE_COOKIE` | Set `1` when serving CMS through HTTPS |
+| `DSO_PLAYER_DATABASE` | Character database; `data/db/players.sqlite3` |
+| `DSO_ACCOUNT_REGISTRY` | Account/authentication/admin database; `data/db/accounts.sqlite3` |
+| `DSO_SOCIAL_STATE_FILE` | Guild/group state; `data/state/social-states.json` |
+| `DSO_EVENT_SCHEDULE` | Event configuration; `data/events.json` |
+| `DSO_CHAT_AUDIT_LOG` | Chat audit output; `data/logs/chat-service.log` |
+| `DSO_ACCOUNT_SAVE_INTERVAL_SECONDS` | Periodic player persistence; 15 seconds |
 
-`0x1c | client alive time in ms (recorded from previous ping) | server GUID | Magic | string length | Edition (MCPE or MCEE for Education Edition);MOTD line 1;Protocol Version;Version Name;Player Count;Max Player Count;Server Unique ID;MOTD line 2;Game mode;Game mode (numeric);Port (IPv4);Port (IPv6);`
+The CMS supports accounts, characters, item/currency bookings, events, sessions,
+live admin actions and audit history. To grant an existing account the first CMS
+role, install the fork as an editable package, then run:
 
-Example:
+```powershell
+py -3.12-64 -m pip install -e .
+py -3.12-64 -m dso_server.services.admin --grant-admin YourUsername
+```
 
-`MCPE;Dedicated Server;527;1.19.1;0;10;13253860892328930865;Bedrock level;Survival;1;19132;19133;`
+Use the same `DSO_ACCOUNT_REGISTRY` override as the server, if configured.
+The command does not create an account. `--revoke-admin YourUsername` removes
+access. For remote CMS access use an HTTPS reverse proxy and secure cookies;
+the built-in HTTP listener does not provide TLS.
 
-The client doesn't seem to use the gamemode or the numeric value for the gamemode.
+## Content and persistence
 
-### Open Connection Request 1 |→ Client→Server
+The map and navigation directories contain only copy instructions. The static
+database and all backups are excluded. Before launching or building an installed
+package, copy assets from the compatible client revision as follows:
 
-The client sends this when attempting to join the server
+| Client source | Server destination |
+| --- | --- |
+| `export_win32/db/static.db4` | `data/db/static.db4` |
+| Contents of `export_win32/maps/` | `data/maps/` |
+| Contents of `export_win32/navigation/` | `data/navigation/` |
+| `export_win32/tables/navshapes.bin` | `data/navigation/navshapes.bin` |
 
-`0x05 | Magic | Protocol version	(currently 11 or 0x0b) | RakNet Null Padding`
+Keep navigation subdirectories intact, for example
+`data/navigation/a0200_kingscity/a0200_kingscity.tok`. Do not add another
+`maps/` or `navigation/` wrapper directory. Do not copy backup files.
+Server and client must use the same static database revision: wire indexes
+depend on its row order. Debug vendors are hidden by the release launcher.
 
-The null padding seems to be used to discover the maximum packet size the network can handle.
+Quest definitions (`data/quests.xml`) and the chest catalog are included.
+Account/player databases and runtime output directories are created as needed;
+they are not seeded from the development server.
 
-The client will send this to the server with decreasing null padding until the server responds with a
+`data/events.json` starts with an empty schedule. Configure event runs in the CMS.
 
-### Open Connection Reply 1 |→ Server→Client
+Stop the running server before backing up or migrating its account/player
+databases, social state and event schedule, so pending database writes drain.
+This export is a fresh fork, not a backup of existing players or accounts.
 
-The server responds with this once the client attempts to join
+## Development and tests
 
-`0x06 | magic | server GUID | ServerHasSecurity (boolean) | Cookie (uint32, if server has security) | MTU Size (Unsigned short)`
+The complete `docs/` and `tests/` source folders are included, with test fixtures,
+the root `conftest.py`, pytest configuration and the helpers imported by tests.
+Start with [Architecture](docs/ARCHITECTURE.md), [Operations](docs/OPERATIONS.md),
+[Concurrency](docs/CONCURRENCY.md) and the
+[Spell implementation contract](docs/SPELL_IMPLEMENTATION_CONTRACT.md).
+Feature documents describe the protocol contracts and related regression tests.
+Some documents describe earlier development setups; this README defines the
+export's launcher defaults and the client assets that must be supplied separately.
 
-This is the first half of the handshake between the client and the server.
+From the exported source directory:
 
-### Open Connection Request 2 |→ Client→Server
+```powershell
+py -3.12-64 -m pip install -e ".[test]"
+py -3.12-64 -m pytest
+```
 
-The client responds with this after they receive the open connection reply 1 packet.
+Use `python3` on Linux. Add the required client assets before running the full
+suite; gameplay and relocation tests require the matching static database, maps
+and navigation. To check source boundaries and runtime utilities without those
+assets, run:
 
-`0x07 | magic | Cookie (uint32, if server has security) | Client supports security (Boolean(false), always false for the vanilla client, if server has security) | server Address | MTU Size (Unsigned short) | client GUID (Long)`
+```powershell
+py -3.12-64 -m pytest tests/test_standalone.py -k "not relocated"
+py -3.12-64 -m pytest tests/test_gc_tuning.py tests/test_log_stream.py tests/test_stall_attribution.py
+```
 
-### Open Connection Reply 2 |→ Server→Client
+`tools/audit_character_stats.py` and `tools/install_admin_effects.py` are retained
+because tests import them. `tools/export_production.py` can generate another
+source export with docs, tests and the same asset exclusions; choose an unused
+`--name`. Make changes against the documented contracts, then run the relevant
+regression tests. Test fixtures stay under `tests/`; runtime modules must not
+depend on them. Documentation, tests and development tools are included in the
+source ZIP, while the installed runtime package retains its explicit package list.
 
-This is the last part of the handshake between the client and the server.
+## Export scope and verification
 
-`0x08 | magic | server GUID (Long) | client Address | MTU Size | security(Boolean)`
+`RELEASE_MANIFEST.json` lists every shipped file with its size and SHA-256,
+exclusions, export-only changes and validation results. This source tree contains
+entry points, five runtime packages, admin web assets, quests, the chest catalog,
+an event schedule, client-copy instructions, documentation, tests and their helpers.
+The small runtime worker-observation, watchdog and logging modules are retained
+because the application, garbage collector, admin status and map services use
+them. The separate debugger, diagnostic output, unrelated tools, caches, backups,
+live state and client-only files are excluded.
 
-**From here on, all RakNet messages are contained in a [Frame Set Packet](https://wiki.vg/Raknet_Protocol#Frame_Set_Packet).**
+The export changes only launcher defaults, package metadata and documentation,
+plus the selected event-schedule policy and omitted client assets. Gameplay
+implementation and retained content are copied unchanged. The original working
+tree is not rewritten.
 
-### Connection Request |→ Client→Server
+Validation covers Python syntax/import ownership, asset exclusions, copy
+instructions and archive file hashes. Runtime initialization and content checks
+are skipped because the client assets are intentionally absent. Tests and fixtures
+are preserved for development after those assets are supplied.
 
-This is the part where the client sends the connection request.
+`SANITIZATION.json` describes export-only anonymization and date normalization.
+Personal labels, identifying paths, captured roster names/IDs and public endpoint
+examples are replaced with synthetic values. Editorial dates and capture metadata
+use the chosen reference date; executable test dates, expiry boundaries and wire
+timing values remain intact. Normalized dates do not claim when the original
+captures or validation runs happened. The manifest records the actual generation
+time; ZIP entry timestamps use the reference date.
 
-`0x09 | client GUID (Long) | Request timestamp (Long) | Secure (Boolean)`
-
-### Connection Request Accepted |→ Server→Client
-
-The server sends this packet in response to the incoming connection request.
-
-`0x10 | client Address | System index (Short, unknown what this does. 0 works as a value (Minecraft client sends 47)) | System adresses ([]Address) | Ping time (Long) | Pong Time (Long)`
-
-### New Incoming Connection |→ Client→Server
-
-Our RakNet connection is now fully successful.
-
-`0x13 | server Address | internal Adress ([20(maybe 10)]Address) (i use 255.255.255.255:0) | Ping time (Long) | Pong Time (Long)`
-
-### Note:
-
-The next 2 packets ( and the first Minecraft Protocoll packet) are all send together as one by the vanilla client.
-The RakNetProtocoll allows for them to be sent seperately too,
-however servers with a custom raknet implementation might not always handle this case
-because this never occurs within the vanilly client.
-
-### New Incomming Connection
-
-The client sends this packet in response to Connection Request Accepted.
-
-`0x13 | serverAddress (uint8) | clientMachineAddresses (address[10], Minecraft sends only one ipv6 together with a placeholder (see below) instead of the other 9) | clientSendTime (uint64) | serverSendTime (uint64)`
-
-placehodler for the other clientMachineAddresses (a.k.a. Internal Adresses):
-
-> 0xd4 0x0b 0xa7 0x86 0xdd 0x98 0x33 0x00 0x00
-> each byte replaces one of the 9 missing clientMachineAdresses
-
-After having sent this packet,
-you must periodically sent a Connected Ping to keep the connection alive.
-The server also sometimes sends a Connected Ping, respond with a Connected Pong.
-
-### Connected Ping
-
-The client sends this packet immeadiatly after/with New Incomming Connection.
-This packet should be sent as unreliable.
-The client/server will respond to this with a Connected Pong.
-
-`0x00 | Time since start (uint64)`
-
-### Connected Pong
-
-The client or server sends this packet after having received a Connected Ping.
-This packet should be sent as unreliable.
-
-`0x00 | Time since start client (uint64) | Time since start server (uint64)`
-
-## Sources
-
-::: tip
-If you are interested and want to read more about it here is the documentation for the Bedrock Protocol and RakNet:
-
-[Mojang's Official Protocol Documentation](https://github.com/Mojang/bedrock-protocol-docs)
-
-[RakNet Protocol Documentation](https://wiki.vg/Raknet_Protocol)
-
-[another RakNet Protocol Documentation](https://github.com/vp817/RakNetProtocolDoc)
-:::
-
-Thanks to these guys : 
-     ZestiiSpaghett
-     MedicalJewel105
-     SmokeyStack
-     ThomasOrs
-     Adrian8115
-     ismaileke
-     Tom-Teclador
-
+Made by **S**

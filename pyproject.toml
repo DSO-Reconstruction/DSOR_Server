@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dso-server"
+version = "0.1.0"
+description = "Standalone reconstructed Drakensang Online server"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[tool.setuptools]
+packages = [
+    "dso_server",
+    "dso_server.services",
+    "dso_server.protocol",
+    "dso_server.gameplay",
+    "dso_server.persistence",
+    "dso_server.runtime",
+]
+package-dir = {dso_server = "."}
+include-package-data = false
+
+[tool.setuptools.package-data]
+dso_server = [
+    "data/catalogs/*.json",
+    "data/events.json",
+    "data/quests.xml",
+    "services/admin_static/*.html",
+    "services/admin_static/*.css",
+    "services/admin_static/*.js",
+    "data/db/README.txt",
+    "data/maps/README.txt",
+    "data/navigation/README.txt",
+    "data/db/static.db4",
+    "data/maps/*.db4",
+    "data/maps/*.map",
+    "data/maps/*.col",
+    "data/navigation/navshapes.bin",
+    "data/navigation/**/*.tok",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--import-mode=importlib"

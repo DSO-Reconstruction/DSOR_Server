@@ -1,0 +1,17 @@
+"""Project-owned content and state paths, independent of the working directory."""
+
+import os
+from pathlib import Path
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+DATA_ROOT = PACKAGE_ROOT / "data"
+DATABASE_ROOT = DATA_ROOT / "db"
+DEFAULT_STATIC_DB_PATH = Path(os.getenv("DSO_STATIC_DB") or DATABASE_ROOT / "static.db4")
+DEFAULT_PLAYER_DATABASE_PATH = DATABASE_ROOT / "players.sqlite3"
+DEFAULT_ACCOUNT_DATABASE_PATH = DATABASE_ROOT / "accounts.sqlite3"
+DEFAULT_SOCIAL_STATE_PATH = DATA_ROOT / "state" / "social-states.json"
+DEFAULT_CHAT_AUDIT_PATH = DATA_ROOT / "logs" / "chat-service.log"
+DEFAULT_CHEST_CONTENTS_MAP = DATA_ROOT / "catalogs" / "chest_contents.json"
+# Quest definitions decoded from the client's quests.pbxml (see docs/QUESTS.md).
+DEFAULT_QUESTS_PATH = Path(os.getenv("DSO_QUESTS_FILE") or DATA_ROOT / "quests.xml")

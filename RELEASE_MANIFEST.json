@@ -1,0 +1,1712 @@
+{
+  "format": 1,
+  "created_at": "2026-10-13T12:07:57.188630+00:00",
+  "kind": "production source fork; client assets supplied separately",
+  "event_schedule": "empty",
+  "file_count_excluding_manifest": 318,
+  "bytes_excluding_manifest": 20777874,
+  "excluded": [
+    "live_debugger/; editor/agent settings; Git history",
+    "todo/; development caches and compiled Python files",
+    "tools other than required test helpers and the release exporter; data/tools/; data/exports/; profiling binaries and client artwork",
+    "data/diagnostics/; data/logs/; data/state/; caches and bytecode",
+    "account/player databases, sessions, social state and all backups/WAL/SHM files",
+    "old event runs (replaced with an empty schedule unless --keep-events is used)",
+    "all data/maps/ and data/navigation/ content, plus data/db/static.db4; supplied by the operator",
+    "legacy/prototype files outside the standalone server directory; local run.md"
+  ],
+  "required_external_content": [
+    "data/maps/README.txt",
+    "data/navigation/README.txt",
+    "data/db/README.txt"
+  ],
+  "sanitization": {
+    "reference_date": "2026-09-09 00:00:00",
+    "scope": "Personal labels, user paths, public endpoint examples, captured roster identities and editorial/capture metadata",
+    "changed_files": [
+      "docs/ADMIN_CMS.md",
+      "docs/BOSS_SPAWNS.md",
+      "docs/CLASS_SKILL_IMPLEMENTATION_AUDIT.md",
+      "docs/DAILY_CHALLENGES.md",
+      "docs/DEBUG_VENDORS.md",
+      "docs/DUNGEON_DAILY_AND_STATUS_FIXES.md",
+      "docs/EVENT_NOTIFICATIONS.md",
+      "docs/GAME_EVENTS.md",
+      "docs/LEADERBOARDS.md",
+      "docs/MAP_AND_CUSTOMIZATION.md",
+      "docs/OPERATIONS.md",
+      "docs/PERFORMANCE.md",
+      "docs/PLAYER_RESPAWN.md",
+      "docs/PROP_AND_TRIGGER_COMMANDS.md",
+      "docs/PVP_MATCHMAKING.md",
+      "docs/QUEST_PROTOCOL.md",
+      "docs/WANTED_THIEF.md",
+      "gameplay/achievement_content.py",
+      "gameplay/local_combat_state.py",
+      "gameplay/local_mount_state.py",
+      "gameplay/map_companions.py",
+      "gameplay/map_event_state.py",
+      "protocol/currency_protocol.py",
+      "protocol/gameplay_commands.py",
+      "protocol/gem_protocol.py",
+      "protocol/player_init_protocol.py",
+      "protocol/pvp_match_protocol.py",
+      "protocol/social_protocol.py",
+      "protocol/talent_protocol.py",
+      "protocol/wanted_thief_protocol.py",
+      "run.bat",
+      "services/chat.py",
+      "services/customization.py",
+      "services/events.py",
+      "tests/fixtures/captured_character_selection.py",
+      "tests/fixtures/daily_challenges_retail.json",
+      "tests/fixtures/daily_login_offers_retail.json",
+      "tests/fixtures/item_customization_retail.json",
+      "tests/fixtures/player_block_example_player.json",
+      "tests/fixtures/player_respawn_retail.json",
+      "tests/fixtures/player_stats_example_player.json",
+      "tests/test_achievements.py",
+      "tests/test_combat_latency.py",
+      "tests/test_player_block.py",
+      "tests/test_player_stat_parity.py",
+      "tests/test_pvp_projectile_sets.py",
+      "tests/test_quests.py",
+      "tests/test_wanted_thief.py",
+      "tools/audit_character_stats.py"
+    ],
+    "dates_preserved": "Executable test dates, membership expiry boundaries, wire-format timestamps and relative protocol timings",
+    "archive_timestamps": "Normalized to reference_date; manifest generation time remains actual",
+    "note": "Editorial reference dates are normalized examples, not original capture or execution timestamps.",
+    "validation": {
+      "test_collection": 1326,
+      "asset_independent_checks_passed": 17,
+      "affected_fixture_checks_passed": 45,
+      "affected_fixture_expected_failures": 3,
+      "client_assets_used_only_in_temporary_test_copy": true,
+      "known_identifiers_and_personal_paths_absent": true,
+      "non_roster_fixture_wire_payloads_preserved": true,
+      "full_gameplay_suite": "not run"
+    }
+  },
+  "development_files": {
+    "docs": 38,
+    "tests_and_fixtures": 93,
+    "tools": [
+      "audit_character_stats.py",
+      "install_admin_effects.py",
+      "export_production.py",
+      "sanitize_release.py"
+    ],
+    "pytest_configuration": "included"
+  },
+  "export_only_changes": [
+    "release README and ignore rules",
+    "launcher defaults require login and disable debug vendors",
+    "package metadata includes quests and asset-copy instructions; pytest setup retained",
+    "map/navigation/static database content omitted; copy instructions supplied instead",
+    "export text and roster fixtures anonymized; editorial dates normalized",
+    "run.bat help refers to release README and omits testing overrides",
+    "event schedule policy above"
+  ],
+  "validation": {
+    "compiled_and_import_checked_python_files": 254,
+    "client_assets_and_backups_absent": "passed",
+    "copy_instructions": "passed",
+    "retained_source_sha256_comparison": "verified before documented sanitization",
+    "runtime_initialization_and_content_checks": "skipped: required client assets intentionally omitted",
+    "network_listeners_started": false,
+    "client_gameplay_or_load_test": "not run"
+  },
+  "files": [
+    {
+      "path": ".gitignore",
+      "size": 567,
+      "sha256": "0c6ea04333a5decb4283095f639167ac96e1c86bae237910b895cc7d00461fca"
+    },
+    {
+      "path": "__init__.py",
+      "size": 535,
+      "sha256": "da36ec63bf9b796e88eab0fd187d23b04b7c438be8581e728d16ef4827174131"
+    },
+    {
+      "path": "__main__.py",
+      "size": 1651,
+      "sha256": "cb2b9c6a2f88ca08cf235709916af40bc74f98ee7df1b7a6e8714f1ed0252e2c"
+    },
+    {
+      "path": "app.py",
+      "size": 23817,
+      "sha256": "b4537c2f2275586b9ba3447387361f1c3d0fc58b7f513c2812c524fbe77323ab"
+    },
+    {
+      "path": "conftest.py",
+      "size": 187,
+      "sha256": "2bc2ad36d5ddab06a6ef8cb85db0706038d53e9f55f9ca0e732a77596af70677"
+    },
+    {
+      "path": "data/catalogs/chest_contents.json",
+      "size": 6715972,
+      "sha256": "5bb5567a328c4eae338ce75e0dafb1755826a83e00a1d4203e1385308558a7af"
+    },
+    {
+      "path": "data/db/README.txt",
+      "size": 523,
+      "sha256": "31183cea63fbd58522e6a318a9437af62ee02894af80398d6de7cca1e6a09ba9"
+    },
+    {
+      "path": "data/events.json",
+      "size": 22,
+      "sha256": "4e136a9be1fa1022eec8dfc39794898852cd86895b9a5adad345179688da8132"
+    },
+    {
+      "path": "data/maps/README.txt",
+      "size": 535,
+      "sha256": "6ee1f3c12b0c294628d3431a60300adacc0f75245f50ed39a81173492642ff7e"
+    },
+    {
+      "path": "data/navigation/README.txt",
+      "size": 768,
+      "sha256": "b69daa9e8925fc938801db379385f009233101a3a08cae3c2c047c3caf059d18"
+    },
+    {
+      "path": "data/quests.xml",
+      "size": 8417591,
+      "sha256": "91a33a947821e8dc6455eaa5aff9a091949586edc19fe2a017f88a35383ea51e"
+    },
+    {
+      "path": "docs/ADMIN_CMS.md",
+      "size": 14481,
+      "sha256": "f45c4843db3b794cdf4a9ba073bb20b03a416650d154b4039666e9d3ddab6ec5"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "size": 13544,
+      "sha256": "5928789f663305c1404d8e209cb53c7526050466b1ca6e3ff84472b41628c4f6"
+    },
+    {
+      "path": "docs/BOSS_SPAWNS.md",
+      "size": 6354,
+      "sha256": "c0d2466af0870b74af276a2493af80ae85470bea10af2e686fe7c7731a0023e5"
+    },
+    {
+      "path": "docs/CLASS_SKILL_IMPLEMENTATION_AUDIT.md",
+      "size": 18355,
+      "sha256": "1b3629d81f6eb70b18e3dd7c337af91850c37a54bdc115018fea61d80d541993"
+    },
+    {
+      "path": "docs/CLIENT_DATA_OVERVIEW.md",
+      "size": 10537,
+      "sha256": "1eadf49d1e44b6a2bd3c74aa60b80fb1a543b73bccac974614a5a9969ebb2387"
+    },
+    {
+      "path": "docs/command_ids.json",
+      "size": 55308,
+      "sha256": "a745944e5c37e62546dcd21b5db8576860ec53ef8b1d7cbe3d1d6f2b612e61d2"
+    },
+    {
+      "path": "docs/COMMAND_IDS.md",
+      "size": 14299,
+      "sha256": "774acb6532b76a3ca4c2b1cc8a015b07d44838f23ba721d35b30de6fbb594efb"
+    },
+    {
+      "path": "docs/CONCURRENCY.md",
+      "size": 16204,
+      "sha256": "49746d90af6ef1c8e45570a5f838a0f0b811840d564ca77f046d8ab4c2d8d74f"
+    },
+    {
+      "path": "docs/DAILY_CHALLENGES.md",
+      "size": 4327,
+      "sha256": "15cbcbd677c1ffdcc3bd60a895957d3252d127b059da463c5890ec52d3961c56"
+    },
+    {
+      "path": "docs/DEBUG_VENDORS.md",
+      "size": 1500,
+      "sha256": "48f533c6fe10241963e07b65fcd4b2c78669e2da36be63e591d671f2efd8e8af"
+    },
+    {
+      "path": "docs/DUNGEON_DAILY_AND_STATUS_FIXES.md",
+      "size": 3394,
+      "sha256": "ef81e048d4654a3b255ae454a5fe8c2f429ae72522aad48d65faeadda4534925"
+    },
+    {
+      "path": "docs/EVENT_NOTIFICATIONS.md",
+      "size": 13005,
+      "sha256": "6505bef5c757641f84c9ec58aeedf3bfc1c30263729ad2c909647406cd399080"
+    },
+    {
+      "path": "docs/GAME_EVENTS.md",
+      "size": 16043,
+      "sha256": "7063087f394b583a08b42b6fb85e95b6cc8a46f91688ac133df6e8ca9deb5875"
+    },
+    {
+      "path": "docs/ITEM_SET_AUDIT.md",
+      "size": 14677,
+      "sha256": "d5d4d7911c209d2d31383025b31a7fb52f6fc11582d6c203781c47ecf925664d"
+    },
+    {
+      "path": "docs/LEADERBOARDS.md",
+      "size": 4595,
+      "sha256": "0c43d091c6a17808b8236a265a402aa484476ec376181a739424c3021051b354"
+    },
+    {
+      "path": "docs/MAP_AND_CUSTOMIZATION.md",
+      "size": 16584,
+      "sha256": "d25b5303d6072afd801ce1250d2d63c9568ff36eabe9388cb7d2b95d1828ce84"
+    },
+    {
+      "path": "docs/MELEE_TARGETING.md",
+      "size": 2564,
+      "sha256": "8fae4c0f147f5cf408fdddea067b7b094bf9702d82c92c5e3f4874b10356a372"
+    },
+    {
+      "path": "docs/monster_cast_latency_check.json",
+      "size": 19109,
+      "sha256": "32cfed5877218dfe16637e5859e64c2b7e75c447c5cd5b2a21beea7d4fdb34d9"
+    },
+    {
+      "path": "docs/monster_delivery_load_test.json",
+      "size": 2304,
+      "sha256": "42f2e35a5eb3b780bdc622ede2e3482e647224dae19e4035a3f7cbe5a267f6c6"
+    },
+    {
+      "path": "docs/monster_worker_load_check.json",
+      "size": 28697,
+      "sha256": "5f3b0b9b34a77bfb5bddb9d8fc23ca9facef5b596af59e4ce4f74ff7b3fe9668"
+    },
+    {
+      "path": "docs/OPERATIONS.md",
+      "size": 28657,
+      "sha256": "e030ca36d7c8214e46c293da00fd0c3a31c2e976cb692ea472b97cceec050b6f"
+    },
+    {
+      "path": "docs/PACKET_ENCRYPTION.md",
+      "size": 941,
+      "sha256": "1a3fbffe77f765d6d93539c881671b60eb87d7ab82b4d004ab728b78065f74a1"
+    },
+    {
+      "path": "docs/PERFORMANCE.md",
+      "size": 66625,
+      "sha256": "ae67d1b89274d66fa311a547c4e6152acd507173d89abb456ffd15f3212bde55"
+    },
+    {
+      "path": "docs/PLAYER_RESPAWN.md",
+      "size": 8143,
+      "sha256": "9f90f019742efe77526eb5a57f1cf7230f42400e5324e3fbc1a755bb1e78d59d"
+    },
+    {
+      "path": "docs/PREMIUM_BAGS.md",
+      "size": 2033,
+      "sha256": "409ca879e0ada752ae1cc0b195079b6ee5c9efe2ea668beb5993b9e712281c1c"
+    },
+    {
+      "path": "docs/PROP_AND_TRIGGER_COMMANDS.md",
+      "size": 32978,
+      "sha256": "d2a8f9ed1fc22736cd1555cd937903b1c50156b025c141da2b5a21c74c5c134e"
+    },
+    {
+      "path": "docs/pvp maps.docs",
+      "size": 213,
+      "sha256": "06e3fbc556c0ec73f4c7caec1f12c7820626f0c34637ee51b0eacb29b2c15b02"
+    },
+    {
+      "path": "docs/PVP_MATCHMAKING.md",
+      "size": 41960,
+      "sha256": "b858b74962e003c668af6455f69c8fbd3415b11196d2a8e65519a02042863ede"
+    },
+    {
+      "path": "docs/QUEST_DROPS.md",
+      "size": 5848,
+      "sha256": "19fa19ab592d8487644d31c6cd5705170eb2e3d4ea10c10303a02bcd0fb69f8a"
+    },
+    {
+      "path": "docs/QUEST_FEASIBILITY.md",
+      "size": 11433,
+      "sha256": "9f8997ec655da2697f6e8480e1d159a26a23067b30c3dffbd10cee3b552a8051"
+    },
+    {
+      "path": "docs/QUEST_PROTOCOL.md",
+      "size": 31572,
+      "sha256": "4de7c0f61798f3aba0bb0473b33e9acebe37a7357fc9f0700f98a9d7b9616b04"
+    },
+    {
+      "path": "docs/QUESTS.md",
+      "size": 18942,
+      "sha256": "6b9e47c39c731a3f025ab1cc56958bdf955d18313f73abb2d18a46f98c0f5900"
+    },
+    {
+      "path": "docs/SEQUENCES.md",
+      "size": 14946,
+      "sha256": "a70b3a0ee021b92f090c23d541a9ebfd831c0d60e84991d07372204e1d384d08"
+    },
+    {
+      "path": "docs/SET_CONCEPT_STORMBOUND.md",
+      "size": 18542,
+      "sha256": "e67ad79ec2cf28e500a01cfb870a80bfca3e55b633825ab8ff2e002e48e27e26"
+    },
+    {
+      "path": "docs/SOCKET_EFFECT_AUDIT.md",
+      "size": 4702,
+      "sha256": "beaae32df6ea979b863caf9de8196b8b67ac452fefb8f1b0d3b34c0555f5a285"
+    },
+    {
+      "path": "docs/SPELL_IMPLEMENTATION_CONTRACT.md",
+      "size": 3247,
+      "sha256": "44c0e0b19db2d11b6db0e878b81e9365137192b8af095d6b2ddd408f109bd949"
+    },
+    {
+      "path": "docs/VENDORS_AND_ACCOUNT_WALLET.md",
+      "size": 3795,
+      "sha256": "11bcb53115eb688d79c78b8ee9fc92560f73f7606369762337e315e43ab9ae17"
+    },
+    {
+      "path": "docs/WANTED_THIEF.md",
+      "size": 6404,
+      "sha256": "20b0fd749049a1ac9fbe9914fb7b33647de2f74cb782ba796dcb1cb52023d199"
+    },
+    {
+      "path": "gameplay/__init__.py",
+      "size": 71,
+      "sha256": "eb083f8fce32e8d0fa0db68650ddfb26907e91053b4eb3f8e6b7c25093dd1e7b"
+    },
+    {
+      "path": "gameplay/achievement_content.py",
+      "size": 14447,
+      "sha256": "8167f4d78ef7e7f47d47d2a62f2ad3d04e904d676c4a75710ea188fc42770e71"
+    },
+    {
+      "path": "gameplay/boss_encounter_policy.py",
+      "size": 14195,
+      "sha256": "ab50b3dd5ad2aa6ace99a8e2d1ba72a6d9f2df61d3ee3823c39c9e37d3fe2c8f"
+    },
+    {
+      "path": "gameplay/combat_entities.py",
+      "size": 12610,
+      "sha256": "53a37eba9135b40f9f5162ad010907cc8adc4429d36470a2498dcf256bbe900c"
+    },
+    {
+      "path": "gameplay/daily_challenges.py",
+      "size": 8587,
+      "sha256": "be71dd79357535b7f7e19a0cf354a3f876e676c9e08f0fcf5406157a7d251e87"
+    },
+    {
+      "path": "gameplay/event_spawn_areas.py",
+      "size": 3753,
+      "sha256": "e31cf9c56fd0ee8e8814ff6d4fea8ef9a74e17f4ec976e4676f46e01a6e93430"
+    },
+    {
+      "path": "gameplay/event_system.py",
+      "size": 34864,
+      "sha256": "bd66f2f8f4b9bb6741d0be99c509136852c7cf3b2713a437cbfe008dbfe98760"
+    },
+    {
+      "path": "gameplay/item_economy_values.py",
+      "size": 3676,
+      "sha256": "af126c5c91efff5890a603210d8a23c37f6882f5724481fff89c023a97428af1"
+    },
+    {
+      "path": "gameplay/item_random.py",
+      "size": 5253,
+      "sha256": "5134538e81efd4ee7b976158bb9daddf7858dce001e093b41af3a3746a6b32cf"
+    },
+    {
+      "path": "gameplay/item_set_procs.py",
+      "size": 10697,
+      "sha256": "33419b4f9b4a49d96545db641bf88f3628c9eb72b45b69985af9aafb9dd9127e"
+    },
+    {
+      "path": "gameplay/local_combat_state.py",
+      "size": 398859,
+      "sha256": "163d48c4bbc91e1fc9366a7bf4fde58ade7081b34b32d43f683155b9b9b44455"
+    },
+    {
+      "path": "gameplay/local_map_state.py",
+      "size": 28558,
+      "sha256": "edc7bf2bfe03e71c318ddc7379885d2614fdf0a43d7ff7c2b2f88bacaca9831a"
+    },
+    {
+      "path": "gameplay/local_monster_state.py",
+      "size": 100548,
+      "sha256": "ddb541693e1447aac62897f124e46340db4593a2568b9d0477d00856df144fa2"
+    },
+    {
+      "path": "gameplay/local_mount_state.py",
+      "size": 5038,
+      "sha256": "62df9d65c5b0cdfdb911fc7f870512e431bce25f69136402e8f971aadbee302f"
+    },
+    {
+      "path": "gameplay/map_collision_terrain.py",
+      "size": 15710,
+      "sha256": "4d89df694d43bece0e0ff0a71353e6978685ff0b5a6521eae1c59feb8dafcd83"
+    },
+    {
+      "path": "gameplay/map_companions.py",
+      "size": 10410,
+      "sha256": "eed2d97490172f35d94ce57f5fb23eb8e609a61115ae4dfa93eb67baf326fbd2"
+    },
+    {
+      "path": "gameplay/map_difficulty_state.py",
+      "size": 8500,
+      "sha256": "4056db7ea5496c8ce8617edc011b49cbe25d25ea8bbb4b48daefc7cb574f0aa9"
+    },
+    {
+      "path": "gameplay/map_event_state.py",
+      "size": 45575,
+      "sha256": "68aed93df701e1f2225888b307e019950c3ad5c0e9ef145084181ff2f3d768e9"
+    },
+    {
+      "path": "gameplay/map_unlocks.py",
+      "size": 2571,
+      "sha256": "a9b0b950394a05b9cb4bef32d4f8c5950f56e73992f5a897920344e31c72670c"
+    },
+    {
+      "path": "gameplay/navigation_shapes.py",
+      "size": 2178,
+      "sha256": "67618d28797b44d5e936e5ef0423dd6a3ee8af876f6a2f2333f85d5b09f1076c"
+    },
+    {
+      "path": "gameplay/pathengine_navigation.py",
+      "size": 31329,
+      "sha256": "12103306e0f393e4815fa9b73cd6b92df313f35c6dd0edab7e7945f490dca726"
+    },
+    {
+      "path": "gameplay/player_combat_stats.py",
+      "size": 99053,
+      "sha256": "8abf75a6a1669a9a6ecbbbd93c34b3a9226b04326d8a6427015105778e837b8b"
+    },
+    {
+      "path": "gameplay/player_summon_lifecycle.py",
+      "size": 9021,
+      "sha256": "f5c0f3d64be8f8effbd7a35810d2c7d7a580b9537b4054b23a51a9a4c3e5094e"
+    },
+    {
+      "path": "gameplay/premium_bags.py",
+      "size": 2829,
+      "sha256": "08957e5b03b4d487f4cc33c3267c392b21ab1ef23bd4cb418ef7e9a96930b2a6"
+    },
+    {
+      "path": "gameplay/pvp_match_state.py",
+      "size": 15280,
+      "sha256": "2a9f26805715f968ca764f1f740fb95e7d310e851f944245707410b7b691e832"
+    },
+    {
+      "path": "gameplay/quest_content.py",
+      "size": 28432,
+      "sha256": "2b60a3d3c144ca57da97da3503a34dbfe1c1c8f302164c66f3412d3e1a6fa9d6"
+    },
+    {
+      "path": "gameplay/status_modifier_runtime.py",
+      "size": 15798,
+      "sha256": "6878f3f9ee73693b654e26720141c22351c67b9216ec83095256c705fb22c126"
+    },
+    {
+      "path": "gameplay/status_runtime_catalog.py",
+      "size": 2975,
+      "sha256": "d2ef96d053b83dbfa35ceac2d32391e07165f734fc5df9785261091b3ea9e0b7"
+    },
+    {
+      "path": "gameplay/stickerbook_state.py",
+      "size": 30286,
+      "sha256": "174b88b7245673fdfea36f782438f089592862e84c5cfb66777022b65f93ac59"
+    },
+    {
+      "path": "gameplay/wanted_thief.py",
+      "size": 4757,
+      "sha256": "5c7426cfd4cefa15e3dd1ed754e32630d077129734fcc26860368667d2294256"
+    },
+    {
+      "path": "paths.py",
+      "size": 853,
+      "sha256": "5cb3d3f9e4b40c0f818ae926bdd96b085a92f3e18923f8b8f035ca87f8fa6471"
+    },
+    {
+      "path": "persistence/__init__.py",
+      "size": 67,
+      "sha256": "f38fed9f195e97e919660e8c3324c1c26117d35ca4435841f09678e2d346912c"
+    },
+    {
+      "path": "persistence/account_registry.py",
+      "size": 30675,
+      "sha256": "212f1c236388447ad5b7e633d146abdb6b7cde54873948ccc17a401bd6d00973"
+    },
+    {
+      "path": "persistence/account_state.py",
+      "size": 46651,
+      "sha256": "7f385d5fa27c80f8e7f0a33474aaab407907520d9564610a9a5ba9fc63a55099"
+    },
+    {
+      "path": "persistence/admin_registry.py",
+      "size": 11227,
+      "sha256": "9c471ac61bdfb902c725f45288882e0dac3294b2caee550a1f090c7c68b03b33"
+    },
+    {
+      "path": "persistence/character_roster.py",
+      "size": 888,
+      "sha256": "742fbd4b05f469aa5721263d18847fd1420f4789f7cfaa22512b2cb1ccca33c1"
+    },
+    {
+      "path": "persistence/player_database.py",
+      "size": 17991,
+      "sha256": "b1ad57e38b1de874c4683c36d68aa37926cde8939678aaaac35d7f4c971351c5"
+    },
+    {
+      "path": "persistence/readonly_db.py",
+      "size": 1866,
+      "sha256": "e4c3fd420bc81d080b3d1d5379b8b09814067b7bb8bc832b80bb38a562136ded"
+    },
+    {
+      "path": "persistence/social_state.py",
+      "size": 14633,
+      "sha256": "c38e4f41de650e929117e25a16c88e78f1ebae761b5a56b72556d00dbe672fad"
+    },
+    {
+      "path": "persistence/static_game_database.py",
+      "size": 25797,
+      "sha256": "2272b4fb6f2a7360d20310753c03ef8ddc141ffcaf0e7c91891abab1ae479eca"
+    },
+    {
+      "path": "persistence/static_schema_compat.py",
+      "size": 6489,
+      "sha256": "c4fc9abddd0ee9273ded5108eeabbb9429b20f60fbc9e1760eabb1ecef867aa7"
+    },
+    {
+      "path": "protocol/__init__.py",
+      "size": 56,
+      "sha256": "cb74ec83000c06ed42b41b390d30dd1a5b4921f309d9c1f0c9b9cb73dc36261d"
+    },
+    {
+      "path": "protocol/character_generation.py",
+      "size": 6975,
+      "sha256": "eb09b674a8dddd87533b2ccfcc2e1433ad608a37f5d3ad6dafa31f4efce66556"
+    },
+    {
+      "path": "protocol/character_selection.py",
+      "size": 22930,
+      "sha256": "bb6e9fb8ec484c2b9aa29d6e7c2cdcb4a0550fbe1ae4d757a76b003c94d63da9"
+    },
+    {
+      "path": "protocol/chat_protocol.py",
+      "size": 6369,
+      "sha256": "4272d2970b55a0ef92cbb74f515fb0cf4875da92b23c3ba47d3e0c125b13c341"
+    },
+    {
+      "path": "protocol/chest_loot_protocol.py",
+      "size": 29118,
+      "sha256": "1915f554eedbc435f43835e91488e6b6a3fa512a91db58de03138ed3afb740bb"
+    },
+    {
+      "path": "protocol/combat_protocol.py",
+      "size": 46518,
+      "sha256": "7e2ab008b48a510243d988bace991ae425cf0a5be9b1c1c0695c931db4c28393"
+    },
+    {
+      "path": "protocol/command_ids.py",
+      "size": 5048,
+      "sha256": "4fe69146b02e4c28978026c6d9961aa995975650df613ce24ed8083242e35b74"
+    },
+    {
+      "path": "protocol/commerce_protocol.py",
+      "size": 17769,
+      "sha256": "b5e28f9ce47e652eb2d9c85b01545993ea6e7032944bfdae51c64f85045799a0"
+    },
+    {
+      "path": "protocol/consumable_protocol.py",
+      "size": 27764,
+      "sha256": "0d7149a75457c95b2bb0f9471375f6149e89b7894fe241239ca02be34fa8369e"
+    },
+    {
+      "path": "protocol/currency_protocol.py",
+      "size": 6336,
+      "sha256": "bd4d0d3cbe4e9382f6081d1ed79e608f87722c682d9116c7e0b67425888d3a83"
+    },
+    {
+      "path": "protocol/daily_challenge_protocol.py",
+      "size": 1202,
+      "sha256": "0d06a9c7a7338823c84afc55751f3b7c7cdfa624be3456338d5b74dd6b0f4497"
+    },
+    {
+      "path": "protocol/gameplay_commands.py",
+      "size": 25253,
+      "sha256": "a160d36b2210807d3ef2346f3185bc50f83b841b995d117e33e51ea6be4c22df"
+    },
+    {
+      "path": "protocol/gameplay_protocol.py",
+      "size": 128414,
+      "sha256": "1404c97ae76de2c1e9ddd532a1258a6a8bbf26cf36c900b98c2c8869692c8b6e"
+    },
+    {
+      "path": "protocol/gem_protocol.py",
+      "size": 22645,
+      "sha256": "c4329504aa1cd473f74f84290c396be162c284a87eec612bc779b5daa35247ab"
+    },
+    {
+      "path": "protocol/inventory_codec.py",
+      "size": 45744,
+      "sha256": "2d101e75a3392735f67fe823f9a741c35e56a2a83df0583f8833dcb59bc382e5"
+    },
+    {
+      "path": "protocol/inventory_economy_protocol.py",
+      "size": 37799,
+      "sha256": "c7f48b0bac8ed04875f0e2f2cae5ea682be0201b9dd0396473f16804b6d61dce"
+    },
+    {
+      "path": "protocol/item_customization_protocol.py",
+      "size": 8892,
+      "sha256": "409ff69e5d5c7e8abc8a7f5cba5c3c9eab974913c5796eea2a713e780ac38d59"
+    },
+    {
+      "path": "protocol/item_receipt_protocol.py",
+      "size": 5204,
+      "sha256": "be820a3ffb83eed5e699497f75642abdb0db484dc7da2c13fcbae9086cc24b98"
+    },
+    {
+      "path": "protocol/item_set_protocol.py",
+      "size": 16615,
+      "sha256": "7bec9ccbeaea8fdac1fb6603f1e60c668ce561ab410ac41a31753437b393d0ea"
+    },
+    {
+      "path": "protocol/loot_protocol.py",
+      "size": 10337,
+      "sha256": "8ccc690596203e084f61d5904f79c2e335a927bd8479ea93252e91580b46fa92"
+    },
+    {
+      "path": "protocol/map_packets.py",
+      "size": 3235,
+      "sha256": "dd2f5600b1baa7b2c73e10893ba60cb1a78ac8ed4f8f61462a75ba74a4467245"
+    },
+    {
+      "path": "protocol/membership_protocol.py",
+      "size": 5768,
+      "sha256": "10f43c4a2e3f9a1638f8b321f0bade9bb8420c39ecfed3078166727608d0bef9"
+    },
+    {
+      "path": "protocol/new_player_codec.py",
+      "size": 10223,
+      "sha256": "9e005015caf8a7e44df1c59c31a63574631210040969f7b54cddec729614fc75"
+    },
+    {
+      "path": "protocol/player_init_protocol.py",
+      "size": 86403,
+      "sha256": "0dc76426efd4be38d5c3667c505a8cde70d28bb39f0b80d3edf2e2c181841f32"
+    },
+    {
+      "path": "protocol/prop_protocol.py",
+      "size": 12576,
+      "sha256": "7c2ca0068491dbef95e10cffed28048864f02dbcd288c79e87f1110f129effa9"
+    },
+    {
+      "path": "protocol/pvp_match_protocol.py",
+      "size": 38717,
+      "sha256": "d24c69444ea73a27d04b512bf9cdc89e2445662c6df603bac243787ea7192ac1"
+    },
+    {
+      "path": "protocol/pvp_protocol.py",
+      "size": 2261,
+      "sha256": "550d72ce75c29a42e5639356ac3a92b43afc6c6ec3bf7aee372eba6adc318230"
+    },
+    {
+      "path": "protocol/quest_protocol.py",
+      "size": 16065,
+      "sha256": "c1e50d55ee4776488f3edf99f35ffcab1234826e8d5fbe80c4d1918e0e394901"
+    },
+    {
+      "path": "protocol/ranking_protocol.py",
+      "size": 6860,
+      "sha256": "bb51b59cc8e3865b4f3af3101b4c5d1cb6df241b138d3f8e368f19c1165137a8"
+    },
+    {
+      "path": "protocol/respawn_protocol.py",
+      "size": 1983,
+      "sha256": "3c65965380a62f1c7a0275502839e0ab4ff5227dfd3175c2bdf091625c227511"
+    },
+    {
+      "path": "protocol/reward_protocol.py",
+      "size": 17638,
+      "sha256": "06d9d1194ef258c8618e54e2b2757d03ee78f22175dc19ee8c735ba95334015a"
+    },
+    {
+      "path": "protocol/shop_protocol.py",
+      "size": 20083,
+      "sha256": "86157db3b3eccda96758e42af4c1e21ab8c19919d9a108ee87244ec77afd619b"
+    },
+    {
+      "path": "protocol/skill_book_protocol.py",
+      "size": 2705,
+      "sha256": "3b7b67f25afaa3f383e3df6fbee05e9d4101a6c50149a0400bd6793b750e0987"
+    },
+    {
+      "path": "protocol/social_protocol.py",
+      "size": 40779,
+      "sha256": "25375db2cf16870f24204baf2b35eca3029f7538f1bdda65ff820f0c90e4343a"
+    },
+    {
+      "path": "protocol/socket_effect_protocol.py",
+      "size": 44058,
+      "sha256": "fa8daad6f14401eaeb8e580c51f25a139db7dccfafb51d261dcfb1e1128656df"
+    },
+    {
+      "path": "protocol/socket_minion_protocol.py",
+      "size": 6183,
+      "sha256": "e301dc872dbbe791697e8ee6b294746c78823b055464492cd9cc6765e550d69b"
+    },
+    {
+      "path": "protocol/talent_protocol.py",
+      "size": 27791,
+      "sha256": "96d0675164610fe82dfdc7258f3d42c8cf72bbd46a3f5f49f60f9a04086ce84a"
+    },
+    {
+      "path": "protocol/wanted_thief_protocol.py",
+      "size": 3833,
+      "sha256": "4698b6f691eb04c4f943b0f8a9398cee3a077d8090fd0ae89d57a74aa8507e29"
+    },
+    {
+      "path": "protocol/world_loot_protocol.py",
+      "size": 87446,
+      "sha256": "fe812bfa45fb4f20c982306135d8a50a8ceecf165ebd1d446ad445b2aeb8eaa7"
+    },
+    {
+      "path": "pyproject.toml",
+      "size": 1164,
+      "sha256": "eaa3d76fc3596c3da4657023de1d2e3ae71847ea0fa0cb4fe841f3055cbb1de3"
+    },
+    {
+      "path": "README.md",
+      "size": 8202,
+      "sha256": "affc34f99ea52f4161ce00667f2e2e1f0a972841215f8de5bce7e7c952b7c3f8"
+    },
+    {
+      "path": "run.bat",
+      "size": 3265,
+      "sha256": "e21f5e04ac0c2f19583a0cfcf26ad30017eeced16a8d9a0e76aab8735560997b"
+    },
+    {
+      "path": "run.py",
+      "size": 703,
+      "sha256": "fd3bad3ba2d217a74fd0c05ba868d3cc128421c33a60d642f5fb7fb308eeeaef"
+    },
+    {
+      "path": "runtime/__init__.py",
+      "size": 69,
+      "sha256": "661c561012c8a5ca6d7550b018d93f23e547e868f0e3b02aad3147f4f1fe412a"
+    },
+    {
+      "path": "runtime/admin_commands.py",
+      "size": 3266,
+      "sha256": "8bb715acbca46f6b4431613e4162c4f8710fb0f75071dc0d7f0f029365f39b0e"
+    },
+    {
+      "path": "runtime/concurrency.py",
+      "size": 17153,
+      "sha256": "ca1f0be45e9d4e8514873a7263f646eec354b8016eb9d8e8f98d5956684418ba"
+    },
+    {
+      "path": "runtime/context.py",
+      "size": 26481,
+      "sha256": "03bb8f7ba9c0f03bd2d86fa39c29b1ef81a890610f98da6957833b5bd1c14e75"
+    },
+    {
+      "path": "runtime/gameplay_routes.py",
+      "size": 6764,
+      "sha256": "87dcf13e6042750c6a40821c6de5c1c6f419837a9fd5c9cd56a94bb6d7a203ff"
+    },
+    {
+      "path": "runtime/gameplay_scheduler.py",
+      "size": 15299,
+      "sha256": "777d4803de03f5e81d91628cb232c0448d4c469c0be52120ff80e33630fbb15f"
+    },
+    {
+      "path": "runtime/gc_tuning.py",
+      "size": 11849,
+      "sha256": "0c3a5efb8ea2164957a278c8eb94dd91717b3a4d4f7bcebab154f4c48e55aeb7"
+    },
+    {
+      "path": "runtime/log_stream.py",
+      "size": 7836,
+      "sha256": "c24a9114a5e0bfe70527c9d60c7e98bb7eccc11bbd758634d2ad4b57f91df017"
+    },
+    {
+      "path": "runtime/maintenance.py",
+      "size": 4809,
+      "sha256": "dccdd033f48ecbdd8bbfa17ede7ef9e970f6246a858d334a63fc32ab7e1ef2cc"
+    },
+    {
+      "path": "runtime/monster_runtime_diagnostics.py",
+      "size": 4012,
+      "sha256": "ecf3789d69d21123810991b79499ef55609c8ea8fabcbffea0b6e8d1ced5b685"
+    },
+    {
+      "path": "runtime/stall_watchdog.py",
+      "size": 13831,
+      "sha256": "fc6deb74c4510ed2bef778dc55825e83ecafd1dfbfb2501eaf421239117be027"
+    },
+    {
+      "path": "runtime/transport.py",
+      "size": 98526,
+      "sha256": "019baa7b0c5653d903d145b857bbee5e081537c2cac1a9d5ce029d23f316201c"
+    },
+    {
+      "path": "SANITIZATION.json",
+      "size": 2773,
+      "sha256": "d2de0d5408e300ea6925a785ead8d0d19aa42ca022937083d90726379d2195b3"
+    },
+    {
+      "path": "services/__init__.py",
+      "size": 55,
+      "sha256": "c27286f8c1631f8af007d2f4ebdafe8f51aaaf7cc69790d253a1bfa7da6115e9"
+    },
+    {
+      "path": "services/accounts.py",
+      "size": 23444,
+      "sha256": "05852d00e8998a071f3572b4597a2270f89ff64063a2c4dfcc2543a4690850c2"
+    },
+    {
+      "path": "services/achievements.py",
+      "size": 11441,
+      "sha256": "4c5314aec1ddad52300b1fb391c456c3690a6f0d843962102b5af0b1cd838e00"
+    },
+    {
+      "path": "services/admin.py",
+      "size": 23376,
+      "sha256": "29bd8a906b22d445a09f1d76329004ef68f333521ee5fcbf32e6824f1c40fea1"
+    },
+    {
+      "path": "services/admin_bookings.py",
+      "size": 9767,
+      "sha256": "dc4a49baf20b736e68fcec52f7ac45493a98cae8cffee07f15d9a176094aa598"
+    },
+    {
+      "path": "services/admin_effects.py",
+      "size": 5360,
+      "sha256": "20e239baac75e74048c0e42fab1bfc53ae8a83fb7de2a848d2f5a7ceecbc12b4"
+    },
+    {
+      "path": "services/admin_event_refresh.py",
+      "size": 4208,
+      "sha256": "44099bda9e3b7891d5b4ea4357ae2fda6415ac14569cf4ce00ce58951fa75938"
+    },
+    {
+      "path": "services/admin_events.py",
+      "size": 15099,
+      "sha256": "c836082a94d11ba051eeb0bb273310c761a1724465820fa76c2eb507bca1584c"
+    },
+    {
+      "path": "services/admin_http.py",
+      "size": 6376,
+      "sha256": "1253ef0b5a4675967e232316ba9001c44cb3cf5d17470a9f29624225237244bf"
+    },
+    {
+      "path": "services/admin_items.py",
+      "size": 5449,
+      "sha256": "d4cee26037632ece0e7e3fdd01da8167f9f227646c81f677fd12c1b9506d9b7d"
+    },
+    {
+      "path": "services/admin_live.py",
+      "size": 16343,
+      "sha256": "fee08564ed7b823cd63139114b4012075d8f153afdba31459f8caaaf10d02e63"
+    },
+    {
+      "path": "services/admin_static/admin.css",
+      "size": 10243,
+      "sha256": "e47b2b137ccc38dd6d2c8e26043c884d6f52fa3dfb0684bbb341b291264e921e"
+    },
+    {
+      "path": "services/admin_static/admin.js",
+      "size": 4637,
+      "sha256": "e12a2c8fbd1c7c0c6fdca11035a4665091066cda42b075351dd1accef47d7a27"
+    },
+    {
+      "path": "services/admin_static/admin_booking.js",
+      "size": 16081,
+      "sha256": "b7bdc28ef4b2ed4120aa43e5eb3707beda72be9dcf9c1d7055ede46ea9946ac9"
+    },
+    {
+      "path": "services/admin_static/admin_character.js",
+      "size": 11437,
+      "sha256": "3b7d4c1677ae4360f61067d34e3f87fb84a9b924655ce386802b5ae5a29367c0"
+    },
+    {
+      "path": "services/admin_static/admin_events.js",
+      "size": 13750,
+      "sha256": "c172b47a407a26f0bcb0d6e18a2f6193aef28bf358e48a685bee29b51559af31"
+    },
+    {
+      "path": "services/admin_static/admin_live.js",
+      "size": 6448,
+      "sha256": "b3b26e5949367a1468aae2215504682c6553acd8a9ea141172dcc8837388a4a1"
+    },
+    {
+      "path": "services/admin_static/admin_pages.js",
+      "size": 15919,
+      "sha256": "687078a497355f0162c69940f72fa3e1dd72095a7ce9f02b2dc481545eb9662c"
+    },
+    {
+      "path": "services/admin_static/admin_ui.js",
+      "size": 7535,
+      "sha256": "f07dad44d809c7906964dc325bbbe5985a04059e2efd10bbc9e0ae4e830aa27c"
+    },
+    {
+      "path": "services/admin_static/index.html",
+      "size": 2411,
+      "sha256": "97da2602e20eea0044c68558875a60122cc61fd8efbd5963fba8c42098083f3e"
+    },
+    {
+      "path": "services/base.py",
+      "size": 1070,
+      "sha256": "b4bfb16fdc633c7024e5243b7946172aecb506ad629e28ee53869bcd2285f34d"
+    },
+    {
+      "path": "services/battleground.py",
+      "size": 38171,
+      "sha256": "320afcd0f407db00291d02a47108940373e89065db82396d8db7e4366b98c536"
+    },
+    {
+      "path": "services/character_selection.py",
+      "size": 28137,
+      "sha256": "9f6bef9b6f21633a4465e88696fe72f2c65ebb9221f938ed2ebfecfa0d7816f8"
+    },
+    {
+      "path": "services/character_server.py",
+      "size": 4783,
+      "sha256": "cd70498de7ab62b64be712dd4277db22337e7fa0ff872b97addb30ff0f0e420c"
+    },
+    {
+      "path": "services/chat.py",
+      "size": 28644,
+      "sha256": "e18dcb584f72a5e12eb7c28a0bfeb82521e265ce81fc59fa5ab752a20b532a22"
+    },
+    {
+      "path": "services/combat_resolution.py",
+      "size": 50323,
+      "sha256": "da338a7195017c6d383f8a379b3744cb21e71a9538f1e126133ebdfb3c061c3e"
+    },
+    {
+      "path": "services/commerce.py",
+      "size": 46312,
+      "sha256": "e27e374a9b69d43ed5f316bf4fa903b9b175b5ce26dd1d24d02951f39ab20861"
+    },
+    {
+      "path": "services/consumables.py",
+      "size": 42396,
+      "sha256": "3b596a0284b8b4c7982374dce04885804d06ca718fb6414c86846db4e0e97536"
+    },
+    {
+      "path": "services/customization.py",
+      "size": 37199,
+      "sha256": "af485c82d319785ce172508aadfef5e9461d7fe8e5a1167e6c466f95b69be614"
+    },
+    {
+      "path": "services/daily_challenges.py",
+      "size": 18035,
+      "sha256": "8db0d98549a633f96cf21eaebd4c6b2dd41c29e1723c31b3e20c8cd0fe584e01"
+    },
+    {
+      "path": "services/dispatch.py",
+      "size": 35782,
+      "sha256": "b12bb9c3709613ed2824e98ffc711f6a9191e20ed0351152a5d9cf31b0efa7ae"
+    },
+    {
+      "path": "services/events.py",
+      "size": 22479,
+      "sha256": "760e68666f967851a7fa041b263d5d2a81088bf62de653dbdd897462d5bca046"
+    },
+    {
+      "path": "services/gateway.py",
+      "size": 970,
+      "sha256": "82a1eebd2a9ddf6de7a3981e8ddb61efa8be045d82c559ca65b933b2da5f75d0"
+    },
+    {
+      "path": "services/inventory_interactions.py",
+      "size": 19995,
+      "sha256": "d506598c7cfb96cd9492d381039a7f7f9e26d573c278b2a6d5a5845379402785"
+    },
+    {
+      "path": "services/inventory_map.py",
+      "size": 53261,
+      "sha256": "348bdd1d402547586b9748ec09634bbf8fc1fd0a247c9e888878391d012f985a"
+    },
+    {
+      "path": "services/lifecycle.py",
+      "size": 38128,
+      "sha256": "f8b4cbbc7d779c1c9a2e902f8ff4e3a3acf66b7d69d78b072baf35f1633657ac"
+    },
+    {
+      "path": "services/login_game.py",
+      "size": 21105,
+      "sha256": "88efbb76d69d76ca3f7cee292c37cfb26e14afc3568cd5ead6630200671ece3b"
+    },
+    {
+      "path": "services/loot_presence.py",
+      "size": 7091,
+      "sha256": "c58db0af94dc7c51151cc6c388d31365545e3a8c3e87581d1e62ce39a71d772c"
+    },
+    {
+      "path": "services/map_companions.py",
+      "size": 7508,
+      "sha256": "20b458b58599b6ff0f9b4a0e40105422a1e69a307bff144aa720430af87d3f79"
+    },
+    {
+      "path": "services/map_events.py",
+      "size": 48297,
+      "sha256": "0ef6167fe4330414e4f6fdd17f853588b48dde191b2bd69968ea07675321d910"
+    },
+    {
+      "path": "services/map_transition.py",
+      "size": 33999,
+      "sha256": "30fe705312efd922765c70235c79b14cacc3bc6bde739b298c1c192d44fe5dcb"
+    },
+    {
+      "path": "services/map_unlocks.py",
+      "size": 2462,
+      "sha256": "57128e2ca4db4077582461cf66ceeaea7b97e76ae66bb3e3afb1eaf928191943"
+    },
+    {
+      "path": "services/matchmaking.py",
+      "size": 26219,
+      "sha256": "0a98b42c07371e9333669606b257374cb2ca85fed954aae9673294322f1ae1c1"
+    },
+    {
+      "path": "services/monster_activity.py",
+      "size": 24141,
+      "sha256": "b1a650757d265867a4ce8fb35fa341fa5176775ff0f3f8be00108ec48ad9d9d2"
+    },
+    {
+      "path": "services/monster_chase_loop.py",
+      "size": 6676,
+      "sha256": "a72c18832ab681217e5341d396ac01d09cd9c5027427a945ef9e50bec09facb4"
+    },
+    {
+      "path": "services/monster_combat.py",
+      "size": 42818,
+      "sha256": "928b6bd72b06573b1944017d7be83150c6cb7e2970ee24b241b65a9b48c1f01f"
+    },
+    {
+      "path": "services/monster_tick_context.py",
+      "size": 15679,
+      "sha256": "a83d22dde8878773f0d61366efa1884c06a943e02db4fc82541de5ddc337b1a5"
+    },
+    {
+      "path": "services/player_cast_timing.py",
+      "size": 2861,
+      "sha256": "b357d8ec4901fbf56ea32e2a8480e37933c1b1b0d87c12452ef0c966afe50714"
+    },
+    {
+      "path": "services/player_combat.py",
+      "size": 46887,
+      "sha256": "780528c85a3d07038efe3df10981d8573a8d26b6cb784748ef7a0d2d5374b046"
+    },
+    {
+      "path": "services/player_init_state.py",
+      "size": 53356,
+      "sha256": "25ac8993c8d80f7f221aed99606a5ec89dfec81e045427731105065393a765be"
+    },
+    {
+      "path": "services/player_init_world.py",
+      "size": 27272,
+      "sha256": "12e1c67ab1d315579fd7c9df2e61b502afed79ac999c6203b873c7eb4c374861"
+    },
+    {
+      "path": "services/player_initialization.py",
+      "size": 6904,
+      "sha256": "7bb3c5a3b62672fc60264b7e83b56a316726675db5e2bdc020dc077a21e829bd"
+    },
+    {
+      "path": "services/player_owned_resolution_dispatch.py",
+      "size": 9040,
+      "sha256": "433f64078e4a6e90db628ca0df639a3c3697f433cf6bc55e7a0d0137b65f1b51"
+    },
+    {
+      "path": "services/player_persistence.py",
+      "size": 25708,
+      "sha256": "b2910e5656554d6dbf4c350184fa6567c3cba69d2812718df0a6aa697666a974"
+    },
+    {
+      "path": "services/player_progression.py",
+      "size": 13107,
+      "sha256": "2508625aeac4ee60c86639add6cc49cec35a9a5b58b80a7194147f007730fd0c"
+    },
+    {
+      "path": "services/player_projectiles.py",
+      "size": 26234,
+      "sha256": "8dcd0e8ea5b025d63487a623c15b9b0379c962dfdbf4b3b9f7b71c60c2bdf102"
+    },
+    {
+      "path": "services/player_resources.py",
+      "size": 15958,
+      "sha256": "3ce72e5f6278ca4994cd9ee425dce9fb78189a4bfb712b5d2d935fe114faedd1"
+    },
+    {
+      "path": "services/player_respawn.py",
+      "size": 19616,
+      "sha256": "70390a6ae63b1e3c136e4f527234b9028bdd99048690b1769659f9ac0f43febd"
+    },
+    {
+      "path": "services/player_summons.py",
+      "size": 23604,
+      "sha256": "a55777e858154097d3b081ee09f71bfa766baf0d7f006e578271c9c80765e43a"
+    },
+    {
+      "path": "services/player_trails.py",
+      "size": 4059,
+      "sha256": "e4c68673bd0c30353c813da2dae6986bfdd4fc719284f57ef9836377d97b9949"
+    },
+    {
+      "path": "services/player_traps.py",
+      "size": 10525,
+      "sha256": "ee2716ecad6d21aad8833b4553d942dc369751d14803d4b5c776eb16b3b1057d"
+    },
+    {
+      "path": "services/premium_bags.py",
+      "size": 6237,
+      "sha256": "6cc30012e306881c542283f305a0835df6ca89ded056708f3b30ec552eae5cbd"
+    },
+    {
+      "path": "services/presence.py",
+      "size": 48482,
+      "sha256": "677a71f3621aa8cf174cfa4e7c2fd836d6b6e515cd0a16fb536b344a2c6ef071"
+    },
+    {
+      "path": "services/presence_identity.py",
+      "size": 8226,
+      "sha256": "7d4534e339eaa711695128e2a8066c75b9ee43e9c565cfad2c47f7d329f88602"
+    },
+    {
+      "path": "services/presence_socket_effects.py",
+      "size": 2626,
+      "sha256": "901871b10c00f360b791ca6edf8b15033e82aecf26f46bfd703b692dbdb7792e"
+    },
+    {
+      "path": "services/presence_visuals.py",
+      "size": 40775,
+      "sha256": "dae5a758ba71e2fca173a885a8e47b7a3df0e06b49974318a0342634b57c93f1"
+    },
+    {
+      "path": "services/pvp_combat.py",
+      "size": 43550,
+      "sha256": "8a0b151538e77153d9a929e7f7220b2332e00cb7f2180443a86ae222216e9704"
+    },
+    {
+      "path": "services/quests.py",
+      "size": 64798,
+      "sha256": "1f98612545de7d982f43be4b6adef17f873474a8d5ee0aa4c442ad4c4ecbba77"
+    },
+    {
+      "path": "services/ranking.py",
+      "size": 5365,
+      "sha256": "0dc41bf43882f977388fd88d462f520ee315219340118e3a1d5f854e46428c06"
+    },
+    {
+      "path": "services/social.py",
+      "size": 34876,
+      "sha256": "dea39171da05eb958555415e8f0649e6d4a76fbbc168eff17732495dfe4f9c32"
+    },
+    {
+      "path": "services/socket_effects.py",
+      "size": 26020,
+      "sha256": "c518078c31bd3cae73d7c953fcde7475eb3c7a0fa5fbe6f3615f15b171319c11"
+    },
+    {
+      "path": "services/summon_pvp.py",
+      "size": 12663,
+      "sha256": "040e530ef9bd1136caed476314f82f692be595d7c448274fa5fe720d857c78c3"
+    },
+    {
+      "path": "services/talents.py",
+      "size": 37602,
+      "sha256": "5b8232927d6d5e273976435b5573cf7b4212e399c8ae0800e0d8faa27b1d51ea"
+    },
+    {
+      "path": "services/wanted_thief.py",
+      "size": 9324,
+      "sha256": "1f8db756a936f2eb61d64b578c52e99bfe87df470170f4c47cf8f51ac6ede1e3"
+    },
+    {
+      "path": "services/world.py",
+      "size": 47376,
+      "sha256": "5b884d63ec068ecda4cf6e3c23aa1229370d9c754ea4ba581dbd6cd01f04ae88"
+    },
+    {
+      "path": "tests/__init__.py",
+      "size": 68,
+      "sha256": "50f02ff47b209a93c5e003cb794ff5aa34406fd3c5e36b6d7b8de0130a74a7ae"
+    },
+    {
+      "path": "tests/fixtures/__init__.py",
+      "size": 65,
+      "sha256": "531aabbab46432678263589b36018ef77f343f372bfce290fe7aab9229501b36"
+    },
+    {
+      "path": "tests/fixtures/captured_character_selection.py",
+      "size": 3512,
+      "sha256": "2e936de0cb1e0484816c1b68fc09d2da56b9da1a3256e2d59314ae6ede620e75"
+    },
+    {
+      "path": "tests/fixtures/characters.py",
+      "size": 1234,
+      "sha256": "f6e3bdb4d386cc59e23f9d6a664adccd1c2c39c6eaeed983c290025cc3bca9ec"
+    },
+    {
+      "path": "tests/fixtures/daily_challenges_retail.json",
+      "size": 4474,
+      "sha256": "3dce0caea1dd875e8d10c3f96e3947dc9405add0e9f330d7dc3d93c7b620950f"
+    },
+    {
+      "path": "tests/fixtures/daily_login_offers_retail.json",
+      "size": 6599,
+      "sha256": "4d6cd35a7e0cd7135e2f8650b23cca9523a7c47269772f049957af405a9a28aa"
+    },
+    {
+      "path": "tests/fixtures/item_customization_retail.json",
+      "size": 9549,
+      "sha256": "0c96377cf8706c27e9a64d39edec187be23a80d81907c70af922b934b84be196"
+    },
+    {
+      "path": "tests/fixtures/player_block_example_player.json",
+      "size": 6332,
+      "sha256": "4473094ab9ab6838f78eac411db52e9db119b08c3f929f33799ee8cebda26b19"
+    },
+    {
+      "path": "tests/fixtures/player_respawn_retail.json",
+      "size": 2748,
+      "sha256": "ce4cae674594d74cf95bc61020a92ebe287d407146f8b425a47130c919783702"
+    },
+    {
+      "path": "tests/fixtures/player_stats_example_player.json",
+      "size": 53066,
+      "sha256": "c6031ea0be38425b8fbebbc46ac0576e3857da57af371690807dd7614cb20ab4"
+    },
+    {
+      "path": "tests/test_account_service_disconnects.py",
+      "size": 3698,
+      "sha256": "d0212ed0b82be50aed2b8a772a6e79b5c6c9a3425db77c6a7a7194c45c475ec5"
+    },
+    {
+      "path": "tests/test_achievements.py",
+      "size": 15238,
+      "sha256": "555138f0ccf3062734a59abca697e133c42dd71545d76758edc5e450b4728a97"
+    },
+    {
+      "path": "tests/test_admin_cms.py",
+      "size": 27153,
+      "sha256": "797acdfaf6bf6df4df7783e69e640fbe76f62a711bf5695eb6f8de92f050e357"
+    },
+    {
+      "path": "tests/test_admin_effect_content.py",
+      "size": 7629,
+      "sha256": "0d6baa1d80d925e6565dd553b3b42c75bdc8a4e19770d265fd01a7ab66c3f62e"
+    },
+    {
+      "path": "tests/test_admin_events.py",
+      "size": 16574,
+      "sha256": "b21a0068260cdd41700482cc04b657c4c19ea3b5a65e8e3ac5d9d652291a9a72"
+    },
+    {
+      "path": "tests/test_admin_live.py",
+      "size": 18003,
+      "sha256": "c03eddc3b0aae28b2dd0f318ee23389150b992fb2b2955b0809b6397dd23bc95"
+    },
+    {
+      "path": "tests/test_admin_map_transfer.py",
+      "size": 6571,
+      "sha256": "6e848798400c92dfd12356196c40888ef9f4c15b0ddf6c452edf620432cded37"
+    },
+    {
+      "path": "tests/test_admin_mounted_speed.py",
+      "size": 9468,
+      "sha256": "e706bf61da27db8262c3b9dc62bd071ec209c0137171c1cea47ce29b1b14b32d"
+    },
+    {
+      "path": "tests/test_admin_speed.py",
+      "size": 12285,
+      "sha256": "c692a91f2d9cfec25a0e042f9b1387a808d92b10ff2d30323241018ac83a2705"
+    },
+    {
+      "path": "tests/test_ammunition_slots.py",
+      "size": 10215,
+      "sha256": "c3f1f00890f56d66f6c3a132fbf3526dd0605cfc8553d9215e41e6208b80e132"
+    },
+    {
+      "path": "tests/test_anniversary_reward_delivery.py",
+      "size": 5461,
+      "sha256": "06015f11fbea3f70262ebba6b0d78889c1d22612e9b56c7d8e12ad620f049385"
+    },
+    {
+      "path": "tests/test_battleground_movement.py",
+      "size": 6440,
+      "sha256": "190627dfa6aac9e30c2a3120cbca48f02d2fc5946da0335a9be907709e2cdd28"
+    },
+    {
+      "path": "tests/test_battleground_polish.py",
+      "size": 10650,
+      "sha256": "14c2af0b88ebabd40215da7c5ee9e03f6bd7188aea6d4c3249b84a39675bf9a4"
+    },
+    {
+      "path": "tests/test_boss_spawn_population.py",
+      "size": 7287,
+      "sha256": "ae6aef424279233614f0071b1d16b8a37e81e9fb3b6c60f970a464228ac4056e"
+    },
+    {
+      "path": "tests/test_character_roster.py",
+      "size": 9485,
+      "sha256": "73a051fa5f49da5648124671cdd7fb73ba1a2b716aba43f4a95a90a089c248c2"
+    },
+    {
+      "path": "tests/test_character_screen_logout.py",
+      "size": 6440,
+      "sha256": "de9d62c9ef74f58661b54703b996bc24aca58bbc4d78b6d1a5b4f31ed9dbce63"
+    },
+    {
+      "path": "tests/test_combat_entities.py",
+      "size": 10723,
+      "sha256": "d6061257b1e8fefffe66bcf4de6b3a5ba42dbd40c566fb0b6924ec44d5448424"
+    },
+    {
+      "path": "tests/test_combat_latency.py",
+      "size": 11572,
+      "sha256": "c69684091f36a7d77e2fc524f6a2cbc4a0ab08bf139d9774884ae83b811538ab"
+    },
+    {
+      "path": "tests/test_daily_challenges.py",
+      "size": 23534,
+      "sha256": "c92246fc5df4d1ee80d713b47fdec626ffc8184db300e3b15549234cb98e7a4c"
+    },
+    {
+      "path": "tests/test_dungeon_quests.py",
+      "size": 27577,
+      "sha256": "82b0c2d956b7f8237f39ebc2e34956298ca6f72c21bec9b8004ef8bcf8fe769d"
+    },
+    {
+      "path": "tests/test_dungeon_runtime_fixes.py",
+      "size": 7816,
+      "sha256": "fe18bf7562488581b916400e00c465a3e472d1295757eb6e58c40e6bf4cbc5eb"
+    },
+    {
+      "path": "tests/test_emotes.py",
+      "size": 6949,
+      "sha256": "1bbaca8d32f97009b7125669cc12025ed525221f1ccbf15ded923465c7798e5c"
+    },
+    {
+      "path": "tests/test_enemy_minion_targets.py",
+      "size": 12655,
+      "sha256": "1a2d5bdb0950aafb5ac0ea1611610b040644302d93ba5ce57610402ec8210320"
+    },
+    {
+      "path": "tests/test_essence_consumption.py",
+      "size": 11403,
+      "sha256": "29cf98a39937a27559a5f1dfeeb06f96b6cca705143a5f76436c878c3443e412"
+    },
+    {
+      "path": "tests/test_event_notifications.py",
+      "size": 11597,
+      "sha256": "d08501c7abf5dddb3fda8f1eb6cf676c966acc0bdc9acfee96ed43b8e9bea6c3"
+    },
+    {
+      "path": "tests/test_event_status_effects.py",
+      "size": 7707,
+      "sha256": "77081da0d61856109c08e72382687bc1779f02c188ffbdae1e429540af6d37e4"
+    },
+    {
+      "path": "tests/test_event_travel.py",
+      "size": 10116,
+      "sha256": "64451a1a1944d09942b445e603dcdf2f460395119722933698b4fdd938e48a9f"
+    },
+    {
+      "path": "tests/test_event_waves_and_vendors.py",
+      "size": 6556,
+      "sha256": "cc646bc3052ece59318d89fb47e16e29b7a83da5917e454be0d82cf7976484fd"
+    },
+    {
+      "path": "tests/test_gameplay_regressions.py",
+      "size": 12416,
+      "sha256": "e26a409a3dc34383ece6464fe8bfff967bc6109adc4d37c37e844db7bb59b0e9"
+    },
+    {
+      "path": "tests/test_gc_tuning.py",
+      "size": 4964,
+      "sha256": "d16eac38c6a1419a47a8821e7053b14642dd35d42086db258ea4e30cc4e06f64"
+    },
+    {
+      "path": "tests/test_group_popup.py",
+      "size": 10422,
+      "sha256": "64c59c3e3dee1bbb195e9af53980329a59ce9e857e4b30d52b6d9f7652efdb98"
+    },
+    {
+      "path": "tests/test_hub_travel.py",
+      "size": 6730,
+      "sha256": "3a35025e50b8ada1a9a95640df6b228d6bdfb365552cd271e72ed3ddff755d39"
+    },
+    {
+      "path": "tests/test_inventory_cosmetics.py",
+      "size": 5114,
+      "sha256": "837c1e771917a134538da591a2c4efe276de3498f8aba1f811fc96e45da47ccd"
+    },
+    {
+      "path": "tests/test_item_customization.py",
+      "size": 11028,
+      "sha256": "5a0daf894f3cd2ac0ef11dd453eb60effa5b9195bb7758b559c2d68c15586364"
+    },
+    {
+      "path": "tests/test_local_combat_state.py",
+      "size": 151094,
+      "sha256": "ff0f7ff8a6779cc1efd405e3a0cf761e7b0758aadb19333bbc8515bc12dcff79"
+    },
+    {
+      "path": "tests/test_log_stream.py",
+      "size": 3410,
+      "sha256": "7e197d7bfee50debbc503ef3a3f2e9afb86f4ad576b95fbd0710867f06bc1141"
+    },
+    {
+      "path": "tests/test_login_enforcement.py",
+      "size": 5544,
+      "sha256": "36e318817f4ce0a3fd3884e601785758f43f76290093bb10c697023769bd78c9"
+    },
+    {
+      "path": "tests/test_logout.py",
+      "size": 5084,
+      "sha256": "a1c3f4bd2e79feb66f18a8f3f496dea8971e8651075e79d0729762caf800b87e"
+    },
+    {
+      "path": "tests/test_maintenance.py",
+      "size": 11923,
+      "sha256": "26aa66a6bf593c872f96ccba4f4cff6f22a8f6c6faeea64d877c6a948564c4a5"
+    },
+    {
+      "path": "tests/test_map_companions.py",
+      "size": 17016,
+      "sha256": "553e404b589d95512b19bd379de17174a0d50419918445228d7277d411489dac"
+    },
+    {
+      "path": "tests/test_map_events.py",
+      "size": 29203,
+      "sha256": "fd2173f007a810406194ad779b57e68197d34aaddb09c29cb74fa523ecf952e9"
+    },
+    {
+      "path": "tests/test_map_local_event_updates.py",
+      "size": 1395,
+      "sha256": "38a12a145c14b16844a2eee9f11eb76395b2a98d0bf3110ffbb4caec267dd741"
+    },
+    {
+      "path": "tests/test_map_travel_delivery.py",
+      "size": 4030,
+      "sha256": "5c7b97bf4c23ccfb4a2b1fed9de4625c336719ebba9462f789258c2a9a0d1d55"
+    },
+    {
+      "path": "tests/test_map_unlocks.py",
+      "size": 11897,
+      "sha256": "1782b48e7e8b72acde1f64e6c8b85a079215ab6a860e59eeac5d090f2113b572"
+    },
+    {
+      "path": "tests/test_melee_target_range.py",
+      "size": 7496,
+      "sha256": "2747fb77d231a7305c15b5b2ea982f47a5f32918be91a3756dde29c26c51ef83"
+    },
+    {
+      "path": "tests/test_monster_ai_delivery.py",
+      "size": 13438,
+      "sha256": "125697c3a44e4245af254bf0ca0a2ebded8b19d47db44a91fb3414cf3fcc8f50"
+    },
+    {
+      "path": "tests/test_monster_cast_movement.py",
+      "size": 11997,
+      "sha256": "9f32b6dd7de214efda0924a7071d9ee035c871b28c483c7affcd9dcde4d48f30"
+    },
+    {
+      "path": "tests/test_monster_movement_loss.py",
+      "size": 5042,
+      "sha256": "b058d7340a9d3f34426872fd937f50236451d6576b4028d367e43756f48a9e3b"
+    },
+    {
+      "path": "tests/test_monster_population_scale.py",
+      "size": 1763,
+      "sha256": "b21d0c98bc4e396b04972d054ffabddcb329e2520eccabf99b4c709ce9cf8f8b"
+    },
+    {
+      "path": "tests/test_monster_worker_progress.py",
+      "size": 11632,
+      "sha256": "50e1576ead2c1ab0b1d9948f964fe6835a731f9e638976854a16ae1dfe6cf737"
+    },
+    {
+      "path": "tests/test_player_block.py",
+      "size": 7188,
+      "sha256": "20f4de553b3c1db6cf008aa18d3846ec0853f1dbcd51a8ed5f3d970ecdadfdbf"
+    },
+    {
+      "path": "tests/test_player_overhead_icons.py",
+      "size": 5470,
+      "sha256": "e81ae88eba79a8d473ca2640a22590b6559c8488c1602930e2eddffdd43d2466"
+    },
+    {
+      "path": "tests/test_player_progression.py",
+      "size": 6419,
+      "sha256": "c64e8e588e042b45f4079d46c0f34c0d1abdfdba98faadd257bdf0ba136c2c21"
+    },
+    {
+      "path": "tests/test_player_respawn.py",
+      "size": 36804,
+      "sha256": "e44e3f1b11b0d1cccc5cfb922a2be8a1fbb7955a5b0f699a5b3312f96edba831"
+    },
+    {
+      "path": "tests/test_player_stat_parity.py",
+      "size": 8895,
+      "sha256": "71e12e0de85cd6d60fd2c1ed167b3bdf1cb08bd4dd0df03ef15c62f002d64b92"
+    },
+    {
+      "path": "tests/test_populated_map_simulation.py",
+      "size": 34353,
+      "sha256": "81caf84a66e498a180dcde3ff9ee6c73e6846d437269526e128305926ef28274"
+    },
+    {
+      "path": "tests/test_premium_bags.py",
+      "size": 16304,
+      "sha256": "ac783ddb84284bef467624e5e72edb3303a78f899a3aab469ca39df95c4b10fc"
+    },
+    {
+      "path": "tests/test_pvp_group_hostility.py",
+      "size": 4556,
+      "sha256": "6ad1b662693c2438dc1df963142be66111474150d9f8a30687d8dee77569c357"
+    },
+    {
+      "path": "tests/test_pvp_matchmaking.py",
+      "size": 44284,
+      "sha256": "f26af193ca4051739d5314a1cec769a11bedde1412ad7a4f62f2ce56e1dc78b2"
+    },
+    {
+      "path": "tests/test_pvp_player_effects.py",
+      "size": 12428,
+      "sha256": "d1d0c39b1a1c1528aa42a7134cef80404fe49a5e9c5a05e746310942cdaf07c6"
+    },
+    {
+      "path": "tests/test_pvp_projectile_sets.py",
+      "size": 7211,
+      "sha256": "2feb21be0d53b4a1718adb1f0d49248f9e861d3a5f7f684166dc8daafe9208ba"
+    },
+    {
+      "path": "tests/test_quest_delivery.py",
+      "size": 13444,
+      "sha256": "fd3ce1087ff73fad8c7bc6178dbdbcca781da7eb5d1d24f51c634f49c6d8a0a2"
+    },
+    {
+      "path": "tests/test_quest_drops.py",
+      "size": 19589,
+      "sha256": "01a0ed2d5780b9d3ed18de5c6ea680cd19cd267cbb99379bfedbf4ab2cb3ad00"
+    },
+    {
+      "path": "tests/test_quest_events.py",
+      "size": 10330,
+      "sha256": "5ea18992a3b2d31a57a08c2418932302492ba0374a952e697015071e2b99d5ad"
+    },
+    {
+      "path": "tests/test_quest_map_markers.py",
+      "size": 3596,
+      "sha256": "5775ad46a5b515041d812fb9ead306d08ca5c329510a271e85116cc0362f35f1"
+    },
+    {
+      "path": "tests/test_quests.py",
+      "size": 38127,
+      "sha256": "eae6a6fb3642fa4dddca8103e79c0f3ecfaaa45fdf86d0332c355d8c4cd1f1b8"
+    },
+    {
+      "path": "tests/test_ranger_skill_timing.py",
+      "size": 10133,
+      "sha256": "0d376e216a4d435bd524fef3ac00e76f95717a9ed19f9df351a56af45da2778c"
+    },
+    {
+      "path": "tests/test_ranking.py",
+      "size": 12453,
+      "sha256": "f5c05b9e8929e7fdd6fba5791195b93344fde519b47ebebe9376686835e0f3e4"
+    },
+    {
+      "path": "tests/test_receive_thread_offload.py",
+      "size": 4999,
+      "sha256": "4cfa1ad0a7d1e6aeb75eb822a9cb0f86a468c2d7a4993cb61356879be7ddcbd1"
+    },
+    {
+      "path": "tests/test_safe_login.py",
+      "size": 4220,
+      "sha256": "3e450d59151e81d556c0c8019db392ca687a73c30db23c8cdf308b8b3b5f3203"
+    },
+    {
+      "path": "tests/test_session_lock_hot_paths.py",
+      "size": 15148,
+      "sha256": "c2ec2dbafb6de5bd83e4ca4d11c00fd16f4606d25e33cb92f0e1f4d0b74f755f"
+    },
+    {
+      "path": "tests/test_skill_hitbox.py",
+      "size": 1866,
+      "sha256": "5aeece5cd6475490e0e612c5c6b37dae7253bb0fe3db6e7c38028379fee4db6b"
+    },
+    {
+      "path": "tests/test_social_presence.py",
+      "size": 5518,
+      "sha256": "8dcd1287f27eddb1e916e7036f30d6d35b6299e35e0f6274e5f9b5e07a48d530"
+    },
+    {
+      "path": "tests/test_socket_stat_contributions.py",
+      "size": 5729,
+      "sha256": "3f08b790f394132803943874b0b00218c92361cafbc3310e75065a01858b3f28"
+    },
+    {
+      "path": "tests/test_stall_attribution.py",
+      "size": 2099,
+      "sha256": "f2e161d60b8c056ca81e9dd73c03dfe903defec26459d83d8bf9076335ebd843"
+    },
+    {
+      "path": "tests/test_standalone.py",
+      "size": 7546,
+      "sha256": "743d5ac2b4a3718477f708e072f64105820cceaef3bdbc36ac03b04e97335987"
+    },
+    {
+      "path": "tests/test_status_modifier_runtime.py",
+      "size": 5098,
+      "sha256": "905b60fb2476389e2842651ccb91d27c04733b6ff2bffdfc6ac9d2e06312de9d"
+    },
+    {
+      "path": "tests/test_summon_pvp_kills.py",
+      "size": 7538,
+      "sha256": "2420c00a5e70b2f4707339f3b516cea91ac74b241947e0b8cbe81c3fa0e31e88"
+    },
+    {
+      "path": "tests/test_summon_startup.py",
+      "size": 4894,
+      "sha256": "2e8537292229a82932f925a5b3b2bc0b9ae16ec5204ef63d40e3b3d1e25a2898"
+    },
+    {
+      "path": "tests/test_target_skill_input.py",
+      "size": 5323,
+      "sha256": "c0ec830af62198c0417f9b88d21f85c3b3e5251595d7c2f1f2098491c1a6e520"
+    },
+    {
+      "path": "tests/test_vendor_repairs.py",
+      "size": 10121,
+      "sha256": "bbba7a7980fff59082bda8fc5369ef25c0d86b6480ca7a1fb5ba599c09c13260"
+    },
+    {
+      "path": "tests/test_wanted_thief.py",
+      "size": 15294,
+      "sha256": "fe578a056dc2b0994821399aac3e151dd0202da010e5f6ea8c7000719001bdb0"
+    },
+    {
+      "path": "tests/test_wave_notifications.py",
+      "size": 8265,
+      "sha256": "225ab02d1bdc3008faa432268e6cec8c4e4101c1f33b3638bb25d91a43f6f6ab"
+    },
+    {
+      "path": "tools/audit_character_stats.py",
+      "size": 10614,
+      "sha256": "894fdb017dc51a2bb40a2c0d7c7f33bfeaadd426b025baa5f23f480a87f092ff"
+    },
+    {
+      "path": "tools/export_production.py",
+      "size": 25042,
+      "sha256": "8fe47ebb98c288eff8fb814e007e5ed8e8d8b93219f357cee9c0ac55263249f0"
+    },
+    {
+      "path": "tools/install_admin_effects.py",
+      "size": 8513,
+      "sha256": "3576f3aad7fb885d1cdc142b557fc273effd8a0689c5b2bb33a68c8054b9940b"
+    },
+    {
+      "path": "tools/sanitize_release.py",
+      "size": 9642,
+      "sha256": "6b5098a09b42f110931d2930aeb800eadb03fa7f08b3116bde18e9c020eb1a48"
+    }
+  ]
+}

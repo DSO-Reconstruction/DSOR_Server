@@ -1,0 +1,98 @@
+{
+  "combat": {
+    "impact_loss": 0,
+    "impacts_dispatched": 40,
+    "impacts_expected": 40,
+    "pending_impacts_end": 0
+  },
+  "configuration": {
+    "ack_delay_ms": 80.0,
+    "active_monsters": 768,
+    "aoe_targets_per_cast": 4,
+    "casts_per_player_second": 1.0,
+    "lose_first_reliable_every": 5,
+    "map_id": "a0303_wildcave",
+    "measured_seconds": 10.0,
+    "players": 1,
+    "same_deadline_handle_mode": "coalesced-per-cast",
+    "scheduler_workers": 10,
+    "tick_budget_ms": 40.0,
+    "tick_rate_hz": 25.0,
+    "transport": "in-memory ACK/loss simulation",
+    "victim_status_effect_per_impact": true,
+    "warmup_seconds": 1.0
+  },
+  "frames": {
+    "count": 250,
+    "over_40ms": 0,
+    "over_40ms_percent": 0.0,
+    "p95_budget_utilization_percent": 31.51,
+    "processing_ms": {
+      "max": 14.881,
+      "p50": 11.128,
+      "p95": 12.602
+    },
+    "tick_start_lateness_ms": {
+      "max": 1.014,
+      "p50": 0.3,
+      "p95": 0.546
+    }
+  },
+  "network": {
+    "bytes_per_client": {
+      "max": 33070.0,
+      "p50": 33070.0,
+      "p95": 33070.0
+    },
+    "bytes_per_second_per_client": {
+      "max": 3307.0,
+      "p50": 3307.0,
+      "p95": 3307.0
+    },
+    "packets_per_client": {
+      "max": 372.0,
+      "p50": 372.0,
+      "p95": 372.0
+    },
+    "packets_per_second_per_client": {
+      "max": 37.2,
+      "p50": 37.2,
+      "p95": 37.2
+    },
+    "per_client": {
+      "127.0.0.1:41000": {
+        "bytes": 33070,
+        "packets": 372
+      }
+    },
+    "reliable_backlog_peak": 7,
+    "reliable_backlog_peak_by_client": {
+      "127.0.0.1:41000": 7
+    },
+    "total_bytes": 33070,
+    "total_packets": 372
+  },
+  "pass": true,
+  "scheduler": {
+    "callback_errors": 0,
+    "callback_lateness_ms": {
+      "max": 19.996,
+      "p50": 6.892,
+      "p95": 19.834
+    },
+    "callback_p95_budget_utilization_percent": 49.59,
+    "callback_runtime_ms": {
+      "max": 1.185,
+      "p50": 0.789,
+      "p95": 1.083
+    },
+    "callbacks_executed": 10,
+    "callbacks_over_40ms": 0,
+    "handles_alive_at_end": 0,
+    "handles_scheduled": 10,
+    "pending_end": 0,
+    "pending_peak": 1,
+    "same_cast_handles_cancelled": 0,
+    "unexplained_handle_loss": 0
+  }
+}

@@ -1,0 +1,1158 @@
+"""Map-local scripted events: signals, event definitions, and gated content.
+
+Retail scripts a dungeon with three tables.  ``_Template_Signal`` in
+``static.db4`` turns a world happening (a kill, a prop interaction, a
+trigger-volume hit, a map entry) into a named signal when its conditions
+hold.  ``_Template_Events`` rows with ``MapLocal=1`` consume those signals
+through ``StartSignalId``/``EndSignalId``.  Each map database then gates its
+placed spawn points, state objects, exits, and trigger volumes behind
+``_Instance_EventSets`` flags such as ``BOSS_death=True;``.  Everything
+below is read-only content; the mutable per-map-instance state lives in
+:class:`MapEventRuntime`.
+"""
+
+from __future__ import annotations
+
+from collections import deque
+from dataclasses import dataclass, field
+from functools import lru_cache
+import math
+from pathlib import Path
+import random
+import re
+import sqlite3
+import threading
+import time
+import uuid
+from types import MappingProxyType
+from typing import Iterable, Mapping
+
+from dso_server.gameplay.local_map_state import (
+    LOCAL_PROP_ID_BASE,
+    map_database_path,
+)
+from dso_server.protocol.prop_protocol import (
+    PROP_STATE_ACTIVE,
+    PROP_STATE_USED,
+    NewProp,
+    ZERO_GUID,
+)
+
+
+# The client addresses props by the **low 16 bits** of the prop id only:
+# ``ClientPropManager::RegisterPropEntity`` (0x1402197c5) and the world's
+# prop lookup (0x1409ec90e) both ``movzx`` the id's low word before indexing
+# their arrays, so two props whose ids differ only above bit 15 overwrite each
+# other on the client.  ``_Instance_StateObjectSpawnPoint`` rows share rowids
+# with the scene state objects, so a spawn-point prop cannot simply live in a
+# second base such as 0x40000: rowid 4 of each table would both land in slot
+# 3, which is how gated loot chests replaced the map's progress altars.  Every
+# prop of a map therefore gets its index from one sequence -- scene objects at
+# ``LOCAL_PROP_ID_BASE + rowid - 1`` (unchanged, shared with
+# ``load_local_crafting_props``), spawn points after the highest scene rowid.
+# Retail does the same: both 2026-09-09 captures allocate every prop of a map
+# sequentially from 0x10000.
+PROP_INDEX_LIMIT = 0x10000
+
+
+def prop_index(prop_id: int) -> int:
+    """The slot the client selects for a prop id."""
+
+    return int(prop_id) & 0xFFFF
+
+
+def spawn_prop_id(scene_row_limit: int, row_id: int) -> int:
+    """Prop id for spawn-point ``row_id`` placed after ``scene_row_limit`` rows."""
+
+    index = int(scene_row_limit) + int(row_id) - 1
+    if index >= PROP_INDEX_LIMIT:
+        raise ValueError(
+            f"prop index {index} exceeds the client's 16-bit prop slot range"
+        )
+    return LOCAL_PROP_ID_BASE + index
+# Retail sends an empty operation string in every PropInfo, even for the
+# crafting workbench and for eggs the player then clicks: the client keeps
+# the template's own operation, and an empty string does not block clicking.
+WIRE_PROP_OPERATION = ""
+
+# Bloodshed is difficulty tier 8 in ``_Template_MapAccessGroup`` (the ``_08``
+# access groups carry ``mapeffect_bloodshed`` and the ``BloodShedInfo`` text).
+# The bloody sludges (``all_guardian_bloodshed_thing_blood_01``) sit in every
+# dungeon's spawn-point table without an EventSet: their skills are the
+# ``*_BLOODSHED`` variants, the ``bloodshed-challenge-01-n`` quest that clears
+# them is activated only on ``*_08`` maps, and ``CLOSE_MAP_BLOODSHED`` fires on
+# their kill.  Nothing in the map data gates the rows themselves, so the server
+# gates them by tier.
+BLOODSHED_DIFFICULTY = 8
+
+# Spawn-point chest variants are authored on top of each other: one location
+# holds a ``normal_*`` free chest (map-level loot, tier 0), one ``scaling_*``
+# free chest per scaling tier, and the ``scaling_magic/rare/epic`` chests plus
+# their treasure-goblin twins.  ``_Template_MapDifficulty`` carries the per-tier
+# chance of each rarity; retail shows one chest per spot.
+CHEST_LOCATION_RADIUS = 1.5
+_CHEST_TIER_MARKERS = ("_epic_", "_rare_", "_magic_")
+
+SERVER_SIGNAL_TYPES = frozenset({"serversignal", "mapsignal"})
+CLIENT_REPORTED_SIGNAL_TYPES = frozenset({"clienttoserversignal", "clientsignal"})
+
+_DIFFICULTY_SUFFIX = re.compile(r"_diff_\d+$", re.IGNORECASE)
+
+
+def _tokens(value: object) -> tuple[str, ...]:
+    return tuple(
+        token.strip()
+        for token in str(value or "").replace(",", ";").split(";")
+        if token.strip()
+    )
+
+
+def _folded_tokens(value: object) -> tuple[str, ...]:
+    return tuple(token.casefold() for token in _tokens(value))
+
+
+def bloodshed_only_template(template_id: object) -> bool:
+    """Whether a spawn row belongs to the Bloodshed tier alone."""
+
+    return "bloodshed" in str(template_id or "").casefold()
+
+
+def map_key(value: object) -> str:
+    """Normalize a map or access-group id the way signal rows name maps."""
+
+    return _DIFFICULTY_SUFFIX.sub("", str(value or "").strip()).casefold()
+
+
+@dataclass(frozen=True)
+class SignalRule:
+    """One ``_Template_Signal`` row."""
+
+    signal_id: str
+    signal_type: str
+    event_type: str
+    params: tuple[str, ...]
+    maps: frozenset[str]
+    min_level: int
+    max_level: int
+    classes: frozenset[str]
+    player_amount: int
+    events_running: tuple[str, ...]
+    events_not_running: tuple[str, ...]
+    requires_quest_state: bool
+    enabled: bool
+    quest_accepted: tuple[str, ...] = ()
+    quest_not_accepted: tuple[str, ...] = ()
+    quest_solved: tuple[str, ...] = ()
+    quest_not_solved: tuple[str, ...] = ()
+    quest_task_done: tuple[str, ...] = ()
+    quest_task_not_done: tuple[str, ...] = ()
+    maps_unlocked: tuple[str, ...] = ()
+    maps_not_unlocked: tuple[str, ...] = ()
+
+    @property
+    def server_evaluated(self) -> bool:
+        return self.signal_type in SERVER_SIGNAL_TYPES or (
+            self.signal_type == "clientsignal"
+            and self.event_type in {"playerenteredmap", "playerlevelup"}
+        )
+
+    @property
+    def fraction(self) -> float:
+        try:
+            return float(self.params[0]) if self.params else 1.0
+        except ValueError:
+            return 1.0
+
+    def accepts(
+        self,
+        *,
+        map_id: str,
+        running_events: frozenset[str],
+        player_level: int,
+        class_name: str,
+        player_count: int,
+        quests_accepted: frozenset[str] = frozenset(),
+        quests_solved: frozenset[str] = frozenset(),
+        tasks_done: frozenset[str] = frozenset(),
+        unlocked_maps: frozenset[str] = frozenset(),
+    ) -> bool:
+        if not self.enabled:
+            return False
+        if self.maps and map_key(map_id) not in self.maps:
+            return False
+        # Quest conditions read the character's log (services/quests.py):
+        # "accepted" is any quest in the log that is not closed, "solved" a
+        # closed one, and task tokens are ``<quest>:<task title>``.
+        if any(q not in quests_accepted for q in self.quest_accepted):
+            return False
+        if any(q in quests_accepted for q in self.quest_not_accepted):
+            return False
+        if any(q not in quests_solved for q in self.quest_solved):
+            return False
+        if any(q in quests_solved for q in self.quest_not_solved):
+            return False
+        if any(t not in tasks_done for t in self.quest_task_done):
+            return False
+        if any(t in tasks_done for t in self.quest_task_not_done):
+            return False
+        if self.maps_unlocked or self.maps_not_unlocked:
+            discovered = frozenset(map_key(value) for value in unlocked_maps)
+            if any(value not in discovered for value in self.maps_unlocked):
+                return False
+            if any(value in discovered for value in self.maps_not_unlocked):
+                return False
+        if self.min_level and player_level < self.min_level:
+            return False
+        if self.max_level and player_level > self.max_level:
+            return False
+        if self.classes and class_name.casefold() not in self.classes:
+            return False
+        if self.player_amount > 0 and player_count < self.player_amount:
+            return False
+        if any(event not in running_events for event in self.events_running):
+            return False
+        if any(event in running_events for event in self.events_not_running):
+            return False
+        return True
+
+
+@dataclass(frozen=True)
+class MapLocalEventDefinition:
+    """One ``_Template_Events`` row with ``MapLocal=1``."""
+
+    event_id: str
+    wire_id: int
+    start_signals: tuple[str, ...]
+    end_signals: tuple[str, ...]
+    start_delay: float
+    duration: float
+    maps: frozenset[str]
+    client_only: bool
+
+    @property
+    def key(self) -> str:
+        return self.event_id.casefold()
+
+    @property
+    def wave_label(self) -> str | None:
+        # Numbered waves also carry difficulty suffixes (_pw, _scaling,
+        # _event, _normal_01) and sometimes A/B spawn variants. Presentation
+        # events such as wave_countdown_01 and wave_done are not waves.
+        match = re.search(r"(?:^|_)(?:monster)?wave_?(\d+)[a-z]?(?=_|$)", self.key)
+        if match:
+            return f"Wave {int(match.group(1))}"
+        if self.key.endswith("_boss_wave"):
+            return "Boss wave"
+        if re.search(r"_monster_?waves?(?:_single)?$", self.key):
+            return "Monster wave"
+        return None
+
+    def applies_to(self, map_id: str) -> bool:
+        return not self.maps or map_key(map_id) in self.maps
+
+
+@dataclass(frozen=True)
+class SignalContext:
+    """What happened, and the state the signal conditions read."""
+
+    map_id: str
+    params: frozenset[str]
+    running_events: frozenset[str]
+    player_level: int = 1
+    class_name: str = ""
+    player_count: int = 1
+    present_templates: frozenset[str] = frozenset()
+    alive_templates: frozenset[str] = frozenset()
+    dead_fraction: float = 0.0
+    quests_accepted: frozenset[str] = frozenset()
+    quests_solved: frozenset[str] = frozenset()
+    tasks_done: frozenset[str] = frozenset()
+    unlocked_maps: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class MapSignalCatalog:
+    rules_by_event_type: Mapping[str, tuple[SignalRule, ...]]
+    rules_by_signal_id: Mapping[str, SignalRule]
+    events: Mapping[str, MapLocalEventDefinition]
+    events_by_start_signal: Mapping[str, tuple[str, ...]]
+    events_by_end_signal: Mapping[str, tuple[str, ...]]
+
+    def rule(self, signal_id: str) -> SignalRule | None:
+        return self.rules_by_signal_id.get(str(signal_id).casefold())
+
+    def event(self, event_id: str) -> MapLocalEventDefinition | None:
+        return self.events.get(str(event_id).casefold())
+
+    def evaluate(
+        self, event_type: str, context: SignalContext,
+    ) -> tuple[SignalRule, ...]:
+        """Return the server-evaluated rules that fire for ``event_type``."""
+
+        kind = str(event_type).casefold()
+        fired = []
+        for rule in self.rules_by_event_type.get(kind, ()):
+            if not rule.accepts(
+                map_id=context.map_id,
+                running_events=context.running_events,
+                player_level=context.player_level,
+                class_name=context.class_name,
+                player_count=context.player_count,
+                quests_accepted=context.quests_accepted,
+                quests_solved=context.quests_solved,
+                tasks_done=context.tasks_done,
+                unlocked_maps=context.unlocked_maps,
+            ):
+                continue
+            if kind == "monsterseliminated":
+                listed = frozenset(rule.params)
+                present = listed & context.present_templates
+                if (
+                    not present
+                    or not (listed & context.params)
+                    or (listed & context.alive_templates)
+                ):
+                    continue
+            elif kind == "monsterseliminatedpercentage":
+                if context.dead_fraction + 1e-9 < rule.fraction:
+                    continue
+            elif rule.params and not (frozenset(rule.params) & context.params):
+                continue
+            fired.append(rule)
+        return tuple(fired)
+
+
+def _load_signal_catalog(
+    database_path: str, mtime_ns: int, size: int,
+) -> MapSignalCatalog:
+    del mtime_ns, size
+    path = Path(database_path)
+    rules_by_type: dict[str, list[SignalRule]] = {}
+    rules_by_id: dict[str, SignalRule] = {}
+    events: dict[str, MapLocalEventDefinition] = {}
+    by_start: dict[str, list[str]] = {}
+    by_end: dict[str, list[str]] = {}
+    with sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True
+    ) as database:
+        database.row_factory = sqlite3.Row
+        for row in database.execute("SELECT * FROM _Template_Signal"):
+            signal_id = str(row["SignalId"] or "").strip()
+            if not signal_id:
+                continue
+            rule = SignalRule(
+                signal_id=signal_id,
+                signal_type=str(row["SignalType"] or "").casefold(),
+                event_type=str(row["EventType"] or "").casefold(),
+                params=_folded_tokens(row["EventParam"]),
+                maps=frozenset(map_key(value) for value in _tokens(row["Map"])),
+                min_level=int(row["MinLevel"] or 0),
+                max_level=int(row["MaxLevel"] or 0),
+                classes=frozenset(_folded_tokens(row["CharClass"])),
+                player_amount=int(row["PlayerAmount"] or 0),
+                events_running=_folded_tokens(row["EventRunning"]),
+                events_not_running=_folded_tokens(row["EventNotRunning"]),
+                requires_quest_state=any(
+                    _tokens(row[column])
+                    for column in ("QuestAccepted", "QuestSolved", "QuestTaskDone")
+                ),
+                enabled=bool(int(row["Enabled"] or 0)),
+                quest_accepted=_folded_tokens(row["QuestAccepted"]),
+                quest_not_accepted=_folded_tokens(row["QuestNotAccepted"]),
+                quest_solved=_folded_tokens(row["QuestSolved"]),
+                quest_not_solved=_folded_tokens(row["QuestNotSolved"]),
+                quest_task_done=_folded_tokens(row["QuestTaskDone"]),
+                quest_task_not_done=_folded_tokens(row["QuestTaskNotDone"]),
+                maps_unlocked=tuple(map_key(value) for value in _tokens(row["MapUnlocked"])),
+                maps_not_unlocked=tuple(map_key(value) for value in _tokens(row["MapNotUnlocked"])),
+            )
+            rules_by_id[signal_id.casefold()] = rule
+            if rule.server_evaluated:
+                rules_by_type.setdefault(rule.event_type, []).append(rule)
+        for row in database.execute(
+            "SELECT rowid - 1 AS wire_id, * FROM _Template_Events "
+            "WHERE COALESCE(MapLocal, 0)=1"
+        ):
+            event_id = str(row["Id"] or "").strip()
+            if not event_id:
+                continue
+            definition = MapLocalEventDefinition(
+                event_id=event_id,
+                wire_id=int(row["wire_id"]),
+                start_signals=_folded_tokens(row["StartSignalId"]),
+                end_signals=_folded_tokens(row["EndSignalId"]),
+                start_delay=max(0.0, float(row["MapEventStartDelay"] or 0.0)),
+                duration=max(0.0, float(row["MapEventDuration"] or 0.0)),
+                maps=frozenset(map_key(value) for value in _tokens(row["Map"])),
+                client_only=bool(int(row["ClientOnly"] or 0)),
+            )
+            events[definition.key] = definition
+            for signal in definition.start_signals:
+                by_start.setdefault(signal, []).append(definition.key)
+            for signal in definition.end_signals:
+                by_end.setdefault(signal, []).append(definition.key)
+    return MapSignalCatalog(
+        rules_by_event_type=MappingProxyType({
+            key: tuple(values) for key, values in rules_by_type.items()
+        }),
+        rules_by_signal_id=MappingProxyType(rules_by_id),
+        events=MappingProxyType(events),
+        events_by_start_signal=MappingProxyType({
+            key: tuple(values) for key, values in by_start.items()
+        }),
+        events_by_end_signal=MappingProxyType({
+            key: tuple(values) for key, values in by_end.items()
+        }),
+    )
+
+
+_signal_catalog_cache = lru_cache(maxsize=4)(_load_signal_catalog)
+
+
+def load_map_signal_catalog(static_database_path: str | Path) -> MapSignalCatalog:
+    path = Path(static_database_path).resolve()
+    stat = path.stat()
+    return _signal_catalog_cache(str(path), stat.st_mtime_ns, stat.st_size)
+
+
+@dataclass(frozen=True)
+class EventSetDefinition:
+    row: int
+    required: frozenset[str]
+    forbidden: frozenset[str]
+
+    @property
+    def events(self) -> frozenset[str]:
+        return self.required | self.forbidden
+
+    def satisfied(self, active: frozenset[str]) -> bool:
+        return (not self.required or bool(self.required & active)) and not (self.forbidden & active)
+
+
+@dataclass(frozen=True)
+class GatedSpawnRow:
+    row_id: int
+    event_set_row: int
+    template_id: str
+    position: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class MapPropDefinition:
+    prop_id: int
+    row_id: int
+    kind: str
+    instance_id: str
+    template_id: str
+    instance_guid: bytes
+    position: tuple[float, float, float]
+    rotation: float
+    event_set_row: int
+    operation: str
+    one_shot: bool
+    loot_list_id: str
+    chest_id: str
+    signal_referenced: bool
+    workbench: bool
+    quest_switch_id: str = ""
+
+    @property
+    def always_present(self) -> bool:
+        return self.event_set_row < 0
+
+    @property
+    def network_prop(self) -> bool:
+        """Whether the server publishes this object as a prop at all.
+
+        Scene objects that nothing listens to stay client-side; a dungeon
+        holds hundreds of them and retail's own PropInfo carried only the
+        interactive ones.
+        """
+
+        if self.workbench or self.signal_referenced or self.quest_switch_id:
+            return True
+        if self.always_present:
+            return False
+        return bool(self.operation or self.loot_list_id or self.chest_id)
+
+    def new_prop(self, state: int) -> NewProp:
+        return NewProp(
+            prop_id=self.prop_id,
+            template_id=self.template_id,
+            instance_guid=self.instance_guid,
+            position=self.position,
+            rotation=self.rotation,
+            state=state,
+            operation=WIRE_PROP_OPERATION,
+        )
+
+
+@dataclass(frozen=True)
+class TriggerVolumeDefinition:
+    row_id: int
+    trigger_id: str
+    event_set_row: int
+    per_player: bool
+    category: str
+    matrix: tuple[float, ...]
+    triggered_event_id: str = ""
+
+    def contains(self, position: tuple[float, float, float]) -> bool:
+        """Test a world position against the unit-cube placeholder volume."""
+
+        m = self.matrix
+        relative = (
+            float(position[0]) - m[12],
+            float(position[1]) - m[13],
+            float(position[2]) - m[14],
+        )
+        # Row-vector convention: rows 0..2 are the scaled basis vectors.
+        basis = (
+            (m[0], m[1], m[2]),
+            (m[4], m[5], m[6]),
+            (m[8], m[9], m[10]),
+        )
+        local = _solve_basis(basis, relative)
+        if local is None:
+            return False
+        return all(abs(value) <= 0.5 + 1e-6 for value in local)
+
+
+def _solve_basis(basis, vector):
+    """Express ``vector`` in the (possibly non-orthogonal) row basis."""
+
+    (a, b, c), (d, e, f), (g, h, i) = basis
+    # vector = x*row0 + y*row1 + z*row2  ->  solve the transposed system.
+    det = a * (e * i - f * h) - d * (b * i - c * h) + g * (b * f - c * e)
+    if abs(det) < 1e-9:
+        return None
+    x, y, z = vector
+    # Cramer's rule on the transposed matrix.
+    det_x = x * (e * i - f * h) - d * (y * i - z * h) + g * (y * f - z * e)
+    det_y = a * (y * i - z * h) - x * (b * i - c * h) + g * (b * z - c * y)
+    det_z = a * (e * z - f * y) - d * (b * z - c * y) + x * (b * f - c * e)
+    return (det_x / det, det_y / det, det_z / det)
+
+
+def _read_transform(value: bytes) -> tuple[tuple[float, ...], tuple[float, float, float], float]:
+    import struct
+
+    if not isinstance(value, (bytes, bytearray)) or len(value) != 64:
+        raise ValueError("map transform must be 64 bytes")
+    matrix = struct.unpack("<16f", bytes(value))
+    position = (matrix[12], matrix[13], matrix[14])
+    rotation = math.atan2(matrix[8], matrix[0])
+    return matrix, position, rotation
+
+
+@dataclass(frozen=True)
+class MapEventContent:
+    map_id: str
+    event_sets: Mapping[int, EventSetDefinition]
+    referenced_events: frozenset[str]
+    spawn_rows: tuple[GatedSpawnRow, ...]
+    props: tuple[MapPropDefinition, ...]
+    trigger_volumes: tuple[TriggerVolumeDefinition, ...]
+    # difficulty tier -> (uncommon, magic, rare, epic) percentages
+    chest_tier_chances: Mapping[int, tuple[int, int, int, int]] = field(
+        default_factory=dict
+    )
+
+    def server_driven_event_sets(self, catalog) -> frozenset[int]:
+        """EventSet rows whose flags a server-evaluated map-local event flips.
+
+        The load-time population must leave these alone: the map-event runtime
+        spawns their rows when the event starts, so materializing them at map
+        load as well produced two bosses in the Balor arena.
+        """
+
+        rows = set()
+        for row, definition in self.event_sets.items():
+            for key in definition.events:
+                event = catalog.event(key)
+                if event is None or not event.applies_to(self.map_id):
+                    continue
+                if any(
+                    rule is not None and rule.server_evaluated
+                    for rule in (catalog.rule(s) for s in event.start_signals)
+                ):
+                    rows.add(row)
+                    break
+        return frozenset(rows)
+
+    def event_sets_for(self, event_key: str) -> tuple[EventSetDefinition, ...]:
+        return tuple(
+            definition for definition in self.event_sets.values()
+            if event_key in definition.events
+        )
+
+    def enabled_event_set_rows(self, active: frozenset[str]) -> frozenset[int]:
+        return frozenset(
+            row for row, definition in self.event_sets.items()
+            if definition.satisfied(active)
+        )
+
+    def spawn_rows_for_sets(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
+        wanted = {int(value) for value in rows}
+        return tuple(row for row in self.spawn_rows if row.event_set_row in wanted)
+
+    def props_for_sets(self, rows: Iterable[int]) -> tuple[MapPropDefinition, ...]:
+        wanted = {int(value) for value in rows}
+        return tuple(
+            prop for prop in self.props
+            if prop.event_set_row in wanted and prop.network_prop
+        )
+
+    def baseline_props(self) -> tuple[MapPropDefinition, ...]:
+        return tuple(
+            prop for prop in self.props
+            if prop.always_present and prop.network_prop
+        )
+
+    def prop(self, prop_id: int) -> MapPropDefinition | None:
+        for prop in self.props:
+            if prop.prop_id == int(prop_id):
+                return prop
+        return None
+
+
+def _load_map_event_content(
+    database_path: str, map_id: str, signal_props_key: tuple[str, ...],
+) -> MapEventContent:
+    signal_props = frozenset(signal_props_key)
+    quest_switches = _quest_switch_props()
+    path = map_database_path(Path(database_path), map_id)
+    with sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True
+    ) as database:
+        event_sets: dict[int, EventSetDefinition] = {}
+        for row_id, flags in database.execute(
+            "SELECT Id, EventFlags FROM _Instance_EventSets"
+        ):
+            required = set()
+            forbidden = set()
+            for declaration in str(flags or "").split(";"):
+                name, separator, value = declaration.partition("=")
+                if not separator or not name.strip():
+                    continue
+                target = (
+                    required
+                    if value.strip().casefold() == "true"
+                    else forbidden
+                )
+                target.add(name.strip().casefold())
+            try:
+                key = int(row_id)
+            except (TypeError, ValueError):
+                continue
+            event_sets[key] = EventSetDefinition(
+                key, frozenset(required), frozenset(forbidden)
+            )
+        referenced = frozenset(
+            event
+            for definition in event_sets.values()
+            for event in definition.events
+        )
+
+        spawn_rows = []
+        for row_id, transform, template_id, event_set_row in database.execute(
+            """
+            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1)
+            FROM _Instance_SpawnPoint
+            WHERE TRIM(COALESCE(NpcId, ''))<>''
+              AND COALESCE(AlliedToPlayer, 0)=0
+              AND COALESCE(EventSetRow, -1)>=0
+            ORDER BY rowid
+            """
+        ):
+            try:
+                _matrix, position, _rotation = _read_transform(transform)
+            except ValueError:
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                int(row_id), int(event_set_row), str(template_id).strip(), position
+            ))
+
+        templates: dict[str, tuple[str, bool, str, str]] = {}
+        chest_tier_chances: dict[int, tuple[int, int, int, int]] = {}
+        try:
+            static_path = Path(database_path)
+            with sqlite3.connect(
+                f"file:{static_path.as_posix()}?mode=ro", uri=True
+            ) as static_database:
+                try:
+                    for row in static_database.execute(
+                        "SELECT Id, COALESCE(Uncommon, 0), COALESCE(Magic, 0), "
+                        "COALESCE(Rare, 0), COALESCE(Epic, 0) "
+                        "FROM _Template_MapDifficulty"
+                    ):
+                        chest_tier_chances[int(row[0])] = tuple(
+                            int(value or 0) for value in row[1:5]
+                        )
+                except (sqlite3.Error, ValueError):
+                    chest_tier_chances = {}
+                for row in static_database.execute(
+                    "SELECT Id, COALESCE(InteractOperation, ''), "
+                    "COALESCE(OperationId, ''), COALESCE(OneShot, 0), "
+                    "COALESCE(LootListId, ''), COALESCE(ChestId, '') "
+                    "FROM _Template_StateObject"
+                ):
+                    templates[str(row[0])] = (
+                        str(row[1]).strip() or str(row[2]).strip(),
+                        bool(int(row[3] or 0)),
+                        str(row[4]).strip(),
+                        str(row[5]).strip(),
+                    )
+        except sqlite3.Error:
+            templates = {}
+
+        props = []
+        scene_row_limit = int(
+            database.execute(
+                "SELECT COALESCE(MAX(rowid), 0) FROM _Instance_StateObject"
+            ).fetchone()[0]
+        )
+        for row in database.execute(
+            """
+            SELECT rowid, Guid, _ID, Id, Transform, COALESCE(EventSetRow, -1),
+                   COALESCE(InteractOperation, ''), COALESCE(OperationId, ''),
+                   COALESCE(OneShot, 0), COALESCE(LootListId, ''),
+                   COALESCE(ChestId, ''), COALESCE(State, 'active')
+            FROM _Instance_StateObject
+            ORDER BY rowid
+            """
+        ):
+            (
+                row_id, guid, instance_id, template_id, transform,
+                event_set_row, interact_operation, operation_id, one_shot,
+                loot_list_id, chest_id, state,
+            ) = row
+            try:
+                _matrix, position, rotation = _read_transform(transform)
+            except ValueError:
+                continue
+            instance_id = str(instance_id or template_id or "")
+            template_id = str(template_id or instance_id or "")
+            authored_operation = (
+                str(interact_operation).strip() or str(operation_id).strip()
+            )
+            workbench = bool(
+                str(state).casefold() == "active"
+                and (
+                    authored_operation.startswith("OpenCraftingWindow")
+                    or authored_operation.startswith("OpenFilterCraftingWindow:")
+                )
+            )
+            signal_referenced = instance_id.casefold() in signal_props
+            props.append(MapPropDefinition(
+                prop_id=LOCAL_PROP_ID_BASE + int(row_id) - 1,
+                row_id=int(row_id),
+                kind="scene",
+                instance_id=instance_id,
+                template_id=template_id,
+                instance_guid=bytes(guid) if guid else ZERO_GUID,
+                position=position,
+                rotation=rotation,
+                event_set_row=int(event_set_row),
+                operation=authored_operation,
+                one_shot=bool(int(one_shot or 0)),
+                loot_list_id=str(loot_list_id).strip(),
+                chest_id=str(chest_id).strip(),
+                signal_referenced=signal_referenced,
+                workbench=workbench,
+                quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+            ))
+        try:
+            spawn_point_rows = database.execute(
+                """
+                SELECT rowid, _ID, StateObjectId, Transform,
+                       COALESCE(EventSetRow, -1)
+                FROM _Instance_StateObjectSpawnPoint
+                WHERE TRIM(COALESCE(StateObjectId, ''))<>''
+                ORDER BY rowid
+                """
+            ).fetchall()
+        except sqlite3.OperationalError:
+            spawn_point_rows = []
+        for row_id, instance_id, template_id, transform, event_set_row in spawn_point_rows:
+            try:
+                _matrix, position, rotation = _read_transform(transform)
+            except ValueError:
+                continue
+            template_id = str(template_id).strip()
+            instance_id = str(instance_id or template_id)
+            operation, one_shot, loot_list_id, chest_id = templates.get(
+                template_id, ("", False, "", "")
+            )
+            signal_referenced = (
+                instance_id.casefold() in signal_props
+                or template_id.casefold() in signal_props
+            )
+            props.append(MapPropDefinition(
+                prop_id=spawn_prop_id(scene_row_limit, row_id),
+                row_id=int(row_id),
+                kind="spawn",
+                instance_id=instance_id,
+                template_id=template_id,
+                instance_guid=ZERO_GUID,
+                position=position,
+                rotation=rotation,
+                event_set_row=int(event_set_row),
+                operation=operation,
+                one_shot=one_shot,
+                loot_list_id=loot_list_id,
+                chest_id=chest_id,
+                signal_referenced=signal_referenced,
+                workbench=False,
+                quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+            ))
+
+        volumes = []
+        for row in database.execute(
+            """
+            SELECT rowid, _ID, Id, Transform, COALESCE(EventSetRow, -1),
+                   COALESCE(PerPlayer, 0), COALESCE(TriggeredEventCategory, ''),
+                   COALESCE(TriggeredEventId, '')
+            FROM _Instance_TriggerVolume
+            ORDER BY rowid
+            """
+        ):
+            (
+                row_id, instance_id, template_id, transform, event_set_row,
+                per_player, category, triggered_event_id,
+            ) = row
+            try:
+                matrix, _position, _rotation = _read_transform(transform)
+            except ValueError:
+                continue
+            volumes.append(TriggerVolumeDefinition(
+                row_id=int(row_id),
+                trigger_id=str(instance_id or template_id or ""),
+                event_set_row=int(event_set_row),
+                per_player=bool(int(per_player or 0)),
+                category=str(category),
+                matrix=matrix,
+                triggered_event_id=str(triggered_event_id or ""),
+            ))
+    return MapEventContent(
+        map_id=str(map_id),
+        event_sets=MappingProxyType(event_sets),
+        referenced_events=referenced,
+        spawn_rows=tuple(spawn_rows),
+        props=tuple(props),
+        trigger_volumes=tuple(volumes),
+        chest_tier_chances=MappingProxyType(chest_tier_chances),
+    )
+
+
+_map_content_cache = lru_cache(maxsize=64)(_load_map_event_content)
+
+
+@lru_cache(maxsize=1)
+def _quest_switch_props() -> Mapping[str, str]:
+    """prop instance id -> quest switch id, from data/quests.xml when present."""
+
+    try:
+        from dso_server.gameplay.quest_content import load_quest_catalog
+        from dso_server.paths import DEFAULT_QUESTS_PATH
+        return load_quest_catalog(DEFAULT_QUESTS_PATH).switch_props
+    except Exception:
+        return MappingProxyType({})
+
+
+def load_map_event_content(
+    static_database_path: str | Path, map_id: str,
+) -> MapEventContent:
+    catalog = load_map_signal_catalog(static_database_path)
+    signal_props = tuple(sorted({
+        param
+        for rule in catalog.rules_by_signal_id.values()
+        if rule.event_type == "playerinteractedprop"
+        for param in rule.params
+    }))
+    return _map_content_cache(
+        str(Path(static_database_path).resolve()), str(map_id), signal_props
+    )
+
+
+@dataclass
+class PropRuntimeState:
+    definition: MapPropDefinition
+    state: int = PROP_STATE_ACTIVE
+
+    def new_prop(self) -> NewProp:
+        return self.definition.new_prop(self.state)
+
+
+@dataclass(frozen=True)
+class EventTransition:
+    event: MapLocalEventDefinition
+    active: bool
+    enabled_sets: tuple[int, ...]
+    disabled_sets: tuple[int, ...]
+    announce: bool
+
+
+@dataclass
+class MapEventRuntime:
+    """Mutable scripted-event state of one map instance.
+
+    Every session on the instance shares one runtime, like the combat state.
+    The lock protects only small deterministic mutation; callers build
+    packets and send them after releasing it.
+    """
+
+    content: MapEventContent
+    catalog: MapSignalCatalog
+    instance_key: tuple
+    initial_flags: frozenset[str]
+    monster_level: int | None = None
+    scaling_difficulty: int = 0
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    running: dict[str, float] = field(default_factory=dict)
+    pending: dict[str, object] = field(default_factory=dict)
+    pending_start_deadlines: dict[str, float] = field(default_factory=dict)
+    pending_start_tokens: dict[str, object] = field(default_factory=dict)
+    wave_countdown_digits: dict[str, int] = field(default_factory=dict)
+    instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+    completed_quests: set[tuple[int, str]] = field(default_factory=set)
+    enabled_event_sets: set[int] = field(default_factory=set)
+    props: dict[int, PropRuntimeState] = field(default_factory=dict)
+    event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
+    fired_once: set[str] = field(default_factory=set)
+    signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
+    generation: int = 0
+
+    def __post_init__(self) -> None:
+        self.initial_flags = frozenset(
+            str(value).casefold() for value in self.initial_flags
+        )
+        self.enabled_event_sets = set(
+            self.content.enabled_event_set_rows(self.initial_flags)
+        )
+        for definition in self.content.baseline_props():
+            self.props[definition.prop_id] = PropRuntimeState(definition)
+        for definition in self.select_props(
+            self.content.props_for_sets(self.enabled_event_sets)
+        ):
+            self.props.setdefault(definition.prop_id, PropRuntimeState(definition))
+
+    @property
+    def map_id(self) -> str:
+        return self.content.map_id
+
+    def active_flags(self) -> frozenset[str]:
+        return self.initial_flags | frozenset(self.running)
+
+    def running_events(self) -> frozenset[str]:
+        return frozenset(self.running)
+
+    def running_definitions(self) -> tuple[MapLocalEventDefinition, ...]:
+        return tuple(
+            definition
+            for key in sorted(self.running)
+            for definition in (self.catalog.event(key),)
+            if definition is not None
+        )
+
+    def published_props(self) -> tuple[PropRuntimeState, ...]:
+        return tuple(self.props[key] for key in sorted(self.props))
+
+    def active_trigger_volumes(self) -> tuple[TriggerVolumeDefinition, ...]:
+        return tuple(
+            volume for volume in self.content.trigger_volumes
+            if volume.event_set_row < 0
+            or volume.event_set_row in self.enabled_event_sets
+        )
+
+    def _transition(
+        self, definition: MapLocalEventDefinition, active: bool,
+    ) -> EventTransition:
+        flags = self.active_flags()
+        enabled = []
+        disabled = []
+        for event_set in self.content.event_sets_for(definition.key):
+            satisfied = event_set.satisfied(flags)
+            currently = event_set.row in self.enabled_event_sets
+            if satisfied and not currently:
+                self.enabled_event_sets.add(event_set.row)
+                enabled.append(event_set.row)
+            elif currently and not satisfied:
+                self.enabled_event_sets.discard(event_set.row)
+                disabled.append(event_set.row)
+        return EventTransition(
+            event=definition,
+            active=active,
+            enabled_sets=tuple(enabled),
+            disabled_sets=tuple(disabled),
+            # Retail announces every map-local event it starts, including
+            # ones no EventSet on the map references (BOSS_death_dtu).
+            announce=True,
+        )
+
+    def begin_event(
+        self, definition: MapLocalEventDefinition, *, now: float | None = None,
+    ) -> EventTransition | None:
+        if definition.key in self.running:
+            return None
+        self.pending.pop(definition.key, None)
+        self.pending_start_deadlines.pop(definition.key, None)
+        self.pending_start_tokens.pop(definition.key, None)
+        self.wave_countdown_digits.pop(definition.key, None)
+        self.running[definition.key] = time.perf_counter() if now is None else now
+        self.generation += 1
+        return self._transition(definition, True)
+
+    def end_event(
+        self, definition: MapLocalEventDefinition,
+    ) -> EventTransition | None:
+        self.pending.pop(definition.key, None)
+        self.pending_start_deadlines.pop(definition.key, None)
+        self.pending_start_tokens.pop(definition.key, None)
+        self.wave_countdown_digits.pop(definition.key, None)
+        if self.running.pop(definition.key, None) is None:
+            return None
+        self.generation += 1
+        return self._transition(definition, False)
+
+    def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
+        """Gated monster rows for these sets, minus tiers this instance lacks."""
+
+        return tuple(
+            row for row in self.content.spawn_rows_for_sets(rows)
+            if not bloodshed_only_template(row.template_id)
+            or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
+        )
+
+    def select_props(
+        self, definitions: Iterable[MapPropDefinition],
+    ) -> tuple[MapPropDefinition, ...]:
+        """Reduce overlapping spawn-point props to the one this instance shows.
+
+        Scene objects pass through untouched.  Spawn-point props within
+        ``CHEST_LOCATION_RADIUS`` of each other in the same EventSet form one
+        location; ``normal_*`` templates are kept only on tier 0 and
+        ``scaling_*`` ones only above it, then one rarity is rolled from
+        ``_Template_MapDifficulty`` (epic, rare, magic, otherwise free), with a
+        plain chest preferred over its treasure-goblin twin.  The roll is
+        stable per instance and location so every joiner sees the same chest.
+        """
+
+        selected = []
+        locations = []
+        for definition in definitions:
+            if definition.kind != "spawn":
+                selected.append(definition)
+                continue
+            for row, anchor, members in locations:
+                if row == definition.event_set_row and all(
+                    abs(a - b) <= CHEST_LOCATION_RADIUS
+                    for a, b in zip(anchor, definition.position)
+                ):
+                    members.append(definition)
+                    break
+            else:
+                locations.append(
+                    (definition.event_set_row, definition.position, [definition])
+                )
+        tier = max(0, int(self.scaling_difficulty))
+        wanted_prefix = "normal_" if tier == 0 else "scaling_"
+        other_prefix = "scaling_" if tier == 0 else "normal_"
+        _uncommon, magic, rare, epic = self.content.chest_tier_chances.get(
+            tier, (0, 0, 0, 0)
+        )
+        for row, anchor, members in locations:
+            if len(members) == 1:
+                selected.append(members[0])
+                continue
+            candidates = [
+                m for m in members
+                if not m.template_id.casefold().startswith(other_prefix)
+            ] or members
+            preferred = [
+                m for m in candidates
+                if m.template_id.casefold().startswith(wanted_prefix)
+            ]
+            if preferred:
+                candidates = preferred
+            roll = random.Random(
+                f"{self.instance_key}:{row}:{anchor[0]:.1f}:{anchor[2]:.1f}"
+            ).uniform(0.0, 100.0)
+            if roll < epic:
+                marker = "_epic_"
+            elif roll < epic + rare:
+                marker = "_rare_"
+            elif roll < epic + rare + magic:
+                marker = "_magic_"
+            else:
+                marker = ""
+            def in_tier(definition: MapPropDefinition) -> bool:
+                key = definition.template_id.casefold()
+                if marker:
+                    return marker in key
+                return not any(mk in key for mk in _CHEST_TIER_MARKERS)
+
+            tiered = [m for m in candidates if in_tier(m)] or candidates
+            plain = [m for m in tiered if "goblin" not in m.template_id.casefold()]
+            selected.append(min(plain or tiered, key=lambda m: m.row_id))
+        return tuple(selected)
+
+    def publish_props(
+        self, definitions: Iterable[MapPropDefinition],
+    ) -> tuple[PropRuntimeState, ...]:
+        published = []
+        for definition in definitions:
+            if definition.prop_id in self.props:
+                continue
+            state = PropRuntimeState(definition)
+            self.props[definition.prop_id] = state
+            published.append(state)
+        return tuple(published)
+
+    def unpublish_props(self, prop_ids: Iterable[int]) -> tuple[int, ...]:
+        removed = []
+        for prop_id in prop_ids:
+            if self.props.pop(int(prop_id), None) is not None:
+                removed.append(int(prop_id))
+        return tuple(removed)
+
+    def interact(self, prop_id: int) -> tuple[PropRuntimeState, bool] | None:
+        """Record one interaction; the flag says whether the state flipped."""
+
+        state = self.props.get(int(prop_id))
+        if state is None:
+            return None
+        if state.state != PROP_STATE_ACTIVE:
+            return state, False
+        if state.definition.one_shot and not state.definition.workbench:
+            state.state = PROP_STATE_USED
+            return state, True
+        return state, False
+
+
+__all__ = [
+    "CLIENT_REPORTED_SIGNAL_TYPES",
+    "WIRE_PROP_OPERATION",
+    "EventSetDefinition",
+    "EventTransition",
+    "GatedSpawnRow",
+    "MapEventContent",
+    "MapEventRuntime",
+    "MapLocalEventDefinition",
+    "MapPropDefinition",
+    "MapSignalCatalog",
+    "PropRuntimeState",
+    "SERVER_SIGNAL_TYPES",
+    "BLOODSHED_DIFFICULTY",
+    "CHEST_LOCATION_RADIUS",
+    "PROP_INDEX_LIMIT",
+    "bloodshed_only_template",
+    "prop_index",
+    "spawn_prop_id",
+    "SignalContext",
+    "SignalRule",
+    "TriggerVolumeDefinition",
+    "load_map_event_content",
+    "load_map_signal_catalog",
+    "map_key",
+]

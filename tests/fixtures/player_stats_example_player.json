@@ -1,0 +1,2184 @@
+{
+  "character_id": 200000001,
+  "talent_categories": [
+    {
+      "preselection": 2,
+      "selected_skills": [
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "mage_talent_frozen_master"
+        },
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "mage_talent_bloodmage"
+        },
+        {
+          "field_00": 10,
+          "field_04": 0,
+          "resource_id": "mage_iceball_talent"
+        },
+        {
+          "field_00": 6,
+          "field_04": 0,
+          "resource_id": "mage_arcanevortex_talent"
+        },
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "mage_frostnova_talent"
+        },
+        {
+          "field_00": 10,
+          "field_04": 0,
+          "resource_id": "mage_frostwind_talent"
+        },
+        {
+          "field_00": 10,
+          "field_04": 0,
+          "resource_id": "mage_talent_skill_cat_01_dmg"
+        },
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "mage_firemanifestation_talent"
+        }
+      ],
+      "selected_talents": []
+    },
+    {
+      "preselection": 0,
+      "selected_skills": [
+        {
+          "field_00": 15,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_faster_hub_movspeed"
+        },
+        {
+          "field_00": 60,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_2hand_atk_speed"
+        },
+        {
+          "field_00": 60,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_2hand_w_damage"
+        },
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_mage_hitCritical_Trigger"
+        },
+        {
+          "field_00": 80,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_critical"
+        },
+        {
+          "field_00": 80,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_damage"
+        },
+        {
+          "field_00": 80,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_resistance"
+        },
+        {
+          "field_00": 71,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_armor"
+        },
+        {
+          "field_00": 60,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_hp"
+        },
+        {
+          "field_00": 60,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_mage_resource"
+        },
+        {
+          "field_00": 15,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_faster_mount_cast"
+        },
+        {
+          "field_00": 15,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_faster_home_teleport"
+        },
+        {
+          "field_00": 30,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_2hand_kill_trigger"
+        },
+        {
+          "field_00": 40,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_hpPerKill"
+        },
+        {
+          "field_00": 49,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_block"
+        },
+        {
+          "field_00": 30,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_hpPerSecond"
+        },
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_dungeon_workbench"
+        },
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_dungeon_shop"
+        },
+        {
+          "field_00": 150,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_all_gold_find"
+        }
+      ],
+      "selected_talents": [
+        {
+          "field_00": 45,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_ability"
+        },
+        {
+          "field_00": 150,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_twoHand"
+        },
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_combat"
+        },
+        {
+          "field_00": 200,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_attack"
+        },
+        {
+          "field_00": 200,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_defense"
+        },
+        {
+          "field_00": 150,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_base"
+        },
+        {
+          "field_00": 152,
+          "field_04": 0,
+          "resource_id": "trait_wisdom_economy"
+        }
+      ]
+    },
+    {
+      "preselection": 0,
+      "selected_skills": [
+        {
+          "field_00": 50,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_mage_critical_damage_increased"
+        },
+        {
+          "field_00": 25,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_mage_ice_resistance"
+        },
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_all_progression_xp"
+        },
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_all_progression_wisdom"
+        },
+        {
+          "field_00": 5,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_all_essentials_rc"
+        },
+        {
+          "field_00": 2,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_all_essentials_realm_fragments"
+        },
+        {
+          "field_00": 3,
+          "field_04": 0,
+          "resource_id": "trait_groupaura_all_essentials_vc"
+        }
+      ],
+      "selected_talents": [
+        {
+          "field_00": 75,
+          "field_04": 0,
+          "resource_id": "trait_group_aura"
+        },
+        {
+          "field_00": 10,
+          "field_04": 0,
+          "resource_id": "trait_group_progression"
+        },
+        {
+          "field_00": 10,
+          "field_04": 0,
+          "resource_id": "trait_group_essentials"
+        }
+      ]
+    },
+    {
+      "preselection": 0,
+      "selected_skills": [
+        {
+          "field_00": 1,
+          "field_04": 0,
+          "resource_id": "mage_fame_trait_02_hpreg_onkill"
+        },
+        {
+          "field_00": 25,
+          "field_04": 0,
+          "resource_id": "fame_focus_talent_03_playerdmgresistence"
+        },
+        {
+          "field_00": 20,
+          "field_04": 0,
+          "resource_id": "fame_focus_talent_02_playerdmgbonus"
+        }
+      ],
+      "selected_talents": []
+    }
+  ],
+  "active_status_effects": [
+    {
+      "effect_id": 6075,
+      "field_04": 131180,
+      "field_08": 0,
+      "field_0c": 0,
+      "field_10": 25,
+      "field_14": 25,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": []
+    },
+    {
+      "effect_id": 504,
+      "field_04": 133879,
+      "field_08": 1362,
+      "field_0c": 0,
+      "field_10": 900000,
+      "field_14": 0,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": [
+        0.25,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "effect_id": 906,
+      "field_04": 133949,
+      "field_08": 1964,
+      "field_0c": 0,
+      "field_10": 90000,
+      "field_14": 0,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "effect_id": 6433,
+      "field_04": 134020,
+      "field_08": 0,
+      "field_0c": 0,
+      "field_10": 0,
+      "field_14": 25,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": [
+        1.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "effect_id": 6434,
+      "field_04": 134021,
+      "field_08": 0,
+      "field_0c": 0,
+      "field_10": 0,
+      "field_14": 25,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "effect_id": 6432,
+      "field_04": 134302,
+      "field_08": 0,
+      "field_0c": 0,
+      "field_10": 0,
+      "field_14": 25,
+      "field_18": 0,
+      "field_1c": 100,
+      "field_20": 1,
+      "field_25": false,
+      "field_26": false,
+      "field_38": false,
+      "field_39": true,
+      "field_3c": 255,
+      "has_details": true,
+      "shape_values": [],
+      "values": [
+        5.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  ],
+  "stickerbook_entries": [
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "costume_community_02"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "costume_mage_cloak_twitch"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "costume_polar_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "costume_rabbit_brown"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "e_sar_01_costume_antonia_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "e_sar_pet_kraken"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "emote_jubilation_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "emote_overwhelming_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "emote_twitch_cheerdance_01"
+    },
+    {
+      "field_14": 3,
+      "field_18": 0,
+      "resource_id": "epicmount_black_bear_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_chariot_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_coconut_mount_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_hound_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_jumong_horse_01"
+    },
+    {
+      "field_14": 3,
+      "field_18": 0,
+      "resource_id": "epicmount_meanie_carrier_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_ostrich_brown"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_ram_brown"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shadowcorpser_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shetland_pony_beige"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shetland_pony_black"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shetland_pony_brown"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shetland_pony_redish"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "epicmount_shetland_pony_white"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "golden_wings_costume_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_bat_meanie"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_bomb"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_chicken_white"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_dog_01"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_dragon_joygame"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_filbur"
+    },
+    {
+      "field_14": 3,
+      "field_18": 0,
+      "resource_id": "pet_frogman_epic"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_harpy_black_10_percent_armor"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_jindo_uncommon"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_meanie"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_meanie_squire_02_uncommon"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_pixie_uncommon"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_rabbit"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_raptor_02"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_raven"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_redhair_harpy_uncommon"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "pet_turtle_uncommon"
+    },
+    {
+      "field_14": 2,
+      "field_18": 0,
+      "resource_id": "vanity_groundmarker_24"
+    }
+  ],
+  "active_pet": "pet_frogman_epic",
+  "membership": {
+    "active": true,
+    "expires_at": "2031-07-25T23:59:59+00:00",
+    "type": 2
+  },
+  "class_name": "mage",
+  "level": 100,
+  "inventory": {
+    "items": [
+      {
+        "item_id": 15954778,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 7,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 8477,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 135,
+        "field_30": 11,
+        "field_34": 7464,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 7,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        "created_at": [
+          2026,
+          7,
+          24,
+          9,
+          6,
+          55
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954779,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 7,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 9047,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 140,
+        "field_30": 11,
+        "field_34": 7775,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 8,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "",
+          "",
+          "",
+          "",
+          "",
+          "",
+          ""
+        ],
+        "created_at": [
+          2026,
+          7,
+          24,
+          9,
+          6,
+          55
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954883,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 6,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 46022,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 26341,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_mythic_ring_death",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.8323497216171505,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_ring"
+          },
+          {
+            "value": 0.4571261689479441,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_ring"
+          },
+          {
+            "value": 0.4153945793473619,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_movement_ring"
+          },
+          {
+            "value": 0.6077814924439946,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_movement_ring"
+          }
+        ],
+        "socketed_templates": [
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          29,
+          14,
+          28,
+          30
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954885,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 46029,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 24517,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_unique_ring_bgh_intensified",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.6706639258453806,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_ring"
+          },
+          {
+            "value": 0.45709427650981405,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_ring"
+          },
+          {
+            "value": 0.3364294487900952,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_ring"
+          },
+          {
+            "value": 0.6821025499581136,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_ring"
+          }
+        ],
+        "socketed_templates": [
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          29,
+          14,
+          30,
+          48
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954886,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 6,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 46035,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 25863,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_mythic_helmet_dragan_sp",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.4358007309253601,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_helmet"
+          },
+          {
+            "value": 0.9585660925584444,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_helmet"
+          },
+          {
+            "value": 0.8116119789448347,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_helmet"
+          },
+          {
+            "value": 0.06171136539566291,
+            "kind": 6,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_helmet"
+          }
+        ],
+        "socketed_templates": [
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          29,
+          14,
+          31,
+          32
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954893,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 5,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 46081,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 26537,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_unique_belt_premium_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.5480331043461854,
+            "kind": 5,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_belt"
+          },
+          {
+            "value": 0.5614314772411247,
+            "kind": 5,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_belt"
+          },
+          {
+            "value": 0.5743104602303446,
+            "kind": 5,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_healthpoints_belt"
+          },
+          {
+            "value": 0.6467597789708487,
+            "kind": 5,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_resistance_all_belt"
+          }
+        ],
+        "socketed_templates": [
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_i",
+          "gem_ruby_i",
+          "gem_ruby_i",
+          "gem_ruby_i",
+          "gem_ruby_i",
+          "gem_ruby_i"
+        ],
+        "created_at": [
+          2026,
+          7,
+          29,
+          14,
+          42,
+          50
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954895,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 47129,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 33778,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "set_winters_guardian_amulet_mage",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.9166542240103547,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_amulet"
+          },
+          {
+            "value": 0.760498128663466,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_amulet"
+          },
+          {
+            "value": 0.614142124396381,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_movement_amulet"
+          },
+          {
+            "value": 0.6874661339544937,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_healthpoints_amulet"
+          }
+        ],
+        "socketed_templates": [
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_onyx_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_o",
+          "gem_ruby_o",
+          "gem_ruby_o",
+          "gem_ruby_q",
+          "gem_ruby_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          29,
+          15,
+          39,
+          19
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954903,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 61851,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 10846,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_mythic_shoulders_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.3018726326406659,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "shoulders_blockrating_relative_high"
+          },
+          {
+            "value": 0.18532863649688525,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "shoulders_armor_relative_high"
+          },
+          {
+            "value": 0.014566610394474044,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "shoulders_armor_relative_high"
+          },
+          {
+            "value": 0.8717896444639365,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "shoulders_armor_relative_high"
+          }
+        ],
+        "socketed_templates": [
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          19,
+          14,
+          29
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954913,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 65483,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 19179,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_unique_backitem_bgh_heredur_intensified",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.40930641951479296,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_backitem_offense"
+          },
+          {
+            "value": 0.2322904169551132,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_attack_backitem_offense"
+          },
+          {
+            "value": 0.4134817668104619,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_attack_backitem_offense"
+          },
+          {
+            "value": 0.6165694060661961,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_healthpoints_backitem_offense"
+          }
+        ],
+        "socketed_templates": [
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          20,
+          52,
+          51
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954914,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 65485,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 13259,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "set_cataclysmic_winter_torso_mage",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.12043747492092738,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_armor_torso"
+          },
+          {
+            "value": 0.04052402488785645,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_armor_torso"
+          },
+          {
+            "value": 0.47526102227654743,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_block_torso"
+          },
+          {
+            "value": 0.5065916089514895,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_resistance_andermagic_torso"
+          }
+        ],
+        "socketed_templates": [
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          20,
+          55,
+          24
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954915,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 65486,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 24965,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "set_mastery_of_winter_gloves_mage",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.5565251208955436,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_attack_gloves"
+          },
+          {
+            "value": 0.46885875511843955,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_attack_gloves"
+          },
+          {
+            "value": 0.6952257139158116,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_gloves"
+          },
+          {
+            "value": 0.4659998627731827,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_gloves"
+          }
+        ],
+        "socketed_templates": [
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q",
+          "gem_attackspeed_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          20,
+          55,
+          41
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954916,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 65487,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 1,
+        "field_34": 17163,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "set_winter_wanderer_boots_mage",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 0.2679956248498938,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_movement_boots"
+          },
+          {
+            "value": 0.006388639454696143,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_speed_movement_boots"
+          },
+          {
+            "value": 0.4007463582868297,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_critical_boots"
+          },
+          {
+            "value": 0.8155981376516828,
+            "kind": 7,
+            "field_08": 0,
+            "field_0c": 100,
+            "template_id": "item_damage_boots"
+          }
+        ],
+        "socketed_templates": [
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q",
+          "gem_faster_run_q"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          20,
+          55,
+          59
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954929,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1668,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_jewel_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "jewel_buff_health_reg_epic",
+          "jewel_buff_flames_epic",
+          "jewel_buff_HealthGlobeDamage_epic",
+          "jewel_boss_gem_drop_epic",
+          "jewel_bgh_mage",
+          "jewel_buff_pirate_epic",
+          "jewel_buff_revenge_epic",
+          "jewel_buff_skills_movement_mage_epic",
+          "jewel_buff_snow_epic",
+          "jewel_buff_stunned_epic"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          12
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954930,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1669,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_jewel_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "jewel_buff_xmas_event_mage",
+          "jewel_dragon_03_sp_mage",
+          "jewel_buff_dtu_weaponmod_epic",
+          "jewel_buff_halloween_ghostEffect_epic",
+          "jewel_buff_blocked_energy_epic",
+          "jewel_buff_GroupResourceReg_maxHealthpoints_onHit_epic",
+          "jewel_buff_GroupHpReg_maxResource_onHit_epic",
+          "jewel_bgh_key_drop_epic",
+          "jewel_aura_damage_poison_epic",
+          "jewel_resource_cost_epic"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          12
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954931,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1672,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_jewel_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "jewel_stat_1h_damage_epic",
+          "jewel_stat_armor_epic",
+          "jewel_stat_health_epic",
+          "jewel_summer_event_epic",
+          "jewel_pve_event_epic",
+          "jewel_skill_cooldown_epic",
+          "jewel_skill_cooldown_epic",
+          "jewel_skill_cooldown_epic",
+          "jewel_skill_cooldown_epic",
+          "jewel_skill_cooldown_epic"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          12
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954932,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1673,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "unique_gem_attackspeed_04",
+          "unique_gem_attackspeed_04",
+          "unique_gem_attackspeed_04",
+          "unique_gem_attackspeed_04",
+          "unique_gem_attackspeed_04",
+          "unique_gem_ce2023_offensive",
+          "unique_gem_critical_04",
+          "unique_gem_critical_04",
+          "unique_gem_critical_04",
+          "unique_gem_critical_04"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954933,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1674,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "unique_gem_damage_04",
+          "unique_gem_damage_04",
+          "unique_gem_damage_04",
+          "unique_gem_damage_04",
+          "unique_gem_damage_04",
+          "unique_gem_hitpoints_04",
+          "unique_gem_hitpoints_04",
+          "unique_gem_hitpoints_04",
+          "unique_gem_hitpoints_04",
+          "unique_gem_hitpoints_04"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954934,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1675,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "unique_gem_resistance_04",
+          "unique_gem_resistance_04",
+          "unique_gem_resistance_04",
+          "unique_gem_resistance_04",
+          "unique_gem_resistance_04",
+          "unique_gem_resistance_ice_critical_hitpoints_04",
+          "unique_gem_resistance_ice_critical_hitpoints_04",
+          "unique_gem_resistance_ice_critical_hitpoints_04",
+          "unique_gem_resistance_ice_critical_hitpoints_04",
+          "unique_gem_resistance_ice_critical_hitpoints_04"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954935,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1676,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "unique_gem_run_damage_berry_hal_04",
+          "unique_gem_run_damage_berry_hal_04",
+          "unique_gem_run_damage_berry_hal_04",
+          "unique_gem_run_damage_berry_hal_04",
+          "unique_gem_run_damage_berry_hal_04",
+          "unique_gem_healthregen_04",
+          "unique_gem_healthregen_04",
+          "unique_gem_healthregen_04",
+          "unique_gem_faster_run_04",
+          "unique_gem_faster_run_04"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15954936,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 0,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1677,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 100,
+        "field_30": 11,
+        "field_34": 5287,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "all_base_trinket_rune_01",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [],
+        "socketed_templates": [
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04"
+        ],
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15955020,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 7,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 8979,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 145,
+        "field_30": 1,
+        "field_34": 69160,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_unique_2h_staff_anniversary_2025",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 1.0,
+            "kind": 7,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_damage_2h_staff_damage"
+          },
+          {
+            "value": 1.0,
+            "kind": 7,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_damage_2h_staff_damage"
+          },
+          {
+            "value": 1.0,
+            "kind": 7,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_damage_2h_staff_damage"
+          },
+          {
+            "value": 1.0,
+            "kind": 7,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_critical_2h_staff_damage"
+          }
+        ],
+        "socketed_templates": [
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q",
+          "gem_ruby_q"
+        ],
+        "created_at": [
+          2026,
+          9,
+          27,
+          1,
+          11,
+          30
+        ],
+        "quest_id": ""
+      },
+      {
+        "item_id": 15955022,
+        "field_04": 0,
+        "amount": 1,
+        "field_08": 5,
+        "socket_count": 10,
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 9238,
+        "field_20": 0,
+        "field_1c": 0,
+        "field_28": "none",
+        "item_level": 145,
+        "field_30": 1,
+        "field_34": 69160,
+        "field_3c": false,
+        "field_3d": false,
+        "template_id": "mage_unique_weaponmodifier_nye",
+        "field_88": "",
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_80": "",
+        "field_38": 0,
+        "field_f8": "",
+        "field_3e": true,
+        "enchantments": [
+          {
+            "value": 1.0,
+            "kind": 5,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_damage_weaponmod"
+          },
+          {
+            "value": 1.0,
+            "kind": 5,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_damage_weaponmod"
+          },
+          {
+            "value": 1.0,
+            "kind": 5,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_speed_attack_weaponmod"
+          },
+          {
+            "value": 1.0,
+            "kind": 5,
+            "field_08": 22,
+            "field_0c": 145,
+            "template_id": "item_speed_attack_weaponmod"
+          }
+        ],
+        "socketed_templates": [
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q",
+          "gem_critical_damage_fasterRun_q"
+        ],
+        "created_at": [
+          2026,
+          9,
+          27,
+          1,
+          15,
+          45
+        ],
+        "quest_id": ""
+      }
+    ],
+    "equipment_slots": {
+      "15954778": [
+        14
+      ],
+      "15954779": [
+        13
+      ],
+      "15954883": [
+        9
+      ],
+      "15954885": [
+        8
+      ],
+      "15954886": [
+        0
+      ],
+      "15954893": [
+        11
+      ],
+      "15954895": [
+        10
+      ],
+      "15954903": [
+        1
+      ],
+      "15954913": [
+        7
+      ],
+      "15954914": [
+        2
+      ],
+      "15954915": [
+        3
+      ],
+      "15954916": [
+        4
+      ],
+      "15954929": [
+        21
+      ],
+      "15954930": [
+        20
+      ],
+      "15954931": [
+        22
+      ],
+      "15954932": [
+        19
+      ],
+      "15954933": [
+        18
+      ],
+      "15954934": [
+        17
+      ],
+      "15954935": [
+        16
+      ],
+      "15954936": [
+        15
+      ],
+      "15955020": [
+        5,
+        6
+      ],
+      "15955022": [
+        12
+      ]
+    }
+  },
+  "screenshot": {
+    "damage": 694684,
+    "attack_speed": 19.509,
+    "critical": 321054,
+    "health": 1042039,
+    "regeneration": 6981.98,
+    "armor": 71190,
+    "fire": 62533,
+    "ice": 119482,
+    "lightning": 62533,
+    "darkmagic": 78767,
+    "poison": 62533,
+    "block": 56097,
+    "coin_relative": 1.06
+  }
+}

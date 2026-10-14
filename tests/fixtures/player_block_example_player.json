@@ -1,0 +1,253 @@
+{
+  "description": "Block-relevant equipment, talent ranks and pet from Example Player 2, 2026-09-09. No account identifiers or credentials.",
+  "level": 100,
+  "class_name": "mage",
+  "displayed_block_value": 56097,
+  "displayed_block_percent": 14.14,
+  "inventory": {
+    "items": [
+      {
+        "amount": 1,
+        "created_at": [
+          2026,
+          7,
+          30,
+          19,
+          14,
+          29
+        ],
+        "enchantments": [
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "shoulders_blockrating_relative_high",
+            "value": 0.3018726326406659
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "shoulders_armor_relative_high",
+            "value": 0.18532863649688525
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "shoulders_armor_relative_high",
+            "value": 0.014566610394474044
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "shoulders_armor_relative_high",
+            "value": 0.8717896444639365
+          }
+        ],
+        "field_04": 0,
+        "field_08": 7,
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 61851,
+        "field_1c": 0,
+        "field_20": 0,
+        "field_28": "none",
+        "field_30": 1,
+        "field_34": 10846,
+        "field_38": 0,
+        "field_3c": false,
+        "field_3d": false,
+        "field_3e": true,
+        "field_80": "",
+        "field_88": "",
+        "field_f8": "",
+        "item_id": 15954125,
+        "item_level": 100,
+        "quest_id": "",
+        "socket_count": 10,
+        "socketed_templates": [
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q",
+          "gem_amethyst_q"
+        ],
+        "template_id": "mage_mythic_shoulders_01"
+      },
+      {
+        "amount": 1,
+        "created_at": [
+          2026,
+          7,
+          30,
+          20,
+          55,
+          24
+        ],
+        "enchantments": [
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "item_armor_torso",
+            "value": 0.12043747492092738
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "item_armor_torso",
+            "value": 0.04052402488785645
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "item_block_torso",
+            "value": 0.47526102227654743
+          },
+          {
+            "field_08": 0,
+            "field_0c": 100,
+            "kind": 7,
+            "template_id": "item_resistance_andermagic_torso",
+            "value": 0.5065916089514895
+          }
+        ],
+        "field_04": 0,
+        "field_08": 7,
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 65485,
+        "field_1c": 0,
+        "field_20": 0,
+        "field_28": "none",
+        "field_30": 1,
+        "field_34": 13259,
+        "field_38": 0,
+        "field_3c": false,
+        "field_3d": false,
+        "field_3e": true,
+        "field_80": "",
+        "field_88": "",
+        "field_f8": "",
+        "item_id": 15954136,
+        "item_level": 100,
+        "quest_id": "",
+        "socket_count": 10,
+        "socketed_templates": [
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q",
+          "gem_cyanit_q"
+        ],
+        "template_id": "set_cataclysmic_winter_torso_mage"
+      },
+      {
+        "amount": 1,
+        "created_at": [
+          2026,
+          7,
+          30,
+          21,
+          45,
+          56
+        ],
+        "enchantments": [],
+        "field_04": 0,
+        "field_08": 0,
+        "field_100": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "field_11": 0,
+        "field_12": 0,
+        "field_18": 1677,
+        "field_1c": 0,
+        "field_20": 0,
+        "field_28": "none",
+        "field_30": 11,
+        "field_34": 5287,
+        "field_38": 0,
+        "field_3c": false,
+        "field_3d": false,
+        "field_3e": true,
+        "field_80": "",
+        "field_88": "",
+        "field_f8": "",
+        "item_id": 15954158,
+        "item_level": 100,
+        "quest_id": "",
+        "socket_count": 10,
+        "socketed_templates": [
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_damage_block_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04",
+          "unique_gem_resistance_ice_fire_light_04"
+        ],
+        "template_id": "all_base_trinket_rune_01"
+      }
+    ],
+    "equipment_slots": {
+      "15954136": [
+        2
+      ],
+      "15954125": [
+        1
+      ],
+      "15954158": [
+        15
+      ]
+    }
+  },
+  "talents": [
+    {
+      "resource_id": "trait_wisdom_all_block",
+      "rank": 49
+    },
+    {
+      "resource_id": "mage_fame_trait_02_hpreg_onkill",
+      "rank": 1
+    }
+  ],
+  "pet": {
+    "resource_id": "pet_jabbax",
+    "values": [
+      0.25,
+      0,
+      0,
+      0,
+      0
+    ]
+  }
+}

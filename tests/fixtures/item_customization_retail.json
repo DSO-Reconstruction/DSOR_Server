@@ -1,0 +1,233 @@
+{
+  "source": "capture_20260909_000000_sample_16.log",
+  "exchanges": [
+    {
+      "timestamp": "2026-09-09T00:00:00",
+      "request": "8b42010300000000000000050000000c000000030000000600000000000000000000000b00666b5f4c696d655f3030330c00666b5f426c61636b5f3030380600000000000000000000000b00666b5f4c696d655f3030330c00666b5f426c61636b5f3030380600000000000000000000000b00666b5f4c696d655f3030330c00666b5f426c61636b5f303038",
+      "updates": [
+        {
+          "payload": "8530009c620300010000000a000000000000009e370000000000009100000014afe4a64900000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc48c0185b1b17dd5b9a5c5d5957da195b1b595d17d95cdcd95b98d957d89b1858dad7dcd95d3d2040201fe0",
+          "bit_length": 1643,
+          "item_id": 221852,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 14238,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 2576531282,
+          "field_1c": 36,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "all_unique_helmet_essence_black_set",
+          "enabled": true,
+          "actor_id": 66281
+        },
+        {
+          "payload": "85300086620300010000000a0000000000000079250100000000009100000014afe4a64900000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc47c01b5859d957dd5b9a5c5d5957cc9a17dcdd18599997ddd85d195c99dc985d997d2040201fe0",
+          "bit_length": 1611,
+          "item_id": 221830,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 75129,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 2576531282,
+          "field_1c": 36,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "mage_unique_2h_staff_watergrave",
+          "enabled": true,
+          "actor_id": 66281
+        },
+        {
+          "payload": "8530003d620300010000000a00000000000000f0520000000000009100000014afe4a64900000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc4680185b1b17dd5b9a5c5d5957d89858dada5d195b57db59591d5cd87d2040201fe0",
+          "bit_length": 1571,
+          "item_id": 221757,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 21232,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 2576531282,
+          "field_1c": 36,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "all_unique_backitem_medusa",
+          "enabled": true,
+          "actor_id": 66281
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-09-09T00:00:00",
+      "request": "8b42010300000000000000050000000c000000030000000600000000000000000000000c00666b5f426c61636b5f3030380b00666b5f4c696d655f3030330600000000000000000000000c00666b5f426c61636b5f3030380b00666b5f4c696d655f3030330600000000000000000000000c00666b5f426c61636b5f3030380b00666b5f4c696d655f303033",
+      "updates": [
+        {
+          "payload": "8530009c620300010000000a000000000000009e3700000000000091000000014141745ac0000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc48c0185b1b17dd5b9a5c5d5957da195b1b595d17d95cdcd95b98d957d89b1858dad7dcd95d3d2040201fe0",
+          "bit_length": 1643,
+          "item_id": 221852,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 14238,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 3506767109,
+          "field_1c": 107,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "all_unique_helmet_essence_black_set",
+          "enabled": true,
+          "actor_id": 66281
+        },
+        {
+          "payload": "85300086620300010000000a00000000000000792501000000000091000000014141745ac0000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc47c01b5859d957dd5b9a5c5d5957cc9a17dcdd18599997ddd85d195c99dc985d997d2040201fe0",
+          "bit_length": 1611,
+          "item_id": 221830,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 75129,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 3506767109,
+          "field_1c": 107,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "mage_unique_2h_staff_watergrave",
+          "enabled": true,
+          "actor_id": 66281
+        },
+        {
+          "payload": "8530003d620300010000000a00000000000000f05200000000000091000000014141745ac0000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc4680185b1b17dd5b9a5c5d5957d89858dada5d195b57db59591d5cd87d2040201fe0",
+          "bit_length": 1571,
+          "item_id": 221757,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 21232,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 3506767109,
+          "field_1c": 107,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "all_unique_backitem_medusa",
+          "enabled": true,
+          "actor_id": 66281
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-09-09T00:00:00",
+      "request": "8b42010100000005000000010000000600000026006d6167655f756e697175655f32685f73746166665f636f7272757074696f6e5f7365745f46581f006d6167655f756e697175655f32685f73746166665f7761746572677261766526006d6167655f756e697175655f32685f73746166665f636f7272757074696f6e5f7365745f4658000000000000",
+      "updates": [
+        {
+          "payload": "85300086620300010000000a00000000000000792501000000000091000000014141745ac0000002800000028019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc428019d95b57dc9d589e57dc49801b5859d957dd5b9a5c5d5957cc9a17dcdd18599997d8dbdc9c9d5c1d1a5bdb97dcd95d17d1963d2040201fe0",
+          "bit_length": 1667,
+          "item_id": 221830,
+          "amount": 1,
+          "socket_count": 10,
+          "field_34": 75129,
+          "item_level": 145,
+          "flags": [
+            false,
+            false
+          ],
+          "field_20": 3506767109,
+          "field_1c": 107,
+          "sockets": [
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q",
+            "gem_ruby_q"
+          ],
+          "skin": "mage_unique_2h_staff_corruption_set_FX",
+          "enabled": true,
+          "actor_id": 66281
+        }
+      ]
+    }
+  ]
+}
