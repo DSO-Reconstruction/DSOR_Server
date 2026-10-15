@@ -9,6 +9,7 @@ from dso_server.protocol.consumable_protocol import load_instant_consumable_defi
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.services import movement_validation
 
 
 @contextmanager
@@ -287,10 +288,40 @@ class WorldService:
                         track=True, label="player-locked-movement-correction",
                     )
             return
+        correction = None
         with s.flow_lock:
-            s.gameplay_last_move = move
+            refusal = movement_validation.check_move(s, move)
+            if refusal is None:
+                s.gameplay_last_move = move
+            else:
+                # The server keeps the last valid position; the client goes back
+                # there (not on every refused record: it keeps sending from where
+                # it predicted until the correction lands).
+                now = time.perf_counter()
+                frame = s.gameplay_coordinate_frame
+                if frame is None and s.gameplay_combat_state is not None:
+                    frame = s.gameplay_combat_state.encounter.coordinate_frame
+                kept = s.gameplay_last_move
+                if kept is None and frame is not None and s.gameplay_spawn_position is not None:
+                    kept = Move.from_values(frame.world_to_wire(s.gameplay_spawn_position), 0.0, 0.0, 0.0, move.start_tick, 0)
+                    s.gameplay_last_move = kept
+                if kept is not None and frame is not None and now - s.gameplay_move_correction_at >= movement_validation.CORRECTION_INTERVAL:
+                    s.gameplay_move_correction_at = now
+                    correction = (replace(kept, scalar_byte=0, duration_ticks=0, start_tick=move.start_tick), frame)
             if ((int(move.start_tick) - int(s.gameplay_chase_server_tick)) & 0xFFFFFFFF) < 0x80000000:
                 s.gameplay_chase_server_tick = move.start_tick
+        if refusal is not None:
+            CharacterService._accept_gameplay_state_command(s, 0x005F)
+            if correction is not None:
+                stopped, frame = correction
+                print(f"[{GAMEPLAY_SERVICE_NAME}] refused move: {refusal}; corrected to {stopped.relative_position}")
+                s.send_unreliable_sequenced(encode_move(stopped, actor_id=LOCAL_PLAYER_ACTOR_ID))
+                s.send_reliable_ordered(
+                    encode_force_transform_batch(ForceTransform(frame.wire_to_world(stopped.relative_position), stopped.yaw),
+                                                 actor_id=LOCAL_PLAYER_ACTOR_ID),
+                    track=True, label="player-invalid-movement-correction",
+                )
+            return
         CharacterService._accept_gameplay_state_command(s, 0x005F)
         update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
         s.send_unreliable_sequenced(update)

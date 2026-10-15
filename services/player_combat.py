@@ -5,6 +5,7 @@ from __future__ import annotations
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
+from dso_server.services import movement_validation
 
 
 class PlayerCombatService(PlayerCastTimingService):
@@ -134,6 +135,10 @@ class PlayerCombatService(PlayerCastTimingService):
                 payload, s.current_message_bit_length
             )
             skill = client_skill
+        if movement_validation.non_finite(client_skill):
+            # NaN passes every range and area comparison: it hit every monster.
+            print(f"[{GAMEPLAY_SERVICE_NAME}] dropped bullet skill 0x{command_id:04x} with a non-finite value")
+            return
         CharacterService._accept_gameplay_state_command(s, command_id)
         if CharacterService._player_victim_feature_locked(
             s, "skills", "regularskills"
@@ -581,6 +586,10 @@ class PlayerCombatService(PlayerCastTimingService):
             raise ValueError(
                 f"unsupported spatial skill command 0x{command_id:04x}"
             )
+        if movement_validation.non_finite(client_skill):
+            # NaN passes every range and area comparison: it hit every monster.
+            print(f"[{GAMEPLAY_SERVICE_NAME}] dropped spatial skill 0x{command_id:04x} with a non-finite value")
+            return
         CharacterService._accept_gameplay_state_command(s, command_id)
         if command_id == TARGET_SKILL_COMMAND and client_skill.target_actor_id == 0:
             # Target loss is a no-op before mount, resource, cooldown, or hit
@@ -720,6 +729,30 @@ class PlayerCombatService(PlayerCastTimingService):
                     player_stats=player_stats,
                 )
             )
+            geometry = combat._load_player_skill_geometry(client_skill.skill_index)
+            if (
+                target_position is not None
+                and geometry is not None
+                and geometry.skill_type.casefold() in movement_validation.MOVEMENT_SKILL_TYPES
+            ):
+                # Teleport / Jump / Charge: where the caster may land, within the
+                # skill's range on ground it can reach (its following moves are
+                # allowed along that path only).
+                with s.flow_lock:
+                    clamped = movement_validation.clamp_movement_destination(
+                        s, geometry, position, target_position,
+                    )
+                if movement_validation._flat_distance(clamped, target_position) > 0.05:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] {geometry.skill_type} destination "
+                        f"{tuple(round(v, 2) for v in target_position)} clamped to "
+                        f"{tuple(round(v, 2) for v in clamped)}"
+                    )
+                target_position = clamped
+                if hasattr(client_skill, "target_position"):
+                    client_skill = replace(client_skill, target_position=clamped)
+                    with s.flow_lock:
+                        s.gameplay_client_command_state[command_id] = client_skill
             if target_position is not None:
                 summon_position_world = tuple(
                     float(value) for value in target_position

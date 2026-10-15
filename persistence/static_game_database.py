@@ -405,8 +405,10 @@ class StaticGameDatabase:
         """Return SkillBookInfo ids for a player class in this client build.
 
         These are runtime SkillManager indexes for the local content export.
-        The database also verifies that the selected class exists and has a
-        contiguous skill dataset.
+        The database also verifies that the selected class exists and has
+        skills. Its rows need not be contiguous: the live 261 export has a
+        warrior set skill (chainlightning_SetLight2026_warrior, rowid 1869)
+        among the mage rows, and every index is its own row's.
         """
 
         class_id = int(class_id)
@@ -425,11 +427,6 @@ class StaticGameDatabase:
                 f"{class_name} skill dataset contains no rows"
             )
         rowids = tuple(int(row[0]) for row in rows)
-        expected = tuple(range(rowids[0], rowids[0] + len(rowids)))
-        if rowids != expected:
-            raise CharacterSelectionError(
-                f"{class_name} skill rows are not contiguous in this client export"
-            )
         return tuple(
             rowid + CLIENT_SKILL_MANAGER_ROW_OFFSET for rowid in rowids
         )
