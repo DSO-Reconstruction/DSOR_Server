@@ -1841,7 +1841,7 @@ class LocalCombatState:
         monster = self.monsters[actor_id]
         # Raises MonsterReturnHome and drops this actor's queued swings and
         # every player impact already in flight toward it.
-        self._set_returning_home(actor_id, True, server_tick)
+        self._set_returning_home(actor_id, True, server_tick, reason="hard leash: pulled past its reset radius, reset at spawn")
         self.monster_positions[actor_id] = monster.position
         self.monster_health[actor_id] = monster.maximum_health
         self.monster_yaws[actor_id] = 0.0
@@ -1866,11 +1866,17 @@ class LocalCombatState:
         active: bool,
         server_tick: int,
         *, now: float | None = None,
+        reason: str = "",
     ) -> bool:
         actor_id = int(actor_id)
         active = bool(active)
         if active == (actor_id in self.returning_home_actor_ids):
             return False
+        if active and reason:
+            dropped = sum(1 for p in self.pending_player_hits.values() if p.target_actor_id == actor_id) + sum(
+                1 for p in self.pending_runtime_player_hits.values() if p.target_actor_id == actor_id)
+            print(f"[{self.__class__.__name__}] monster {actor_id} gives up: {reason}"
+                  + (f"; {dropped} player hit(s) in flight cancelled" if dropped else ""))
         if active:
             self.returning_home_actor_ids.add(actor_id)
             self.returning_home_started_at[actor_id] = time.perf_counter() if now is None else now
@@ -3361,7 +3367,9 @@ class LocalCombatState:
                 # Authored CompanionStrategy paths place allies inside the
                 # arena's behavior-change aura before their boss-facing cast.
                 index = summon.patrol_index
-                if self._distance(summon.position, patrol[index]) <= 0.75 and index + 1 < len(patrol):
+                # The step below stops exactly at its 0.75 stop distance: compare
+                # with a margin, or reaching the point hinged on float rounding.
+                if self._distance(summon.position, patrol[index]) <= 0.75 + 0.05 and index + 1 < len(patrol):
                     index += 1
                     summon = replace(summon, patrol_index=index)
                     self.player_summons[actor_id] = summon
@@ -6164,7 +6172,8 @@ class LocalCombatState:
                 player_home_distance = self._distance(player_position, home)
                 if target is None and not returning_home:
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time)
+                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
+                                                 reason="no target left for it")
                         returning_home = True
                     else:
                         self.monster_routes.pop(actor_id, None)
@@ -6265,7 +6274,8 @@ class LocalCombatState:
                 not returning_home
                 and self._near_protected_waypoint(start)
             ):
-                self._set_returning_home(actor_id, True, server_tick, now=current_time)
+                self._set_returning_home(actor_id, True, server_tick, now=current_time,
+                                         reason="it entered a travel stone's safe zone")
                 returning_home = True
 
             # Travel stones are hard safe-zone obstacles, not merely points
@@ -6278,7 +6288,8 @@ class LocalCombatState:
             ):
                 self.monster_routes.pop(actor_id, None)
                 if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                    self._set_returning_home(actor_id, True, server_tick, now=current_time)
+                    self._set_returning_home(actor_id, True, server_tick, now=current_time,
+                                             reason="the player is in a travel stone's safe zone")
                     returning_home = True
                 else:
                     self.monster_moving[actor_id] = False
@@ -6329,7 +6340,12 @@ class LocalCombatState:
                     or player_home_distance > reset_radius
                 )
             ):
-                self._set_returning_home(actor_id, True, server_tick, now=current_time)
+                self._set_returning_home(
+                    actor_id, True, server_tick, now=current_time,
+                    reason=(f"outrun ({direct_distance:.1f} m > escape range {monster.escape_range:.1f})"
+                            if direct_distance > monster.escape_range else
+                            f"player {player_home_distance:.1f} m from its home > reset radius {reset_radius:.1f}"),
+                )
                 returning_home = True
 
             # Only an actor that is already home may idle here. Anything that
@@ -6557,7 +6573,8 @@ class LocalCombatState:
                     start, destination
                 ):
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time)
+                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
+                                                 reason="its path crosses a travel stone's safe zone")
                     destination = start
             maximum_step = monster.run_speed * movement_elapsed
             destination = self.ground_monster_position(
