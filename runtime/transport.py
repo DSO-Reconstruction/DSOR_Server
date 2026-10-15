@@ -663,6 +663,11 @@ class Session:
         self.gameplay_initialization_timer = None
         self.gameplay_client_command_counts = {}
         self.gameplay_last_move = None
+        # services/movement_validation.py: the running budget (metres), a movement
+        # skill's open path (origin, destination, expiry) and the last correction.
+        self.gameplay_move_budget = 0.0
+        self.gameplay_movement_allowance = None
+        self.gameplay_move_correction_at = 0.0
         self.gameplay_client_command_state = {}
         self.gameplay_monster_encounter = None
         self.gameplay_combat_state = None

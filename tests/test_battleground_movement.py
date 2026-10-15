@@ -34,12 +34,20 @@ class BattlegroundMovementTests(unittest.TestCase):
             self.addCleanup(patcher.stop)
 
     def request(self, session, tick):
+        """A step the player could really take: on walkable ground, in a
+        straight line from where it stands (services/movement_validation.py
+        refuses the rest)."""
+        from dso_server.services import movement_validation as mv
         previous = session.gameplay_last_move
-        return Move.from_values(
-            (previous.relative_position[0] + 5.0, previous.relative_position[1],
-             previous.relative_position[2] + 5.0),
-            3.0, 1.0, 1.0, tick, 25,
-        )
+        start = previous.relative_position
+        navigation = getattr(self.combat.encounter, "navigation", None)
+        for dx, dz in ((1.0, 1.0), (1.0, -1.0), (-1.0, 1.0), (-1.0, -1.0), (0.5, 0.0), (0.0, 0.5), (-0.5, 0.0), (0.0, -0.5)):
+            goal = (start[0] + dx, start[1], start[2] + dz)
+            if not isinstance(navigation, mv.PathEngineNavigationMesh) or mv.walkable_path(
+                navigation, self.frame.wire_to_world(start), self.frame.wire_to_world(goal),
+            ):
+                break
+        return Move.from_values(goal, 3.0, 1.0, 1.0, tick, 25)
 
     @staticmethod
     def payload(move):
