@@ -870,9 +870,16 @@ class CustomizationService:
             )
             return
 
-        definition = find_mount(request.value)
-        if definition is None and database_definition is not None:
-            definition = database_definition.mount
+        # The database's own definition first: its effect ids are its rows'.
+        # LOCAL_MOUNTS' black bear carries ids from an older database (cast
+        # 4100 / ride 4099); with this static.db4 those rows are other effects
+        # (cast_mount_black_bear_01 is row 4241), so the client drew a boss's
+        # aura instead of the bear.
+        definition = (
+            database_definition.mount
+            if database_definition is not None and database_definition.mount is not None
+            else find_mount(request.value)
+        )
         if definition is None:
             raise ValueError(
                 f"owned sticker-book item {request.value!r} has no "
