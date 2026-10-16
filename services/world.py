@@ -895,7 +895,9 @@ class WorldService:
                         int(points[3]),
                     )
                     response_packet, response_bits = (
-                        encode_discard_item_batch((int(item_id),))
+                        encode_wisdom_pickup_response(
+                            drop, actor_id=LOCAL_PLAYER_ACTOR_ID
+                        )
                     )
                 elif drop.item_category == 'Currency':
                     if currency is None:
