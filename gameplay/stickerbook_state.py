@@ -590,19 +590,18 @@ def _collector_effect_definitions_cached(
             ).fetchone()
             if status is None:
                 continue
-            duration = max(
-                1,
-                round(
-                    max(1.0, float(status["StatusEffectDuration"] or 1.0))
-                    * SERVER_TICKS_PER_SECOND
-                ),
-            )
             definitions.append(
                 CollectorEffectDefinition(
                     reward_id,
                     int(status["rowid"]) - 1,
                     1,
-                    duration,
+                    # Stickerbook rewards are derived from permanent
+                    # collection progress. The database's one-second
+                    # duration is only a template default. These entries use
+                    # field_0c=0, which the client reserves for permanent
+                    # effects, so they must also carry a zero duration rather
+                    # than an inconsistent one-second timer.
+                    0,
                 )
             )
         return tuple(definitions)
