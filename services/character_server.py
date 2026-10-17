@@ -46,6 +46,7 @@ from dso_server.services.presence_identity import PresenceIdentityService
 from dso_server.services.presence_visuals import PresenceVisualService
 from dso_server.services.social import SocialService
 from dso_server.services.commerce import CommerceService
+from dso_server.services.trade import TradeService
 from dso_server.services.talents import TalentService
 from dso_server.services.dispatch import DispatchService
 class CharacterServer(
@@ -91,6 +92,7 @@ class CharacterServer(
         PresenceService,
         SocialService,
         CommerceService,
+        TradeService,
         TalentService,
         DispatchService,
         RakNetServer):
