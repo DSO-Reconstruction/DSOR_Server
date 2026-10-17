@@ -1,40 +1,38 @@
 # DSO-SERVER
 
-Bu depo, Drakensang Online sunucu yazılımının geliştirilmesi için kullanılan bir fork'tur. Kaynak proje: [DSO-Reconstruction/DSOR_Server](https://github.com/DSO-Reconstruction/DSOR_Server). Bu fork'un GitHub adresi [xm1rth/DSO-SERVER](https://github.com/xm1rth/DSO-SERVER) olarak planlanmıştır.
+This repository is a fork used to develop the Drakensang Online server software. The upstream project is [DSO-Reconstruction/DSOR_Server](https://github.com/DSO-Reconstruction/DSOR_Server). This fork is hosted at [xm1rth/DSO-SERVER](https://github.com/xm1rth/DSO-SERVER).
 
-## Gerekli istemci dosyaları
+## Required client assets
 
-İstemciye ait oyun verileri bu depoya eklenmez. Sunucuyu başlatmadan önce uyumlu istemci sürümünüzden aşağıdaki dosya ve klasörleri kendiniz kopyalayın:
+Game client assets are not included in this repository. Before starting the server, copy the following files and folders from a compatible client version:
 
-| Kaynak | Bu depodaki hedef |
+| Source | Destination in this repository |
 | --- | --- |
 | `export_win32/db/static.db4` | `data/db/static.db4` |
-| `export_win32/maps/` içeriği | `data/maps/` |
-| `export_win32/navigation/` içeriği | `data/navigation/` |
+| Contents of `export_win32/maps/` | `data/maps/` |
+| Contents of `export_win32/navigation/` | `data/navigation/` |
 | `export_win32/tables/navshapes.bin` | `data/navigation/navshapes.bin` |
-| İstemcinin `language/` klasörü | `data/language/` |
-| İstemcinin `quests.xml` dosyası | `data/quests.xml` |
-| İstemcinin `DSOClient/` klasörünün tamamı | `DSOClient/` |
+| The client's `language/` folder | `data/language/` |
+| The client's `quests.xml` file | `data/quests.xml` |
+| The complete client `DSOClient/` folder | `DSOClient/` |
 
-`maps` ve `navigation` klasörlerinin içeriğini hedef klasöre doğrudan kopyalayın; iç içe ikinci bir `maps/` veya `navigation/` klasörü oluşturmayın. Navigation alt klasörlerinin yapısını koruyun. `navshapes.bin`, istemcinin `tables/` klasöründen gelir.
+Copy the contents of the `maps` and `navigation` folders directly into their destinations. Do not create an extra nested `maps/` or `navigation/` folder. Preserve the navigation subfolder structure. `navshapes.bin` comes from the client's `tables/` folder.
 
-Sunucu ve istemci aynı uyumlu içerik sürümünü kullanmalıdır. Özellikle `static.db4`, map ve navigation dosyalarının sürümleri eşleşmelidir. Yedekleri (`.bak`, `*backup*`) ve SQLite çalışma dosyalarını (`-wal`, `-shm`) kopyalamayın. Eksik istemci dosyaları nedeniyle sunucu başlamaz; bu dosyalar GitHub deposunda bulunmaz ve `.gitignore` ile hariç tutulur.
+The server and client must use matching content revisions. In particular, `static.db4`, map files, and navigation files must come from compatible versions. Do not copy backups (`.bak`, `*backup*`) or SQLite runtime sidecars (`-wal`, `-shm`). These client assets are excluded from Git by `.gitignore` and must be supplied locally. The server will not start without the required assets.
 
-## Kurulum ve çalıştırma
+## Installation and startup
 
-64-bit Python 3.12 veya daha yenisini kurun. Depoyu indirdikten sonra:
+Install 64-bit Python 3.12 or newer. After cloning the repository:
 
-1. Yukarıdaki istemci dosyalarını yerleştirin.
-2. `.env.example` dosyasını `.env` adıyla kopyalayın.
-3. Yerel kullanım için `DSO_PUBLIC_HOST=127.0.0.1` değerini bırakın. Başka bilgisayarlardan bağlantı kabul edecekseniz `.env` içinde `DSO_HOST=0.0.0.0` ve istemcilerin erişebileceği `DSO_PUBLIC_HOST` adresini ayarlayın.
-4. Windows'ta `start.bat` dosyasını çalıştırın. Linux'ta `bash start.sh` komutunu kullanın.
+1. Copy the required client assets listed above.
+2. Copy `.env.example` to `.env`.
+3. For local use, keep `DSO_PUBLIC_HOST=127.0.0.1`. To accept connections from other computers, set `DSO_HOST=0.0.0.0` and set `DSO_PUBLIC_HOST` in `.env` to an address reachable by clients.
+4. On Windows, run `start.bat`. On Linux, run `bash start.sh`.
 
-Sunucu, hesap kayıt/giriş API'sini HTTP `8080` portunda ve yönetim panelini varsayılan olarak yalnızca yerel erişime açık HTTP `8081` portunda sunar. Oyun servisleri UDP `80`, `2190`, `2191` ve `2192` portlarını kullanır. `DSO_PUBLIC_HOST` adresi istemcilerin bu sunucuya ulaşabildiği adres olmalıdır.
+The server provides the account registration/login API over HTTP on port `8080`. The admin panel uses HTTP port `8081` and listens on loopback by default. Game services use UDP ports `80`, `2190`, `2191`, and `2192`. `DSO_PUBLIC_HOST` must be reachable by game clients.
 
-`data/events.json` başlangıçta boş bir etkinlik takvimi içerir. Etkinlikleri sunucunun yönetim panelinden tanımlayabilirsiniz.
+`data/events.json` starts with an empty event schedule. Events can be configured through the server's admin panel.
 
-## Fork ve kaynak
+## Fork and attribution
 
-Bu proje, [DSO Reconstruction](https://github.com/DSO-Reconstruction/DSOR_Server) çalışmasının fork'udur. Kaynak projenin amacı Drakensang Online ile ilgili bileşenleri tersine mühendislikle incelemektir. Bu depoda yapılan değişiklikler ve eklemeler bu fork kapsamında geliştirilir.
-
-Planlanan uzak depo: [`https://github.com/xm1rth/DSO-SERVER.git`](https://github.com/xm1rth/DSO-SERVER.git).
+This project is a fork of [DSO Reconstruction](https://github.com/DSO-Reconstruction/DSOR_Server), a project focused on reverse engineering components related to Drakensang Online. Changes and additions in this repository are developed as part of this fork.
