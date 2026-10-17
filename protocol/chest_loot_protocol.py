@@ -505,6 +505,33 @@ def _direct_entries(
                 _definition(static_database_path, class_template_id)
                 guaranteed.append(_MappedReward(class_template_id, class_amount))
             continue
+        if mode == "one_of_class":
+            normalized_class = str(class_name or "").casefold()
+            class_items = (entry.get("by_class") or {}).get(normalized_class)
+            if normalized_class not in {"warrior", "mage", "ranger", "dwarf"}:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} requires a valid player class"
+                )
+            if class_items is None:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} has no reward for "
+                    f"class {normalized_class!r}"
+                )
+            class_template_id, class_amount = _split_embedded_amount(
+                class_items.get("item") if isinstance(class_items, dict)
+                else class_items,
+                class_items.get("amount") if isinstance(class_items, dict)
+                else None,
+            )
+            if class_template_id == str(record.get("container") or ""):
+                raise ValueError(
+                    f"container {class_template_id!r} maps to itself"
+                )
+            _definition(static_database_path, class_template_id)
+            choices.append(_MappedReward(class_template_id, class_amount))
+            continue
         template_id, amount = _split_embedded_amount(
             entry.get("item"), entry.get("amount")
         )

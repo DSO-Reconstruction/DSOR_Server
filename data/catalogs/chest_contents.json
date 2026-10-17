@@ -156488,22 +156488,33 @@
       "category": "LootGenItem",
       "obsolete": false,
       "required_level": 1,
-      "resolved": false,
+      "resolved": true,
       "loot_list": "lootlist_dried_dragon_blood",
-      "yields": [],
+      "yields": [
+        {
+          "item": "money_rc",
+          "amount": 1000,
+          "mode": "guaranteed",
+          "item_name": "Andermant",
+          "item_category": "Currency",
+          "known_template": true
+        }
+      ],
       "transitive_yields": [],
       "blocked_by_loot_lists": [],
       "ui": {
         "display_name": "Dried Dragon Blood",
         "style": "prose",
-        "mode": "unknown",
+        "mode": "guaranteed",
         "prose": "The dried and coagulated dragon blood has lost its due magic power. Fortunately, scholars who study dragons are also collecting it. It can be directly exchanged for 1,000 Andermants.",
         "chance_percent": null,
         "rarity_hints": [
           "Magic"
         ],
         "entries": []
-      }
+      },
+      "resolved_via_ui": true,
+      "mapping_note": "The item tooltip says this can be directly exchanged for 1,000 Andermants; opening it grants 1,000 Andermant to the character wallet."
     },
     {
       "container": "e_anniversary_cake",
@@ -189611,12 +189622,359 @@
       },
       "resolved_via_ui": true,
       "mapping_note": "Contents and amounts were parsed from the Turkish localized client description. Reward item names uniquely match static.db4 templates."
+    },
+    {
+      "container": "dragon_blood_box",
+      "name": "Dragon Blood Box",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "lootlist_dragon_blood_box",
+      "yields": [
+        {
+          "item": "dragon_blood_essence",
+          "amount": 1,
+          "chance_percent": 40,
+          "mode": "chance",
+          "item_name": "Dragon Blood Essence",
+          "item_category": "ItemCurrency",
+          "known_template": true
+        },
+        {
+          "item": "dried_dragon_blood",
+          "amount": 1,
+          "chance_percent": 60,
+          "mode": "chance",
+          "item_name": "Dried Dragon Blood",
+          "item_category": "LootGenItem",
+          "known_template": true
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Dragon Blood Box",
+        "style": "prose",
+        "mode": "chance",
+        "prose": "Mühürlü Ejderha Kanı Kutusu, ataların ejderhalara karşı verdiği asırlık savaşların ihtişamını temsil eder. Açıldığında tam bir Ejderha Taşı için %5, Ejderha Kanı Özü için %30, Kurutulmuş Ejderha Kanı için %65 şans verir.",
+        "chance_percent": null,
+        "rarity_hints": null,
+        "entries": []
+      },
+      "resolved_via_ui": true,
+      "mapping_note": "Loot-list data is unavailable in static.db4. Per user request, the server mapping uses 40% Dragon Blood Essence and 60% Dried Dragon Blood; the client's 5% Dragon Stone reward is omitted because its item template is not present in the local database."
+    },
+    {
+      "container": "lootbox_level_rallye_jewels_random",
+      "name": "Jewel Chest",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_level_rallye_jewels_random",
+      "yields": [
+        {
+          "item": "jewel_boss_gem_drop_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Gem Fortune",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_buff_blocked_energy_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Pent-up Power",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Lasting Health",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_buff_revenge_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Revival Boon",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "by_class": {
+            "warrior": "jewel_buff_skills_movement_warrior_common",
+            "mage": "jewel_buff_skills_movement_mage_common",
+            "ranger": "jewel_buff_skills_movement_ranger_common",
+            "dwarf": "jewel_buff_skills_movement_dwarf_common"
+          },
+          "amount": 1,
+          "mode": "one_of_class",
+          "item_name": "Jewel of Swiftness",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_buff_stun_immunity_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Prolongation",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_buff_stunned_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Converse",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_stat_1h_damage_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Dextrous Vigor",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_stat_2h_damage_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Ambidextrous Vigor",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_stat_armor_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Fortitude",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_stat_health_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Vitality",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        },
+        {
+          "item": "jewel_stat_damage_common",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel of Vigor",
+          "item_category": "EquipmentJewel",
+          "known_template": true
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Mücevher Sandığı",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Aşağıdaki mücevherlerden birini almak için bu sandığı aç:\n • Cevher Talihi Mücevheri\n • Hapsedilmiş Güç Mücevheri\n • Kalıcı Şifa Mücevheri\n • Diriliş Lütfu Mücevheri\n • Sürat Mücevheri\n • Sürdürme Mücevheri\n • Evirtim Mücevheri\n • Hünerli Kuvvet Mücevheri\n • Çok Yönlü Kuvvet Mücevheri\n • Cesaret Mücevheri\n • Sağlık Mücevheri\n • Kuvvet Mücevheri",
+        "chance_percent": null,
+        "rarity_hints": null,
+        "entries": []
+      },
+      "resolved_via_ui": true,
+      "mapping_note": "The Turkish description lists twelve jewel types without odds or rarity. The mapping treats the twelve outcomes as equally likely and uses the common template variant; Jewel of Swiftness resolves to the player class-specific template."
+    },
+    {
+      "container": "soul_equipment_chest",
+      "name": "Soul Equipment Chest",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "lootlist_soul_equipment_chest",
+      "yields": [
+        {
+          "item": "mercenary_all_base_amulet_damage_magic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Necklace (Magic)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_amulet_damage_epic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Necklace (Epic)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_amulet_damage_rare",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Necklace (Rare)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_belt_healthpoints_magic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Belt (Magic)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_belt_healthpoints_epic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Belt (Epic)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_belt_healthpoints_rare",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Belt (Rare)",
+          "item_category": "MercenaryJewelry",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_backitem_healthpoints_magic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Cloak (Magic)",
+          "item_category": "MercenaryDefenseBackitem",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_backitem_healthpoints_epic",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Cloak (Epic)",
+          "item_category": "MercenaryDefenseBackitem",
+          "known_template": true
+        },
+        {
+          "item": "mercenary_all_base_backitem_healthpoints_rare",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Soul Cloak (Rare)",
+          "item_category": "MercenaryDefenseBackitem",
+          "known_template": true
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Soul Equipment Chest",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Aşağıdakilerden birini almak için sandığı aç:\n 1x Ruh Kolyesi (Büyü)\n 1x Ruh Kolyesi (Epik)\n 1x Ruh Kolyesi (Ender)\n 1x Ruh Kemeri (Büyü)\n 1x Ruh Kemeri (Epik)\n 1x Ruh Kemeri (Ender)\n 1x Ruh Pelerini (Büyü)\n 1x Ruh Pelerini (Epik)\n 1x Ruh Pelerini (Ender)",
+        "chance_percent": null,
+        "rarity_hints": null,
+        "entries": []
+      },
+      "resolved_via_ui": true,
+      "mapping_note": "Reward options and rarities come from the Turkish client description; item IDs were matched to static.db4. The description gives no odds, so the current one-of resolver weights the nine listed outcomes equally."
+    },
+    {
+      "container": "season_pass_chest_new",
+      "name": "New Season Pass Chest",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "lootlist_season_pass_chest_new",
+      "yields": [
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": 500,
+          "mode": "one_of",
+          "item_name": "Draken",
+          "item_category": "NoAutoUseCurrency",
+          "known_template": true
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": 1000,
+          "mode": "one_of",
+          "item_name": "Draken",
+          "item_category": "NoAutoUseCurrency",
+          "known_template": true
+        },
+        {
+          "item": "season_coin",
+          "amount": 50,
+          "mode": "one_of",
+          "item_name": "Season Coin",
+          "item_category": "ItemCurrency",
+          "known_template": true
+        },
+        {
+          "item": "season_coin",
+          "amount": 100,
+          "mode": "one_of",
+          "item_name": "Season Coin",
+          "item_category": "ItemCurrency",
+          "known_template": true
+        },
+        {
+          "item": "season_coin",
+          "amount": 200,
+          "mode": "one_of",
+          "item_name": "Season Coin",
+          "item_category": "ItemCurrency",
+          "known_template": true
+        },
+        {
+          "item": "lootbox_level_rallye_jewels_random",
+          "amount": 1,
+          "mode": "one_of",
+          "item_name": "Jewel Chest",
+          "item_category": "LootGenItem",
+          "known_template": true
+        },
+        {
+          "item": "dragon_blood_box",
+          "amount": 2,
+          "mode": "one_of",
+          "item_name": "Dragon Blood Box",
+          "item_category": "LootGenItem",
+          "known_template": true
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "New Season Pass Chest",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Şu nesnelerden birini alma şansın var:\n 500x Draken\n 1.000x Draken\n 50x Sezon Sikkesi\n 100x Sezon Sikkesi\n 200x Sezon Sikkesi\n 1x Mücevher Sandığı\n 2x Ejderha Kanı Kutusu",
+        "chance_percent": null,
+        "rarity_hints": null,
+        "entries": []
+      },
+      "resolved_via_ui": true,
+      "mapping_note": "Reward options and amounts come from the Turkish client description; item IDs were matched to static.db4. The description gives no odds, so the current one-of resolver weights the seven listed outcomes equally."
     }
   ],
   "summary": {
-    "total_containers": 2797,
-    "resolved_containers": 2168,
-    "total_edges": 7327,
+    "total_containers": 2801,
+    "resolved_containers": 2173,
+    "total_edges": 7358,
     "transitive_edges": 7075,
     "containers_with_nesting": 2085,
     "distinct_server_side_loot_lists": 522,
@@ -189647,9 +190005,9 @@
         "edges": 1297
       },
       "_Template_Item.Loot": {
-        "containers": 558,
-        "resolved": 105,
-        "edges": 384
+        "containers": 562,
+        "resolved": 110,
+        "edges": 415
       },
       "none": {
         "containers": 54,
@@ -189658,15 +190016,15 @@
       }
     },
     "ui": {
-      "containers_with_tooltip": 625,
+      "containers_with_tooltip": 629,
       "containers_with_parsed_entries": 320,
       "tooltip_entries": 1579,
       "tooltip_entries_resolved": 838,
       "tooltip_entries_ambiguous": 638,
-      "recovered_by_ui": 314,
+      "recovered_by_ui": 319,
       "styles": {
-        "bulleted": 310,
-        "prose": 247,
+        "bulleted": 313,
+        "prose": 248,
         "missing": 19,
         "inline": 2,
         "prose_extracted": 7

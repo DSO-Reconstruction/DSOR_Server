@@ -470,6 +470,8 @@ class PlayerRespawnService:
                 s, current_health=current_health, maximum_health=current_health,
                 server_tick=tick, event_seed=tick,
             )
+            if request.same_spot:
+                self._season_pass_feed(s, "RespawnInstantly")
             CharacterService._accept_gameplay_state_command(s, 0x0062)
         except _InsufficientRespawnFunds:
             s.send_reliable_ordered(

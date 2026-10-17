@@ -17,6 +17,7 @@ from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
 from dso_server.protocol.reward_protocol import daily_login_offers
 from dso_server.protocol.player_init_protocol import (
+    SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
 )
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
@@ -449,6 +450,8 @@ class PlayerInitializationWorldService:
             map_id=state.gameplay_map,
             map_access_group_id=state.map_access.access_group_id,
         )
+        self._season_pass_daily_login(s)
+        season_pass_state = CharacterService._season_pass_document(s)
         commands = list(build_local_player_init_commands(
             state.new_player,
             state.inventory,
@@ -532,6 +535,12 @@ class PlayerInitializationWorldService:
             event_update=event_update,
             event_progress_info=event_progress_info,
             event_participation_info=event_participation_info,
+            season_pass_info=SeasonPassRewardsInfoResult(
+                int(season_pass_state["level"]),
+                int(season_pass_state["experience"]),
+                tuple(season_pass_state["pass_types"]),
+                tuple(season_pass_state["claimed_awards"]),
+            ),
         ))
         with s.flow_lock:
             spender_state = s.gameplay_daily_challenges

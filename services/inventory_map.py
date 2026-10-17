@@ -9,6 +9,90 @@ from dso_server.runtime.transport import Session
 class InventoryMapService:
     """Inventory actions, NPC/prop interaction, and map transitions."""
 
+    def _activate_season_pass_item(
+            self, s: Session, item_id: int, template_id: str) -> bool:
+        pass_unlocks = {
+            "gold_pass": (1,),
+            "gold_pass_2": (1, 3),
+            "red_pass": (2,),
+            "red_pass_2": (2, 4),
+        }
+        unlocks = pass_unlocks.get(str(template_id).casefold())
+        if unlocks is None:
+            return False
+
+        from dso_server.gameplay.season_pass import normalize_season_pass_state
+        from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
+        from dso_server.protocol.player_init_protocol import (
+            INVENTORY_INFO_COMMAND,
+            SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
+            SeasonPassRewardsInfoResult,
+            ServerCommand,
+            encode_server_command_batch,
+        )
+
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            if inventory is None or s.gameplay_character is None:
+                raise ValueError("player inventory is not initialized")
+            item = next((entry for entry in inventory.items
+                         if int(entry.item_id) == int(item_id)), None)
+            if item is None or str(item.template_id).casefold() != str(template_id).casefold():
+                raise ValueError("Season Pass ticket is no longer in inventory")
+            state = normalize_season_pass_state(
+                getattr(s, "gameplay_season_pass", None) or {}
+            )
+            current_types = set(state["pass_types"])
+            newly_unlocked = set(unlocks) - current_types
+            if not newly_unlocked:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] retained duplicate Season Pass "
+                    f"ticket {template_id!r}; its reward track is already active"
+                )
+                return True
+
+            builder = InventoryMutationBuilder(
+                inventory, s.gameplay_next_item_id,
+            )
+            builder.consume(int(item_id), 1)
+            mutation = builder.finish()
+            state["pass_types"] = tuple(sorted(current_types | set(unlocks)))
+            result = SeasonPassRewardsInfoResult(
+                int(state["level"]), int(state["experience"]),
+                tuple(state["pass_types"]), tuple(state["claimed_awards"]),
+            )
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, mutation.delta,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+                ServerCommand(
+                    SEASON_PASS_REWARDS_INFO_RESULT_COMMAND, result, 0,
+                ),
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, mutation.final,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = mutation.next_item_id
+            s.gameplay_season_pass = state
+
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix="season-pass-ticket-activated",
+        )
+        CharacterService._request_account_save(
+            s, "Season Pass ticket activated", flush=True,
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] activated Season Pass ticket "
+            f"{template_id!r}; pass types={state['pass_types']}"
+        )
+        return True
+
     def _handle_inventory_sort(
             self, s: Session, action, inventory) -> None:
         """Sort the active inventory page reported by operation 0x19.
@@ -1230,6 +1314,10 @@ class InventoryMapService:
                 raise ValueError(
                     f"inventory item {action.item_id} does not exist"
                 )
+            if self._activate_season_pass_item(
+                s, action.item_id, item.template_id,
+            ):
+                return
             try:
                 contents = load_payment_package_contents(
                     self.static_database_path,

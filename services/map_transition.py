@@ -814,6 +814,10 @@ class MapTransitionService:
                     s.gameplay_next_item_id = original_next_item_id
                     s.gameplay_pending_travel_item = pending
             return
+        if consumed_travel_item:
+            self._season_pass_feed(
+                s, "UseDungeonKeys", value=str(pending["template_id"]),
+            )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] accepted typed travel request for "
             f"{map_id} (scaling difficulty {difficulty}); "

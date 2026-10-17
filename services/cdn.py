@@ -92,7 +92,7 @@ class CdnService:
         self.port = int(port)
         self.verbose = verbose
         if client_dir is None:
-            client_dir = os.getenv("DSO_CDN_DATA") or (PACKAGE_ROOT / "cloud\DSOClient")
+            client_dir = os.getenv("DSO_CDN_DATA") or (PACKAGE_ROOT / "DSOClient")
         self.client_dir = Path(client_dir)
         self._index: dict[str, Path] = {}
         self._root_key: str = "f910a2e8a4a19589c8f96e07d4c0051d"

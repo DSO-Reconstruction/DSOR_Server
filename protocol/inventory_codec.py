@@ -44,6 +44,7 @@ BOOTSTRAP_STARTER_RING_DEATH_ID = 0x00F00220
 BOOTSTRAP_STARTER_RING_LIFE_ID = 0x00F00221
 BOOTSTRAP_STARTER_MOUNT_ID = 0x00F00222
 BOOTSTRAP_STARTER_MORTIS_PET_ID = 0x00F00223
+BOOTSTRAP_STARTER_SEASON_PASS_IDS = range(0x00F00224, 0x00F00228)
 
 # UI::TransmogWidget::UpdateEquipmentSlots iterates its eight UI slots and,
 # in normal mode, asks Game::Inventory for equipment slot ids 0 through 7.
@@ -1072,6 +1073,25 @@ def encode_bootstrap_inventory_info(
         field_38=0,
         created_at=created_at,
     )
+    season_pass_tickets = [
+        ItemInfo(
+            item_id=item_id,
+            template_id=template_id,
+            field_08=rarity,
+            socket_count=0,
+            socketed_templates=[],
+            item_level=1,
+            field_18=0x2124 + index,
+            field_30=1,
+            field_38=0,
+            created_at=created_at,
+        )
+        for index, (item_id, template_id, rarity) in enumerate(zip(
+            BOOTSTRAP_STARTER_SEASON_PASS_IDS,
+            ("gold_pass", "gold_pass_2", "red_pass", "red_pass_2"),
+            (5, 5, 7, 7),
+        ))
+    ]
     equipment_slots = {**core_allocations, **trinket_allocations}
     equipment_slots[ring_death.item_id] = (8,)
     equipment_slots[ring_life.item_id] = (9,)
@@ -1088,7 +1108,7 @@ def encode_bootstrap_inventory_info(
                 mortis_pet,
                 health_potion,
                 travel_map,
-            ],
+            ] + season_pass_tickets,
             equipment_slots=equipment_slots,
             # Retail places TravelMapItem in ordinary inventory storage. It
             # must never enter equipment_slots: AddItemAtEquipmentSlot calls
@@ -1098,6 +1118,10 @@ def encode_bootstrap_inventory_info(
                 health_potion.item_id: 1,
                 manticore.item_id: 2,
                 mortis_pet.item_id: 3,
+                **{
+                    item.item_id: 4 + index
+                    for index, item in enumerate(season_pass_tickets)
+                },
             },
             actor_id=actor_id,
         )

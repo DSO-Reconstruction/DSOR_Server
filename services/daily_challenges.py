@@ -363,6 +363,7 @@ class DailyChallengeService:
         A full inventory retains capped progress for retry, never discards a
         reward or opens the next tier prematurely.
         """
+        self._season_pass_feed(s, kind, value=value, count=count)
         if (getattr(s, 'gameplay_daily_challenges', None) is None
                 or s.gameplay_character is None or s.gameplay_exit_transition_started):
             return
@@ -452,9 +453,16 @@ class DailyChallengeService:
                 s.gameplay_presence_callback(s, ('status_effects', (StatusEffect(False, (*retired, entry)),)))
         if applied:
             CharacterService._refresh_player_combat_vitals(s)
+        newly_completed = sum(
+            entry.state == COMPLETED
+            and old_entries.get(entry.challenge_id) is not None
+            and old_entries[entry.challenge_id].state != COMPLETED
+            for entry in (*state.daily, *state.bonuses)
+        )
         CharacterService._request_account_save(s, 'Daily challenge progress and rewards',
-                                               flush=any(e.state == COMPLETED and old_entries.get(e.challenge_id) != e
-                                                         for e in (*state.daily, *state.bonuses)))
+                                               flush=bool(newly_completed))
+        for _ in range(newly_completed):
+            self._season_pass_feed(s, 'DailyChallengeClosed')
 
     def _daily_challenge_reward(self, s, definition, effects):
         """Stage inventory/currency before committing a completed task's payout."""

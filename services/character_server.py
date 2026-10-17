@@ -25,6 +25,7 @@ from dso_server.services.matchmaking import MatchmakingService
 from dso_server.services.battleground import BattlegroundService
 from dso_server.services.ranking import RankingService
 from dso_server.services.wanted_thief import WantedThiefService
+from dso_server.services.season_pass import SeasonPassService
 from dso_server.services.daily_challenges import DailyChallengeService
 from dso_server.services.summon_pvp import SummonPVPService
 from dso_server.services.player_combat import PlayerCombatService
@@ -70,6 +71,7 @@ class CharacterServer(
         BattlegroundService,
         RankingService,
         WantedThiefService,
+        SeasonPassService,
         DailyChallengeService,
         SummonPVPService,
         PlayerSummonService,

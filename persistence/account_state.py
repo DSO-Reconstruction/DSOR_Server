@@ -144,6 +144,8 @@ class AccountState:
     quest_log: dict[str, dict[str, object]] = field(default_factory=dict)
     # Wanted board offers, remaining attempts, and reset/VIP timestamps.
     wanted_thief: dict[str, object] = field(default_factory=dict)
+    # Season Pass level, experience, mission progress, and claimed reward IDs.
+    season_pass: dict[str, object] = field(default_factory=dict)
     daily_challenges: dict[str, object] = field(default_factory=dict)
     # Achievements: achievement id -> {progress, completed_at}
     # (gameplay/achievement_content.py); completion stamps are written
@@ -591,6 +593,7 @@ def _state_to_document(state: AccountState) -> dict:
             for key, value in state.quest_log.items()
         },
         "wanted_thief": copy.deepcopy(state.wanted_thief),
+        "season_pass": copy.deepcopy(state.season_pass),
         "daily_challenges": copy.deepcopy(state.daily_challenges),
         "achievements": {
             str(key): dict(value)
@@ -785,6 +788,7 @@ def _state_from_document(document: dict) -> AccountState:
             if isinstance(value, dict)
         },
         wanted_thief=copy.deepcopy(document.get("wanted_thief", {})),
+        season_pass=copy.deepcopy(document.get("season_pass", {})),
         daily_challenges=copy.deepcopy(document.get("daily_challenges", {})),
         achievements={
             str(key): dict(value)

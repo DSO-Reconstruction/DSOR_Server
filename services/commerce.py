@@ -1195,6 +1195,20 @@ class CommerceService:
         )
         if total_price.rc:
             self._credit_tier_spender_progress(s, total_price.rc)
+            self._season_pass_feed(
+                s, "SpendRealCurrency", count=total_price.rc,
+            )
+        if total_price.ic:
+            if shop_currency_resource == "e_chr_2012_event_currency":
+                self._season_pass_feed(
+                    s, "SpendEventCurrency", count=total_price.ic,
+                )
+            else:
+                self._season_pass_feed(
+                    s, "SpendGameCurrency",
+                    value=str(shop_currency_resource or ""),
+                    count=total_price.ic,
+                )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] handled Transaction for "
             f"{transaction.shop_id!r}: delivered "

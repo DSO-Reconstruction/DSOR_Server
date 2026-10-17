@@ -27,6 +27,7 @@ from dso_server.protocol.wanted_thief_protocol import (
     GET_WANTED_THIEF_INFO_COMMAND, ACCEPT_WANTED_THIEF_MISSION_COMMAND,
     REFRESH_WANTED_THIEF_MISSION_COMMAND,
 )
+from dso_server.protocol.season_pass_protocol import SEASON_PASS_COMMANDS
 from dso_server.protocol.gameplay_protocol import (
     CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND, LOGOUT_COMMAND, decode_logout,
 )
@@ -576,6 +577,8 @@ class DispatchService:
                 self._handle_join_battleground_response(s, payload)
             elif command_id == LEAVE_PVP_COMMAND:
                 self._handle_leave_pvp(s, payload)
+            elif command_id in SEASON_PASS_COMMANDS:
+                self._handle_season_pass_command(s, payload)
             elif command_id in {
                 GET_WANTED_THIEF_INFO_COMMAND, ACCEPT_WANTED_THIEF_MISSION_COMMAND,
                 REFRESH_WANTED_THIEF_MISSION_COMMAND,

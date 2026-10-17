@@ -1260,6 +1260,7 @@ class PlayerInitializationStateService:
             CharacterService._restore_event_state(s, persisted_state)
             CharacterService._restore_quest_state(s, persisted_state)
             CharacterService._restore_wanted_thief_state(s, persisted_state)
+            CharacterService._restore_season_pass_state(s, persisted_state)
             CharacterService._restore_daily_challenge_state(s, persisted_state)
             CharacterService._restore_map_unlocks(self, s, persisted_state)
             CharacterService._restore_achievement_state(s, persisted_state)

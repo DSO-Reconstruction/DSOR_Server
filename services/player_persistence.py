@@ -280,6 +280,7 @@ class PlayerPersistenceService:
             event_participation = dict(s.gameplay_event_participation)
             quest_log = CharacterService._quest_log_document(s)
             wanted_thief = CharacterService._wanted_thief_document(s)
+            season_pass = CharacterService._season_pass_document(s)
             daily_challenges = CharacterService._daily_challenge_document(s)
             unlocked_maps = tuple(sorted(s.gameplay_unlocked_maps))
             admin_all_maps = s.gameplay_admin_all_maps
@@ -443,6 +444,7 @@ class PlayerPersistenceService:
             event_participation=event_participation,
             quest_log=quest_log,
             wanted_thief=wanted_thief,
+            season_pass=season_pass,
             daily_challenges=daily_challenges,
             achievements=achievements,
             chapters_unlocked=chapters_unlocked,

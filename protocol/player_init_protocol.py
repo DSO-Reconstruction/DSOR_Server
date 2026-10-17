@@ -108,7 +108,8 @@ KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
-SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x015F)
+SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x0162)
+SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassMissionsInfoResultCommand", 0x0166)
 GET_SECOND_DAY_SIGNED_AWARD_COMMAND = command_id("Commands::GetSecondDaySignedAwardCommand", 0x016C)
 OBSTACLE_UPDATE_COMMAND = command_id("Commands::ObstacleUpdateCommand", 0x0072)
 COMMAND_0173 = 0x0173
@@ -121,7 +122,7 @@ COMMAND_0173 = 0x0173
 # from packets targeting this client build.
 #
 # 0x015b reproduces the same 0x016c symptom on this build (``invalid command
-# ending in multi command 347``), as does 0x015f (``... 351``). This client
+# ending in multi command 347``). This client
 # build's 0x0083 decoder expects four maps: daily, bonus, tiered spender, and
 # comeback daily. The older checked-in capture has only three, so the reader
 # accepts that legacy form while the writer emits the current four-map form.
@@ -129,7 +130,6 @@ LOCAL_CLIENT_UNSUPPORTED_INIT_COMMANDS = frozenset({
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND,
     COMMAND_0173,
     USER_HATCH_EGGS_INFO_COMMAND,
-    SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
 })
 
 
@@ -707,8 +707,13 @@ class UserHatchEggsInfo:
 class SeasonPassRewardsInfoResult:
     field_20: int
     field_24: int
-    claimed_free: tuple[int, ...]
-    claimed_premium: tuple[int, ...]
+    pass_types: tuple[int, ...]
+    claimed_awards: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SeasonPassMissionsInfoResult:
+    missions: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -1804,8 +1809,26 @@ def _write_season_pass_rewards_info_result_body(
 ) -> None:
     writer.write_uint32_le(value.field_20)
     writer.write_uint32_le(value.field_24)
-    _write_u32_array(writer, value.claimed_free)
-    _write_u32_array(writer, value.claimed_premium)
+    _write_u32_array(writer, value.pass_types)
+    _write_u32_array(writer, value.claimed_awards)
+
+
+def _read_season_pass_missions_info_result_body(
+    reader: BitReader,
+) -> SeasonPassMissionsInfoResult:
+    return SeasonPassMissionsInfoResult(tuple(
+        (reader.read_uint32_le(), reader.read_uint32_le())
+        for _ in range(reader.read_uint32_le())
+    ))
+
+
+def _write_season_pass_missions_info_result_body(
+    writer: BitWriter, value: SeasonPassMissionsInfoResult
+) -> None:
+    writer.write_uint32_le(len(value.missions))
+    for mission_id, progress in value.missions:
+        writer.write_uint32_le(mission_id)
+        writer.write_uint32_le(progress)
 
 
 def _read_fieldless_body(reader: BitReader) -> Fieldless:
@@ -1896,6 +1919,8 @@ _BODY_READERS = {
     USER_HATCH_EGGS_INFO_COMMAND: _read_user_hatch_eggs_info_body,
     SEASON_PASS_REWARDS_INFO_RESULT_COMMAND:
         _read_season_pass_rewards_info_result_body,
+    SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND:
+        _read_season_pass_missions_info_result_body,
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND: _read_second_day_signed_award_body,
     OBSTACLE_UPDATE_COMMAND: _read_obstacle_update_body,
     PLAYER_READY_COMMAND: _read_fieldless_body,
@@ -1951,6 +1976,8 @@ _BODY_WRITERS = {
     USER_HATCH_EGGS_INFO_COMMAND: _write_user_hatch_eggs_info_body,
     SEASON_PASS_REWARDS_INFO_RESULT_COMMAND:
         _write_season_pass_rewards_info_result_body,
+    SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND:
+        _write_season_pass_missions_info_result_body,
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND: _write_second_day_signed_award_body,
     OBSTACLE_UPDATE_COMMAND: _write_obstacle_update_body,
     PLAYER_READY_COMMAND: _write_fieldless_body,
@@ -2135,6 +2162,7 @@ def build_local_player_init_commands(
     event_update: EventUpdate | None = None,
     event_progress_info: EventProgressInfo | None = None,
     event_participation_info: EventParticipationInfo | None = None,
+    season_pass_info: SeasonPassRewardsInfoResult | None = None,
     quest_log: QuestLogInfo | None = None,
     chapter_progress: ChapterProgress | None = None,
     timed_challenges: TimedChallengesInfo | None = None,
@@ -2281,6 +2309,8 @@ def build_local_player_init_commands(
         event_progress_info = EventProgressInfo(())
     if event_participation_info is None:
         event_participation_info = EventParticipationInfo(())
+    if season_pass_info is None:
+        season_pass_info = SeasonPassRewardsInfoResult(0, 0, (), ())
     aggregate_achievement = ServerCommand(
         ACHIEVEMENT_INFO_COMMAND, achievements, actor_id
     )
@@ -2441,7 +2471,7 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
-                SeasonPassRewardsInfoResult(0, 0, (), ()),
+                season_pass_info,
                 0,
             ),
             ServerCommand(

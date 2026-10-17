@@ -784,6 +784,7 @@ class Session:
         self.gameplay_interaction_npc_shop_id = None
         self.gameplay_timed_offer_purchases = {}
         self.gameplay_event_progress = {}
+        self.gameplay_season_pass = {}
         self.gameplay_wanted_thief = None
         self.gameplay_daily_challenges = None
         self.gameplay_tier_spender_challenges = ()
