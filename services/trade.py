@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 import threading
+import time
 import weakref
 from dataclasses import dataclass, field, replace
 
@@ -42,6 +43,8 @@ from dso_server.protocol.trade_protocol import (
 )
 
 _LOCK = threading.Lock()
+# An invitation nobody answers lapses (and stops blocking both players).
+TRADE_INVITE_SECONDS = 60.0
 _SERVERS: "weakref.WeakSet" = weakref.WeakSet()
 # Sessions whose client shows trades, by id(session) (a game client must never
 # receive TradeState).
@@ -62,6 +65,7 @@ class _Trade:
     requester: _Side
     invited: _Side
     open: bool = False
+    created: float = 0.0
     # Set while one thread makes the exchange (both acceptances may arrive on
     # two gameplay servers' threads at once).
     busy: bool = False
@@ -219,16 +223,37 @@ class TradeService:
             message = f"{target.gameplay_character.name} cannot trade (their client has no trade)"
         elif target.gameplay_map != s.gameplay_map:
             message = f"{target.gameplay_character.name} is not on your map"
-        if message is None:
-            them = int(target.gameplay_character.character_id)
-            with _LOCK:
-                if me in _TRADES:
-                    message = "you are already trading"
-                elif them in _TRADES:
-                    message = f"{target.gameplay_character.name} is already trading"
-                else:
-                    trade = _Trade(_Side(me, my_name), _Side(them, target.gameplay_character.name))
-                    _TRADES[me] = _TRADES[them] = trade
+        if message is not None:
+            TradeService._trade_send(s, TradeState(PHASE_CLOSED, str(target_name), message=message))
+            return
+        them = int(target.gameplay_character.character_id)
+        now = time.monotonic()
+        replaced = None
+        with _LOCK:
+            # Invitations nobody answered in time lapse.
+            for trade in {id(t): t for t in _TRADES.values()}.values():
+                if not trade.open and now - trade.created > TRADE_INVITE_SECONDS:
+                    for side in (trade.requester, trade.invited):
+                        _TRADES.pop(side.character_id, None)
+            mine, theirs = _TRADES.get(me), _TRADES.get(them)
+            if mine is not None and mine is theirs and not mine.open and mine.invited.character_id == me:
+                # They asked us first: asking them back accepts.
+                mine.open = True
+                trade = mine
+            elif mine is not None and (mine.open or mine.invited.character_id == me):
+                message = "you are already trading"
+            elif theirs is not None and theirs is not mine:
+                message = f"{target.gameplay_character.name} is already trading"
+            else:
+                # Our own unanswered request to someone else is replaced.
+                if mine is not None:
+                    replaced = mine
+                    for side in (mine.requester, mine.invited):
+                        _TRADES.pop(side.character_id, None)
+                trade = _Trade(_Side(me, my_name), _Side(them, target.gameplay_character.name), created=now)
+                _TRADES[me] = _TRADES[them] = trade
+        if replaced is not None and replaced is not trade:
+            TradeService._trade_close(replaced, {replaced.invited.character_id: f"{my_name} withdrew the trade request"})
         if message is not None:
             TradeService._trade_send(s, TradeState(PHASE_CLOSED, str(target_name), message=message))
             return

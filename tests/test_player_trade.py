@@ -161,3 +161,24 @@ def test_a_game_client_is_never_sent_trade_state(traders):
     server._handle_trade_command(alice, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Bob")))
     assert last_state(bob) is None
     assert "cannot trade" in last_state(alice)["message"]
+
+
+def test_asking_back_accepts_and_a_new_request_replaces_an_unanswered_one(traders):
+    server, alice, bob = traders
+    server._handle_trade_command(alice, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Bob")))
+    server._handle_trade_command(bob, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Alice")))
+    assert last_state(alice)["phase"] == last_state(bob)["phase"] == tp.PHASE_OPEN
+    server._handle_trade_command(bob, command(tp.TRADE_CANCEL_COMMAND))
+    server._handle_trade_command(alice, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Bob")))
+    server._handle_trade_command(alice, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Bob")))
+    assert last_state(bob)["phase"] == tp.PHASE_INVITED
+    assert len({id(t) for t in trade_service._TRADES.values()}) == 1
+
+
+def test_an_unanswered_invitation_lapses(traders, monkeypatch):
+    server, alice, bob = traders
+    server._handle_trade_command(alice, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Bob")))
+    later = trade_service.time.monotonic() + trade_service.TRADE_INVITE_SECONDS + 1
+    monkeypatch.setattr(trade_service.time, "monotonic", lambda: later)
+    server._handle_trade_command(bob, command(tp.TRADE_REQUEST_COMMAND, lambda w: w.write_string("Alice")))
+    assert last_state(bob)["phase"] == tp.PHASE_REQUESTED
