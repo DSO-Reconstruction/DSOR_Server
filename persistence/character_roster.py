@@ -11,7 +11,11 @@ def load_character_roster(store: AccountStateStore | None) -> CharacterSelection
     if store is None:
         return selection
     for profile in store.profiles():
-        character = CharacterRecord(**asdict(profile))
+        # Gold belongs to the durable profile/account state, not the
+        # CharacterRecord wire schema consumed by character selection.
+        character_fields = asdict(profile)
+        character_fields.pop("gold", None)
+        character = CharacterRecord(**character_fields)
         state = store.get(profile.character_id)
         if state is not None:
             character.map_id = state.map_id

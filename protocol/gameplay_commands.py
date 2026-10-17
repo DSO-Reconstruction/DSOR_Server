@@ -18,6 +18,7 @@ from dso_server.protocol.currency_protocol import (
     DEFAULT_DRAKEN_BALANCE,
     DEFAULT_GAME_CURRENCY_BALANCES,
     DEFAULT_GLYPH_OF_POWER_BALANCE,
+    STARTER_GOLD_UNITS,
     normalize_game_currency_balances,
 )
 
@@ -34,7 +35,7 @@ LOCAL_PLAYER_ACTOR_ID = 1
 # Leaving this substructure at its constructor defaults makes the client treat
 # hostile monsters as neutral actors, which produces the white NPC outline.
 LOCAL_PLAYER_FACTION_ID = 0x00010002
-LOCAL_GOLD_BALANCE = 999_999_999
+LOCAL_GOLD_BALANCE = STARTER_GOLD_UNITS
 LOCAL_PREMIUM_CURRENCY_BALANCE = 9_999_999
 
 # The selected local-player bootstrap was reconstructed from an established

@@ -13,16 +13,20 @@ import time
 from typing import Any
 
 from dso_server.protocol.currency_protocol import (
-    DEFAULT_BADGE_OF_HONOR_BALANCE,
-    DEFAULT_DRAKEN_BALANCE,
-    DEFAULT_GLYPH_OF_POWER_BALANCE,
+    GAME_CURRENCY_DEFINITIONS,
+    STARTER_GOLD_UNITS,
     normalize_game_currency_balances,
 )
 
 from dso_server.runtime.context import *
 from dso_server.gameplay.premium_bags import reconcile_premium_bags
 from dso_server.protocol.membership_protocol import membership_is_active
-from dso_server.protocol.inventory_codec import owned_inventory_items
+from dso_server.protocol.inventory_codec import (
+    BOOTSTRAP_ITEM_ID,
+    BOOTSTRAP_ITEM_TEMPLATE,
+    BOOTSTRAP_SECOND_RUNE_ID,
+    owned_inventory_items,
+)
 from dso_server.gameplay.map_unlocks import (
     restored_map_unlocks, saved_quest_map_unlocks, unlocked_travel_map_ids,
 )
@@ -51,6 +55,34 @@ def normalize_stickerbook_entry(entry):
         field_14=3 if favorite else 2,
         field_18=0,
     )
+
+
+def _upgrade_legacy_starter_gold(persisted_state) -> None:
+    """Upgrade only an unsaved old starter balance with its bootstrap runes.
+
+    The previous starter snapshot can already be persisted by the time the
+    server is updated. Its exact 10,000-gold balance plus one of the old
+    server-issued rune IDs identifies that untouched starter state.
+    """
+
+    if persisted_state is None or int(persisted_state.currency.amount) not in {
+        10_000,
+        100_000_000,
+    }:
+        return
+    old_rune_ids = {BOOTSTRAP_ITEM_ID, BOOTSTRAP_SECOND_RUNE_ID}
+    has_legacy_starter_rune = any(
+        int(item.item_id) in old_rune_ids
+        or (
+            item.template_id == BOOTSTRAP_ITEM_TEMPLATE
+            and int(item.item_level) >= 140
+        )
+        for item in owned_inventory_items(persisted_state.inventory)
+    )
+    if has_legacy_starter_rune:
+        persisted_state.currency = replace(
+            persisted_state.currency, amount=STARTER_GOLD_UNITS
+        )
 
 
 @dataclass
@@ -521,16 +553,24 @@ class PlayerInitializationStateService:
 
         character = state.character
         persisted_state = state.persisted_state
+        starter_currency = 100_000_000
+        _upgrade_legacy_starter_gold(persisted_state)
         game_currency_balances = normalize_game_currency_balances(
-            (
-                persisted_state.game_currencies
-                if persisted_state is not None
-                else None
-            )
+            persisted_state.game_currencies
+            if persisted_state is not None
+            else {
+                definition.wire_id: starter_currency
+                for definition in GAME_CURRENCY_DEFINITIONS
+            }
         )
         premium = (persisted_state.currency.andermant if persisted_state is not None
-                   else getattr(character, "premium_currency", 9_999_999))
+                   else getattr(character, "premium_currency", 100_000_000))
         store = getattr(self, "account_store", None)
+        starter_gold = STARTER_GOLD_UNITS
+        if persisted_state is None and store is not None:
+            profile = store.get_profile(character.character_id)
+            if profile is not None and int(profile.gold) > 0:
+                starter_gold = int(profile.gold)
         if store is not None:
             premium = store.currency_for_character(character.character_id,
                 CurrencyChanged(premium, 0, (0, 0, 0), 0, False)).andermant
@@ -544,27 +584,27 @@ class PlayerInitializationStateService:
             gold=(
                 max(0, int(persisted_state.currency.amount))
                 if persisted_state is not None
-                else LOCAL_GOLD_BALANCE
+                else starter_gold
             ),
             badge_of_honor=(
                 max(0, int(persisted_state.currency.badge_of_honor))
                 if persisted_state is not None
-                else DEFAULT_BADGE_OF_HONOR_BALANCE
+                else starter_currency
             ),
             legacy_progression_currency=(
                 max(0, int(persisted_state.currency.legacy_progression))
                 if persisted_state is not None
-                else 0
+                else starter_currency
             ),
             draken=(
                 max(0, int(persisted_state.currency.draken))
                 if persisted_state is not None
-                else DEFAULT_DRAKEN_BALANCE
+                else starter_currency
             ),
             glyph_of_power=(
                 max(0, int(persisted_state.currency.glyph_of_power))
                 if persisted_state is not None
-                else DEFAULT_GLYPH_OF_POWER_BALANCE
+                else starter_currency
             ),
             game_currencies=game_currency_balances,
             knowledge_xp=state.talent_category_points[1],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dso_server.protocol.item_customization_protocol import item_tint
+from dso_server.protocol.currency_protocol import STARTER_GOLD_UNITS
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -629,7 +630,7 @@ class CharacterSelectionService:
                     body_stature=request.body_stature,
                     character_id=character_id,
                     unknown_u32_a=0,
-                    premium_currency=9_999_999,
+                    premium_currency=100_000_000,
                     progression_u64=0,
                     progression_u32=0,
                     level=1,
@@ -653,7 +654,9 @@ class CharacterSelectionService:
         self._reencode_character_selection()
         if self.account_store is not None:
             self.account_store.put_profile(
-                CharacterProfile.from_character_record(character),
+                CharacterProfile.from_character_record(
+                    character, gold=STARTER_GOLD_UNITS
+                ),
                 flush=False,
             )
 

@@ -49,6 +49,9 @@ class CharacterProfile:
     body_stature: int
     level: int = 1
     premium_currency: int = 9_999_999
+    # Initial gold is recorded with the character profile at creation time;
+    # the first gameplay snapshot later takes over as the durable balance.
+    gold: int = 0
     admin_privileges: bool = False
     admin_name_color: bool = False
     unknown_u32_a: int = 0
@@ -77,7 +80,9 @@ class CharacterProfile:
     quickbar_skill_slots: tuple[str | None, ...] | None = None
 
     @classmethod
-    def from_character_record(cls, character) -> "CharacterProfile":
+    def from_character_record(
+        cls, character, *, gold: int = 0
+    ) -> "CharacterProfile":
         """Detach every durable roster field from a CharacterRecord."""
 
         return cls(
@@ -92,6 +97,7 @@ class CharacterProfile:
             body_stature=character.body_stature,
             level=character.level,
             premium_currency=character.premium_currency,
+            gold=max(0, int(gold)),
             admin_privileges=character.admin_privileges,
             admin_name_color=character.admin_name_color,
             unknown_u32_a=character.unknown_u32_a,
@@ -922,6 +928,7 @@ def _profile_from_document(document: dict) -> CharacterProfile:
         body_stature=int(document["body_stature"]),
         level=int(document.get("level", 1)),
         premium_currency=int(document.get("premium_currency", 9_999_999)),
+        gold=max(0, int(document.get("gold", 0))),
         admin_privileges=bool(document.get("admin_privileges", False)),
         admin_name_color=bool(document.get("admin_name_color", False)),
         unknown_u32_a=int(document.get("unknown_u32_a", 0)),

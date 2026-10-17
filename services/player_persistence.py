@@ -557,7 +557,9 @@ class PlayerPersistenceService:
                             getattr(live, 'progression_u64', 0)
                         )
                     store.put_profile(
-                        CharacterProfile.from_character_record(character),
+                        CharacterProfile.from_character_record(
+                            character, gold=state.currency.gold
+                        ),
                         flush=closing_session,
                     )
                     break
