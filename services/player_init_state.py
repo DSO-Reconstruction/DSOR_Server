@@ -735,6 +735,11 @@ class PlayerInitializationStateService:
                     mount_ride,
                     definition=resolved_mount,
                     effect_id=resolved_mount.ride_effect_id,
+                    # Every map initialization resets the chase clock to 0.
+                    # A saved ride's start tick belongs to the previous map
+                    # (or server process), so carry the active ride forward
+                    # on the new map's clock instead of replaying a stale tick.
+                    start_tick=0,
                 )
         persistent_status_effects = {
             effect.field_04: effect
@@ -888,11 +893,24 @@ class PlayerInitializationStateService:
                 )
                 if definition is None:
                     continue
-                matching = any(
-                    effect.effect_id == definition.status_effect_wire_id
-                    for effect in persistent_status_effects.values()
+                matching_instance_id = next(
+                    (
+                        instance_id
+                        for instance_id, effect
+                        in persistent_status_effects.items()
+                        if effect.effect_id
+                        == definition.status_effect_wire_id
+                    ),
+                    None,
                 )
-                if matching:
+                if matching_instance_id is not None:
+                    # Cosmetic statuses are active for the new map too, but
+                    # their saved start tick was measured on the old map's
+                    # clock. Rebase it just like newly reconstructed effects.
+                    persistent_status_effects[matching_instance_id] = replace(
+                        persistent_status_effects[matching_instance_id],
+                        field_08=0,
+                    )
                     continue
                 effect = sticker_status_entry(
                     definition,

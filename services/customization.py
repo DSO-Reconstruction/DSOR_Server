@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import sqlite3
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -80,6 +81,55 @@ class CustomizationService:
         return True
 
     @staticmethod
+    def _mercenary_owner_aura_effect(
+            s: Session, monster_id: str) -> tuple[int, tuple[float, ...]] | None:
+        """Resolve the BuffUI child of a mercenary's Summoner aura."""
+
+        path = s.gameplay_combat_state.encounter.static_database_path
+        with sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT PermanentStatusEffect FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
+                (str(monster_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            for resource_id in str(row[0] or "").split(";"):
+                resource_id = resource_id.strip()
+                if not resource_id:
+                    continue
+                aura = database.execute(
+                    "SELECT AuraEffectId, COALESCE(AuraTargets, '') "
+                    "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                    (resource_id,),
+                ).fetchone()
+                if aura is None or "summoner" not in {
+                    token.strip().casefold()
+                    for token in str(aura[1] or "").replace(",", ";").split(";")
+                }:
+                    continue
+                for child_id in str(aura[0] or "").split(";"):
+                    child_id = child_id.strip()
+                    if not child_id:
+                        continue
+                    child = database.execute(
+                        "SELECT rowid-1, Groups FROM _Template_StatusEffect "
+                        "WHERE Id=? LIMIT 1",
+                        (child_id,),
+                    ).fetchone()
+                    if child is None:
+                        continue
+                    groups = {
+                        token.strip().casefold()
+                        for token in str(child[1] or "").replace(",", ";").split(";")
+                    }
+                    if "buffui" in groups:
+                        return int(child[0]), (0.0, 0.0, 0.0, 0.0, 0.0)
+        return None
+
+    @staticmethod
     def _activate_mercenary(
             self, s: Session, definition, *, source: str) -> bool:
         """Activate an authored ShadowSoul item and publish its companion.
@@ -140,6 +190,7 @@ class CustomizationService:
             raise ValueError(
                 f"mercenary target {monster_id!r} is missing from the static database"
             )
+        owner_aura = self._mercenary_owner_aura_effect(s, monster_id)
         summon_definition = replace(
             summon_definition,
             category="mercenary",
@@ -189,11 +240,36 @@ class CustomizationService:
             has_details=True,
             values=tuple(definition.values),
         )
+        aura_entry = None
+        if owner_aura is not None:
+            with s.flow_lock:
+                aura_instance_id = int(s.gameplay_next_status_effect_instance_id)
+                s.gameplay_next_status_effect_instance_id += 1
+            aura_entry = StatusEffectEntry(
+                effect_id=owner_aura[0],
+                field_04=aura_instance_id,
+                field_0c=0,
+                field_14=0,
+                field_08=0,
+                field_18=0,
+                field_10=0,
+                field_1c=100,
+                field_20=LOCAL_PLAYER_ACTOR_ID,
+                field_25=False,
+                field_26=False,
+                field_39=True,
+                has_details=True,
+                values=owner_aura[1],
+            )
         with s.flow_lock:
             previous_status = getattr(
                 s, "gameplay_mercenary_status_effect", None
             )
+            previous_aura = getattr(
+                s, "gameplay_mercenary_aura_status_effect", None
+            )
             s.gameplay_mercenary_status_effect = status_entry
+            s.gameplay_mercenary_aura_status_effect = aura_entry
         status_entries = []
         if previous_status is not None:
             status_entries.append(replace(
@@ -209,7 +285,23 @@ class CustomizationService:
                 has_details=False,
                 values=(),
             ))
+        if previous_aura is not None:
+            status_entries.append(replace(
+                previous_aura,
+                field_0c=start_tick,
+                field_14=SERVER_TICKS_PER_SECOND,
+                field_08=start_tick,
+                field_10=0,
+                field_20=LOCAL_PLAYER_ACTOR_ID,
+                field_25=False,
+                field_26=False,
+                field_39=True,
+                has_details=False,
+                values=(),
+            ))
         status_entries.append(status_entry)
+        if aura_entry is not None:
+            status_entries.append(aura_entry)
         status = StatusEffect(False, tuple(status_entries))
         s.send_reliable_ordered(
             encode_status_effect_batch(status, actor_id=LOCAL_PLAYER_ACTOR_ID),
