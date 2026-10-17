@@ -119,6 +119,7 @@ from dso_server.protocol.gem_protocol import (
     insert_gem,
     promote_local_loot_equipment_levels,
     remove_gem,
+    upgrade_gem,
     upgrade_rune,
     unlock_gem_socket,
 )

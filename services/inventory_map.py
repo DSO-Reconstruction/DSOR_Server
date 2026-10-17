@@ -485,6 +485,66 @@ class InventoryMapService:
             and inventory is not None
             and any(
                 int(candidate.item_id) == int(action.item_id)
+                and candidate.template_id == "gem_crafting"
+                for candidate in inventory.items
+            )
+        ):
+            try:
+                if not action.field_0c:
+                    raise ValueError(
+                        "gem upgrade has no target gem item id"
+                    )
+                # The Gem Crafting Joker reuses the insert-gem inventory
+                # action. Its target is the gem to upgrade, not a socket.
+                action.insertion_socket_index
+                mutation = upgrade_gem(
+                    inventory,
+                    action.item_id,
+                    action.field_0c,
+                    static_database_path=self.static_database_path,
+                    next_item_id=next_item_id,
+                )
+                packet, packet_bits = encode_server_command_batch(
+                    (
+                        ServerCommand(
+                            INVENTORY_INFO_COMMAND,
+                            mutation.delta,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ),
+                    ),
+                    include_terminator=True,
+                )
+            except (OSError, ValueError) as exc:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] rejected gem upgrade "
+                    f"0x{action.action:03x}: {exc}"
+                )
+                return
+            with s.flow_lock:
+                s.gameplay_inventory = mutation.inventory
+                s.gameplay_next_item_id = mutation.next_item_id
+            CharacterService._send_world_loot_state_batch(
+                s,
+                packet,
+                packet_bits,
+                label="gem-upgraded",
+            )
+            CharacterService._request_account_save(
+                s, "equipment gem upgraded", flush=True
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] upgraded gem "
+                f"{action.field_0c}: {mutation.previous_template_id} -> "
+                f"{mutation.upgraded_template_id} using item "
+                f"{action.item_id}"
+            )
+            return
+
+        if (
+            action.action == INSERT_GEM_ACTION
+            and inventory is not None
+            and any(
+                int(candidate.item_id) == int(action.item_id)
                 and candidate.template_id == "unique_gem_crafting"
                 for candidate in inventory.items
             )

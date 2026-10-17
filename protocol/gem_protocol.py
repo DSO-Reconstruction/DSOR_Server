@@ -81,6 +81,16 @@ class RuneUpgradeMutation:
     upgraded_template_id: str
 
 
+@dataclass(frozen=True)
+class GemUpgradeMutation:
+    inventory: InventoryInfo
+    delta: InventoryInfo
+    upgraded_item: ItemInfo
+    next_item_id: int
+    previous_template_id: str
+    upgraded_template_id: str
+
+
 def _item(inventory: InventoryInfo, item_id: int) -> ItemInfo:
     item = next(
         (
@@ -612,6 +622,91 @@ def upgrade_rune(
         upgraded_item=upgraded_item,
         next_item_id=mutation.next_item_id,
         previous_template_id=rune_definition.template_id,
+        upgraded_template_id=upgraded_template_id,
+    )
+
+
+def upgrade_gem(
+    inventory: InventoryInfo,
+    crafting_item_id: int,
+    gem_item_id: int,
+    *,
+    static_database_path,
+    next_item_id: int,
+) -> GemUpgradeMutation:
+    """Use a Gem Crafting Joker to upgrade one equipment gem by one tier."""
+
+    builder = InventoryMutationBuilder(inventory, next_item_id)
+    crafting_item = builder.item(crafting_item_id)
+    gem = builder.item(gem_item_id)
+    if crafting_item.template_id != "gem_crafting":
+        raise ValueError(f"item {crafting_item_id} is not a Gem Crafting Joker")
+    if int(crafting_item.amount) <= 0 or int(gem.amount) <= 0:
+        raise ValueError("gem upgrade requires non-empty item stacks")
+    if int(crafting_item_id) == int(gem_item_id):
+        raise ValueError("a crafting joker cannot upgrade itself")
+
+    gem_definition = load_purchase_item_definition(
+        static_database_path, gem.template_id
+    )
+    if gem_definition.item_category != EQUIPMENT_GEM_CATEGORY:
+        raise ValueError(
+            f"item {gem_item_id} is {gem_definition.item_category!r}, "
+            "not an equipment gem"
+        )
+
+    database = sqlite3.connect(
+        f"file:{Path(static_database_path)}?mode=ro", uri=True
+    )
+    try:
+        recipe = database.execute(
+            "SELECT CraftedItemId FROM _Template_CraftingRecipes "
+            "WHERE IngredientItemId1=? AND IngredientItemId2='gem_crafting:1' "
+            "AND CraftingRecipeType='ItemUpgrade' AND IsLive=1 "
+            "ORDER BY Id LIMIT 1",
+            (f"{gem.template_id}:1",),
+        ).fetchone()
+    finally:
+        database.close()
+    if recipe is None or not recipe[0]:
+        raise ValueError(
+            f"gem {gem.template_id!r} has no Gem Crafting Joker upgrade"
+        )
+
+    upgraded_template_id = str(recipe[0]).split(":", 1)[0]
+    upgraded_definition = load_purchase_item_definition(
+        static_database_path, upgraded_template_id
+    )
+    if upgraded_definition.item_category != EQUIPMENT_GEM_CATEGORY:
+        raise ValueError(
+            f"upgrade result {upgraded_template_id!r} is not an equipment gem"
+        )
+
+    builder.consume(crafting_item_id, 1, preserve_item_id=True)
+    if int(gem.amount) > 1:
+        builder.consume(gem_item_id, 1, preserve_item_id=True)
+        builder.add_item(
+            upgraded_definition,
+            1,
+            item_level=max(1, int(gem.item_level)),
+        )
+        upgraded_item = next(
+            item for item in builder.changed_items
+            if item.template_id == upgraded_template_id
+        )
+    else:
+        gem.template_id = upgraded_template_id
+        gem.field_08 = upgraded_definition.rarity
+        builder.changed_items.append(copy.deepcopy(gem))
+        upgraded_item = copy.deepcopy(gem)
+
+    mutation = builder.finish()
+    return GemUpgradeMutation(
+        inventory=mutation.inventory,
+        delta=mutation.delta,
+        upgraded_item=upgraded_item,
+        next_item_id=mutation.next_item_id,
+        previous_template_id=gem_definition.template_id,
         upgraded_template_id=upgraded_template_id,
     )
 
