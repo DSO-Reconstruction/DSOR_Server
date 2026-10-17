@@ -398,6 +398,21 @@ class MonsterCombatant:
     target_radius: float | None = None
 
 
+def _monster_health_after_damage(
+    monster: MonsterCombatant,
+    previous_health: int,
+    damage: int,
+) -> tuple[int, bool]:
+    """Apply damage while keeping arena training dummies available forever."""
+
+    current = max(0, int(previous_health) - max(0, int(damage)))
+    if current == 0 and str(monster.template_id).casefold().startswith(
+        "damage_doll"
+    ):
+        return max(1, int(monster.maximum_health)), False
+    return current, current == 0
+
+
 @dataclass(frozen=True)
 class PlayerSkillGeometry:
     resource_id: str
@@ -585,6 +600,7 @@ class PlayerSummonActor:
     initial_aura_instance_id: int | None
     cast_id: int = 0
     patrol_index: int = 0
+    moving: bool = False
 
     @property
     def spawn_ready_at(self) -> float:
@@ -1841,7 +1857,10 @@ class LocalCombatState:
         monster = self.monsters[actor_id]
         # Raises MonsterReturnHome and drops this actor's queued swings and
         # every player impact already in flight toward it.
-        self._set_returning_home(actor_id, True, server_tick, reason="hard leash: pulled past its reset radius, reset at spawn")
+        self._set_returning_home(
+            actor_id, True, server_tick,
+            reason="hard leash: pulled past its reset radius, reset at spawn",
+        )
         self.monster_positions[actor_id] = monster.position
         self.monster_health[actor_id] = monster.maximum_health
         self.monster_yaws[actor_id] = 0.0
@@ -1865,19 +1884,29 @@ class LocalCombatState:
         actor_id: int,
         active: bool,
         server_tick: int,
-        *, now: float | None = None,
-        reason: str = "",
+        *, now: float | None = None, reason: str = "",
     ) -> bool:
         actor_id = int(actor_id)
         active = bool(active)
         if active == (actor_id in self.returning_home_actor_ids):
             return False
-        if active and reason:
-            dropped = sum(1 for p in self.pending_player_hits.values() if p.target_actor_id == actor_id) + sum(
-                1 for p in self.pending_runtime_player_hits.values() if p.target_actor_id == actor_id)
-            print(f"[{self.__class__.__name__}] monster {actor_id} gives up: {reason}"
-                  + (f"; {dropped} player hit(s) in flight cancelled" if dropped else ""))
         if active:
+            if reason:
+                cancelled_hits = sum(
+                    pending.target_actor_id == actor_id
+                    for pending in self.pending_player_hits.values()
+                ) + sum(
+                    pending.target_actor_id == actor_id
+                    for pending in self.pending_runtime_player_hits.values()
+                )
+                print(
+                    f"[{self.__class__.__name__}] monster {actor_id} gives up: "
+                    f"{reason}"
+                    + (
+                        f"; {cancelled_hits} player hit(s) in flight cancelled"
+                        if cancelled_hits else ""
+                    )
+                )
             self.returning_home_actor_ids.add(actor_id)
             self.returning_home_started_at[actor_id] = time.perf_counter() if now is None else now
             self.returning_home_progress[actor_id] = self._distance(
@@ -3315,6 +3344,25 @@ class LocalCombatState:
         elapsed = max(0.0, min(0.5, float(elapsed_seconds)))
         movements = []
         for actor_id, summon in tuple(self.player_summons.items()):
+            def stop_if_moving(value):
+                if not value.moving:
+                    return value
+                stopped = replace(value, moving=False)
+                self.player_summons[actor_id] = stopped
+                movements.append(
+                    MonsterMovement(
+                        actor_id,
+                        stopped.position,
+                        self.encounter.coordinate_frame.world_to_wire(
+                            stopped.position
+                        ),
+                        stopped.yaw,
+                        False,
+                        int(server_tick) & 0xFFFFFFFF,
+                    )
+                )
+                return stopped
+
             definition = summon.definition
             if getattr(definition, "map_companion", False):
                 from dso_server.gameplay.map_companions import companion_combat_phase
@@ -3331,6 +3379,7 @@ class LocalCombatState:
                 or definition.move_speed <= 0.0
                 or definition.attack_skill_database_index is None
             ):
+                stop_if_moving(summon)
                 continue
             owner = (player_positions or {}).get(summon.owner_actor_id)
             follows = bool(getattr(definition, "follows_owner", False))
@@ -3357,8 +3406,14 @@ class LocalCombatState:
             elif follows and owner is not None:
                 target = owner
                 distance = self._distance(summon.position, target)
-                stop_distance = 2.5
+                stop_distance = (
+                    4.0
+                    if str(getattr(definition, "category", "")).casefold()
+                    == "mercenary"
+                    else 2.5
+                )
             else:
+                stop_if_moving(summon)
                 continue
             patrol = getattr(definition, "patrol_points", ())
             if (follows and patrol and nearest is not None
@@ -3367,9 +3422,7 @@ class LocalCombatState:
                 # Authored CompanionStrategy paths place allies inside the
                 # arena's behavior-change aura before their boss-facing cast.
                 index = summon.patrol_index
-                # The step below stops exactly at its 0.75 stop distance: compare
-                # with a margin, or reaching the point hinged on float rounding.
-                if self._distance(summon.position, patrol[index]) <= 0.75 + 0.05 and index + 1 < len(patrol):
+                if self._distance(summon.position, patrol[index]) <= 0.80 and index + 1 < len(patrol):
                     index += 1
                     summon = replace(summon, patrol_index=index)
                     self.player_summons[actor_id] = summon
@@ -3377,6 +3430,7 @@ class LocalCombatState:
                 distance = self._distance(summon.position, target)
                 stop_distance = 0.75
             if distance <= stop_distance + 1e-6:
+                stop_if_moving(summon)
                 continue
             dx = target[0] - summon.position[0]
             dz = target[2] - summon.position[2]
@@ -3406,6 +3460,10 @@ class LocalCombatState:
             except (
                 NavigationError, CollisionTerrainError, ValueError
             ):
+                stop_if_moving(summon)
+                continue
+            if self._distance(summon.position, candidate) <= 1e-5:
+                stop_if_moving(summon)
                 continue
             yaw = math.atan2(-dx, -dz)
             spawn_group = summon.spawn_group.runtime_subset(
@@ -3416,6 +3474,7 @@ class LocalCombatState:
                 position=candidate,
                 yaw=yaw,
                 spawn_group=spawn_group or summon.spawn_group,
+                moving=True,
             )
             self.player_summons[actor_id] = updated
             movements.append(
@@ -6172,8 +6231,10 @@ class LocalCombatState:
                 player_home_distance = self._distance(player_position, home)
                 if target is None and not returning_home:
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                                 reason="no target left for it")
+                        self._set_returning_home(
+                            actor_id, True, server_tick, now=current_time,
+                            reason="no target left for it",
+                        )
                         returning_home = True
                     else:
                         self.monster_routes.pop(actor_id, None)
@@ -6274,8 +6335,10 @@ class LocalCombatState:
                 not returning_home
                 and self._near_protected_waypoint(start)
             ):
-                self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                         reason="it entered a travel stone's safe zone")
+                self._set_returning_home(
+                    actor_id, True, server_tick, now=current_time,
+                    reason="it entered a travel stone's safe zone",
+                )
                 returning_home = True
 
             # Travel stones are hard safe-zone obstacles, not merely points
@@ -6288,8 +6351,10 @@ class LocalCombatState:
             ):
                 self.monster_routes.pop(actor_id, None)
                 if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                    self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                             reason="the player is in a travel stone's safe zone")
+                    self._set_returning_home(
+                        actor_id, True, server_tick, now=current_time,
+                        reason="the player is in a travel stone's safe zone",
+                    )
                     returning_home = True
                 else:
                     self.monster_moving[actor_id] = False
@@ -6342,9 +6407,15 @@ class LocalCombatState:
             ):
                 self._set_returning_home(
                     actor_id, True, server_tick, now=current_time,
-                    reason=(f"outrun ({direct_distance:.1f} m > escape range {monster.escape_range:.1f})"
-                            if direct_distance > monster.escape_range else
-                            f"player {player_home_distance:.1f} m from its home > reset radius {reset_radius:.1f}"),
+                    reason=(
+                        f"outrun ({direct_distance:.1f} m > escape range "
+                        f"{monster.escape_range:.1f})"
+                        if direct_distance > monster.escape_range
+                        else (
+                            f"player {player_home_distance:.1f} m from its home "
+                            f"> reset radius {reset_radius:.1f}"
+                        )
+                    ),
                 )
                 returning_home = True
 
@@ -6573,8 +6644,10 @@ class LocalCombatState:
                     start, destination
                 ):
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                                 reason="its path crosses a travel stone's safe zone")
+                        self._set_returning_home(
+                            actor_id, True, server_tick, now=current_time,
+                            reason="its path crosses a travel stone's safe zone",
+                        )
                     destination = start
             maximum_step = monster.run_speed * movement_elapsed
             destination = self.ground_monster_position(
@@ -7483,9 +7556,10 @@ class LocalCombatState:
                         )
                     ),
                 )
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    self.monsters[actor_id], previous, damage
+                )
                 self.monster_health[actor_id] = current
-                killed = current == 0
                 resolutions.append(
                     DamageResolution(
                         target_actor_id=actor_id,
@@ -7522,6 +7596,7 @@ class LocalCombatState:
         *,
         player_damage_range: tuple[float, float],
         player_incoming_damage_multipliers=(),
+        player_invulnerable: bool = False,
         now: float | None = None,
         server_tick: int = 0,
     ) -> tuple[tuple[DamageResolution, ...], tuple[DamageResolution, ...]]:
@@ -7562,7 +7637,9 @@ class LocalCombatState:
                 previous = self.monster_health.get(actor_id, 0)
                 if previous <= 0 or damage <= 0:
                     continue
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    monster, previous, damage
+                )
                 self.monster_health[actor_id] = current
                 monster_results.append(
                     DamageResolution(
@@ -7571,7 +7648,7 @@ class LocalCombatState:
                         current_health=current,
                         maximum_health=monster.maximum_health,
                         damage=damage,
-                        killed=current == 0,
+                        killed=killed,
                         position=self.monster_positions[actor_id],
                         server_tick=int(server_tick) & 0xFFFFFFFF,
                         hit_tags=damage_types or (5,),
@@ -7596,7 +7673,10 @@ class LocalCombatState:
                     )
                     self_damage += raw * incoming_by_type.get(normalized, 1.0)
                     self_types.extend(damage_type_ids(damage_type))
-            requested = max(0, int(math.ceil(self_damage)))
+            requested = (
+                0 if player_invulnerable
+                else max(0, int(math.ceil(self_damage)))
+            )
             if requested <= 0:
                 continue
             health = self.player_health.setdefault(
@@ -7779,7 +7859,9 @@ class LocalCombatState:
         if previous <= 0:
             return None
         damage = max(1, int(round(int(incoming.damage) * float(fraction))))
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
         return DamageResolution(
             target_actor_id=monster.actor_id,
@@ -7787,7 +7869,7 @@ class LocalCombatState:
             current_health=current,
             maximum_health=monster.maximum_health,
             damage=damage,
-            killed=current == 0,
+            killed=killed,
             position=self.monster_positions[monster.actor_id],
             server_tick=(int(incoming.server_tick) + 1) & 0xFFFFFFFF,
             hit_tags=(0,),
@@ -8376,11 +8458,12 @@ class LocalCombatState:
                     )
                 )
                 damage += immediate_damage
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    target, previous, damage
+                )
                 if damage <= 0:
                     continue
                 self.monster_health[target.actor_id] = current
-                killed = current == 0
                 effects = tuple(
                     effect
                     for effect in pending.geometry.victim_status_effects
@@ -8570,9 +8653,10 @@ class LocalCombatState:
         # uses ``resolve_runtime_player_hit`` below, which applies the actual
         # database/talent damage coefficient.
         damage = previous if pending.damage_modifier > 0.0 else 0
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
-        killed = current == 0
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -8757,9 +8841,10 @@ class LocalCombatState:
             now=current_time,
         )
         damage += immediate_damage
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
-        killed = current == 0
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -9338,11 +9423,12 @@ class LocalCombatState:
             if targets_monster:
                 target = self.monsters[attack.target_actor_id]
                 previous = self.monster_health[attack.target_actor_id]
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    target, previous, damage
+                )
                 if damage <= 0:
                     continue
                 self.monster_health[attack.target_actor_id] = current
-                killed = current == 0
                 victim_effects = tuple(
                     definition
                     for definition in self._load_monster_attack_effects(

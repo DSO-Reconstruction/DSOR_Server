@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.item_customization_protocol import (
@@ -21,6 +23,230 @@ ADMIN_SPEED_EFFECT_VALUES = ADMIN_EFFECTS["speed"]["values"]
 
 class CustomizationService:
     """Equipment appearance, mounts, costumes, pets, and sticker-book interactions."""
+
+    @staticmethod
+    def _ensure_mercenary_quickbar_shortcut(
+            s: Session, resource_id: str) -> bool:
+        """Put an owned Shadow Soul in the first free sticker shortcut slot."""
+
+        resource_id = str(resource_id).strip()
+        if resource_id.startswith("sb_mercenary_"):
+            resource_id = "item_mercenary_" + resource_id.removeprefix(
+                "sb_mercenary_"
+            )
+        if not resource_id.startswith("item_mercenary_"):
+            return False
+
+        with s.flow_lock:
+            if resource_id not in s.gameplay_stickerbook_entries:
+                return False
+            quick_slots = s.gameplay_quick_slots
+            if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
+                return False
+            bars = list(quick_slots.quickbars)
+            first_bar = list(bars[0])
+            if len(first_bar) != 17:
+                return False
+            if any(
+                slot.kind == 2 and slot.resource_id == resource_id
+                for bar in bars
+                for slot in bar
+            ):
+                return False
+
+            empty = next(
+                (
+                    index for index in range(8, 13)
+                    if first_bar[index].kind == 0xFFFFFFFF
+                ),
+                None,
+            )
+            if empty is None:
+                return False
+            first_bar[empty] = QuickSlotInfo(2, resource_id)
+            bars[0] = tuple(first_bar)
+            updated = QuickSlotsInfo(tuple(bars))
+            s.gameplay_quick_slots = updated
+
+        CharacterService._send_stickerbook_commands(
+            s,
+            (ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                updated,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),),
+            label="mercenary-quickbar-shortcut",
+        )
+        return True
+
+    @staticmethod
+    def _activate_mercenary(
+            self, s: Session, definition, *, source: str) -> bool:
+        """Activate an authored ShadowSoul item and publish its companion.
+
+        Mercenary items are reusable inventory/sticker-book entries, not
+        consumables.  Their ``ShadowSoul:<monster>`` status program starts the
+        client effect, while the ordinary player-summon lifecycle creates the
+        authoritative actor visible to every player on the map.
+        """
+
+        if definition is None or definition.kind != "mercenary":
+            return False
+        monster_id = ""
+        for encoded in str(definition.start_modifiers or "").split(";"):
+            kind, separator, arguments = encoded.partition(":")
+            if not separator or kind.strip().casefold() != "shadowsoul":
+                continue
+            monster_id = arguments.split(";", 1)[0].strip()
+            break
+        if not monster_id:
+            raise ValueError(
+                f"mercenary {definition.resource_id!r} has no ShadowSoul target"
+            )
+
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            move = s.gameplay_last_move
+            if (
+                not s.connected
+                or combat is None
+                or character is None
+                or move is None
+            ):
+                raise ValueError("mercenary use requires an active map session")
+            owner_actor_id = (
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            generation = s.gameplay_chase_generation
+            tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
+            if tick == 0:
+                tick = int(move.start_tick) & 0xFFFFFFFF
+            level = max(1, int(character.level))
+            class_name = CLASS_NAMES.get(int(character.class_id), "mage")
+            position = combat.encounter.coordinate_frame.wire_to_world(
+                move.relative_position
+            )
+            yaw = float(getattr(move, "yaw", 0.0))
+
+        summon_definition = load_socket_minion_definition(
+            self.static_database_path,
+            monster_id,
+            1,
+            (0.0, 0.0, 0.0, 0.0),
+        )
+        if summon_definition is None:
+            raise ValueError(
+                f"mercenary target {monster_id!r} is missing from the static database"
+            )
+        summon_definition = replace(
+            summon_definition,
+            category="mercenary",
+            amount=1,
+            limit=1,
+            lifetime_seconds=0.0,
+            owner_despawn_range=float("inf"),
+            follows_owner=True,
+        )
+        modifier_sources = tuple(
+            CharacterService._active_skill_modifier_sources(s)
+        )
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+        stats = calculate_player_combat_stats(
+            combat.encounter.static_database_path,
+            cache_owner=s,
+            class_name=class_name,
+            level=level,
+            inventory=inventory,
+            modifier_sources=modifier_sources,
+        )
+
+        # Apply the database-authored status effect locally and to nearby
+        # viewers. The summon lifecycle below owns the actual actor/combat;
+        # the item's separate CoolDownCategory belongs to the client action UI.
+        with s.flow_lock:
+            instance_id = int(s.gameplay_next_status_effect_instance_id)
+            s.gameplay_next_status_effect_instance_id += 1
+            start_tick = int(s.gameplay_chase_server_tick or tick) & 0xFFFFFFFF
+        status_entry = StatusEffectEntry(
+            effect_id=int(definition.status_effect_wire_id),
+            field_04=instance_id,
+            # The companion remains active until another Shadow Soul replaces
+            # it. A one-second database duration made the buff icon disappear
+            # while the summoned actor kept following the player.
+            field_0c=0,
+            field_14=0,
+            field_08=0,
+            field_18=0,
+            field_10=0,
+            field_1c=100,
+            field_20=LOCAL_PLAYER_ACTOR_ID,
+            field_25=False,
+            field_26=False,
+            field_39=True,
+            has_details=True,
+            values=tuple(definition.values),
+        )
+        with s.flow_lock:
+            previous_status = getattr(
+                s, "gameplay_mercenary_status_effect", None
+            )
+            s.gameplay_mercenary_status_effect = status_entry
+        status_entries = []
+        if previous_status is not None:
+            status_entries.append(replace(
+                previous_status,
+                field_0c=start_tick,
+                field_14=SERVER_TICKS_PER_SECOND,
+                field_08=start_tick,
+                field_10=0,
+                field_20=LOCAL_PLAYER_ACTOR_ID,
+                field_25=False,
+                field_26=False,
+                field_39=True,
+                has_details=False,
+                values=(),
+            ))
+        status_entries.append(status_entry)
+        status = StatusEffect(False, tuple(status_entries))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(status, actor_id=LOCAL_PLAYER_ACTOR_ID),
+            track=True,
+            label="mercenary-shadow-soul-activated",
+        )
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (status,)))
+
+        CharacterService._resolve_player_summon(
+            s,
+            generation,
+            ("mercenary-summon", owner_actor_id, start_tick),
+            summon_definition,
+            int(owner_actor_id),
+            position,
+            yaw,
+            level,
+            start_tick,
+            (stats.minimum_damage, stats.maximum_damage),
+            modifier_sources,
+            round_token=CharacterService._pvp_round_token(s),
+        )
+        if CharacterService._ensure_mercenary_quickbar_shortcut(
+            s, definition.resource_id
+        ):
+            CharacterService._persist_gameplay_session(
+                self,
+                s,
+                reason=f"Shadow Soul quickbar shortcut: {definition.resource_id}",
+                flush=True,
+            )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] activated mercenary "
+            f"{definition.resource_id!r} -> {monster_id!r} from {source}"
+        )
+        return True
 
     def _handle_item_customization(self, s: Session, payload: bytes) -> None:
         changes = decode_item_customization_changes(payload)
@@ -446,6 +672,10 @@ class CustomizationService:
                 'stickerbook-unlock-stickerbook-unlock'
             ),
         )
+        if definition.kind == "mercenary":
+            CharacterService._ensure_mercenary_quickbar_shortcut(
+                s, definition.resource_id
+            )
         CharacterService._persist_gameplay_session(
             self,
             s,
@@ -869,10 +1099,34 @@ class CustomizationService:
                 self, s, database_definition
             )
             return
+        if (
+            database_definition is not None
+            and database_definition.kind == "mercenary"
+        ):
+            CharacterService._activate_mercenary(
+                self, s, database_definition, source="sticker book"
+            )
+            return
 
-        definition = find_mount(request.value)
-        if definition is None and database_definition is not None:
-            definition = database_definition.mount
+        # Resolve status-effect wire IDs from the active static database. The
+        # local black-bear entry keeps the captured cast timing, but its old
+        # hard-coded effect indexes can point at an unrelated effect after a
+        # client database update.
+        definition = (
+            database_definition.mount
+            if database_definition is not None
+            else None
+        )
+        local_definition = find_mount(request.value)
+        if definition is not None and local_definition is not None:
+            definition = replace(
+                definition,
+                cast_duration_seconds=local_definition.cast_duration_seconds,
+                cast_duration_ticks=local_definition.cast_duration_ticks,
+                ride_duration_ticks=local_definition.ride_duration_ticks,
+            )
+        if definition is None:
+            definition = local_definition
         if definition is None:
             raise ValueError(
                 f"owned sticker-book item {request.value!r} has no "

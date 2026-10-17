@@ -4,6 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DSO Administration</title>
+  <script>
+    try {
+      const savedTheme = localStorage.getItem("dso-admin-theme");
+      if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
+    } catch {}
+  </script>
   <link rel="stylesheet" href="/admin.css">
   <script type="module" src="/admin.js"></script>
 </head>
@@ -27,8 +33,10 @@
         <a href="#accounts">Accounts</a>
         <a href="#characters">Characters</a>
         <a href="#bookings">Bookings</a>
+        <a href="#bookings/batch">Batch booking</a>
         <a href="#events">Events</a>
         <a href="#items">Item catalog</a>
+        <a href="#npc-shops">NPC shops</a>
         <a href="#sessions">Sessions</a>
         <a href="#audit">Audit log</a>
       </nav>
@@ -36,7 +44,7 @@
     </aside>
     <main>
       <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
-      <header class="page-header"><div><h1 id="page-title" tabindex="-1">Status</h1><p id="page-description" class="muted"></p></div><div class="page-actions"><span id="page-actions"></span><button id="refresh" class="secondary">Refresh</button></div></header>
+      <header class="page-header"><div><h1 id="page-title" tabindex="-1">Status</h1><p id="page-description" class="muted"></p></div><div class="page-actions"><span id="page-actions"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Dark theme</button><button id="refresh" class="secondary">Refresh</button></div></header>
       <p id="notice" class="notice" role="status" hidden></p>
       <div id="content" aria-live="polite"></div>
     </main>

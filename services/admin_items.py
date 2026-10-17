@@ -1,14 +1,103 @@
 """Item metadata and validated, template-aware equipment booking options."""
 
 from contextlib import closing
+from functools import lru_cache
+import os
 from pathlib import Path
 import sqlite3
+import xml.etree.ElementTree as ElementTree
 
 from dataclasses import replace
+from dso_server.paths import DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition, add_purchased_item
 from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.world_loot_protocol import _is_equipment_row, EQUIPMENT_RARITIES, roll_new_equipment_enchantments
+
+
+# Locales are only used to label item templates, so the first readable one wins.
+LANGUAGE_PREFERENCE = ("tr", "en", "de", "ru", "cs", "bg", "ar")
+
+# Fallback language roots when DSO_LANGUAGE_DIR is not set and data/language/<locale> is empty.
+_FALLBACK_LANGUAGE_ROOTS = [
+    PACKAGE_ROOT / "cdndata" / "export_win32" / "language",
+]
+
+
+def _has_locale_files(directory):
+    """True if a directory contains at least one db.*.xml file."""
+    return any(Path(directory).glob("db.*.xml"))
+
+
+def item_language_directory():
+    """The client locale folder that supplies item titles, or None for template names."""
+    wanted = str(os.getenv("DSO_ITEM_LANGUAGE", "")).strip().casefold()
+    if wanted:
+        candidate = DEFAULT_LANGUAGE_ROOT / wanted
+        if candidate.is_dir() and _has_locale_files(candidate):
+            return candidate
+        # Also check fallback roots (e.g., cdndata/export_win32/language/tr).
+        for root in _FALLBACK_LANGUAGE_ROOTS:
+            candidate = root / wanted
+            if candidate.is_dir() and _has_locale_files(candidate):
+                return candidate
+        return None
+    # Keep locale preference ahead of root preference so a German fallback
+    # cannot override Turkish or English files shipped with the client.
+    for name in LANGUAGE_PREFERENCE:
+        for root in (DEFAULT_LANGUAGE_ROOT, *_FALLBACK_LANGUAGE_ROOTS):
+            candidate = root / name
+            if candidate.is_dir() and _has_locale_files(candidate):
+                return candidate
+    return None
+
+
+@lru_cache(maxsize=4)
+def locale_titles(language_directory):
+    """Index every ``db.*.xml`` locale key the client would display."""
+    titles = {}
+    if language_directory is None:
+        return titles
+    for path in sorted(Path(language_directory).glob("db.*.xml")):
+        for entry in ElementTree.parse(path).getroot().iter("item"):
+            key = str(entry.get("name") or "")
+            text = str(entry.text or "").strip()
+            if key and text:
+                titles[key] = text
+    return titles
+
+
+def _display_name(titles, template_id, name, locale_key):
+    localized = titles.get(str(locale_key or ""))
+    if not localized or localized.startswith("Localize:"):
+        # Cosmetic templates often leave LocaleIdTitle empty even though the
+        # client resolves their display name from db.switchable.xml using
+        # ``<template id>Title`` (for example epicmount_doomhound_01Title).
+        localized = titles.get(f"{template_id}Title")
+    if localized and not localized.startswith("Localize:"):
+        return localized
+    return str(name or "").strip() or str(template_id)
+
+
+@lru_cache(maxsize=4)
+def _catalog(static_database_path, language_directory):
+    titles = locale_titles(language_directory)
+    with closing(sqlite3.connect(
+            Path(static_database_path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
+        rows = db.execute(
+            "SELECT Id,Name,LocaleIdTitle,ItemCategory,DefaultRarity,RequiredLevel,MaxStackSize,SlotType "
+            "FROM _Template_Item").fetchall()
+    return tuple({
+        "template_id": str(row[0]), "category": str(row[3] or ""),
+        "name": _display_name(titles, row[0], row[1], row[2]),
+        "template_name": str(row[1] or "").strip(),
+        "rarity": row[4], "required_level": row[5], "max_stack_size": row[6], "slot_types": row[7],
+    } for row in rows)
+
+
+def item_catalog(static_database_path):
+    """All item templates with the name the client shows for each."""
+    return _catalog(Path(static_database_path).resolve(), item_language_directory())
 
 
 def socket_limit(schedule, level):
@@ -30,7 +119,7 @@ def item_metadata(path, template_id):
     with closing(sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
         db.row_factory = sqlite3.Row
         row = dict(db.execute(
-            "SELECT Id,ItemCategory,SlotType,IconConfiguration,CharClass,MaxSocketCount "
+            "SELECT Id,ItemCategory,SlotType,IconConfiguration,CharClass,MaxSocketCount,Name,LocaleIdTitle "
             "FROM _Template_Item WHERE Id=?", (template_id,),
         ).fetchone())
         tiers = sorted({0, *(int(r[0]) for r in db.execute("SELECT Tier FROM _Template_EnchantmentTiers"))})
@@ -38,6 +127,9 @@ def item_metadata(path, template_id):
     rarities = list(range(5)) if definition.rarity < 5 else [definition.rarity]
     return {
         "template_id": template_id, "category": definition.item_category,
+        "name": _display_name(locale_titles(item_language_directory()), template_id,
+                              row.get("Name"), row.get("LocaleIdTitle")),
+        "template_name": str(row.get("Name") or "").strip(),
         "equipment": equipment, "rarity": definition.rarity,
         "rarity_name": EQUIPMENT_RARITIES[definition.rarity],
         "max_stack_size": definition.max_stack_size, "required_level": definition.required_level,

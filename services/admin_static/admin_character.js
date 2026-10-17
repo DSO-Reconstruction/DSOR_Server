@@ -1,9 +1,161 @@
 import { livePage } from "./admin_live.js";
 import { $, esc, human, date, classes, rarities, api, link, navigate, status, table, facts,
-  section, tabs, toolbar, bindSearch, pager, tree, bookingTable } from "./admin_ui.js";
+  section, tabs, toolbar, bindSearch, pager, tree, bookingTable, reasonInput, formError, notice, confirmAction } from "./admin_ui.js";
 
 const containers = {equipment_slots: "Equipment", storage_58: "Inventory", storage_80: "Extra inventory", storage_a8: "Bank", storage_d0: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
+const privileges = [["admin_privileges", "Game administrator"], ["admin_name_color", "Administrator name colour"]];
+
+function privilegeSection(p) {
+  return section("Game administrator privileges", `<form id="privilege-form" class="form-page">
+    <fieldset class="form-section"><legend>Character flags</legend><div class="form-stack">
+      <label class="check"><input name="admin_privileges" type="checkbox" ${p.admin_privileges ? "checked" : ""}>Game administrator</label>
+      <label class="check"><input name="admin_name_color" type="checkbox" ${p.admin_name_color ? "checked" : ""}>Administrator name colour</label>
+      <p class="help">The administrator flag carries the <code>!</code> chat commands and administrator-only client input; the colour only changes how the name looks to other players. Both are saved on the character and survive restarts, and can be set while offline. Chat rights update an online character immediately, but the game client reads the flag when it enters a map, so change map or relog for administrator input.</p>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="form-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Save privileges</button></div></form>`);
+}
+
+function bindPrivileges(p, id) {
+  $("#privilege-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]");
+    const values = new FormData(form), changes = {};
+    for (const [key, label] of privileges) {
+      const granted = values.has(key);
+      if (granted !== p[key]) changes[key] = granted;
+    }
+    button.disabled = true;
+    try {
+      if (!Object.keys(changes).length) throw new Error("No changes to save.");
+      const summary = privileges.filter(([key]) => key in changes)
+        .map(([key, label]) => `${label} ${changes[key] ? "granted" : "revoked"}`).join(", ");
+      if (!(await confirmAction("Save game administrator privileges?", `${p.name}: ${summary}.`, "Save privileges"))) return;
+      await api(`/api/characters/${id}/privileges`, {changes, reason: values.get("reason")});
+      notice(`Privileges saved: ${summary}.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) { formError(error); } finally { button.disabled = false; }
+  });
+}
+
+function identitySection(p, range) {
+  const level = range ? `<label>Level<input name="level" type="number" min="${range[0]}" max="${range[1]}" step="1" value="${p.level}"><small>This class can be between level ${range[0]} and ${range[1]}. Experience is set to the start of the new level.</small></label>`
+    : `<label>Level<input name="level" type="number" value="${p.level}" disabled><small>This class has no authored levels to choose from.</small></label>`;
+  return section("Name and level", `<form id="identity-form" class="form-page">
+    <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
+      <label>Name<input name="name" type="text" maxlength="32" value="${esc(p.name)}" autocomplete="off" spellcheck="false" dir="auto"><small>Up to 32 characters, no leading or trailing spaces. No other character may already use it.</small></label>
+      ${level}
+    </div>
+      <p class="help">Works while the character is offline. Change only what you want to edit; the other field is left alone. Renaming updates the roster, the saved profile and chat, but other players see the new name when that character next enters a map. Moving to a different level resets its experience to that level's authored starting value and does not grant talents or recompute gear.</p>
+    </fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="identity-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Save name and level</button></div></form>`);
+}
+
+function bindIdentity(p, id, range) {
+  $("#identity-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]");
+    const values = new FormData(form), changes = {};
+    button.disabled = true;
+    try {
+      const name = String(values.get("name"));
+      if (name !== p.name) changes.name = name;
+      if (range) {
+        const level = Number(values.get("level"));
+        if (!Number.isInteger(level) || level < range[0] || level > range[1])
+          throw new Error(`Level must be a whole number between ${range[0]} and ${range[1]}.`);
+        if (level !== p.level) changes.level = level;
+      }
+      if (!Object.keys(changes).length) throw new Error("No changes to save.");
+      const summary = ["name" in changes ? `renamed to ${changes.name}` : "",
+        "level" in changes ? `now level ${changes.level}` : ""].filter(Boolean).join(", ");
+      if (!(await confirmAction("Save name and level?", `${p.name}: ${summary}.`, "Save name and level"))) return;
+      await api(`/api/characters/${id}/identity`, {changes, reason: values.get("reason")});
+      notice(`Saved: ${summary}.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#identity-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
+function wisdomSection(wisdom) {
+  const [minimum, maximum] = wisdom.range;
+  return section("Wisdom Level", `<form id="wisdom-form" class="form-page">
+    <fieldset class="form-section"><legend>Ancient Wisdom</legend><div class="form-grid">
+      <label>Current Wisdom Level<input value="${wisdom.level}" disabled><small>${Number(wisdom.experience).toLocaleString()} Wisdom XP</small></label>
+      <label>Set Wisdom Level<input name="level" type="number" min="${minimum}" max="${maximum}" step="1" value="${wisdom.level}" required>
+        <small>Choose a level from ${minimum} to ${maximum}. The required Wisdom XP will be assigned.</small></label>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="wisdom-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Set Wisdom Level</button></div></form>`);
+}
+
+function bindWisdom(wisdom, id) {
+  $("#wisdom-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]");
+    const values = new FormData(form), level = Number(values.get("level"));
+    button.disabled = true;
+    try {
+      if (!Number.isInteger(level) || level < wisdom.range[0] || level > wisdom.range[1])
+        throw new Error(`Wisdom Level must be a whole number between ${wisdom.range[0]} and ${wisdom.range[1]}.`);
+      if (level === wisdom.level) throw new Error("Choose a different Wisdom Level.");
+      if (!(await confirmAction("Set Wisdom Level?", `${wisdom.level} → ${level}.`, "Set level"))) return;
+      await api(`/api/characters/${id}/wisdom`, {level, reason: values.get("reason")});
+      notice(`Wisdom Level set to ${level}.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#wisdom-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
+function inventoryCopySection(id, itemCount) {
+  return section("Copy items to another character", `<form id="inventory-copy-form" class="form-page">
+    <fieldset class="form-section"><legend>Destination</legend><div class="form-stack">
+      <label>Target character ID<input name="target_character_id" type="number" min="1" step="1" required>
+        <small>Copies all ${itemCount} owned item records, including equipped and overflow items. Existing target items are kept.</small></label>
+      <p class="help">The target must be online and fully loaded into a map. If the source is online, it must also be fully loaded; offline sources need saved gameplay state. Copies receive new item IDs. Equipped source items are added to available storage; no character progress or currencies are copied.</p>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="inventory-copy-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Copy all items</button></div></form>`);
+}
+
+function bindInventoryCopy(id) {
+  $("#inventory-copy-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]");
+    const values = new FormData(form), targetId = Number(values.get("target_character_id"));
+    button.disabled = true;
+    try {
+      if (!Number.isSafeInteger(targetId) || targetId <= 0)
+        throw new Error("Enter a valid target character ID.");
+      if (!(await confirmAction("Copy all items?",
+        `Copy this character's full item inventory to online character ${targetId}? Existing target items will be kept.`,
+        "Copy all items"))) return;
+      const result = await api(`/api/characters/${id}/copy-inventory`, {
+        target_character_id: targetId, reason: values.get("reason")
+      });
+      notice(`Copied ${result.items_copied} items from ${result.source_name} to ${result.target_name}.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#inventory-copy-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
 
 function location(item, inventory) {
   for (const [field, name] of Object.entries(containers)) {
@@ -40,14 +192,19 @@ export async function characterPage(route) {
       ["Character ID", p.character_id], ["Class", esc(classes[p.class_id] || p.class_id)], ["Level", p.level],
       ["Presence", status(data.online ? "Online" : "Offline", data.online ? "good" : "")],
       ["Saved map", `<code>${esc(s?.map_id || p.map_id)}</code>`], ["Last saved", esc(date(s?.saved_at))],
-      ["Game admin privileges", p.admin_privileges ? "Yes" : "No"]
+      ["Game admin privileges", status(p.admin_privileges ? "Granted" : "Not granted", p.admin_privileges ? "good" : "")],
+      ["Admin name colour", p.admin_name_color ? "Yes" : "No"]
     ])) + section("Membership and PvP", facts([
       ["Membership", s?.membership?.active ? (s.membership.type === 2 ? "Deluxe" : `Type ${s.membership.type}`) : "Inactive"],
       ["Membership expires", esc(date(s?.membership?.expires_at))], ["PvP enabled", s?.pvp_enabled ? "Yes" : "No"],
       ["Honor points", esc(s?.honor_points ?? 0)], ["Wins / losses", `${s?.pvp_matches_won ?? 0} / ${s?.pvp_matches_lost ?? 0}`],
       ["Kills / deaths", `${s?.pvp_kills ?? 0} / ${s?.pvp_deaths ?? 0}`], ["Title", esc(s?.achievement_title || "None")]
     ])) + '</div>';
+    result.html += identitySection(p, data.level_range) + privilegeSection(p);
+    result.mount = () => { bindIdentity(p, id, data.level_range); bindPrivileges(p, id); };
     if (s) {
+      result.html += wisdomSection(data.wisdom);
+      result.mount = () => { bindIdentity(p, id, data.level_range); bindWisdom(data.wisdom, id); bindPrivileges(p, id); };
       const balances = {...s.currencies}; delete balances.game;
       result.html += '<div class="columns">' + section("Currencies", table(["Currency", "Balance"], Object.entries(balances).map(([k, v]) => [esc(human(k)), esc(v)]))) +
         section("Additional currencies", table(["Currency", "Balance"], Object.entries(s.currencies.game || {}).map(([k, v]) => [esc(human(k)), esc(v)]))) + '</div>';
@@ -62,6 +219,8 @@ export async function characterPage(route) {
   } else if (tab === "inventory") {
     if (route.parts[3]) return inventoryItemPage(result, route, data);
     const inventory = s.inventory, all = inventory.items || [];
+    const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
+      (inventory.premium_storage_overflow || []).length;
     const counts = {};
     for (const item of all) { const where = location(item, inventory).name; counts[where] = (counts[where] || 0) + 1; }
     let rows = all.filter(item => (!route.params.container || location(item, inventory).name === route.params.container) &&
@@ -69,7 +228,8 @@ export async function characterPage(route) {
     const offset = Math.max(0, Number(route.params.offset) || 0), total = rows.length;
     rows = rows.slice(offset, offset + 50);
     const options = ["", ...Object.keys(counts)].map(name => `<option value="${esc(name)}" ${route.params.container === name ? "selected" : ""}>${name ? `${esc(name)} (${counts[name]})` : "All containers"}</option>`).join("");
-    result.html += `<p class="muted">${all.length} item records · ${Object.keys(inventory.storage_58 || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.storage_a8 || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
+    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_58 || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.storage_a8 || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
+      inventoryCopySection(id, itemCount) +
       toolbar(route, "Search template or item ID", `<select id="container-filter" aria-label="Inventory container">${options}</select>`) +
       table(["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], rows.map(item => {
         const where = location(item, inventory);
@@ -78,6 +238,7 @@ export async function characterPage(route) {
           `${(item.socketed_templates || []).filter(Boolean).length} / ${item.socket_count}`];
       }), "No items match this filter.") + pager({total, offset, limit: 50}, route);
     result.mount = () => {
+      bindInventoryCopy(id);
       bindSearch(route);
       $("#container-filter").addEventListener("change", event => navigate(route.path, {...route.params, container: event.target.value, offset: 0}));
     };

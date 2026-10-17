@@ -636,14 +636,17 @@ class Session:
         # trigger-volume occupancy (see services/map_events.py).
         self.gameplay_map_event_runtime = None
         self.gameplay_trigger_volumes_inside = set()
+        self.gameplay_trigger_volumes_last_position = None
         self.gameplay_last_visited_town = ""
         # Actual character discoveries, independent of development travel unlocks.
         self.gameplay_unlocked_maps = set()
         self.gameplay_admin_all_maps = False
+        self.gameplay_gm_invulnerable = False
         self.gameplay_respawn_allowed = False
         self.gameplay_death_pending = False
         self.gameplay_respawn_in_progress = False
         self.gameplay_revive_movement_until = 0.0
+        self.gameplay_respawn_protection_instance_id = None
         self.gameplay_exit_inside_guids = set()
         self.gameplay_exit_distances = {}
         self.gameplay_exit_callback = None
@@ -663,8 +666,7 @@ class Session:
         self.gameplay_initialization_timer = None
         self.gameplay_client_command_counts = {}
         self.gameplay_last_move = None
-        # services/movement_validation.py: the running budget (metres), a movement
-        # skill's open path (origin, destination, expiry) and the last correction.
+        # Movement validation budget and one-shot movement-skill path.
         self.gameplay_move_budget = 0.0
         self.gameplay_movement_allowance = None
         self.gameplay_move_correction_at = 0.0
@@ -676,6 +678,7 @@ class Session:
         self.gameplay_pending_monster_movements = {}
         self.gameplay_pending_monster_movement_combat = None
         self.gameplay_announced_monster_actor_ids = set()
+        self.gameplay_announced_npc_actor_ids = set()
         self.gameplay_requested_actor_ids = set()
         self.gameplay_monsters_spawned = False
         self.gameplay_spawned_monster_actor_ids = set()
@@ -687,6 +690,8 @@ class Session:
         self.gameplay_delivered_monster_positions = {}
         self.gameplay_no_target_cast_streak = 0
         self.gameplay_last_monster_resync_at = 0.0
+        self.gameplay_last_tier_spender_shuffle_at = 0.0
+        self.gameplay_last_tier_spender_shuffle_backpressure_log_at = 0.0
         self.gameplay_summon_actor_ids = set()
         # Native NewLocationEffect/DiscardLocationEffect registrations are
         # client-local just like monster and item registrations.
@@ -769,6 +774,7 @@ class Session:
         self.gameplay_membership_type = DELUXE_MEMBERSHIP
         self.gameplay_membership_expires_at = default_deluxe_expiry()
         self.gameplay_membership_active = True
+        self.gameplay_membership_status_effect_ids = frozenset()
         self.gameplay_premium_bag_timer = None
         self.gameplay_premium_bag_deadline = None
         self.gameplay_vendor_buyback = ()
@@ -780,6 +786,7 @@ class Session:
         self.gameplay_event_progress = {}
         self.gameplay_wanted_thief = None
         self.gameplay_daily_challenges = None
+        self.gameplay_tier_spender_challenges = ()
         self.gameplay_event_participation = {}
         self.gameplay_pending_travel_item = None
         # Immutable process-cache reference; never serialized.
@@ -1149,6 +1156,15 @@ class Session:
     def reliable_backlog_size(self) -> int:
         with self.pending_lock:
             return len(self.pending_reliable)
+
+    def pending_reliable_count_for_label(self, label: str) -> int:
+        """Count unacknowledged reliable datagrams for one response type."""
+
+        with self.pending_lock:
+            return sum(
+                1 for item in self.pending_reliable.values()
+                if item.get('label') == label
+            )
 
     def retransmit(
             self, sequences, interval=NAK_RETRANSMIT_GRACE_SECONDS,

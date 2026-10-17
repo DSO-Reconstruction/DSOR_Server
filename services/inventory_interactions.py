@@ -201,31 +201,112 @@ class InventoryInteractionService:
         )
 
     def _active_npc_definitions(self, s: Session) -> tuple[LocalNPCDefinition, ...]:
-        """Use the map instance's event sets for both dialogs and quest refreshes."""
+        """Use the map instance's event sets for both dialogs and quest refreshes.
+
+        Quest-gated NPCs (e.g. a0002 hub smith_01/spellweaver_01 behind
+        a0002_start_hub_02/04) have no map-local event driving them, so the
+        shared runtime never enables their set. The quest log is the durable
+        record of which gated target the player is meeting, so its open
+        encounter/talk steps re-activate their flags per player
+        (see _quest_reveal_flags).
+        """
         gameplay_map = s.gameplay_map or DEFAULT_GAMEPLAY_MAP
+        try:
+            reveal = frozenset(
+                CharacterService._quest_reveal_flags(self, s, gameplay_map)
+            )
+        except Exception:
+            reveal = frozenset()
         runtime = getattr(s, "gameplay_map_event_runtime", None)
+        # _load_initialization_world publishes NPCs using the selected map
+        # access group's event flag. Keep that flag in the request-side
+        # catalog too, regardless of whether this session has a live shared
+        # event runtime; otherwise the client can see the NPC but its
+        # NPCRequest/Encounter actor id cannot be resolved after a map hop.
+        access_group_flag = frozenset()
+        access_group_id = getattr(s, "gameplay_map_access_group_id", None)
+        if access_group_id:
+            access_group_flag = frozenset(
+                (str(access_group_id).casefold(),)
+            )
         if runtime is None:
-            return load_local_npc_definitions(
+            active = frozenset(
+                CharacterService._event_catalog(self).active_event_flags()
+            ) | frozenset(reveal) | access_group_flag
+            definitions = load_local_npc_definitions(
                 self.static_database_path, gameplay_map,
                 include_inactive_event_sets=False,
-                active_event_flags=CharacterService._event_catalog(self).active_event_flags(),
+                active_event_flags=active,
             )
+            if NPC_TRACE:
+                print(
+                    f"[NPC-TRACE] _active_npc_definitions(runtime=None) "
+                    f"map={gameplay_map!r} flags={sorted(active)} "
+                    f"access_group={getattr(s, 'gameplay_map_access_group_id', None)!r} "
+                    f"npc_count={len(definitions)}"
+                )
+            return definitions
         with runtime.lock:
-            enabled = frozenset(runtime.enabled_event_sets)
-        return tuple(
-            definition for definition in load_local_npc_definitions(
-                self.static_database_path, gameplay_map,
-                include_inactive_event_sets=True,
+            running = frozenset(runtime.active_flags())
+        try:
+            scheduled = frozenset(
+                CharacterService._event_catalog(self).active_event_flags()
             )
-            if definition.event_set_row < 0 or definition.event_set_row in enabled
+        except Exception:
+            scheduled = frozenset()
+        # Quest reveal only covers sets no map-local event can drive (hub
+        # smith_01/spellweaver_01). Event-driven sets (tutorial spellweaver)
+        # stay gated on the running event so the instance's phasing and the
+        # relog-republish test keep their meaning.
+        try:
+            catalog = runtime.catalog
+            reveal = frozenset(
+                flag for flag in reveal
+                if (lambda ev: ev is None or not ev.applies_to(gameplay_map))(
+                    catalog.event(str(flag).casefold())
+                )
+            )
+        except Exception:
+            pass
+        active = (
+            frozenset(running)
+            | frozenset(scheduled)
+            | frozenset(reveal)
+            | access_group_flag
         )
+        definitions = load_local_npc_definitions(
+            self.static_database_path, gameplay_map,
+            include_inactive_event_sets=False,
+            active_event_flags=active,
+        )
+        if NPC_TRACE:
+            print(
+                f"[NPC-TRACE] _active_npc_definitions(runtime=active) "
+                f"map={gameplay_map!r} flags={sorted(active)} "
+                f"running={sorted(running)} npc_count={len(definitions)}"
+            )
+        return definitions
 
     def _resolve_npc_interaction(self, s: Session, actor_id: int) -> LocalNPCDefinition | None:
         definitions = CharacterService._active_npc_definitions(self, s)
         if int(actor_id) != 0:
-            return next((d for d in definitions if int(actor_id) in {
+            result = next((d for d in definitions if int(actor_id) in {
                 int(d.actor_id), local_npc_actor_id(d),
             }), None)
+            if NPC_TRACE:
+                if result is not None:
+                    print(
+                        f"[NPC-TRACE] _resolve_npc_interaction "
+                        f"actor_id={actor_id} found=yes "
+                        f"template={result.template_id!r}"
+                    )
+                else:
+                    print(
+                        f"[NPC-TRACE] _resolve_npc_interaction "
+                        f"actor_id={actor_id} found=NO "
+                        f"(searched {len(definitions)} defs)"
+                    )
+            return result
         # Static-scene NPCs may request their role with actor zero before
         # their dynamic actor is attached. Keep the existing proximity limit.
         with s.flow_lock:
@@ -237,6 +318,8 @@ class InventoryInteractionService:
             if encounter is not None and last_move is not None else spawn_position
         )
         if player_position is None:
+            if NPC_TRACE:
+                print("[NPC-TRACE] actor zero has no player position")
             return None
 
         def distance(candidate):
@@ -248,26 +331,21 @@ class InventoryInteractionService:
         definition = min(definitions, key=distance, default=None)
         return definition if definition is not None and distance(definition) <= 8.0 else None
 
-    def _handle_npc_encounter(self, s: Session, payload: bytes) -> None:
-        request = decode_simple_gameplay_command(payload)
-        CharacterService._accept_gameplay_state_command(s, ENCOUNTER_COMMAND)
-        with s.flow_lock:
-            s.gameplay_client_command_state[ENCOUNTER_COMMAND] = request
-        definition = CharacterService._resolve_npc_interaction(self, s, request.value)
-        if definition is not None:
-            CharacterService._quest_on_npc_encounter(self, s, definition.template_id)
-
-    def _handle_npc_request(self, s: Session, payload: bytes) -> None:
-        request = decode_simple_gameplay_command(payload)
-        CharacterService._accept_gameplay_state_command(s, 0x0029)
-        with s.flow_lock:
-            s.gameplay_client_command_state[0x0029] = request
-        definition = CharacterService._resolve_npc_interaction(self, s, request.value)
-        response_actor_id = 0 if int(request.value) == 0 else None
+    def _process_npc_interaction(self, s: Session, actor_id: int, *, label: str) -> None:
+        definition = CharacterService._resolve_npc_interaction(self, s, actor_id)
         if definition is None:
+            if NPC_TRACE:
+                print(
+                    f"[NPC-TRACE] _process_npc_interaction {label} "
+                    f"FAILED: actor_id={actor_id} map={s.gameplay_map!r} "
+                    f"access_group="
+                    f"{getattr(s, 'gameplay_map_access_group_id', None)!r} "
+                    f"runtime_attached="
+                    f"{getattr(s, 'gameplay_map_event_runtime', None) is not None}"
+                )
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] NPCRequest references unknown "
-                f"local actor {request.value}"
+                f"[{GAMEPLAY_SERVICE_NAME}] {label} references unknown "
+                f"local actor {actor_id}"
             )
             return
 
@@ -275,7 +353,11 @@ class InventoryInteractionService:
         # the dialog that follows already offers the turn-in (retail order).
         CharacterService._quest_on_npc_encounter(self, s, definition.template_id)
         npc_info = CharacterService._quest_decorate_npc_info(
-            self, s, local_npc_info(definition, actor_id=response_actor_id),
+            # Actor 0 is a client-side proximity lookup, not the NPC's
+            # identity. Once resolved, return NPCInfo under the concrete
+            # actor the client knows from NewNPC; an actor-0 response cannot
+            # be matched to the clicked NPC and its interaction list is lost.
+            self, s, local_npc_info(definition),
             definition.template_id,
         )
         with s.flow_lock:
@@ -289,9 +371,135 @@ class InventoryInteractionService:
             label="npc-info-response",
         )
         print(
-            f"[{GAMEPLAY_SERVICE_NAME}] handled NPCRequest for "
+            f"[{GAMEPLAY_SERVICE_NAME}] handled {label} for "
             f"{definition.template_id!r} actor {npc_info.actor_id}: "
             f"sent typed NPCInfo category {npc_info.category}"
+        )
+
+    def _handle_npc_encounter(self, s: Session, payload: bytes) -> None:
+        request = decode_simple_gameplay_command(payload)
+        CharacterService._accept_gameplay_state_command(s, ENCOUNTER_COMMAND)
+        with s.flow_lock:
+            s.gameplay_client_command_state[ENCOUNTER_COMMAND] = request
+        self._process_npc_interaction(s, request.value, label="EncounterCommand")
+
+    def _handle_npc_request(self, s: Session, payload: bytes) -> None:
+        request = decode_simple_gameplay_command(payload)
+        CharacterService._accept_gameplay_state_command(s, 0x0029)
+        with s.flow_lock:
+            s.gameplay_client_command_state[0x0029] = request
+        self._process_npc_interaction(s, request.value, label="NPCRequest")
+
+    def _handle_enchantment_transfer(self, s: Session, request) -> None:
+        """Exchange all or one selected enchantment between two workbench items."""
+
+        with s.flow_lock:
+            inventory = copy.deepcopy(s.gameplay_inventory)
+            currency = s.gameplay_currency_state
+            next_item_id = s.gameplay_next_item_id
+        try:
+            if inventory is None or currency is None:
+                raise ValueError("player inventory is not initialized")
+            recipe_key = str(request.recipe_id).strip().casefold()
+            if recipe_key[-1:].isdigit():
+                recipe_key = recipe_key[:-1]
+            normalized_recipe = "".join(
+                character for character in recipe_key if character.isalnum()
+            )
+            is_transfer_recipe = "enchantmenttransfer" in normalized_recipe
+            all_transfer = is_transfer_recipe and (
+                "all" in normalized_recipe
+                or normalized_recipe == "enchantmenttransfer"
+                or (
+                    int(request.field_10) == 0xFFFFFFFF
+                    and int(request.field_14) == 0xFFFFFFFF
+                )
+            )
+            single_transfer = is_transfer_recipe and not all_transfer
+            if not (all_transfer or single_transfer):
+                raise ValueError(
+                    "payment selector 5 has unsupported crafting rule "
+                    f"{request.recipe_id!r}"
+                )
+            if len(request.item_ids) != 2 or int(request.amount) != 1:
+                raise ValueError(
+                    "enchantment transfer requires exactly two items and one execution"
+                )
+            first_id, second_id = (int(value) for value in request.item_ids)
+            if first_id == second_id:
+                raise ValueError("enchantment transfer requires two different items")
+
+            builder = InventoryMutationBuilder(inventory, next_item_id)
+            first = builder.item(first_id)
+            second = builder.item(second_id)
+            first_enchantments = copy.deepcopy(first.enchantments)
+            second_enchantments = copy.deepcopy(second.enchantments)
+            if not first_enchantments or not second_enchantments:
+                raise ValueError(
+                    "both items need at least one enchantment to transfer"
+                )
+            first_index = int(request.field_10)
+            second_index = int(request.field_14)
+            if all_transfer:
+                # All-transfer exchanges the complete enchantment sets. Item
+                # rarities can provide different line counts, so requiring
+                # equal lengths incorrectly rejected otherwise valid pairs.
+                first.enchantments = second_enchantments
+                second.enchantments = first_enchantments
+            else:
+                if not (
+                    0 <= first_index < len(first_enchantments)
+                    and 0 <= second_index < len(second_enchantments)
+                ):
+                    raise ValueError(
+                        "selected enchantment position is outside its item"
+                    )
+                first_enchantments[first_index], second_enchantments[second_index] = (
+                    second_enchantments[second_index],
+                    first_enchantments[first_index],
+                )
+                first.enchantments = first_enchantments
+                second.enchantments = second_enchantments
+
+            builder.changed_items.extend(
+                (copy.deepcopy(first), copy.deepcopy(second))
+            )
+            mutation = builder.finish()
+            mutation.delta.field_1e0 = False
+            result_items = tuple(copy.deepcopy(item) for item in mutation.changed_items)
+            packet, packet_bits = encode_server_command_batch(
+                (
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(
+                        CRAFTING_RESULT_COMMAND,
+                        CraftingResult(
+                            status=0,
+                            items=result_items,
+                            result_type=3,
+                            item_relations=(),
+                            field_70=0,
+                        ),
+                        0,
+                    ),
+                ),
+                include_terminator=True,
+            )
+        except (OSError, ValueError) as exc:
+            print(f"[{GAMEPLAY_SERVICE_NAME}] rejected enchantment transfer: {exc}")
+            return
+        with s.flow_lock:
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = mutation.next_item_id
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="workbench-enchantment-transfer"
+        )
+        CharacterService._request_account_save(
+            s, "workbench enchantments transferred", flush=True
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] transferred enchantments between "
+            f"items {first_id} and {second_id}"
         )
 
     def _handle_crafting(self, s: Session, payload: bytes) -> None:
@@ -299,6 +507,10 @@ class InventoryInteractionService:
         CharacterService._accept_gameplay_state_command(s, CRAFTING_COMMAND)
         with s.flow_lock:
             s.gameplay_client_command_state[CRAFTING_COMMAND] = request
+        if request.payment_currency == 5:
+            self._handle_enchantment_transfer(s, request)
+            return
+        with s.flow_lock:
             inventory = copy.deepcopy(s.gameplay_inventory)
             currency = s.gameplay_currency_state
             next_item_id = s.gameplay_next_item_id
@@ -372,6 +584,16 @@ class InventoryInteractionService:
                 recipe.price,
                 request.payment_currency,
                 craft_count,
+                player_level=int(character.level),
+                # Keep a mixed rolling deployment of the interaction handler
+                # and recipe protocol backward-compatible. Older recipe
+                # objects do not carry the scaling flags yet.
+                scale_rc_to_player_level=getattr(
+                    recipe, "scale_price_rc", False
+                ),
+                scale_vc_to_player_level=getattr(
+                    recipe, "scale_price_vc", False
+                ),
             )
             updated_currency, updated_ic = debit_currency(
                 currency,

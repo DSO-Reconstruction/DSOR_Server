@@ -23,6 +23,8 @@ import random
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_map_state import (
+    LOCAL_NPC_ACTOR_BASE,
+    load_local_event_set_flags,
     load_local_npc_definitions,
     local_npc_actor_id,
     local_npc_info,
@@ -46,12 +48,17 @@ from dso_server.gameplay.quest_content import (
 from dso_server.paths import DEFAULT_QUESTS_PATH
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.gameplay_protocol import (
+    ActorsEnterVicinity,
+    ActorsEnterVicinityBatch,
+    ActorPlacement,
     NPC_INFO_COMMAND,
     NPCBatch,
     NPCFlag,
     NPCInfo,
     NPCInteraction,
     NPCStringSet,
+    NewNPC,
+    encode_actors_enter_vicinity_batch,
     encode_npc_batch,
 )
 from dso_server.protocol.loot_protocol import _credit_currency
@@ -174,6 +181,66 @@ class QuestService:
                 active |= runtime.running_events()
         return active
 
+    def _quest_reveal_flags(self, s: Session, map_id: str) -> frozenset[str]:
+        """Declare the event sets a live quest's meeting target hides behind.
+
+        A map-local event reveals its EventSet content only in the instance
+        that ran it, so a character that relogs after the reveal but before
+        the meeting finds nobody standing there and can never finish the
+        task. The quest log is the durable record of how far the player got,
+        so its open encounter/talk steps re-activate the flags their target
+        NPC is authored behind.
+        """
+
+        wanted = {str(map_id).casefold()}
+        catalog = self._quest_catalog()
+        targets = set()
+        for quest_id, progress in _quest_log(s).items():
+            quest = catalog.quest(quest_id)
+            if quest is None:
+                continue
+            for task in active_tasks(quest, progress):
+                if task.maps and not task.maps & wanted:
+                    continue
+                for event in task.events:
+                    if not event.value:
+                        continue
+                    if event.kind == "encounter":
+                        targets.add(event.value.casefold())
+                    elif event.kind == "talk":
+                        # Talk events name the dialog, not the NPC; the
+                        # task's dialog table maps it to the meeting target.
+                        actor = task.dialogs.get(event.value)
+                        if actor:
+                            targets.add(actor.casefold())
+                        else:
+                            # Fall back to quest-wide dialog lookup in case
+                            # the event value is the bare dialog short name.
+                            for dialog_id, dialog_actor in task.dialogs.items():
+                                if dialog_id.casefold().endswith(
+                                    event.value.casefold()
+                                ):
+                                    targets.add(dialog_actor.casefold())
+                                    break
+        if not targets:
+            return frozenset()
+        gated = {
+            definition.template_id.casefold(): definition.event_set_row
+            for definition in load_local_npc_definitions(
+                self.static_database_path,
+                map_id,
+                include_inactive_event_sets=True,
+            )
+        }
+        declarations = load_local_event_set_flags(self.static_database_path, map_id)
+        return frozenset({
+            flag
+            for target in targets
+            for row in (gated.get(target),)
+            if row is not None and row >= 0
+            for flag in declarations.get(row, frozenset())
+        })
+
     @staticmethod
     def _restore_quest_state(s: Session, persisted_state) -> None:
         documents = getattr(persisted_state, "quest_log", None) or {}
@@ -256,6 +323,57 @@ class QuestService:
             if rule is not None and rule.event_type in {"playerenteredmap", "playerenteredmapid"}:
                 if self._quest_entry_signal_matches(s, rule):
                     self._quest_on_signal(s, rule.signal_id)
+        # Clear-region objectives drive the client's remaining-monster
+        # counter. Retail normally asks for this tracker from the UI, but
+        # map-bound challenges can start automatically without that request.
+        # Select the active objective on this map and publish its initial
+        # monster set so the counter is visible immediately on entry.
+        map_keys = {
+            str(value).casefold()
+            for value in (
+                s.gameplay_map,
+                getattr(s, "gameplay_map_access_id", ""),
+                getattr(s, "gameplay_map_access_group_id", ""),
+            )
+            if value
+        }
+        catalog = self._quest_catalog()
+        tracking = getattr(s, "gameplay_quest_tracking", None)
+        tracking_is_current = False
+        if tracking:
+            tracked_id, tracked_task_index = tracking
+            tracked_progress = next((progress for quest_id, progress in _quest_log(s).items()
+                                     if quest_id.casefold() == str(tracked_id).casefold()), None)
+            tracked_quest = catalog.quest(tracked_id)
+            if tracked_progress is not None and tracked_quest is not None:
+                tracking_is_current = any(
+                    task.index == int(tracked_task_index)
+                    and (not task.maps or bool(map_keys.intersection(
+                        value.casefold() for value in task.maps
+                    )))
+                    for task in active_tasks(tracked_quest, tracked_progress)
+                )
+        # A stale or unrelated tracker must not hide the current dungeon's
+        # map-bound clear-region objective. Keep an active objective that
+        # really belongs to this map, but replace tracking left over from a
+        # previous map or a quest whose task has already advanced.
+        if not tracking_is_current:
+            s.gameplay_quest_tracking = None
+            for quest_id, progress in _quest_log(s).items():
+                quest = catalog.quest(quest_id)
+                if quest is None or not quest.bound_to_map:
+                    continue
+                task = next((task for task in active_tasks(quest, progress)
+                             if task.clear_regions
+                             and (not task.maps or bool(
+                                 map_keys.intersection(
+                                     value.casefold() for value in task.maps
+                                 )
+                             ))), None)
+                if task is not None:
+                    s.gameplay_quest_tracking = (quest.quest_id, task.index)
+                    self._quest_send_monster_indication(s)
+                    break
         # Shared dungeons may already be cleared when another player joins.
         # Reconcile against the actual population, never an empty spawn table.
         self._quest_check_cleared_regions(s)
@@ -273,6 +391,14 @@ class QuestService:
                 quest_id, progress.state, progress.finished_mask, counters,
                 progress.completed_at,
             ))
+        if os.getenv("DSO_NPC_TRACE") == "1":
+            print(
+                "[npc-trace] QuestLogInfo: "
+                + ", ".join(
+                    f"{quest_id}(state={progress.state},mask={progress.finished_mask})"
+                    for quest_id, progress in _quest_log(s).items()
+                )
+            )
         return QuestLogInfo(tuple(entries))
 
     def _quest_chapter_progress(self, s: Session) -> ChapterProgress:
@@ -537,8 +663,7 @@ class QuestService:
             return tuple(commands)
         by_actor = {}
         for definition in definitions:
-            # Match the actor published by NewNPC/NPCInfo. Arena merchants
-            # use a separate actor range from their static row-derived IDs.
+            # Match the row-ordered actor published by NewNPC/NPCInfo.
             by_actor.setdefault(local_npc_actor_id(definition), definition.template_id)
         decorated = []
         for command in commands:
@@ -551,6 +676,19 @@ class QuestService:
                         command.actor_id,
                     )
             decorated.append(command)
+        if os.getenv("DSO_NPC_TRACE") == "1":
+            print(
+                "[npc-trace] decorated init NPCInfo: "
+                + ", ".join(
+                    f"actor{command.value.actor_id}"
+                    f"/{by_actor.get(int(command.value.actor_id), '?')}"
+                    f"[cat={command.value.category:#04x} "
+                    f"tpl={command.value.template_id!r} "
+                    f"inter={[(i.field_08, i.source, i.target) for i in command.value.interactions]}]"
+                    for command in decorated
+                    if command.command_id == NPC_INFO_COMMAND
+                )
+            )
         return tuple(decorated)
 
     def _quest_npc_info_commands(self, s: Session) -> tuple[ServerCommand, ...]:
@@ -585,8 +723,123 @@ class QuestService:
     def _quest_refresh_npc_infos(self, s: Session) -> None:
         """Send the NPCInfo refresh on its own (outside a quest batch)."""
 
+        self._quest_spawn_revealed_npcs(s)
         self._send_quest_commands(
             s, self._quest_npc_info_commands(s), label="quest-npc-info",
+        )
+
+    def _quest_spawn_revealed_npcs(self, s: Session) -> None:
+        """Send NewNPC for quest-gated targets the client has no actor for.
+
+        NPCInfo refreshes alone cannot reveal a gated NPC (hub smith_01 /
+        spellweaver_01, Kingshill event vendors): the client drops NPCInfo
+        for an actor it never created. This sends the missing NewNPC+NPCInfo
+        pair per player, mirroring the map-event path, and records the actor
+        so a later refresh does not resend a duplicate id.
+        """
+
+        try:
+            definitions = CharacterService._active_npc_definitions(self, s)
+        except Exception as exc:
+            _log(f"revealed NPC spawn skipped: {type(exc).__name__}: {exc}")
+            return
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        map_local_event_flags = set()
+        event_set_flags = {}
+        if runtime is not None:
+            try:
+                event_set_flags = load_local_event_set_flags(
+                    self.static_database_path,
+                    s.gameplay_map or DEFAULT_GAMEPLAY_MAP,
+                )
+                for flags in event_set_flags.values():
+                    for flag in flags:
+                        event = runtime.catalog.event(str(flag).casefold())
+                        if event is not None and event.applies_to(runtime.map_id):
+                            map_local_event_flags.add(str(flag).casefold())
+            except Exception as exc:
+                _log(
+                    f"map-local NPC gate lookup failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        with s.flow_lock:
+            announced = set(
+                getattr(s, "gameplay_announced_npc_actor_ids", set()) or set()
+            )
+            missing = tuple(
+                definition for definition in definitions
+                if int(local_npc_actor_id(definition)) not in announced
+                and int(getattr(definition, "event_set_row", -1)) >= 0
+                # Map-local events own their own NewNPC emission. Do not race
+                # that path by materializing the same actor from a quest
+                # refresh after the event flag becomes active.
+                and not (
+                    event_set_flags.get(
+                        int(definition.event_set_row), frozenset()
+                    )
+                    & map_local_event_flags
+                )
+            )
+            claimed_actor_ids = {
+                int(local_npc_actor_id(definition)) for definition in missing
+            }
+            # Event transitions and quest refreshes can discover the same
+            # newly enabled NPC on different threads. Claim its actor id
+            # before releasing the lock so only one sender emits NewNPC.
+            s.gameplay_announced_npc_actor_ids.update(claimed_actor_ids)
+        if not missing:
+            return
+        commands: list = []
+        actor_ids = []
+        for definition in missing:
+            actor_id = int(local_npc_actor_id(definition))
+            actor_ids.append(actor_id)
+            commands.append(NewNPC(
+                template_id=definition.template_id,
+                instance_guid=definition.instance_guid,
+                placement=ActorPlacement(
+                    LOCAL_NPC_ACTOR_BASE, actor_id, 1, False, False
+                ),
+                rotation=definition.rotation,
+                position=definition.position,
+                enabled=True,
+                actor_id=actor_id,
+            ))
+            commands.append(CharacterService._quest_decorate_npc_info(
+                self, s,
+                local_npc_info(definition, actor_id=actor_id),
+                definition.template_id,
+            ))
+        try:
+            vicinity_packet, vicinity_bits = encode_actors_enter_vicinity_batch(
+                ActorsEnterVicinityBatch(
+                    ActorsEnterVicinity(tuple(actor_ids)),
+                    actor_id=0,
+                    commands=(),
+                )
+            )
+            s.send_reliable_ordered(
+                vicinity_packet,
+                track=True,
+                label="quest-revealed-npc-actor-vicinity",
+            )
+            packet, packet_bits = encode_npc_batch(
+                NPCBatch(tuple(commands)), include_actor_vicinity=False,
+            )
+        except Exception as exc:
+            with s.flow_lock:
+                s.gameplay_announced_npc_actor_ids.difference_update(
+                    claimed_actor_ids
+                )
+            _log(f"revealed NPC encode failed: {type(exc).__name__}: {exc}")
+            return
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="quest-revealed-npc",
+        )
+        _log(
+            f"revealed {len(missing)} quest-gated NPC(s) on "
+            f"{s.gameplay_map!r}: "
+            + ", ".join(sorted({d.template_id for d in missing})[:6])
         )
 
     # ------------------------------------------------------------------
@@ -884,6 +1137,8 @@ class QuestService:
             CharacterService._chapter_unlock_commands(self, s, quest.chapter_id)
         )
         self._send_quest_commands(s, commands, label="quest-accept")
+        self._quest_spawn_revealed_npcs(s)
+        self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
@@ -909,6 +1164,13 @@ class QuestService:
             if (s.gameplay_exit_transition_started or log.get(quest.quest_id) is not progress
                     or progress.state == QUEST_STATE_CLOSED):
                 return False
+            # Quest loot carries provenance while it is in the bag. Consume
+            # those items in the same locked hand-in transition; for older
+            # saves, the cleanup helper also recognizes unambiguous QuestItems.
+            mutation = self._quest_cancel_inventory(s, quest)
+            if mutation is not None:
+                s.gameplay_inventory = mutation.inventory
+                s.gameplay_next_item_id = mutation.next_item_id
             progress.state = QUEST_STATE_CLOSED
             progress.completed_at = _now_stamp()
         runtime = getattr(s, "gameplay_map_event_runtime", None)
@@ -917,10 +1179,16 @@ class QuestService:
                 runtime.completed_quests.add(self._quest_run_key(s, quest))
         CharacterService._quest_unlock_maps(self, s, quest.quest_id)
         _log(f"closed {quest.quest_id!r}")
+        if mutation is not None:
+            self._send_quest_commands(s, tuple(ServerCommand(
+                INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
+            ) for record in (mutation.delta, mutation.final)), label="quest-turn-in-items")
         self._quest_grant_rewards(s, quest)
         self._send_quest_commands(s, self._quest_state_commands(
             s, quest.quest_id, QUEST_STATE_CLOSED, progress.completed_at,
         ), label="quest-turn-in")
+        self._quest_spawn_revealed_npcs(s)
+        self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest closed")
         self._quest_fire_signal(s, "PlayerClosedQuest", (quest.quest_id,))
@@ -1212,6 +1480,8 @@ class QuestService:
             + (" -> finished" if result.quest_finished else "")
         )
         self._send_quest_commands(s, commands, label="quest-progress")
+        self._quest_spawn_revealed_npcs(s)
+        self._quest_refresh_map_phases(s)
         for change in result.changes:
             if change.finished:
                 self._quest_fire_signal(
@@ -1240,7 +1510,44 @@ class QuestService:
                 self._quest_feed(s, "kill", template, position=position)
         self._quest_check_shared_cleared_regions(s, counts)
 
+    def _quest_send_tracked_clear_region_indication(
+        self, s: Session, *, group_only: bool = False,
+    ) -> None:
+        """Refresh the visible remaining-mob list from authoritative map state."""
+
+        tracking = getattr(s, "gameplay_quest_tracking", None)
+        if not tracking:
+            return
+        quest_id, task_index = tracking
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next((value for key, value in _quest_log(s).items()
+                         if key.casefold() == str(quest_id).casefold()), None)
+        if quest is None or progress is None or progress.state != QUEST_STATE_ACCEPTED:
+            return
+        map_keys = {
+            str(value).casefold()
+            for value in (
+                s.gameplay_map,
+                getattr(s, "gameplay_map_access_id", ""),
+                getattr(s, "gameplay_map_access_group_id", ""),
+            )
+            if value
+        }
+        task = next((value for value in active_tasks(quest, progress)
+                     if value.index == int(task_index)
+                     and value.clear_regions
+                     and (not value.maps or bool(map_keys.intersection(
+                         item.casefold() for item in value.maps
+                     )))
+                     and (not group_only or value.group)), None)
+        if task is not None:
+            self._quest_send_monster_indication(s)
+
     def _quest_check_shared_cleared_regions(self, s: Session, killed: dict[str, int]) -> None:
+        # Send the new living population before a final kill advances and
+        # closes the clear-region task. The client's counter is derived from
+        # this actor list, so it must receive the empty list at zero as well.
+        self._quest_send_tracked_clear_region_indication(s)
         self._quest_check_cleared_regions(s, killed)
         # ClearRegion describes the shared map population. A group-enabled
         # objective must also finish for participants who did not land the
@@ -1250,6 +1557,9 @@ class QuestService:
         if runtime is not None and combat is not None:
             for peer in self._map_event_sessions(runtime):
                 if peer is not s and peer.gameplay_combat_state is combat:
+                    self._quest_send_tracked_clear_region_indication(
+                        peer, group_only=True,
+                    )
                     self._quest_check_cleared_regions(peer, killed, group_only=True)
 
     def _quest_check_cleared_regions(
@@ -1279,10 +1589,6 @@ class QuestService:
                     templates = {value.strip().casefold() for value in monster.split(";") if value.strip()}
                     if templates.intersection(killed_keys) and not templates.intersection(alive_keys):
                         self._quest_feed(s, "regioncleared", region_id)
-                    elif templates.intersection(killed_keys) and (
-                        getattr(s, "gameplay_quest_tracking", None) == (quest_id, task.index)
-                    ):
-                        self._quest_send_monster_indication(s)
 
     def _quest_on_item_collected(self, s: Session, template_id: str, amount: int = 1,
                                  *, quest_id: str = "") -> None:
@@ -1329,6 +1635,27 @@ class QuestService:
             fire(self, s, event_type, params)
         except Exception as exc:
             _log(f"signal {event_type} failed: {type(exc).__name__}: {exc}")
+
+    def _quest_refresh_map_phases(self, s: Session) -> None:
+        """Re-evaluate map-entry phasing after quest state changed mid-map.
+
+        Entry rules (e.g. hub_02: 02-n accepted + garden unlocked) only fire
+        on map entry. A turn-in on the same map can satisfy them afterwards
+        (garden unlocks while standing in the hub); without a re-entry the
+        phased NPCs would never spawn. Already-running events no-op.
+        """
+
+        try:
+            runtime = getattr(s, "gameplay_map_event_runtime", None)
+            map_id = str(getattr(runtime, "map_id", None) or s.gameplay_map or "")
+            if not runtime or not map_id:
+                return
+            access_group = str(getattr(s, "gameplay_map_access_group_id", "") or "")
+            access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+            self._quest_fire_signal(s, "PlayerEnteredMap", (map_id, access_group, access_id))
+            self._quest_fire_signal(s, "PlayerEnteredMapId", (access_group, access_id, map_id))
+        except Exception as exc:
+            _log(f"map phase refresh failed: {type(exc).__name__}: {exc}")
 
 
 __all__ = ["QuestService"]

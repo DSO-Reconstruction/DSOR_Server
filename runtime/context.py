@@ -119,6 +119,7 @@ from dso_server.protocol.gem_protocol import (
     insert_gem,
     promote_local_loot_equipment_levels,
     remove_gem,
+    upgrade_rune,
     unlock_gem_socket,
 )
 from dso_server.protocol.commerce_protocol import (
@@ -145,6 +146,7 @@ from dso_server.protocol.item_receipt_protocol import (
 )
 from dso_server.protocol.inventory_economy_protocol import (
     CRAFTING_COMMAND,
+    CRAFTING_RESULT_ACCEPTANCE_COMMAND,
     SALVAGE_COMMAND,
     InventoryMutationBuilder,
     crafting_execution_count,
@@ -205,6 +207,8 @@ from dso_server.protocol.gameplay_protocol import (
     InstanceConfigClientInfo,
     ActorStatsUpdate,
     ActorPlacement,
+    ActorsEnterVicinity,
+    ActorsEnterVicinityBatch,
     LocationEffectInfo,
     LocationEffectInfoBatch,
     TrapInfo,
@@ -269,6 +273,7 @@ from dso_server.gameplay.local_map_state import (
     load_local_npc_definitions,
     load_local_npc_shop_id,
     load_local_spawn_position,
+    load_local_travel_point_position,
     load_local_team_entries,
     local_npc_info,
     map_database_path,
@@ -356,6 +361,7 @@ from dso_server.protocol.player_init_protocol import (
     EVENT_PROGRESS_CHANGED_COMMAND,
     EVENT_PROGRESS_INFO_COMMAND,
     EVENT_UPDATE_COMMAND,
+    NEW_NPC_COMMAND,
     EventUpdateEntry,
     EventProgressChanged,
     UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND,
@@ -448,6 +454,7 @@ from dso_server.gameplay.pvp_match_state import (
 )
 from dso_server.protocol.reward_protocol import (
     ACCEPTED_TIER_SPENDER_COMMAND,
+    SHUFFLE_TIER_SPENDER_DEALS_COMMAND,
     ACTIVITY_SIGNIN_PROTOCOL_COMMAND,
     LOCAL_OCP_METHODS,
     LOCAL_OCP_OFFERS,
@@ -461,6 +468,7 @@ from dso_server.protocol.reward_protocol import (
     decode_notification_action,
     decode_ocp_booking_request,
     decode_tier_spender_accept,
+    decode_tier_spender_shuffle,
     load_offer_group_rewards,
     load_payment_signin_rewards,
     load_spender_rewards,
@@ -577,6 +585,7 @@ from dso_server.protocol.world_loot_protocol import (
     decode_pickup_item,
     encode_discard_item_batch,
     encode_new_item_batch,
+    encode_pickup_info_batch,
     encode_world_pickup_response,
     generate_monster_loot,
     prime_world_loot_cache,
@@ -745,6 +754,11 @@ VERBOSE_PACKET_LOGGING = (
 )
 GAMEPLAY_SERVICE_NAME = 'DrasaOnlineMapServer'
 DEFAULT_GAMEPLAY_MAP = 'a0200_kingscity'
+
+# Diagnostic trace flag for NPC interaction and map-transition initialization.
+# Set DSO_NPC_TRACE=1 to print detailed logs for _begin_local_player_initialization,
+# _active_npc_definitions, _resolve_npc_interaction, and _process_npc_interaction.
+NPC_TRACE = os.getenv('DSO_NPC_TRACE', '').strip().casefold() not in ('', '0', 'false', 'no', 'off')
 
 # Temporary local stress-testing switch. When enabled, every monster kill
 # produces health/gold/Andermant plus one equipment item of each of the eight

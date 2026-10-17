@@ -68,6 +68,51 @@ class CombatResolutionService:
     """Combat result serialization and status-effect delivery."""
 
     @staticmethod
+    def _cancel_respawn_protection(s: Session) -> None:
+        """Remove the temporary revive protection after this player hits."""
+
+        timers = []
+        with s.flow_lock:
+            instance_id = getattr(
+                s, "gameplay_respawn_protection_instance_id", None
+            )
+            s.gameplay_respawn_protection_instance_id = None
+            if instance_id is None:
+                return
+            runtime = s.gameplay_runtime_status_effects.pop(
+                int(instance_id), None
+            )
+            for prefix in ("player-status-tick", "runtime-effect-expire"):
+                timer = s.gameplay_projectile_timers.pop(
+                    (prefix, int(instance_id)), None
+                )
+                if timer is not None:
+                    timers.append(timer)
+            server_tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
+            s.gameplay_disabled_feature_cache = None
+        for timer in timers:
+            timer.cancel()
+        if runtime is None:
+            return
+        entry = runtime[0]
+        removal = CharacterService._consumable_cleanup_entry(
+            entry, server_tick=server_tick
+        )
+        value = StatusEffect(False, (removal,))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(
+                value, actor_id=LOCAL_PLAYER_ACTOR_ID
+            ),
+            track=True,
+            label="respawn-protection-cancelled-on-hit",
+        )
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False
+        )
+
+    @staticmethod
     def _send_player_heal_transition(
             s: Session, *, current_health: int, maximum_health: int,
             recovered: int, server_tick: int, label: str,
@@ -122,6 +167,11 @@ class CombatResolutionService:
         inventory = s.gameplay_inventory
         if combat is None or character is None or inventory is None:
             return 0
+        if any(
+            int(getattr(resolution, "damage", 0)) > 0
+            for resolution in resolutions
+        ):
+            CharacterService._cancel_respawn_protection(s)
         stats = calculate_player_combat_stats(
             combat.encounter.static_database_path,
             cache_owner=s,

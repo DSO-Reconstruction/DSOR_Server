@@ -1,10 +1,28 @@
 import { $, esc, api, setSession, hasSession, routeInfo, link, notice } from "./admin_ui.js";
 import { listPage, accountPage, itemPage, bookingPage, auditPage } from "./admin_pages.js";
 import { characterPage } from "./admin_character.js";
-import { newBookingPage } from "./admin_booking.js";
+import { newBookingPage, batchBookingPage } from "./admin_booking.js";
 import { eventsPage, eventPage, newEventPage } from "./admin_events.js";
+import { npcShopsPage, npcShopPage } from "./admin_shops.js";
 
 let generation = 0;
+const THEME_STORAGE_KEY = "dso-admin-theme";
+function applyTheme(theme) {
+  const selected = theme === "dark" ? "dark" : "light";
+  document.documentElement.dataset.theme = selected;
+  const toggle = $("#theme-toggle");
+  if (toggle) {
+    toggle.textContent = selected === "dark" ? "Light theme" : "Dark theme";
+    toggle.setAttribute("aria-pressed", String(selected === "dark"));
+  }
+}
+applyTheme(document.documentElement.dataset.theme);
+$("#theme-toggle").addEventListener("click", () => {
+  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  applyTheme(next);
+  try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch {}
+});
+
 function signedOut() {
   generation++;
   setSession("");
@@ -35,8 +53,10 @@ async function render() {
   try {
     let result;
     const [name, id] = route.parts;
-    if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
+    if (name === "npc-shops") result = id ? await npcShopPage(route) : await npcShopsPage(route);
+    else if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
     else if (name === "bookings" && id === "new") result = await newBookingPage(route);
+    else if (name === "bookings" && id === "batch") result = await batchBookingPage(route);
     else if (name === "accounts" && id) result = await accountPage(route);
     else if (name === "characters" && id) result = await characterPage(route);
     else if (name === "items" && id) result = await itemPage(route);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 import sqlite3
+import threading
 import time
 from dso_server.protocol.currency_protocol import normalize_game_currency_balances
 from dso_server.protocol.inventory_codec import owned_inventory_items
@@ -20,6 +21,19 @@ TUTORIAL_LOGIN_MAPS = frozenset({
     "a0004_start_tomb_dun",
     "a0005_start_fortress_dun",
 })
+# Where a character without a finished tutorial chain must replay the
+# tutorial: the dungeon that opens the act-00 chapter (data/quests.xml,
+# ``a0001-start-tutorial-01-<class>`` from ``a0001_start_starter``).
+TUTORIAL_DUNGEON_MAP = "a0001_start_tutorial_dun"
+# Closing any ``a0001-start-tutorial-03-<class>`` is the gate the hub uses
+# for ``a0002-WayToGrimmagstone-01-n`` (requiredOperator ANY over the four
+# class variants), so having reached that quest is the chain-entry marker.
+TUTORIAL_FINAL_QUESTS = (
+    "a0001-start-tutorial-03-w",
+    "a0001-start-tutorial-03-d",
+    "a0001-start-tutorial-03-r",
+    "a0001-start-tutorial-03-m",
+)
 
 
 class PlayerPersistenceService:
@@ -116,6 +130,19 @@ class PlayerPersistenceService:
             target.health_points = live_health
         return target
 
+    def _tutorial_chain_reached(self, state) -> bool:
+        """Whether this character has at least accepted the final tutorial.
+
+        Accepting ``a0001-start-tutorial-03-<class>`` matters as much as
+        closing it: the quest's goal is the hub's spellweaver, so a character
+        mid-turn-in has to stay on the hub.  Only a character that never
+        reached that quest has no turn-in target there and must replay the
+        dungeon instead.
+        """
+
+        quest_log = getattr(state, "quest_log", None) or {}
+        return any(quest_id in quest_log for quest_id in TUTORIAL_FINAL_QUESTS)
+
     def _persisted_gameplay_map(self, character, fallback: str) -> str:
         store = getattr(self, 'account_store', None)
         if store is None or character is None:
@@ -123,6 +150,42 @@ class PlayerPersistenceService:
         state = store.get(getattr(character, 'character_id', 0))
         if state is None:
             return fallback
+        # A character parked on the tutorial hub before reaching the final
+        # tutorial quest has no quest giver there: the hub's first offer
+        # (``a0002-WayToGrimmagstone-01-n``) requires a closed
+        # ``a0001-start-tutorial-03-<class>``.  Returns from the tutorial
+        # dungeons route through ``_nearest_login_hub`` straight into the
+        # hub, which stranded exactly those characters outside the chain.
+        # Replay the tutorial dungeon until the chain is reached; a character
+        # holding the in-progress final quest stays on the hub, its goal NPC
+        # is there.
+        if not self._tutorial_chain_reached(state):
+            current = str(state.map_id or "")
+            if current == TUTORIAL_LOGIN_HUB:
+                # Hub without a chain entry: send back to the dungeon.
+                if map_database_path(
+                    self.static_database_path, TUTORIAL_DUNGEON_MAP
+                ).is_file():
+                    destination = TUTORIAL_DUNGEON_MAP
+                    state.map_id = destination
+                    state.map_access_id = destination
+                    state.map_difficulty = 0
+                    state.scaling_difficulty = 0
+                    state.position = None
+                    store.put(state, flush=True)
+                    character.map_id = destination
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] tutorial-repair moved "
+                        f"{getattr(character, 'name', state.character_id)!r} "
+                        f"from {TUTORIAL_LOGIN_HUB!r} back to "
+                        f"{destination!r} (tutorial chain not reached)"
+                    )
+                    return destination
+            elif current == TUTORIAL_DUNGEON_MAP:
+                # Mid-chain in the dungeon: keep the character there.  The
+                # quest givers and goals of tasks 0..2 are dungeon NPCs, so
+                # the safe-login hub fallback would strand the chain.
+                return TUTORIAL_DUNGEON_MAP
         if map_database_path(
             self.static_database_path, state.map_id
         ).is_file():
@@ -355,6 +418,7 @@ class PlayerPersistenceService:
             map_id=map_id,
             unlocked_maps=unlocked_maps,
             admin_all_maps=admin_all_maps,
+            admin_invulnerable=bool(getattr(s, "gameplay_gm_invulnerable", False)),
             position=(
                 tuple(float(value) for value in position)
                 if position is not None
@@ -416,6 +480,20 @@ class PlayerPersistenceService:
 
     def _persist_gameplay_session(
             self, s: Session, *, reason: str, flush: bool = False) -> bool:
+        """Serialize session snapshots so older captures cannot win a race."""
+
+        with s.flow_lock:
+            persist_lock = getattr(s, "gameplay_persist_lock", None)
+            if persist_lock is None:
+                persist_lock = threading.RLock()
+                s.gameplay_persist_lock = persist_lock
+        with persist_lock:
+            return PlayerPersistenceService._persist_gameplay_session_locked(
+                self, s, reason=reason, flush=flush
+            )
+
+    def _persist_gameplay_session_locked(
+            self, s: Session, *, reason: str, flush: bool = False) -> bool:
         store = getattr(self, 'account_store', None)
         with s.flow_lock:
             transfer_started = s.gameplay_exit_transition_started
@@ -435,10 +513,15 @@ class PlayerPersistenceService:
         state = CharacterService._capture_account_state(self, s)
         if state is None:
             return False
-        # Runtime persistence must never put SQLite I/O on a packet-handler
-        # thread. The store updates its in-memory authority immediately and
-        # coalesces this snapshot on its dedicated writer.
-        store.put(state, flush=False)
+        # Runtime persistence normally stays off the packet-handler's disk-I/O
+        # path: the store publishes the snapshot in memory and coalesces it on
+        # its dedicated writer. On session retirement, wait for the final
+        # snapshot to reach SQLite before the client can reconnect (or the
+        # process can be restarted) with stale inventory.
+        closing_session = reason in {
+            "client disconnect", "connection replaced", "server shutdown"
+        }
+        store.put(state, flush=closing_session)
         # The per-account selection payload embeds the active character's
         # equipment, which this snapshot may have just changed. Its cache key
         # only tracks the roster, so the entry is dropped here rather than
@@ -475,7 +558,7 @@ class PlayerPersistenceService:
                         )
                     store.put_profile(
                         CharacterProfile.from_character_record(character),
-                        flush=False,
+                        flush=closing_session,
                     )
                     break
         if reason != 'interval':

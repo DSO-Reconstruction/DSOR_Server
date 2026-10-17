@@ -279,7 +279,7 @@ class LoginGameServer(DispatchService, LoginServer):
             return
         if s.gameplay_mode or claimed is not None:
             s.gameplay_mode = True
-            CharacterServer._bind_gameplay_route(s, claimed)
+            CharacterServer._bind_gameplay_route(s, claimed, claimed=True)
             map_name = s.gameplay_map or DEFAULT_GAMEPLAY_MAP
             s.gameplay_map = map_name
             map_spec = self._gameplay_map_load_spec(
@@ -392,6 +392,8 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_ocp_booking(self, s, payload)
         elif command_id == ACCEPTED_TIER_SPENDER_COMMAND:
             CharacterServer._handle_tier_spender_accept(self, s, payload)
+        elif command_id == SHUFFLE_TIER_SPENDER_DEALS_COMMAND:
+            CharacterServer._handle_tier_spender_shuffle(self, s, payload)
         elif command_id == CLIENT_NOTIFICATION_COMMAND:
             CharacterServer._handle_notification_action(self, s, payload)
         elif command_id == ACTIVITY_SIGNIN_PROTOCOL_COMMAND:

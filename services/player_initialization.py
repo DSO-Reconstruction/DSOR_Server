@@ -58,8 +58,19 @@ class PlayerInitializationService(
         with s.flow_lock:
             if not active:
                 s.gameplay_initialization_timer = None
+                if NPC_TRACE:
+                    print(
+                        f"[NPC-TRACE] init skipped: session not current "
+                        f"(scheduled={scheduled}, map={s.gameplay_map!r})"
+                    )
                 return False
             if s.gameplay_initialization_sent:
+                if NPC_TRACE:
+                    print(
+                        f"[NPC-TRACE] init skipped: already sent "
+                        f"(map={s.gameplay_map!r}, access_group="
+                        f"{getattr(s, 'gameplay_map_access_group_id', None)!r})"
+                    )
                 return False
             if not scheduled:
                 timer_to_cancel = s.gameplay_initialization_timer
@@ -77,6 +88,11 @@ class PlayerInitializationService(
         # explicit path wins to avoid duplicate initialization.
         if timer_to_cancel is not None:
             timer_to_cancel.cancel()
+        if NPC_TRACE:
+            print(
+                f"[NPC-TRACE] init claimed for map={s.gameplay_map!r} "
+                f"scheduled={scheduled}"
+            )
         return True
 
     def _send_local_player_initialization(
@@ -131,6 +147,17 @@ class PlayerInitializationService(
         # presence-readiness signal.
         with s.flow_lock:
             s.gameplay_presence_ready = True
+        # A trigger may have started a map-local event during the world-load
+        # phase, before this session could receive its scripted actor. Replay
+        # the active gated spawns now that its complete PlayerReady stream is
+        # queued; the event helper deduplicates actors already materialized.
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is not None and s.gameplay_combat_state is not None:
+            with runtime.lock:
+                running_event_sets = frozenset(runtime.enabled_event_sets)
+            CharacterService._spawn_event_monsters(
+                self, runtime, (s,), running_event_sets
+            )
         CharacterService._refresh_premium_bags(s)
         CharacterService._announce_remote_presence(self, s)
         CharacterService._on_map_entered(self, s)

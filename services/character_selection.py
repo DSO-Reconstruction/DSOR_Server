@@ -231,19 +231,43 @@ class CharacterSelectionService:
         return True
 
     @staticmethod
-    def _equipment_record_for(item) -> EquipmentRecord:
+    def _equipment_record_for(
+            item, static_database=None) -> EquipmentRecord:
         """One selection-screen record for an equipped inventory item.
 
         ``field_f8`` is the transmog skin and ``field_20`` is packed ARGB.
+        Character-selection previews construct models from item templates, so
+        newer skin ids are resolved to their authored ``TooltipItem`` model.
         The captured retail records also carry an ``effect_id``
         for set/weapon FX; its runtime source is not recovered, so it is left
         empty exactly as the character-creation records leave it.
         """
 
         tint = item_tint(item) or (0.0, 0.0, 0.0, 0.0)
+        appearance_id = str(item.field_f8 or item.field_80 or "")
+        item_id = str(item.template_id)
+        if appearance_id and static_database is not None:
+            try:
+                visual_item = (
+                    static_database.character_selection_visual_item_template(
+                        item.template_id, appearance_id
+                    )
+                )
+                if visual_item != item_id:
+                    item_id = visual_item
+                    # The resolved template already carries the selected
+                    # model. Keep a same-id appearance override: basic
+                    # equipment skins often use their own item template as
+                    # the preview model while that template still points at
+                    # the legacy base skin.
+                    if visual_item != appearance_id:
+                        appearance_id = ""
+            except (OSError, ValueError, CharacterSelectionError):
+                # Older static databases may not contain the preview link.
+                pass
         return EquipmentRecord(
-            item_id=str(item.template_id),
-            appearance_id=str(item.field_f8 or item.field_80 or ""),
+            item_id=item_id,
+            appearance_id=appearance_id,
             tint=tint,
         )
 
@@ -272,7 +296,9 @@ class CharacterSelectionService:
             for slot in slots:
                 by_slot[int(slot)] = item
         return [
-            CharacterSelectionService._equipment_record_for(by_slot[slot])
+            CharacterSelectionService._equipment_record_for(
+                by_slot[slot], getattr(self, "static_database", None)
+            )
             for slot in sorted(by_slot)
         ]
 

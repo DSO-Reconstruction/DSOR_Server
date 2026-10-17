@@ -2356,20 +2356,20 @@ def credit_currency_drop(
         if value > 0xFFFFFFFF:
             raise ValueError("Andermant balance overflows uint32")
         return CurrencyChanged(
-            value, state.amount, state.values, state.delta, False
+            value, state.amount, state.values, state.delta, True
         )
     if drop.item.template_id in GOLD_ITEM_TEMPLATES:
         value = int(state.amount) + amount
         if value > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("gold balance overflows uint64")
         return CurrencyChanged(
-            state.currency_type, value, state.values, state.delta, False
+            state.currency_type, value, state.values, state.delta, True
         )
     raise ValueError(f"item {drop.item.template_id!r} is not a direct currency")
 
 
 def add_world_drop_to_inventory(
-    info: InventoryInfo, drop: WorldLootDrop
+    info: InventoryInfo, drop: WorldLootDrop, *, max_stack_size: int = 1
 ) -> InventoryLootMutation:
     """Move one non-currency world item into an ordinary or premium bag slot."""
 
@@ -2378,15 +2378,67 @@ def add_world_drop_to_inventory(
     inventory = copy.deepcopy(info)
     if any(item.item_id == drop.item.item_id for item in inventory.items):
         raise ValueError(f"inventory already contains item {drop.item.item_id}")
-    location = free_inventory_location(inventory)
-    if location is None:
-        raise ValueError("ordinary inventory storage is full")
-    storage_name, slot = location
     stored = copy.deepcopy(drop.item)
     stored.quest_id = drop.quest_id
     stored.field_100 = (0.0, 0.0, 0.0)
-    inventory.items.append(stored)
-    getattr(inventory, storage_name)[stored.item_id] = slot
+    changed_item_ids: list[int] = []
+    replacements: dict[int, int] = {}
+    remaining = max(1, int(stored.amount))
+    maximum = max(1, int(max_stack_size))
+    for old_item in tuple(inventory.items):
+        if (
+            remaining <= 0 or old_item.template_id != stored.template_id
+            or old_item.quest_id != stored.quest_id
+            or int(old_item.amount) >= maximum
+            or not (old_item.item_id in inventory.storage_58
+                    or old_item.item_id in inventory.storage_80)
+            or old_item.field_1c != stored.field_1c
+            or old_item.field_04 != stored.field_04
+            or old_item.item_level != stored.item_level
+            or old_item.enchantments or stored.enchantments
+            or old_item.socketed_templates or stored.socketed_templates
+        ):
+            continue
+        added = min(remaining, maximum - int(old_item.amount))
+        new_id = max(
+            [int(item.item_id) for item in inventory.items] + [int(stored.item_id)]
+        ) + 1
+        replacement = replace(
+            old_item,
+            item_id=new_id,
+            amount=int(old_item.amount) + added,
+            field_18=new_id & 0xFFFF,
+            field_30=(
+                (int(old_item.field_30) // max(1, int(old_item.amount)))
+                * (int(old_item.amount) + added)
+            ),
+        )
+        inventory.items[inventory.items.index(old_item)] = replacement
+        for values in (
+            inventory.equipment_slots, inventory.storage_58,
+            inventory.storage_80, inventory.storage_a8, inventory.storage_d0,
+        ):
+            if int(old_item.item_id) in values:
+                values[new_id] = values.pop(int(old_item.item_id))
+        for values in (inventory.field_f8, inventory.field_118, inventory.field_180):
+            for index, value in enumerate(values):
+                if int(value) == int(old_item.item_id):
+                    values[index] = new_id
+        changed_item_ids.append(int(old_item.item_id))
+        replacements[new_id] = int(old_item.item_id)
+        remaining -= added
+        if remaining <= 0:
+            break
+    if remaining > 0:
+        stored.amount = remaining
+        location = free_inventory_location(inventory)
+        if location is None:
+            raise ValueError("ordinary inventory storage is full")
+        storage_name, slot = location
+        inventory.items.append(stored)
+        getattr(inventory, storage_name)[stored.item_id] = slot
+    # Return changed stacks as authoritative item records; the pickup delta
+    # also carries their retail ID replacement map.
     inventory.changed_item_ids = []
     inventory.field_158 = {}
     inventory.field_1e0 = False
@@ -2396,17 +2448,23 @@ def add_world_drop_to_inventory(
     # everything. Carry the current allocation while limiting item/storage
     # records to the newly picked object.
     delta = copy.deepcopy(inventory)
-    delta.items = [copy.deepcopy(stored)]
+    changed_ids = set(replacements) | {int(stored.item_id)}
+    delta.items = [
+        copy.deepcopy(item) for item in inventory.items
+        if int(item.item_id) in changed_ids
+    ]
     delta.equipment_slots = copy.deepcopy(inventory.equipment_slots)
-    delta.storage_58 = {}
-    delta.storage_80 = {}
-    getattr(delta, storage_name)[stored.item_id] = slot
-    delta.storage_a8 = {}
-    delta.storage_d0 = {}
+    for name in ("storage_58", "storage_80", "storage_a8", "storage_d0"):
+        allocation = getattr(inventory, name)
+        setattr(delta, name, {
+            int(allocated_id): int(slot)
+            for allocated_id, slot in allocation.items()
+            if int(allocated_id) in changed_ids
+        })
     delta.field_f8 = []
     delta.field_118 = []
-    delta.changed_item_ids = []
-    delta.field_158 = {}
+    delta.changed_item_ids = changed_item_ids
+    delta.field_158 = replacements
     delta.field_180 = []
     delta.field_1a0 = []
     delta.field_1e0 = True

@@ -78,6 +78,7 @@ class SocialStateStore:
         self.lock = threading.RLock()
         self.guilds: dict[int, Guild] = {}
         self.groups: dict[int, Group] = {}
+        self.buddies: dict[int, set[int]] = {}
         self.next_guild_id = 50_000_001
         self.next_group_id = 60_000_001
         self._load()
@@ -159,6 +160,15 @@ class SocialStateStore:
                 group.description = ""
                 repaired = True
             self.groups[group.group_id] = group
+        raw_buddies = document.get("buddies", {})
+        if isinstance(raw_buddies, dict):
+            for owner_id, buddy_ids in raw_buddies.items():
+                owner = int(owner_id)
+                self.buddies[owner] = {
+                    int(buddy_id)
+                    for buddy_id in buddy_ids
+                    if int(buddy_id) != owner
+                }
         if repaired:
             self.flush()
 
@@ -170,6 +180,11 @@ class SocialStateStore:
                 "next_group_id": self.next_group_id,
                 "guilds": [asdict(value) for value in self.guilds.values()],
                 "groups": [asdict(value) for value in self.groups.values()],
+                "buddies": {
+                    str(owner_id): sorted(buddy_ids)
+                    for owner_id, buddy_ids in self.buddies.items()
+                    if buddy_ids
+                },
             }
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self.path.write_text(
@@ -246,6 +261,35 @@ class SocialStateStore:
                 if any(m.character_id == character_id for m in group.members):
                     return copy.deepcopy(group)
         return None
+
+    def buddies_for(self, character_id: int) -> tuple[int, ...]:
+        with self.lock:
+            return tuple(sorted(self.buddies.get(int(character_id), ())))
+
+    def add_buddy(self, character_id: int, buddy_character_id: int) -> None:
+        owner = int(character_id)
+        buddy = int(buddy_character_id)
+        if owner == buddy:
+            raise ValueError("a character cannot add itself as a buddy")
+        with self.lock:
+            buddies = self.buddies.setdefault(owner, set())
+            if buddy in buddies:
+                raise ValueError("character is already a buddy")
+            buddies.add(buddy)
+            self.flush()
+
+    def remove_buddy(self, character_id: int, buddy_character_id: int) -> bool:
+        owner = int(character_id)
+        buddy = int(buddy_character_id)
+        with self.lock:
+            buddies = self.buddies.get(owner)
+            if not buddies or buddy not in buddies:
+                return False
+            buddies.remove(buddy)
+            if not buddies:
+                self.buddies.pop(owner, None)
+            self.flush()
+            return True
 
     def group_by_id(self, group_id: int) -> Group | None:
         """Return a detached roster for group finder inspection."""

@@ -121,18 +121,18 @@ SPAWN_AREA_MONSTERS_ENABLED = (
 SPAWN_AREA_MAX_MONSTERS = max(
     0, int(os.environ.get("DSO_SPAWN_AREA_MAX_MONSTERS", "0"))
 )
-# Multiplier on every spawn area's authored SpawnPerMeter density.  1.0 is
-# the database value; the default trims the generated population by about
-# 15% per map, which is the reduction the populated-map work asked for.
+# Multiplier on every spawn area's authored SpawnPerMeter density. The
+# database values produced overly dense populations across large maps, so the
+# default keeps 35% of the authored density while retaining its relative
+# distribution between maps and regions.
 SPAWN_AREA_DENSITY_SCALE = max(
-    0.0, float(os.environ.get("DSO_SPAWN_AREA_DENSITY_SCALE", "0.85"))
+    0.0, float(os.environ.get("DSO_SPAWN_AREA_DENSITY_SCALE", "0.35"))
 )
-# Whole-map cap on the density-driven population.  768 was the historical
-# value; the live packed-map maps (a0303, a0203, a0302, a0406) all sat exactly
-# on it.  650 trims those by about 15%, matching the density scale below so
-# density-bound and cap-bound maps shrink by a similar fraction.
+# Whole-map cap on the density-driven population. Keep very large maps from
+# exceeding 250 density-driven actors even when their authored areas are
+# unusually large or numerous.
 SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
-    0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "650"))
+    0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "250"))
 )
 
 # Spawn-list membership is server-owned and is not shipped in static.db4.
@@ -140,6 +140,18 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # The Dragan fortress database has authored main-hall density areas with
+    # an 8-minute respawn interval, but its list_mainhall membership is not
+    # included in static.db4. Populate those areas with the map's ordinary
+    # fortress enemies; elemental guards remain gated by their own EventSets.
+    'e_dra_03_dun_01': {
+        'list_mainhall': (
+            'e_dra_fortress_normal_skeleton_warrior_01',
+            'e_dra_fortress_normal_skeleton_archer_01',
+            'e_dra_fortress_normal_undead_ripper_01',
+            'e_dra_fortress_normal_death_knight_01',
+        ),
+    },
     # This story map uses the shared reactivation family, not an a0702 normal
     # family. Its named lists identify the supporting species; the only a0702
     # template is Sargon, placed once by _Instance_SpawnPoint.
@@ -1288,6 +1300,40 @@ def _load_runtime_definition(
 
     values = _load_runtime_template(static_database_path, str(template_id))
     if values is None:
+        # Kraliyet Arenası authors its damage dolls as ordinary spawn-point
+        # monsters, but their templates intentionally have no Skills. The
+        # normal runtime loader treats that as an invalid actor and silently
+        # drops every doll. Keep these targets damageable while disabling
+        # their movement and autonomous combat.
+        if str(template_id).casefold().startswith("damage_doll"):
+            return MonsterRuntimeDefinition(
+                actor_id=int(actor_id),
+                attack=_PLAYER_ONLY_ATTACK,
+                run_speed=0.0,
+                aggro_range=0.0,
+                attack_interval=0.0,
+                capsule_radius=0.3,
+                escape_range=0.0,
+                travel_distance=0.0,
+                attacks=(),
+            )
+        # This tutorial cultist is a scripted, untargetable story actor. Its
+        # static template intentionally has no Skills, so the ordinary runtime
+        # loader rejects it even though the map event needs to publish it for
+        # the staff-theft sequence. Keep it inert in the combat simulation while
+        # still allowing the event spawn to reach the client.
+        if str(template_id).casefold() == "a0001_champion_undead_mage_01":
+            return MonsterRuntimeDefinition(
+                actor_id=int(actor_id),
+                attack=_PLAYER_ONLY_ATTACK,
+                run_speed=0.0,
+                aggro_range=0.0,
+                attack_interval=0.0,
+                capsule_radius=0.3,
+                escape_range=0.0,
+                travel_distance=0.0,
+                attacks=(),
+            )
         return None
     (
         attacks,
@@ -2233,6 +2279,7 @@ def _load_dynamic_monster_encounter(
         # Base rows and the selected EventSet form one authored population.
         # Inactive EventSets were removed before boss-phase resolution.
         row_sets = (tuple(fixed_rows),)
+        bloodshed_spawn_positions = set()
         for rows in row_sets:
             before = len(monsters)
             for _row_id, raw_transform, raw_template_id, _event_set in rows:
@@ -2240,10 +2287,55 @@ def _load_dynamic_monster_encounter(
                     position = _spawn_position(bytes(raw_transform))
                 except (TypeError, ValueError):
                     continue
+                is_bloodshed_sludge = bloodshed_only_template(raw_template_id)
+                if is_bloodshed_sludge:
+                    # The map tables duplicate each sludge spawn point twice
+                    # with identical transforms. Keep one actor per authored
+                    # location before applying the overlap recovery below.
+                    position_key = (round(position[0], 3), round(position[2], 3))
+                    if position_key in bloodshed_spawn_positions:
+                        continue
+                    bloodshed_spawn_positions.add(position_key)
                 actor_id = LOCAL_MONSTER_ACTOR_BASE + len(monsters)
-                append_monster(
-                    str(raw_template_id), actor_id, position
+                placed = append_monster(
+                    str(raw_template_id), actor_id, position,
+                    # Bloodshed challenges author five sludges on every
+                    # eligible dungeon map. A few maps overlap one sludge's
+                    # transform with an earlier actor; keep the challenge
+                    # count by resolving that collision to nearby walkable
+                    # ground instead of silently dropping the sludge.
+                    resolve_projected_overlap=is_bloodshed_sludge,
+                    max_navigation_snap_distance=(
+                        32.0 if is_bloodshed_sludge else 2.0
+                    ),
                 )
+                if (
+                    is_bloodshed_sludge
+                    and not placed
+                    and allowed_component is not None
+                    and isinstance(navigation, PathEngineNavigationMesh)
+                    and player_position is not None
+                ):
+                    # A few composite maps author a sludge on a disconnected
+                    # navigation island. Keep the five-mob challenge playable
+                    # by placing that sludge on nearby walkable ground in the
+                    # player's connected component.
+                    try:
+                        candidates = navigation.component_positions(
+                            allowed_component,
+                            around=player_position,
+                            minimum_distance=8.0,
+                            maximum_distance=32.0,
+                            limit=32,
+                        )
+                    except NavigationError:
+                        candidates = ()
+                    for candidate in candidates:
+                        if append_monster(
+                            str(raw_template_id), actor_id, candidate,
+                            resolve_projected_overlap=True,
+                        ):
+                            break
             if len(monsters) > before:
                 break
 

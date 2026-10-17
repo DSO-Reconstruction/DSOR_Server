@@ -2275,14 +2275,29 @@ def _read_npc_info_body(reader: BitReader) -> NPCInfo:
     )
 
 
-def encode_npc_batch(value: NPCBatch) -> tuple[bytes, int]:
+def encode_npc_batch(
+    value: NPCBatch, *, include_actor_vicinity: bool = True,
+) -> tuple[bytes, int]:
     if not value.commands:
         raise ValueError("NPC batch must contain at least one command")
+    new_npc_ids = tuple(
+        int(command.actor_id)
+        for command in value.commands
+        if isinstance(command, NewNPC)
+    )
     writer = BitWriter()
+    writer.write_uint8(0x85)
+    if new_npc_ids and include_actor_vicinity:
+        # The client only picks actors announced in ActorsEnterVicinity.
+        # Register every newly-created NPC before its NewNPC/NPCInfo pair.
+        writer.write_bytes(ACTORS_ENTER_VICINITY_COMMAND.to_bytes(2, "little"))
+        writer.write_uint32_le(len(new_npc_ids))
+        for actor_id in new_npc_ids:
+            writer.write_uint32_le(actor_id)
+        writer.write_uint32_le(0)
+        writer.write_uint8(0xFF)
     for index, command in enumerate(value.commands):
-        if index == 0:
-            writer.write_uint8(0x85)
-        else:
+        if index > 0:
             writer.write_uint8(0xFF)
         if isinstance(command, NewNPC):
             writer.write_bytes(NEW_NPC_COMMAND.to_bytes(2, "little"))
@@ -2301,6 +2316,18 @@ def decode_npc_batch(payload: bytes, bit_length: int) -> NPCBatch:
     if reader.read_uint8() != 0x85:
         raise ValueError("NewNPC capture is not a server command batch")
     command_id = int.from_bytes(reader.read_bytes(2), "little")
+    if command_id == ACTORS_ENTER_VICINITY_COMMAND:
+        actor_count = reader.read_uint32_le()
+        if actor_count > 1_000_000:
+            raise ValueError("ActorsEnterVicinity actor count is unreasonable")
+        for _ in range(actor_count):
+            reader.read_uint32_le()
+        reader.read_uint32_le()  # actorless command context, zero on retail
+        if reader.read_uint8() != 0xFF:
+            raise ValueError("ActorsEnterVicinity is not followed by 0xff")
+        if not reader.remaining:
+            raise ValueError("NPC batch has no commands after actor registration")
+        command_id = int.from_bytes(reader.read_bytes(2), "little")
     commands: list[NewNPC | NPCInfo] = []
     while True:
         if command_id == NEW_NPC_COMMAND:

@@ -207,6 +207,10 @@ class StaticGameDatabase:
             "AmuletSlot": (10,),
             "BeltSlot": (11,),
             "WeaponModSlot": (12,),
+            # The Arcane Vessel / Emblem UI slot sits after the three jewel
+            # trinket slots and before the Ancient Trinket slot in the
+            # client's inventory allocation table.
+            "EmblemSlot": (23,),
             "AncientTrinketSlot": (24,),
             "MercenaryAmuletSlot": (25,),
             "MercenaryCloakSlot": (26,),
@@ -298,6 +302,92 @@ class StaticGameDatabase:
             )
         return animation_set
 
+    def remote_player_template_row_index(self, class_id: int) -> int:
+        """Return the zero-based template row used by NewRemotePlayer.
+
+        Remote players are instantiated from ``_Template_RemotePlayer``.  The
+        player and remote-player tables currently share an order, but they are
+        separate template vectors and must not rely on that incidental match.
+        """
+
+        class_name = CLASS_NAMES.get(int(class_id))
+        if class_name is None:
+            raise CharacterSelectionError(f"unknown class id {class_id}")
+        template_id = f"remote_human_male_{class_name}"
+        with self._connect() as connection:
+            row = connection.execute(
+                'SELECT rowid FROM "_Template_RemotePlayer" '
+                'WHERE "Id"=? LIMIT 1',
+                (template_id,),
+            ).fetchone()
+            if row is None:
+                raise CharacterSelectionError(
+                    f"no remote-player template for class {class_name!r}"
+                )
+            index = connection.execute(
+                'SELECT COUNT(*) FROM "_Template_RemotePlayer" '
+                'WHERE rowid < ?',
+                (row[0],),
+            ).fetchone()[0]
+        return int(index)
+
+    def character_selection_visual_item_template(
+            self, item_template_id: str, appearance_id: str = "") -> str:
+        """Resolve a selected equipment skin to the item used by previews.
+
+        The character-selection equipment record builds its model from the
+        item template. Unlike RemotePlayerInfo, it does not apply a
+        ``SkinGraphics`` value as a runtime slot override. Newer equipment
+        skins provide their preview model through ``TooltipItem``; older item
+        appearances link to one of those skins through ``EquipmentSkinId``.
+        """
+
+        fallback = str(item_template_id)
+        appearance_id = str(appearance_id or "")
+        if not appearance_id:
+            return fallback
+        with self._connect() as connection:
+            if not compat.table_exists(connection, "_Template_EquipmentSkin"):
+                return fallback
+            skin_id = appearance_id
+            if not self._exists(
+                connection, "_Template_EquipmentSkin", "Id", skin_id
+            ):
+                if not compat.table_exists(
+                    connection, "_Template_ItemAppearance"
+                ):
+                    return fallback
+                row = connection.execute(
+                    'SELECT "EquipmentSkinId" '
+                    'FROM "_Template_ItemAppearance" '
+                    'WHERE "Id"=? LIMIT 1',
+                    (appearance_id,),
+                ).fetchone()
+                if row is None or not row[0]:
+                    return fallback
+                skin_id = str(row[0])
+            tooltip_item = connection.execute(
+                'SELECT ' + compat.projection(
+                    connection, "_Template_EquipmentSkin", ("TooltipItem",)
+                ) + ' FROM "_Template_EquipmentSkin" '
+                'WHERE "Id"=? LIMIT 1',
+                (skin_id,),
+            ).fetchone()
+            candidate = str(tooltip_item[0] or "") if tooltip_item else ""
+            # Basic equipment skins commonly omit TooltipItem even though
+            # their skin id has a corresponding item template.  In that case
+            # use the same-id template as the preview model instead of
+            # falling back to the currently equipped item's default model.
+            if not candidate and self._exists(
+                connection, "_Template_Item", "Id", skin_id
+            ):
+                candidate = skin_id
+            if candidate and self._exists(
+                connection, "_Template_Item", "Id", candidate
+            ):
+                return candidate
+        return fallback
+
     def remote_equipment_skin(
         self, template_id: str, appearance_id: str = ""
     ) -> str:
@@ -355,6 +445,21 @@ class StaticGameDatabase:
             f"item {template_id!r} has no remote equipment skin"
         )
 
+    def remote_equipment_icon(self, template_id: str) -> str:
+        """Return the client icon used for non-geometry equipment slots."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                'SELECT "IconBrush" FROM "_Template_Item" '
+                'WHERE "Id"=? LIMIT 1',
+                (str(template_id),),
+            ).fetchone()
+        if row is None or not row[0]:
+            raise CharacterSelectionError(
+                f"item {template_id!r} has no equipment icon"
+            )
+        return str(row[0])
+
     def gameplay_map_ruleset(self, map_id: str) -> int:
         """Return the client ruleset used by the map-load packet.
 
@@ -405,10 +510,8 @@ class StaticGameDatabase:
         """Return SkillBookInfo ids for a player class in this client build.
 
         These are runtime SkillManager indexes for the local content export.
-        The database also verifies that the selected class exists and has
-        skills. Its rows need not be contiguous: the live 261 export has a
-        warrior set skill (chainlightning_SetLight2026_warrior, rowid 1869)
-        among the mage rows, and every index is its own row's.
+        The database also verifies that the selected class exists and has a
+        contiguous skill dataset.
         """
 
         class_id = int(class_id)
@@ -606,23 +709,28 @@ class StaticGameDatabase:
         if class_name is None:
             raise CharacterSelectionError(f"unknown class id {class_id}")
         level = int(level)
-        if level < 1:
+        if level < 1 or level > 100:
             raise CharacterSelectionError(f"invalid player level {level}")
 
+        next_level = min(level + 1, 100)
         with self._connect() as connection:
             rows = connection.execute(
                 'SELECT "Level", "LevelXP" FROM "_Template_XPLevels" '
                 'WHERE "CharClass"=? AND "Level" IN (?, ?)',
-                (class_name, level, level + 1),
+                (class_name, level, next_level),
             ).fetchall()
         xp_by_level = {int(row[0]): int(row[1]) for row in rows}
-        if level not in xp_by_level or level + 1 not in xp_by_level:
+        if level not in xp_by_level or next_level not in xp_by_level:
+            if level == 100 and level in xp_by_level:
+                return xp_by_level[level], xp_by_level[level] + 1
             raise CharacterSelectionError(
                 f"missing XP progression for {class_name} level {level}"
             )
 
         level_base_xp = xp_by_level[level]
-        next_level_base_xp = xp_by_level[level + 1]
+        next_level_base_xp = (
+            xp_by_level[next_level] if next_level > level else level_base_xp + 1
+        )
         if next_level_base_xp <= level_base_xp:
             raise CharacterSelectionError(
                 f"non-positive XP span for {class_name} level {level}: "

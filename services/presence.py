@@ -8,6 +8,41 @@ from dso_server.gameplay.player_summon_lifecycle import player_summon_preparatio
 class PresenceService:
     """Remote-player presence, equipment, status, and world synchronization."""
 
+    @staticmethod
+    def _send_remote_player_actor_to(
+        viewer: Session, remote: RemotePlayer,
+    ) -> None:
+        """Register the actor in the client's vicinity before creating it.
+
+        NPCs and props are registered through ActorsEnterVicinity before the
+        client receives their entity command. Remote players need the same
+        ordering: NewRemotePlayer alone can arrive with a valid actor id that
+        the client's vicinity/actor registry has never seen.
+        """
+
+        vicinity_packet, _ = encode_actors_enter_vicinity_batch(
+            ActorsEnterVicinityBatch(
+                ActorsEnterVicinity((int(remote.actor_id),)),
+                actor_id=0,
+                commands=(),
+            )
+        )
+        viewer.send_reliable_ordered(
+            vicinity_packet,
+            track=True,
+            label=f"remote-player-vicinity-{remote.actor_id}",
+        )
+        viewer.send_reliable_ordered(
+            encode_new_remote_player(remote),
+            track=True,
+            label=f"remote-player-enter-{remote.actor_id}",
+        )
+        viewer.send_reliable_ordered(
+            encode_remote_player_info(remote),
+            track=True,
+            label=f"remote-player-info-{remote.actor_id}",
+        )
+
     def _remote_player_for(self, session: Session) -> RemotePlayer:
         character = session.gameplay_character
         if character is None:
@@ -46,6 +81,18 @@ class PresenceService:
                 if int(character.class_id) == 3
                 else "male"
             )
+        template_row = int(session.gameplay_template_row_index or 0)
+        if self.static_database is not None:
+            try:
+                template_row = (
+                    self.static_database.remote_player_template_row_index(
+                        character.class_id
+                    )
+                )
+            except (OSError, ValueError, CharacterSelectionError):
+                # Keep the route's template index as a compatibility fallback
+                # for older static databases without the remote template set.
+                pass
         animation_set = CharacterService._remote_animation_for(
             character,
             inventory,
@@ -61,15 +108,24 @@ class PresenceService:
             beard_style=int(character.beard_style),
             body_style=int(character.body_style),
             body_stature=int(character.body_stature),
-            template_row=int(session.gameplay_template_row_index or 0),
+            template_row=template_row,
             position=tuple(float(value) for value in position),
             heading=heading,
             character_id=int(character.character_id),
-            account_id=777_777,
+            # NewRemotePlayer carries the account identity as well as the
+            # character id. A shared placeholder makes every remote actor
+            # appear to belong to the same account and can collide with the
+            # client's player/account registries.
+            account_id=max(
+                1,
+                int(getattr(session, "account_id", None)
+                    or character.character_id),
+            ),
             level=max(1, int(character.level)),
             admin_privileges=bool(character.admin_privileges),
             admin_name_color=bool(character.admin_name_color),
             equipment=self._remote_equipment_visuals(inventory),
+            emblem_id=self._remote_emblem_id(inventory),
             animation_set=animation_set,
             title_type=int(session.gameplay_title_type),
             achievement_title=str(session.gameplay_achievement_title),
@@ -133,13 +189,36 @@ class PresenceService:
                     label=f"remote-player-replaced-{stale_actor_id}",
                 )
         if not peers:
+            map_sessions = tuple(
+                peer for peer in self._map_session_candidates(
+                    session.gameplay_map
+                ) if peer is not session
+            )
+            readiness = tuple(
+                (
+                    getattr(peer.gameplay_character, "name", "?"),
+                    bool(peer.connected),
+                    bool(peer.gameplay_mode),
+                    bool(peer.gameplay_initialization_sent),
+                    bool(peer.gameplay_presence_ready),
+                    bool(peer.gameplay_presence_departed),
+                    CharacterService._gameplay_instance_key(peer),
+                )
+                for peer in map_sessions
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] no shared remote-player "
+                f"instance for {character.name!r}: map="
+                f"{session.gameplay_map!r}, key="
+                f"{CharacterService._gameplay_instance_key(session)!r}, "
+                f"map_sessions(name,connected,gameplay,initialized,ready,"
+                f"departed,key)={readiness!r}"
+            )
             CharacterService._broadcast_presence_social_status(
                 self, character.character_id
             )
             return
         local_remote = self._remote_player_for(session)
-        local_packet = encode_new_remote_player(local_remote)
-        local_info = encode_remote_player_info(local_remote)
         local_status = CharacterService._remote_status_snapshot(
             session, local_remote.actor_id
         )
@@ -162,15 +241,8 @@ class PresenceService:
                 bool(peer.gameplay_pvp_enabled),
                 int(peer.gameplay_chase_server_tick) & 0xFFFFFFFF,
             )
-            peer.send_reliable_ordered(
-                local_packet,
-                track=True,
-                label=f"remote-player-enter-{local_remote.actor_id}",
-            )
-            peer.send_reliable_ordered(
-                local_info,
-                track=True,
-                label=f"remote-player-info-{local_remote.actor_id}",
+            CharacterService._send_remote_player_actor_to(
+                peer, local_remote
             )
             if local_status.entries:
                 peer.send_reliable_ordered(
@@ -189,15 +261,8 @@ class PresenceService:
             CharacterService._send_player_overhead_icons_to(
                 peer, session, local_remote.actor_id
             )
-            session.send_reliable_ordered(
-                encode_new_remote_player(peer_remote),
-                track=True,
-                label=f"remote-player-enter-{peer_remote.actor_id}",
-            )
-            session.send_reliable_ordered(
-                encode_remote_player_info(peer_remote),
-                track=True,
-                label=f"remote-player-info-{peer_remote.actor_id}",
+            CharacterService._send_remote_player_actor_to(
+                session, peer_remote
             )
             if peer_status.entries:
                 session.send_reliable_ordered(
@@ -961,15 +1026,8 @@ class PresenceService:
                 CharacterService._forget_remote_visual_status(
                     session, remote.actor_id
                 )
-                session.send_reliable_ordered(
-                    encode_new_remote_player(remote),
-                    track=True,
-                    label=f"remote-player-enter-{remote.actor_id}",
-                )
-                session.send_reliable_ordered(
-                    encode_remote_player_info(remote),
-                    track=True,
-                    label=f"remote-player-info-{remote.actor_id}",
+                CharacterService._send_remote_player_actor_to(
+                    session, remote
                 )
                 status = CharacterService._remote_status_snapshot(
                     peer, remote.actor_id

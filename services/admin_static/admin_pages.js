@@ -21,6 +21,7 @@ export async function listPage(route) {
   }
   let rows = "";
   let extra = "";
+  let searchHint = "Search " + names[name].toLowerCase();
   if (name === "accounts") {
     result.description = "Open an account to manage access and inspect its characters.";
     rows = table(["Account", "ID", "Access", "State", "Characters", "Last login", "Created"], data.rows.map(a => [
@@ -37,15 +38,17 @@ export async function listPage(route) {
     rows = bookingTable(data.rows);
   } else if (name === "items") {
     result.description = "Game item templates. Open a template to inspect its properties and book it.";
+    searchHint = "Search by in-game name, category, or template ID";
     const sort = route.params.sort || "template";
     extra = '<span class="spacer"></span><label for="item-sort">Sort by</label><select id="item-sort" name="sort">' +
-      [["template", "Template ID"], ["category", "Category (A-Z)"], ["category_desc", "Category (Z-A)"]]
+      [["template", "Template ID"], ["name", "Name (A-Z)"], ["category", "Category (A-Z)"], ["category_desc", "Category (Z-A)"]]
         .map(([value, label]) => `<option value="${value}" ${sort === value ? "selected" : ""}>${label}</option>`).join("") + '</select>';
     result.mount = () => {
       bindSearch(route);
       $("#item-sort").addEventListener("change", event => navigate(route.path, {...route.params, sort: event.target.value, offset: 0}));
     };
-    rows = table(["Template", "Category", "Rarity", "Required level", "Stack limit"], data.rows.map(i => [
+    rows = table(["Name", "Template", "Category", "Rarity", "Required level", "Stack limit"], data.rows.map(i => [
+      esc(i.name),
       link(i.template_id, `items/${encodeURIComponent(i.template_id)}`, route.params, "resource mono"),
       esc(i.category), esc(i.rarity), esc(i.required_level), esc(i.max_stack_size)
     ]));
@@ -58,7 +61,7 @@ export async function listPage(route) {
       link("#" + a.id, `audit/${a.id}`), esc(date(a.created_at)), esc(a.actor), esc(a.action), esc(a.target), esc(a.details.reason || "—")
     ]));
   }
-  result.html = toolbar(route, "Search " + names[name].toLowerCase(), extra) + rows + pager(data, route);
+  result.html = toolbar(route, searchHint, extra) + rows + pager(data, route);
   return result;
 }
 
@@ -134,10 +137,12 @@ export async function itemPage(route) {
   const id = decodeURIComponent(route.parts.slice(1).join("/"));
   const item = await api(`/api/items/${encodeURIComponent(id)}`);
   return {
-    title: id, description: `${item.category} · ${item.equipment ? "Equipment" : "Stack item"}`,
-    breadcrumbs: [["Item catalog", "items", route.params], [id]],
+    title: item.name, description: `${id} · ${item.category} · ${item.equipment ? "Equipment" : "Stack item"}`,
+    breadcrumbs: [["Item catalog", "items", route.params], [item.name]],
     actions: item.bookable ? link("Book item", "bookings/new", {template: id, account_id: route.params.account_id, character_id: route.params.character_id}, "button") : "",
     html: `<div class="columns">${section("Template", facts([
+      ["Name", esc(item.name)], ["Template ID", `<code class="resource mono">${esc(id)}</code>`],
+      ["Internal name", esc(item.template_name || "—")],
       ["Category", esc(item.category)], ["Default rarity", esc(item.rarity_name)], ["Required level", item.required_level],
       ["Stack limit", item.max_stack_size], ["Destination", esc(item.destination)], ["Classes", esc(item.classes.join(", ") || "All classes")],
       ["Slots", esc(item.slot_types.join(", ") || "None")]

@@ -737,6 +737,23 @@ class PresenceVisualService:
         return tuple(visuals[slot] for slot in sorted(visuals))
 
     @staticmethod
+    def _remote_emblem_id(inventory) -> str:
+        """Return the template id used by the client's remote emblem icon."""
+
+        if inventory is None:
+            return ""
+        items_by_id = {
+            int(item.item_id): item for item in inventory.items
+        }
+        for item_id, slots in sorted(inventory.equipment_slots.items()):
+            if 23 not in tuple(int(slot) for slot in slots):
+                continue
+            item = items_by_id.get(int(item_id))
+            if item is not None:
+                return str(item.template_id or "")
+        return ""
+
+    @staticmethod
     def _remap_player_status_effect(
             value: StatusEffect, actor_id: int) -> StatusEffect:
         return StatusEffect(

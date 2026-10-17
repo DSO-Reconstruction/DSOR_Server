@@ -35,7 +35,6 @@ LOCAL_NPC_ACTOR_BASE = 0x10000
 # factor new NPC"), which is what hid the tutorial's ranger (row 2) and, in
 # Kingshill, the arena merchant.  NPC ids therefore skip that slot.
 LOCAL_PLAYER_CLIENT_ACTOR_ID = LOCAL_NPC_ACTOR_BASE + 1
-LOCAL_ARENA_MERCHANT_ACTOR_BASE = 0x20000
 
 
 def npc_actor_id_for_row(row_id: int) -> int:
@@ -45,22 +44,47 @@ def npc_actor_id_for_row(row_id: int) -> int:
     if actor_id >= LOCAL_PLAYER_CLIENT_ACTOR_ID:
         actor_id += 1
     return actor_id
-BANKER_NPC_CATEGORY = 17
-JEWELLER_NPC_CATEGORY = 1
-PVP_MERCHANT_NPC_CATEGORY = 14
+
+
+# The wire profession code is the index of this list.  Client release261
+# keeps the names as one contiguous .rdata pool at 0x140ebe4cf..0x140ebe640,
+# and UI::NpcWidget switches on the index (`cmp r15d, 0x11` -> "openBank" at
+# 0x1404ad9ec).  A profession that is not listed here is announced as 0xFF,
+# which builds no widget button at all, so the vendor looks inert.  Note that
+# the compare chain at 0x14017eb50 numbers these same names differently;
+# those values are internal and never go on the wire.
+NPC_PROFESSIONS = (
+    "alchemist",
+    "jewelry",
+    "weapon",
+    "armor",
+    "smith",
+    "simple_smith",
+    "essence",
+    "priest",
+    "monger",
+    "mage_skilltrainer",
+    "warrior_skilltrainer",
+    "ranger_skilltrainer",
+    "dwarf_skilltrainer",
+    "niwalk_skilltrainer",
+    "arena_merchant",
+    "equip",
+    "crafting",
+    "banker",
+    "tailor",
+    "event_manager",
+    "mount_trader",
+    "privileged_trader",
+    "gambler_trader",
+    "fragment_trader",
+    "lucky_sphere_trader",
+    "food_recycling",
+    "rank_of_planar_fissure",
+    "map_access_planar_fissure",
+)
 NPC_CATEGORY_BY_PROFESSION = {
-    "alchemist": 0,
-    "jewelry": JEWELLER_NPC_CATEGORY,
-    "jeweller": JEWELLER_NPC_CATEGORY,
-    "jeweler": JEWELLER_NPC_CATEGORY,
-    "smith": 4,
-    "priest": 7,
-    "monger": 8,
-    "arena_merchant": PVP_MERCHANT_NPC_CATEGORY,
-    "equip": 15,
-    "crafting": 16,
-    "banker": BANKER_NPC_CATEGORY,
-    "mount_trader": 20,
+    name: index for index, name in enumerate(NPC_PROFESSIONS)
 }
 LOCAL_PROP_ID_BASE = 0x10000
 KINGSCITY_MAP_ID = "a0200_kingscity"
@@ -229,6 +253,25 @@ def active_local_map_event_flags(
     })
 
 
+def _event_set_declarations(declarations: str) -> list[tuple[str, str]]:
+    return [tuple(part.strip().casefold() for part in value.split("=", 1))
+            for value in str(declarations or "").split(";") if "=" in value]
+
+
+def event_set_required_flags(declarations: str) -> frozenset[str]:
+    """The flag names an EventSet row is waiting for.
+
+    ``testEvent2=True`` means the row appears once that flag is active;
+    ``...=False`` rows are hidden content and declare nothing to wait for.
+    """
+
+    return frozenset(
+        name
+        for name, value in _event_set_declarations(declarations)
+        if name and value == "true"
+    )
+
+
 def event_set_enabled(declarations: str, active_flags) -> bool:
     """Positive EventFlags are alternative activation influences.
 
@@ -236,11 +279,29 @@ def event_set_enabled(declarations: str, active_flags) -> bool:
     event independently; Grima and the workbench list alternative unlocks.
     Negative declarations continue to hide content while their event runs.
     """
-    pairs = [tuple(part.strip().casefold() for part in value.split("=", 1))
-             for value in declarations.split(";") if "=" in value]
+    pairs = _event_set_declarations(declarations)
     required = {name for name, value in pairs if name and value == "true"}
     forbidden = {name for name, value in pairs if name and value != "true"}
     return (not required or bool(required & set(active_flags))) and not (forbidden & set(active_flags))
+
+
+def load_local_event_set_flags(
+    static_database_path: str | Path,
+    map_id: str,
+) -> dict[int, frozenset[str]]:
+    """Map each ``_Instance_EventSets`` row to the flags that reveal it."""
+
+    path = map_database_path(static_database_path, map_id)
+    database = _open_read_only(path)
+    try:
+        return {
+            int(row[0]): event_set_required_flags(str(row[1] or ""))
+            for row in database.execute(
+                "SELECT Id, EventFlags FROM _Instance_EventSets"
+            )
+        }
+    finally:
+        database.close()
 
 
 def _enabled_event_set_ids(
@@ -296,6 +357,12 @@ def load_local_npc_definitions(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
         )
+        if os.getenv("DSO_NPC_TRACE") == "1":
+            print(
+                f"[npc-trace] {map_id} include_inactive={include_inactive_event_sets} "
+                f"enabled_sets={sorted(enabled_event_sets)} "
+                f"flags={sorted(active_local_map_event_flags(map_id, active_event_flags))}"
+            )
         # Hiding the NPC is enough to disable the whole debug vendor: the
         # client never sees it, and its shop cannot resolve without it.
         vendor_enabled = debug_vendor_enabled()
@@ -314,6 +381,12 @@ def load_local_npc_definitions(
                 and not include_inactive_event_sets
                 and event_set_row not in enabled_event_sets
             ):
+                if os.getenv("DSO_NPC_TRACE") == "1":
+                    print(
+                        "[npc-trace]   row "
+                        f"{row[0]} '{str(row[2] or '')}' "
+                        f"set {event_set_row} DROPPED"
+                    )
                 continue
             position, rotation = _transform(bytes(row[10]))
             definitions.append(
@@ -333,6 +406,16 @@ def load_local_npc_definitions(
                     position=position,
                     rotation=rotation,
                     event_set_row=event_set_row,
+                )
+            )
+        if os.getenv("DSO_NPC_TRACE") == "1":
+            print(
+                "[npc-trace]   SENT "
+                + ", ".join(
+                    f"row{d.row_id}/actor{d.actor_id}/{d.instance_id}"
+                    f"[{d.profession or '-'}="
+                    f"{NPC_CATEGORY_BY_PROFESSION.get(d.profession.casefold(), 0xFF):#04x}]"
+                    for d in definitions
                 )
             )
         return tuple(definitions)
@@ -371,11 +454,43 @@ def load_local_npc_definition(
 
 
 def local_npc_actor_id(definition: LocalNPCDefinition) -> int:
-    """Return the collision-free session actor assigned to one map NPC."""
+    """Return the row-ordered actor id shared by all map NPC professions."""
 
-    if definition.profession.casefold() == "arena_merchant":
-        return LOCAL_ARENA_MERCHANT_ACTOR_BASE + int(definition.row_id)
+    # The client and the working DRASA path use one generation-1 actor
+    # sequence for every NPC, including arena merchants. Moving those
+    # merchants to generation 2 changes the low-word slot the client uses for
+    # prop lookup and lets later props overwrite NPC/prop registrations.
     return int(definition.actor_id)
+
+
+def local_prop_actor_base(
+    static_database_path: str | Path, map_id: str,
+) -> int:
+    """Choose the first actor id after every NPC authored for this map.
+
+    NPCs and props are announced together in ActorsEnterVicinity and share the
+    client's actor-id space. Reserve event-gated NPC rows too, because those
+    actors may be created later by a map event.
+    """
+
+    definitions = load_local_npc_definitions(
+        static_database_path,
+        map_id,
+        include_inactive_event_sets=True,
+    )
+    next_slot = max(
+        LOCAL_PLAYER_CLIENT_ACTOR_ID & 0xFFFF,
+        max(
+            (
+                local_npc_actor_id(definition) & 0xFFFF
+                for definition in definitions
+            ),
+            default=-1,
+        ),
+    ) + 1
+    if next_slot >= 0x10000:
+        raise ValueError(f"map {map_id!r} has no free prop actor slots")
+    return LOCAL_PROP_ID_BASE + next_slot
 
 
 def local_npc_info(
@@ -394,9 +509,10 @@ def local_npc_info(
     is_banker = profession == "banker"
     category = NPC_CATEGORY_BY_PROFESSION.get(profession, 0xFF)
     return NPCInfo(
-        template_id=(
-            "" if is_banker else definition.shop_id or definition.profession
-        ),
+        # NPCInfo's first string is the map row's ShopId. Profession travels
+        # separately in category; substituting it here makes the client look
+        # up a nonexistent shop template for quest/event NPCs.
+        template_id=("" if is_banker else definition.shop_id or ""),
         interactions=(),
         flags=(),
         string_sets=(),
@@ -424,6 +540,7 @@ def load_local_crafting_props(
     """
 
     path = map_database_path(static_database_path, map_id)
+    prop_actor_base = local_prop_actor_base(static_database_path, map_id)
     database = _open_read_only(path)
     try:
         entries = []
@@ -447,7 +564,7 @@ def load_local_crafting_props(
                     # Retail preserves the StateObject scene index. Filtering
                     # the query and then enumerating it made every workbench
                     # point at a different local object.
-                    prop_id=LOCAL_PROP_ID_BASE + int(row[0]) - 1,
+                    prop_id=prop_actor_base + int(row[0]) - 1,
                     template_id=str(row[2] or ""),
                     instance_guid=bytes(row[1]),
                     field_20=0xFFFFFFFF,
@@ -535,6 +652,7 @@ def load_local_map_initialization(
     npc_count: int | None = None,
     required_professions: tuple[str, ...] = ("banker",),
     active_event_flags: frozenset[str] = frozenset(),
+    include_inactive_event_sets: bool = False,
 ) -> tuple[tuple[ServerCommand, ...], ExitInfo]:
     """Return every map NPC service and all active map exits.
 
@@ -550,7 +668,7 @@ def load_local_map_initialization(
     all_definitions = load_local_npc_definitions(
         static_database_path,
         map_id,
-        include_inactive_event_sets=False,
+        include_inactive_event_sets=include_inactive_event_sets,
         active_event_flags=active_event_flags,
     )
     required = {value.casefold() for value in required_professions}
@@ -639,6 +757,40 @@ def load_local_spawn_position(
         return position
     finally:
         database.close()
+
+
+def load_local_travel_point_position(
+    static_database_path: str | Path,
+    map_id: str,
+) -> tuple[float, float, float]:
+    """Resolve the authored travel-stone position, falling back to Respawnpoint.
+
+    World-map and travel-stone destinations should arrive beside the map's
+    general travel point. A few older/event maps have no travel-point row, so
+    retain their authored player entry as a safe fallback.
+    """
+
+    path = map_database_path(static_database_path, map_id)
+    database = _open_read_only(path)
+    try:
+        row = database.execute(
+            """
+            SELECT Transform FROM _Instance_TravelPoint
+            WHERE lower(COALESCE(State, 'active'))='active'
+            ORDER BY CASE WHEN lower(COALESCE(Name, ''))='general_travel_point'
+                          THEN 0 ELSE 1 END, rowid
+            LIMIT 1
+            """
+        ).fetchone()
+        if row is not None:
+            position, _rotation = _transform(bytes(row[0]))
+            return position
+    except sqlite3.Error:
+        # Some legacy map databases do not contain _Instance_TravelPoint.
+        pass
+    finally:
+        database.close()
+    return load_local_spawn_position(static_database_path, map_id)
 
 
 def load_local_entry_position(

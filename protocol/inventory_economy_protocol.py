@@ -36,6 +36,9 @@ from dso_server.protocol.player_init_protocol import CurrencyChanged
 
 SALVAGE_COMMAND = command_id("Commands::SalvageCommand", 0x0031)
 CRAFTING_COMMAND = command_id("Commands::CraftingCommand", 0x005C)
+CRAFTING_RESULT_ACCEPTANCE_COMMAND = command_id(
+    "Commands::CraftingResultAcceptanceCommand", 0x005E
+)
 @dataclass(frozen=True)
 class SalvageRequest:
     item_ids: tuple[int, ...]
@@ -66,6 +69,8 @@ class CraftingRecipe:
     unlock_resource_id: str
     minimum_level: int
     crafting_recipe_type: str = ""
+    scale_price_rc: bool = False
+    scale_price_vc: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,11 @@ def decode_crafting_request(payload: bytes) -> CraftingRequest:
     mode = reader.read_uint32_le()
     field_10 = reader.read_uint32_le()
     field_14 = reader.read_uint32_le()
-    if payment_currency not in (0, 1):
+    # The retail enchantment-transfer workbench reuses CraftingCommand with
+    # selector 5. It is an operation selector for that special recipe, not a
+    # wallet currency; the interaction handler routes it without debiting a
+    # currency balance.
+    if payment_currency not in (0, 1, 5):
         raise ValueError(
             f"CraftingCommand payment currency {payment_currency} "
             "is unsupported"
@@ -284,6 +293,8 @@ def _load_recipe_cached(
             str(row["RecipeItemReference"] or ""),
             max(1, int(row["UnlockLevel"] or 1)),
             crafting_recipe_type,
+            str(row["ScalePriceRC"] or "NoScaling") == "ToPlayerLevel",
+            str(row["ScalePriceVC"] or "NoScaling") == "ToPlayerLevel",
         )
     finally:
         database.close()
@@ -323,20 +334,27 @@ def crafting_price_for_payment(
     price: PurchasePrice,
     payment_currency: int,
     executions: int,
+    *,
+    player_level: int = 1,
+    scale_rc_to_player_level: bool = False,
+    scale_vc_to_player_level: bool = False,
 ) -> PurchasePrice:
-    """Select exactly one client-chosen workbench payment branch."""
+    """Select the client's workbench payment branch and apply recipe scaling."""
 
     count = int(executions)
     if count <= 0:
         raise ValueError("crafting execution count must be positive")
+    level = max(1, int(player_level))
     if int(payment_currency) == 1:
         if int(price.rc) <= 0:
             raise ValueError("recipe cannot be paid with Andermant")
-        return PurchasePrice(rc=int(price.rc) * count)
+        unit_price = int(price.rc) * (level if scale_rc_to_player_level else 1)
+        return PurchasePrice(rc=unit_price * count)
     if int(payment_currency) != 0:
         raise ValueError("unsupported crafting payment currency")
     if int(price.vc) > 0:
-        return PurchasePrice(vc=int(price.vc) * count)
+        unit_price = int(price.vc) * (level if scale_vc_to_player_level else 1)
+        return PurchasePrice(vc=unit_price * count)
     if int(price.uc) > 0:
         return PurchasePrice(uc=int(price.uc) * count)
     # Free recipes have no price branch at all.

@@ -28,6 +28,11 @@ from dso_server.gameplay.map_unlocks import (
 )
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.membership_effects import (
+    membership_status_effect,
+    membership_status_effect_ids,
+)
+from dso_server.gameplay.skin_unlocks import repair_skin_source_inventory
 from dso_server.services.admin_effects import restore_admin_effects, limited_admin_speed_entries
 
 
@@ -92,6 +97,7 @@ class PlayerInitializationState:
     membership_type: int = 0
     membership_expires_at: str = ""
     membership_active: bool = False
+    membership_status_effect_ids: frozenset = frozenset()
     mount_ride: Any = None
     persistent_status_effects: dict = field(default_factory=dict)
     timed_status_effect_expiries: dict = field(default_factory=dict)
@@ -272,6 +278,25 @@ class PlayerInitializationStateService:
             if account_store is not None
             else None
         )
+        # The bundled XP table includes post-cap rows for compatibility with
+        # source data. They are not playable levels on this server. Normalize
+        # old/admin-set characters before map scaling and NewPlayer are built.
+        try:
+            level_cap_xp, _next_level_xp = self.static_database.player_xp_bounds(
+                int(character.class_id), 100
+            )
+            current_level = max(1, int(getattr(character, 'level', 1)))
+            current_xp = max(0, int(getattr(character, 'progression_u32', 0)))
+            if current_level > 100 or current_xp > level_cap_xp:
+                character.level = 100
+                character.progression_u32 = level_cap_xp
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] capped character "
+                    f"{getattr(character, 'name', character.character_id)!r} "
+                    "at level 100"
+                )
+        except (AttributeError, CharacterSelectionError, OSError, TypeError, ValueError):
+            pass
         map_access, spawn_position = (
             CharacterService._resolve_map_entry_route(
                 self,
@@ -455,6 +480,11 @@ class PlayerInitializationStateService:
                     f"item(s) to level {max(1, int(character.level))}: "
                     f"{promoted_item_ids}"
                 )
+        inventory = repair_skin_source_inventory(
+            inventory,
+            static_database_path=self.static_database_path,
+            class_name=CLASS_NAMES[int(character.class_id)],
+        )
         refresh_inventory_economy_values(
             self.static_database_path,
             inventory,
@@ -682,6 +712,30 @@ class PlayerInitializationStateService:
             if persisted_state is not None
             else s.gameplay_mount_ride
         )
+        if mount_ride is not None:
+            sticker_definition = load_sticker_definition(
+                self.static_database_path,
+                mount_ride.definition.stickerbook_resource_id,
+            )
+            if sticker_definition is not None and sticker_definition.mount is not None:
+                resolved_mount = sticker_definition.mount
+                local_mount = find_mount(
+                    mount_ride.definition.stickerbook_resource_id
+                )
+                if local_mount is not None:
+                    # Keep the captured local cast timing while refreshing
+                    # effect indexes from the active database.
+                    resolved_mount = replace(
+                        resolved_mount,
+                        cast_duration_seconds=local_mount.cast_duration_seconds,
+                        cast_duration_ticks=local_mount.cast_duration_ticks,
+                        ride_duration_ticks=local_mount.ride_duration_ticks,
+                    )
+                mount_ride = replace(
+                    mount_ride,
+                    definition=resolved_mount,
+                    effect_id=resolved_mount.ride_effect_id,
+                )
         persistent_status_effects = {
             effect.field_04: effect
             for effect in (
@@ -690,6 +744,15 @@ class PlayerInitializationStateService:
                 else ()
             )
         }
+        if mount_ride is not None:
+            saved_ride_effect = persistent_status_effects.get(
+                mount_ride.instance_id
+            )
+            if saved_ride_effect is not None:
+                persistent_status_effects[mount_ride.instance_id] = replace(
+                    saved_ride_effect,
+                    effect_id=mount_ride.definition.ride_effect_id,
+                )
         persistent_status_effects = restore_admin_effects(
             persistent_status_effects,
             load_status_runtime_catalog(self.static_database_path),
@@ -777,6 +840,14 @@ class PlayerInitializationStateService:
             for instance_id, effect in persistent_status_effects.items()
             if effect.effect_id not in talent_effect_wire_ids
         }
+        membership_effect_ids = membership_status_effect_ids(
+            self.static_database_path
+        )
+        persistent_status_effects = {
+            instance_id: effect
+            for instance_id, effect in persistent_status_effects.items()
+            if effect.effect_id not in membership_effect_ids
+        }
         next_status_effect_instance_id = max(
             s.gameplay_next_status_effect_instance_id,
             (
@@ -790,6 +861,18 @@ class PlayerInitializationStateService:
                 else 0
             ),
         )
+        if membership_active:
+            membership_effect = membership_status_effect(
+                self.static_database_path,
+                membership_type,
+                instance_id=next_status_effect_instance_id,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                expires_at=membership_expires_at,
+                server_tick=0,
+            )
+            if membership_effect is not None:
+                persistent_status_effects[membership_effect.field_04] = membership_effect
+                next_status_effect_instance_id += 1
         if persisted_state is not None:
             for resource_id in (
                 persisted_state.active_costume,
@@ -949,6 +1032,7 @@ class PlayerInitializationStateService:
         state.membership_type = membership_type
         state.membership_expires_at = membership_expires_at
         state.membership_active = membership_active
+        state.membership_status_effect_ids = membership_effect_ids
         state.mount_ride = mount_ride
         state.persistent_status_effects = persistent_status_effects
         state.timed_status_effect_expiries = timed_status_effect_expiries
@@ -1043,6 +1127,10 @@ class PlayerInitializationStateService:
             s.gameplay_admin_booking_ids = (
                 persisted_state.admin_booking_ids if persisted_state is not None else ()
             )
+            s.gameplay_gm_invulnerable = bool(
+                persisted_state.admin_invulnerable
+                if persisted_state is not None else False
+            )
             s.gameplay_spawn_position = state.spawn_position
             s.gameplay_coordinate_frame = state.coordinate_frame
             s.gameplay_map_exits = state.map_exits
@@ -1052,6 +1140,9 @@ class PlayerInitializationStateService:
             s.gameplay_map_access_id = state.map_access.request_map_id
             s.gameplay_map_access_group_id = (
                 state.map_access.access_group_id
+            )
+            s.gameplay_fractured_planes_run = bool(
+                getattr(state.character, "fractured_planes_run", False)
             )
             s.gameplay_map_difficulty = state.map_access.map_difficulty
             s.gameplay_scaling_difficulty = (
@@ -1100,6 +1191,9 @@ class PlayerInitializationStateService:
             s.gameplay_membership_type = state.membership_type
             s.gameplay_membership_expires_at = state.membership_expires_at
             s.gameplay_membership_active = state.membership_active
+            s.gameplay_membership_status_effect_ids = (
+                state.membership_status_effect_ids
+            )
             s.gameplay_timed_offer_purchases = (
                 dict(persisted_state.timed_offer_purchases)
                 if persisted_state is not None

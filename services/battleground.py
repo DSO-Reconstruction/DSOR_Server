@@ -77,6 +77,9 @@ class BattlegroundService:
                     entry.arena_heading, entry.arena_heading,
                     int(s.gameplay_chase_server_tick), 0,
                 )
+                s.gameplay_move_budget = 0.0
+                s.gameplay_movement_allowance = None
+                s.gameplay_move_correction_at = 0.0
         self._send_pvp(
             s,
             encode_force_transform_batch(

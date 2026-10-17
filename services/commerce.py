@@ -12,6 +12,77 @@ from dso_server.protocol.shop_protocol import OFFER_COMMAND
 class CommerceService:
     """NPC/OCP offers, rewards, and purchase transactions."""
 
+    def _build_shop_offer_snapshot(self, s: Session, shop_id: str):
+        """Build the same filtered offer snapshot used for a fresh shop open."""
+        character = s.gameplay_character
+        if character is None and hasattr(self, 'character_selection'):
+            character = self.character_selection.active_character
+        player_level = max(1, int(getattr(character, 'level', 1)))
+        class_id = int(getattr(character, 'class_id', 0))
+        offers = load_shop_offers(
+            self.static_database_path,
+            shop_id,
+            player_level=player_level,
+            class_id=class_id,
+            active_event_ids=CharacterService._event_catalog(
+                self
+            ).active_template_ids(),
+        )
+        with s.flow_lock:
+            owned_stickers = tuple(s.gameplay_stickerbook_entries)
+            vendor_buyback = tuple(s.gameplay_vendor_buyback)
+        hidden_item_ids = owned_source_item_ids(
+            self.static_database_path,
+            owned_stickers,
+        )
+        if hidden_item_ids:
+            visible_offers = tuple(
+                offer
+                for offer in offers.offers
+                if offer is None or offer.item_id not in hidden_item_ids
+            )
+            visible_categories = tuple(dict.fromkeys(
+                offer.category for offer in visible_offers if offer is not None
+            ))
+            offers = replace(
+                offers,
+                offers=visible_offers,
+                categories=visible_categories,
+            )
+        return replace(offers, sold_items=tuple(
+            copy.deepcopy(item) for item, _ in vendor_buyback
+        ))
+
+    def _refresh_open_npc_shop(self, s: Session, shop_id: str) -> bool:
+        """Publish a CMS shop change to a player who currently has it open."""
+        if not self.is_session_current(s):
+            return False
+        with s.flow_lock:
+            if s.gameplay_open_shop_id != shop_id:
+                return False
+            actor_id = s.gameplay_open_shop_actor_id
+        offers = replace(
+            self._build_shop_offer_snapshot(s, shop_id),
+            field_60=True,
+        )
+        with s.flow_lock:
+            if s.gameplay_open_shop_id != shop_id:
+                return False
+            s.gameplay_open_shop_offers = offers
+        packet, packet_bits = encode_offer_response_batch(
+            offers,
+            timed_offers_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            offer_actor_id=int(actor_id or 0),
+        )
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            pace_seconds=0.002,
+            track=True,
+            label_prefix='admin-npc-shop-refresh',
+        )
+        return True
+
     def _handle_request_offer(self, s: Session, payload: bytes) -> None:
         request = decode_request_offer(payload)
         CharacterService._accept_gameplay_state_command(s, 0x0059)
@@ -36,50 +107,7 @@ class CommerceService:
             )
             return
 
-        character = s.gameplay_character
-        if character is None and hasattr(self, 'character_selection'):
-            character = self.character_selection.active_character
-        player_level = max(1, int(getattr(character, 'level', 1)))
-        class_id = int(getattr(character, 'class_id', 0))
-        offers = load_shop_offers(
-            self.static_database_path,
-            shop_id,
-            player_level=player_level,
-            class_id=class_id,
-            active_event_ids=CharacterService._event_catalog(
-                self
-            ).active_template_ids(),
-        )
-        with s.flow_lock:
-            owned_stickers = tuple(s.gameplay_stickerbook_entries)
-        hidden_item_ids = owned_source_item_ids(
-            self.static_database_path,
-            owned_stickers,
-        )
-        if hidden_item_ids:
-            visible_offers = tuple(
-                offer
-                for offer in offers.offers
-                if (
-                    offer is None
-                    or offer.item_id not in hidden_item_ids
-                )
-            )
-            visible_categories = tuple(
-                dict.fromkeys(
-                    offer.category
-                    for offer in visible_offers
-                    if offer is not None
-                )
-            )
-            offers = replace(
-                offers,
-                offers=visible_offers,
-                categories=visible_categories,
-            )
-        offers = replace(offers, sold_items=tuple(
-            copy.deepcopy(item) for item, _ in s.gameplay_vendor_buyback
-        ))
+        offers = self._build_shop_offer_snapshot(s, shop_id)
         with s.flow_lock:
             s.gameplay_open_shop_id = shop_id
             s.gameplay_open_shop_actor_id = request.npc_actor_id
@@ -87,11 +115,16 @@ class CommerceService:
         packet, packet_bits = encode_offer_response_batch(
             offers,
             timed_offers_actor_id=LOCAL_PLAYER_ACTOR_ID,
-            offer_actor_id=0,
+            # OfferCommand is actor-scoped. For an NPC shop, the client
+            # requested this shop against that NPC actor and expects the
+            # response to retain the same actor context. Global-store
+            # requests use actor zero and remain actorless.
+            offer_actor_id=int(request.npc_actor_id),
         )
         s.send_reliable_ordered_split(
             packet,
             total_bit_length=packet_bits,
+            pace_seconds=0.002,
             track=True,
             label_prefix='npc-shop-offers-npc-shop-offers',
         )
@@ -99,7 +132,8 @@ class CommerceService:
             f"[{GAMEPLAY_SERVICE_NAME}] handled RequestOffer for NPC actor "
             f"{request.npc_actor_id}: sent {len(offers.offers)} typed "
             f"{shop_id!r} offers from static.db4 "
-            f"({len(packet)} bytes/{packet_bits} bits)"
+            f"({len(packet)} bytes/{packet_bits} bits; "
+            f"offer_actor={int(request.npc_actor_id)})"
         )
 
     @track_inventory_reward
@@ -341,18 +375,94 @@ class CommerceService:
     def _handle_tier_spender_accept(
             self, s: Session, payload: bytes) -> None:
         reward_ids = decode_tier_spender_accept(payload)
-        definitions = load_spender_rewards(
-            self.static_database_path, reward_ids
-        )
-        self._deliver_rewards(
-            s,
-            definitions,
-            claim_keys=tuple(f"spender:{value}" for value in reward_ids),
-            label="tier-spender-reward",
-        )
+        definitions = load_spender_rewards(self.static_database_path, reward_ids)
+        by_id = {definition.claim_id: definition for definition in definitions}
+        today = self._daily_challenge_now().date().isoformat()
+        with s.flow_lock:
+            state = s.gameplay_daily_challenges
+            if (state is None or state.day != today
+                    or len(state.spender) != 12):
+                raise ValueError("tier spender board is unavailable")
+            groups = tuple(
+                {entry.challenge_id for entry in state.spender[index:index + 4]}
+                for index in (0, 4, 8)
+            )
+            selected_by_group = []
+            remaining = set(reward_ids)
+            for group in groups:
+                matches = remaining.intersection(group)
+                if len(matches) != 1:
+                    raise ValueError(
+                        "tier spender selection must contain one reward per tier"
+                    )
+                selected = next(iter(matches))
+                selected_by_group.append(selected)
+                remaining.remove(selected)
+            if remaining or len(reward_ids) != 3:
+                raise ValueError(
+                    "tier spender selection must contain one reward per tier"
+                )
+            selections = tuple(selected_by_group)
+            if state.spender_selections and state.spender_selections != selections:
+                raise ValueError("tier spender rewards were already selected")
+            if state.spender_selections != selections:
+                s.gameplay_daily_challenges = replace(
+                    state, spender_selections=selections
+                )
+        if state.spender_selections != selections:
+            CharacterService._request_account_save(
+                s, "Tier spender rewards selected", flush=True
+            )
         CharacterService._accept_gameplay_state_command(
             s, ACCEPTED_TIER_SPENDER_COMMAND
         )
+        self._award_due_tier_spender_rewards(s, by_id=by_id)
+
+    def _award_due_tier_spender_rewards(self, s, *, by_id=None):
+        with s.flow_lock:
+            state = s.gameplay_daily_challenges
+            if state is None or not state.spender_selections:
+                return
+            progress = int(state.spender_progress)
+            claims = dict(s.gameplay_timed_offer_purchases)
+            selected = tuple(state.spender_selections)
+        if by_id is None:
+            definitions = load_spender_rewards(
+                self.static_database_path, selected
+            )
+            by_id = {definition.claim_id: definition for definition in definitions}
+        due = tuple(
+            by_id[reward_id] for reward_id in selected
+            if reward_id in by_id
+            and progress >= int(by_id[reward_id].rc_needed)
+            and not claims.get(f"spender:{reward_id}", 0)
+        )
+        if due:
+            self._deliver_rewards(
+                s, due,
+                claim_keys=tuple(f"spender:{item.claim_id}" for item in due),
+                label="tier-spender-reward",
+            )
+
+    def _credit_tier_spender_progress(self, s, amount):
+        amount = int(amount)
+        if amount <= 0:
+            return
+        today = self._daily_challenge_now().date().isoformat()
+        with s.flow_lock:
+            state = s.gameplay_daily_challenges
+            if state is None or state.day != today or len(state.spender) != 12:
+                return
+            progress = min(0xffffffff, int(state.spender_progress) + amount)
+            if progress == state.spender_progress:
+                return
+            s.gameplay_daily_challenges = replace(
+                state, spender_progress=progress
+            )
+        CharacterService._request_account_save(
+            s, "Tier spender progress", flush=True
+        )
+        self._award_due_tier_spender_rewards(s)
 
     def _settle_ocp_booking(
             self, s: Session, pending_key: str, reward) -> None:
@@ -937,8 +1047,19 @@ class CommerceService:
                     definition,
                     offer.amount * entry.amount,
                     next_item_id=next_item_id,
-                    item_level=max(1, int(character.level)),
+                    item_level=(
+                        offer.item_level_override
+                        or max(1, int(character.level))
+                    ),
                 )
+                if offer.unlocked_socket_count:
+                    for purchased_item in mutation.changed_items:
+                        purchased_item.socket_count = (
+                            offer.unlocked_socket_count
+                        )
+                        purchased_item.socketed_templates = [
+                            "" for _ in range(offer.unlocked_socket_count)
+                        ]
                 next_item_id = mutation.next_item_id
                 changed_items.extend(mutation.changed_items)
                 replaced_item_ids.extend(mutation.replaced_item_ids)
@@ -1072,6 +1193,8 @@ class CommerceService:
             track=True,
             label_prefix='vendor-purchase-vendor-purchase',
         )
+        if total_price.rc:
+            self._credit_tier_spender_progress(s, total_price.rc)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] handled Transaction for "
             f"{transaction.shop_id!r}: delivered "

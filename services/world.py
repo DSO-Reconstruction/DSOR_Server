@@ -11,6 +11,15 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services import movement_validation
 
+_PERSISTENT_SCRIPTED_ACTORS = frozenset({
+    "a0001_champion_undead_mage_01",
+    "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
+})
+_FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
+_FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
+_FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
+_FORTRESS_GRIMMAG_VISIBILITY_EXIT_RADIUS = 85.0
+
 
 @contextmanager
 def _rollback_uncommitted_world_pickup_heal(
@@ -46,9 +55,35 @@ class WorldService:
     """Movement, actor discovery, world loot, and vicinity state."""
 
     @staticmethod
+    def _monster_visibility_radius(encounter, combat, actor_id, *, exiting=False):
+        """Return the visibility boundary for an actor on this map."""
+
+        monster = (
+            combat.monsters.get(int(actor_id))
+            if combat is not None
+            else None
+        )
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _FORTRESS_GRIMMAG_MAP
+            and monster is not None
+            and monster.template_id.casefold() == _FORTRESS_GRIMMAG_TEMPLATE
+        ):
+            return (
+                _FORTRESS_GRIMMAG_VISIBILITY_EXIT_RADIUS
+                if exiting
+                else _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS
+            )
+        return (
+            MONSTER_VISIBILITY_EXIT_RADIUS
+            if exiting
+            else MONSTER_VISIBILITY_ENTER_RADIUS
+        )
+
+    @staticmethod
     def _monster_groups_within_radius(
             encounter, *, world_position, actor_ids, positions,
-            radius: float, extra_groups=()):
+            radius: float, extra_groups=(), radius_for_actor=None):
         """Build runtime group subsets from individually-near actors.
 
         Spawn groups remain useful packet batches, but their center and most
@@ -61,7 +96,6 @@ class WorldService:
         candidates = {int(actor_id) for actor_id in actor_ids}
         if not candidates:
             return ()
-        radius_squared = max(0.0, float(radius)) ** 2
         player_x = float(world_position[0])
         player_z = float(world_position[2])
         groups = []
@@ -79,7 +113,14 @@ class WorldService:
                     and (
                         (float(position[0]) - player_x) ** 2
                         + (float(position[2]) - player_z) ** 2
-                    ) <= radius_squared + 1e-9
+                    ) <= max(
+                        0.0,
+                        float(
+                            radius_for_actor(actor_id)
+                            if radius_for_actor is not None
+                            else radius
+                        ),
+                    ) ** 2 + 1e-9
                 )
             }
             if not nearby:
@@ -160,17 +201,28 @@ class WorldService:
         # and commits its timer state afterward, which otherwise forms AB/BA.
         with combat.lock:
             current_positions = dict(combat.monster_positions)
-        exit_radius_squared = MONSTER_VISIBILITY_EXIT_RADIUS ** 2
+            persistent_scripted = {
+                actor_id
+                for actor_id in announced
+                if (
+                    combat.monsters.get(actor_id) is not None
+                    and combat.monsters[actor_id].template_id.casefold()
+                    in _PERSISTENT_SCRIPTED_ACTORS
+                )
+            }
         forgotten = {
             actor_id
             for actor_id in announced
+            if actor_id not in persistent_scripted
             for position in (current_positions.get(actor_id),)
             if (
                 position is None
                 or (
                     (float(position[0]) - float(world_position[0])) ** 2
                     + (float(position[2]) - float(world_position[2])) ** 2
-                ) > exit_radius_squared + 1e-9
+                ) > CharacterService._monster_visibility_radius(
+                    encounter, combat, actor_id, exiting=True
+                ) ** 2 + 1e-9
             )
         }
         discarded = forgotten.intersection(spawned)
@@ -253,7 +305,10 @@ class WorldService:
         move = decode_move(payload)
         if CharacterService._player_victim_feature_locked(s, "movement"):
             # The local client predicts movement. Silently dropping Move
-            # leaves it walking while the server holds its old position.
+            # leaves it walking while the server holds its old position. A
+            # revive animation can produce many input packets in a row, so
+            # correct to the frozen transform once per revive window instead
+            # of repeatedly snapping the client back on every packet.
             with s.flow_lock:
                 previous_move = s.gameplay_last_move
                 frame = s.gameplay_coordinate_frame
@@ -268,10 +323,27 @@ class WorldService:
                 # locked, so subsequent round effects use a current tick.
                 if ((int(move.start_tick) - int(s.gameplay_chase_server_tick)) & 0xFFFFFFFF) < 0x80000000:
                     s.gameplay_chase_server_tick = move.start_tick
+                revive_lock_until = float(
+                    getattr(s, "gameplay_revive_movement_until", 0.0)
+                )
+                if revive_lock_until > 0.0:
+                    correction_needed = (
+                        float(getattr(
+                            s,
+                            "gameplay_revive_movement_correction_until",
+                            0.0,
+                        )) != revive_lock_until
+                    )
+                    if correction_needed:
+                        s.gameplay_revive_movement_correction_until = (
+                            revive_lock_until
+                        )
+                else:
+                    correction_needed = True
                 stopped = (
                     replace(previous_move, scalar_byte=0, duration_ticks=0,
                             start_tick=move.start_tick)
-                    if previous_move is not None else None
+                    if previous_move is not None and correction_needed else None
                 )
                 if stopped is not None:
                     s.gameplay_last_move = stopped
@@ -290,36 +362,67 @@ class WorldService:
             return
         correction = None
         with s.flow_lock:
+            s.gameplay_revive_movement_correction_until = 0.0
             refusal = movement_validation.check_move(s, move)
             if refusal is None:
                 s.gameplay_last_move = move
             else:
-                # The server keeps the last valid position; the client goes back
-                # there (not on every refused record: it keeps sending from where
-                # it predicted until the correction lands).
+                # Retain the last valid server position and periodically send
+                # a correction while the client continues to predict locally.
                 now = time.perf_counter()
                 frame = s.gameplay_coordinate_frame
                 if frame is None and s.gameplay_combat_state is not None:
                     frame = s.gameplay_combat_state.encounter.coordinate_frame
                 kept = s.gameplay_last_move
-                if kept is None and frame is not None and s.gameplay_spawn_position is not None:
-                    kept = Move.from_values(frame.world_to_wire(s.gameplay_spawn_position), 0.0, 0.0, 0.0, move.start_tick, 0)
+                if (
+                    kept is None
+                    and frame is not None
+                    and s.gameplay_spawn_position is not None
+                ):
+                    kept = Move.from_values(
+                        frame.world_to_wire(s.gameplay_spawn_position),
+                        0.0, 0.0, 0.0, move.start_tick, 0,
+                    )
                     s.gameplay_last_move = kept
-                if kept is not None and frame is not None and now - s.gameplay_move_correction_at >= movement_validation.CORRECTION_INTERVAL:
+                if (
+                    kept is not None
+                    and frame is not None
+                    and now - s.gameplay_move_correction_at
+                    >= movement_validation.CORRECTION_INTERVAL
+                ):
                     s.gameplay_move_correction_at = now
-                    correction = (replace(kept, scalar_byte=0, duration_ticks=0, start_tick=move.start_tick), frame)
+                    correction = (
+                        replace(
+                            kept,
+                            scalar_byte=0,
+                            duration_ticks=0,
+                            start_tick=move.start_tick,
+                        ),
+                        frame,
+                    )
             if ((int(move.start_tick) - int(s.gameplay_chase_server_tick)) & 0xFFFFFFFF) < 0x80000000:
                 s.gameplay_chase_server_tick = move.start_tick
         if refusal is not None:
             CharacterService._accept_gameplay_state_command(s, 0x005F)
             if correction is not None:
                 stopped, frame = correction
-                print(f"[{GAMEPLAY_SERVICE_NAME}] refused move: {refusal}; corrected to {stopped.relative_position}")
-                s.send_unreliable_sequenced(encode_move(stopped, actor_id=LOCAL_PLAYER_ACTOR_ID))
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] refused move: {refusal}; "
+                    f"corrected to {stopped.relative_position}"
+                )
+                s.send_unreliable_sequenced(
+                    encode_move(stopped, actor_id=LOCAL_PLAYER_ACTOR_ID)
+                )
                 s.send_reliable_ordered(
-                    encode_force_transform_batch(ForceTransform(frame.wire_to_world(stopped.relative_position), stopped.yaw),
-                                                 actor_id=LOCAL_PLAYER_ACTOR_ID),
-                    track=True, label="player-invalid-movement-correction",
+                    encode_force_transform_batch(
+                        ForceTransform(
+                            frame.wire_to_world(stopped.relative_position),
+                            stopped.yaw,
+                        ),
+                        actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                    track=True,
+                    label="player-invalid-movement-correction",
                 )
             return
         CharacterService._accept_gameplay_state_command(s, 0x005F)
@@ -360,6 +463,11 @@ class WorldService:
                 positions=current_positions,
                 radius=MONSTER_VISIBILITY_ENTER_RADIUS,
                 extra_groups=combat.runtime_groups,
+                radius_for_actor=lambda actor_id: (
+                    CharacterService._monster_visibility_radius(
+                        encounter, combat, actor_id
+                    )
+                ),
             )
         with s.flow_lock:
             if (
@@ -380,6 +488,20 @@ class WorldService:
                 s, combat, group,
                 label="monster-actors-enter-vicinity",
             )
+            grimmag_ids = tuple(
+                actor_id
+                for actor_id in group.actor_ids
+                if (
+                    combat.monsters.get(actor_id) is not None
+                    and combat.monsters[actor_id].template_id.casefold()
+                    == _FORTRESS_GRIMMAG_TEMPLATE
+                )
+            )
+            if grimmag_ids:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] announced fortress Grimmag "
+                    f"actor(s) {grimmag_ids} to {s.addr}"
+                )
             if VERBOSE_PACKET_LOGGING:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] announced nearby monster actors "
@@ -464,7 +586,9 @@ class WorldService:
                 actor_is_near = (
                     (float(actor_position[0]) - float(player_world[0])) ** 2
                     + (float(actor_position[2]) - float(player_world[2])) ** 2
-                ) <= MONSTER_VISIBILITY_EXIT_RADIUS ** 2 + 1e-9
+                ) <= CharacterService._monster_visibility_radius(
+                    encounter, combat, decoded.value, exiting=True
+                ) ** 2 + 1e-9
 
         activate_actor_ids = ()
         with s.flow_lock:
@@ -615,6 +739,29 @@ class WorldService:
                         start_tick=server_tick, duration_ticks=duration,
                     ))
             CharacterService._start_monster_chase(s)
+        requested_monster = (
+            combat.monsters.get(int(decoded.value))
+            if combat is not None
+            else None
+        )
+        if (
+            requested_monster is not None
+            and encounter is not None
+            and encounter.map_id.casefold() == _FORTRESS_GRIMMAG_MAP
+            and requested_monster.template_id.casefold()
+            == _FORTRESS_GRIMMAG_TEMPLATE
+        ):
+            with s.flow_lock:
+                announced = int(decoded.value) in s.gameplay_announced_monster_actor_ids
+                spawned = int(decoded.value) in s.gameplay_spawned_monster_actor_ids
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] fortress Grimmag ActorRequest "
+                f"actor={decoded.value}, near={actor_is_near}, "
+                f"announced={announced}, spawned={spawned}, "
+                f"rejected={rejected_for_distance}, "
+                f"response={'NewMonster' if spawn_batch is not None else 'none'} "
+                f"to {s.addr}"
+            )
 
     @staticmethod
     def _send_world_loot_batch(s: Session, drops) -> None:
@@ -895,7 +1042,9 @@ class WorldService:
                         int(points[3]),
                     )
                     response_packet, response_bits = (
-                        encode_discard_item_batch((int(item_id),))
+                        encode_discard_item_batch(
+                            (int(item_id),), notify=True
+                        )
                     )
                 elif drop.item_category == 'Currency':
                     if currency is None:
@@ -935,7 +1084,13 @@ class WorldService:
                         raise ValueError('player inventory is unavailable')
                     if live_health is not None:
                         inventory.health_points = live_health
-                    mutation = add_world_drop_to_inventory(inventory, drop)
+                    item_definition = load_purchase_item_definition(
+                        instant_database_path, drop.item.template_id,
+                    )
+                    mutation = add_world_drop_to_inventory(
+                        inventory, drop,
+                        max_stack_size=item_definition.max_stack_size,
+                    )
                     response_packet, response_bits = (
                         encode_world_pickup_response(
                             drop,
@@ -944,6 +1099,11 @@ class WorldService:
                         )
                     )
                     s.gameplay_inventory = mutation.inventory
+                    if mutation.inventory.items:
+                        s.gameplay_next_item_id = max(
+                            int(s.gameplay_next_item_id),
+                            max(int(item.item_id) for item in mutation.inventory.items) + 1,
+                        )
                 del s.gameplay_world_loot[int(item_id)]
                 # The pickup response contains the local DiscardItem. Remove
                 # the registration before peer callbacks can reconcile it.
@@ -962,6 +1122,16 @@ class WorldService:
             response_bits,
             label='world-loot-pickup-response',
         )
+        if wisdom_pickup:
+            pickup_packet, pickup_bits = encode_pickup_info_batch(
+                drop.item.template_id
+            )
+            CharacterService._send_world_loot_state_batch(
+                s,
+                pickup_packet,
+                pickup_bits,
+                label='world-loot-pickup-info',
+            )
         if instant_definition is not None:
             CharacterService._apply_instant_consumable_effect(
                 s,
@@ -1005,13 +1175,10 @@ class WorldService:
                 (
                     ServerCommand(
                         TALENT_CATEGORY_POINTS_INFO_COMMAND,
-                        # Incremental category refresh: 1 is Ancient Wisdom.
-                        # 0xFF is reserved for the full initialization/reset
-                        # snapshot and does not refresh the live wisdom UI.
-                        # The category and the values are both in category
-                        # order here; the codec permutes them into the wire's
-                        # own order (see TALENT_CATEGORY_POINTS_WIRE_ORDER).
-                        TalentCategoryPointsInfo(1, points),
+                        # Match the complete category-point snapshot sent on
+                        # map initialization. The client does not refresh its
+                        # live Knowledge counter from a category-only update.
+                        TalentCategoryPointsInfo(0xFF, points),
                         0,
                     ),
                     # The progression value is authoritative immediately,

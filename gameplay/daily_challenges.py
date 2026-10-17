@@ -131,7 +131,10 @@ class DailyChallengeCatalog:
         bonuses = tuple(bonus.get(d.resource_id, d.entry(ACCEPTED))
                         for d in self.definitions.values()
                         if d.category == "BonusReward" and d.eligible(facts))
-        return DailyChallengeState(current.day, tuple(entries), bonuses)
+        return DailyChallengeState(
+            current.day, tuple(entries), bonuses, current.spender,
+            current.spender_progress, current.spender_selections,
+        )
 
 
 def load_daily_challenge_catalog(database_path: str | Path) -> DailyChallengeCatalog:
@@ -176,15 +179,24 @@ class DailyChallengeState:
     day: str
     daily: tuple[TimedChallenge, ...]
     bonuses: tuple[TimedChallenge, ...]
+    spender: tuple[TimedChallenge, ...] = ()
+    spender_progress: int = 0
+    spender_selections: tuple[str, ...] = ()
 
-    def info(self) -> TimedChallengesInfo:
+    def info(self, *, include_spender: bool = False) -> TimedChallengesInfo:
         # The historical weekly/monthly codec names actually describe bonus
-        # objectives and RC spender rewards. Spender rewards are independent.
-        return TimedChallengesInfo(0, self.daily, self.bonuses, ())
+        # objectives and RC spender rewards, not calendar periods.
+        return TimedChallengesInfo(
+            0, self.daily, self.bonuses,
+            self.spender if include_spender else (), (),
+        )
 
     def to_document(self) -> dict:
         return {"day": self.day, "daily": [asdict(e) for e in self.daily],
-                "bonuses": [asdict(e) for e in self.bonuses]}
+                "bonuses": [asdict(e) for e in self.bonuses],
+                "spender": [asdict(e) for e in self.spender],
+                "spender_progress": self.spender_progress,
+                "spender_selections": list(self.spender_selections)}
 
     @classmethod
     def from_document(cls, document):
@@ -203,4 +215,122 @@ class DailyChallengeState:
                     raise ValueError("invalid saved daily challenge")
                 result.append(entry)
             return tuple(result)
-        return cls(day, entries("daily"), entries("bonuses"))
+        spender_progress = int(document.get("spender_progress", 0))
+        spender_selections = tuple(
+            str(value) for value in document.get("spender_selections", ())
+        )
+        if not 0 <= spender_progress <= 0xffffffff:
+            raise ValueError("invalid saved tier spender progress")
+        if len(set(spender_selections)) != len(spender_selections):
+            raise ValueError("duplicate saved tier spender selection")
+        return cls(day, entries("daily"), entries("bonuses"), entries("spender"),
+                   spender_progress, spender_selections)
+
+
+@dataclass(frozen=True)
+class SpenderChallengeDefinition:
+    resource_id: str
+    slot: str
+    weight: int
+    minimum_level: int
+    maximum_level: int
+    class_names: frozenset[str]
+    activation_event: str
+    completed_quest: str
+    memberships: frozenset[str]
+
+
+def load_tier_spender_challenges(
+    database_path: str | Path,
+    facts: ChallengeEligibility,
+    *,
+    membership: str = "NoPrivilege",
+    rng=None,
+    slots: tuple[str, ...] = ("copper", "silver", "gold"),
+    excluded_ids: frozenset[str] = frozenset(),
+) -> tuple[TimedChallenge, ...]:
+    """Select four client-resolvable rewards for each requested RC tier."""
+    path = Path(database_path)
+    stamp = path.stat()
+    definitions = _load_spender_challenge_definitions(
+        str(path), stamp.st_mtime_ns, stamp.st_size
+    )
+    active_events = facts.active_events
+    closed_quests = facts.closed_quests
+    membership_name = str(membership or "NoPrivilege").casefold()
+    generator = rng or random.SystemRandom()
+    selected = []
+    requested_slots = tuple(str(slot).casefold() for slot in slots)
+    if not requested_slots or any(
+        slot not in {"copper", "silver", "gold"} for slot in requested_slots
+    ):
+        raise ValueError("invalid tier spender slot selection")
+    excluded = frozenset(str(value) for value in excluded_ids)
+    for slot in requested_slots:
+        candidates = [entry for entry in definitions
+                      if entry.slot == slot and entry.weight > 0
+                      and entry.resource_id not in excluded
+                      and entry.minimum_level <= facts.level <= entry.maximum_level
+                      and (not entry.class_names or facts.class_name in entry.class_names)
+                      and (not entry.activation_event or entry.activation_event in active_events)
+                      and (not entry.completed_quest or entry.completed_quest in closed_quests)
+                      and membership_name in entry.memberships]
+        for _ in range(4):
+            if not candidates:
+                break
+            choice = generator.choices(
+                candidates, weights=[entry.weight for entry in candidates], k=1
+            )[0]
+            selected.append(TimedChallenge(
+                choice.resource_id, choice.resource_id, AVAILABLE, 0,
+                ZERO_TIMESTAMP,
+            ))
+            candidates.remove(choice)
+    return tuple(selected)
+
+
+def load_tier_spender_shuffle_prices(
+    database_path: str | Path,
+) -> dict[str, int]:
+    """Read the authored Andermant cost for each spender shuffle tier."""
+
+    names = {
+        "copper": "TierSpenderDealsShufflePriceCopper",
+        "silver": "TierSpenderDealsShufflePriceSilver",
+        "gold": "TierSpenderDealsShufflePriceGold",
+    }
+    # connect() returns the thread's cached read-only connection. Do not close
+    # it here: later gameplay queries on that worker reuse the same handle.
+    database = connect(database_path)
+    row = database.execute(
+        "SELECT " + ", ".join(f'"{column}"' for column in names.values())
+        + " FROM _Globals LIMIT 1"
+    ).fetchone()
+    if row is None:
+        raise ValueError("static globals do not define spender shuffle prices")
+    prices = {slot: int(row[index]) for index, slot in enumerate(names)}
+    if any(price < 0 or price > 0xFFFFFFFF for price in prices.values()):
+        raise ValueError("spender shuffle price is outside the currency range")
+    return prices
+
+
+@lru_cache(maxsize=4)
+def _load_spender_challenge_definitions(path, mtime_ns, size):
+    del mtime_ns, size
+    database = connect(path)
+    definitions = []
+    for row in database.execute(
+        'SELECT Id, SpenderSlot, Weighting, MinLevel, MaxLevel, CharClass, '
+        'EventId, QuestIdCompleted, Membership '
+        'FROM "_Template_RCSpenderRewards" WHERE Obsolete = 0 ORDER BY rowid'
+    ):
+        definitions.append(SpenderChallengeDefinition(
+            str(row[0]), str(row[1] or "").casefold(), int(row[2] or 0),
+            int(row[3] or 0), int(row[4] or 0),
+            frozenset(part.strip().casefold() for part in str(row[5] or "").split(";")
+                      if part.strip()),
+            str(row[6] or "").casefold(), str(row[7] or "").casefold(),
+            frozenset(part.strip().casefold() for part in str(row[8] or "").split(";")
+                      if part.strip()),
+        ))
+    return tuple(definitions)

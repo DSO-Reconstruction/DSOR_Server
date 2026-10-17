@@ -160,6 +160,7 @@ class AccountState:
     last_visited_town: str = ""
     unlocked_maps: tuple[str, ...] = ()
     admin_all_maps: bool = False
+    admin_invulnerable: bool = False
     map_access_id: str = ""
     map_difficulty: int = 0
     scaling_difficulty: int = 0
@@ -526,6 +527,7 @@ def _state_to_document(state: AccountState) -> dict:
         "last_visited_town": str(state.last_visited_town),
         "unlocked_maps": list(state.unlocked_maps),
         "admin_all_maps": bool(state.admin_all_maps),
+        "admin_invulnerable": bool(state.admin_invulnerable),
         "map_access_id": str(state.map_access_id or state.map_id),
         "map_difficulty": int(state.map_difficulty),
         "scaling_difficulty": int(state.scaling_difficulty),
@@ -724,6 +726,7 @@ def _state_from_document(document: dict) -> AccountState:
         last_visited_town=str(document.get("last_visited_town", "")),
         unlocked_maps=tuple(str(value) for value in document.get("unlocked_maps", ())),
         admin_all_maps=document.get("admin_all_maps") is True,
+        admin_invulnerable=document.get("admin_invulnerable") is True,
         position=position,
         inventory=_inventory_from_document(document["inventory"]),
         vendor_buyback=tuple(
@@ -1058,6 +1061,12 @@ class AccountStateStore:
             if result is not None:
                 result.currency = self.currency_for_character(character_id, result.currency)
             return result
+
+    def saved_at_for_character(self, character_id: int) -> str:
+        """Read only a character's activity timestamp without copying its state."""
+        with self.lock:
+            state = self.states.get(int(character_id))
+            return str(state.saved_at or "") if state is not None else ""
 
     def get_profile(self, character_id: int) -> CharacterProfile | None:
         """Read current roster metadata without copying a player's inventory."""

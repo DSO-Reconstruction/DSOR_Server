@@ -13,9 +13,12 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import threading
+import xml.etree.ElementTree as ElementTree
 
 from dso_server.gameplay.event_system import load_event_catalog, UINT32_MAX
 from dso_server.services import events as game_events
+from dso_server.paths import DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT
+from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
 
 _SCHEDULE_LOCK = threading.RLock()
@@ -26,14 +29,53 @@ class EventScheduleConflict(ValueError):
 
 
 @lru_cache(maxsize=4)
-def _templates(path, revision):
+def _event_title_aliases():
+    """Collect event title translations so searches work across client locales."""
+    roots = (DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT / "cdndata" / "export_win32" / "language")
+    titles = {}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for directory in root.iterdir():
+            source = directory / "db.event.xml"
+            if not source.is_file():
+                continue
+            try:
+                for entry in ElementTree.parse(source).getroot().iter("item"):
+                    key = str(entry.get("name") or "")
+                    value = str(entry.text or "").strip()
+                    if key and value and not value.startswith("Localize:"):
+                        titles.setdefault(key, set()).add(value)
+            except (ElementTree.ParseError, OSError):
+                continue
+    return {key: tuple(values) for key, values in titles.items()}
+
+
+@lru_cache(maxsize=4)
+def _templates(path, revision, language_directory):
+    display_titles = locale_titles(language_directory)
+    aliases = _event_title_aliases()
     with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
         db.row_factory = sqlite3.Row
-        return tuple(dict(row) for row in db.execute(
-            "SELECT Id AS template_id,Name AS name,MinPlayerLevel AS min_level,"
+        rows = db.execute(
+            "SELECT Id AS template_id,Name AS template_name,LocaleIdTitle AS locale_title,MinPlayerLevel AS min_level,"
             "MaxPlayerLevel AS max_level,Map AS map_id,TeleportTarget AS teleport_target,"
             "EventStatusEffects AS status_effects,EventProgressBars AS progress_bars "
-            "FROM _Template_Events WHERE COALESCE(ClientOnly,0)=0 AND COALESCE(MapLocal,0)=0 ORDER BY Id"))
+            "FROM _Template_Events WHERE COALESCE(ClientOnly,0)=0 AND COALESCE(MapLocal,0)=0 ORDER BY Id").fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        template_id = str(item["template_id"])
+        raw_name = str(item.pop("template_name") or "")
+        locale_key = str(item.pop("locale_title") or "")
+        item["name"] = _display_name(display_titles, template_id, raw_name, locale_key)
+        item["template_name"] = raw_name
+        item["search_names"] = tuple(dict.fromkeys((
+            *aliases.get(locale_key, ()), *aliases.get(f"{template_id}Title", ()),
+            *aliases.get(f"{template_id}ShortTitle", ()),
+        )))
+        result.append(item)
+    return tuple(result)
 
 
 class EventAdministration:
@@ -121,7 +163,8 @@ class EventAdministration:
     def templates(self):
         path = self.service.static_database_path.resolve()
         stat = path.stat()
-        return _templates(path, (stat.st_mtime_ns, stat.st_size))
+        language_directory = item_language_directory()
+        return _templates(path, (stat.st_mtime_ns, stat.st_size), language_directory)
 
     def _read(self):
         raw = self.schedule_path.read_bytes()
@@ -186,11 +229,23 @@ class EventAdministration:
                 event_id = max((65535, *(event.event_id for event in previous.events))) + 1
                 if event_id > UINT32_MAX:
                     raise ValueError("event instance ID limit reached")
+                # Carry forward an event template's explicit drop-map scope
+                # when creating another schedule instance. Without this,
+                # templates whose collectible maps are defined per schedule
+                # can start dropping progress items in every map.
+                collectible_maps = next((
+                    sorted(event.collectible_maps)
+                    for event in previous.events
+                    if event.template.resource_id == template_id
+                    and event.collectible_maps
+                ), None)
                 entry = {"event_id": event_id, "template_id": template_id,
                          "state": "scheduled" if end else "active", "starts_at": now.isoformat(),
                          "ends_at": end.isoformat() if end else None,
                          "participation_default": participation, "collectible_drop_chance": chance,
                          "collectible_amount": amount}
+                if collectible_maps is not None:
+                    entry["collectible_maps"] = collectible_maps
                 document["events"].append(entry)
                 action = "event.add"
             else:

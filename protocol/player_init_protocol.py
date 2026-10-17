@@ -22,11 +22,13 @@ from dso_server.protocol.currency_protocol import (
     write_game_currency_changed_body,
 )
 from dso_server.protocol.gameplay_protocol import (
+    ACTORS_ENTER_VICINITY_COMMAND,
     MESSAGE_COMMAND,
     NEW_NPC_COMMAND,
     NPC_INFO_COMMAND,
     PROP_INFO_COMMAND,
     STATUS_EFFECT_COMMAND,
+    ActorsEnterVicinity,
     Message,
     MessageArgument,
     PropInfo,
@@ -96,6 +98,13 @@ UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND = command_id("Commands::UpdatePr
 EVENT_PROGRESS_INFO_COMMAND = command_id("Commands::EventProgressInfoCommand", 0x00E0)
 EVENT_PARTICIPATION_INFO_COMMAND = command_id("Commands::EventParticipationInfoCommand", 0x00DF)
 EXIT_INFO_COMMAND = command_id("Commands::ExitInfoCommand", 0x0044)
+# The checked-in command table is from a different client build: its 0x0168
+# slot is the timer command there, while this client's log identifies 0x0168
+# (360) as GetWantedThiefInfoResultCommand. The same registration order puts
+# KickOutToHubLimitTimeLeftCommand at 0x016b on the installed client.
+KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
+    "Commands::KickOutToHubLimitTimeLeftCommand", 0x016B,
+)
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
@@ -110,9 +119,17 @@ COMMAND_0173 = 0x0173
 # produces ``invalid command ending in multi command 364`` when sent by the
 # server.  Keep both codecs so captures remain fully reversible, but omit them
 # from packets targeting this client build.
+#
+# 0x015b reproduces the same 0x016c symptom on this build (``invalid command
+# ending in multi command 347``), as does 0x015f (``... 351``). This client
+# build's 0x0083 decoder expects four maps: daily, bonus, tiered spender, and
+# comeback daily. The older checked-in capture has only three, so the reader
+# accepts that legacy form while the writer emits the current four-map form.
 LOCAL_CLIENT_UNSUPPORTED_INIT_COMMANDS = frozenset({
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND,
     COMMAND_0173,
+    USER_HATCH_EGGS_INFO_COMMAND,
+    SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
 })
 
 
@@ -121,6 +138,25 @@ class ServerCommand:
     command_id: int
     value: object
     actor_id: int | None
+
+
+@dataclass(frozen=True)
+class KickOutToHubLimitTimeLeft:
+    """Seconds remaining for the client's native LimitTimeWidget."""
+
+    seconds: int
+
+
+def _read_kick_out_to_hub_limit_time_left_body(
+    reader: BitReader,
+) -> KickOutToHubLimitTimeLeft:
+    return KickOutToHubLimitTimeLeft(reader.read_uint32_le())
+
+
+def _write_kick_out_to_hub_limit_time_left_body(
+    writer: BitWriter, value: KickOutToHubLimitTimeLeft,
+) -> None:
+    writer.write_uint32_le(max(0, int(value.seconds)))
 
 
 @dataclass(frozen=True)
@@ -511,15 +547,19 @@ class TimedChallenge:
 
 @dataclass(frozen=True)
 class TimedChallengesInfo:
-    """Daily, bonus-objective, and RC-spender maps, in native wire order.
+    """Timed-challenge maps, in native wire order.
 
     weekly/monthly are legacy field names; these are not calendar periods.
+    comeback_daily is the fourth map required by the installed client.
     """
 
     server_time: int
     daily: tuple[TimedChallenge, ...]
     weekly: tuple[TimedChallenge, ...]
     monthly: tuple[TimedChallenge, ...]
+    # None preserves the older captured three-map form on decode/encode.
+    # Server-generated messages must pass an explicit tuple, even when empty.
+    comeback_daily: tuple[TimedChallenge, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -1332,7 +1372,11 @@ def decode_event_update(payload: bytes, bit_length: int) -> EventUpdate:
     return value
 
 
-def _read_timed_challenges(reader: BitReader) -> tuple[TimedChallenge, ...]:
+def _read_timed_challenges(
+    reader: BitReader, *, count: int | None = None,
+) -> tuple[TimedChallenge, ...]:
+    if count is None:
+        count = reader.read_uint32_le()
     return tuple(
         TimedChallenge(
             reader.read_string(),
@@ -1341,7 +1385,7 @@ def _read_timed_challenges(reader: BitReader) -> tuple[TimedChallenge, ...]:
             reader.read_uint32_le(),
             tuple(reader.read_uint32_le() for _ in range(6)),
         )
-        for _ in range(reader.read_uint32_le())
+        for _ in range(count)
     )
 
 
@@ -1376,11 +1420,27 @@ def _read_daily_challenge_progress_body(reader):
 
 
 def _read_timed_challenges_info_body(reader: BitReader) -> TimedChallengesInfo:
+    server_time = reader.read_uint64_le()
+    daily = _read_timed_challenges(reader)
+    weekly = _read_timed_challenges(reader)
+    monthly = _read_timed_challenges(reader)
+
+    # A 2026-09 retail capture ends after the three legacy maps. The installed
+    # client reads a fourth comeback-daily map before the actor context. Try
+    # that map, but rewind on malformed/truncated legacy tails so old captures
+    # remain decodable. Counts are bounded before allocating or iterating.
+    comeback_position = reader.position
+    try:
+        count = reader.read_uint32_le()
+        if count > 4096:
+            raise ValueError(f"unreasonable timed-challenge count {count}")
+        comeback_daily = _read_timed_challenges(reader, count=count)
+    except (ValueError, IndexError):
+        reader.position = comeback_position
+        comeback_daily = None
+
     return TimedChallengesInfo(
-        reader.read_uint64_le(),
-        _read_timed_challenges(reader),
-        _read_timed_challenges(reader),
-        _read_timed_challenges(reader),
+        server_time, daily, weekly, monthly, comeback_daily,
     )
 
 
@@ -1391,6 +1451,8 @@ def _write_timed_challenges_info_body(
     _write_timed_challenges(writer, value.daily)
     _write_timed_challenges(writer, value.weekly)
     _write_timed_challenges(writer, value.monthly)
+    if value.comeback_daily is not None:
+        _write_timed_challenges(writer, value.comeback_daily)
 
 
 def _read_offer_string_floats(reader: BitReader) -> tuple[OfferStringFloat, ...]:
@@ -1622,6 +1684,25 @@ def _write_exit_info_body(writer: BitWriter, value: ExitInfo) -> None:
         _write_blob16(writer, exit_info.instance_guid)
 
 
+def _read_actors_enter_vicinity_body(
+    reader: BitReader,
+) -> ActorsEnterVicinity:
+    count = reader.read_uint32_le()
+    if count > 1_000_000:
+        raise ValueError("ActorsEnterVicinity actor count is unreasonable")
+    return ActorsEnterVicinity(tuple(
+        reader.read_uint32_le() for _ in range(count)
+    ))
+
+
+def _write_actors_enter_vicinity_body(
+    writer: BitWriter, value: ActorsEnterVicinity,
+) -> None:
+    writer.write_uint32_le(len(value.actor_ids))
+    for actor_id in value.actor_ids:
+        writer.write_uint32_le(actor_id)
+
+
 def _read_activity_signin_calendar_body(
     reader: BitReader,
 ) -> ActivitySigninCalendar:
@@ -1770,6 +1851,8 @@ def _write_obstacle_update_body(writer: BitWriter, value: ObstacleUpdate) -> Non
 
 
 _BODY_READERS = {
+    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND:
+        _read_kick_out_to_hub_limit_time_left_body,
     MEMBERSHIP_UPDATE_COMMAND: read_membership_update_body,
     MESSAGE_COMMAND: _read_message_body,
     NOTIFICATION_COMMAND: _read_notification_body,
@@ -1819,9 +1902,12 @@ _BODY_READERS = {
     NEW_NPC_COMMAND: _read_new_npc_body,
     NPC_INFO_COMMAND: _read_npc_info_body,
     PROP_INFO_COMMAND: _read_prop_info_body,
+    ACTORS_ENTER_VICINITY_COMMAND: _read_actors_enter_vicinity_body,
 }
 
 _BODY_WRITERS = {
+    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND:
+        _write_kick_out_to_hub_limit_time_left_body,
     MEMBERSHIP_UPDATE_COMMAND: write_membership_update_body,
     MESSAGE_COMMAND: _write_message_body,
     NOTIFICATION_COMMAND: _write_notification_body,
@@ -1871,6 +1957,7 @@ _BODY_WRITERS = {
     NEW_NPC_COMMAND: _write_new_npc_body,
     NPC_INFO_COMMAND: _write_npc_info_body,
     PROP_INFO_COMMAND: _write_prop_info_body,
+    ACTORS_ENTER_VICINITY_COMMAND: _write_actors_enter_vicinity_body,
 }
 
 _ACTORLESS_COMMANDS = {
@@ -2043,6 +2130,7 @@ def build_local_player_init_commands(
     prop_info: PropInfo | None = None,
     notifications: tuple[NotificationEntry, ...] = (),
     activity_signin_calendar: ActivitySigninCalendar | None = None,
+    item_customizations: tuple[ItemCustomization, ...] = (),
     membership_update: MembershipUpdate | None = None,
     event_update: EventUpdate | None = None,
     event_progress_info: EventProgressInfo | None = None,
@@ -2249,7 +2337,7 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 ITEM_CUSTOMIZATION_INFO_COMMAND,
-                ItemCustomizationInfo(()),
+                ItemCustomizationInfo(tuple(item_customizations)),
                 actor_id,
             ),
             ServerCommand(INVENTORY_INFO_COMMAND, inventory, actor_id),
@@ -2305,7 +2393,7 @@ def build_local_player_init_commands(
             ServerCommand(
                 TIMED_CHALLENGES_INFO_COMMAND,
                 timed_challenges if timed_challenges is not None
-                else TimedChallengesInfo(0, (), (), ()),
+                else TimedChallengesInfo(0, (), (), (), ()),
                 actor_id,
             ),
             ServerCommand(
@@ -2337,9 +2425,6 @@ def build_local_player_init_commands(
     commands.extend(map_entity_commands)
     commands.extend(
         (
-            # Retail sends PropInfo in the local player's command context.
-            # The prop entry still carries its own prop id; actor 0 leaves
-            # the visible workbench detached from its interaction owner.
             ServerCommand(PROP_INFO_COMMAND, prop_info, actor_id),
             ServerCommand(
                 ACTIVITY_SIGNIN_CALENDAR_COMMAND,
@@ -2374,7 +2459,8 @@ def build_local_player_init_commands(
         )
     )
     expected_command_count = (
-        91 + len(map_entity_commands) + int(membership_update is not None)
+        91 + len(map_entity_commands)
+        + int(membership_update is not None)
     )
     if len(commands) != expected_command_count:
         raise AssertionError(

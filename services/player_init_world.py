@@ -16,7 +16,11 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
 from dso_server.protocol.reward_protocol import daily_login_offers
+from dso_server.protocol.player_init_protocol import (
+    TIMED_CHALLENGES_INFO_COMMAND,
+)
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
+from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
 
 
 @dataclass
@@ -42,6 +46,9 @@ class PlayerInitializationWorldService:
         character = state.character
         gameplay_map = state.gameplay_map
         map_access = state.map_access
+        # PropInfo is keyed to the concrete player actor for this map session,
+        # even on hub maps that do not create a combat encounter.
+        CharacterService._session_remote_actor_id(self, s)
         CharacterService._select_dungeon_instance(self, s, map_access)
         active_event_flags = frozenset({
             *CharacterService._event_catalog(
@@ -49,10 +56,21 @@ class PlayerInitializationWorldService:
             ).active_event_flags(),
             *map_access.event_set_flags,
         })
+        try:
+            active_event_flags |= frozenset(
+                CharacterService._quest_reveal_flags(self, s, gameplay_map)
+            )
+        except Exception:
+            pass
         map_commands, exit_info = load_local_map_initialization(
             self.static_database_path,
             gameplay_map,
             active_event_flags=active_event_flags,
+            # Register every map NPC before a map-local EventUpdate can
+            # activate its scene set. The client owns event visibility; if a
+            # gated NPC is first announced after that update, the client has
+            # already reserved the row's actor id and rejects our NewNPC.
+            include_inactive_event_sets=True,
         )
         monster_encounter = load_local_monster_encounter(
             self.static_database_path,
@@ -86,6 +104,20 @@ class PlayerInitializationWorldService:
                 "with no monster population; using a player-only combat "
                 "encounter"
             )
+        if monster_encounter is None and bool(
+            getattr(character, "admin_privileges", False)
+        ):
+            # Hubs normally have no combat world, so the client rejects
+            # skill casts there. Give GM characters an empty player-only
+            # combat state while keeping city monster spawns disabled.
+            try:
+                ruleset = self.static_database.gameplay_map_ruleset(gameplay_map)
+            except (AttributeError, KeyError, OSError, ValueError):
+                ruleset = 5 if gameplay_map in {"a0200_kingscity", "b1200_hub"} else 1
+            if int(ruleset) == 5:
+                monster_encounter = load_local_player_only_encounter(
+                    self.static_database_path, gameplay_map
+                )
         skill_book_ids = tuple(
             self.static_database.player_skill_manager_indices(
                 character.class_id
@@ -213,10 +245,17 @@ class PlayerInitializationWorldService:
             # events already revealed.
             with map_event_runtime.lock:
                 runtime_flags = map_event_runtime.active_flags()
+            try:
+                reveal_flags = frozenset(
+                    CharacterService._quest_reveal_flags(self, s, gameplay_map)
+                )
+            except Exception:
+                reveal_flags = frozenset()
             map_commands, exit_info = load_local_map_initialization(
                 self.static_database_path,
                 gameplay_map,
-                active_event_flags=active_event_flags | runtime_flags,
+                active_event_flags=active_event_flags | runtime_flags | reveal_flags,
+                include_inactive_event_sets=True,
             )
             with s.flow_lock:
                 s.gameplay_map_exits = tuple(
@@ -224,7 +263,7 @@ class PlayerInitializationWorldService:
                     for definition in load_local_map_exits(
                         self.static_database_path,
                         gameplay_map,
-                        active_event_flags=active_event_flags | runtime_flags,
+                        active_event_flags=active_event_flags | runtime_flags | reveal_flags,
                     )
                     if definition.active and definition.destination_map_id
                 )
@@ -233,6 +272,18 @@ class PlayerInitializationWorldService:
             old_projectile_timers = tuple(
                 s.gameplay_projectile_timers.values()
             )
+            # Track which event NPCs were sent in this map's initialization.
+            try:
+                from dso_server.protocol.player_init_protocol import (
+                    NEW_NPC_COMMAND as _INIT_NEW_NPC,
+                )
+                s.gameplay_announced_npc_actor_ids = {
+                    int(command.value.actor_id)
+                    for command in map_commands
+                    if getattr(command, "command_id", None) == _INIT_NEW_NPC
+                }
+            except Exception:
+                s.gameplay_announced_npc_actor_ids = set()
             s.gameplay_projectile_timers.clear()
             s.gameplay_runtime_status_effects.clear()
             s.gameplay_victim_status_effect_instances.clear()
@@ -244,6 +295,12 @@ class PlayerInitializationWorldService:
             s.gameplay_chase_clock_anchor = None
             s.gameplay_monster_encounter = monster_encounter
             s.gameplay_combat_state = combat_state
+            # A session can survive map transfers. Never validate the first
+            # move on a new map against its previous map's coordinates.
+            s.gameplay_last_move = None
+            s.gameplay_move_budget = 0.0
+            s.gameplay_movement_allowance = None
+            s.gameplay_move_correction_at = 0.0
             s.gameplay_skill_book_ids = frozenset(skill_book_ids)
             s.gameplay_vicinity_announced = False
             s.gameplay_announced_monster_actor_ids.clear()
@@ -260,6 +317,18 @@ class PlayerInitializationWorldService:
             old_chase_timer.cancel()
         for projectile_timer in old_projectile_timers:
             projectile_timer.cancel()
+        if map_event_runtime is not None and combat_state is not None:
+            # Trigger volumes can fire while this first initialization is
+            # constructing the combat state. If an event is already running,
+            # materialize its gated actors now; the normal post-PlayerReady
+            # pass below announces them after the initialization stream.
+            with map_event_runtime.lock:
+                running_event_sets = frozenset(
+                    map_event_runtime.enabled_event_sets
+                )
+            CharacterService._spawn_event_monsters(
+                self, map_event_runtime, (s,), running_event_sets
+            )
         return PlayerInitializationWorld(
             map_commands=map_commands,
             exit_info=exit_info,
@@ -380,7 +449,7 @@ class PlayerInitializationWorldService:
             map_id=state.gameplay_map,
             map_access_group_id=state.map_access.access_group_id,
         )
-        commands = build_local_player_init_commands(
+        commands = list(build_local_player_init_commands(
             state.new_player,
             state.inventory,
             CharacterService._quest_decorate_map_commands(
@@ -391,6 +460,10 @@ class PlayerInitializationWorldService:
             quest_log=CharacterService._quest_log_info(self, s),
             chapter_progress=CharacterService._quest_chapter_progress(self, s),
             timed_challenges=CharacterService._daily_challenge_initialization_info(self, s),
+            item_customizations=load_skin_unlock_customizations(
+                self.static_database_path,
+                class_name=class_name,
+            ),
             special_offer=(daily_login_offers(self.static_database_path, class_name)
                            if DAILY_LOGIN_REWARDS_ENABLED else None),
             skill_book_ids=world.skill_book_ids,
@@ -459,7 +532,24 @@ class PlayerInitializationWorldService:
             event_update=event_update,
             event_progress_info=event_progress_info,
             event_participation_info=event_participation_info,
-        )
+        ))
+        with s.flow_lock:
+            spender_state = s.gameplay_daily_challenges
+            spender_progress = int(
+                getattr(spender_state, "spender_progress", 0)
+            )
+        if spender_progress:
+            timed_index = next(
+                (index for index, command in enumerate(commands)
+                 if command.command_id == TIMED_CHALLENGES_INFO_COMMAND),
+                None,
+            )
+            if timed_index is not None:
+                commands.insert(timed_index + 1, ServerCommand(
+                    UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND,
+                    UpdateProgressTierSpenderChallenges(spender_progress),
+                    0,
+                ))
         quick_slots_snapshot = next(
             (
                 command.value
@@ -618,10 +708,25 @@ class PlayerInitializationWorldService:
             )
         )
         map_access = state.map_access
+        timed_challenges = next(
+            (command.value for command in commands
+             if command.command_id == 0x0083),
+            None,
+        )
+        timed_challenge_counts = (
+            "missing"
+            if timed_challenges is None
+            else (
+                f"daily={len(timed_challenges.daily)}, "
+                f"bonus={len(timed_challenges.weekly)}, "
+                f"spender={len(timed_challenges.monthly)}"
+            )
+        )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] sent complete typed 0x85 player "
             f"initialization ({len(commands)} client-supported commands, "
-            f"{len(initialization)} bytes), including InventoryInfo, "
+            f"{len(initialization)} bytes, timed-challenges: "
+            f"{timed_challenge_counts}), including InventoryInfo, "
             f"QuickSlots, QuickbarInfo, map entities and PlayerReady "
             f"for actor {LOCAL_PLAYER_ACTOR_ID} "
             f"(template row {state.template_row_index}, "

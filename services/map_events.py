@@ -11,7 +11,11 @@ through the presence callback (``("map_signal", ...)`` and
 from __future__ import annotations
 
 import math
+import random
+import sqlite3
 import time
+from functools import lru_cache
+from pathlib import Path
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -39,6 +43,7 @@ from dso_server.gameplay.map_event_state import (
     WIRE_PROP_OPERATION,
     MapEventRuntime,
     MapLocalEventDefinition,
+    PropRuntimeState,
     SignalContext,
     load_map_event_content,
     load_map_signal_catalog,
@@ -48,6 +53,8 @@ from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.gameplay_protocol import (
     PROP_INFO_COMMAND,
+    ActorsEnterVicinity,
+    ActorsEnterVicinityBatch,
     ActorPlacement,
     Message,
     MessageArgument,
@@ -55,16 +62,19 @@ from dso_server.protocol.gameplay_protocol import (
     NewNPC,
     PropInfo,
     PropInfoEntry,
+    encode_actors_enter_vicinity_batch,
     encode_npc_batch,
     encode_message_batch,
     encode_screen_message,
 )
 from dso_server.protocol.player_init_protocol import (
     EXIT_INFO_COMMAND,
+    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
     EventUpdate,
     EventUpdateEntry,
     ExitInfo,
     ExitInfoEntry,
+    KickOutToHubLimitTimeLeft,
     ServerCommand,
     encode_event_update,
     encode_server_command_batch,
@@ -72,6 +82,7 @@ from dso_server.protocol.player_init_protocol import (
 from dso_server.protocol.prop_protocol import (
     PROP_INTERACTION_COMMAND,
     PROP_STATE_ACTIVE,
+    PROP_STATE_USED,
     QUEST_TRIGGER_SIGNAL_COMMAND,
     PropUpdate,
     decode_prop_interaction,
@@ -79,10 +90,35 @@ from dso_server.protocol.prop_protocol import (
     encode_discard_prop_batch,
     encode_prop_update_batch,
 )
-
-
+from dso_server.protocol.commerce_protocol import (
+    _new_item,
+    load_purchase_item_definition,
+)
+from dso_server.protocol.world_loot_protocol import WorldLootDrop
 from dso_server.gameplay.quest_content import load_quest_catalog
 from dso_server.paths import DEFAULT_QUESTS_PATH
+
+
+@lru_cache(maxsize=8192)
+def _monster_kill_score(static_database_path: str, template_id: str) -> int:
+    """Return the static score granted when a monster template is killed."""
+
+    try:
+        with sqlite3.connect(f"{static_database_path}?mode=ro", uri=True) as database:
+            row = database.execute(
+                "SELECT AddScoreForKill FROM _Template_Monster WHERE Id=? LIMIT 1",
+                (template_id,),
+            ).fetchone()
+    except (OSError, sqlite3.Error) as exc:
+        _log(
+            f"kill-score lookup failed for {template_id!r}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return 0
+    if row is None:
+        _log(f"kill-score template {template_id!r} is missing from static data")
+        return 0
+    return max(0, int(row[0] or 0))
 
 
 MAP_EVENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] map-event"
@@ -92,6 +128,16 @@ EVENT_SPAWN_SNAP_DISTANCE = 4.0
 # same actor, materialized by the initial population (boss rooms bypass the
 # event gate so the boss exists on entry).
 EVENT_SPAWN_DUPLICATE_RADIUS = 1.5
+_FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
+    "a0001_champion_undead_mage_01",
+    "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
+})
+_TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
+_BLOOD_CHEST_GEM_TEMPLATES = (
+    "gem_amethyst_e", "gem_cyanit_e", "gem_diamond_e",
+    "gem_onyx_e", "gem_ruby_e",
+)
+_BLOOD_CHEST_LOOT_LIST = "chest_lootlist_bloodshed"
 
 
 def _log(message: str) -> None:
@@ -146,9 +192,44 @@ def _send_prop_info(viewer: Session, states, *, label: str) -> None:
     Quest-controlled props are filtered per viewer (services/quests.py).
     """
 
+    personalized = tuple(_prop_state_for_viewer(viewer, state) for state in states)
     _send_prop_info_entries(
-        viewer, CharacterService._quest_prop_entries(viewer, states), label=label,
+        viewer, CharacterService._quest_prop_entries(viewer, personalized), label=label,
     )
+
+
+def _prop_state_for_viewer(viewer: Session, state: PropRuntimeState) -> PropRuntimeState:
+    """Return this player's view of an individually used prop."""
+
+    definition = state.definition
+    if not definition.individual_usage:
+        return state
+    runtime = getattr(viewer, "gameplay_map_event_runtime", None)
+    if runtime is None:
+        return state
+    key = (
+        _individual_prop_player_id(viewer), int(definition.prop_id),
+    )
+    with runtime.lock:
+        used = key in runtime.individual_prop_usage
+    return (
+        PropRuntimeState(definition, PROP_STATE_USED)
+        if used else state
+    )
+
+
+def _individual_prop_player_id(viewer: Session) -> int:
+    """Stable per-character key, including across a reconnect to the instance."""
+
+    character_id = getattr(viewer, "selected_character_id", None)
+    if character_id is None:
+        character = getattr(viewer, "gameplay_character", None)
+        character_id = getattr(character, "character_id", None)
+    if character_id is None:
+        character_id = getattr(viewer, "gameplay_remote_actor_id", 0)
+    if character_id:
+        return int(character_id)
+    return id(viewer)
 
 
 def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
@@ -160,11 +241,23 @@ def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
         for state, operation in pairs
     )
     for start in range(0, len(entries), 16):
+        chunk = entries[start:start + 16]
+        vicinity_packet, _ = encode_actors_enter_vicinity_batch(
+            ActorsEnterVicinityBatch(
+                ActorsEnterVicinity(tuple(entry.prop_id for entry in chunk)),
+                actor_id=0,
+                commands=(),
+            )
+        )
+        CharacterService._send_world_loot_state_batch(
+            viewer, vicinity_packet, len(vicinity_packet) * 8,
+            label=f"{label}-actor-vicinity",
+        )
         packet, packet_bits = encode_server_command_batch(
             (
                 ServerCommand(
                     PROP_INFO_COMMAND,
-                    PropInfo(entries[start:start + 16]),
+                    PropInfo(chunk),
                     LOCAL_PLAYER_ACTOR_ID,
                 ),
             ),
@@ -206,9 +299,12 @@ class MapEventService:
             with s.flow_lock:
                 s.gameplay_map_event_runtime = None
                 s.gameplay_trigger_volumes_inside = set()
+                s.gameplay_trigger_volumes_last_position = None
             s.gameplay_quest_props_visible = set()
             return None
         key = CharacterService._gameplay_instance_key(s)
+        if getattr(s, "gameplay_fractured_planes_run", False):
+            key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
         with self.gameplay_world_lock:
             registry = self._map_event_registry()
@@ -227,6 +323,7 @@ class MapEventService:
         with s.flow_lock:
             s.gameplay_map_event_runtime = runtime
             s.gameplay_trigger_volumes_inside = set()
+            s.gameplay_trigger_volumes_last_position = None
             s.gameplay_quest_props_visible = set()
         return runtime
 
@@ -259,6 +356,7 @@ class MapEventService:
             return None
         with runtime.lock:
             states = runtime.published_props()
+        states = tuple(_prop_state_for_viewer(s, state) for state in states)
         tick = _session_game_tick(s)
         return PropInfo(tuple(
             _prop_info_entry(state, game_tick=tick, operation=operation)
@@ -361,7 +459,10 @@ class MapEventService:
         if not rules:
             return
         for rule in rules:
-            if rule.event_type == "monsterseliminatedpercentage":
+            if rule.event_type in (
+                "monsterseliminatedpercentage",
+                "playerkillmonstergetscore",
+            ):
                 with runtime.lock:
                     if rule.signal_id in runtime.fired_once:
                         continue
@@ -399,6 +500,96 @@ class MapEventService:
         CharacterService._quest_on_monsters_killed(self, s, monsters)
         CharacterService._achievement_on_monsters_killed(self, s, monsters)
         CharacterService._on_map_companion_boss_defeated(self, s, monsters)
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is not None:
+            score_rules = tuple(
+                rule
+                for rule in runtime.catalog.rules_by_event_type.get(
+                    "playerkillmonstergetscore", ()
+                )
+                if not rule.maps or map_key(runtime.map_id) in rule.maps
+            )
+            if score_rules:
+                static_path = Path(self.static_database_path).resolve().as_uri()
+                scored_templates = tuple(
+                    (
+                        str(getattr(monster, "template_id", "")).casefold(),
+                        _monster_kill_score(
+                            static_path,
+                            str(getattr(monster, "template_id", "")).casefold(),
+                        ),
+                    )
+                    for monster in monsters
+                    if str(getattr(monster, "template_id", ""))
+                )
+                score_gained = sum(score for _template, score in scored_templates)
+                with runtime.lock:
+                    runtime.kill_score += score_gained
+                    current_score = runtime.kill_score
+                thresholds = tuple(
+                    int(value)
+                    for rule in score_rules
+                    for value in rule.params
+                    if str(value).isdigit()
+                )
+                next_threshold = min(
+                    (value for value in thresholds if value > current_score),
+                    default=None,
+                )
+                target_text = (
+                    str(next_threshold) if next_threshold is not None
+                    else ",".join(map(str, sorted(set(thresholds))))
+                )
+                _log(
+                    f"kill-score progress on {runtime.map_id}: "
+                    f"gained={score_gained}, total={current_score}, "
+                    f"next={target_text}, monsters={scored_templates!r}"
+                )
+                if score_gained:
+                    self._fire_map_signal(
+                        s, "PlayerKillMonsterGetScore", (str(current_score),)
+                    )
+                # Fractured Planes reuses Endless Tower's authored score gate.
+                # Some dynamically selected tower monsters have no
+                # AddScoreForKill value, so a fully cleared first floor can
+                # otherwise remain below the authored 315 point threshold
+                # forever. If every currently materialized monster is dead
+                # and no delayed map event is still spawning the next wave,
+                # resolve that floor's score gate as a completed clear.
+                if (
+                    getattr(s, "gameplay_fractured_planes_run", False)
+                    and map_key(runtime.map_id)
+                    == "h0009_endlesstower_01_sm_01"
+                ):
+                    combat = s.gameplay_combat_state
+                    if combat is not None:
+                        with combat.lock:
+                            present, alive = combat.monster_template_counts()
+                        fully_cleared = bool(present) and not alive
+                    else:
+                        fully_cleared = False
+                    if fully_cleared:
+                        with runtime.lock:
+                            has_pending_spawns = bool(runtime.pending_start_tokens)
+                            clear_rules = tuple(
+                                rule for rule in score_rules
+                                if rule.signal_id not in runtime.fired_once
+                            )
+                            if not has_pending_spawns:
+                                runtime.fired_once.update(
+                                    rule.signal_id for rule in clear_rules
+                                )
+                        if not has_pending_spawns:
+                            for rule in clear_rules:
+                                _log(
+                                    f"Fractured Planes floor clear on "
+                                    f"{runtime.map_id}: resolving "
+                                    f"{rule.signal_id!r} after all spawned "
+                                    f"monsters were defeated"
+                                )
+                                self._emit_map_signal(
+                                    s, runtime, rule.signal_id
+                                )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
         self._fire_map_signal(s, "MonstersEliminated", templates)
         self._fire_map_signal(s, "MonstersEliminatedPercentage", ())
@@ -437,6 +628,30 @@ class MapEventService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        if getattr(s, "gameplay_fractured_planes_run", False):
+            with runtime.lock:
+                if runtime.fractured_planes_limit_deadline is None:
+                    runtime.fractured_planes_limit_deadline = (
+                        time.perf_counter() + 8 * 60
+                    )
+                seconds_left = max(
+                    0,
+                    math.ceil(
+                        runtime.fractured_planes_limit_deadline
+                        - time.perf_counter()
+                    ),
+                )
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
+                    KickOutToHubLimitTimeLeft(seconds_left),
+                    1,
+                ),
+            ))
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="fractured-planes-limit-time"
+            )
+            self._schedule_fractured_planes_limit_tick(runtime)
         access_group = str(getattr(s, "gameplay_map_access_group_id", "") or "")
         access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
         self._fire_map_signal(
@@ -456,6 +671,78 @@ class MapEventService:
     # ------------------------------------------------------------------
     # Client-reported signals
     # ------------------------------------------------------------------
+
+    def _spawn_map_chest_loot(self, s: Session, definition) -> int:
+        """Materialize the supported Bloodshed chest rewards as world loot.
+
+        The client export names CHEST_lootlist_BLOODSHED but does not include
+        the server-side loot-list rows. Keep this fallback deliberately small
+        and use item templates that are present in the shipped static DB.
+        """
+
+        loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
+        if loot_list_id != _BLOOD_CHEST_LOOT_LIST:
+            _log(
+                f"no local loot table for chest {definition.instance_id!r} "
+                f"({loot_list_id!r}); no rewards spawned"
+            )
+            return 0
+        try:
+            specifications = [("money_rc", 10)]
+            gem_count = random.SystemRandom().randint(4, 5)
+            specifications.extend(
+                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
+                for _ in range(gem_count)
+            )
+            drops = []
+            for template_id, amount in specifications:
+                item_definition = load_purchase_item_definition(
+                    self.static_database_path, template_id,
+                )
+                item = _new_item(item_definition, 0, amount)
+                item.field_100 = tuple(float(value) for value in definition.position)
+                auto_pick_up = "All" if item_definition.item_category == "Currency" else "None"
+                drops.append(WorldLootDrop(
+                    item, item_definition.item_category, auto_pick_up,
+                ))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(
+                f"cannot build rewards for chest {definition.instance_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return 0
+        instance_key = CharacterService._gameplay_instance_key(s)
+        map_id = str(s.gameplay_map or "")
+        with self.gameplay_world_lock:
+            counters = getattr(self, "gameplay_world_next_item_ids", None)
+            if counters is None:
+                counters = self.gameplay_world_next_item_ids = {}
+            with s.flow_lock:
+                first = max(
+                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
+                    int(counters.get(instance_key, RUNTIME_ITEM_ID_BASE)),
+                )
+            end = first + len(drops)
+            counters[instance_key] = end
+            counters[map_id] = max(end, int(counters.get(map_id, RUNTIME_ITEM_ID_BASE)))
+            with s.flow_lock:
+                for offset, drop in enumerate(drops):
+                    item_id = first + offset
+                    drop.item.item_id = item_id
+                    drop.item.field_18 = item_id & 0xFFFF
+                    s.gameplay_world_loot[item_id] = drop
+                s.gameplay_next_item_id = max(
+                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
+                    end,
+                )
+        CharacterService._reconcile_world_loot_visibility(
+            s, label="map-chest-loot",
+        )
+        _log(
+            f"spawned {len(drops)} reward item(s) from "
+            f"{definition.instance_id!r} for player session"
+        )
+        return len(drops)
 
     def _handle_staging_signal(self, s: Session, payload: bytes) -> None:
         CharacterService._handle_simple_gameplay_command(s, payload, 0x0113)
@@ -508,8 +795,25 @@ class MapEventService:
         }
         with s.flow_lock:
             previous = set(getattr(s, "gameplay_trigger_volumes_inside", ()))
+            previous_position = getattr(
+                s, "gameplay_trigger_volumes_last_position", None
+            )
+            if previous_position is None:
+                # The first movement packet can already be beyond a trigger
+                # volume (especially after a map transfer). Sweep the path
+                # from the authored entry position so that the initial
+                # tutorial and other entry triggers cannot be skipped.
+                previous_position = getattr(s, "gameplay_spawn_position", None)
             s.gameplay_trigger_volumes_inside = inside
+            s.gameplay_trigger_volumes_last_position = world
         entered = inside - previous
+        if previous_position is not None:
+            entered.update(
+                volume.row_id
+                for volume in volumes
+                if volume.row_id not in previous
+                and volume.intersects_segment(previous_position, world)
+            )
         if not entered:
             return
         # Both the volume id (server signal rules) and its TriggeredEventId
@@ -539,7 +843,26 @@ class MapEventService:
             _log(f"PropInteraction {request!r} without a map runtime")
             return
         with runtime.lock:
-            result = runtime.interact(request.prop_id)
+            existing = runtime.props.get(int(request.prop_id))
+            definition = existing.definition if existing is not None else None
+            if definition is not None and definition.individual_usage:
+                usage_key = (
+                    _individual_prop_player_id(s), int(definition.prop_id),
+                )
+                if (
+                    existing.state == PROP_STATE_ACTIVE
+                    and usage_key not in runtime.individual_prop_usage
+                ):
+                    runtime.individual_prop_usage.add(usage_key)
+                    result = (
+                        PropRuntimeState(definition, PROP_STATE_USED), True,
+                    )
+                else:
+                    result = (
+                        PropRuntimeState(definition, PROP_STATE_USED), False,
+                    )
+            else:
+                result = runtime.interact(request.prop_id)
         if result is None:
             _log(
                 f"PropInteraction for unknown prop {request.prop_id} "
@@ -564,7 +887,11 @@ class MapEventService:
         # tick, every flag false, trailing actor 0, then a one-record
         # PropInfo refreshing the same prop.
         remote_actor_id = int(getattr(s, "gameplay_remote_actor_id", 0) or 0)
-        for viewer in self._map_event_sessions(runtime) or (s,):
+        viewers = (
+            (s,) if definition.individual_usage
+            else self._map_event_sessions(runtime) or (s,)
+        )
+        for viewer in viewers:
             if CharacterService._quest_prop_operation(viewer, definition) is None:
                 continue
             update = PropUpdate(
@@ -582,12 +909,8 @@ class MapEventService:
                 (packet, packet_bits), track=True, label="prop-update"
             )
             _send_prop_info(viewer, (state,), label="prop-update-info")
-        if definition.loot_list_id or definition.chest_id:
-            _log(
-                f"chest {definition.instance_id!r} loot list "
-                f"{definition.loot_list_id or definition.chest_id!r} is not "
-                "implemented yet"
-            )
+        if flipped and (definition.loot_list_id or definition.chest_id):
+            self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
             CharacterService._quest_on_prop_interacted(
                 self, s, definition.instance_id,
@@ -672,6 +995,54 @@ class MapEventService:
                 Message(5, (MessageArgument(1, seconds),)), actor_id=0,
             ), label="map-wave-countdown",
         )
+
+    def _schedule_fractured_planes_limit_tick(self, runtime) -> None:
+        with runtime.lock:
+            deadline = runtime.fractured_planes_limit_deadline
+            scheduler = runtime.scheduler
+            if (
+                deadline is None
+                or scheduler is None
+                or runtime.fractured_planes_limit_timer is not None
+            ):
+                return
+            delay = min(1.0, max(0.0, deadline - time.perf_counter()))
+            handle = scheduler.timer(
+                delay,
+                self._run_fractured_planes_limit_tick,
+                args=(runtime,),
+            )
+            handle.absolute_deadline = time.perf_counter() + delay
+            runtime.fractured_planes_limit_timer = handle
+        handle.start()
+
+    def _run_fractured_planes_limit_tick(self, runtime) -> None:
+        with runtime.lock:
+            runtime.fractured_planes_limit_timer = None
+            deadline = runtime.fractured_planes_limit_deadline
+            if deadline is None:
+                return
+            seconds_left = max(0, math.ceil(deadline - time.perf_counter()))
+        packet, packet_bits = encode_server_command_batch((
+            ServerCommand(
+                KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
+                KickOutToHubLimitTimeLeft(seconds_left),
+                1,
+            ),
+        ))
+        for viewer in self._map_event_sessions(runtime):
+            try:
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="fractured-planes-limit-time",
+                )
+            except Exception as exc:
+                _log(
+                    "fractured-planes limit timer send failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        if seconds_left:
+            self._schedule_fractured_planes_limit_tick(runtime)
 
     def _broadcast_wave_message(self, runtime, packet, *, label) -> None:
         for viewer in self._map_event_sessions(runtime):
@@ -918,32 +1289,64 @@ class MapEventService:
             + ", ".join(sorted({d.template_id for d in definitions})[:6])
         )
         for viewer in sessions:
+            with viewer.flow_lock:
+                announced = set(viewer.gameplay_announced_npc_actor_ids)
+                viewer.gameplay_announced_npc_actor_ids.update(
+                    local_npc_actor_id(definition)
+                    for definition in definitions
+                )
             commands = []
+            new_actor_ids = []
             for definition in definitions:
                 actor_id = local_npc_actor_id(definition)
-                commands.append(NewNPC(
-                    template_id=definition.template_id,
-                    instance_guid=definition.instance_guid,
-                    placement=ActorPlacement(
-                        LOCAL_NPC_ACTOR_BASE, actor_id, 1, False, False
-                    ),
-                    rotation=definition.rotation,
-                    position=definition.position,
-                    enabled=True,
-                    actor_id=actor_id,
-                ))
+                # ActorManager::RegisterActor() rejects a duplicate id and
+                # DrasaClientHandler then drops the rest of this batch, which
+                # would take the quest offers with it.
+                if actor_id not in announced:
+                    new_actor_ids.append(actor_id)
+                    commands.append(NewNPC(
+                        template_id=definition.template_id,
+                        instance_guid=definition.instance_guid,
+                        placement=ActorPlacement(
+                            LOCAL_NPC_ACTOR_BASE, actor_id, 1, False, False
+                        ),
+                        rotation=definition.rotation,
+                        position=definition.position,
+                        enabled=True,
+                        actor_id=actor_id,
+                    ))
                 commands.append(CharacterService._quest_decorate_npc_info(
                     self, viewer,
                     local_npc_info(definition, actor_id=actor_id),
                     definition.template_id,
                 ))
-            packet, packet_bits = encode_npc_batch(NPCBatch(tuple(commands)))
+            # Register dynamic NPC ids in their own reliable-ordered frame.
+            # Map-entry actors use this same ordering; keeping registration
+            # inside the NewNPC batch can leave late-created actors visible
+            # without a client interaction target.
+            if new_actor_ids:
+                vicinity_packet, vicinity_bits = encode_actors_enter_vicinity_batch(
+                    ActorsEnterVicinityBatch(
+                        ActorsEnterVicinity(tuple(new_actor_ids)),
+                        actor_id=0,
+                        commands=(),
+                    )
+                )
+                viewer.send_reliable_ordered(
+                    vicinity_packet,
+                    track=True,
+                    label="map-event-npc-actor-vicinity",
+                )
+            packet, packet_bits = encode_npc_batch(
+                NPCBatch(tuple(commands)), include_actor_vicinity=False,
+            )
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-new-npc"
             )
 
     def _spawn_event_monsters(self, runtime, sessions, event_sets) -> None:
         rows = runtime.gated_spawn_rows(event_sets)
+        authored_rotations = {row.row_id: row.rotation for row in rows}
         # An EventSet keeps one row per difficulty variant of its boss (the
         # Heredur arena's BOSS_spawn set holds ten ``boss_heredur_scaling``
         # rows and the spawner).  The load-time population already picks one
@@ -959,7 +1362,10 @@ class MapEventService:
             scaling_difficulty=runtime.scaling_difficulty,
         )
         rows = tuple(
-            GatedSpawnRow(int(r[0]), int(r[3]), str(r[2]), tuple(r[1]))
+            GatedSpawnRow(
+                int(r[0]), int(r[3]), str(r[2]), tuple(r[1]),
+                authored_rotations.get(int(r[0]), 0.0),
+            )
             for r in selected
         )
         combat = self._map_event_combat_state(sessions)
@@ -972,6 +1378,9 @@ class MapEventService:
         encounter = combat.encounter
         database_path = encounter.static_database_path
         rows += event_area_spawn_rows(runtime, encounter, event_sets)
+        # The authored cultist animset maps Death to cultist_steal_staff.
+        # Its idle is start_idle; the staff theft uses its scripted despawn
+        # transition, not with an extra Grimmag/China scene carrier.
         if not rows:
             return
         with combat.lock:
@@ -984,6 +1393,32 @@ class MapEventService:
             )
             actor_ids = combat.allocate_runtime_actor_ids(len(pending))
         if not pending:
+            # A map-local event can start from a trigger while the player's
+            # first 0x85 initialization is still being assembled. In that
+            # window there are no ready sessions to receive the spawn, but
+            # the event transition still needs to materialize its actors in
+            # the shared combat state. The initialization path calls this
+            # method again once PlayerReady has been queued; replay the
+            # already materialized event groups to that viewer then.
+            with runtime.lock:
+                event_actor_ids = set().union(*(
+                    runtime.event_set_actor_ids.get(int(event_set), set())
+                    for event_set in event_sets
+                )) if event_sets else set()
+            groups = []
+            seen_groups = set()
+            for actor_id in sorted(event_actor_ids):
+                group = combat.runtime_group_for_actor(actor_id)
+                if group is None or id(group) in seen_groups:
+                    continue
+                seen_groups.add(id(group))
+                groups.append(group)
+            for viewer in sessions:
+                with viewer.flow_lock:
+                    ready = viewer.gameplay_presence_ready
+                if ready:
+                    for group in groups:
+                        self._announce_runtime_group(viewer, combat, group)
             _log(
                 f"{len(rows)} gated spawn row(s) on {runtime.map_id} already "
                 "materialized"
@@ -994,16 +1429,22 @@ class MapEventService:
         spawned_rows = []
         for row, actor_id in zip(pending, actor_ids, strict=True):
             position = row.position
-            try:
-                position = _grounded_spawn_position(
-                    encounter.navigation,
-                    encounter.terrain,
-                    position,
-                    reference_position=position,
-                    max_horizontal_distance=EVENT_SPAWN_SNAP_DISTANCE,
-                )
-            except (NavigationError, CollisionTerrainError, ValueError):
-                position = tuple(float(value) for value in row.position)
+            scripted_cultist = (
+                row.template_id.casefold() == _TUTORIAL_CULTIST_TEMPLATE
+            )
+            # The cinematic's staff, portal and root motion are authored
+            # against this exact transform, not a navigable combat position.
+            if not scripted_cultist:
+                try:
+                    position = _grounded_spawn_position(
+                        encounter.navigation,
+                        encounter.terrain,
+                        position,
+                        reference_position=position,
+                        max_horizontal_distance=EVENT_SPAWN_SNAP_DISTANCE,
+                    )
+                except (NavigationError, CollisionTerrainError, ValueError):
+                    position = tuple(float(value) for value in row.position)
             runtime_definition = _load_runtime_definition(
                 database_path, row.template_id, actor_id
             )
@@ -1022,6 +1463,12 @@ class MapEventService:
             except ValueError as exc:
                 _log(f"cannot load {row.template_id!r}: {exc}")
                 continue
+            if scripted_cultist:
+                monster = replace(monster, field_a0=float(row.rotation))
+                _log(
+                    f"tutorial cultist authored placement: "
+                    f"position={monster.position!r}, yaw={row.rotation:.6f}"
+                )
             monsters.append(monster)
             definitions.append(runtime_definition)
             spawned_rows.append(row)
@@ -1045,7 +1492,119 @@ class MapEventService:
             + ", ".join(sorted({monster.template_id for monster in monsters}))
         )
         for viewer in sessions:
-            self._announce_runtime_group(viewer, combat, group)
+            with viewer.flow_lock:
+                ready = viewer.gameplay_presence_ready
+            if ready:
+                self._announce_runtime_group(viewer, combat, group)
+
+        scene_actor_ids = tuple(
+            monster.actor_id
+            for row, monster in zip(spawned_rows, monsters, strict=True)
+            if row.template_id.casefold() == _TUTORIAL_CULTIST_TEMPLATE
+        )
+        if scene_actor_ids:
+            scheduler = getattr(runtime, "scheduler", None)
+            if scheduler is None:
+                _log("cannot start tutorial cultist scene: map scheduler is unavailable")
+            else:
+                # Publish the authored actor before switching its animation
+                # from start_idle to the authored staff-theft sequence.
+                handle = scheduler.timer(
+                    0.35,
+                    self._start_tutorial_cultist_sequence,
+                    args=(runtime, combat, tuple(sessions), scene_actor_ids),
+                )
+                handle.start()
+                _log(
+                    f"queued tutorial cultist despawn sequence after actor "
+                    f"initialization for {scene_actor_ids!r}"
+                )
+
+    def _start_tutorial_cultist_sequence(
+            self, runtime, combat, sessions, scene_actor_ids) -> None:
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        with combat.lock:
+            tick = max(
+                (
+                    int(getattr(viewer, "gameplay_chase_server_tick", 0) or 0)
+                    for viewer in sessions
+                ),
+                default=0,
+            )
+            # Native KillCommand +0x78 maps to Messaging::Kill::SetDespawn.
+            # Despawn bypasses the client's ordinary Death clip and loads
+            # despawn/a0001_cultist_death, whose hijacked Death track plays
+            # cultist_steal_staff. No damage types: this is a scripted scene.
+            scene_commands = tuple(
+                KillServerCommand(
+                    Kill(
+                        server_tick=tick,
+                        hit_tags=(),
+                        animation_time=600,
+                        field_4c=0,
+                        killer_actor_id=0,
+                        position=tuple(combat.monster_positions[actor_id]),
+                        skill_id=0,
+                        projectile_id=0xFFFFFFFF,
+                        field_78=True,
+                    ),
+                    int(actor_id),
+                )
+                for actor_id in scene_actor_ids
+                if actor_id in combat.monster_positions
+            )
+        if scene_commands:
+            packet, packet_bits = encode_combat_batch(
+                CombatBatch(scene_commands)
+            )
+            stun_effects = ()
+            database_path = Path(combat.encounter.static_database_path)
+            try:
+                with sqlite3.connect(
+                    f"file:{database_path.as_posix()}?mode=ro", uri=True
+                ) as database:
+                    stun_effects = combat._load_location_aura_effects(
+                        database, "a0001_tutorial_sequence_stun_aura"
+                    )
+            except Exception as exc:
+                _log(
+                    "could not load tutorial cultist stun effect: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            for viewer in sessions:
+                with viewer.flow_lock:
+                    if viewer.gameplay_combat_state is not combat:
+                        continue
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="tutorial-cultist-scripted-despawn",
+                )
+                if stun_effects:
+                    CharacterService._send_socket_actor_applications(
+                        viewer,
+                        ((LOCAL_PLAYER_ACTOR_ID, None, stun_effects),),
+                        server_tick=tick,
+                        label="tutorial-cultist-sequence-stun",
+                    )
+            if stun_effects:
+                _log(
+                    "applied authored tutorial cultist stun to "
+                    f"{len(sessions)} session(s) for "
+                    f"{max(effect.duration_ticks for effect in stun_effects)} "
+                    "ticks"
+                )
+            else:
+                _log("tutorial cultist stun aura resolved to no receiver effects")
+        with combat.lock:
+            retired_scene_ids = combat.retire_monsters(scene_actor_ids)
+        with runtime.lock:
+            for actor_ids_for_set in runtime.event_set_actor_ids.values():
+                actor_ids_for_set.difference_update(retired_scene_ids)
+        _log(
+            f"started authored tutorial cultist despawn sequence for "
+            f"actor(s) {retired_scene_ids!r}"
+        )
 
     def _announce_runtime_group(self, viewer: Session, combat, group) -> None:
         """Offer a freshly spawned group to one viewer, like a MoveCommand does."""
@@ -1070,14 +1629,35 @@ class MapEventService:
         with combat.lock:
             alive = set(combat.alive_actor_ids)
             positions = dict(combat.monster_positions)
-        groups = CharacterService._monster_groups_within_radius(
+            scripted_actor_ids = {
+                actor_id
+                for actor_id in group.actor_id_set & alive
+                if (
+                    combat.monsters.get(actor_id) is not None
+                    and combat.monsters[actor_id].template_id.casefold()
+                    in _FORCE_ANNOUNCE_EVENT_ACTORS
+                )
+            }
+        candidates = (group.actor_id_set & alive) - announced
+        forced = candidates & scripted_actor_ids
+        groups = list(CharacterService._monster_groups_within_radius(
             None,
             world_position=player_world,
-            actor_ids=(group.actor_id_set & alive) - announced,
+            actor_ids=candidates - forced,
             positions=positions,
             radius=MONSTER_VISIBILITY_ENTER_RADIUS,
             extra_groups=(group,),
-        )
+        ))
+        # Scripted story actors must appear when their event starts even if
+        # the trigger volume is wider than the ordinary monster visibility
+        # radius. Keep the exception template-scoped; ordinary event waves
+        # retain the normal per-actor distance filter.
+        if forced:
+            scripted_group = group.runtime_subset(
+                forced, positions=positions
+            )
+            if scripted_group is not None:
+                groups.append(scripted_group)
         if not groups:
             return
         with viewer.flow_lock:
@@ -1086,10 +1666,74 @@ class MapEventService:
             for subset in groups:
                 viewer.gameplay_announced_monster_actor_ids.update(subset.actor_ids)
             viewer.gameplay_vicinity_announced = True
+            # Scripted story actors must not depend on the client's optional
+            # ActorRequest round trip to become visible. Reserve them before
+            # announcing vicinity so a simultaneous request cannot enqueue a
+            # duplicate NewMonster packet.
+            scripted_spawn_ids = forced.difference(
+                viewer.gameplay_spawned_monster_actor_ids
+            )
+            viewer.gameplay_spawned_monster_actor_ids.update(
+                scripted_spawn_ids
+            )
+            viewer.gameplay_requested_actor_ids.update(scripted_spawn_ids)
+            if scripted_spawn_ids:
+                viewer.gameplay_monsters_spawned = True
+        scripted_group = None
+        if scripted_spawn_ids:
+            scripted_group = next(
+                (
+                    subset for subset in groups
+                    if scripted_spawn_ids.issubset(subset.actor_id_set)
+                ),
+                None,
+            )
         for subset in groups:
             CharacterService._send_monster_vicinity(
                 viewer, combat, subset,
                 label="map-event-monster-vicinity",
+            )
+        if scripted_spawn_ids and scripted_group is not None:
+            spawn_group = scripted_group.runtime_subset(
+                scripted_spawn_ids, positions=positions
+            )
+            if spawn_group is not None:
+                packet, packet_bits = encode_monster_spawn_batch(
+                    spawn_group.spawn_batch
+                )
+                if len(packet) > TAIL_FRAG_SIZE:
+                    viewer.send_reliable_ordered_split(
+                        packet,
+                        total_bit_length=packet_bits,
+                        track=True,
+                        label_prefix="map-event-scripted-monster-spawn",
+                    )
+                else:
+                    viewer.send_reliable_ordered(
+                        (packet, packet_bits),
+                        track=True,
+                        label="map-event-scripted-monster-spawn",
+                    )
+                with combat.lock:
+                    combat.activate_monsters(scripted_spawn_ids)
+                    delivered_positions = {
+                        actor_id: combat.monster_positions[actor_id]
+                        for actor_id in scripted_spawn_ids
+                        if actor_id in combat.monster_positions
+                    }
+                with viewer.flow_lock:
+                    if viewer.gameplay_combat_state is combat:
+                        viewer.gameplay_delivered_monster_positions.update(
+                            delivered_positions
+                        )
+                _log(
+                    f"sent scripted NewMonster state "
+                    f"{tuple(sorted(scripted_spawn_ids))} to {viewer.addr!r}"
+                )
+        if forced:
+            _log(
+                f"announced scripted actor(s) {tuple(sorted(forced))} "
+                f"to {viewer.addr!r}"
             )
 
     def _retire_event_monsters(self, runtime, sessions, event_sets) -> None:

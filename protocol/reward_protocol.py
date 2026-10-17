@@ -20,6 +20,9 @@ from dso_server.protocol.gameplay_protocol import OCPMethod, OCPOffer
 
 
 ACCEPTED_TIER_SPENDER_COMMAND = command_id("Commands::AcceptedTierSpenderChallengesCommand", 0x0139)
+# Client-only request. Retail calls this Commands::ShuffleTierSpenderDeals;
+# unlike server commands it is absent from the generated command-id dump.
+SHUFFLE_TIER_SPENDER_DEALS_COMMAND = 0x0148
 NOTIFICATION_COMMAND = command_id("Commands::NotificationCommand", 0x0088)
 ACTIVITY_SIGNIN_PROTOCOL_COMMAND = 0x0149
 OCP_BOOKING_COMMAND = command_id("Commands::OCPBookingCommand", 0x010F)
@@ -54,8 +57,10 @@ class OCPBookingReward:
     rarity: str = 'Common'
 
 
-def _client_reader(payload: bytes, command_id: int) -> BitReader:
-    reader = BitReader(payload, len(payload) * 8)
+def _client_reader(
+    payload: bytes, command_id: int, bit_length: int | None = None
+) -> BitReader:
+    reader = BitReader(payload, len(payload) * 8 if bit_length is None else bit_length)
     if reader.read_uint8() != 0x8B:
         raise ValueError("expected a client command")
     actual = int.from_bytes(reader.read_bytes(2), "little")
@@ -80,6 +85,21 @@ def decode_tier_spender_accept(payload: bytes) -> tuple[str, ...]:
     if not rewards or any(not reward for reward in rewards):
         raise ValueError("spender claim must contain reward ids")
     return rewards
+
+
+def decode_tier_spender_shuffle(
+    payload: bytes, bit_length: int | None = None
+) -> int:
+    """Decode the client's tier shuffle request (one uint32 tier index)."""
+
+    reader = _client_reader(
+        payload, SHUFFLE_TIER_SPENDER_DEALS_COMMAND, bit_length
+    )
+    tier_index = reader.read_uint32_le()
+    _finish_padding(reader, "ShuffleTierSpenderDeals")
+    if tier_index not in (0, 1, 2):
+        raise ValueError(f"invalid tier spender shuffle index {tier_index}")
+    return tier_index
 
 
 def decode_notification_action(payload: bytes) -> NotificationAction:
@@ -217,6 +237,7 @@ class RewardDefinition:
     claim_id: str
     item_id: str
     amount: int
+    rc_needed: int = 0
 
 
 def load_spender_rewards(
@@ -230,7 +251,7 @@ def load_spender_rewards(
         definitions = []
         for reward_id in reward_ids:
             row = database.execute(
-                'SELECT "Items", "ItemAmount", "Obsolete" '
+                'SELECT "Items", "ItemAmount", "RCNeeded", "Obsolete" '
                 'FROM "_Template_RCSpenderRewards" WHERE "Id" = ?',
                 (reward_id,),
             ).fetchone()
@@ -238,11 +259,14 @@ def load_spender_rewards(
                 raise ValueError(f"unknown spender reward {reward_id!r}")
             item_id = str(row["Items"] or "")
             amount = int(row["ItemAmount"] or 0)
-            if not item_id or amount <= 0:
+            rc_needed = int(row["RCNeeded"] or 0)
+            if not item_id or amount <= 0 or rc_needed <= 0:
                 raise ValueError(f"invalid spender reward {reward_id!r}")
             # Resolve now so malformed database links fail before mutation.
             load_purchase_item_definition(database_path, item_id)
-            definitions.append(RewardDefinition(reward_id, item_id, amount))
+            definitions.append(RewardDefinition(
+                reward_id, item_id, amount, rc_needed
+            ))
         return tuple(definitions)
     finally:
         database.close()

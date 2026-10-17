@@ -17,6 +17,66 @@ class MonsterCombatService(
         MonsterTickContextService):
     """Monster pursuit, attacks, return-home state, and vicinity delivery."""
 
+    def _admin_kill_all_monsters(self, s: Session) -> int:
+        """Resolve every living monster in this shared map instance as a GM kill."""
+        combat = s.gameplay_combat_state
+        character = s.gameplay_character
+        if combat is None or character is None:
+            raise ValueError("the current map has no combat encounter")
+        attacker_actor_id = (
+            s.gameplay_remote_actor_id
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        resolutions = []
+        killed_monsters = []
+        with combat.lock:
+            for actor_id in combat.alive_actor_ids:
+                monster = combat.monsters[actor_id]
+                if str(monster.template_id).casefold().startswith("damage_doll"):
+                    continue
+                previous = int(combat.monster_health.get(actor_id, 0))
+                if previous <= 0:
+                    continue
+                combat.monster_health[actor_id] = 0
+                combat.pending_monster_attacks.pop(actor_id, None)
+                combat.monster_status_effects.pop(actor_id, None)
+                for key in tuple(combat.monster_status_damage):
+                    if int(key[0]) == int(actor_id):
+                        combat.monster_status_damage.pop(key, None)
+                combat.monster_target_actor_ids.pop(actor_id, None)
+                resolutions.append(DamageResolution(
+                    target_actor_id=int(actor_id),
+                    attacker_actor_id=int(attacker_actor_id),
+                    current_health=0,
+                    maximum_health=int(monster.maximum_health),
+                    damage=previous,
+                    killed=True,
+                    position=combat.monster_positions[actor_id],
+                    server_tick=server_tick,
+                    hit_tags=(0,),
+                    skill_index=0,
+                    source_actor_id=int(attacker_actor_id),
+                ))
+                killed_monsters.append(monster)
+        if not resolutions:
+            return 0
+        target_sessions = {int(attacker_actor_id): s}
+        for peer in self._active_gameplay_sessions(
+                map_id=s.gameplay_map, excluding=s, instance_of=s):
+            peer_character = peer.gameplay_character
+            if peer_character is None or peer.gameplay_combat_state is not combat:
+                continue
+            peer_actor_id = (
+                peer.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(peer_character.character_id)
+            )
+            target_sessions[int(peer_actor_id)] = peer
+        self._dispatch_player_owned_resolutions(
+            combat, target_sessions, tuple(resolutions)
+        )
+        return len(killed_monsters)
+
     @staticmethod
     def _apply_base_health_regeneration(
             target_sessions, health_regeneration) -> None:
@@ -534,6 +594,11 @@ class MonsterCombatService(
                         block_damage_reduction = (
                             target_stats.block_damage_reduction
                         )
+                    invulnerable = bool(getattr(
+                        target_session, "gameplay_gm_invulnerable", False
+                    ))
+                    if invulnerable:
+                        incoming_multipliers = 0.0
                     hostile_resolutions.extend(
                         combat.resolve_due_monster_attacks(
                             position,
@@ -564,6 +629,7 @@ class MonsterCombatService(
                                 player_incoming_damage_multipliers=(
                                     target_stats.incoming_damage_multipliers
                                 ),
+                                player_invulnerable=invulnerable,
                                 now=now,
                                 server_tick=server_tick,
                             )

@@ -6,6 +6,7 @@ from dso_server.protocol.command_ids import command_id
 import copy
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import sqlite3
 
 from dso_server.protocol.commerce_protocol import (
@@ -22,6 +23,9 @@ from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
     CurrencyChanged,
     _write_currency_changed_body,
+)
+from dso_server.protocol.inventory_economy_protocol import (
+    InventoryMutationBuilder,
 )
 from dso_server.protocol.character_selection import BitWriter
 from dso_server.protocol.shop_protocol import OFFER_RARITY_IDS
@@ -65,6 +69,16 @@ class SocketUnlockMutation:
     unlocked_socket_count: int
     maximum_socket_count: int
     price_rc: int
+
+
+@dataclass(frozen=True)
+class RuneUpgradeMutation:
+    inventory: InventoryInfo
+    delta: InventoryInfo
+    upgraded_item: ItemInfo
+    next_item_id: int
+    previous_template_id: str
+    upgraded_template_id: str
 
 
 def _item(inventory: InventoryInfo, item_id: int) -> ItemInfo:
@@ -443,9 +457,15 @@ def insert_gem(
     working = copy.deepcopy(inventory)
     gem = _item(working, gem_item_id)
     equipment = _item(working, equipment_item_id)
+    if gem.template_id == "unique_gem_crafting":
+        raise ValueError(
+            "Rune Crafting Joker must be applied to a rune item, not a socket"
+        )
     _validate_socket_content(
         static_database_path, equipment, gem
     )
+
+
     definition = load_purchase_item_definition(
         static_database_path, gem.template_id
     )
@@ -513,6 +533,87 @@ def insert_gem(
         socket_index=socket_index,
     )
 
+
+def upgrade_rune(
+    inventory: InventoryInfo,
+    crafting_item_id: int,
+    rune_item_id: int,
+    *,
+    static_database_path,
+    next_item_id: int,
+) -> RuneUpgradeMutation:
+    """Use the Rune Crafting Joker to raise one rune by one tier."""
+
+    from dso_server.protocol.commerce_protocol import (
+        load_purchase_item_definition,
+    )
+
+    builder = InventoryMutationBuilder(inventory, next_item_id)
+    crafting_item = builder.item(crafting_item_id)
+    rune_item = builder.item(rune_item_id)
+    if crafting_item.template_id != "unique_gem_crafting":
+        raise ValueError(
+            f"item {crafting_item_id} is not a Rune Crafting Joker"
+        )
+    if int(crafting_item.amount) <= 0 or int(rune_item.amount) <= 0:
+        raise ValueError("rune upgrade requires non-empty item stacks")
+    if int(crafting_item_id) == int(rune_item_id):
+        raise ValueError("a crafting joker cannot upgrade itself")
+
+    rune_definition = load_purchase_item_definition(
+        static_database_path, rune_item.template_id
+    )
+    if rune_definition.item_category != "EquipmentRune":
+        raise ValueError(
+            f"item {rune_item_id} is {rune_definition.item_category!r}, "
+            "not an equipment rune"
+        )
+    match = re.fullmatch(r"(.+)_([0-9]{2})", rune_item.template_id)
+    if match is None:
+        raise ValueError(
+            f"rune {rune_item.template_id!r} has no next crafting tier"
+        )
+    prefix, current_tier_text = match.groups()
+    next_tier = int(current_tier_text) + 1
+    upgraded_template_id = f"{prefix}_{next_tier:02d}"
+    upgraded_definition = load_purchase_item_definition(
+        static_database_path, upgraded_template_id
+    )
+    if upgraded_definition.item_category != "EquipmentRune":
+        raise ValueError(
+            f"rune {rune_item.template_id!r} is already at its maximum tier"
+        )
+
+    builder.consume(crafting_item_id, 1, preserve_item_id=True)
+    if int(rune_item.amount) > 1:
+        builder.consume(rune_item_id, 1, preserve_item_id=True)
+        builder.add_item(
+            upgraded_definition,
+            1,
+            item_level=max(1, int(rune_item.item_level)),
+        )
+        upgraded_item = next(
+            item for item in builder.changed_items
+            if item.template_id == upgraded_template_id
+        )
+    else:
+        rune_item.template_id = upgraded_template_id
+        # ``field_08`` is the item's rarity ID, which drives the inventory
+        # frame color in the client.  Changing only the template updates the
+        # title and rune effect but leaves the old rarity border in place.
+        rune_item.field_08 = upgraded_definition.rarity
+        builder.changed_items.append(copy.deepcopy(rune_item))
+        upgraded_item = copy.deepcopy(rune_item)
+
+    mutation = builder.finish()
+    return RuneUpgradeMutation(
+        inventory=mutation.inventory,
+        delta=mutation.delta,
+        upgraded_item=upgraded_item,
+        next_item_id=mutation.next_item_id,
+        previous_template_id=rune_definition.template_id,
+        upgraded_template_id=upgraded_template_id,
+    )
 
 def _write_item_info_response_body(
     writer: BitWriter, item: ItemInfo

@@ -9,6 +9,106 @@ from dso_server.runtime.transport import Session
 class InventoryMapService:
     """Inventory actions, NPC/prop interaction, and map transitions."""
 
+    def _handle_inventory_sort(
+            self, s: Session, action, inventory) -> None:
+        """Sort the active inventory page reported by operation 0x19.
+
+        The client sends the active page index in ``field_0c`` and its slot
+        count in ``field_10`` (28 for a normal inventory page).  Item ID is
+        zero and the argument count is zero because this is a container
+        operation, not an item operation.
+        """
+
+        try:
+            if inventory is None:
+                raise ValueError("player inventory is not initialized")
+            if int(action.item_id) != 0 or action.argument_count != 0:
+                raise ValueError(
+                    "sort request must target the inventory with no item "
+                    "arguments"
+                )
+            page_index = int(action.field_0c)
+            page_size = int(action.field_10)
+            if page_size <= 0 or page_size > 224:
+                raise ValueError(
+                    f"invalid inventory sort page size {page_size}"
+                )
+            if page_index < 0:
+                raise ValueError(
+                    f"invalid inventory sort page index {page_index}"
+                )
+            page_start = page_index * page_size
+            if page_start < 0 or page_start + page_size > int(
+                inventory.storage_size
+            ):
+                raise ValueError(
+                    f"inventory sort page [{page_start}, "
+                    f"{page_start + page_size}) is outside capacity "
+                    f"{inventory.storage_size}"
+                )
+
+            page_end = page_start + page_size
+            page_items = [
+                (int(item_id), int(slot))
+                for item_id, slot in inventory.storage_58.items()
+                if page_start <= int(slot) < page_end
+            ]
+            item_by_id = {
+                int(item.item_id): item for item in inventory.items
+            }
+            if any(item_id not in item_by_id for item_id, _ in page_items):
+                raise ValueError(
+                    "inventory page contains an allocation without an item"
+                )
+
+            sorted_item_ids = sorted(
+                (item_id for item_id, _ in page_items),
+                key=lambda item_id: (
+                    str(item_by_id[item_id].template_id).casefold(),
+                    int(item_by_id[item_id].item_level),
+                    int(item_by_id[item_id].field_1c),
+                    item_id,
+                ),
+            )
+            updated_inventory = clone_inventory_info(inventory)
+            for item_id, _ in page_items:
+                updated_inventory.storage_58.pop(item_id, None)
+            for offset, item_id in enumerate(sorted_item_ids):
+                updated_inventory.storage_58[item_id] = page_start + offset
+
+            response_inventory = equipment_allocation_snapshot(
+                updated_inventory
+            )
+            packet, packet_bits = encode_server_command_batch(
+                (
+                    ServerCommand(
+                        INVENTORY_INFO_COMMAND,
+                        response_inventory,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                ),
+                include_terminator=True,
+            )
+        except (AttributeError, TypeError, ValueError) as exc:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] rejected inventory sort: {exc}"
+            )
+            return
+
+        with s.flow_lock:
+            s.gameplay_inventory = updated_inventory
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="inventory-page-sorted"
+        )
+        CharacterService._request_account_save(
+            s, "inventory page sorted", flush=True
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] sorted inventory page "
+            f"[{page_start}, {page_end}) containing "
+            f"{len(sorted_item_ids)} item(s)"
+        )
+
     def _handle_inventory_split(
             self, s: Session, action, inventory, next_item_id: int) -> None:
         """Apply ``SplitStack`` operations 0x1e..0x21.
@@ -244,6 +344,10 @@ class InventoryMapService:
             )
         CharacterService._accept_gameplay_state_command(s, 0x0055)
 
+        if action.operation == 0x19:
+            self._handle_inventory_sort(s, action, inventory)
+            return
+
         if action.action == UNLOCK_GEM_SOCKET_ACTION:
             try:
                 if inventory is None or currency is None:
@@ -289,6 +393,68 @@ class InventoryMapService:
                 f"{mutation.maximum_socket_count} on item "
                 f"{mutation.equipment_item_id}; debited "
                 f"{mutation.price_rc} RC"
+            )
+            return
+
+        if (
+            action.action == INSERT_GEM_ACTION
+            and inventory is not None
+            and any(
+                int(candidate.item_id) == int(action.item_id)
+                and candidate.template_id == "unique_gem_crafting"
+                for candidate in inventory.items
+            )
+        ):
+            try:
+                if not action.field_0c:
+                    raise ValueError(
+                        "rune upgrade has no target rune item id"
+                    )
+                # The client reuses InventoryCommand's insert-item opcode for
+                # the Rune Crafting Joker drop. Its target is a rune stack,
+                # not an equipment socket container.
+                action.insertion_socket_index
+                mutation = upgrade_rune(
+                    inventory,
+                    action.item_id,
+                    action.field_0c,
+                    static_database_path=self.static_database_path,
+                    next_item_id=next_item_id,
+                )
+                mutation.delta.field_1e0 = False
+                packet, packet_bits = encode_server_command_batch(
+                    (
+                        ServerCommand(
+                            INVENTORY_INFO_COMMAND,
+                            mutation.delta,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ),
+                    ),
+                    include_terminator=True,
+                )
+            except (OSError, ValueError) as exc:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] rejected rune upgrade "
+                    f"0x{action.action:03x}: {exc}"
+                )
+                return
+            with s.flow_lock:
+                s.gameplay_inventory = mutation.inventory
+                s.gameplay_next_item_id = mutation.next_item_id
+            CharacterService._send_world_loot_state_batch(
+                s,
+                packet,
+                packet_bits,
+                label="rune-upgraded",
+            )
+            CharacterService._request_account_save(
+                s, "rune upgraded", flush=True
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] upgraded rune "
+                f"{action.field_0c}: {mutation.previous_template_id} -> "
+                f"{mutation.upgraded_template_id} using item "
+                f"{action.item_id}"
             )
             return
 
@@ -918,6 +1084,26 @@ class InventoryMapService:
                 )
                 return
 
+            # Shadow souls are reusable companions.  Their inventory action
+            # must not fall through to the consumable/chest route, which
+            # either rejects the item or consumes the quest reward.
+            mercenary_definition = (
+                load_sticker_definition(
+                    self.static_database_path,
+                    inventory_item.template_id,
+                )
+                if inventory_item is not None
+                else None
+            )
+            if (
+                mercenary_definition is not None
+                and mercenary_definition.kind == "mercenary"
+            ):
+                CharacterService._activate_mercenary(
+                    self, s, mercenary_definition, source="inventory item"
+                )
+                return
+
             # Currency items are consumed into either the fixed legacy
             # balances or the keyed currency bag.  Perform this before the
             # LootGenItem/payment-package route because currencies such as a
@@ -1010,10 +1196,23 @@ class InventoryMapService:
                 return
 
         if action.operation != 0x13:
+            detail = ""
+            if action.operation == 0x19:
+                try:
+                    detail = (
+                        f" (action=0x{action.action:08x}, "
+                        f"argument_count={action.argument_count}, "
+                        f"arguments={action.arguments}, "
+                        f"fields=({action.field_08}, {action.field_0c}, "
+                        f"{action.field_10}, {action.field_14}, "
+                        f"{action.field_18}))"
+                    )
+                except ValueError as exc:
+                    detail = f" (could not decode arguments: {exc})"
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] ignored unsupported inventory "
                 f"item operation 0x{action.operation:02x} for "
-                f"item {action.item_id}"
+                f"item {action.item_id}{detail}"
             )
             return
 
@@ -1184,6 +1383,33 @@ class InventoryMapService:
                 f"{action.item_id}/{action.action} could not open a fixed "
                 f"package or mapped chest: {exc}"
             )
+            # The client may optimistically remove a right-clicked chest.
+            # Send the authoritative inventory snapshot back when the server
+            # rejects the open, so an unsupported/under-level chest is not
+            # lost from the visible inventory.
+            if inventory is not None:
+                try:
+                    packet, packet_bits = encode_server_command_batch(
+                        (
+                            ServerCommand(
+                                INVENTORY_INFO_COMMAND,
+                                inventory,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ),
+                        ),
+                        include_terminator=True,
+                    )
+                    s.send_reliable_ordered_split(
+                        packet,
+                        total_bit_length=packet_bits,
+                        track=True,
+                        label_prefix="rejected-chest-inventory-resync",
+                    )
+                except (AttributeError, OSError, ValueError) as resync_exc:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] could not restore "
+                        f"inventory after rejected item action: {resync_exc}"
+                    )
             return
 
         with s.flow_lock:

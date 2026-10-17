@@ -22,6 +22,28 @@ LOGOUT_COUNTDOWN_SECONDS = 10.0
 
 class MapTransitionService:
     """Validate map exits/travel and coordinate the local server handoff."""
+
+    @staticmethod
+    def _event_route_satisfies_map_gate(catalog, map_id: str) -> bool:
+        """Allow Fractured Planes to use the Endless Tower floor routes.
+
+        The Endless Tower access rows are authored for ``event_endlesstower``.
+        Fractured Planes reuses those access IDs while its own event is active,
+        so allow the selected floor (1–100) through the event gate as well.
+        """
+        map_id = str(map_id).strip().casefold()
+        prefix = "h0009_endlesstower_floor_"
+        if not map_id.startswith(prefix):
+            return False
+        suffix = map_id[len(prefix):]
+        if len(suffix) != 3 or not suffix.isdigit():
+            return False
+        floor = int(suffix)
+        return (
+            1 <= floor <= 100
+            and "event_fracturedplanes" in catalog.active_template_ids()
+        )
+
     def _handle_logout(self, s: Session, payload: bytes) -> None:
         try:
             request = decode_logout(payload)
@@ -170,13 +192,19 @@ class MapTransitionService:
             self, s: Session, destination_map_id: str, *,
             spawn_position=None, reason: str,
             gameplay_switch: bool = False,
-            scaling_difficulty: int = 0) -> bool:
+            scaling_difficulty: int = 0,
+            fractured_planes_run: bool = False) -> bool:
         character = s.gameplay_character
+        event_catalog = CharacterService._event_catalog(self)
         if (
             reason not in {"admin-chat", "admin-cms"}
-            and not CharacterService._event_catalog(
-                self
-            ).map_available(destination_map_id)
+            and not event_catalog.map_available(destination_map_id)
+            and not (
+                reason == "event-travel"
+                and CharacterService._event_route_satisfies_map_gate(
+                    event_catalog, destination_map_id,
+                )
+            )
         ):
             raise ValueError(
                 f"map {destination_map_id!r} requires an active event"
@@ -254,6 +282,9 @@ class MapTransitionService:
         route_character = copy.deepcopy(character)
         if route_character is not None:
             route_character.map_id = physical_map_id
+            # This route-only marker distinguishes Fractured Planes from the
+            # Endless Tower floors whose physical maps it reuses.
+            route_character.fractured_planes_run = bool(fractured_planes_run)
             # CharacterRecord intentionally remains a compact wire model.
             # Route-only difficulty metadata is attached to its private copy
             # and consumed by PlayerInitializationService on reconnect.
@@ -545,11 +576,25 @@ class MapTransitionService:
         player_level = max(1, int(getattr(s.gameplay_character, "level", 1)))
         requested = (str(request.map_id).casefold(), str(request.entry_name or "").casefold())
         destination = None
+        fractured_planes_run = False
         for event in catalog.active_events():
             template = event.template
             if (template.client_only or template.category.casefold() == "silent"
                     or not template.minimum_level <= player_level <= template.maximum_level):
                 continue
+            # Fractured Planes reuses the Endless Tower floor access IDs. The
+            # client asks for a selected floor even though the event template
+            # has no TeleportTarget of its own.
+            if (
+                template.resource_id.casefold() == "event_fracturedplanes"
+                and requested[1] == "entrypoint"
+                and CharacterService._event_route_satisfies_map_gate(
+                    catalog, requested[0],
+                )
+            ):
+                destination = (request.map_id, "Entrypoint")
+                fractured_planes_run = True
+                break
             target_map, _, target_entry = template.teleport_target.strip().partition(":")
             target_map, target_entry = target_map.strip(), target_entry.strip()
             if not target_map:
@@ -568,7 +613,12 @@ class MapTransitionService:
             return
         map_id, entry_name = destination
         try:
-            if not catalog.map_available(map_id):
+            if (
+                not catalog.map_available(map_id)
+                and not CharacterService._event_route_satisfies_map_gate(
+                    catalog, map_id,
+                )
+            ):
                 raise ValueError("the destination requires an active event")
             if not CharacterService._map_quest_accessible(self, s, map_id):
                 raise ValueError("the destination requires its unlocking quest")
@@ -586,7 +636,8 @@ class MapTransitionService:
             CharacterService._accept_gameplay_state_command(s, command_id)
             CharacterService._begin_map_transfer(
                 self, s, map_id, spawn_position=spawn_position,
-                reason="event-travel", scaling_difficulty=0)
+                reason="event-travel", scaling_difficulty=0,
+                fractured_planes_run=fractured_planes_run)
         except (OSError, ValueError) as exc:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected event travel: {exc}")
 
@@ -611,7 +662,7 @@ class MapTransitionService:
             map_id = CharacterService._resolve_hub_travel_destination(
                 self, s
             )
-            spawn_position = load_local_spawn_position(
+            spawn_position = load_local_travel_point_position(
                 self.static_database_path, map_id
             )
             print(
@@ -730,6 +781,12 @@ class MapTransitionService:
                     scaling_difficulty=difficulty)
                 spawn_position = load_local_entry_position(
                     self.static_database_path, access.physical_map_id, request.entry_name)
+            elif spawn_position is None:
+                access = resolve_map_access(self.static_database_path, map_id,
+                    player_level=max(1, int(getattr(character, "level", 1))),
+                    scaling_difficulty=difficulty)
+                spawn_position = load_local_travel_point_position(
+                    self.static_database_path, access.physical_map_id)
             started = CharacterService._begin_map_transfer(
                 self,
                 s,
