@@ -30,18 +30,18 @@ class MapTransitionService:
         """Allow Fractured Planes to use the Endless Tower floor routes.
 
         The Endless Tower access rows are authored for ``event_endlesstower``.
-        Fractured Planes has its own access aliases in the static database:
-        floors 72–80 map to its nine tower rooms and floor 100 maps to its boss.
-        Permit only those aliases while the Fractured Planes event is active.
+        Fractured Planes reuses those floor access IDs, including the zero-padded
+        IDs sent by the client when entering a selected floor. Permit valid
+        floor IDs only while the Fractured Planes event is active.
         """
         map_id = str(map_id).strip().casefold()
         prefix = "h0009_endlesstower_floor_"
-        fractured_planes_routes = {
-            *(f"{prefix}{floor}" for floor in range(72, 81)),
-            f"{prefix}100",
-        }
+        floor_id = map_id.removeprefix(prefix)
+        if not map_id.startswith(prefix) or not floor_id.isdecimal():
+            return False
+        floor_number = int(floor_id)
         return (
-            map_id in fractured_planes_routes
+            1 <= floor_number <= 100
             and "event_fracturedplanes" in catalog.active_template_ids()
         )
 

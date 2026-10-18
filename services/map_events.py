@@ -14,6 +14,7 @@ import math
 import random
 import sqlite3
 import time
+from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -271,6 +272,24 @@ def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
 class MapEventService:
     """Signal evaluation and event-set transitions for one map instance."""
 
+    def _is_fractured_planes_run(self, s: Session) -> bool:
+        """Recover the Fractured Planes marker after entry reconnects."""
+
+        if getattr(s, "gameplay_fractured_planes_run", False):
+            return True
+        access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+        if not access_id.casefold().startswith("h0009_endlesstower_floor_"):
+            return False
+        try:
+            active = CharacterService._event_route_satisfies_map_gate(
+                CharacterService._event_catalog(self), access_id,
+            )
+            if active:
+                s.gameplay_fractured_planes_run = True
+            return bool(active)
+        except (OSError, ValueError, sqlite3.Error):
+            return False
+
     # ------------------------------------------------------------------
     # Runtime registry
     # ------------------------------------------------------------------
@@ -303,7 +322,8 @@ class MapEventService:
             s.gameplay_quest_props_visible = set()
             return None
         key = CharacterService._gameplay_instance_key(s)
-        if getattr(s, "gameplay_fractured_planes_run", False):
+        if CharacterService._is_fractured_planes_run(self, s):
+            s.gameplay_fractured_planes_run = True
             key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
         with self.gameplay_world_lock:
@@ -477,16 +497,52 @@ class MapEventService:
                          signal_id: str) -> None:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
+        signal_keys = [key]
+        fractured_run = CharacterService._is_fractured_planes_run(self, s)
+        if (
+            fractured_run
+            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+            and key.startswith("h0009_endlesstower_01_room_")
+            and key.endswith("_end_signal_01")
+        ):
+            # Percentage-clear rows append _01, but the corresponding local
+            # room events listen to the unsuffixed signal name.
+            signal_keys.append(key[:-3])
         with runtime.lock:
             runtime.signal_log.append((time.time(), key))
-        for event_key in catalog.events_by_end_signal.get(key, ()):
-            definition = catalog.event(event_key)
-            if definition is not None and definition.applies_to(runtime.map_id):
-                self._stop_map_local_event(runtime, definition)
-        for event_key in catalog.events_by_start_signal.get(key, ()):
-            definition = catalog.event(event_key)
-            if definition is not None and definition.applies_to(runtime.map_id):
-                self._schedule_map_local_event_start(runtime, definition)
+        for event_signal in signal_keys:
+            for event_key in catalog.events_by_end_signal.get(event_signal, ()):
+                definition = catalog.event(event_key)
+                if definition is not None and definition.applies_to(runtime.map_id):
+                    self._stop_map_local_event(runtime, definition)
+            for event_key in catalog.events_by_start_signal.get(event_signal, ()):
+                definition = catalog.event(event_key)
+                if definition is not None and definition.applies_to(runtime.map_id):
+                    self._schedule_map_local_event_start(runtime, definition)
+        if (
+            fractured_run
+            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+            and any(
+                value in signal_keys
+                for value in (
+                    "h0009_endlesstower_01_room_01_end_signal",
+                    "h0009_endlesstower_01_room_01_end_signal_01",
+                )
+            )
+        ):
+            # The three lethal path auras belong to legacy Tower monster
+            # signals. Fractured Planes selects different templates, so retire
+            # those hazard sets on its room-clear percentage signal.
+            for suffix in ("01", "03", "05"):
+                self._emit_map_signal(
+                    s, runtime,
+                    f"h0009_endlesstower_01_monster_{suffix}_end_signal",
+                )
+            for room in ("02", "06"):
+                self._emit_map_signal(
+                    s, runtime,
+                    f"h0009_endlesstower_01_room_{room}_interact_signal",
+                )
         CharacterService._quest_on_signal(self, s, signal_id)
 
     def _on_monsters_killed(self, s: Session, monsters) -> None:
@@ -557,7 +613,7 @@ class MapEventService:
                 # and no delayed map event is still spawning the next wave,
                 # resolve that floor's score gate as a completed clear.
                 if (
-                    getattr(s, "gameplay_fractured_planes_run", False)
+                    CharacterService._is_fractured_planes_run(self, s)
                     and map_key(runtime.map_id)
                     == "h0009_endlesstower_01_sm_01"
                 ):
@@ -589,6 +645,26 @@ class MapEventService:
                                 )
                                 self._emit_map_signal(
                                     s, runtime, rule.signal_id
+                                )
+                            # Fractured Planes dynamically populates this
+                            # tower floor with templates that do not always
+                            # match its static MonstersEliminated list. End
+                            # the active room explicitly after the final
+                            # spawned monster dies so authored path/trap
+                            # cleanup events run reliably.
+                            with runtime.lock:
+                                room_is_running = (
+                                    "h0009_endlesstower_01_room_01"
+                                    in runtime.active_flags()
+                                )
+                            if room_is_running:
+                                _log(
+                                    f"Fractured Planes floor clear on "
+                                    f"{runtime.map_id}: ending active room 01"
+                                )
+                                self._emit_map_signal(
+                                    s, runtime,
+                                    "h0009_endlesstower_01_room_01_end_signal",
                                 )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
         self._fire_map_signal(s, "MonstersEliminated", templates)
@@ -628,7 +704,8 @@ class MapEventService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
-        if getattr(s, "gameplay_fractured_planes_run", False):
+        if CharacterService._is_fractured_planes_run(self, s):
+            s.gameplay_fractured_planes_run = True
             with runtime.lock:
                 if runtime.fractured_planes_limit_deadline is None:
                     runtime.fractured_planes_limit_deadline = (
@@ -666,6 +743,16 @@ class MapEventService:
         self._fire_map_signal(
             s, "PlayerEnteredMapId", (access_group, access_id, runtime.map_id)
         )
+        if (
+            CharacterService._is_fractured_planes_run(self, s)
+            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+        ):
+            # This reused Tower scene does not contain the Fractured Planes
+            # entrance stone as a server prop. Start room 01 on entry so its
+            # objective, percentage-clear rule, and trap cleanup are active.
+            self._emit_map_signal(
+                s, runtime, "h0009_endlesstower_01_room_01_start_signal"
+            )
         CharacterService._quest_on_map_entered(self, s)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
@@ -767,6 +854,19 @@ class MapEventService:
             return
         _log(f"client reported signal {rule.signal_id!r} on {runtime.map_id}")
         self._emit_map_signal(s, runtime, rule.signal_id)
+        # Fractured Planes replaces the Endless Tower entrance prop, while
+        # the reused room event still waits for the tower's old prop id.
+        # Bridge the real stones interaction into the authored room-start
+        # signal so the level objective and its clear/trap events can run.
+        if (
+            CharacterService._is_fractured_planes_run(self, s)
+            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+            and rule.signal_id.casefold()
+            == "fractured_levelmap_tower01_stones_01"
+        ):
+            self._emit_map_signal(
+                s, runtime, "h0009_endlesstower_01_room_01_start_signal"
+            )
 
     def _handle_quest_trigger_signal(self, s: Session, payload: bytes) -> None:
         request = decode_quest_trigger_signal(
@@ -1232,24 +1332,62 @@ class MapEventService:
         except Exception as exc:
             _log(f"exit refresh failed: {type(exc).__name__}: {exc}")
             return
-        exit_info = ExitInfo(tuple(
-            ExitInfoEntry(
-                definition.name,
-                definition.destination_map_id,
-                int(definition.active),
-                definition.instance_guid,
-            )
-            for definition in definitions
-        ))
-        packet, packet_bits = encode_server_command_batch(
-            (ServerCommand(EXIT_INFO_COMMAND, exit_info, LOCAL_PLAYER_ACTOR_ID),),
-            include_terminator=True,
-        )
         for viewer in sessions:
+            viewer_definitions = definitions
+            if CharacterService._is_fractured_planes_run(self, viewer):
+                access_id = str(
+                    getattr(viewer, "gameplay_map_access_id", "") or ""
+                ).casefold()
+                prefix = "h0009_endlesstower_floor_"
+                floor_text = access_id.removeprefix(prefix)
+                if access_id.startswith(prefix) and floor_text.isdecimal():
+                    floor_number = int(floor_text)
+                    if 1 <= floor_number < 100:
+                        next_floor = f"{prefix}{floor_number + 1:03d}"
+                        redirected = False
+                        viewer_definitions = tuple(
+                            replace(
+                                definition,
+                                destination_map_id=next_floor,
+                            )
+                            if (
+                                definition.exit_id.casefold()
+                                == "fracturedplanes_rift_entrance"
+                                and int(definition.event_set_row) == 1841
+                            )
+                            else definition
+                            for definition in definitions
+                        )
+                        redirected = any(
+                            definition.exit_id.casefold()
+                            == "fracturedplanes_rift_entrance"
+                            and definition.destination_map_id == next_floor
+                            for definition in viewer_definitions
+                        )
+                        if redirected:
+                            _log(
+                                f"Fractured Planes exit on floor "
+                                f"{floor_number:03d} routes to {next_floor}"
+                            )
+            exit_info = ExitInfo(tuple(
+                ExitInfoEntry(
+                    definition.name,
+                    definition.destination_map_id,
+                    int(definition.active),
+                    definition.instance_guid,
+                )
+                for definition in viewer_definitions
+            ))
+            packet, packet_bits = encode_server_command_batch(
+                (ServerCommand(
+                    EXIT_INFO_COMMAND, exit_info, LOCAL_PLAYER_ACTOR_ID,
+                ),),
+                include_terminator=True,
+            )
             with viewer.flow_lock:
                 if viewer.gameplay_map != runtime.map_id:
                     continue
-                viewer.gameplay_map_exits = definitions
+                viewer.gameplay_map_exits = viewer_definitions
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-exit-info"
             )
