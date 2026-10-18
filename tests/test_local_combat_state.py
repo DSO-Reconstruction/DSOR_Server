@@ -2411,6 +2411,8 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         state.activate_monsters((shaman_actor_id,))
         state.last_monster_attack_at[shaman_actor_id] = 0.0
+        # Its InitialCoolDown has run out.
+        state._monster_skill_ready_at[shaman_actor_id] = {}
         monster_position = state.monster_positions[shaman_actor_id]
         player_position = encounter.coordinate_frame.world_to_wire(
             (
@@ -2684,6 +2686,8 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         state.activate_monsters((actor_id,))
         state.last_monster_attack_at[actor_id] = 0.0
+        # Its shot's InitialCoolDown (1-3 s) has run out.
+        state._monster_skill_ready_at[actor_id] = {}
         monster_position = state.monster_positions[actor_id]
         cast_target = (
             monster_position[0] + 6.0,
@@ -3129,20 +3133,41 @@ class LocalCombatStateTests(unittest.TestCase):
             monster.position[1],
             monster.position[2],
         ))
-        selected = []
-        for ordinal in range(3):
+        # Every 2 s for 40 s: the specials come when their cooldown allows
+        # (double strike 5 s, missile 20 s), the plain strike fills the rest.
+        used = []
+        for ordinal in range(20):
+            now = 1000.0 + ordinal * 2.0
             state.pending_monster_attacks.clear()
             state.last_monster_attack_at[actor_id] = 0.0
             attacks = state.maybe_start_monster_attacks(
-                target,
-                server_tick=1000 + ordinal * 100,
-                now=1000.0 + ordinal * 10.0,
+                target, server_tick=1000 + ordinal * 50, now=now,
             )
-            self.assertEqual(len(attacks), 1)
-            selected.append(attacks[0].definition.resource_id)
+            # The previous skill's own lock can still hold it.
+            used.extend((now, attack.definition.resource_id) for attack in attacks)
 
-        self.assertEqual(len(set(selected)), 3)
-        self.assertIn("heredur_base_missile", selected)
+        names = [name for _now, name in used]
+        self.assertEqual(
+            set(names),
+            {"heredur_base_strike", "heredur_base_doublestrike", "heredur_base_missile"},
+        )
+        for skill, cooldown in (("heredur_base_doublestrike", 5.0), ("heredur_base_missile", 20.0)):
+            times = [now for now, name in used if name == skill]
+            self.assertTrue(all(b - a >= cooldown for a, b in zip(times, times[1:])))
+        self.assertEqual(names.count("heredur_base_missile"), 2)
+
+    def test_monster_skills_wait_their_initial_cooldown_and_match_difficulty(self):
+        actor_id = sorted(self.state.monsters)[0]
+        base = self.state.monsters[actor_id].attack
+        plain = replace(base, resource_id="plain", cooldown=0.0, initial_cooldown=(0.0, 0.0), cooldown_category="")
+        hounds = replace(base, resource_id="hounds", cooldown=35.0, initial_cooldown=(3.0, 5.0), cooldown_category="Skill05")
+        hard = replace(base, resource_id="hard_only", cooldown=10.0, cooldown_category="Skill06", min_difficulty=4)
+        skills = (plain, hounds, hard)
+        choose = lambda now: self.state._monster_skill_choice(actor_id, skills, skills, 0, now).resource_id
+        self.assertEqual(choose(100.0), "plain")  # hounds wait 3-5 s; hard_only is not this difficulty
+        self.assertEqual(choose(105.1), "hounds")
+        self.state._monster_skill_ready_at[actor_id]["Skill05"] = 140.1
+        self.assertEqual(choose(106.0), "plain")
 
     def test_player_summon_can_damage_only_explicit_hostile_player(self):
         definition = self.state.player_summon_definition(1877)

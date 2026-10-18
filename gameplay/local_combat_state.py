@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 import math
 import os
+import random
 from pathlib import Path
 import sqlite3
 import struct
@@ -118,6 +119,12 @@ MONSTER_MELEE_VERTICAL_REACH = 1.5
 # within this much above their head or below their feet.
 PROJECTILE_VERTICAL_SLACK = 1.0
 PLAYER_CAPSULE_HEIGHT = 2.0
+
+
+def _cooldown_key(definition) -> str:
+    """Skills of one CoolDownCategory share a timer; others have their own."""
+
+    return definition.cooldown_category or definition.resource_id
 RANGED_STANDOFF_RATIO = 0.80
 MONSTER_HOME_ARRIVAL_DISTANCE = 0.20
 # ``_Template_StatusEffect`` row ``MonsterReturnHome`` (15 s, group "Special").
@@ -1005,6 +1012,11 @@ class LocalCombatState:
         self._monster_skill_cursors: dict[int, int] = {
             actor_id: 0 for actor_id in self.monsters
         }
+        # When each monster's skill (or cooldown category) can be used again,
+        # set once it starts fighting: its InitialCoolDown, then its CoolDown
+        # after each use (_monster_skill_choice).
+        self._monster_skill_ready_at: dict[int, dict[str, float]] = {}
+        self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
         # Animation locks outlive early impacts and can end before a projectile
         # lands. Keep them separate from the pending damage transaction.
@@ -1328,6 +1340,7 @@ class LocalCombatState:
             self.monster_last_published_positions[actor_id] = combatant.position
             self.last_monster_attack_at[actor_id] = time.perf_counter()
             self._monster_skill_cursors[actor_id] = 0
+            self._monster_skill_ready_at.pop(actor_id, None)
             if ammo_vulnerabilities and actor_id in ammo_vulnerabilities:
                 self.monster_ammo_vulnerabilities[actor_id] = frozenset(
                     ammo_vulnerabilities[actor_id]
@@ -1868,6 +1881,8 @@ class LocalCombatState:
                 self.monster_status_damage.pop((actor_id, resource_id), None)
         # A reset actor is a fresh spawn; it carries no diminishing returns.
         self.monster_status_immunities.pop(actor_id, None)
+        # Its skill cooldowns start over with its next fight.
+        self._monster_skill_ready_at.pop(actor_id, None)
         # Clears MonsterReturnHome: the actor is already home.
         self._set_returning_home(actor_id, False, server_tick)
 
@@ -8847,6 +8862,56 @@ class LocalCombatState:
             pending.cast_id, now=pending.due_at
         )
 
+    def _monster_skill_choice(
+        self,
+        actor_id: int,
+        definitions,
+        eligible_definitions,
+        skill_cursor: int,
+        current_time: float,
+    ):
+        """The skill a monster uses now, or None.
+
+        Only the variants of the map's difficulty count (MinDifficulty /
+        MaxDifficulty), and only skills whose cooldown has run out: a skill's
+        CoolDown starts at each use, its InitialCoolDown when the monster first
+        fights (Bearach's hounds come after 3 to 5 s). A ready skill with a
+        cooldown, a special, goes before the plain attacks, which take turns as
+        before; among ready specials, the one ready the longest.
+        UNVERIFIED: the retail choice among several ready specials and the
+        meaning of the Skills ":N" suffix.
+        """
+
+        difficulty = int(getattr(self.encounter, "scaling_difficulty", 0))
+        ready_at = self._monster_skill_ready_at.get(actor_id)
+        if ready_at is None:
+            ready_at = {}
+            for definition in definitions:
+                low, high = definition.initial_cooldown
+                if high > 0.0:
+                    key = _cooldown_key(definition)
+                    wait = self._monster_cooldown_random.uniform(low, high)
+                    ready_at[key] = max(ready_at.get(key, 0.0), current_time + wait)
+            self._monster_skill_ready_at[actor_id] = ready_at
+        usable = tuple(
+            definition
+            for definition in eligible_definitions
+            if definition.min_difficulty <= difficulty <= definition.max_difficulty
+            and current_time + 1e-9 >= ready_at.get(_cooldown_key(definition), 0.0)
+        )
+        if not usable:
+            return None
+        specials = tuple(d for d in usable if d.cooldown > 0.0)
+        if specials:
+            # The one ready the longest: a short-cooldown special must not keep
+            # a longer one from ever coming (Heredur's 5 s double strike and
+            # 20 s missile).
+            return min(
+                specials,
+                key=lambda d: ready_at.get(_cooldown_key(d), 0.0),
+            )
+        return usable[skill_cursor % len(usable)]
+
     def maybe_start_monster_attacks(
         self,
         player_position: tuple[float, float, float],
@@ -9024,12 +9089,13 @@ class LocalCombatState:
                     or vertical_gap <= MONSTER_MELEE_VERTICAL_REACH
                 )
             )
-            if not eligible_definitions:
-                continue
             skill_cursor = self._monster_skill_cursors.get(actor_id, 0)
-            definition = eligible_definitions[
-                skill_cursor % len(eligible_definitions)
-            ]
+            definition = self._monster_skill_choice(
+                actor_id, definitions, eligible_definitions,
+                skill_cursor, current_time,
+            )
+            if definition is None:
+                continue
             if (
                 current_time - self.last_monster_attack_at[actor_id]
                 + 1e-9
@@ -9172,6 +9238,10 @@ class LocalCombatState:
                 self.monster_last_movement_publish_ticks[actor_id] = start_tick
                 self.monster_last_published_positions[actor_id] = monster_position
             self._monster_skill_cursors[actor_id] = skill_cursor + 1
+            if definition.cooldown > 0.0:
+                self._monster_skill_ready_at.setdefault(actor_id, {})[
+                    _cooldown_key(definition)
+                ] = current_time + definition.cooldown
             self.pending_monster_attacks[actor_id] = attack
             attacks.append(attack)
             next_cursor = (

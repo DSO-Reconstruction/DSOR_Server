@@ -219,6 +219,15 @@ class MonsterAttackDefinition:
     )
     loop_start_frame: int = 0
     damage_types: tuple[tuple[str, float], ...] = (("Physical", 1.0),)
+    # _Template_Skill CoolDown (seconds), InitialCoolDown ("3|5": a first wait
+    # drawn in that range once the monster fights), CoolDownCategory (skills
+    # sharing one timer) and MinDifficulty/MaxDifficulty (the map difficulties
+    # the variant is used on: boss_khalys_base_melee 0-3, _melee_plus 4-10).
+    cooldown: float = 0.0
+    initial_cooldown: tuple[float, float] = (0.0, 0.0)
+    cooldown_category: str = ""
+    min_difficulty: int = 0
+    max_difficulty: int = 99
 
 
 @dataclass(frozen=True)
@@ -413,6 +422,8 @@ class LocalMonsterEncounter:
     protected_waypoints: tuple[
         tuple[tuple[float, float, float], float], ...
     ] = ()
+    # The map's difficulty, which picks the skill variants monsters use.
+    scaling_difficulty: int = 0
 
     def player_is_near(self, position: tuple[float, float, float]) -> bool:
         position = self.coordinate_frame.wire_to_world(position)
@@ -1111,6 +1122,19 @@ def _parse_damage_types(value: object) -> tuple[tuple[str, float], ...]:
     return tuple(parsed) or (("Physical", 1.0),)
 
 
+def _parse_cooldown_range(value) -> tuple[float, float]:
+    """InitialCoolDown: "", "4", "3|5" or "12.0|15.0" -> (low, high) seconds."""
+
+    parts = [part.strip() for part in str(value or "").split("|") if part.strip()]
+    try:
+        numbers = [max(0.0, float(part)) for part in parts]
+    except ValueError:
+        return (0.0, 0.0)
+    if not numbers:
+        return (0.0, 0.0)
+    return (min(numbers), max(numbers))
+
+
 @lru_cache(maxsize=256)
 def _load_runtime_template(
     static_database_path: Path,
@@ -1167,7 +1191,12 @@ def _load_runtime_template(
                        COALESCE(s.HitStances, ''),
                        COALESCE(s.LoopStartFrame, 0),
                        COALESCE(s.ExecuteSequenceMapping, ''),
-                       COALESCE(s.DamageType, 'Physical')
+                       COALESCE(s.DamageType, 'Physical'),
+                       COALESCE(s.CoolDown, 0),
+                       COALESCE(s.InitialCoolDown, ''),
+                       COALESCE(s.CoolDownCategory, ''),
+                       COALESCE(s.MinDifficulty, 0),
+                       COALESCE(s.MaxDifficulty, 99)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id=s.SkillBulletId
@@ -1239,6 +1268,11 @@ def _load_runtime_template(
                         start_offset=start_offset,
                         loop_start_frame=max(0, int(skill_row[18])),
                         damage_types=_parse_damage_types(skill_row[20]),
+                        cooldown=max(0.0, float(skill_row[21] or 0.0)),
+                        initial_cooldown=_parse_cooldown_range(skill_row[22]),
+                        cooldown_category=str(skill_row[23] or "").strip(),
+                        min_difficulty=int(skill_row[24] or 0),
+                        max_difficulty=int(skill_row[25] if skill_row[25] is not None else 99),
                     ),
                 )
             )
@@ -2515,6 +2549,7 @@ def _load_dynamic_monster_encounter(
         ),
         spawn_batch=MonsterSpawnBatch(all_commands),
         runtime_definitions=tuple(runtime_definitions),
+        scaling_difficulty=max(0, int(scaling_difficulty)),
         spawn_groups=spawn_groups,
         fixed_monster_count=fixed_monster_count,
         spawn_area_monster_count=spawn_area_monster_count,

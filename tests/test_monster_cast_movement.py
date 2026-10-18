@@ -113,7 +113,8 @@ class MonsterCastMovementTests(unittest.TestCase):
 
     def test_next_short_spell_does_not_cut_off_previous_skill_lock(self):
         monster = self.combat.monsters[self.actor]
-        long = replace(monster.attack, hit_frame=1, motion_unblock_frame=10, skill_unblock_frame=50)
+        long = replace(monster.attack, hit_frame=1, motion_unblock_frame=10, skill_unblock_frame=50,
+                       cooldown=0.0, initial_cooldown=(0.0, 0.0), cooldown_category="")
         short = replace(long, resource_id="short-test-attack", motion_unblock_frame=1, skill_unblock_frame=1)
         self.combat.monsters[self.actor] = replace(monster, attack=long, attacks=(long, short), attack_interval=.1)
         attack = self.cast()
