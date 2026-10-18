@@ -107,6 +107,17 @@ def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
 
 
 MONSTER_STOP_DISTANCE = 1.75
+# A melee blow reaches a player no more than this far above or below the
+# monster's feet (metres). Range checks are flat (x/z): without it a monster on
+# a ledge struck a player standing under it ("a monster on high ground attacked
+# me ... but I still took the damage", 2026-10-18). 1.5 m keeps slopes and
+# steps, where both feet sit on the same ground, unaffected.
+MONSTER_MELEE_VERTICAL_REACH = 1.5
+# A projectile's lane (from the monster's centre to its cast-time target) is
+# also a height: the player is hit where the lane passes through their capsule,
+# within this much above their head or below their feet.
+PROJECTILE_VERTICAL_SLACK = 1.0
+PLAYER_CAPSULE_HEIGHT = 2.0
 RANGED_STANDOFF_RATIO = 0.80
 MONSTER_HOME_ARRIVAL_DISTANCE = 0.20
 # ``_Template_StatusEffect`` row ``MonsterReturnHome`` (15 s, group "Special").
@@ -9000,10 +9011,18 @@ class LocalCombatState:
             target_distance = self._distance(
                 attack_target_world, monster_position
             )
+            vertical_gap = abs(attack_target_world[1] - monster_position[1])
             eligible_definitions = tuple(
                 definition
                 for definition in definitions
                 if target_distance <= definition.attack_range
+                and (
+                    definition.command_id in {
+                        BULLET_SKILL_COMMAND,
+                        TARGET_BULLET_SKILL_COMMAND,
+                    }
+                    or vertical_gap <= MONSTER_MELEE_VERTICAL_REACH
+                )
             )
             if not eligible_definitions:
                 continue
@@ -9170,7 +9189,7 @@ class LocalCombatState:
     ) -> bool:
         """Test the player capsule against a fixed cast-time trajectory."""
 
-        origin_x, _origin_y, origin_z = attack.projectile_origin
+        origin_x, origin_y, origin_z = attack.projectile_origin
         direction_x = float(attack.direction[0])
         direction_z = float(attack.direction[2])
         direction_length = math.hypot(direction_x, direction_z)
@@ -9196,7 +9215,19 @@ class LocalCombatState:
         lateral = abs(
             player_dx * direction_z - player_dz * direction_x
         )
-        return lateral <= collision_radius
+        if lateral > collision_radius:
+            return False
+        # The lane's height where it meets the player: from the origin's height
+        # to the cast-time target's, along the flight.
+        fraction = (
+            min(1.0, max(0.0, along / path_length)) if path_length > 1e-6 else 1.0
+        )
+        lane_y = origin_y + (attack.target_position[1] - origin_y) * fraction
+        return (
+            player_position[1] - PROJECTILE_VERTICAL_SLACK
+            <= lane_y
+            <= player_position[1] + PLAYER_CAPSULE_HEIGHT + PROJECTILE_VERTICAL_SLACK
+        )
 
     def resolve_due_monster_attacks(
         self,
@@ -9268,6 +9299,8 @@ class LocalCombatState:
             elif (
                 self._distance(target_world, monster_position)
                 > definition.hit_range
+                or abs(target_world[1] - monster_position[1])
+                > MONSTER_MELEE_VERTICAL_REACH
             ):
                 continue
             if isinstance(incoming_damage_multiplier, (int, float)):

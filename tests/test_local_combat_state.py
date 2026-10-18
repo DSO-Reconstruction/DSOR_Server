@@ -2281,6 +2281,57 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertLess(result[0].current_health, result[0].maximum_health)
 
+    def test_melee_does_not_reach_a_player_far_above_or_below(self):
+        # A monster on a ledge must not strike a player standing under it:
+        # range is flat, the vertical reach is MONSTER_MELEE_VERTICAL_REACH.
+        player_world = (-70.0, 2.0, 35.0)
+        player_position = self._wire(player_world)
+        self.state.last_monster_attack_at = {
+            actor_id: 0.0 for actor_id in self.state.monsters
+        }
+        for tick in range(101, 151):
+            self.state.advance_monsters(
+                player_position, elapsed_seconds=0.2, server_tick=tick
+            )
+            if any(
+                self.state._distance(player_world, position)
+                <= self.encounter.attack.attack_range
+                for position in self.state.monster_positions.values()
+            ):
+                break
+        above = (player_world[0], player_world[1] + 4.0, player_world[2])
+        self.assertEqual(
+            self.state.maybe_start_monster_attacks(
+                self._wire(above), server_tick=151, now=11.1
+            ),
+            (),
+        )
+        attacks = self.state.maybe_start_monster_attacks(
+            player_position, server_tick=152, now=11.2
+        )
+        self.assertTrue(attacks)
+        # Gone up a ledge before the blow lands: it misses.
+        self.assertEqual(
+            self.state.resolve_due_monster_attacks(
+                self._wire(above),
+                now=max(attack.due_at for attack in attacks),
+            ),
+            (),
+        )
+
+    def test_straight_projectile_lane_has_a_height(self):
+        attack = SimpleNamespace(
+            projectile_origin=(0.0, 10.0, 0.0),
+            direction=(0.0, -0.5, 1.0, 0.0),
+            target_position=(0.0, 0.0, 20.0),
+            projectile_radius=0.3,
+        )
+        hit = LocalCombatState._fixed_projectile_intersects_player
+        self.assertTrue(hit(attack, (0.0, 0.0, 20.0)))
+        # Halfway the lane is 5 m up: a player on the ground there is under it.
+        self.assertFalse(hit(attack, (0.0, 0.0, 10.0)))
+        self.assertTrue(hit(attack, (0.0, 4.0, 10.0)))
+
     def test_collision_correction_never_exceeds_run_speed_step(self):
         player_world = (-51.75, 2.0, 12.45)
         player_position = self._wire(player_world)
