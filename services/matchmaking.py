@@ -234,7 +234,7 @@ class MatchmakingService:
         waiting = registry.waiting_count(entry.match_mode)
         tick = int(server_time() // 40) & 0xFFFFFFFF
         info = encode_matchmaking_info(MatchMakingInfo(
-            state=0,
+            state=MATCHMAKING_EVENT_JOINED_BY_USER,
             server_tick=tick,
             match_mode=entry.match_mode,
             message="",
@@ -272,12 +272,25 @@ class MatchmakingService:
         self._send_pvp(
             s,
             encode_matchmaking_info(MatchMakingInfo(
-                state=MATCH_MODE_INVALID,
+                state=MATCHMAKING_EVENT_ABORTED_BY_USER,
                 server_tick=int(server_time() // 40) & 0xFFFFFFFF,
-                match_mode=MATCH_MODE_INVALID,
+                # Keep the mode so the client can clear the queue UI for the
+                # specific queue that was just cancelled.
+                match_mode=removed.match_mode,
                 message="",
             )),
             label="pvp-queue-left",
+        )
+        self._send_pvp(
+            s,
+            encode_join_match_queue_info(JoinMatchQueueInfo(
+                server_tick=int(server_time() // 40) & 0xFFFFFFFF,
+                estimated_wait=0.0,
+                state=MATCH_MODE_INVALID,
+                queued_players=0,
+                queued_at=CalendarTime(),
+            )),
+            label="pvp-queue-info-cleared",
         )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} left the "
@@ -449,7 +462,7 @@ class MatchmakingService:
             self._send_pvp(
                 session,
                 encode_matchmaking_info(MatchMakingInfo(
-                    state=MATCH_MODE_INVALID,
+                    state=MATCHMAKING_EVENT_ABORTED_BY_SERVER,
                     server_tick=int(server_time() // 40) & 0xFFFFFFFF,
                     match_mode=match.match_mode,
                     message="",

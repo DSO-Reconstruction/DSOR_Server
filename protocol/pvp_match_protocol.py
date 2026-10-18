@@ -111,6 +111,18 @@ MATCH_MODE_ASSAULT_THE_FORTRESS_5V5 = 3
 MATCH_MODE_LAST_MAN_STANDING_8FFA = 4
 MATCH_MODE_RANGE = (-1, 4)
 
+# ``MatchMakingInfo.state`` is an event code, not an active/inactive flag.
+# Values 0..6 are handled explicitly by the retail client.
+MATCHMAKING_EVENT_INVALID = -1
+MATCHMAKING_EVENT_JOINED_BY_USER = 0
+MATCHMAKING_EVENT_JOINED_BY_GROUP_LEADER = 1
+MATCHMAKING_EVENT_ABORTED_BY_USER = 2
+MATCHMAKING_EVENT_ABORTED_BY_GROUP_LEADER = 3
+MATCHMAKING_EVENT_ABORTED_BY_SERVER = 4
+MATCHMAKING_EVENT_GROUP_TOO_BIG = 5
+MATCHMAKING_EVENT_GROUP_LEVEL_RANGE = 6
+MATCHMAKING_EVENT_RANGE = (-1, 6)
+
 QUEUE_KIND_INVALID = -1
 QUEUE_KIND_SINGLE = 0
 QUEUE_KIND_GROUP = 1
@@ -499,8 +511,10 @@ def encode_join_battleground_response(
 class MatchMakingInfo:
     """``PVP::MatchMakingInfoCommand`` (0x00D7), Encode at 0x14099b55c.
 
-    enum, ``uint32``, enum, string.  Retail sends it with an empty string, so
-    the whole command including its terminator is twelve bytes.
+    Matchmaking event, ``uint32``, match mode, string. The client distinguishes
+    queue joined/aborted events using the first enum; it is not a boolean state.
+    Retail sends an empty string, so the whole command including its
+    terminator is twelve bytes.
     """
 
     state: int = 0
@@ -512,7 +526,8 @@ class MatchMakingInfo:
 def encode_matchmaking_info(value: MatchMakingInfo) -> tuple[bytes, int]:
     writer = BitWriter()
     _begin_server_command(writer, MATCHMAKING_INFO_COMMAND)
-    _write_enum8(writer, value.state, (-1, 4), "matchmaking state")
+    _write_enum8(writer, value.state, MATCHMAKING_EVENT_RANGE,
+                 "matchmaking event")
     writer.write_uint32_le(int(value.server_tick))
     _write_enum8(writer, value.match_mode, MATCH_MODE_RANGE, "match mode")
     writer.write_string(value.message)
@@ -524,7 +539,7 @@ def decode_matchmaking_info(
     reader = BitReader(payload, bit_length)
     _start_server_command(reader, MATCHMAKING_INFO_COMMAND)
     value = MatchMakingInfo(
-        _read_enum8(reader, (-1, 4), "matchmaking state"),
+        _read_enum8(reader, MATCHMAKING_EVENT_RANGE, "matchmaking event"),
         reader.read_uint32_le(),
         _read_enum8(reader, MATCH_MODE_RANGE, "match mode"),
         reader.read_string(),
