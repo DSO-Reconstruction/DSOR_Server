@@ -856,16 +856,21 @@ class CombatResolutionService:
             server_tick=server_tick,
             label=label,
             max_stack_followups={int(stack.effect_id): (buff,)},
+            force_fresh_effect_ids={int(buff.effect_id)},
         )
 
     @staticmethod
     def _send_player_skill_status_effects(
             s: Session, definitions, *, server_tick: int,
-            label: str, max_stack_followups=None) -> None:
+            label: str, max_stack_followups=None,
+            force_fresh_effect_ids=None) -> None:
         if not definitions or STATUS_EFFECTS_DISABLED:
             return
         definitions = list(definitions)
         max_stack_followups = max_stack_followups or {}
+        force_fresh_effect_ids = {
+            int(effect_id) for effect_id in (force_fresh_effect_ids or ())
+        }
         from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
         combat = s.gameplay_combat_state
         path = getattr(getattr(combat, 'encounter', None), 'static_database_path', DEFAULT_STATIC_DB_PATH)
@@ -873,6 +878,7 @@ class CombatResolutionService:
         with s.flow_lock:
             commands = []
             removals = []
+            pre_removals = []
             consumed_this_batch = set()
             retired_timers = []
             periodic_effects = []
@@ -901,9 +907,17 @@ class CombatResolutionService:
                     s.gameplay_next_status_effect_instance_id
                 )
                 s.gameplay_next_status_effect_instance_id += 1
+                # A max-stack followup such as the attack-speed damage buff
+                # must restart as a fresh effect. Reusing a counted occurrence
+                # makes the client rebuild it from the static template (10s),
+                # ignoring the server's refreshed 30s duration override.
                 stack_index = (
-                    int(previous.field_18) + 1
-                    if previous is not None else 0
+                    0
+                    if int(definition.effect_id) in force_fresh_effect_ids
+                    else (
+                        int(previous.field_18) + 1
+                        if previous is not None else 0
+                    )
                 )
                 start_tick = int(server_tick) & 0xFFFFFFFF
                 entry = StatusEffectEntry(
@@ -936,7 +950,7 @@ class CombatResolutionService:
                     )
                 )
                 if previous is not None:
-                    removals.append(replace(
+                    previous_removal = replace(
                         previous,
                         field_0c=(start_tick + duration) & 0xFFFFFFFF,
                         field_14=SERVER_TICKS_PER_SECOND,
@@ -950,7 +964,13 @@ class CombatResolutionService:
                         field_38=False,
                         field_3c=0xFF,
                         shape_values=(),
-                    ))
+                    )
+                    if int(definition.effect_id) in force_fresh_effect_ids:
+                        # Remove the still-active buff before adding its fresh
+                        # 30-second instance at the max-stack boundary.
+                        pre_removals.append(previous_removal)
+                    else:
+                        removals.append(previous_removal)
                     s.gameplay_runtime_status_effects.pop(
                         int(previous_id), None
                     )
@@ -969,12 +989,20 @@ class CombatResolutionService:
                         0, int(definition.max_stack_size) - 1
                     )
                 ):
-                    # Same rule the victim path applies: the authored max-stack
-                    # child stops this parent, so the client consumes the edge
-                    # occurrence. Keeping it here would make the next cast send
-                    # stack 30, 31, ... of an effect the client already dropped
-                    # instead of starting the ladder again at zero -- Cold Chill
-                    # would climb forever and Icy Wrath would fire exactly once.
+                    # Clear the cap occurrence explicitly as well as resetting
+                    # the server cache. The authored max-stack child may consume
+                    # it locally, but clients can otherwise retain the counted
+                    # occurrence and display 105, 110, ... across generations.
+                    removals.append(replace(
+                        entry,
+                        has_details=False,
+                        values=(),
+                        field_25=False,
+                        field_39=False,
+                        field_38=False,
+                        field_3c=0xFF,
+                        shape_values=(),
+                    ))
                     consumed_this_batch.add(int(definition.effect_id))
                     definitions.extend(
                         max_stack_followups.get(
@@ -998,6 +1026,14 @@ class CombatResolutionService:
         for timer in retired_timers:
             timer.cancel()
         if commands:
+            if pre_removals:
+                commands.insert(
+                    0,
+                    StatusEffectServerCommand(
+                        StatusEffect(False, tuple(pre_removals)),
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                )
             s.send_reliable_ordered(
                 encode_status_effect_command_batch(
                     StatusEffectCommandBatch(tuple(commands))
