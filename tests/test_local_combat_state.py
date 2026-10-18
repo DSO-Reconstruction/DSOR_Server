@@ -2319,6 +2319,29 @@ class LocalCombatStateTests(unittest.TestCase):
             (),
         )
 
+    def test_radius_skill_reaches_a_monster_standing_higher(self):
+        # bloody360 (Radius, HitRange 4.62): a monster 4.2 m away on flat
+        # ground, standing 3 m higher, is inside its radius as the Angle and
+        # Cone shapes measure it (flat).
+        database = sqlite3.connect(f"file:{DEFAULT_STATIC_DB_PATH}?mode=ro", uri=True)
+        try:
+            index = database.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='bloody360'"
+            ).fetchone()[0]
+        finally:
+            database.close()
+        actor = sorted(self.state.living_actor_ids)[0]
+        monster = self.state.monster_positions[actor]
+        for other in list(self.state.monster_positions):
+            if other != actor:
+                self.state.monster_positions[other] = (1e4, 0.0, 1e4)
+        player = (monster[0], monster[1] - 3.0, monster[2] - 4.2)
+        plan = self.state.plan_entity_skill_hits(
+            skill_index=index, player_position=self._wire(player),
+            projectile=False, aim_angle=math.pi,
+        )
+        self.assertEqual(len(plan.impacts), 1)
+
     def test_straight_projectile_lane_has_a_height(self):
         attack = SimpleNamespace(
             projectile_origin=(0.0, 10.0, 0.0),

@@ -139,7 +139,13 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
             elif targeting == "actor":
                 continue
             else:
-                reach = distance(point or origin, position)
+                # Flat, as the angle and cone shapes measure: in 3D a monster
+                # standing a little higher than the caster fell out of a radius
+                # skill that the arc of another still reached ("avec le bloody
+                # swing je touche pas le mob alors qu'il est au meme endroit",
+                # 2026-10-18; rageful swing, an Angle skill, hit it).
+                centre = point or origin
+                reach = math.hypot(position[0] - centre[0], position[2] - centre[2])
                 if reach > radius + size:
                     continue
             candidates.append((reach, entity.actor_id, entity))
