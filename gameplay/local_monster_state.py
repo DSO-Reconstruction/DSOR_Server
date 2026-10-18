@@ -79,6 +79,22 @@ LOCAL_MONSTER_ACTOR_BASE = 0x00030000
 MONSTER_GROUP_SIZE = 8
 MONSTER_GROUP_RADIUS = 24.0
 MONSTER_SPAWN_MINIMUM_SPACING = 0.75
+TUTORIAL_GRIMMAG_MAP_ID = "a0005_start_fortress_dun"
+TUTORIAL_GRIMMAG_TEMPLATE_ID = (
+    "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
+)
+# The Grimmag-specific spawn point is the arena anchor. EventSet 30's nearby
+# add spawns are outside the boss room, so their centroid is not a valid boss
+# position.
+TUTORIAL_GRIMMAG_ARENA_POSITION = (
+    -10.568790435791016,
+    0.05000000074505806,
+    50.022220611572266,
+)
+# The client reports an existing registration at the first default
+# local-monster ID (0x30000) on this map. Keep the server-controlled concrete
+# boss out of that sequential range so NewMonster cannot reuse the ID.
+TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID = LOCAL_MONSTER_ACTOR_BASE + 0x1000
 TRAVEL_STONE_MONSTER_EXCLUSION_RADIUS = max(
     8.0,
     float(os.environ.get("DSO_TRAVEL_STONE_MONSTER_RADIUS", "12")),
@@ -2034,6 +2050,7 @@ def _load_dynamic_monster_encounter(
         enabled_event_sets = _enabled_event_set_ids(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
+            map_id=map_id,
         )
         all_fixed_rows = tuple(database.execute(
             """
@@ -2165,6 +2182,10 @@ def _load_dynamic_monster_encounter(
         resolve_projected_overlap: bool = False,
         max_navigation_snap_distance: float = 2.0,
     ) -> bool:
+        keep_story_boss_at_authored_position = (
+            str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+            and str(template_id).casefold() == TUTORIAL_GRIMMAG_TEMPLATE_ID
+        )
         if int(actor_id) in used_actor_ids:
             return False
         # PathEngine owns connectivity/XZ. The transformed client collision
@@ -2179,14 +2200,32 @@ def _load_dynamic_monster_encounter(
                 max_horizontal_distance=max_navigation_snap_distance,
             )
             if (
-                allowed_component is not None
+                not keep_story_boss_at_authored_position
+                and allowed_component is not None
                 and isinstance(navigation, PathEngineNavigationMesh)
                 and navigation.component_for_position(position)
                 != allowed_component
             ):
                 return False
         except NavigationError:
-            return False
+            if not keep_story_boss_at_authored_position:
+                return False
+            # This isolated tutorial boss arena can be a different PathEngine
+            # component from the map entry. Keep its authored X/Z placement,
+            # but still project against collision terrain so a stale or
+            # mismatched PathEngine token does not leave Grimmag below the
+            # floor (or floating at the authored placeholder height).
+            try:
+                position = _grounded_spawn_position(
+                    _DirectNavigationMesh(),
+                    terrain,
+                    position,
+                    reference_position=position,
+                )
+            except NavigationError:
+                # The direct fallback normally cannot raise NavigationError;
+                # retain the authored transform if its implementation does.
+                pass
         if inside_protected_waypoint(position):
             return False
         if _spawn_position_is_occupied(occupied_positions, position):
@@ -2287,6 +2326,14 @@ def _load_dynamic_monster_encounter(
                     position = _spawn_position(bytes(raw_transform))
                 except (TypeError, ValueError):
                     continue
+                if (
+                    str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+                    and str(raw_template_id).casefold()
+                    == TUTORIAL_GRIMMAG_TEMPLATE_ID
+                ):
+                    # Spawn Grimmag at the center of the last authored wave,
+                    # not at the placeholder's distant staging position.
+                    position = TUTORIAL_GRIMMAG_ARENA_POSITION
                 is_bloodshed_sludge = bloodshed_only_template(raw_template_id)
                 if is_bloodshed_sludge:
                     # The map tables duplicate each sludge spawn point twice
@@ -2297,6 +2344,12 @@ def _load_dynamic_monster_encounter(
                         continue
                     bloodshed_spawn_positions.add(position_key)
                 actor_id = LOCAL_MONSTER_ACTOR_BASE + len(monsters)
+                if (
+                    str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+                    and str(raw_template_id).casefold()
+                    == TUTORIAL_GRIMMAG_TEMPLATE_ID
+                ):
+                    actor_id = TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID
                 placed = append_monster(
                     str(raw_template_id), actor_id, position,
                     # Bloodshed challenges author five sludges on every

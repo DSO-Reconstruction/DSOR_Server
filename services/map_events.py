@@ -13,6 +13,7 @@ from __future__ import annotations
 import math
 import random
 import sqlite3
+import struct
 import time
 from dataclasses import replace
 from functools import lru_cache
@@ -46,6 +47,7 @@ from dso_server.gameplay.map_event_state import (
     MapLocalEventDefinition,
     PropRuntimeState,
     SignalContext,
+    TriggerVolumeDefinition,
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
@@ -78,6 +80,7 @@ from dso_server.protocol.player_init_protocol import (
     KickOutToHubLimitTimeLeft,
     ServerCommand,
     encode_event_update,
+    encode_kill_monster_get_total_scores,
     encode_server_command_batch,
 )
 from dso_server.protocol.prop_protocol import (
@@ -120,6 +123,110 @@ def _monster_kill_score(static_database_path: str, template_id: str) -> int:
         _log(f"kill-score template {template_id!r} is missing from static data")
         return 0
     return max(0, int(row[0] or 0))
+
+
+@lru_cache(maxsize=32)
+def _endless_tower_first_clear_rewards(static_database_path: str,
+                                       access_id: str):
+    """Parse one Endless Tower floor's authored first-clear reward.
+
+    ``_Template_EndlessTower.FirstClearReward`` is an ``&``-separated list of
+    ``Loot:<item>,<amount>`` and currency entries (``RC:`` for Andermant).
+    Fractured Planes reuses the same floor access rows, so the reward is keyed
+    by the floor's ``MapAccess``.
+    """
+
+    access_id = str(access_id or "").strip()
+    if not access_id:
+        return ()
+    try:
+        with sqlite3.connect(
+            f"file:{static_database_path}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT FirstClearReward FROM _Template_EndlessTower "
+                "WHERE MapAccess=? LIMIT 1",
+                (access_id,),
+            ).fetchone()
+    except (OSError, sqlite3.Error) as exc:
+        _log(
+            f"first-clear reward lookup failed for {access_id!r}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return ()
+    if row is None:
+        _log(f"no Endless Tower row for floor access {access_id!r}")
+        return ()
+    definitions = []
+    for entry in str(row[0] or "").split("&"):
+        entry = entry.strip()
+        if not entry:
+            continue
+        kind, separator, body = entry.partition(":")
+        if not separator:
+            _log(f"ignored malformed first-clear reward {entry!r} on {access_id!r}")
+            continue
+        kind = kind.strip().casefold()
+        try:
+            if kind == "loot":
+                item_id, comma, raw_amount = body.rpartition(",")
+                if not comma or not item_id.strip():
+                    raise ValueError("missing loot item or amount")
+                definitions.append(RewardDefinition(
+                    f"endless-tower:{access_id}", item_id.strip(),
+                    max(1, int(raw_amount)),
+                ))
+            elif kind == "rc":
+                definitions.append(RewardDefinition(
+                    f"endless-tower:{access_id}", "money_rc", max(1, int(body)),
+                ))
+            else:
+                _log(
+                    f"unsupported first-clear reward {entry!r} on {access_id!r}"
+                )
+        except ValueError as exc:
+            _log(
+                f"ignored first-clear reward {entry!r} on {access_id!r}: {exc}"
+            )
+    return tuple(definitions)
+
+
+@lru_cache(maxsize=32)
+def _fractured_planes_floor_one_hazards(static_database_path: str,
+                                        map_id: str):
+    """Load Endless Tower floor-one lethal location auras as oriented boxes."""
+
+    if map_key(map_id) != "h0009_endlesstower_01_sm_01":
+        return ()
+    path = map_database_path(static_database_path, map_id)
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            rows = database.execute(
+                "SELECT rowid, EventSetRow, Transform, StatusEffectId "
+                "FROM _Instance_LocationEffect "
+                "WHERE lower(StatusEffectId)=?",
+                ("h0009_arena_path_kill_aura",),
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        _log(
+            f"Fractured Planes floor-one hazard load failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        return ()
+    result = []
+    for row_id, event_set, transform, effect_id in rows:
+        try:
+            matrix = tuple(struct.unpack("<16f", bytes(transform)))
+        except (TypeError, struct.error):
+            continue
+        result.append((
+            TriggerVolumeDefinition(
+                int(row_id), str(effect_id), int(event_set), False,
+                "fractured-plane-hazard", matrix,
+            ),
+            str(effect_id),
+        ))
+    return tuple(result)
 
 
 MAP_EVENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] map-event"
@@ -289,6 +396,94 @@ class MapEventService:
             return bool(active)
         except (OSError, ValueError, sqlite3.Error):
             return False
+
+    def _clear_fractured_planes_floor_one_traps(
+            self, s: Session, runtime: MapEventRuntime) -> None:
+        """Disable the legacy Endless Tower hazard sets on the FP clear gate."""
+
+        with runtime.lock:
+            if "fracturedplanes_floor_001_traps_cleared" in runtime.fired_once:
+                return
+            runtime.fired_once.add("fracturedplanes_floor_001_traps_cleared")
+        # The hazard sets are split across three monster-end events and two
+        # trap-removal events in the reused Tower map. FP uses different room
+        # templates, so its authored room signals never reliably reach them.
+        for suffix in ("01", "03", "05"):
+            self._emit_map_signal(
+                s, runtime,
+                f"h0009_endlesstower_01_monster_{suffix}_end_signal",
+            )
+        for room in ("02", "06"):
+            self._emit_map_signal(
+                s, runtime,
+                f"h0009_endlesstower_01_room_{room}_interact_signal",
+            )
+        _log("Fractured Planes floor 001 trap event sets disabled")
+
+    def _grant_fractured_planes_first_clear(self, s: Session) -> None:
+        """Grant the cleared floor's first-completion reward, once per player.
+
+        The reward becomes available when the boss-death event opens the rift
+        exit, so it is delivered as the player takes that portal to the next
+        floor.  The claim is recorded in the persisted timed-offer claim map,
+        which makes "first completion" per character rather than per run.
+        """
+
+        access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+        rewards = _endless_tower_first_clear_rewards(
+            self.static_database_path, access_id
+        )
+        if not rewards:
+            return
+        claim_key = f"endless-tower-first-clear:{access_id.casefold()}"
+        with s.flow_lock:
+            claimed = int(
+                getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                    claim_key, 0
+                )
+            )
+        if claimed:
+            return
+        try:
+            CharacterService._deliver_rewards(
+                self, s, rewards,
+                claim_keys=(claim_key,),
+                label="fractured-planes-first-clear",
+            )
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(
+                f"first-clear reward failed on {access_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        _log(
+            f"granted {access_id!r} first-clear reward "
+            f"({len(rewards)} entr{'y' if len(rewards) == 1 else 'ies'})"
+        )
+
+    def _broadcast_fractured_planes_score(
+            self, runtime: MapEventRuntime, score: int) -> None:
+        """Mirror the instance's kill score to every Fractured Planes panel.
+
+        The panel bar and its ``%0.f%%`` label are drawn by the client from
+        ``KillMonsterGetTotalScoresCommand``; without it the widget keeps its
+        authored default (a full bar and the literal ``Text`` label).
+        """
+
+        packet, packet_bits = encode_kill_monster_get_total_scores(
+            max(0, int(score)), actor_id=LOCAL_PLAYER_ACTOR_ID,
+        )
+        for viewer in self._map_event_sessions(runtime):
+            try:
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="fractured-planes-score",
+                )
+            except Exception as exc:
+                _log(
+                    "fractured-planes score send failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     # ------------------------------------------------------------------
     # Runtime registry
@@ -530,19 +725,7 @@ class MapEventService:
                 )
             )
         ):
-            # The three lethal path auras belong to legacy Tower monster
-            # signals. Fractured Planes selects different templates, so retire
-            # those hazard sets on its room-clear percentage signal.
-            for suffix in ("01", "03", "05"):
-                self._emit_map_signal(
-                    s, runtime,
-                    f"h0009_endlesstower_01_monster_{suffix}_end_signal",
-                )
-            for room in ("02", "06"):
-                self._emit_map_signal(
-                    s, runtime,
-                    f"h0009_endlesstower_01_room_{room}_interact_signal",
-                )
+            self._clear_fractured_planes_floor_one_traps(s, runtime)
         CharacterService._quest_on_signal(self, s, signal_id)
 
     def _on_monsters_killed(self, s: Session, monsters) -> None:
@@ -605,6 +788,10 @@ class MapEventService:
                     self._fire_map_signal(
                         s, "PlayerKillMonsterGetScore", (str(current_score),)
                     )
+                    if CharacterService._is_fractured_planes_run(self, s):
+                        self._broadcast_fractured_planes_score(
+                            runtime, current_score
+                        )
                 # Fractured Planes reuses Endless Tower's authored score gate.
                 # Some dynamically selected tower monsters have no
                 # AddScoreForKill value, so a fully cleared first floor can
@@ -669,6 +856,21 @@ class MapEventService:
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
         self._fire_map_signal(s, "MonstersEliminated", templates)
         self._fire_map_signal(s, "MonstersEliminatedPercentage", ())
+        if (
+            runtime is not None
+            and CharacterService._is_fractured_planes_run(self, s)
+            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+        ):
+            combat = s.gameplay_combat_state
+            if combat is not None:
+                with combat.lock:
+                    present, alive = combat.monster_template_counts()
+                total = sum(present.values())
+                cleared = total > 0 and (
+                    1.0 - sum(alive.values()) / total
+                ) >= 0.6
+                if cleared:
+                    self._clear_fractured_planes_floor_one_traps(s, runtime)
 
     @staticmethod
     def _notify_monsters_killed(s: Session, monsters) -> None:
@@ -735,6 +937,17 @@ class MapEventService:
                 s, packet, packet_bits, label="fractured-planes-limit-time"
             )
             self._schedule_fractured_planes_limit_tick(runtime)
+            # Publish the instance's running kill score so the panel leaves its
+            # authored default (a full bar with the literal ``Text`` label) and
+            # starts filling as monsters die.
+            with runtime.lock:
+                entry_score = runtime.kill_score
+            score_packet, score_bits = encode_kill_monster_get_total_scores(
+                entry_score, actor_id=LOCAL_PLAYER_ACTOR_ID,
+            )
+            CharacterService._send_world_loot_state_batch(
+                s, score_packet, score_bits, label="fractured-planes-score"
+            )
         access_group = str(getattr(s, "gameplay_map_access_group_id", "") or "")
         access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
         self._fire_map_signal(
@@ -881,6 +1094,87 @@ class MapEventService:
         self._fire_map_signal(s, "PlayerHitTrigger", (request.trigger_id,))
 
     @staticmethod
+    def _apply_fractured_planes_floor_one_hazard_damage(
+            s: Session, runtime: MapEventRuntime, position) -> None:
+        """Apply the authored 2%-health-per-second floor-one path aura."""
+
+        if (
+            not getattr(s, "gameplay_fractured_planes_run", False)
+            or map_key(runtime.map_id) != "h0009_endlesstower_01_sm_01"
+        ):
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        static_path = str(combat.encounter.static_database_path)
+        hazards = _fractured_planes_floor_one_hazards(
+            static_path, runtime.map_id,
+        )
+        if not hazards:
+            return
+        with runtime.lock:
+            active_sets = set(runtime.enabled_event_sets)
+        matching = tuple(
+            (volume, effect_id)
+            for volume, effect_id in hazards
+            if volume.event_set_row in active_sets and volume.contains(position)
+        )
+        if not matching:
+            return
+        now = time.perf_counter()
+        hazard_id = min(volume.row_id for volume, _effect in matching)
+        with s.flow_lock:
+            cooldowns = getattr(
+                s, "gameplay_fractured_hazard_next_at", None,
+            )
+            if cooldowns is None:
+                cooldowns = {}
+                s.gameplay_fractured_hazard_next_at = cooldowns
+            if now < float(cooldowns.get(hazard_id, 0.0)):
+                return
+            cooldowns[hazard_id] = now + 1.0
+            inventory = s.gameplay_inventory
+        if inventory is None:
+            return
+        actor_id = int(combat.player_actor_id)
+        with combat.lock:
+            health = combat.player_health.get(actor_id)
+            if health is None or int(health[0]) <= 0:
+                return
+            previous, maximum = int(health[0]), int(health[1])
+            damage = max(1, int(math.ceil(maximum * 0.02)))
+            current = max(0, previous - damage)
+            applied = previous - current
+            health[0] = current
+            if actor_id == int(combat.player_actor_id):
+                combat.player_current_health = current
+        if applied <= 0:
+            return
+        CharacterService._cancel_respawn_protection(s)
+        with s.flow_lock:
+            if s.gameplay_inventory is inventory:
+                inventory.health_points = float(current)
+            server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        resolution = DamageResolution(
+            target_actor_id=actor_id,
+            attacker_actor_id=0,
+            current_health=current,
+            maximum_health=maximum,
+            damage=applied,
+            killed=current <= 0,
+            position=tuple(float(value) for value in position),
+            server_tick=server_tick,
+            hit_tags=(0,),
+            skill_index=0,
+            source_actor_id=0,
+            periodic_damage=True,
+        )
+        CharacterService._send_combat_resolution(
+            s, resolution, label="fractured-planes-path-trap",
+            include_item_set_procs=False,
+        )
+
+    @staticmethod
     def _check_trigger_volumes(s: Session, wire_position) -> None:
         """Detect trigger-volume entry from the player's own movement."""
 
@@ -894,6 +1188,9 @@ class MapEventService:
                 return
             frame = combat.encounter.coordinate_frame
         world = frame.wire_to_world(wire_position)
+        MapEventService._apply_fractured_planes_floor_one_hazard_damage(
+            s, runtime, world,
+        )
         with runtime.lock:
             volumes = runtime.active_trigger_volumes()
         inside = {

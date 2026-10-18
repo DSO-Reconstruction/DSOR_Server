@@ -29,6 +29,7 @@ from typing import Iterable, Mapping
 
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
+    effective_event_set_declarations,
     local_prop_actor_base,
     map_database_path,
 )
@@ -698,6 +699,7 @@ def _load_map_event_content(
         for row_id, flags in database.execute(
             "SELECT Id, EventFlags FROM _Instance_EventSets"
         ):
+            flags = effective_event_set_declarations(map_id, int(row_id), flags)
             required = set()
             forbidden = set()
             for declaration in str(flags or "").split(";"):

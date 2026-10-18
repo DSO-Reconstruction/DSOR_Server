@@ -89,6 +89,8 @@ NPC_CATEGORY_BY_PROFESSION = {
 LOCAL_PROP_ID_BASE = 0x10000
 KINGSCITY_MAP_ID = "a0200_kingscity"
 PARALLEL_WORLDS_HUB_MAP_ID = "pw000_hub"
+TUTORIAL_DUNGEON_MAP_ID = "a0001_start_tutorial_dun"
+TUTORIAL_CULTIST_EVENT_FLAG = "a0001_start_dun_undead_mage_01"
 BASELINE_MAP_EVENT_FLAGS = {
     # These are permanent account/world unlocks on the local development
     # realm, not rotating game events.  Keeping them explicit makes Gnob,
@@ -272,6 +274,33 @@ def event_set_required_flags(declarations: str) -> frozenset[str]:
     )
 
 
+def effective_event_set_declarations(
+    map_id: str, row_id: int, declarations: str,
+) -> str:
+    """Apply server-owned map behavior without editing the extracted map DB.
+
+    The tutorial cultist (Nefertari's staff-theft scene) is authored behind
+    ``a0001_start_dun_undead_mage_01``. The retail map marks its EventSet as
+    active while that event is *not* running, which places the actor in the
+    encounter before the high-hall trigger. On the server it must be gated by
+    the positive event flag so the authored scene starts the actor exactly
+    when the player enters the high hall.
+    """
+
+    if (
+        str(map_id).casefold() != TUTORIAL_DUNGEON_MAP_ID
+        or int(row_id) != 2
+    ):
+        return str(declarations or "")
+    pairs = _event_set_declarations(declarations)
+    if any(
+        name == TUTORIAL_CULTIST_EVENT_FLAG and value == "false"
+        for name, value in pairs
+    ):
+        return f"{TUTORIAL_CULTIST_EVENT_FLAG}=True;"
+    return str(declarations or "")
+
+
 def event_set_enabled(declarations: str, active_flags) -> bool:
     """Positive EventFlags are alternative activation influences.
 
@@ -295,7 +324,9 @@ def load_local_event_set_flags(
     database = _open_read_only(path)
     try:
         return {
-            int(row[0]): event_set_required_flags(str(row[1] or ""))
+            int(row[0]): event_set_required_flags(
+                effective_event_set_declarations(map_id, int(row[0]), row[1])
+            )
             for row in database.execute(
                 "SELECT Id, EventFlags FROM _Instance_EventSets"
             )
@@ -307,6 +338,8 @@ def load_local_event_set_flags(
 def _enabled_event_set_ids(
     database: sqlite3.Connection,
     active_event_flags: frozenset[str],
+    *,
+    map_id: str | None = None,
 ) -> frozenset[int]:
     active_flags = {
         str(value).casefold() for value in active_event_flags
@@ -316,7 +349,12 @@ def _enabled_event_set_ids(
         for row in database.execute(
             "SELECT Id, EventFlags FROM _Instance_EventSets"
         )
-        if event_set_enabled(str(row[1] or ""), active_flags)
+        if event_set_enabled(
+            effective_event_set_declarations(
+                map_id or "", int(row[0]), row[1]
+            ),
+            active_flags,
+        )
     )
 
 
@@ -356,6 +394,7 @@ def load_local_npc_definitions(
         enabled_event_sets = _enabled_event_set_ids(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
+            map_id=map_id,
         )
         if os.getenv("DSO_NPC_TRACE") == "1":
             print(
@@ -610,6 +649,7 @@ def load_local_map_exits(
         enabled_event_sets = _enabled_event_set_ids(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
+            map_id=map_id,
         )
         for row in database.execute(
             """

@@ -105,6 +105,14 @@ EXIT_INFO_COMMAND = command_id("Commands::ExitInfoCommand", 0x0044)
 KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
     "Commands::KickOutToHubLimitTimeLeftCommand", 0x016B,
 )
+# The installed client registers 364/0x016b+1 as
+# ``Commands::KillMonsterGetTotalScoresCommand``. The checked-in command table
+# instead maps 0x016c to the unrelated ``GetSecondDaySignedAwardCommand``.
+# These two ids collide, so the Endless Tower / Fractured Planes score command
+# is written directly from this literal -- never through ``command_id`` (whose
+# selected-table fallback is :data:`UNAVAILABLE_COMMAND_ID`) and never through
+# ``_BODY_WRITERS`` (whose 0x016c entry emits the award body).
+KILL_MONSTER_GET_TOTAL_SCORES_COMMAND = 0x016C
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
@@ -157,6 +165,40 @@ def _write_kick_out_to_hub_limit_time_left_body(
     writer: BitWriter, value: KickOutToHubLimitTimeLeft,
 ) -> None:
     writer.write_uint32_le(max(0, int(value.seconds)))
+
+
+def encode_kill_monster_get_total_scores(
+    score: int, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Push the running Endless Tower / Fractured Planes kill score.
+
+    ``Commands::KillMonsterGetTotalScoresCommand``'s decoder (0x14097a09c)
+    reads one u32 into ``[command + 0x20]``, and the inherited-actor slot every
+    Endless Tower command shares (vtable +0x48, 0x140a2297c) then reads a
+    trailing u32 into ``[command + 0x18]``.  Both fields are mandatory: the
+    earlier one-field shape let the actor reader swallow the ``0xff``
+    separator, which is what the client logged as
+    ``could not decode command's additional server data (ID: '364')``.
+
+    The handler (0x1401cf938) forwards ``[+0x20]`` to
+    ``UI::DrasaUIManager`` (0x14040f268), which lazily loads and shows
+    PlanarFissureInfoWidget and then drives its bar and ``%0.f%%`` label
+    (0x1405b7fd4/0x1405b8080).  Showing the widget is also what stamps the
+    panel's phase-one state and score target, so the first command both
+    activates the panel and replaces its authored ``Text`` placeholder.
+    """
+
+    if type(score) is not int or not 0 <= score <= 0x7FFFFFFF:
+        raise ValueError("kill score must be a non-negative int32")
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(
+        KILL_MONSTER_GET_TOTAL_SCORES_COMMAND.to_bytes(2, "little")
+    )
+    writer.write_uint32_le(score)
+    writer.write_uint32_le(actor_id)
+    writer.write_uint8(0xFF)
+    return writer.finish()
 
 
 @dataclass(frozen=True)

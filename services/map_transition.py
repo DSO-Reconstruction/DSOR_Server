@@ -410,6 +410,37 @@ class MapTransitionService:
         )
         return True
 
+    def _fractured_planes_rift_destination(
+            self, s: Session, definition) -> str | None:
+        """Advance the Fractured Planes rift to the run's next floor, if it is it.
+
+        Fractured Planes reuses the Endless Tower rift exit, whose authored
+        ``ExitURL`` always names the first floor while a run has to climb.  The
+        server publishes the real next-floor destination in its ``ExitInfo``,
+        but the client echoes the exit's own authored URL back in
+        ``UnlockMapCommand``, so the request cannot be matched against the
+        published value.  Recognize the rift by its event-set row and derive the
+        destination from the floor the player is standing on instead.
+        """
+
+        if not CharacterService._is_fractured_planes_run(self, s):
+            return None
+        if (
+            str(getattr(definition, "exit_id", "")).casefold()
+            != "fracturedplanes_rift_entrance"
+            and int(getattr(definition, "event_set_row", -1)) != 1841
+        ):
+            return None
+        access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+        prefix = "h0009_endlesstower_floor_"
+        floor_text = access_id.casefold().removeprefix(prefix)
+        if not access_id.casefold().startswith(prefix) or not floor_text.isdecimal():
+            return None
+        floor_number = int(floor_text)
+        if not 1 <= floor_number < 100:
+            return None
+        return f"{prefix}{floor_number + 1:03d}"
+
     def _handle_map_exit(self, s: Session, payload: bytes) -> None:
         try:
             request = decode_unlock_map_request(payload)
@@ -463,7 +494,18 @@ class MapTransitionService:
                 selected_map_id == gameplay_map
                 and request_exit_url == gameplay_map
             )
-            if current_map_representation:
+            fractured_planes_destination = (
+                self._fractured_planes_rift_destination(s, definition)
+            )
+            if fractured_planes_destination is not None:
+                # The Fractured Planes rift is authored for floor one but the
+                # run has to climb; route it by the player's current floor
+                # instead of validating the echoed authored URL.  Taking the
+                # portal also claims the cleared floor's first-completion
+                # reward.
+                CharacterService._grant_fractured_planes_first_clear(self, s)
+                destination_access_id = fractured_planes_destination
+            elif current_map_representation:
                 destination_access_id = authored_exit_url
             else:
                 if request_exit_url != authored_exit_url:
