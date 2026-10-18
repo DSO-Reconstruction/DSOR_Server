@@ -534,8 +534,8 @@ class DispatchService:
                 self._handle_crafting(s, payload)
             elif command_id == CRAFTING_RESULT_ACCEPTANCE_COMMAND:
                 # Retail sends this after consuming a CraftingResult. It is an
-                # acknowledgement only; the inventory was already committed
-                # atomically with the result packet.
+                # acknowledgement only; enchantment transfer sends its full
+                # inventory refresh in the same server batch as CraftingResult.
                 with s.flow_lock:
                     s.gameplay_client_command_state[
                         CRAFTING_RESULT_ACCEPTANCE_COMMAND

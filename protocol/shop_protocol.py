@@ -10,7 +10,7 @@ no captured application payload is replayed.
 from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import sqlite3
@@ -147,6 +147,8 @@ class ShopOffer:
     # offer, but let special jeweler offers grant a fully socketed item.
     unlocked_socket_count: int = 0
     item_level_override: int = 0
+    enchantment_roll_quality_override: int = -1
+    base_enchantment_tier_override: int = -1
 
 
 @dataclass(frozen=True)
@@ -783,6 +785,102 @@ def load_shop_offers(
         # order within a category, and long NPC inventories otherwise bury new
         # items at the very end of the shop list.
         offers = cms_offers + offers
+        if str(shop["Id"]).casefold().startswith("smith_hub"):
+            # The local smith is the class-filtered source for the current
+            # Mythic equipment, plus unique belts and weapon modifiers.
+            # Items are generated at level 145 with their strongest supported
+            # socket layout, 100% enchantment rolls, and maximum base values;
+            # no static.db4 rows are rewritten.
+            equipment_rows = database.execute(
+                "SELECT Id,DefaultRarity,CharClass,SlotType,ItemCategory,"
+                "MaxSocketCount,IconBrush,IconConfiguration "
+                "FROM _Template_Item WHERE MinDropLevel<=145 "
+                "AND MaxDropLevel>=145 AND ("
+                "(DefaultRarity='Mythic' AND lower(CharClass)=? "
+                "AND ItemCategory IN ('Armor','Weapon','SmallWeapon',"
+                "'Jewelry','OffenseBackitem','DefenseBackitem')) OR "
+                "(DefaultRarity='Unique' AND ("
+                "(lower(SlotType) LIKE '%beltslot%' AND "
+                "(lower(CharClass)=? OR coalesce(CharClass,'')='')) OR "
+                "(ItemCategory='WeaponModifier' AND lower(CharClass)=?)))"
+                ") ORDER BY Id",
+                (class_name, class_name, class_name),
+            ).fetchall()
+            present_items = {offer.item_id for offer in offers}
+            for item in equipment_rows:
+                template_id = str(item["Id"])
+                slot_types = tuple(
+                    value.strip()
+                    for value in str(item["SlotType"] or "").split(",")
+                    if value.strip()
+                )
+                category_name = {
+                    "Armor": "Armor",
+                    "Jewelry": "Jewelry",
+                    "OffenseBackitem": "Cloak",
+                    "DefenseBackitem": "Cloak",
+                    "WeaponModifier": "Armor",
+                }.get(str(item["ItemCategory"]), "TwoHand"
+                    if "LeftHandSlot" in slot_types else "OneHand")
+                category = OFFER_CATEGORY_IDS[category_name]
+                if category not in categories:
+                    categories.append(category)
+                socket_count = _socket_limit_at_level(
+                    item["MaxSocketCount"], 145
+                )
+                if template_id in present_items:
+                    offers = [
+                        replace(
+                            offer,
+                            unlocked_socket_count=socket_count,
+                            item_level_override=145,
+                            enchantment_roll_quality_override=100,
+                            base_enchantment_tier_override=16,
+                        )
+                        if offer.item_id == template_id else offer
+                        for offer in offers
+                    ]
+                    continue
+                rarity = OFFER_RARITY_IDS[str(item["DefaultRarity"])]
+                offers.append(
+                    ShopOffer(
+                        resource_id=(
+                            f"smith_{str(item['DefaultRarity']).lower()}"
+                            f"_145_{template_id}"
+                        ),
+                        price_rc=0,
+                        price_vc=1,
+                        price_gc=0,
+                        price_ec=0,
+                        price_uc=0,
+                        price_arena=0,
+                        price_ic=0,
+                        amount=1,
+                        difficulty=0,
+                        timed_offer_amount=0,
+                        min_player_level=1,
+                        max_player_level=200,
+                        is_recommended=False,
+                        dynamic_price=False,
+                        is_new=False,
+                        auto_identify=False,
+                        once_per_character=False,
+                        scale_to_player_level=False,
+                        hide_not_suitable=False,
+                        event_timed=False,
+                        directly_buy_offer=False,
+                        rarity=rarity,
+                        category=category,
+                        icon_brush=str(item["IconBrush"] or ""),
+                        icon_configuration=str(item["IconConfiguration"] or ""),
+                        item_id=template_id,
+                        unlocked_socket_count=socket_count,
+                        item_level_override=145,
+                        enchantment_roll_quality_override=100,
+                        base_enchantment_tier_override=16,
+                    )
+                )
+                present_items.add(template_id)
         if str(shop["Id"]) == "jewelry_hub_all":
             for item in _max_tier_trinket_gems(database, class_name):
                 template_id = str(item["Id"])

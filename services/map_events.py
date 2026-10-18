@@ -632,8 +632,14 @@ class MapEventService:
             with runtime.lock:
                 if runtime.fractured_planes_limit_deadline is None:
                     runtime.fractured_planes_limit_deadline = (
-                        time.perf_counter() + 8 * 60
+                        getattr(
+                            s, "gameplay_fractured_planes_deadline", None
+                        )
+                        or time.perf_counter() + 8 * 60
                     )
+                s.gameplay_fractured_planes_deadline = (
+                    runtime.fractured_planes_limit_deadline
+                )
                 seconds_left = max(
                     0,
                     math.ceil(

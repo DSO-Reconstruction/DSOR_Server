@@ -393,9 +393,16 @@ class InventoryInteractionService:
     def _handle_enchantment_transfer(self, s: Session, request) -> None:
         """Exchange all or one selected enchantment between two workbench items."""
 
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] received enchantment-transfer request: "
+            f"recipe={request.recipe_id!r}, payment={request.payment_currency}, "
+            f"items={request.item_ids}, amount={request.amount}, "
+            f"mode={request.mode}, selections="
+            f"({request.field_10}, {request.field_14})"
+        )
         with s.flow_lock:
             inventory = copy.deepcopy(s.gameplay_inventory)
-            currency = s.gameplay_currency_state
+            currency = copy.deepcopy(s.gameplay_currency_state)
             next_item_id = s.gameplay_next_item_id
         try:
             if inventory is None or currency is None:
@@ -429,6 +436,15 @@ class InventoryInteractionService:
             if first_id == second_id:
                 raise ValueError("enchantment transfer requires two different items")
 
+            transfer_factor = load_enchantment_transfer_factor(
+                self.static_database_path, request.recipe_id
+            )
+            refresh_inventory_economy_values(
+                self.static_database_path,
+                inventory,
+                item_ids=(first_id, second_id),
+                force_melt_value=True,
+            )
             builder = InventoryMutationBuilder(inventory, next_item_id)
             first = builder.item(first_id)
             second = builder.item(second_id)
@@ -438,6 +454,22 @@ class InventoryInteractionService:
                 raise ValueError(
                     "both items need at least one enchantment to transfer"
                 )
+            glyph_cost = transfer_factor * (
+                max(0, int(first.field_34))
+                + max(0, int(second.field_34))
+            )
+            if glyph_cost <= 0:
+                raise ValueError("enchantment transfer has no Glyphs of Power cost")
+            if int(currency.glyph_of_power) < glyph_cost:
+                raise ValueError(
+                    f"enchantment transfer requires {glyph_cost} Glyphs of Power; "
+                    f"balance is {int(currency.glyph_of_power)}"
+                )
+            updated_currency = replace(
+                currency,
+                delta=int(currency.glyph_of_power) - glyph_cost,
+                notify=True,
+            )
             first_index = int(request.field_10)
             second_index = int(request.field_14)
             if all_transfer:
@@ -461,16 +493,30 @@ class InventoryInteractionService:
                 first.enchantments = first_enchantments
                 second.enchantments = second_enchantments
 
-            builder.changed_items.extend(
-                (copy.deepcopy(first), copy.deepcopy(second))
-            )
+            # Give the client fresh item objects so the workbench result and
+            # inventory manager cannot keep displaying cached enchantments
+            # under the old item IDs. Slot/equipment references are remapped
+            # and published through InventoryInfo's replacement map.
+            builder.rekey_item(first_id)
+            builder.rekey_item(second_id)
             mutation = builder.finish()
-            mutation.delta.field_1e0 = False
+            # These are replacement allocations with new IDs, so retain the
+            # mutation flag that tells the client to apply changed-item and
+            # old-to-new reference mappings.
+            mutation.delta.field_1e0 = True
             result_items = tuple(copy.deepcopy(item) for item in mutation.changed_items)
+            # The client accepts the workbench result but does not reliably
+            # refresh existing item IDs from its delta. A full authoritative
+            # InventoryInfo after CraftingResult mirrors the map-entry refresh
+            # that otherwise makes the exchanged enchantments visible.
+            full_inventory_refresh = copy.deepcopy(mutation.inventory)
+            full_inventory_refresh.changed_item_ids = []
+            full_inventory_refresh.field_158 = {}
+            full_inventory_refresh.field_1e0 = False
             packet, packet_bits = encode_server_command_batch(
                 (
                     ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
-                    ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(CURRENCY_CHANGED_COMMAND, updated_currency, LOCAL_PLAYER_ACTOR_ID),
                     ServerCommand(
                         CRAFTING_RESULT_COMMAND,
                         CraftingResult(
@@ -482,6 +528,11 @@ class InventoryInteractionService:
                         ),
                         0,
                     ),
+                    ServerCommand(
+                        INVENTORY_INFO_COMMAND,
+                        full_inventory_refresh,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
                 ),
                 include_terminator=True,
             )
@@ -490,6 +541,7 @@ class InventoryInteractionService:
             return
         with s.flow_lock:
             s.gameplay_inventory = mutation.inventory
+            s.gameplay_currency_state = updated_currency
             s.gameplay_next_item_id = mutation.next_item_id
         CharacterService._send_world_loot_state_batch(
             s, packet, packet_bits, label="workbench-enchantment-transfer"
@@ -499,7 +551,9 @@ class InventoryInteractionService:
         )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] transferred enchantments between "
-            f"items {first_id} and {second_id}"
+            f"items {first_id}->{result_items[0].item_id} and "
+            f"{second_id}->{result_items[1].item_id}; charged "
+            f"{glyph_cost} Glyphs of Power; sent full inventory refresh"
         )
 
     def _handle_crafting(self, s: Session, payload: bytes) -> None:
@@ -507,7 +561,15 @@ class InventoryInteractionService:
         CharacterService._accept_gameplay_state_command(s, CRAFTING_COMMAND)
         with s.flow_lock:
             s.gameplay_client_command_state[CRAFTING_COMMAND] = request
-        if request.payment_currency == 5:
+        normalized_recipe_id = "".join(
+            character
+            for character in str(request.recipe_id).casefold()
+            if character.isalnum()
+        )
+        if (
+            request.payment_currency == 5
+            or "enchantmenttransfer" in normalized_recipe_id
+        ):
             self._handle_enchantment_transfer(s, request)
             return
         with s.flow_lock:

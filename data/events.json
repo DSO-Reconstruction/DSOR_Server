@@ -9,6 +9,26 @@
       "participation_default": true,
       "collectible_drop_chance": 0.34700000000000003,
       "collectible_amount": 1
+    },
+    {
+      "event_id": 65537,
+      "template_id": "event_fracturedplanes",
+      "state": "scheduled",
+      "starts_at": "2026-10-18T00:16:41.166393+00:00",
+      "ends_at": "2026-10-25T00:16:41.166393+00:00",
+      "participation_default": true,
+      "collectible_drop_chance": 0.35,
+      "collectible_amount": 1
+    },
+    {
+      "event_id": 65538,
+      "template_id": "event_fracturedplanes_rank_start",
+      "state": "scheduled",
+      "starts_at": "2026-10-18T00:17:02.381689+00:00",
+      "ends_at": "2026-10-25T00:17:02.381689+00:00",
+      "participation_default": true,
+      "collectible_drop_chance": 0.35,
+      "collectible_amount": 1
     }
   ]
 }

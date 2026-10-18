@@ -12,6 +12,8 @@ decoder (one u32).
 
 from __future__ import annotations
 
+import time
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
@@ -28,19 +30,18 @@ class MapTransitionService:
         """Allow Fractured Planes to use the Endless Tower floor routes.
 
         The Endless Tower access rows are authored for ``event_endlesstower``.
-        Fractured Planes reuses those access IDs while its own event is active,
-        so allow the selected floor (1–100) through the event gate as well.
+        Fractured Planes has its own access aliases in the static database:
+        floors 72–80 map to its nine tower rooms and floor 100 maps to its boss.
+        Permit only those aliases while the Fractured Planes event is active.
         """
         map_id = str(map_id).strip().casefold()
         prefix = "h0009_endlesstower_floor_"
-        if not map_id.startswith(prefix):
-            return False
-        suffix = map_id[len(prefix):]
-        if len(suffix) != 3 or not suffix.isdigit():
-            return False
-        floor = int(suffix)
+        fractured_planes_routes = {
+            *(f"{prefix}{floor}" for floor in range(72, 81)),
+            f"{prefix}100",
+        }
         return (
-            1 <= floor <= 100
+            map_id in fractured_planes_routes
             and "event_fracturedplanes" in catalog.active_template_ids()
         )
 
@@ -200,7 +201,10 @@ class MapTransitionService:
             reason not in {"admin-chat", "admin-cms"}
             and not event_catalog.map_available(destination_map_id)
             and not (
-                reason == "event-travel"
+                (
+                    reason == "event-travel"
+                    or getattr(s, "gameplay_fractured_planes_run", False)
+                )
                 and CharacterService._event_route_satisfies_map_gate(
                     event_catalog, destination_map_id,
                 )
@@ -285,6 +289,14 @@ class MapTransitionService:
             # This route-only marker distinguishes Fractured Planes from the
             # Endless Tower floors whose physical maps it reuses.
             route_character.fractured_planes_run = bool(fractured_planes_run)
+            fractured_deadline = None
+            runtime = getattr(s, "gameplay_map_event_runtime", None)
+            if fractured_planes_run:
+                if reason == "event-travel":
+                    fractured_deadline = time.perf_counter() + 8 * 60
+                elif runtime is not None:
+                    fractured_deadline = runtime.fractured_planes_limit_deadline
+            route_character.fractured_planes_deadline = fractured_deadline
             # CharacterRecord intentionally remains a compact wire model.
             # Route-only difficulty metadata is attached to its private copy
             # and consumed by PlayerInitializationService on reconnect.
@@ -372,6 +384,13 @@ class MapTransitionService:
                 spawn_position=destination_position,
                 reason='map-exit',
                 gameplay_switch=True,
+                fractured_planes_run=(
+                    getattr(s, "gameplay_fractured_planes_run", False)
+                    and CharacterService._event_route_satisfies_map_gate(
+                        CharacterService._event_catalog(self),
+                        destination_access.request_map_id,
+                    )
+                ),
             )
         except (OSError, ValueError) as exc:
             print(

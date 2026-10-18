@@ -313,6 +313,41 @@ def load_crafting_recipe(
     )
 
 
+def load_enchantment_transfer_factor(
+    static_database_path: str | Path, recipe_id: str,
+) -> int:
+    """Read the authored Glyphs of Power factor for a transfer recipe."""
+
+    recipe_id = str(recipe_id or "").strip()
+    database = _open_database(static_database_path)
+    try:
+        row = database.execute(
+            "SELECT CraftingRecipeType, FactorUC "
+            "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
+            (recipe_id,),
+        ).fetchone()
+        if row is None and recipe_id[-1:].isdigit():
+            row = database.execute(
+                "SELECT CraftingRecipeType, FactorUC "
+                "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
+                (recipe_id[:-1],),
+            ).fetchone()
+        if row is None or str(row["CraftingRecipeType"] or "") not in {
+            "EnchantmentTransfer", "SingleEnchantmentTransfer",
+        }:
+            raise ValueError(
+                f"unknown enchantment transfer recipe {recipe_id!r}"
+            )
+        factor = int(round(float(row["FactorUC"] or 0)))
+        if factor <= 0:
+            raise ValueError(
+                f"enchantment transfer recipe {recipe_id!r} has no cost factor"
+            )
+        return factor
+    finally:
+        database.close()
+
+
 def crafting_execution_count(
     recipe: CraftingRecipe, request: CraftingRequest,
 ) -> int:
@@ -475,6 +510,28 @@ class InventoryMutationBuilder:
         if result is None:
             raise ValueError(f"inventory item {item_id} does not exist")
         return result
+
+    def rekey_item(self, item_id: int) -> ItemInfo:
+        """Publish an existing item as a new client object under a fresh ID.
+
+        The replacement map lets the client move equipment/storage references
+        before discarding the old object. This is needed when mutable item
+        fields cannot be refreshed in place by the workbench result handler.
+        """
+
+        item = self.item(item_id)
+        old_id = int(item.item_id)
+        new_id = int(self.next_item_id)
+        if new_id <= 0 or new_id > 0xFFFFFFFF:
+            raise ValueError("inventory item ID allocator is exhausted")
+        self.next_item_id += 1
+        item.item_id = new_id
+        item.field_18 = new_id & 0xFFFF
+        _replace_item_id(self.inventory, old_id, new_id)
+        self.removed_item_ids.append(old_id)
+        self.replacements[new_id] = old_id
+        self.changed_items.append(copy.deepcopy(item))
+        return item
 
     def restore_item(self, item: ItemInfo, *, ingredient_bag: bool = False) -> None:
         """Restore an exact sold item, retaining its identity and upgrades."""

@@ -103,7 +103,17 @@ class PlayerInitializationService(
             return
 
         state = CharacterService._resolve_initialization_character(self, s)
-        CharacterService._resolve_initialization_inventory(self, state)
+        # Establish the concrete world key before rekeying inventory items.
+        # World drops and player inventory IDs share the same per-instance
+        # allocator, so a joining character must reserve IDs against drops
+        # that already exist in this map instance.
+        s.gameplay_map = state.gameplay_map
+        s.gameplay_map_access_id = state.map_access.request_map_id
+        s.gameplay_map_access_group_id = state.map_access.access_group_id
+        s.gameplay_map_difficulty = state.map_access.map_difficulty
+        s.gameplay_scaling_difficulty = state.map_access.scaling_difficulty
+        CharacterService._select_dungeon_instance(self, s, state.map_access)
+        CharacterService._resolve_initialization_inventory(self, state, s)
         # Persistent effects use NewPlayer's actor-variable payload while
         # deriving their concrete values. Re-encode after vitality resolution
         # so the outgoing snapshot still observes hub restoration.

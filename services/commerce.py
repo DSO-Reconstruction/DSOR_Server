@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from dso_server.runtime.context import *
 from dso_server.runtime.admin_commands import track_inventory_reward
 from dso_server.runtime.transport import Session
@@ -1056,6 +1058,7 @@ class CommerceService:
                 shop_currency_resource=shop_currency_resource,
             )
             changed_items = []
+            max_roll_item_ids = set()
             replaced_item_ids = []
             replacements = {}
             timed_offers = []
@@ -1084,8 +1087,17 @@ class CommerceService:
                         purchased_item.socketed_templates = [
                             "" for _ in range(offer.unlocked_socket_count)
                         ]
+                if offer.base_enchantment_tier_override >= 0:
+                    for purchased_item in mutation.changed_items:
+                        purchased_item.field_38 = (
+                            offer.base_enchantment_tier_override
+                        )
                 next_item_id = mutation.next_item_id
                 changed_items.extend(mutation.changed_items)
+                if offer.enchantment_roll_quality_override >= 0:
+                    max_roll_item_ids.update(
+                        int(item.item_id) for item in mutation.changed_items
+                    )
                 replaced_item_ids.extend(mutation.replaced_item_ids)
                 replacements.update(mutation.replacements)
                 if offer.timed_offer:
@@ -1111,6 +1123,14 @@ class CommerceService:
                 items_by_id = {
                     int(item.item_id): item for item in inventory.items
                 }
+                for item_id in max_roll_item_ids:
+                    item = items_by_id.get(item_id)
+                    if item is None:
+                        continue
+                    item.enchantments = [
+                        replace(enchantment, value=1.0)
+                        for enchantment in item.enchantments
+                    ]
                 changed_items = [
                     items_by_id[int(item.item_id)]
                     for item in changed_items

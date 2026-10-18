@@ -448,7 +448,8 @@ class PlayerInitializationStateService:
         )
 
     def _resolve_initialization_inventory(
-            self, state: PlayerInitializationState) -> None:
+            self, state: PlayerInitializationState,
+            session: Session | None = None) -> None:
         """Bootstrap, restore, repair and rekey the local player's inventory."""
 
         character = state.character
@@ -523,7 +524,7 @@ class PlayerInitializationStateService:
         )
         rekeyed_next_item_id = None
         if persisted_state is not None:
-            first_item_id = max(
+            inventory_next_item_id = max(
                 RUNTIME_ITEM_ID_BASE,
                 int(persisted_state.next_item_id),
                 max(
@@ -531,12 +532,46 @@ class PlayerInitializationStateService:
                     default=RUNTIME_ITEM_ID_BASE - 1,
                 ) + 1,
             )
-            inventory, item_id_mapping, rekeyed_next_item_id = (
-                rekey_inventory_items(
-                    inventory,
-                    first_item_id=first_item_id,
+            if session is not None:
+                # Reserve the inventory's entire ID range in the same
+                # per-world allocator used for mob and quest drops. Without
+                # this reservation, a character entering a busy map could
+                # reuse an ID already assigned to a live world item.
+                with self.gameplay_world_lock:
+                    world_key = CharacterService._gameplay_instance_key(session)
+                    first_item_id = max(
+                        inventory_next_item_id,
+                        int(self.gameplay_world_next_item_ids.get(
+                            world_key, RUNTIME_ITEM_ID_BASE
+                        )),
+                    )
+                    inventory, item_id_mapping, rekeyed_next_item_id = (
+                        rekey_inventory_items(
+                            inventory,
+                            first_item_id=first_item_id,
+                        )
+                    )
+                    self.gameplay_world_next_item_ids[world_key] = max(
+                        int(self.gameplay_world_next_item_ids.get(
+                            world_key, RUNTIME_ITEM_ID_BASE
+                        )),
+                        int(rekeyed_next_item_id),
+                    )
+                    map_id = str(session.gameplay_map or '')
+                    self.gameplay_world_next_item_ids[map_id] = max(
+                        int(self.gameplay_world_next_item_ids.get(
+                            map_id, RUNTIME_ITEM_ID_BASE
+                        )),
+                        int(rekeyed_next_item_id),
+                    )
+            else:
+                first_item_id = inventory_next_item_id
+                inventory, item_id_mapping, rekeyed_next_item_id = (
+                    rekey_inventory_items(
+                        inventory,
+                        first_item_id=first_item_id,
+                    )
                 )
-            )
             if item_id_mapping:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] rekeyed "
@@ -1201,6 +1236,9 @@ class PlayerInitializationStateService:
             )
             s.gameplay_fractured_planes_run = bool(
                 getattr(state.character, "fractured_planes_run", False)
+            )
+            s.gameplay_fractured_planes_deadline = getattr(
+                state.character, "fractured_planes_deadline", None
             )
             s.gameplay_map_difficulty = state.map_access.map_difficulty
             s.gameplay_scaling_difficulty = (

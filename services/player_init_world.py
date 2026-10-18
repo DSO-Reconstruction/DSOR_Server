@@ -50,7 +50,6 @@ class PlayerInitializationWorldService:
         # PropInfo is keyed to the concrete player actor for this map session,
         # even on hub maps that do not create a combat encounter.
         CharacterService._session_remote_actor_id(self, s)
-        CharacterService._select_dungeon_instance(self, s, map_access)
         active_event_flags = frozenset({
             *CharacterService._event_catalog(
                 self

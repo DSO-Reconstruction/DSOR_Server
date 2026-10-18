@@ -160,6 +160,7 @@ from dso_server.protocol.inventory_economy_protocol import (
     item_melt_reward,
     item_sell_value,
     load_crafting_recipe,
+    load_enchantment_transfer_factor,
     load_recipe_book_resources,
     load_recipe_unlock_achievements,
     refresh_inventory_economy_values,
