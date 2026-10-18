@@ -4,6 +4,18 @@ set -Eeuo pipefail
 SERVER_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SERVER_DIR"
 
+if [[ ! -f "$SERVER_DIR/.env" ]]; then
+  if [[ -f "$SERVER_DIR/.env.example" ]]; then
+    cp "$SERVER_DIR/.env.example" "$SERVER_DIR/.env"
+  else
+    cat > "$SERVER_DIR/.env" <<'EOF'
+DSO_HOST=127.0.0.1
+DSO_PUBLIC_HOST=127.0.0.1
+EOF
+  fi
+  echo "Created .env with localhost defaults (127.0.0.1). Edit it later if remote clients need to connect."
+fi
+
 if [[ -f "$SERVER_DIR/.env" ]]; then
   set -a
   # shellcheck disable=SC1091
@@ -11,7 +23,7 @@ if [[ -f "$SERVER_DIR/.env" ]]; then
   set +a
 fi
 
-export DSO_HOST="${DSO_HOST:-0.0.0.0}"
+export DSO_HOST="${DSO_HOST:-127.0.0.1}"
 if [[ -z "${DSO_PUBLIC_HOST:-}" ]]; then
   echo "DSO_PUBLIC_HOST is missing. Set it in $SERVER_DIR/.env." >&2
   exit 2
@@ -31,7 +43,6 @@ required_files=(
   "run.py"
   "data/db/static.db4"
   "data/events.json"
-  "data/quests.xml"
   "data/catalogs/chest_contents.json"
   "DSOClient/__root.txt"
 )
@@ -41,6 +52,9 @@ for relative_path in "${required_files[@]}"; do
     exit 2
   fi
 done
+if [[ ! -f "$SERVER_DIR/data/quests.xml" ]]; then
+  echo "Warning: data/quests.xml is missing. The server will start without quest definitions; provide a decoded quests.xml to enable quests." >&2
+fi
 for required_directory in "data/maps" "data/navigation"; do
   if [[ ! -d "$SERVER_DIR/$required_directory" ]]; then
     echo "Required server directory is missing: $required_directory" >&2

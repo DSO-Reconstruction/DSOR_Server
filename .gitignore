@@ -46,3 +46,4 @@ data/language/
 data/db/*
 !data/db/README.txt
 DSOClient/
+data/quests.pbxml

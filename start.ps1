@@ -9,6 +9,17 @@ Set-Location -LiteralPath $ServerDir
 
 # Read the simple KEY=VALUE settings used by this project's .env file.
 $EnvFile = Join-Path $ServerDir '.env'
+if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
+    $EnvExampleFile = Join-Path $ServerDir '.env.example'
+    if (Test-Path -LiteralPath $EnvExampleFile -PathType Leaf) {
+        Copy-Item -LiteralPath $EnvExampleFile -Destination $EnvFile
+    } else {
+        $DefaultEnv = "DSO_HOST=127.0.0.1`nDSO_PUBLIC_HOST=127.0.0.1`n"
+        [System.IO.File]::WriteAllText($EnvFile, $DefaultEnv, [System.Text.UTF8Encoding]::new($false))
+    }
+    Write-Host 'Created .env with localhost defaults (127.0.0.1). Edit it later if remote clients need to connect.'
+}
+
 if (Test-Path -LiteralPath $EnvFile) {
     foreach ($Line in Get-Content -LiteralPath $EnvFile) {
         $Line = $Line.Trim()
@@ -29,7 +40,6 @@ $RequiredFiles = @(
     'run.py',
     'data/db/static.db4',
     'data/events.json',
-    'data/quests.xml',
     'data/catalogs/chest_contents.json',
     'DSOClient/__root.txt'
 )
@@ -42,6 +52,9 @@ foreach ($RelativePath in @('data/maps', 'data/navigation')) {
     if (-not (Test-Path -LiteralPath (Join-Path $ServerDir $RelativePath) -PathType Container)) {
         throw "Required server directory is missing: $RelativePath"
     }
+}
+if (-not (Test-Path -LiteralPath (Join-Path $ServerDir 'data/quests.xml') -PathType Leaf)) {
+    Write-Warning 'data/quests.xml is missing. The server will start without quest definitions; provide a decoded quests.xml to enable quests.'
 }
 foreach ($RelativePath in @('data/db', 'data/logs', 'data/diagnostics', 'data/state')) {
     New-Item -ItemType Directory -Path (Join-Path $ServerDir $RelativePath) -Force | Out-Null
