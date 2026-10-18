@@ -233,7 +233,7 @@ class CharacterSelectionService:
 
     @staticmethod
     def _equipment_record_for(
-            item, static_database=None) -> EquipmentRecord:
+            item, static_database=None, *, enabled: bool = True) -> EquipmentRecord:
         """One selection-screen record for an equipped inventory item.
 
         ``field_f8`` is the transmog skin and ``field_20`` is packed ARGB.
@@ -270,6 +270,7 @@ class CharacterSelectionService:
             item_id=item_id,
             appearance_id=appearance_id,
             tint=tint,
+            enabled=bool(enabled),
         )
 
     def _persisted_selection_equipment(
@@ -288,6 +289,7 @@ class CharacterSelectionService:
         inventory = getattr(state, "inventory", None)
         if inventory is None:
             return None
+        hidden_skins = getattr(state, "hidden_equipment_skins", {})
         items = {int(item.item_id): item for item in inventory.items}
         by_slot = {}
         for item_id, slots in inventory.equipment_slots.items():
@@ -296,12 +298,23 @@ class CharacterSelectionService:
                 continue
             for slot in slots:
                 by_slot[int(slot)] = item
-        return [
-            CharacterSelectionService._equipment_record_for(
-                by_slot[slot], getattr(self, "static_database", None)
+        records = []
+        for slot in sorted(by_slot):
+            item = by_slot[slot]
+            customization_slot = 12 if slot == 7 else slot
+            hidden_skin = str(hidden_skins.get(customization_slot, ""))
+            item_skin = str(item.field_f8 or item.field_80 or "")
+            enabled = not hidden_skin or bool(
+                item_skin and item_skin != hidden_skin
             )
-            for slot in sorted(by_slot)
-        ]
+            records.append(
+                CharacterSelectionService._equipment_record_for(
+                    item,
+                    getattr(self, "static_database", None),
+                    enabled=enabled,
+                )
+            )
+        return records
 
     def _selection_equipment(self, character_id: int) -> list[EquipmentRecord]:
         """Equipment for one character's selection-screen model.

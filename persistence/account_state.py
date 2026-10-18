@@ -187,6 +187,8 @@ class AccountState:
     scaling_difficulty: int = 0
     stickerbook_entries: tuple[StickerbookEntry, ...] = ()
     active_costume: str = ""
+    # EquipmentSlotType -> skin resource hidden by the client's transmog UI.
+    hidden_equipment_skins: dict[int, str] = field(default_factory=dict)
     active_pet: str = ""
     active_mercenary: str = ""
     active_decorations: tuple[str, ...] = ()
@@ -642,6 +644,11 @@ def _state_to_document(state: AccountState) -> dict:
             asdict(entry) for entry in state.stickerbook_entries
         ],
         "active_costume": str(state.active_costume),
+        "hidden_equipment_skins": {
+            str(int(slot)): str(skin)
+            for slot, skin in state.hidden_equipment_skins.items()
+            if str(skin)
+        },
         "active_pet": str(state.active_pet),
         "active_mercenary": str(state.active_mercenary),
         "active_decorations": list(state.active_decorations),
@@ -861,6 +868,13 @@ def _state_from_document(document: dict) -> AccountState:
             if str(entry.get("resource_id", ""))
         ),
         active_costume=str(document.get("active_costume", "")),
+        hidden_equipment_skins={
+            int(slot): str(skin)
+            for slot, skin in document.get(
+                "hidden_equipment_skins", {}
+            ).items()
+            if str(skin)
+        },
         active_pet=str(document.get("active_pet", "")),
         active_mercenary=str(document.get("active_mercenary", "")),
         active_decorations=tuple(

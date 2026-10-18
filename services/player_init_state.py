@@ -1390,6 +1390,39 @@ class PlayerInitializationStateService:
                 if persisted_state is not None
                 else ""
             )
+            s.gameplay_hidden_equipment_skins = (
+                dict(persisted_state.hidden_equipment_skins)
+                if persisted_state is not None
+                else {}
+            )
+            # Older saves may have the durable HideSkin selection but still
+            # have ItemInfo's render-skin gate enabled. Reconcile the item on
+            # load so the local player's first appearance snapshot uses the
+            # same hidden state as presence and character selection.
+            hidden_skins = s.gameplay_hidden_equipment_skins
+            if hidden_skins and s.gameplay_inventory is not None:
+                items_by_id = {
+                    int(item.item_id): item
+                    for item in s.gameplay_inventory.items
+                }
+                for item_id, slots in s.gameplay_inventory.equipment_slots.items():
+                    item = items_by_id.get(int(item_id))
+                    if item is None:
+                        continue
+                    item_skin = str(item.field_f8 or item.field_80 or "")
+                    for equipment_slot in slots:
+                        customization_slot = (
+                            12 if int(equipment_slot) == 7
+                            else int(equipment_slot)
+                        )
+                        hidden_skin = str(
+                            hidden_skins.get(customization_slot, "")
+                        )
+                        if hidden_skin and (
+                            not item_skin or item_skin == hidden_skin
+                        ):
+                            item.field_3e = False
+                            break
             s.gameplay_active_pet = (
                 persisted_state.active_pet
                 if persisted_state is not None

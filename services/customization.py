@@ -8,8 +8,8 @@ import sqlite3
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.item_customization_protocol import (
-    APPLY_ITEM_CUSTOMIZATION_COMMAND, decode_item_customization_changes,
-    apply_item_customizations,
+    APPLY_ITEM_CUSTOMIZATION_COMMAND, CUSTOMIZATION_SLOTS,
+    decode_item_customization_changes, apply_item_customizations,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.services.admin_effects import (
@@ -408,23 +408,68 @@ class CustomizationService:
             if (s.gameplay_inventory is None or s.gameplay_currency_state is None
                     or s.gameplay_character is None):
                 raise ValueError('customization requires initialized player state')
+            previous_currency = s.gameplay_currency_state
             mutation, currency, items = apply_item_customizations(
                 s.gameplay_inventory, s.gameplay_currency_state, changes,
                 database_path=self.static_database_path,
                 class_id=s.gameplay_character.class_id, level=s.gameplay_character.level,
                 next_item_id=s.gameplay_next_item_id,
             )
-            packets = [encode_server_command_batch((
-                ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
-                ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
-                ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
-            ))]
-            packets.extend(encode_item_info_response(item, actor_id=LOCAL_PLAYER_ACTOR_ID)
-                           for item in items)
+            inventory_changed = bool(items) or currency != previous_currency
+            response_items = {
+                int(item.item_id): item for item in items
+            }
+            # GameItem::GetSkins returns no render skins when ItemInfo.field_3e
+            # is false. Change that flag in authoritative item state, then send
+            # the normal ItemUpdateCommand so the local client posts its
+            # RefreshItemSkin event. The item and equipment allocation remain
+            # intact; only this item's render-skin gate changes.
+            for change in changes:
+                if not (change.skin or change.effect_skin):
+                    continue
+                inventory_slot = CUSTOMIZATION_SLOTS[int(change.slot_type)]
+                for item_id, slots in mutation.inventory.equipment_slots.items():
+                    if inventory_slot not in slots:
+                        continue
+                    item = next(
+                        (
+                            value for value in mutation.inventory.items
+                            if int(value.item_id) == int(item_id)
+                        ),
+                        None,
+                    )
+                    if item is not None:
+                        item.field_3e = not bool(change.effect_skin)
+                        response_items[int(item.item_id)] = item
+                    break
+            packets = []
+            if inventory_changed:
+                packets.append(encode_server_command_batch((
+                    ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
+                )))
+            packets.extend(
+                encode_item_info_response(
+                    item, actor_id=LOCAL_PLAYER_ACTOR_ID
+                )
+                for item in response_items.values()
+            )
             s.gameplay_inventory = mutation.inventory
             s.gameplay_currency_state = currency
             s.gameplay_next_item_id = mutation.next_item_id
             s.gameplay_client_command_state[APPLY_ITEM_CUSTOMIZATION_COMMAND] = changes
+            hidden_skins = dict(
+                getattr(s, "gameplay_hidden_equipment_skins", {})
+            )
+            for change in changes:
+                if change.effect_skin:
+                    # Client enum order: AddCustomization, RemoveCustomization,
+                    # ShowSkin, HideSkin, AddColor, RemoveColor.
+                    hidden_skins[int(change.slot_type)] = change.effect_skin
+                elif change.skin:
+                    hidden_skins.pop(int(change.slot_type), None)
+            s.gameplay_hidden_equipment_skins = hidden_skins
         CharacterService._accept_gameplay_state_command(s, APPLY_ITEM_CUSTOMIZATION_COMMAND)
         for packet, bits in packets:
             CharacterService._send_world_loot_state_batch(

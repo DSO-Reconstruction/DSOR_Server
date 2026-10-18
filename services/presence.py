@@ -124,7 +124,10 @@ class PresenceService:
             level=max(1, int(character.level)),
             admin_privileges=bool(character.admin_privileges),
             admin_name_color=bool(character.admin_name_color),
-            equipment=self._remote_equipment_visuals(inventory),
+            equipment=self._remote_equipment_visuals(
+                inventory,
+                getattr(session, "gameplay_hidden_equipment_skins", {}),
+            ),
             emblem_id=self._remote_emblem_id(inventory),
             animation_set=animation_set,
             title_type=int(session.gameplay_title_type),

@@ -307,6 +307,9 @@ class PlayerPersistenceService:
                 int(value) for value in s.gameplay_talent_category_points
             )
             active_costume = str(s.gameplay_active_costume)
+            hidden_equipment_skins = dict(
+                getattr(s, "gameplay_hidden_equipment_skins", {})
+            )
             active_pet = str(s.gameplay_active_pet)
             active_mercenary = str(s.gameplay_active_mercenary)
             active_decorations = tuple(
@@ -472,6 +475,7 @@ class PlayerPersistenceService:
             scaling_difficulty=scaling_difficulty,
             stickerbook_entries=stickerbook_entries,
             active_costume=active_costume,
+            hidden_equipment_skins=hidden_equipment_skins,
             active_pet=active_pet,
             active_mercenary=active_mercenary,
             active_decorations=active_decorations,
