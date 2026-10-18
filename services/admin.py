@@ -12,10 +12,14 @@ from urllib.parse import unquote
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 
-from dso_server.paths import DEFAULT_ACCOUNT_DATABASE_PATH
+from dso_server.paths import DEFAULT_ACCOUNT_DATABASE_PATH, DEFAULT_QUESTS_PATH
 from dso_server.persistence.account_registry import AccountRegistry, AccountRegistryError
 from dso_server.persistence.account_state import _state_to_document
+from dso_server.gameplay.quest_content import (
+    QUEST_STATE_CLOSED, QuestProgress, load_quest_catalog,
+)
 from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
 from dso_server.protocol.character_selection import CLASS_NAMES
@@ -24,8 +28,9 @@ from dso_server.protocol.inventory_codec import (
     free_inventory_location, owned_inventory_items,
 )
 from dso_server.protocol.player_init_protocol import (
-    ServerCommand, encode_server_command_batch,
+    CHAPTER_PROGRESS_COMMAND, ServerCommand, encode_server_command_batch,
 )
+from dso_server.protocol.quest_protocol import QUEST_UPDATE_COMMAND, QuestUpdate
 from dso_server.services.accounts import FailureThrottle
 from dso_server.services.admin_bookings import BookingDelivery, CURRENCIES
 from dso_server.services.admin_items import item_catalog, item_metadata
@@ -33,6 +38,7 @@ from dso_server.services.admin_live import (
     LiveAdministration, map_catalog, ready, state_token,
 )
 from dso_server.services.admin_events import EventAdministration, EventScheduleConflict
+from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
 
@@ -619,6 +625,190 @@ class AdminService:
                 "source_name": source_profile.name,
                 "target_name": target_profile.name}
 
+    def complete_character_main_quests(self, cid, actor, reason):
+        profile = self.store.get_profile(cid)
+        owner = self.registry.character_owner(cid)
+        if profile is None or owner is None:
+            raise ValueError("character must exist and belong to an account")
+        catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
+        class_name = CLASS_NAMES.get(int(profile.class_id), "")
+        quests = list(
+            quest for quest in catalog.quests.values()
+            if quest.quest_type.casefold() == "world" and quest.accepts_class(class_name)
+        )
+        # Ammon's first Parallel Worlds access quest is a chapter prerequisite
+        # authored as Heroic, so it is not part of the World quest type above.
+        parallel_world_intro = catalog.quest("pw000-introduction-01-n")
+        if parallel_world_intro is not None and parallel_world_intro not in quests:
+            quests.append(parallel_world_intro)
+        quests = tuple(quests)
+        if not quests:
+            raise ValueError("no main story quests are available for this character")
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("character is changing maps or initializing; try again shortly")
+
+        completed = 0
+        if target is None:
+            state = self.store.get(cid)
+            if state is None:
+                raise ValueError("character must enter the game once before quests can be changed")
+            quest_log = dict(state.quest_log or {})
+            for quest in quests:
+                previous = quest_log.get(quest.quest_id, {})
+                if int(previous.get("state", -1)) != QUEST_STATE_CLOSED:
+                    completed += 1
+                finished_mask = sum(1 << task.index for task in quest.tasks)
+                quest_log[quest.quest_id] = QuestProgress(
+                    quest.quest_id, state=QUEST_STATE_CLOSED,
+                    finished_mask=finished_mask, completed_at=stamp,
+                ).to_document()
+            from dataclasses import replace as replace_state
+            self.store.put(replace_state(state, quest_log=quest_log), flush=True)
+        else:
+            server, session = target
+            from dso_server.services.quests import _quest_log
+            def commit():
+                nonlocal completed
+                if not server.is_session_current(session):
+                    raise ValueError("character session changed; refresh and retry")
+                with session.flow_lock:
+                    if not ready(session, cid):
+                        raise ValueError("character must remain fully loaded in a map")
+                    log = _quest_log(session)
+                    commands = []
+                    for quest in quests:
+                        progress = log.get(quest.quest_id)
+                        if progress is None or progress.state != QUEST_STATE_CLOSED:
+                            completed += 1
+                        finished_mask = sum(1 << task.index for task in quest.tasks)
+                        if progress is None:
+                            progress = QuestProgress(quest.quest_id)
+                            log[quest.quest_id] = progress
+                        progress.state = QUEST_STATE_CLOSED
+                        progress.finished_mask = finished_mask
+                        progress.completed_at = stamp
+                        progress.tokens.clear()
+                        commands.append(ServerCommand(
+                            QUEST_UPDATE_COMMAND,
+                            QuestUpdate.quest_state(quest.quest_id, QUEST_STATE_CLOSED, stamp),
+                            1,
+                        ))
+                    commands.extend(server._quest_npc_info_commands(session))
+                    commands.append(ServerCommand(
+                        CHAPTER_PROGRESS_COMMAND,
+                        server._quest_chapter_progress(session), 1,
+                    ))
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason="CMS main quests completed", flush=True
+                )
+                server._send_quest_commands(
+                    session, commands, label="admin-main-quests-completed"
+                )
+                return True
+            if not server.admin_commands.call(commit):
+                raise ValueError("character session changed; refresh and retry")
+        self.repository.audit(actor.username, "character.quests.complete_main", cid, {
+            "quest_count": len(quests), "newly_completed": completed,
+            "online": target is not None, "reason": reason,
+        })
+        return {"ok": True, "quest_count": len(quests),
+                "newly_completed": completed, "online": target is not None}
+
+    def delete_character_item(self, cid, item_id, actor, reason):
+        if type(item_id) is not int or item_id <= 0:
+            raise ValueError("item ID must be a positive integer")
+        profile = self.store.get_profile(cid)
+        owner = self.registry.character_owner(cid)
+        if profile is None or owner is None:
+            raise ValueError("character must exist and belong to an account")
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("character is changing maps or initializing; try again shortly")
+
+        if target is None:
+            state = self.store.get(cid)
+            if state is None:
+                raise ValueError("character must enter the game once before inventory can be changed")
+            inventory = clone_inventory_info(state.inventory)
+        else:
+            server, session = target
+            with session.flow_lock:
+                if not ready(session, cid):
+                    raise ValueError("character must be fully loaded into a map")
+                if getattr(session, "gameplay_inventory_rewards_in_progress", 0):
+                    raise ValueError("character inventory is being updated; try again shortly")
+                inventory_token = id(session.gameplay_inventory)
+            state = PlayerPersistenceService._capture_account_state(server, session)
+            if state is None:
+                raise ValueError("character inventory is not ready")
+            inventory = clone_inventory_info(state.inventory)
+
+        item = next((entry for entry in owned_inventory_items(inventory)
+                     if int(entry.item_id) == item_id), None)
+        if item is None:
+            raise ValueError("selected item is no longer in this character's inventory")
+        inventory.items = [entry for entry in inventory.items if int(entry.item_id) != item_id]
+        inventory.premium_inventory_overflow = [
+            entry for entry in inventory.premium_inventory_overflow if int(entry.item_id) != item_id
+        ]
+        inventory.premium_storage_overflow = [
+            entry for entry in inventory.premium_storage_overflow if int(entry.item_id) != item_id
+        ]
+        for name in ("equipment_slots", "storage_58", "storage_80", "storage_a8", "storage_d0", "field_158"):
+            getattr(inventory, name).pop(item_id, None)
+        for name in ("field_f8", "field_118", "field_180"):
+            values = getattr(inventory, name)
+            setattr(inventory, name, [value for value in values if int(value) != item_id])
+        inventory.changed_item_ids = []
+        inventory.field_1e0 = False
+
+        if target is None:
+            from dataclasses import replace as replace_state
+            self.store.put(replace_state(state, inventory=inventory), flush=True)
+        else:
+            delta = clone_inventory_info(inventory)
+            delta.changed_item_ids = [item_id]
+            delta.field_1e0 = True
+            final = clone_inventory_info(inventory)
+            final.items = []
+            final.changed_item_ids = []
+            final.field_158 = {}
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(INVENTORY_INFO_COMMAND, delta, inventory.actor_id),
+                ServerCommand(INVENTORY_INFO_COMMAND, final, inventory.actor_id),
+            ), include_terminator=True)
+            def commit():
+                if not server.is_session_current(session):
+                    raise ValueError("character session changed; refresh and retry")
+                with session.flow_lock:
+                    if not ready(session, cid):
+                        raise ValueError("character must remain fully loaded in a map")
+                    if getattr(session, "gameplay_inventory_rewards_in_progress", 0):
+                        raise ValueError("character inventory is being updated; try again shortly")
+                    if id(session.gameplay_inventory) != inventory_token:
+                        return False
+                    session.gameplay_inventory = inventory
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason="CMS inventory item deleted", flush=True
+                )
+                session.send_reliable_ordered_split(
+                    packet, total_bit_length=packet_bits,
+                    label_prefix="admin-inventory-item-delete",
+                )
+                return True
+            if not server.admin_commands.call(commit):
+                raise ValueError("character inventory changed; refresh and try again")
+        self.repository.audit(actor.username, "character.inventory.item.delete", cid, {
+            "item_id": item_id, "template_id": item.template_id,
+            "amount": item.amount, "online": target is not None, "reason": reason,
+        })
+        return {"ok": True, "item_id": item_id, "template_id": item.template_id,
+                "amount": item.amount, "online": target is not None}
+
     def get(self, path, query, account, session):
         search = str(query.get("q", ""))[:100].casefold()
         if path == "/api/me":
@@ -845,6 +1035,11 @@ class AdminService:
             return {"ok": True}
         if path.startswith("/api/characters/"):
             parts = path.strip("/").split("/")
+            if len(parts) == 6 and parts[3] == "inventory" and parts[5] == "delete":
+                cid, item_id = int(parts[2]), int(parts[4])
+                if self.store.get_profile(cid) is None or self.registry.character_owner(cid) is None:
+                    raise AdminError(404, "owned character not found")
+                return self.delete_character_item(cid, item_id, account, reason)
             if len(parts) != 4:
                 raise AdminError(404, "action not found")
             cid = int(parts[2])
@@ -860,6 +1055,8 @@ class AdminService:
                 return self.copy_character_inventory(
                     cid, payload.get("target_character_id"), account, reason
                 )
+            if parts[3] == "complete-main-quests":
+                return self.complete_character_main_quests(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

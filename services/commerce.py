@@ -146,6 +146,7 @@ class CommerceService:
         # capture-derived inventory objects.
         with s.flow_lock:
             inventory = copy.deepcopy(s.gameplay_inventory)
+            currency = copy.deepcopy(s.gameplay_currency_state)
             next_item_id = int(s.gameplay_next_item_id)
             claims = dict(s.gameplay_timed_offer_purchases)
             character = copy.deepcopy(s.gameplay_character)
@@ -158,10 +159,28 @@ class CommerceService:
         ):
             raise ValueError("one or more rewards were already claimed")
         changed_items = []
+        currency_changed = False
         replaced_item_ids = []
         replacements = {}
         receipt_grants = []
         for definition in definitions:
+            if definition.item_id in {'money_rc', 'money_vc', 'money_vc_gold'}:
+                if currency is None:
+                    raise ValueError('player currency state is not initialized')
+                if definition.item_id == 'money_rc':
+                    field = 'currency_type'
+                    currency_name = 'Andermant'
+                else:
+                    field = 'amount'
+                    currency_name = 'gold'
+                balance = int(getattr(currency, field)) + int(definition.amount)
+                if balance > 0xFFFFFFFF:
+                    raise ValueError(
+                        f'{currency_name} balance exceeds wire range'
+                    )
+                currency = replace(currency, **{field: balance}, notify=True)
+                currency_changed = True
+                continue
             item = load_purchase_item_definition(
                 self.static_database_path, definition.item_id
             )
@@ -230,11 +249,14 @@ class CommerceService:
             receipt_grants,
             next_item_id=next_item_id,
         )
-        commands = [
-            ServerCommand(
-                INVENTORY_INFO_COMMAND, delta, LOCAL_PLAYER_ACTOR_ID
-            ),
-        ]
+        commands = []
+        if currency_changed:
+            commands.append(ServerCommand(
+                CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID
+            ))
+        commands.append(ServerCommand(
+            INVENTORY_INFO_COMMAND, delta, LOCAL_PLAYER_ACTOR_ID
+        ))
         commands.extend(
             ServerCommand(
                 MESSAGE_COMMAND,
@@ -254,6 +276,8 @@ class CommerceService:
         )
         with s.flow_lock:
             s.gameplay_inventory = inventory
+            if currency_changed:
+                s.gameplay_currency_state = currency
             s.gameplay_next_item_id = next_item_id
             for key in claim_keys or ():
                 claims[key] = int(claim_value)

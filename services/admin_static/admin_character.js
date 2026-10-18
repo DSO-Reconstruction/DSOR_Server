@@ -157,6 +157,56 @@ function bindInventoryCopy(id) {
   });
 }
 
+function mainQuestSection() {
+  return section("Main quests", `<form id="main-quests-form" class="form-page">
+    <fieldset class="form-section"><legend>Quest progress</legend>
+      <p class="help">Marks every World type main story quest and the Parallel Worlds introduction prerequisite as completed. No quest rewards are granted.</p>
+    </fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="main-quests-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Complete all main quests</button></div></form>`);
+}
+
+function bindMainQuests(id) {
+  $("#main-quests-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
+    button.disabled = true;
+    try {
+      if (!(await confirmAction("Complete all main quests?",
+        "This will mark all main story quests and the Parallel Worlds introduction prerequisite as completed. Quest rewards will not be granted.",
+        "Complete quests"))) return;
+      const result = await api(`/api/characters/${id}/complete-main-quests`, {reason: values.get("reason")});
+      notice(`Marked ${result.newly_completed} main quests as completed.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#main-quests-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
+function bindInventoryItemDelete(id, item) {
+  $("#inventory-item-delete-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
+    button.disabled = true;
+    try {
+      if (!(await confirmAction("Delete this item?",
+        `Delete ${item.template_id} (item ${item.item_id}, stack ${item.amount}) from this character?`,
+        "Delete item"))) return;
+      const result = await api(`/api/characters/${id}/inventory/${item.item_id}/delete`, {reason: values.get("reason")});
+      notice(`Deleted ${result.template_id} (item ${result.item_id}).`);
+      navigate(`characters/${id}/inventory`);
+    } catch (error) {
+      const target = $("#inventory-item-delete-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function location(item, inventory) {
   for (const [field, name] of Object.entries(containers)) {
     if (Object.hasOwn(inventory[field] || {}, item.item_id)) {
@@ -252,6 +302,8 @@ export async function characterPage(route) {
     result.html += section("Quest log", records(s.quest_log, "Quest")) + section("Achievements", records(s.achievements, "Achievement")) +
       '<div class="columns">' + section("Events", tree({progress: s.event_progress, participation: s.event_participation})) +
       section("Talent presets", tree({skills: s.skill_talent_presets, categories: s.category_talent_presets})) + '</div>';
+    result.html += mainQuestSection();
+    result.mount = () => bindMainQuests(id);
   } else if (tab === "state") {
     result.html += '<div class="columns">' + section("Position and map access", tree({map: s.map_id, position: s.position, last_visited_town: s.last_visited_town,
       map_access: s.map_access_id, map_difficulty: s.map_difficulty, scaling_difficulty: s.scaling_difficulty, unlocked_maps: s.unlocked_maps})) +
@@ -298,5 +350,13 @@ function inventoryItemPage(result, route, data) {
   result.html += section("Sockets", table(["Socket", "Content"], Array.from({length: item.socket_count}, (_, index) => [index + 1,
     item.socketed_templates[index] ? link(item.socketed_templates[index], `items/${encodeURIComponent(item.socketed_templates[index])}`, {}, "resource mono") : '<span class="muted">Empty</span>'
   ]), "This item has no sockets."));
+  result.html += section("Delete item", `<form id="inventory-item-delete-form" class="form-page">
+    <fieldset class="form-section"><legend>Remove from character</legend>
+      <p class="help">This permanently removes this item record and its equipment or storage allocation.</p>
+    </fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="inventory-item-delete-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit" class="danger">Delete item ${item.item_id}</button></div></form>`);
+  result.mount = () => bindInventoryItemDelete(data.profile.character_id, item);
   return result;
 }
