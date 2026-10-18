@@ -787,10 +787,10 @@ def load_shop_offers(
         offers = cms_offers + offers
         if str(shop["Id"]).casefold().startswith("smith_hub"):
             # The local smith is the class-filtered source for the current
-            # Mythic equipment, plus unique belts and weapon modifiers.
-            # Items are generated at level 145 with their strongest supported
-            # socket layout, 100% enchantment rolls, and maximum base values;
-            # no static.db4 rows are rewritten.
+            # Mythic equipment, both mythic Dragan set versions, plus unique
+            # belts and weapon modifiers. Items are generated at level 145
+            # with their strongest supported socket layout, 100% enchantment
+            # rolls, and maximum base values; no static.db4 rows are rewritten.
             equipment_rows = database.execute(
                 "SELECT Id,DefaultRarity,CharClass,SlotType,ItemCategory,"
                 "MaxSocketCount,IconBrush,IconConfiguration "
@@ -799,12 +799,16 @@ def load_shop_offers(
                 "(DefaultRarity='Mythic' AND lower(CharClass)=? "
                 "AND ItemCategory IN ('Armor','Weapon','SmallWeapon',"
                 "'Jewelry','OffenseBackitem','DefenseBackitem')) OR "
+                "(DefaultRarity='Set' AND lower(CharClass)=? "
+                "AND lower(Id) LIKE '%mythic%dragan%' "
+                "AND ItemCategory IN ('Armor','Weapon','SmallWeapon',"
+                "'Jewelry','OffenseBackitem','DefenseBackitem')) OR "
                 "(DefaultRarity='Unique' AND ("
                 "(lower(SlotType) LIKE '%beltslot%' AND "
                 "(lower(CharClass)=? OR coalesce(CharClass,'')='')) OR "
                 "(ItemCategory='WeaponModifier' AND lower(CharClass)=?)))"
                 ") ORDER BY Id",
-                (class_name, class_name, class_name),
+                (class_name, class_name, class_name, class_name),
             ).fetchall()
             present_items = {offer.item_id for offer in offers}
             for item in equipment_rows:
