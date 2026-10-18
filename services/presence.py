@@ -278,6 +278,11 @@ class PresenceService:
             return CharacterService._fire_map_signal(
                 self, session, event[1], event[2]
             )
+        if isinstance(event, tuple) and event[0] == "monster_summons":
+            # Monsters' summons landed this tick (services/monster_summons.py).
+            return CharacterService._spawn_monster_summons(
+                self, session, event[1]
+            )
         if isinstance(event, tuple) and event[0] == "monsters_killed":
             return CharacterService._on_monsters_killed(
                 self, session, event[1]

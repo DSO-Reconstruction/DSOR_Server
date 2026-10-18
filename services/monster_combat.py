@@ -659,6 +659,8 @@ class MonsterCombatService(
             return_home_transitions = (
                 combat.drain_return_home_transitions()
             )
+            monster_summons = tuple(combat.pending_monster_summons)
+            combat.pending_monster_summons.clear()
             health_regeneration = combat.regenerate_players(now=now)
             resource_regeneration = (
                 combat.regenerate_player_resources(now=now)
@@ -719,6 +721,8 @@ class MonsterCombatService(
         CharacterService._dispatch_player_owned_resolutions(
             combat, target_sessions, player_owned_resolutions
         )
+        if monster_summons and callback is not None:
+            callback(s, ("monster_summons", monster_summons))
         for summon in out_of_range_summons:
             owner_session = target_sessions.get(summon.owner_actor_id)
             if owner_session is None:

@@ -26,6 +26,7 @@ from dso_server.gameplay.combat_entities import (
 
 from dso_server.protocol.combat_protocol import (
     BULLET_SKILL_COMMAND,
+    SHIFTED_SKILL_COMMAND,
     SKILL_COMMAND,
     SUSTAINED_SKILL_COMMAND,
     TARGET_BULLET_SKILL_COMMAND,
@@ -776,6 +777,18 @@ class MonsterAttack:
 
 
 @dataclass(frozen=True)
+class MonsterSummonRequest:
+    """A monster's summon that landed: the service spawns the monsters."""
+
+    caster_actor_id: int
+    template_id: str
+    amount: int
+    limit: int
+    position: tuple[float, float, float]
+    level: int
+
+
+@dataclass(frozen=True)
 class DamageResolution:
     target_actor_id: int
     attacker_actor_id: int
@@ -1016,6 +1029,11 @@ class LocalCombatState:
         # set once it starts fighting: its InitialCoolDown, then its CoolDown
         # after each use (_monster_skill_choice).
         self._monster_skill_ready_at: dict[int, dict[str, float]] = {}
+        # The monsters each monster summoned (still counted while alive), and
+        # the summons landed this tick, for the service to spawn
+        # (services/monster_summons.py).
+        self.monster_summoned_actor_ids: dict[int, set[int]] = {}
+        self.pending_monster_summons: list[MonsterSummonRequest] = []
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
         # Animation locks outlive early impacts and can end before a projectile
@@ -8893,11 +8911,21 @@ class LocalCombatState:
                     wait = self._monster_cooldown_random.uniform(low, high)
                     ready_at[key] = max(ready_at.get(key, 0.0), current_time + wait)
             self._monster_skill_ready_at[actor_id] = ready_at
+        alive_summons = len(
+            self.monster_summoned_actor_ids.get(actor_id, set())
+            & set(self.living_actor_ids)
+        )
         usable = tuple(
             definition
             for definition in eligible_definitions
             if definition.min_difficulty <= difficulty <= definition.max_difficulty
             and current_time + 1e-9 >= ready_at.get(_cooldown_key(definition), 0.0)
+            # A summon waits while the caster's summons fill its limit.
+            and not (
+                definition.summon_template
+                and definition.summon_limit > 0
+                and alive_summons + definition.summon_amount > definition.summon_limit
+            )
         )
         if not usable:
             return None
@@ -9167,6 +9195,16 @@ class LocalCombatState:
                     if definition.hit_frame > 0
                     else definition.loop_start_frame
                 )
+            elif definition.command_id == SHIFTED_SKILL_COMMAND:
+                # A Shifted cast: its release at LoopStartFrame (the context's
+                # hit frame), then its impact HitFrame later, at least one tick
+                # (ShiftedSkillCommand's pre-impact delay; a zero-length phase
+                # is a native client assert, presence_visuals).
+                projectile_origin = monster_position
+                impact_delay = (
+                    definition.loop_start_frame + max(1, definition.hit_frame)
+                ) / SERVER_TICKS_PER_SECOND
+                animation_hit_frame = definition.loop_start_frame
             else:
                 projectile_origin = monster_position
                 impact_delay = (
@@ -9193,7 +9231,12 @@ class LocalCombatState:
                 motion_unblock_frame=definition.motion_unblock_frame,
                 skill_unblock_frame=definition.skill_unblock_frame,
                 position=(*monster_position, 1.0),
-                target_position=attack_target_world,
+                # A summon is cast on the caster's own place.
+                target_position=(
+                    monster_position
+                    if definition.summon_template
+                    else attack_target_world
+                ),
                 direction=direction,
                 projectile_radius=definition.projectile_radius,
                 # The recovered retail autonomous BulletSkill uses variant 1.
@@ -9354,6 +9397,18 @@ class LocalCombatState:
             if not targets_monster and attack.target_actor_id != player_actor_id:
                 continue
             del self.pending_monster_attacks[actor_id]
+            if attack.definition is not None and attack.definition.summon_template:
+                # The summon lands: the service spawns its monsters around the
+                # caster (services/monster_summons.py).
+                self.pending_monster_summons.append(MonsterSummonRequest(
+                    caster_actor_id=int(actor_id),
+                    template_id=attack.definition.summon_template,
+                    amount=int(attack.definition.summon_amount),
+                    limit=int(attack.definition.summon_limit),
+                    position=tuple(float(v) for v in monster_position[:3]),
+                    level=int(self.monsters[actor_id].level),
+                ))
+                continue
             if attack.definition is not None and attack.definition.self_buff:
                 # A buff on the caster: no blow lands.
                 continue

@@ -15,6 +15,7 @@ from pathlib import Path
 from dso_server.runtime.gc_tuning import freeze_long_lived_addition
 from dso_server.protocol.combat_protocol import (
     BULLET_SKILL_COMMAND,
+    SHIFTED_SKILL_COMMAND,
     SKILL_COMMAND,
     TARGET_BULLET_SKILL_COMMAND,
     TARGET_SKILL_COMMAND,
@@ -232,6 +233,20 @@ class MonsterAttackDefinition:
     # itself (heredur_bonus_enrage): played as a SkillCommand, its effects put
     # on the caster at its start, no blow.
     self_buff: bool = False
+    # A summon (_Template_Skill Summons): SummonMonsterId (else the caster
+    # template's, SummonCategory FromMonsterTemplate), that many per cast, at
+    # most SummonMonsterLimit of the caster's alive at once. A Shifted one is
+    # played as a ShiftedSkillCommand on the caster's place (Bearach's hounds,
+    # Heredur's skeletons), a Melee one as a SkillCommand (Arachna's spiders).
+    summon_template: str = ""
+    summon_amount: int = 0
+    summon_limit: int = 0
+
+    @property
+    def support(self) -> bool:
+        """A skill that strikes nobody: a buff on the caster or a summon."""
+
+        return self.self_buff or bool(self.summon_template)
 
 
 @dataclass(frozen=True)
@@ -1157,7 +1172,9 @@ def _load_runtime_template(
     with _open_read_only(static_database_path) as database:
         movement_row = database.execute(
             "SELECT RunSpeed, AggroRange, AttackInterval, Skills, "
-            "CapsuleRadius, EscapeRange, TravelDistance "
+            "CapsuleRadius, EscapeRange, TravelDistance, "
+            "COALESCE(SummonMonsterId, ''), COALESCE(SummonMonsterAmount, 0), "
+            "COALESCE(SummonMonsterLimit, 0) "
             "FROM _Template_Monster WHERE Id=? LIMIT 1",
             (str(template_id),),
         ).fetchone()
@@ -1200,7 +1217,11 @@ def _load_runtime_template(
                        COALESCE(s.InitialCoolDown, ''),
                        COALESCE(s.CoolDownCategory, ''),
                        COALESCE(s.MinDifficulty, 0),
-                       COALESCE(s.MaxDifficulty, 99)
+                       COALESCE(s.MaxDifficulty, 99),
+                       COALESCE(s.Summons, 0),
+                       COALESCE(s.SummonMonsterId, ''),
+                       COALESCE(s.SummonMonsterAmount, 0),
+                       COALESCE(s.SummonMonsterLimit, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id=s.SkillBulletId
@@ -1213,7 +1234,21 @@ def _load_runtime_template(
             skill_type = str(skill_row[6])
             targeting_type = str(skill_row[7])
             self_buff = False
-            if (
+            summon = (
+                int(skill_row[26] or 0) != 0
+                and float(skill_row[16]) <= 0.0
+            )
+            summon_template = summon_amount = summon_limit = None
+            if summon:
+                summon_template = str(skill_row[27] or "").strip() or str(movement_row[7] or "").strip()
+                summon_amount = int(skill_row[28] or 0) or int(movement_row[8] or 0)
+                summon_limit = int(skill_row[29] or 0) or int(movement_row[9] or 0)
+                summon = bool(summon_template) and summon_amount > 0 and skill_type in ("Shifted", "Melee")
+            if summon and skill_type == "Shifted":
+                command_id = SHIFTED_SKILL_COMMAND
+            elif summon and skill_type == "Melee":
+                command_id = SKILL_COMMAND
+            elif (
                 skill_type == "Melee"
                 and float(skill_row[16]) > 0.0
                 and "hostile" in str(skill_row[17]).casefold()
@@ -1286,6 +1321,9 @@ def _load_runtime_template(
                         min_difficulty=int(skill_row[24] or 0),
                         max_difficulty=int(skill_row[25] if skill_row[25] is not None else 99),
                         self_buff=self_buff,
+                        summon_template=summon_template if summon else "",
+                        summon_amount=max(0, int(summon_amount or 0)) if summon else 0,
+                        summon_limit=max(0, int(summon_limit or 0)) if summon else 0,
                     ),
                 )
             )
@@ -1307,10 +1345,10 @@ def _load_runtime_template(
     # approach range and interval) is a blow, and a monster with buffs only
     # fights as before, not at all.
     attacks = (
-        tuple(value for value in attacks if not value.self_buff)
-        + tuple(value for value in attacks if value.self_buff)
+        tuple(value for value in attacks if not value.support)
+        + tuple(value for value in attacks if value.support)
     )
-    if attacks[0].self_buff:
+    if attacks[0].support:
         return None
     attack = attacks[0]
     return (

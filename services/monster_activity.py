@@ -273,6 +273,34 @@ class MonsterActivityService:
                             context,
                         )
                     )
+                elif attack.command_id == SHIFTED_SKILL_COMMAND:
+                    # A monster's Shifted cast (its summons): on the target
+                    # point, absolute map coordinates; its impact HitFrame
+                    # (at least one tick) after the release frame the context
+                    # carries (impact_tick - server_tick == hit_frame +
+                    # pre_impact_delay, protocol/combat_protocol.py).
+                    definition = attack.definition
+                    skill_commands.append(
+                        ShiftedSkillServerCommand(
+                            ShiftedSkill(
+                                skill_level=attack.skill_level,
+                                skill_index=attack.skill_index,
+                                aim_angle=attack.aim_angle,
+                                server_tick=attack.server_tick,
+                                cast_id=attack.cast_id,
+                                variant=1,
+                                target_position=tuple(
+                                    float(value)
+                                    for value in attack.target_position[:3]
+                                ),
+                            ),
+                            attack.attacker_actor_id,
+                            context,
+                            max(1, int(definition.hit_frame))
+                            if definition is not None
+                            else 1,
+                        )
+                    )
                 elif attack.command_id == TARGET_BULLET_SKILL_COMMAND:
                     skill_commands.append(
                         TargetBulletSkillServerCommand(

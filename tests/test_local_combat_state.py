@@ -3149,7 +3149,8 @@ class LocalCombatStateTests(unittest.TestCase):
         names = [name for _now, name in used]
         self.assertEqual(
             set(names),
-            {"heredur_base_strike", "heredur_base_doublestrike", "heredur_base_missile"},
+            {"heredur_base_strike", "heredur_base_doublestrike", "heredur_base_missile",
+             "heredur_summon_01"},
         )
         for skill, cooldown in (("heredur_base_doublestrike", 5.0), ("heredur_base_missile", 20.0)):
             times = [now for now, name in used if name == skill]
