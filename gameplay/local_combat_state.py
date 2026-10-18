@@ -115,6 +115,10 @@ def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
 MONSTER_STOP_DISTANCE = 1.75
 RANGED_STANDOFF_RATIO = 0.80
 MONSTER_HOME_ARRIVAL_DISTANCE = 0.20
+# Player-owned mercenaries must not autonomously engage players in the city
+# hubs, even when both players have opted into PvP. Other summon behavior is
+# unchanged; this only gates player actors as targets for Shadow Souls.
+MERCENARY_PVP_SAFE_MAP_IDS = frozenset({"a0200_kingscity", "b1200_hub"})
 # ``_Template_StatusEffect`` row ``MonsterReturnHome`` (15 s, group "Special").
 # The wire id is that table's zero-based row order, so it shifts whenever the
 # table is edited. 701 is the fallback only; ``_return_home_effect_id``
@@ -8093,6 +8097,12 @@ class LocalCombatState:
         started = []
         for actor_id, summon in tuple(self.player_summons.items()):
             definition = summon.definition
+            can_target_players = not (
+                str(getattr(definition, "category", "")).casefold()
+                == "mercenary"
+                and str(self.encounter.map_id).casefold()
+                in MERCENARY_PVP_SAFE_MAP_IDS
+            )
             skill_index = definition.attack_skill_index
             database_skill_index = (
                 definition.attack_skill_database_index
@@ -8178,8 +8188,9 @@ class LocalCombatState:
                 )
                 hostile_player_ids = tuple(
                     target_actor_id
-                    for target_actor_id in hostile_by_owner.get(
-                        summon.owner_actor_id, ()
+                    for target_actor_id in (
+                        hostile_by_owner.get(summon.owner_actor_id, ())
+                        if can_target_players else ()
                     )
                     if target_actor_id in player_positions
                     and self._stationary_directional_position_is_target(
@@ -8237,7 +8248,8 @@ class LocalCombatState:
                     for target_actor_id in hostile_by_owner.get(
                         summon.owner_actor_id, ()
                     )
-                    if target_actor_id in player_positions
+                    if can_target_players
+                    and target_actor_id in player_positions
                 )
                 if not candidates:
                     continue
@@ -8487,6 +8499,13 @@ class LocalCombatState:
             for target_actor_id in pending.target_actor_ids:
                 target = self.monsters.get(target_actor_id)
                 if target is None:
+                    if (
+                        str(getattr(summon.definition, "category", "")).casefold()
+                        == "mercenary"
+                        and str(self.encounter.map_id).casefold()
+                        in MERCENARY_PVP_SAFE_MAP_IDS
+                    ):
+                        continue
                     if (
                         target_actor_id
                         not in hostile_by_owner.get(summon.owner_actor_id, ())
