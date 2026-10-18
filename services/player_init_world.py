@@ -697,6 +697,24 @@ class PlayerInitializationWorldService:
                 label="restore-active-skill-talent-preset",
             )
 
+        with s.flow_lock:
+            active_mercenary = str(s.gameplay_active_mercenary or "")
+            restore_mercenary = bool(
+                active_mercenary and s.gameplay_mercenary_restore_pending
+            )
+            if restore_mercenary and s.gameplay_combat_state is not None:
+                s.gameplay_mercenary_restore_pending = False
+            else:
+                restore_mercenary = False
+        if restore_mercenary:
+            definition = load_sticker_definition(
+                self.static_database_path, active_mercenary
+            )
+            if definition is not None and definition.kind == "mercenary":
+                CharacterService._activate_mercenary(
+                    self, s, definition, source="map transition restore"
+                )
+
     @staticmethod
     def _log_initialization_summary(
             s: Session, state: PlayerInitializationState,

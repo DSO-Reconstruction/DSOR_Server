@@ -1304,6 +1304,14 @@ class PlayerInitializationStateService:
                 if persisted_state is not None
                 else ""
             )
+            s.gameplay_active_mercenary = (
+                persisted_state.active_mercenary
+                if persisted_state is not None
+                else ""
+            )
+            s.gameplay_mercenary_restore_pending = bool(
+                s.gameplay_active_mercenary
+            )
             decoration_resources = list(
                 persisted_state.active_decorations if persisted_state is not None else ()
             )

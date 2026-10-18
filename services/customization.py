@@ -81,6 +81,74 @@ class CustomizationService:
         return True
 
     @staticmethod
+    def _select_mercenary_quickbar_shortcut(
+            s: Session, resource_id: str) -> bool:
+        """Point the mercenary quick slot at the Shadow Soul just activated."""
+
+        resource_id = str(resource_id).strip()
+        if resource_id.startswith("sb_mercenary_"):
+            resource_id = "item_mercenary_" + resource_id.removeprefix(
+                "sb_mercenary_"
+            )
+        if not resource_id.startswith("item_mercenary_"):
+            return False
+
+        with s.flow_lock:
+            if resource_id not in s.gameplay_stickerbook_entries:
+                return False
+            quick_slots = s.gameplay_quick_slots
+            if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
+                return False
+            bars = list(quick_slots.quickbars)
+            first_bar = list(bars[0])
+            if len(first_bar) != 17:
+                return False
+
+            def mercenary_resource(slot):
+                value = str(slot.resource_id or "").strip()
+                if value.startswith("sb_mercenary_"):
+                    value = "item_mercenary_" + value.removeprefix(
+                        "sb_mercenary_"
+                    )
+                return value if value.startswith("item_mercenary_") else ""
+
+            shortcuts = [
+                index for index in range(8, 13)
+                if first_bar[index].kind == 2
+                and mercenary_resource(first_bar[index])
+            ]
+            if shortcuts:
+                target = shortcuts[0]
+                if first_bar[target].resource_id == resource_id:
+                    return False
+            else:
+                target = next(
+                    (
+                        index for index in range(8, 13)
+                        if first_bar[index].kind == 0xFFFFFFFF
+                    ),
+                    None,
+                )
+                if target is None:
+                    return False
+
+            first_bar[target] = QuickSlotInfo(2, resource_id)
+            bars[0] = tuple(first_bar)
+            updated = QuickSlotsInfo(tuple(bars))
+            s.gameplay_quick_slots = updated
+
+        CharacterService._send_stickerbook_commands(
+            s,
+            (ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                updated,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),),
+            label="active-mercenary-quickbar-shortcut",
+        )
+        return True
+
+    @staticmethod
     def _mercenary_owner_aura_effect(
             s: Session, monster_id: str) -> tuple[int, tuple[float, ...]] | None:
         """Resolve the BuffUI child of a mercenary's Summoner aura."""
@@ -162,7 +230,7 @@ class CustomizationService:
                 not s.connected
                 or combat is None
                 or character is None
-                or move is None
+                or (move is None and s.gameplay_spawn_position is None)
             ):
                 raise ValueError("mercenary use requires an active map session")
             owner_actor_id = (
@@ -172,11 +240,17 @@ class CustomizationService:
             generation = s.gameplay_chase_generation
             tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
             if tick == 0:
-                tick = int(move.start_tick) & 0xFFFFFFFF
+                tick = int(
+                    move.start_tick if move is not None else server_time() // 40
+                ) & 0xFFFFFFFF
             level = max(1, int(character.level))
             class_name = CLASS_NAMES.get(int(character.class_id), "mage")
-            position = combat.encounter.coordinate_frame.wire_to_world(
-                move.relative_position
+            position = (
+                combat.encounter.coordinate_frame.wire_to_world(
+                    move.relative_position
+                )
+                if move is not None
+                else tuple(float(value) for value in s.gameplay_spawn_position)
             )
             yaw = float(getattr(move, "yaw", 0.0))
 
@@ -270,32 +344,18 @@ class CustomizationService:
             )
             s.gameplay_mercenary_status_effect = status_entry
             s.gameplay_mercenary_aura_status_effect = aura_entry
+            s.gameplay_active_mercenary = str(definition.resource_id)
+            s.gameplay_mercenary_restore_pending = False
         status_entries = []
         if previous_status is not None:
             status_entries.append(replace(
                 previous_status,
-                field_0c=start_tick,
-                field_14=SERVER_TICKS_PER_SECOND,
-                field_08=start_tick,
-                field_10=0,
-                field_20=LOCAL_PLAYER_ACTOR_ID,
-                field_25=False,
-                field_26=False,
-                field_39=True,
                 has_details=False,
                 values=(),
             ))
         if previous_aura is not None:
             status_entries.append(replace(
                 previous_aura,
-                field_0c=start_tick,
-                field_14=SERVER_TICKS_PER_SECOND,
-                field_08=start_tick,
-                field_10=0,
-                field_20=LOCAL_PLAYER_ACTOR_ID,
-                field_25=False,
-                field_26=False,
-                field_39=True,
                 has_details=False,
                 values=(),
             ))
@@ -325,15 +385,17 @@ class CustomizationService:
             modifier_sources,
             round_token=CharacterService._pvp_round_token(s),
         )
-        if CharacterService._ensure_mercenary_quickbar_shortcut(
+        quickbar_updated = CharacterService._select_mercenary_quickbar_shortcut(
             s, definition.resource_id
-        ):
-            CharacterService._persist_gameplay_session(
-                self,
-                s,
-                reason=f"Shadow Soul quickbar shortcut: {definition.resource_id}",
-                flush=True,
-            )
+        )
+        CharacterService._persist_gameplay_session(
+            self,
+            s,
+            reason=(
+                f"Shadow Soul activated: {definition.resource_id}"
+                + (" and quickbar shortcut added" if quickbar_updated else "")
+            ),
+        )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] activated mercenary "
             f"{definition.resource_id!r} -> {monster_id!r} from {source}"

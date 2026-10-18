@@ -175,6 +175,7 @@ class AccountState:
     stickerbook_entries: tuple[StickerbookEntry, ...] = ()
     active_costume: str = ""
     active_pet: str = ""
+    active_mercenary: str = ""
     active_decorations: tuple[str, ...] = ()
     quick_slots: QuickSlotsInfo | None = None
     membership_type: int = DELUXE_MEMBERSHIP
@@ -629,6 +630,7 @@ def _state_to_document(state: AccountState) -> dict:
         ],
         "active_costume": str(state.active_costume),
         "active_pet": str(state.active_pet),
+        "active_mercenary": str(state.active_mercenary),
         "active_decorations": list(state.active_decorations),
         "pvp_enabled": bool(state.pvp_enabled),
         "honor_points": int(state.honor_points),
@@ -847,6 +849,7 @@ def _state_from_document(document: dict) -> AccountState:
         ),
         active_costume=str(document.get("active_costume", "")),
         active_pet=str(document.get("active_pet", "")),
+        active_mercenary=str(document.get("active_mercenary", "")),
         active_decorations=tuple(
             str(value) for value in document.get("active_decorations", ()) if value
         ),

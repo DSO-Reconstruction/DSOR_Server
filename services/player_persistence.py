@@ -308,6 +308,7 @@ class PlayerPersistenceService:
             )
             active_costume = str(s.gameplay_active_costume)
             active_pet = str(s.gameplay_active_pet)
+            active_mercenary = str(s.gameplay_active_mercenary)
             active_decorations = tuple(
                 resource for resource, _instance in s.gameplay_active_decorations.values()
             )
@@ -469,6 +470,7 @@ class PlayerPersistenceService:
             stickerbook_entries=stickerbook_entries,
             active_costume=active_costume,
             active_pet=active_pet,
+            active_mercenary=active_mercenary,
             active_decorations=active_decorations,
             membership_type=membership_type,
             membership_expires_at=membership_expires_at,

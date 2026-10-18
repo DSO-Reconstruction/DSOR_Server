@@ -716,6 +716,8 @@ class Session:
         self.gameplay_recipe_book_resources = ()
         self.gameplay_active_costume = ""
         self.gameplay_active_pet = ""
+        self.gameplay_active_mercenary = ""
+        self.gameplay_mercenary_restore_pending = False
         self.gameplay_active_decorations = {}  # exclusive group -> (resource, instance)
         self.gameplay_active_costume_effect_instance_id = None
         self.gameplay_active_pet_effect_instance_id = None
