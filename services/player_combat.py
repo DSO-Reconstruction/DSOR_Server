@@ -159,6 +159,7 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_attack_speed = 0.0
         pvp_timers = ()
         entity_plan = None
         pvp_snapshot = ((), ())
@@ -241,6 +242,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     player_stats.minimum_damage,
                     player_stats.maximum_damage,
                 )
+                player_attack_speed = float(player_stats.attack_speed)
                 player_critical_hit_chance = (
                     player_stats.critical_hit_chance
                 )
@@ -505,6 +507,13 @@ class PlayerCombatService(PlayerCastTimingService):
                 server_tick=skill.server_tick,
                 label="player-skillstart-status-effects",
             )
+            if pending_hits or pvp_timers:
+                CharacterService._send_attack_speed_bonus_stack(
+                    s,
+                    attack_speed=player_attack_speed,
+                    server_tick=skill.server_tick,
+                    label="player-attack-speed-bonus-stack",
+                )
         if all((runtime_cast, combat, encounter, position, source_actor_id)):
             CharacterService._schedule_player_bullet_trail(
                 s, combat, encounter, skill, client_skill, position,
@@ -620,6 +629,7 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_attack_speed = 0.0
         skill_speed_multiplier = 1.0
         summon_definition = None
         trap_definition = None
@@ -701,6 +711,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 player_stats.minimum_damage,
                 player_stats.maximum_damage,
             )
+            player_attack_speed = float(player_stats.attack_speed)
             player_critical_hit_chance = (
                 player_stats.critical_hit_chance
             )
@@ -1018,6 +1029,13 @@ class PlayerCombatService(PlayerCastTimingService):
                 server_tick=client_skill.server_tick,
                 label="player-skillstart-status-effects",
             )
+            if pending_hits or pvp_timers:
+                CharacterService._send_attack_speed_bonus_stack(
+                    s,
+                    attack_speed=player_attack_speed,
+                    server_tick=client_skill.server_tick,
+                    label="player-attack-speed-bonus-stack",
+                )
             CharacterService._send_player_skill_status_effects(
                 s,
                 location_owner_effects,

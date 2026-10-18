@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
+from pathlib import Path
+import sqlite3
+import math
+
 from dso_server.protocol.gameplay_protocol import (
     StatusEffectCommandBatch,
     encode_status_effect_command_batch,
@@ -13,6 +18,27 @@ from dso_server.runtime.transport import Session
 
 COMBAT_BATCH_COMMAND_BUDGET = 16
 WIRE_UINT32_MAX = 0xFFFFFFFF
+ATTACK_SPEED_BONUS_STACK = "AttacksPerSecondBonus_stack"
+
+
+@lru_cache(maxsize=4)
+def _load_attack_speed_bonus_effects(database_path: str):
+    path = Path(database_path).resolve()
+    with sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True
+    ) as database:
+        stack = LocalCombatState._load_victim_status_effects(
+            database,
+            f"{ATTACK_SPEED_BONUS_STACK},C:1.0,D:5.0,DP:5.0,ON:Hit",
+        )[0]
+        buff = LocalCombatState._load_victim_status_effects(
+            database,
+            "AttacksPerSecondBonus_buff,C:1.0,D:30.0,DP:30.0,ON:Hit",
+        )[0]
+    # Its authored MaxStackSize child stops the stack at 100. The server
+    # consumes that edge instance in the same transaction that applies the
+    # linked damage buff.
+    return replace(stack, consume_on_max_stack=True), buff
 
 
 def _wire_uint32(value: int) -> int:
@@ -805,11 +831,41 @@ class CombatResolutionService:
         return running
 
     @staticmethod
+    def _send_attack_speed_bonus_stack(
+            s: Session, *, attack_speed: float, server_tick: int,
+            label: str) -> None:
+        """Add the speed-tiered number of native damage stacks per cast."""
+
+        speed = float(attack_speed)
+        if speed + 1e-9 < 4.0:
+            return
+        stacks_per_cast = min(
+            5,
+            1 + math.floor((speed - 4.0 + 1e-9) / 0.5),
+        )
+        combat = s.gameplay_combat_state
+        path = getattr(
+            getattr(combat, "encounter", None),
+            "static_database_path",
+            DEFAULT_STATIC_DB_PATH,
+        )
+        stack, buff = _load_attack_speed_bonus_effects(str(path))
+        CharacterService._send_player_skill_status_effects(
+            s,
+            (stack,) * stacks_per_cast,
+            server_tick=server_tick,
+            label=label,
+            max_stack_followups={int(stack.effect_id): (buff,)},
+        )
+
+    @staticmethod
     def _send_player_skill_status_effects(
             s: Session, definitions, *, server_tick: int,
-            label: str) -> None:
+            label: str, max_stack_followups=None) -> None:
         if not definitions or STATUS_EFFECTS_DISABLED:
             return
+        definitions = list(definitions)
+        max_stack_followups = max_stack_followups or {}
         from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
         combat = s.gameplay_combat_state
         path = getattr(getattr(combat, 'encounter', None), 'static_database_path', DEFAULT_STATIC_DB_PATH)
@@ -920,6 +976,11 @@ class CombatResolutionService:
                     # instead of starting the ladder again at zero -- Cold Chill
                     # would climb forever and Icy Wrath would fire exactly once.
                     consumed_this_batch.add(int(definition.effect_id))
+                    definitions.extend(
+                        max_stack_followups.get(
+                            int(definition.effect_id), ()
+                        )
+                    )
                 else:
                     s.gameplay_runtime_status_effects[instance_id] = (
                         entry,
