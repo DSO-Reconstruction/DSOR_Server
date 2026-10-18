@@ -737,6 +737,10 @@ class PresenceService:
             # one authoritative event so it can never outlive the state
             # transition it represents.
             packet_cache = {}
+            CharacterService._schedule_nefertari_death_despawn(
+                self, session, session.gameplay_combat_state,
+                dispatches, (session, *peers),
+            )
             for viewer in (session, *peers):
                 visible_dispatches = []
                 for resolution, label, loot_generation in dispatches:

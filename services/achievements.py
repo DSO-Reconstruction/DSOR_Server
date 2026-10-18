@@ -48,6 +48,10 @@ from dso_server.services.base import CharacterService
 
 
 ACHIEVEMENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] achievement:"
+RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS = (
+    "item_use_item_rune_extension_stone",
+    "item_use_item_rune_extension_stone_02",
+)
 
 
 def _log(message: str) -> None:
@@ -139,10 +143,18 @@ class AchievementService:
                 continue
             if complete_achievement(state, definition):
                 granted.append(definition.achievement_id)
+        for resource_id in RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS:
+            definition = catalog.achievement(resource_id)
+            if definition is not None and complete_achievement(
+                state, definition
+            ):
+                granted.append(definition.achievement_id)
         if granted:
             refresh_derived_achievements(catalog, state)
-            _log(f"granted recipe achievements {granted!r}")
-            CharacterService._request_account_save(s, "achievements granted")
+            _log(f"granted initialization achievements {granted!r}")
+            CharacterService._request_account_save(
+                s, "initialization achievements granted"
+            )
         return AchievementInfo(self._achievement_records(s))
 
     # ------------------------------------------------------------------

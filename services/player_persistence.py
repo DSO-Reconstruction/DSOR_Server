@@ -318,7 +318,10 @@ class PlayerPersistenceService:
             # Event buffs are rebuilt from the schedule on every map entry;
             # saving them would outlive the event that granted them.
             event_effect_instance_ids = (
-                s.gameplay_event_status_effect_instance_ids
+                set(s.gameplay_event_status_effect_instance_ids)
+                | set(
+                    s.gameplay_fractured_planes_status_effect_instance_ids
+                )
             )
             status_effects = {
                 instance_id: effect
@@ -525,7 +528,12 @@ class PlayerPersistenceService:
         closing_session = reason in {
             "client disconnect", "connection replaced", "server shutdown"
         }
-        store.put(state, flush=closing_session)
+        # Durable inventory mutations and map handoffs pass ``flush=True``.
+        # Dropping that flag here left the newest in-memory snapshot queued
+        # for the async writer, so a destination server could reload the
+        # previous equipment (including empty gem/rune/jewel sockets).
+        durable_snapshot = bool(flush or closing_session)
+        store.put(state, flush=durable_snapshot)
         # The per-account selection payload embeds the active character's
         # equipment, which this snapshot may have just changed. Its cache key
         # only tracks the roster, so the entry is dropped here rather than
@@ -564,7 +572,7 @@ class PlayerPersistenceService:
                         CharacterProfile.from_character_record(
                             character, gold=state.currency.gold
                         ),
-                        flush=closing_session,
+                        flush=durable_snapshot,
                     )
                     break
         if reason != 'interval':

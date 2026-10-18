@@ -4,17 +4,25 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 import threading
+import time
 
 from dso_server.protocol.consumable_protocol import load_instant_consumable_definition
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.fractured_planes_layout import is_tower_hardware
 from dso_server.services import movement_validation
 
 _PERSISTENT_SCRIPTED_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
 })
+# Fixed tower hardware is part of the arena, not a discovery target. Power
+# nodes and trap shooters have to stand where they were authored from the
+# moment the player arrives, because their beams and auras are what the room
+# geometry was designed around. Ordinary monsters keep the normal vicinity
+# radius; these are announced map-wide and never culled.
+_TOWER_MECHANISM_VISIBILITY_RADIUS = 100000.0
 _FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
 _FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
 _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
@@ -55,6 +63,20 @@ class WorldService:
     """Movement, actor discovery, world loot, and vicinity state."""
 
     @staticmethod
+    def _is_tower_hardware_actor(encounter, combat, actor_id) -> bool:
+        """Whether ``actor_id`` is fixed tower hardware on this map."""
+
+        if encounter is None or combat is None:
+            return False
+        monster = combat.monsters.get(int(actor_id))
+        if monster is None:
+            return False
+        return is_tower_hardware(
+            encounter.static_database_path, encounter.map_id,
+            monster.template_id,
+        )
+
+    @staticmethod
     def _monster_visibility_radius(encounter, combat, actor_id, *, exiting=False):
         """Return the visibility boundary for an actor on this map."""
 
@@ -63,6 +85,15 @@ class WorldService:
             if combat is not None
             else None
         )
+        if (
+            monster is not None
+            and encounter is not None
+            and is_tower_hardware(
+                encounter.static_database_path, encounter.map_id,
+                monster.template_id,
+            )
+        ):
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             encounter is not None
             and encounter.map_id.casefold() == _FORTRESS_GRIMMAG_MAP
@@ -133,6 +164,94 @@ class WorldService:
         return tuple(groups)
 
     @staticmethod
+    def _new_monster_batch_for_viewer(s, combat, batch, *, label: str):
+        """Strip NewMonster commands this client has already been sent.
+
+        The client asserts outright on a duplicate actor registration, so a
+        second NewMonster for a live actor id does not merely waste bandwidth -
+        it fails ``GameWorld::NewMonster`` and leaves an actor without an
+        effect module, which crashes the client on the next frame. Several
+        paths reserve an id and encode a batch outside the session lock, so a
+        reservation alone cannot prove the actor was never published. Keep an
+        explicit sent ledger and drop repeats here, at the single choke point
+        every monster spawn goes through.
+        """
+
+        if combat is None:
+            return batch
+        commands = tuple(batch.commands)
+        with s.flow_lock:
+            if s.gameplay_combat_state is not combat:
+                return batch
+            sent = s.gameplay_new_monster_sent_actor_ids
+            kept = []
+            duplicates = []
+            new_monsters = 0
+            for command in commands:
+                if isinstance(command, NewMonsterServerCommand):
+                    new_monsters += 1
+                    actor_id = int(command.value.actor_id)
+                    if actor_id in sent:
+                        duplicates.append(actor_id)
+                        continue
+                    sent.add(actor_id)
+                kept.append(command)
+        if duplicates:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] suppressed duplicate NewMonster for "
+                f"actor(s) {sorted(set(duplicates))} on "
+                f"{getattr(getattr(combat, 'encounter', None), 'map_id', '?')} "
+                f"({label}); the client already created them"
+            )
+        tower_ids = tuple(
+            int(command.value.actor_id)
+            for command in kept
+            if isinstance(command, NewMonsterServerCommand)
+            and int(command.value.actor_id)
+            in getattr(combat, "tower_beam_started_at", {})
+        )
+        if tower_ids:
+            # Permanent monster status effects are serialized with StartTick=0.
+            # The client therefore phases the rotating aura from the shared
+            # server clock, even when this viewer receives the actor later.
+            started_at = getattr(s, "gameplay_tower_beam_started_at", None)
+            if started_at is None:
+                started_at = {}
+                s.gameplay_tower_beam_started_at = started_at
+            for actor_id in tower_ids:
+                started_at[actor_id] = 0.0
+        if not duplicates:
+            return batch
+        if new_monsters and not any(
+            isinstance(command, NewMonsterServerCommand) for command in kept
+        ):
+            # Every actor in this batch was already published, and the
+            # permanent status effects travel with NewMonster. Nothing here
+            # would create anything the client does not already have.
+            return None
+        if not kept:
+            return None
+        return MonsterSpawnBatch(tuple(kept))
+
+    @staticmethod
+    def _forget_published_monsters(s, actor_ids) -> None:
+        """Release actor ids from the sent ledger once the client drops them.
+
+        ``_new_monster_batch_for_viewer`` refuses to publish an actor twice
+        because the client asserts on a duplicate registration. That ledger
+        must shrink in lockstep with the client's own actor table, otherwise a
+        monster that was culled and later re-enters the vicinity would never be
+        created again and would stay invisible while still alive and blocking
+        every clear gate. Call this on every path that sends a discard, in the
+        same critical section that edits ``gameplay_spawned_monster_actor_ids``.
+        """
+
+        forgotten = tuple(int(actor_id) for actor_id in actor_ids)
+        if not forgotten:
+            return
+        s.gameplay_new_monster_sent_actor_ids.difference_update(forgotten)
+
+    @staticmethod
     def _monster_vicinity_state(combat, group):
         """Build retail's MonsterUpdate* -> ActorsEnterVicinity snapshot."""
 
@@ -194,6 +313,9 @@ class WorldService:
             spawned = set(s.gameplay_spawned_monster_actor_ids)
             announced = set(s.gameplay_announced_monster_actor_ids)
             standalone = s.gameplay_presence_callback is None
+            fractured_run = bool(
+                getattr(s, "gameplay_fractured_planes_run", False)
+            )
 
         # Session visibility and map-world transforms are separate ownership
         # domains. Never wait for the shared map lock while monopolising the
@@ -206,8 +328,18 @@ class WorldService:
                 for actor_id in announced
                 if (
                     combat.monsters.get(actor_id) is not None
-                    and combat.monsters[actor_id].template_id.casefold()
-                    in _PERSISTENT_SCRIPTED_ACTORS
+                    and (
+                        combat.monsters[actor_id].template_id.casefold()
+                        in _PERSISTENT_SCRIPTED_ACTORS
+                        or CharacterService._is_tower_hardware_actor(
+                            encounter, combat, actor_id,
+                        )
+                        or (
+                            fractured_run
+                            and combat.monsters[actor_id].rank_id.casefold()
+                            == "rank_boss_endlesstower"
+                        )
+                    )
                 )
             }
         forgotten = {
@@ -253,6 +385,7 @@ class WorldService:
             s.gameplay_spawned_monster_actor_ids.difference_update(
                 discarded
             )
+            CharacterService._forget_published_monsters(s, discarded)
             for actor_id in forgotten:
                 s.gameplay_delivered_monster_positions.pop(actor_id, None)
             s.gameplay_announced_monster_actor_ids.difference_update(
@@ -363,9 +496,15 @@ class WorldService:
         correction = None
         with s.flow_lock:
             s.gameplay_revive_movement_correction_until = 0.0
+            previous_move = s.gameplay_last_move
+            previous_move_received_at = float(
+                getattr(s, "gameplay_last_move_received_at", 0.0) or 0.0
+            )
             refusal = movement_validation.check_move(s, move)
             if refusal is None:
                 s.gameplay_last_move = move
+                accepted_move_at = server_time() / 1000.0
+                s.gameplay_last_move_received_at = accepted_move_at
             else:
                 # Retain the last valid server position and periodically send
                 # a correction while the client continues to predict locally.
@@ -428,6 +567,22 @@ class WorldService:
         CharacterService._accept_gameplay_state_command(s, 0x005F)
         update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
         s.send_unreliable_sequenced(update)
+        # Resolve player-contact hazards as soon as the validated position is
+        # accepted. Vicinity discovery and monster culling can do substantial
+        # work on this movement path, so running collision after those steps
+        # made a fast crossing appear to damage the player seconds later.
+        CharacterService._check_trigger_volumes(
+            s,
+            move.relative_position,
+            previous_wire_position=(
+                previous_move.relative_position
+                if previous_move is not None
+                else None
+            ),
+            previous_wire_position_at=(
+                previous_move_received_at or accepted_move_at
+            ),
+        )
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(s, 'move')
         if VERBOSE_PACKET_LOGGING:
@@ -539,9 +694,14 @@ class WorldService:
                     positions=current_positions,
                 )
                 if scripted_group is not None:
-                    packet, packet_bits = encode_monster_spawn_batch(
-                        scripted_group.spawn_batch
+                    batch = CharacterService._new_monster_batch_for_viewer(
+                        s, combat, scripted_group.spawn_batch,
+                        label="fortress-grimmag-monster-spawn",
                     )
+                else:
+                    batch = None
+                if batch is not None:
+                    packet, packet_bits = encode_monster_spawn_batch(batch)
                     if len(packet) > TAIL_FRAG_SIZE:
                         s.send_reliable_ordered_split(
                             packet,
@@ -601,7 +761,6 @@ class WorldService:
                 ),
             )
         CharacterService._check_map_companions(s, move.relative_position)
-        CharacterService._check_trigger_volumes(s, move.relative_position)
         CharacterService._reconcile_world_loot_visibility(
             s,
             move.relative_position,
@@ -740,6 +899,10 @@ class WorldService:
                 f"{MONSTER_VISIBILITY_EXIT_RADIUS:.1f}-unit exit radius"
             )
         if spawn_batch is not None:
+            spawn_batch = CharacterService._new_monster_batch_for_viewer(
+                s, combat, spawn_batch, label="monster-spawn-batch",
+            )
+        if spawn_batch is not None:
             packet, packet_bits = encode_monster_spawn_batch(spawn_batch)
             if len(packet) > TAIL_FRAG_SIZE:
                 s.send_reliable_ordered_split(
@@ -768,6 +931,62 @@ class WorldService:
             if combat is not None and activate_actor_ids:
                 with combat.lock:
                     combat.activate_monsters(activate_actor_ids)
+                # An ActorRequest can race a lethal hit: it snapshots an
+                # actor while alive, then queues NewMonster after the Kill
+                # transaction. The client would recreate the dead actor from
+                # that stale snapshot and leave its corpse visible. Recheck
+                # after NewMonster is ordered and retire any such actor after
+                # it, so the reliable stream always ends in the dead state.
+                with combat.lock:
+                    dead_after_spawn = tuple(
+                        actor_id
+                        for actor_id in activate_actor_ids
+                        if combat.monster_health.get(actor_id, 0) <= 0
+                    )
+                if dead_after_spawn:
+                    with s.flow_lock:
+                        if s.gameplay_combat_state is not combat:
+                            dead_after_spawn = ()
+                        else:
+                            s.gameplay_spawned_monster_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            CharacterService._forget_published_monsters(
+                                s, dead_after_spawn
+                            )
+                            s.gameplay_announced_monster_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            s.gameplay_requested_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            s.gameplay_delivered_monster_positions = {
+                                actor_id: position
+                                for actor_id, position
+                                in s.gameplay_delivered_monster_positions.items()
+                                if actor_id not in dead_after_spawn
+                            }
+                            s.gameplay_monsters_spawned = bool(
+                                s.gameplay_spawned_monster_actor_ids
+                            )
+                            s.gameplay_vicinity_announced = bool(
+                                s.gameplay_announced_monster_actor_ids
+                            )
+                    if dead_after_spawn:
+                        s.send_reliable_ordered(
+                            encode_discard_monster_batch(dead_after_spawn),
+                            track=True,
+                            label="monster-spawn-race-discard",
+                        )
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] discarded dead actor(s) "
+                            f"recreated by a late ActorRequest: {dead_after_spawn}"
+                        )
+                        spawned_actor_ids = tuple(
+                            actor_id
+                            for actor_id in spawned_actor_ids
+                            if actor_id not in dead_after_spawn
+                        )
             if VERBOSE_PACKET_LOGGING:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] fulfilled ActorRequest for "

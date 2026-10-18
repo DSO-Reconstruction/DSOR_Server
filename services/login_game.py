@@ -474,6 +474,13 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_quest_trigger_signal(self, s, payload)
         elif command_id == 0x0113:
             CharacterServer._handle_staging_signal(self, s, payload)
+        elif command_id == 0x0170:
+            CharacterServer._accept_gameplay_state_command(s, command_id)
+            CharacterServer._send_fractured_planes_effect_choices(self, s)
+        elif command_id == 0x0174:
+            CharacterServer._handle_fractured_planes_first_clear_acceptance(
+                self, s, payload
+            )
         elif command_id in {
             0x00BB, 0x00E2, 0x00E8, 0x00EA,
         }:

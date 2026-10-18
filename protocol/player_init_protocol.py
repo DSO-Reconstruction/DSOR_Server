@@ -113,6 +113,11 @@ KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
 # selected-table fallback is :data:`UNAVAILABLE_COMMAND_ID`) and never through
 # ``_BODY_WRITERS`` (whose 0x016c entry emits the award body).
 KILL_MONSTER_GET_TOTAL_SCORES_COMMAND = 0x016C
+# The installed client registers this after the two high-score commands.
+# Like the score command above, the older selected table has a different
+# command at this slot, so this codec uses the verified registration directly.
+GET_SELF_ENDLESS_TOWER_DATA_COMMAND = 0x016F
+GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND = 0x0171
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
@@ -150,7 +155,11 @@ class ServerCommand:
 
 @dataclass(frozen=True)
 class KickOutToHubLimitTimeLeft:
-    """Seconds remaining for the client's native LimitTimeWidget."""
+    """Native floor timer; zero selects the panel's Level completed phase.
+
+    PlanarFissureInfoWidget::SetTimeLeft (0x1405b7f2c) calls the phase-three
+    setter on zero; it is also the boss-clear notification for this panel.
+    """
 
     seconds: int
 
@@ -197,6 +206,51 @@ def encode_kill_monster_get_total_scores(
     )
     writer.write_uint32_le(score)
     writer.write_uint32_le(actor_id)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def encode_endless_tower_buffs(
+    resources: tuple[str, ...], *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Native 0x171: u32 count, u16-length StringAtom entries, actor ID.
+
+    Verified in rel261_192: vtable 0x14117c310, decoder 0x140979484,
+    StringAtom-array reader 0x14095dc2c. The portal displays the first
+    ActNumber entries from ClientActivityManager +0xc0 (0x1405b2c08).
+    """
+
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND.to_bytes(2, "little"))
+    writer.write_uint32_le(len(resources))
+    for resource in resources:
+        writer.write_string(resource)
+    writer.write_uint32_le(actor_id)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def encode_endless_tower_progress(
+    cleared_floor: int, claimed_floor: int, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Refresh the native Fractured Planes floor selection.
+
+    GetSelfEndlessTowerDataCommand reads three u32s (0x140979364):
+    highest cleared floor, ranking score, highest rewarded floor. Its handler
+    stores them in ClientRankingManager +0x1a0/+0x1a4/+0x1a8. The map-access
+    widget selects cleared_floor + 1 (0x1405b5be8). A trailing actor is read
+    by the inherited decoder, just like KillMonsterGetTotalScoresCommand.
+    No leaderboard score is published by this local progression update.
+    """
+
+    if not 0 <= claimed_floor <= cleared_floor <= 100:
+        raise ValueError("invalid Endless Tower floor progress")
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(GET_SELF_ENDLESS_TOWER_DATA_COMMAND.to_bytes(2, "little"))
+    for value in (cleared_floor, 0, claimed_floor, actor_id):
+        writer.write_uint32_le(value)
     writer.write_uint8(0xFF)
     return writer.finish()
 

@@ -651,6 +651,9 @@ class Session:
         self.gameplay_exit_distances = {}
         self.gameplay_exit_callback = None
         self.gameplay_exit_transition_started = False
+        # Inventory item actions (including socket insertion) and a map
+        # handoff must not snapshot different sides of the same mutation.
+        self.gameplay_inventory_action_lock = threading.RLock()
         # Switch-character countdown outside hubs (services/map_transition.py)
         self.gameplay_logout_timer = None
         self.gameplay_logout_generation = 0
@@ -682,6 +685,15 @@ class Session:
         self.gameplay_requested_actor_ids = set()
         self.gameplay_monsters_spawned = False
         self.gameplay_spawned_monster_actor_ids = set()
+        # Every actor id this client has actually been sent NewMonster for on
+        # the current map. ``gameplay_spawned_monster_actor_ids`` is a
+        # reservation set that several paths add to before they encode, so it
+        # cannot answer "did the client already create this actor?" on its
+        # own. This ledger can, and the client asserts hard on a duplicate
+        # registration: RegisterActor() rejects the id, NewMonster() fails to
+        # set the monster up, and the half-built actor trips an effect-module
+        # assertion a frame later.
+        self.gameplay_new_monster_sent_actor_ids = set()
         # Last transform actually submitted to this client's socket for each
         # registered monster. Shared combat positions advance even when an
         # unreliable movement frame is skipped behind another outbound write;
@@ -728,6 +740,7 @@ class Session:
         self.gameplay_timed_status_effect_expiries = {}
         # Buffs granted by active game events; excluded from persistence.
         self.gameplay_event_status_effect_instance_ids = frozenset()
+        self.gameplay_fractured_planes_status_effect_instance_ids = frozenset()
         self.gameplay_item_set_effects = {}
         self.gameplay_item_set_evaluation = None
         self.gameplay_socket_effects = {}

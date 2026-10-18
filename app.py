@@ -32,7 +32,11 @@ from dso_server.runtime.stall_watchdog import StallWatchdog
 from dso_server.runtime.gc_tuning import ManagedGarbageCollector
 from dso_server.runtime.monster_runtime_diagnostics import worker_snapshot
 from dso_server.runtime.maintenance import MaintenanceShutdown
-from dso_server.paths import DEFAULT_PLAYER_DATABASE_PATH, DEFAULT_SOCIAL_STATE_PATH
+from dso_server.paths import (
+    DEFAULT_PLAYER_DATABASE_PATH,
+    DEFAULT_SOCIAL_STATE_PATH,
+    DEFAULT_STATIC_DB_PATH,
+)
 from dso_server.runtime.transport import (
     UNSPECIFIED_HOSTS,
     FrameBuilder,
@@ -230,6 +234,7 @@ class ServerApplication:
                 "DSO_PLAYER_DATABASE",
                 str(DEFAULT_PLAYER_DATABASE_PATH),
             ),
+            static_database_path=DEFAULT_STATIC_DB_PATH,
         )
         self.social_store = SocialStateStore(
             social_state_file

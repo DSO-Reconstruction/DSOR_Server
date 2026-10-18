@@ -995,17 +995,27 @@ class MapEventRuntime:
     pending_start_deadlines: dict[str, float] = field(default_factory=dict)
     fractured_planes_limit_deadline: float | None = None
     fractured_planes_limit_timer: object | None = None
+    fractured_planes_tower_timer: object | None = None
+    fractured_planes_floor_completed: bool = False
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
     wave_countdown_digits: dict[str, int] = field(default_factory=dict)
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     completed_quests: set[tuple[int, str]] = field(default_factory=set)
     enabled_event_sets: set[int] = field(default_factory=set)
+    # Rows the server turned off itself because the content they gate is spent
+    # (Fractured Planes trap and debuff auras). ``_transition`` must not bring
+    # them back: their authored release signal never fires on these maps.
+    suppressed_event_sets: set[int] = field(default_factory=set)
     props: dict[int, PropRuntimeState] = field(default_factory=dict)
     # StateObject IndividualUsage is scoped to a player and this map instance.
     individual_prop_usage: set[tuple[int, int]] = field(default_factory=set)
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
+    # Monotonic animation anchors for rotating tower beams, shared by every
+    # player in this map instance so server hit checks agree with one another.
+    tower_beam_started_at: dict[int, float] = field(default_factory=dict)
     fired_once: set[str] = field(default_factory=set)
     kill_score: int = 0
+    fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
     generation: int = 0
 
@@ -1061,6 +1071,8 @@ class MapEventRuntime:
             satisfied = event_set.satisfied(flags)
             currently = event_set.row in self.enabled_event_sets
             if satisfied and not currently:
+                if event_set.row in self.suppressed_event_sets:
+                    continue
                 self.enabled_event_sets.add(event_set.row)
                 enabled.append(event_set.row)
             elif currently and not satisfied:
@@ -1100,6 +1112,26 @@ class MapEventRuntime:
             return None
         self.generation += 1
         return self._transition(definition, False)
+
+    def suppress_event_sets(self, rows: Iterable[int]) -> tuple[int, ...]:
+        """Force these EventSet rows off for the rest of the instance.
+
+        Returns the rows that were actually enabled and are now off, so the
+        caller can tell whether anything changed. Suppression is permanent by
+        design: it is how the server retires Fractured Planes trap auras whose
+        authored release signal only ever fires from retail's static selector.
+        """
+
+        removed = []
+        for row in rows:
+            row = int(row)
+            self.suppressed_event_sets.add(row)
+            if row in self.enabled_event_sets:
+                self.enabled_event_sets.discard(row)
+                removed.append(row)
+        if removed:
+            self.generation += 1
+        return tuple(removed)
 
     def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
         """Gated monster rows for these sets, minus tiers this instance lacks."""

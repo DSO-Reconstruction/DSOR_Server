@@ -32,6 +32,10 @@ from dso_server.gameplay.map_unlocks import (
 )
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.endless_tower_effects import (
+    endless_tower_player_buffs,
+)
+from dso_server.gameplay.event_system import event_status_entry
 from dso_server.gameplay.membership_effects import (
     membership_status_effect,
     membership_status_effect_ids,
@@ -138,6 +142,7 @@ class PlayerInitializationState:
     # persistent set so combat, XP and the client see them, but they are
     # rebuilt from the schedule on every initialization and never saved.
     event_status_effect_instance_ids: frozenset = frozenset()
+    fractured_planes_status_effect_instance_ids: frozenset = frozenset()
     next_status_effect_instance_id: int = 0
     item_set_evaluation: Any = None
     item_set_effects: dict = field(default_factory=dict)
@@ -1038,6 +1043,51 @@ class PlayerInitializationStateService:
                 persistent_status_effects[effect.field_04] = effect
                 event_status_effect_instance_ids.add(effect.field_04)
                 next_status_effect_instance_id += 1
+        fractured_planes_status_effect_instance_ids = set()
+        tower_buffs = endless_tower_player_buffs(
+            self.static_database_path,
+            state.map_access.request_map_id,
+            character_id=int(character.character_id),
+        )
+        # These run-specific buffs are rebuilt on every floor entry. Remove
+        # any stale saved tower effects first, then restore the acts reached
+        # by this Fractured Planes run.
+        stale_tower_instance_ids = {
+            instance_id
+            for instance_id, effect in persistent_status_effects.items()
+            if int(effect.effect_id) in tower_buffs.all_effect_ids
+        }
+        persistent_status_effects = {
+            instance_id: effect
+            for instance_id, effect in persistent_status_effects.items()
+            if int(effect.effect_id) not in tower_buffs.all_effect_ids
+        }
+        timed_status_effect_expiries = {
+            instance_id: expires_at
+            for instance_id, expires_at in timed_status_effect_expiries.items()
+            if instance_id not in stale_tower_instance_ids
+        }
+        if (
+            bool(getattr(character, "fractured_planes_run", False))
+            and tower_buffs.act_number > 0
+        ):
+            for spec in tower_buffs.specs:
+                effect = event_status_entry(
+                    spec,
+                    instance_id=next_status_effect_instance_id,
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                )
+                persistent_status_effects[effect.field_04] = effect
+                fractured_planes_status_effect_instance_ids.add(
+                    effect.field_04
+                )
+                next_status_effect_instance_id += 1
+            if tower_buffs.specs:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] restored Fractured Planes "
+                    f"act {tower_buffs.act_number} player effects: "
+                    f"{len(tower_buffs.specs)}"
+                )
         collector_owned = {
             entry.resource_id
             for entry in (
@@ -1132,6 +1182,9 @@ class PlayerInitializationStateService:
         state.talent_effect_instance_ids = talent_effect_instance_ids
         state.event_status_effect_instance_ids = frozenset(
             event_status_effect_instance_ids
+        )
+        state.fractured_planes_status_effect_instance_ids = frozenset(
+            fractured_planes_status_effect_instance_ids
         )
         state.next_status_effect_instance_id = next_status_effect_instance_id
         state.item_set_evaluation = item_set_evaluation
@@ -1415,6 +1468,9 @@ class PlayerInitializationStateService:
             )
             s.gameplay_event_status_effect_instance_ids = frozenset(
                 state.event_status_effect_instance_ids
+            )
+            s.gameplay_fractured_planes_status_effect_instance_ids = (
+                frozenset(state.fractured_planes_status_effect_instance_ids)
             )
             s.gameplay_item_set_effects = state.item_set_effects
             s.gameplay_item_set_evaluation = state.item_set_evaluation

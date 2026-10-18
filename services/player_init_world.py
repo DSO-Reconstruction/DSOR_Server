@@ -307,9 +307,11 @@ class PlayerInitializationWorldService:
             s.gameplay_requested_actor_ids.clear()
             s.gameplay_monsters_spawned = False
             s.gameplay_spawned_monster_actor_ids.clear()
+            s.gameplay_new_monster_sent_actor_ids.clear()
             s.gameplay_delivered_monster_positions.clear()
             s.gameplay_no_target_cast_streak = 0
             s.gameplay_last_monster_resync_at = 0.0
+            s.gameplay_tower_beam_started_at = {}
             s.gameplay_summon_actor_ids.clear()
             s.gameplay_location_effect_ids.clear()
             s.gameplay_remote_visual_status_effects.clear()

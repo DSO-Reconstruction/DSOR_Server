@@ -6,6 +6,7 @@ import sqlite3
 
 from dso_server.gameplay.local_map_state import map_database_path
 from dso_server.gameplay.boss_encounter_policy import density_spawn_templates
+from dso_server.gameplay.fractured_planes_layout import is_tower_layout
 from dso_server.gameplay.local_monster_state import (
     _load_spawn_areas, _grounded_spawn_area_candidates, _area_template_pool,
     _load_runtime_definition,
@@ -16,11 +17,18 @@ from dso_server.gameplay.map_event_state import GatedSpawnRow, map_key
 def event_area_spawn_rows(runtime, encounter, event_sets):
     wanted = frozenset(event_set for event_set in event_sets
                        if not runtime.event_set_actor_ids.get(event_set))
+    already_populated = frozenset(
+        getattr(encounter, "prematerialized_spawn_area_rows", frozenset())
+    )
     with sqlite3.connect(map_database_path(encounter.static_database_path, runtime.map_id)) as db:
-        areas = tuple(a for a in _load_spawn_areas(
-            db, enabled_event_sets=wanted,
-            scaling_difficulty=runtime.scaling_difficulty,
-        ) if a.event_set_row in wanted)
+        areas = tuple(
+            area for area in _load_spawn_areas(
+                db, enabled_event_sets=wanted,
+                scaling_difficulty=runtime.scaling_difficulty,
+            )
+            if area.event_set_row in wanted
+            and area.row_id not in already_populated
+        )
     if not areas:
         return ()
     # The shipped client has SpawnListId references but no server spawn-list
@@ -45,8 +53,12 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
     for area in areas:
         if not area.spawn_list_id.strip():
             continue
-        pool = tuple(metadata) or _area_template_pool(
-            encounter.static_database_path, runtime.map_id, area, ())
+        pool = (
+            _area_template_pool(encounter.static_database_path, runtime.map_id, area, ())
+            if is_tower_layout(runtime.map_id)
+            else tuple(metadata) or _area_template_pool(
+                encounter.static_database_path, runtime.map_id, area, ())
+        )
         name = area.spawn_list_id.casefold()
         # Adds/main populations exclude the bosses/guardians placed as fixed
         # points in the same script. Explicit leader/sentinel areas keep them.

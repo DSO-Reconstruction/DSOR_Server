@@ -21,6 +21,13 @@ from pathlib import Path
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.services.endless_tower_buffs import start_tower_buffs, tower_kills
+from dso_server.gameplay.endless_tower_effects import endless_tower_player_buffs
+from dso_server.gameplay.fractured_planes_layout import (
+    TOWER_AURA_RATE_MULTIPLIER,
+    is_tower_controller, is_tower_hardware, is_tower_layout,
+    is_tower_mechanism,
+)
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     active_local_map_event_flags,
@@ -54,6 +61,12 @@ from dso_server.gameplay.map_event_state import (
 )
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
+from dso_server.protocol.combat_protocol import (
+    CombatBatch,
+    Kill,
+    KillServerCommand,
+    encode_combat_batch,
+)
 from dso_server.protocol.gameplay_protocol import (
     PROP_INFO_COMMAND,
     ActorsEnterVicinity,
@@ -80,6 +93,8 @@ from dso_server.protocol.player_init_protocol import (
     KickOutToHubLimitTimeLeft,
     ServerCommand,
     encode_event_update,
+    encode_endless_tower_progress,
+    encode_endless_tower_buffs,
     encode_kill_monster_get_total_scores,
     encode_server_command_batch,
 )
@@ -123,6 +138,42 @@ def _monster_kill_score(static_database_path: str, template_id: str) -> int:
         _log(f"kill-score template {template_id!r} is missing from static data")
         return 0
     return max(0, int(row[0] or 0))
+
+
+@lru_cache(maxsize=128)
+def _nefertari_death_despawn_timing(
+        static_database_path: str, template_id: str):
+    """Read authored death/despawn durations for Nefertari actors."""
+
+    if "nefertari" not in str(template_id).casefold():
+        return None
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro",
+            uri=True,
+        ) as database:
+            row = database.execute(
+                "SELECT DeathDuration, DespawnDuration, DeathSequence, "
+                "DespawnSequence FROM _Template_Monster WHERE Id=? LIMIT 1",
+                (str(template_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return None
+    if row is None:
+        return None
+    death_duration = max(0.0, float(row[0] or 0.0))
+    despawn_duration = max(0.0, float(row[1] or 0.0))
+    death_sequence = str(row[2] or "").casefold()
+    despawn_sequence = str(row[3] or "").casefold()
+    if death_duration <= 0.0:
+        return None
+    if (
+        not despawn_sequence
+        or despawn_sequence == death_sequence
+        or despawn_duration <= 0.0
+    ):
+        despawn_duration = 0.0
+    return death_duration, despawn_duration
 
 
 @lru_cache(maxsize=32)
@@ -191,12 +242,11 @@ def _endless_tower_first_clear_rewards(static_database_path: str,
     return tuple(definitions)
 
 
-@lru_cache(maxsize=32)
-def _fractured_planes_floor_one_hazards(static_database_path: str,
-                                        map_id: str):
-    """Load Endless Tower floor-one lethal location auras as oriented boxes."""
+@lru_cache(maxsize=128)
+def _fractured_planes_hazards(static_database_path: str, map_id: str):
+    """Load damaging Fractured Planes location effects for a physical floor."""
 
-    if map_key(map_id) != "h0009_endlesstower_01_sm_01":
+    if not map_key(map_id).startswith("h0009_endlesstower_01_sm_"):
         return ()
     path = map_database_path(static_database_path, map_id)
     try:
@@ -204,12 +254,13 @@ def _fractured_planes_floor_one_hazards(static_database_path: str,
             rows = database.execute(
                 "SELECT rowid, EventSetRow, Transform, StatusEffectId "
                 "FROM _Instance_LocationEffect "
-                "WHERE lower(StatusEffectId)=?",
-                ("h0009_arena_path_kill_aura",),
+                "WHERE lower(StatusEffectId) LIKE '%kill_aura' "
+                "OR lower(StatusEffectId) LIKE '%_fire_aura' "
+                "OR lower(StatusEffectId) LIKE '%_trap_damage%'"
             ).fetchall()
     except (OSError, sqlite3.Error) as exc:
         _log(
-            f"Fractured Planes floor-one hazard load failed: "
+            f"Fractured Planes hazard load failed on {map_id}: "
             f"{type(exc).__name__}: {exc}"
         )
         return ()
@@ -229,6 +280,337 @@ def _fractured_planes_floor_one_hazards(static_database_path: str,
     return tuple(result)
 
 
+# How far a trap/debuff aura may sit from the room it belongs to. Authored
+# auras sit on the corridor in front of their room, a few tens of units away
+# from the density area that populates it.
+HAZARD_ROOM_BIND_RADIUS = 60.0
+
+
+# A fixed tower that hurts the player through an aura rather than a skill.
+# ``e_dra_fortress_normal_powernode`` is the Fractured Planes laser: its
+# ``Skills`` column is empty, so it never casts anything. Its authored
+# ``dragan_rotation_aura_small_01`` status supplies the tower's native effect
+# and remains on the actor. The server applies level-scaled
+# ``MinDamage``/``MaxDamage`` through the tighter contact check below.
+TOWER_AURA_MIN_INTERVAL = 0.5
+# The authored visual is a rotating star beam (1 unit wide, 360 degree sweep),
+# not a damaging 8-unit sphere. Keep the native effect for rendering and use
+# its beam dimensions for the server hit test.
+# Every authored player character has CapsuleRadius=0.5 in the static client
+# data. Treat the blue beam as a finite 3D segment and test the distance from
+# that segment to the player's capsule center; the earlier point-only check
+# missed legitimate contacts whenever the character capsule touched the beam
+# while its origin remained just outside the visual strip.
+TOWER_PLAYER_COLLISION_RADIUS = 0.5
+# Character skeletons place the pick/collision body roughly one unit above
+# the actor origin. Extend the segment check along that vertical capsule axis
+# before measuring separation, so standing on a floor laser can make contact.
+TOWER_PLAYER_CAPSULE_HALF_HEIGHT = 1.0
+TOWER_BEAM_CHECK_INTERVAL = 0.05
+
+
+@lru_cache(maxsize=256)
+def _tower_aura_spec(
+    static_database_path: str, template_id: str,
+) -> tuple[float, float, float, float, float] | None:
+    """Return ``(range, tick, width, rotation_speed, start_angle)``.
+
+    The authored aura also contains a broad target sphere. Damage follows only
+    the visible rotating star beam using its range, width and rotation data.
+    """
+
+    try:
+        with sqlite3.connect(
+            f"file:{static_database_path}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT PermanentStatusEffect FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
+                (str(template_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            ids = tuple(
+                value.strip() for value in str(row[0] or "").split(";")
+                if value.strip()
+            )
+            if not ids:
+                return None
+            placeholders = ",".join("?" * len(ids))
+            best = None
+            for (
+                aura_id, targets, radius, tick_rate, beam_width,
+                rotation_speed, start_angle,
+            ) in database.execute(
+                "SELECT Id, COALESCE(AuraTargets, ''), COALESCE(AuraRadius, 0), "
+                "COALESCE(StatusEffectTickRate, 1.0), "
+                "COALESCE(AuraStarBeamWidth, 0), "
+                "COALESCE(AuraRotationSpeed, 0), "
+                "COALESCE(AuraStartAngle, 0) "
+                f"FROM _Template_StatusEffect WHERE Id IN ({placeholders})",
+                ids,
+            ):
+                wanted = str(targets or "").casefold()
+                if "enem" not in wanted and "all" not in wanted:
+                    continue
+                radius = float(radius or 0.0)
+                beam_width = float(beam_width or 0.0)
+                if radius <= 0.0 or beam_width <= 0.0:
+                    continue
+                interval = max(
+                    TOWER_AURA_MIN_INTERVAL,
+                    float(tick_rate or 1.0) / TOWER_AURA_RATE_MULTIPLIER,
+                )
+                candidate = (
+                    radius,
+                    interval,
+                    beam_width,
+                    float(rotation_speed or 0.0),
+                    float(start_angle or 0.0),
+                )
+                if best is None or candidate[0] > best[0]:
+                    best = candidate
+            return best
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"tower aura lookup failed for {template_id!r}: {exc}")
+        return None
+
+
+@lru_cache(maxsize=64)
+def _fractured_planes_hazard_rooms(static_database_path: str, map_id: str):
+    """Bind every authored hazard EventSet to the room whose monsters clear it.
+
+    ``_Instance_LocationEffect`` rows carry an ``EventSetRow``, and that set
+    exists for no other reason than to hold the effect: it gates no spawn row,
+    prop, or trigger volume on any tower layout. Retail releases the set from a
+    room-clear or prop-interaction signal, but Fractured Planes fills those
+    rooms from shared density areas, so the authored selector never fires and a
+    kill aura, fire aura, or ``noskill_aura`` would stay on for the whole run.
+
+    Each hazard is therefore bound to the nearest authored density cluster,
+    which is the room it guards. Returns ``(event_set_row, room volumes)``
+    pairs. A hazard with no room in reach keeps an empty volume tuple: nothing
+    can prove that area safe, so only the floor-clear sweep retires it.
+    """
+
+    path = map_database_path(static_database_path, map_id)
+    try:
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+            effects = tuple(database.execute(
+                "SELECT COALESCE(EventSetRow, -1), Transform "
+                "FROM _Instance_LocationEffect"
+            ))
+            areas = tuple(database.execute(
+                "SELECT rowid, COALESCE(EventSetRow, -1), "
+                "COALESCE(SpawnListId, ''), Transform FROM _Instance_SpawnArea"
+            ))
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"Fractured Planes hazard binding failed on {map_id}: {exc}")
+        return ()
+    anchors: dict[int, list[tuple[float, float]]] = {}
+    for event_set, transform in effects:
+        event_set = int(event_set)
+        if event_set < 0:
+            continue
+        try:
+            matrix = struct.unpack("<16f", bytes(transform))
+        except (TypeError, struct.error):
+            continue
+        anchors.setdefault(event_set, []).append((matrix[12], matrix[14]))
+    if not anchors:
+        return ()
+    # One room is one stack of co-located density areas (``Fire_1``,
+    # ``Ice_1``, ... all share a transform).
+    rooms: dict[tuple[float, float], list[TriggerVolumeDefinition]] = {}
+    for row_id, event_set, name, transform in areas:
+        try:
+            matrix = tuple(struct.unpack("<16f", bytes(transform)))
+        except (TypeError, struct.error):
+            continue
+        rooms.setdefault(
+            (round(matrix[12], 1), round(matrix[14], 1)), []
+        ).append(TriggerVolumeDefinition(
+            int(row_id), str(name), int(event_set), False,
+            "fractured-plane-hazard-room", matrix,
+        ))
+    if not rooms:
+        return tuple((event_set, ()) for event_set in sorted(anchors))
+    bindings = []
+    for event_set, points in sorted(anchors.items()):
+        centre = (
+            sum(point[0] for point in points) / len(points),
+            sum(point[1] for point in points) / len(points),
+        )
+        nearest = min(
+            rooms,
+            key=lambda key: (key[0] - centre[0]) ** 2 + (key[1] - centre[1]) ** 2,
+        )
+        if math.hypot(nearest[0] - centre[0], nearest[1] - centre[1]) > HAZARD_ROOM_BIND_RADIUS:
+            bindings.append((event_set, ()))
+            continue
+        bindings.append((event_set, tuple(rooms[nearest])))
+    return tuple(bindings)
+
+
+def _fractured_planes_floor_number_from_map(map_id: str) -> int:
+    prefix = "h0009_endlesstower_01_sm_"
+    key = map_key(map_id)
+    suffix = key.removeprefix(prefix)
+    return int(suffix) if key.startswith(prefix) and suffix.isdecimal() else 0
+
+
+@lru_cache(maxsize=128)
+def _fractured_planes_floor_regions(static_database_path: str, map_id: str,
+                                    room_event_rows: tuple[tuple[int, str, str], ...],
+                                    room_start_props: tuple[tuple[str, tuple[float, float, float]], ...] = ()):
+    """Map authored room starts to their nearby spawn-area volumes.
+
+    Tower room waves are pre-materialized from shared density areas. Those
+    rows use EventSetRow=-1, so looking up only areas attached to the room
+    EventSet misses blockers and can leave a trap gate open indefinitely.
+    Prefer explicit EventSet associations, then map the room to the nearest
+    authored room-start prop in this physical map.
+    """
+
+    floor = _fractured_planes_floor_number_from_map(map_id)
+    if not floor:
+        return ()
+    path = map_database_path(static_database_path, map_id)
+    row_to_room = {
+        row_id: (room, end_signal)
+        for row_id, room, end_signal in room_event_rows
+    }
+    regions = {}
+    try:
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+            spawn_areas = tuple(database.execute(
+                "SELECT rowid, COALESCE(EventSetRow, -1), "
+                "COALESCE(SpawnListId, ''), Transform FROM _Instance_SpawnArea"
+            ))
+            for row_id, event_set, name, transform in spawn_areas:
+                room_data = row_to_room.get(int(event_set))
+                if room_data is None:
+                    continue
+                room, signal = room_data
+                matrix = tuple(struct.unpack("<16f", bytes(transform)))
+                regions.setdefault(signal, {})[matrix] = TriggerVolumeDefinition(
+                    int(row_id), str(name), int(event_set), False,
+                    "fractured-plane-room", matrix,
+                )
+            # Most floors store their shared enemy density areas with
+            # EventSetRow=-1. Their start props still provide reliable room
+            # coordinates, allowing the corresponding already-materialized
+            # enemies to be found and force-published to the player.
+            area_matrices = tuple(
+                (int(row_id), str(name),
+                 tuple(struct.unpack("<16f", bytes(transform))))
+                for row_id, _event_set, name, transform in spawn_areas
+            )
+            for room_event_set, room, signal in room_event_rows:
+                if regions.get(signal):
+                    continue
+                prop_id = f"h0009_endlesstower_{room}_start".casefold()
+                prop_position = next((
+                    position for instance_id, position in room_start_props
+                    if instance_id.casefold() == prop_id
+                ), None)
+                if prop_position is None or not area_matrices:
+                    continue
+                nearest = min(
+                    area_matrices,
+                    key=lambda area: (
+                        (area[2][12] - prop_position[0]) ** 2
+                        + (area[2][14] - prop_position[2]) ** 2
+                    ),
+                )
+                center = (nearest[2][12], nearest[2][14])
+                if (
+                    (center[0] - prop_position[0]) ** 2
+                    + (center[1] - prop_position[2]) ** 2
+                    > 45.0 ** 2
+                ):
+                    continue
+                for row_id, name, matrix in area_matrices:
+                    if (
+                        abs(matrix[12] - center[0]) > 0.25
+                        or abs(matrix[14] - center[1]) > 0.25
+                    ):
+                        continue
+                    regions.setdefault(signal, {})[matrix] = TriggerVolumeDefinition(
+                        row_id, name, int(room_event_set), False,
+                        "fractured-plane-room", matrix,
+                    )
+    except (OSError, sqlite3.Error, TypeError, struct.error) as exc:
+        _log(f"Fractured Planes room-area load failed on {map_id}: {exc}")
+        return ()
+    return tuple((signal, tuple(volumes.values())) for signal, volumes in regions.items())
+
+
+@lru_cache(maxsize=8)
+def _fractured_planes_floor_one_regions(static_database_path: str):
+    """Floor one has hand-authored room labels instead of per-room event sets."""
+
+    path = map_database_path(static_database_path, "h0009_endlesstower_01_sm_01")
+    suffixes = {
+        "fire_1": "01", "fire_2": "01", "ice_1": "01",
+        "sliver_gold": "05", "ocean": "05",
+        "light": "03", "dragon": "03", "shadow": "03",
+    }
+    regions = {}
+    try:
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+            for row_id, name, transform in database.execute(
+                "SELECT rowid, SpawnListId, Transform FROM _Instance_SpawnArea"
+            ):
+                suffix = suffixes.get(str(name).casefold())
+                if suffix is None:
+                    continue
+                matrix = tuple(struct.unpack("<16f", bytes(transform)))
+                regions.setdefault(suffix, {})[matrix] = TriggerVolumeDefinition(
+                    int(row_id), str(name), -1, False,
+                    "fractured-plane-room", matrix,
+                )
+    except (OSError, sqlite3.Error, TypeError, struct.error) as exc:
+        _log(f"Fractured Planes floor-one room-area load failed: {exc}")
+        return ()
+    return tuple(
+        (f"h0009_endlesstower_01_monster_{suffix}_end_signal", tuple(volumes.values()))
+        for suffix, volumes in regions.items()
+    )
+
+
+def _fractured_planes_room_event_rows(runtime) -> tuple[tuple[int, str, str], ...]:
+    """Return room spawn rows with the exact authored clear-signal name."""
+
+    result = []
+    for row_id, event_set in runtime.content.event_sets.items():
+        for event_key in event_set.events:
+            marker = "_room_"
+            if not event_key.casefold().startswith("h0009_endlesstower_01_room_"):
+                continue
+            room = event_key.rsplit(marker, 1)[-1]
+            if room:
+                event = runtime.catalog.event(event_key)
+                end_signal = (
+                    event.end_signals[0]
+                    if event is not None and event.end_signals
+                    else f"{event_key}_end_signal"
+                )
+                # Floors 2-100 reuse one of ten physical maps. The active map
+                # event namespace comes from its authored event key (for
+                # example ``..._01_room_06``), not the logical floor number
+                # or the physical map suffix (``sm_06``). Using either floor
+                # number here emits an end signal no authored trap gate listens
+                # to. Some rooms (such as room 08) also use a special authored
+                # end signal, so take it from the event definition when present.
+                result.append((
+                    int(row_id),
+                    f"{int(room):02d}" if room.isdecimal() else room,
+                    end_signal,
+                ))
+    return tuple(result)
+
+
 MAP_EVENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] map-event"
 # How far a gated spawn transform may be moved to reach walkable ground.
 EVENT_SPAWN_SNAP_DISTANCE = 4.0
@@ -239,6 +621,9 @@ EVENT_SPAWN_DUPLICATE_RADIUS = 1.5
 _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
+    # The Lythira spawn transform is the boss's authored arena position and
+    # can be outside the ordinary vicinity radius from the entry point.
+    "fp_boss_01_lythira",
 })
 _TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
 _BLOOD_CHEST_GEM_TEMPLATES = (
@@ -420,13 +805,504 @@ class MapEventService:
             )
         _log("Fractured Planes floor 001 trap event sets disabled")
 
+    def _release_fractured_planes_hazards(
+            self, s: Session, runtime: MapEventRuntime, combat, *,
+            population, alive, force: bool = False) -> None:
+        """Retire trap and debuff auras whose room no longer holds enemies.
+
+        ``force`` skips the room test and clears every remaining hazard, which
+        is what the floor-clear gate uses.
+        """
+
+        bindings = _fractured_planes_hazard_rooms(
+            str(combat.encounter.static_database_path), runtime.map_id,
+        )
+        if not bindings:
+            return
+        # Only retire sets whose sole purpose is the effect itself. A set that
+        # also gates a spawn row, prop, or trigger volume is authored content
+        # with its own release path, and turning it off here would desync it.
+        content = runtime.content
+        gated_rows = (
+            {row.event_set_row for row in content.spawn_rows}
+            | {prop.event_set_row for prop in content.props}
+            | {volume.event_set_row for volume in content.trigger_volumes}
+        )
+        released = []
+        for event_set, volumes in bindings:
+            if event_set in gated_rows:
+                continue
+            with runtime.lock:
+                if event_set not in runtime.enabled_event_sets:
+                    continue
+            if not force:
+                members = {
+                    actor_id for actor_id, monster in population
+                    if not is_tower_mechanism(
+                        combat.encounter.static_database_path, runtime.map_id,
+                        monster.template_id,
+                    )
+                    if not monster.rank_id.casefold().startswith("rank_boss")
+                    if any(volume.contains((
+                        monster.position[0], volume.matrix[13], monster.position[2],
+                    )) for volume in volumes)
+                }
+                # An empty room means the authored density never populated this
+                # spot (a miniboss arena, a corridor prop), so leave the hazard
+                # to the floor-clear sweep instead of guessing.
+                if not members or members & alive:
+                    continue
+            released.append(event_set)
+        if not released:
+            return
+        with runtime.lock:
+            removed = runtime.suppress_event_sets(released)
+        if removed:
+            _log(
+                "Fractured Planes trap event sets released on "
+                f"{runtime.map_id}: {sorted(removed)}"
+            )
+            # Suppressing an EventSet only changes the server's spawn/hazard
+            # view. The client still needs the authored map-local event that
+            # turns the corresponding flag on, or its trap visuals remain
+            # latched even though the server has retired their damage. Floor
+            # layouts encode these release events as forbidden flags on the
+            # active hazard sets (for example, sm_05's
+            # ``...closepermtrap_01`` event).
+            release_signals = set()
+            for event_set in removed:
+                definition = content.event_sets.get(event_set)
+                if definition is None:
+                    continue
+                for event_id in definition.forbidden:
+                    event = runtime.catalog.event(event_id)
+                    if event is None or not event.applies_to(runtime.map_id):
+                        continue
+                    release_signals.update(event.start_signals)
+            for signal_id in sorted(release_signals):
+                self._emit_map_signal(s, runtime, signal_id)
+
+    def _schedule_nefertari_death_despawn(
+            self, s: Session, combat, dispatches, viewers) -> None:
+        """Play authored Nefertari despawn sequences after their death clips."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        scheduler = getattr(runtime, "scheduler", None)
+        if runtime is None or scheduler is None or combat is None:
+            return
+        visible_viewers = tuple(
+            viewer
+            for viewer in viewers
+            if viewer.gameplay_combat_state is combat
+        )
+        if not visible_viewers:
+            return
+        for resolution, _label, _loot in dispatches:
+            if not resolution.killed:
+                continue
+            actor_id = int(resolution.target_actor_id)
+            with combat.lock:
+                monster = combat.monsters.get(actor_id)
+                template_id = str(
+                    getattr(monster, "template_id", "") or ""
+                )
+            timing = _nefertari_death_despawn_timing(
+                str(combat.encounter.static_database_path), template_id,
+            )
+            if timing is None:
+                continue
+            death_duration, despawn_duration = timing
+            interested = tuple(
+                viewer
+                for viewer in visible_viewers
+                if actor_id in viewer.gameplay_spawned_monster_actor_ids
+            )
+            if not interested:
+                continue
+            with runtime.lock:
+                timers = getattr(
+                    runtime, "nefertari_despawn_timers", None,
+                )
+                if timers is None:
+                    timers = {}
+                    runtime.nefertari_despawn_timers = timers
+                if actor_id in timers:
+                    continue
+                timer = scheduler.timer(
+                    max(0.05, death_duration),
+                    self._begin_nefertari_despawn,
+                    args=(
+                        runtime, combat, actor_id,
+                        tuple(float(value) for value in resolution.position),
+                        interested, despawn_duration,
+                    ),
+                )
+                timers[actor_id] = timer
+            timer.start()
+
+    def _begin_nefertari_despawn(
+            self, runtime, combat, actor_id, position, viewers,
+            despawn_duration) -> None:
+        """Switch the dead Nefertari actor to its authored vanish sequence."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        with runtime.lock:
+            timers = getattr(runtime, "nefertari_despawn_timers", {})
+            timers.pop(int(actor_id), None)
+        with combat.lock:
+            if combat.monster_health.get(int(actor_id), 0) > 0:
+                return
+            position = tuple(
+                float(value)
+                for value in combat.monster_positions.get(
+                    int(actor_id), position,
+                )
+            )
+        if float(despawn_duration) <= 0.0:
+            self._finish_nefertari_despawn(
+                runtime, combat, int(actor_id), viewers,
+            )
+            return
+        sessions = tuple(
+            viewer
+            for viewer in viewers
+            if viewer.connected
+            and viewer.gameplay_combat_state is combat
+            and getattr(viewer, "gameplay_map_event_runtime", None) is runtime
+        )
+        if not sessions:
+            return
+        tick = max(
+            int(getattr(viewer, "gameplay_chase_server_tick", 0) or 0)
+            for viewer in sessions
+        )
+        command = KillServerCommand(
+            Kill(
+                server_tick=tick,
+                hit_tags=(),
+                animation_time=max(1, int(math.ceil(despawn_duration * 25))),
+                field_4c=0,
+                killer_actor_id=0,
+                position=position,
+                skill_id=0,
+                projectile_id=0xFFFFFFFF,
+                field_78=True,
+            ),
+            int(actor_id),
+        )
+        packet, packet_bits = encode_combat_batch(CombatBatch((command,)))
+        for viewer in sessions:
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits,
+                label="nefertari-authored-despawn",
+            )
+        timer = runtime.scheduler.timer(
+            max(0.05, float(despawn_duration)),
+            self._finish_nefertari_despawn,
+            args=(runtime, combat, int(actor_id), sessions),
+        )
+        timer.start()
+
+    def _finish_nefertari_despawn(
+            self, runtime, combat, actor_id, viewers) -> None:
+        """Remove actors after the authored Nefertari despawn animation."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        packet, packet_bits = encode_discard_monster_batch((int(actor_id),))
+        for viewer in viewers:
+            if (
+                viewer.connected
+                and viewer.gameplay_combat_state is combat
+                and getattr(viewer, "gameplay_map_event_runtime", None)
+                is runtime
+            ):
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="nefertari-despawn-discard",
+                )
+
+    def _update_fractured_planes_clear_state(self, s: Session, monsters) -> None:
+        """Resolve room clears and the spawned Rift Lord independently."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        combat = getattr(s, "gameplay_combat_state", None)
+        if runtime is None or combat is None or not self._is_fractured_planes_run(s):
+            return
+        with combat.lock:
+            population = tuple(combat.monsters.items())
+            alive = frozenset(combat.alive_actor_ids)
+        # Geometry follows the physical layout reused by floors 11, 21, ...,
+        # not the logical floor number shown in the portal.
+        map_floor = _fractured_planes_floor_number_from_map(runtime.map_id)
+        if map_floor:
+            if map_floor == 1:
+                regions = _fractured_planes_floor_one_regions(
+                    str(combat.encounter.static_database_path)
+                )
+            else:
+                regions = _fractured_planes_floor_regions(
+                    str(combat.encounter.static_database_path), runtime.map_id,
+                    _fractured_planes_room_event_rows(runtime),
+                    tuple(
+                        (str(prop.instance_id), tuple(prop.position))
+                        for prop in runtime.content.props
+                    ),
+                )
+            for signal, volumes in regions:
+                # Use authored home positions: a chased monster still belongs
+                # to its room. Spawn areas are upright; their Y bounds describe
+                # editor volumes, not the final collision-floor height.
+                # Every density room is materialized when the map loads, so a
+                # living member really is standing in the room even if this
+                # client has not walked close enough to receive it yet. Only
+                # fixed hardware is ignored: it can never be killed, and the
+                # trap must not wait for it. A dead Nefertari corpse remains in
+                # this population too, but its zero HP keeps it out of
+                # ``alive``.
+                members = {
+                    actor_id for actor_id, monster in population
+                    if not is_tower_mechanism(
+                        combat.encounter.static_database_path, runtime.map_id,
+                        monster.template_id,
+                    )
+                    if any(volume.contains((
+                        monster.position[0], volume.matrix[13], monster.position[2],
+                    )) for volume in volumes)
+                }
+                if not members:
+                    continue
+                blockers = members & alive
+                if blockers:
+                    blocked_by = tuple(
+                        (
+                            actor_id,
+                            combat.monsters[actor_id].template_id,
+                            tuple(round(float(value), 2) for value in
+                                  combat.monster_positions[actor_id]),
+                        )
+                        for actor_id in sorted(blockers)
+                    )
+                    _log(
+                        f"Fractured Planes room still has live actors: "
+                        f"{signal}, blockers={blocked_by!r}"
+                    )
+                    # Encounter populations are loaded before the client asks
+                    # for nearby actor models. A living room member can
+                    # therefore block the trap gate while its NewMonster has
+                    # never reached this client (for example after a distant
+                    # spawn or a missed vicinity request). Publish only the
+                    # actual room blockers so the player can find and kill
+                    # them instead of leaving an invisible objective behind.
+                    groups = {}
+                    for actor_id in blockers:
+                        group = combat.group_for_actor(actor_id)
+                        if group is not None:
+                            groups.setdefault(id(group), (group, set()))[1].add(
+                                int(actor_id)
+                            )
+                    for viewer in self._map_event_sessions(runtime):
+                        for group, actor_ids in groups.values():
+                            self._announce_runtime_group(
+                                viewer, combat, group,
+                                force_actor_ids=actor_ids,
+                            )
+                    continue
+                with runtime.lock:
+                    if signal in runtime.fired_once:
+                        continue
+                    runtime.fired_once.add(signal)
+                _log(f"Fractured Planes room cleared: {signal}, actors={len(members)}")
+                self._emit_map_signal(s, runtime, signal)
+                if map_floor == 1:
+                    # Floor 1's two trap-removal EventSets are wired to
+                    # PlayerInteractedProp signals for their nearby room
+                    # starts, while the kill waves use monster_*_end signals.
+                    # Fractured Planes populates those rooms dynamically, so
+                    # the retail static-template selector never emits the
+                    # interaction signal after the last room mob dies. Bind
+                    # each cleared density region to its authored trap gate.
+                    trap_unlock_signal = {
+                        "h0009_endlesstower_01_monster_01_end_signal":
+                            "h0009_endlesstower_01_room_02_interact_signal",
+                        "h0009_endlesstower_01_monster_05_end_signal":
+                            "h0009_endlesstower_01_room_06_interact_signal",
+                    }.get(signal.casefold())
+                    if trap_unlock_signal:
+                        self._emit_map_signal(s, runtime, trap_unlock_signal)
+                        _log(
+                            "Fractured Planes floor 001 cleared-room trap "
+                            f"unlock: {trap_unlock_signal}"
+                        )
+
+        # Trap and debuff auras are released room by room, so a cleared room
+        # never keeps a kill aura or a ``noskill_aura`` on the path to the next
+        # one. Once every active enemy is down the whole floor is swept: the
+        # remaining hazards are the ones whose authored release never fires
+        # (miniboss arenas, corridor props) and they must not outlive the run.
+        living = {
+            actor_id for actor_id, monster in population
+            if actor_id in alive
+            if not is_tower_mechanism(
+                combat.encounter.static_database_path, runtime.map_id,
+                monster.template_id,
+            )
+            if not monster.rank_id.casefold().startswith("rank_boss")
+        }
+        self._release_fractured_planes_hazards(
+            s, runtime, combat,
+            population=population, alive=alive,
+            force=not living,
+        )
+
+        with runtime.lock:
+            phases = {
+                key for key in runtime.running
+                if key.startswith("fractured_levelmap_bossappear_tower_")
+            }
+            if map_key(runtime.map_id) == "fp0001_boss_01":
+                if "fp_boss_01_lythira_spawn" in runtime.running:
+                    phases.add("fp_boss_01_lythira_spawn")
+            phase_actor_ids = set().union(*(
+                runtime.event_set_actor_ids.get(row, set())
+                for row, event_set in runtime.content.event_sets.items()
+                if event_set.required & phases
+            ))
+        if not phases:
+            # ``fp0001_boss_01`` keeps the Rift Lord in its load-time
+            # population, so she can be killed before the arena hit trigger
+            # that announces her ever runs. Fall back to the killed boss actor
+            # itself, but only once the floor really has nothing left to fight,
+            # so a premature boss kill cannot skip the trash.
+            if not map_floor and map_key(runtime.map_id) != "fp0001_boss_01":
+                return
+            boss_ids = {
+                actor_id for actor_id, monster in population
+                if monster.rank_id.casefold().startswith("rank_boss")
+            }
+            if not boss_ids or boss_ids & alive or living:
+                return
+        else:
+            boss_ids = {
+                actor_id for actor_id, monster in population
+                if actor_id in phase_actor_ids
+                and monster.rank_id.casefold().startswith("rank_boss")
+            }
+            killed_ids = {int(monster.actor_id) for monster in monsters}
+            if not boss_ids & killed_ids or boss_ids & alive:
+                return
+        # EventSet changes control scene entities; the native objective panel
+        # and floor picker require their own completion/progression commands.
+        for phase in phases:
+            definition = runtime.catalog.event(phase)
+            if definition is not None:
+                self._stop_map_local_event(runtime, definition)
+        self._complete_fractured_planes_floor(runtime)
+        self._emit_map_signal(s, runtime, "h0009_endlesstower_boss_spawn_exit_signal")
+        if map_floor == 1:
+            self._clear_fractured_planes_floor_one_traps(s, runtime)
+        # Nothing may still hurt the player on the way to the opened exit.
+        self._release_fractured_planes_hazards(
+            s, runtime, combat,
+            population=population, alive=alive, force=True,
+        )
+        _log(f"Fractured Planes Rift Lord defeated: actors={sorted(boss_ids)}; exit opened")
+
+    @staticmethod
+    def _fractured_planes_floor_number(s: Session) -> int:
+        access_id = str(getattr(s, "gameplay_map_access_id", "") or "").casefold()
+        prefix = "h0009_endlesstower_floor_"
+        if access_id.startswith(prefix) and access_id[len(prefix):].isdecimal():
+            return int(access_id[len(prefix):])
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        physical = str(getattr(runtime, "map_id", "")).casefold()
+        prefix = "h0009_endlesstower_01_sm_"
+        if physical.startswith(prefix) and physical[len(prefix):].isdecimal():
+            return int(physical[len(prefix):])
+        return 0
+
+    @staticmethod
+    def _fractured_planes_progress(s: Session) -> tuple[int, int]:
+        """Use the persisted per-character claim map for native floor progress."""
+
+        with s.flow_lock:
+            purchases = dict(getattr(s, "gameplay_timed_offer_purchases", {}))
+        claimed = 0
+        prefix = "endless-tower-first-clear:h0009_endlesstower_floor_"
+        for key, count in purchases.items():
+            suffix = str(key).removeprefix(prefix)
+            if str(key).startswith(prefix) and suffix.isdecimal() and count:
+                claimed = max(claimed, min(100, int(suffix)))
+        cleared = max(claimed, min(100, int(purchases.get(
+            "endless-tower-cleared-floor", 0,
+        ))))
+        return cleared, claimed
+
+    def _send_fractured_planes_progress(self, s: Session) -> None:
+        cleared, claimed = self._fractured_planes_progress(s)
+        packet, packet_bits = encode_endless_tower_progress(
+            cleared, claimed, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        )
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="fractured-planes-floor-progress",
+        )
+
+    def _send_fractured_planes_effect_choices(self, s: Session) -> None:
+        with s.flow_lock:
+            character = s.gameplay_character
+        if character is None:
+            return
+        selection = endless_tower_player_buffs(
+            self.static_database_path, "",
+            character_id=int(character.character_id),
+        )
+        packet, bits = encode_endless_tower_buffs(
+            selection.choices, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        )
+        CharacterService._send_world_loot_state_batch(
+            s, packet, bits, label="fractured-planes-effect-choices",
+        )
+
+    def _complete_fractured_planes_floor(self, runtime) -> None:
+        with runtime.lock:
+            if runtime.fractured_planes_floor_completed:
+                return
+            runtime.fractured_planes_floor_completed = True
+            timer = runtime.fractured_planes_limit_timer
+            runtime.fractured_planes_limit_timer = None
+        if timer is not None:
+            timer.cancel()
+        # The native timer handler treats zero as success: it calls the
+        # widget's phase-three setter (pf_phase_three = "Level completed").
+        # Keep the actual run deadline for the next floor's remaining time.
+        packet, packet_bits = encode_server_command_batch((ServerCommand(
+            KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
+            KickOutToHubLimitTimeLeft(0), 1,
+        ),))
+        for viewer in self._map_event_sessions(runtime):
+            floor = self._fractured_planes_floor_number(viewer)
+            if not 1 <= floor <= 100:
+                continue
+            with viewer.flow_lock:
+                purchases = viewer.gameplay_timed_offer_purchases
+                purchases["endless-tower-cleared-floor"] = max(
+                    floor, int(purchases.get("endless-tower-cleared-floor", 0)),
+                )
+            CharacterService._request_account_save(viewer, "Fractured Planes floor cleared")
+            self._send_fractured_planes_progress(viewer)
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits, label="fractured-planes-floor-completed",
+            )
+            _log(f"Fractured Planes floor {floor:03d} completed; native floor selection unlocked")
+
     def _grant_fractured_planes_first_clear(self, s: Session) -> None:
         """Grant the cleared floor's first-completion reward, once per player.
 
-        The reward becomes available when the boss-death event opens the rift
-        exit, so it is delivered as the player takes that portal to the next
-        floor.  The claim is recorded in the persisted timed-offer claim map,
-        which makes "first completion" per character rather than per run.
+        The reward is delivered only after the client confirms the portal's
+        first-clear prompt. The claim is recorded in the persisted timed-offer
+        claim map, which makes "first completion" per character rather than
+        per run.
         """
 
         access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
@@ -434,6 +1310,8 @@ class MapEventService:
             self.static_database_path, access_id
         )
         if not rewards:
+            _log(f"no first-clear reward available for {access_id!r}")
+            self._send_fractured_planes_progress(s)
             return
         claim_key = f"endless-tower-first-clear:{access_id.casefold()}"
         with s.flow_lock:
@@ -443,6 +1321,8 @@ class MapEventService:
                 )
             )
         if claimed:
+            _log(f"first-clear reward already claimed for {access_id!r}")
+            self._send_fractured_planes_progress(s)
             return
         try:
             CharacterService._deliver_rewards(
@@ -450,7 +1330,7 @@ class MapEventService:
                 claim_keys=(claim_key,),
                 label="fractured-planes-first-clear",
             )
-        except (OSError, ValueError, sqlite3.Error) as exc:
+        except Exception as exc:
             _log(
                 f"first-clear reward failed on {access_id!r}: "
                 f"{type(exc).__name__}: {exc}"
@@ -460,6 +1340,24 @@ class MapEventService:
             f"granted {access_id!r} first-clear reward "
             f"({len(rewards)} entr{'y' if len(rewards) == 1 else 'ies'})"
         )
+        self._send_fractured_planes_progress(s)
+
+    def _handle_fractured_planes_first_clear_acceptance(
+            self, s: Session, payload: bytes) -> None:
+        """Grant the floor reward when the client accepts its portal prompt."""
+
+        with s.flow_lock:
+            s.gameplay_client_command_state[0x0174] = bytes(payload)
+        CharacterService._accept_gameplay_state_command(s, 0x0174)
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if (
+            runtime is None
+            or not self._is_fractured_planes_run(s)
+            or not runtime.fractured_planes_floor_completed
+        ):
+            _log("ignored first-clear acceptance outside a completed Fractured Planes floor")
+            return
+        self._grant_fractured_planes_first_clear(s)
 
     def _broadcast_fractured_planes_score(
             self, runtime: MapEventRuntime, score: int) -> None:
@@ -643,9 +1541,31 @@ class MapEventService:
                     present, alive = combat.monster_template_counts()
                 present_templates = frozenset(present)
                 alive_templates = frozenset(alive)
-                total = sum(present.values())
-                if total:
-                    dead_fraction = 1.0 - sum(alive.values()) / total
+                if (
+                    kind == "monsterseliminatedpercentage"
+                    and self._is_fractured_planes_run(s)
+                    and _fractured_planes_floor_number_from_map(runtime.map_id)
+                ):
+                    # The tower map keeps dormant/event-gated actors in the
+                    # combat table. They are not part of the live floor count
+                    # until their set is activated.
+                    active = tuple(
+                        actor_id for actor_id in combat.active_monster_actor_ids
+                        if not is_tower_mechanism(
+                            combat.encounter.static_database_path, runtime.map_id,
+                            combat.monsters[actor_id].template_id,
+                        )
+                    )
+                    if active:
+                        dead = sum(
+                            combat.monster_health.get(actor_id, 0) <= 0
+                            for actor_id in active
+                        )
+                        dead_fraction = dead / len(active)
+                else:
+                    total = sum(present.values())
+                    if total:
+                        dead_fraction = 1.0 - sum(alive.values()) / total
         with runtime.lock:
             running = runtime.active_flags()
         quests_accepted, quests_solved, tasks_done = (
@@ -671,6 +1591,28 @@ class MapEventService:
             unlocked_maps=unlocked_maps,
         )
         rules = runtime.catalog.evaluate(kind, context)
+        if (
+            kind == "monsterseliminated"
+            and _fractured_planes_floor_number_from_map(runtime.map_id)
+            and self._is_fractured_planes_run(s)
+        ):
+            # Static template selectors can match only part of a dynamically
+            # populated room. Its traps are governed by the room's actual
+            # actors in _update_fractured_planes_clear_state instead.
+            floor = _fractured_planes_floor_number_from_map(runtime.map_id)
+            regions = (
+                _fractured_planes_floor_one_regions(str(self.static_database_path))
+                if floor == 1 else _fractured_planes_floor_regions(
+                    str(self.static_database_path), runtime.map_id,
+                    _fractured_planes_room_event_rows(runtime),
+                    tuple(
+                        (str(prop.instance_id), tuple(prop.position))
+                        for prop in runtime.content.props
+                    ),
+                )
+            )
+            regional_signals = {signal for signal, _volumes in regions}
+            rules = tuple(rule for rule in rules if rule.signal_id not in regional_signals)
         if not rules:
             return
         for rule in rules:
@@ -696,7 +1638,7 @@ class MapEventService:
         fractured_run = CharacterService._is_fractured_planes_run(self, s)
         if (
             fractured_run
-            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+            and _fractured_planes_floor_number_from_map(runtime.map_id) == 1
             and key.startswith("h0009_endlesstower_01_room_")
             and key.endswith("_end_signal_01")
         ):
@@ -714,21 +1656,144 @@ class MapEventService:
                 definition = catalog.event(event_key)
                 if definition is not None and definition.applies_to(runtime.map_id):
                     self._schedule_map_local_event_start(runtime, definition)
-        if (
-            fractured_run
-            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
-            and any(
-                value in signal_keys
-                for value in (
-                    "h0009_endlesstower_01_room_01_end_signal",
-                    "h0009_endlesstower_01_room_01_end_signal_01",
-                )
-            )
-        ):
-            self._clear_fractured_planes_floor_one_traps(s, runtime)
         CharacterService._quest_on_signal(self, s, signal_id)
 
+    def _fractured_planes_floor_blockers(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> tuple[bool, tuple[int, ...]]:
+        """Return ``(has_floor_monsters, living_blockers)`` for the boss gate.
+
+        The authored gate is a kill-score threshold, and several tower floors
+        only spawn monsters without an ``AddScoreForKill`` value, so the score
+        can never reach it. The server therefore resolves the gate when the
+        floor has nothing left to fight.
+
+        ``combat.active_monster_actor_ids`` cannot answer that on its own. It
+        is shared by the map but derived from per-session visibility, so it can
+        be empty because the player walked away and everything was culled, and
+        it can hold an actor no client currently has. A monster nobody can see
+        cannot be killed, so it must never hold the floor closed; a visible
+        living monster always must. Visibility decides, not activity.
+        """
+
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return False, ()
+        static_path = str(combat.encounter.static_database_path)
+        visible: set[int] = set()
+        for viewer in self._map_event_sessions(runtime):
+            with viewer.flow_lock:
+                if viewer.gameplay_combat_state is combat:
+                    # ``gameplay_spawned_monster_actor_ids`` is reserved
+                    # before packet encoding and can include a mob the client
+                    # never received. The sent ledger is the strongest
+                    # server-side evidence that the actor was published.
+                    visible.update(viewer.gameplay_new_monster_sent_actor_ids)
+        with combat.lock:
+            floor_mobs = tuple(
+                actor_id
+                for actor_id, monster in combat.monsters.items()
+                if not monster.rank_id.casefold().startswith("rank_boss")
+                and not is_tower_mechanism(
+                    static_path, runtime.map_id, monster.template_id,
+                )
+            )
+            blockers = tuple(
+                actor_id
+                for actor_id in floor_mobs
+                if combat.monster_health.get(actor_id, 0) > 0
+                and actor_id in visible
+            )
+        return bool(floor_mobs), blockers
+
+    def _resolve_fractured_planes_floor_clear(
+            self, s: Session, runtime: MapEventRuntime, *, score_rules=None,
+            log_blockers: bool = True,
+    ) -> bool:
+        """Open the boss once nothing killable is left on the floor."""
+
+        if score_rules is None:
+            score_rules = tuple(
+                rule
+                for rule in runtime.catalog.rules_by_event_type.get(
+                    "playerkillmonstergetscore", ()
+                )
+                if not rule.maps or map_key(runtime.map_id) in rule.maps
+            )
+        if not score_rules:
+            return False
+        has_floor_monsters, blockers = self._fractured_planes_floor_blockers(
+            s, runtime,
+        )
+        if not has_floor_monsters or blockers:
+            if blockers and log_blockers:
+                combat = getattr(s, "gameplay_combat_state", None)
+                with combat.lock:
+                    descriptions = tuple(
+                        (
+                            int(actor_id),
+                            combat.monsters[actor_id].template_id,
+                            tuple(round(float(value), 2) for value in
+                                  combat.monster_positions.get(actor_id, (0, 0, 0))),
+                        )
+                        for actor_id in blockers if actor_id in combat.monsters
+                    )
+                _log(
+                    "Fractured Planes boss gate waiting for visible living "
+                    f"mobs on {runtime.map_id}: {descriptions!r}"
+                )
+            return False
+        with runtime.lock:
+            if runtime.pending_start_tokens:
+                return False
+            clear_rules = tuple(
+                rule for rule in score_rules
+                if rule.signal_id not in runtime.fired_once
+            )
+            if not clear_rules:
+                return False
+            runtime.fired_once.update(
+                rule.signal_id for rule in clear_rules
+            )
+        for rule in clear_rules:
+            _log(
+                f"Fractured Planes floor clear on {runtime.map_id}: resolving "
+                f"{rule.signal_id!r} after all killable non-boss monsters were "
+                f"defeated"
+            )
+            self._emit_map_signal(s, runtime, rule.signal_id)
+        # Clear each active room after the final spawned monster dies so all
+        # floor-specific traps and blockers receive their authored end signals.
+        floor_number = _fractured_planes_floor_number_from_map(runtime.map_id)
+        room_rows = _fractured_planes_room_event_rows(runtime)
+        room_regions = (
+            _fractured_planes_floor_regions(
+                str(self.static_database_path), runtime.map_id,
+                room_rows,
+                tuple(
+                    (str(prop.instance_id), tuple(prop.position))
+                    for prop in runtime.content.props
+                ),
+            )
+            if floor_number > 1 else _fractured_planes_floor_one_regions(
+                str(self.static_database_path)
+            )
+        )
+        # Some layouts (notably sm_03, sm_05, sm_06, sm_08 and sm_09) store
+        # room events but omit either room-start props or EventSet-linked
+        # SpawnAreas. A spatial lookup alone then returns no signal at all.
+        # On the final full-clear edge, end every authored room event so its
+        # trap/door transition runs even when that layout has no region data.
+        clear_signals = list(signal for signal, _volumes in room_regions)
+        if floor_number > 1:
+            clear_signals.extend(signal for _row, _room, signal in room_rows)
+        for signal in dict.fromkeys(clear_signals):
+            self._emit_map_signal(s, runtime, signal)
+        return True
+
     def _on_monsters_killed(self, s: Session, monsters) -> None:
+        monsters = tuple(monsters)
+        tower_kills(self, s, monsters)
         templates = tuple(dict.fromkeys(
             str(getattr(monster, "template_id", "")).casefold()
             for monster in monsters
@@ -740,7 +1805,11 @@ class MapEventService:
         CharacterService._achievement_on_monsters_killed(self, s, monsters)
         CharacterService._on_map_companion_boss_defeated(self, s, monsters)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
+        score_rules = ()
         if runtime is not None:
+            if CharacterService._is_fractured_planes_run(self, s):
+                with runtime.lock:
+                    runtime.fractured_planes_kill_seen = True
             score_rules = tuple(
                 rule
                 for rule in runtime.catalog.rules_by_event_type.get(
@@ -792,85 +1861,25 @@ class MapEventService:
                         self._broadcast_fractured_planes_score(
                             runtime, current_score
                         )
-                # Fractured Planes reuses Endless Tower's authored score gate.
-                # Some dynamically selected tower monsters have no
-                # AddScoreForKill value, so a fully cleared first floor can
-                # otherwise remain below the authored 315 point threshold
-                # forever. If every currently materialized monster is dead
-                # and no delayed map event is still spawning the next wave,
-                # resolve that floor's score gate as a completed clear.
-                if (
-                    CharacterService._is_fractured_planes_run(self, s)
-                    and map_key(runtime.map_id)
-                    == "h0009_endlesstower_01_sm_01"
-                ):
-                    combat = s.gameplay_combat_state
-                    if combat is not None:
-                        with combat.lock:
-                            present, alive = combat.monster_template_counts()
-                        fully_cleared = bool(present) and not alive
-                    else:
-                        fully_cleared = False
-                    if fully_cleared:
-                        with runtime.lock:
-                            has_pending_spawns = bool(runtime.pending_start_tokens)
-                            clear_rules = tuple(
-                                rule for rule in score_rules
-                                if rule.signal_id not in runtime.fired_once
-                            )
-                            if not has_pending_spawns:
-                                runtime.fired_once.update(
-                                    rule.signal_id for rule in clear_rules
-                                )
-                        if not has_pending_spawns:
-                            for rule in clear_rules:
-                                _log(
-                                    f"Fractured Planes floor clear on "
-                                    f"{runtime.map_id}: resolving "
-                                    f"{rule.signal_id!r} after all spawned "
-                                    f"monsters were defeated"
-                                )
-                                self._emit_map_signal(
-                                    s, runtime, rule.signal_id
-                                )
-                            # Fractured Planes dynamically populates this
-                            # tower floor with templates that do not always
-                            # match its static MonstersEliminated list. End
-                            # the active room explicitly after the final
-                            # spawned monster dies so authored path/trap
-                            # cleanup events run reliably.
-                            with runtime.lock:
-                                room_is_running = (
-                                    "h0009_endlesstower_01_room_01"
-                                    in runtime.active_flags()
-                                )
-                            if room_is_running:
-                                _log(
-                                    f"Fractured Planes floor clear on "
-                                    f"{runtime.map_id}: ending active room 01"
-                                )
-                                self._emit_map_signal(
-                                    s, runtime,
-                                    "h0009_endlesstower_01_room_01_end_signal",
-                                )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
         self._fire_map_signal(s, "MonstersEliminated", templates)
         self._fire_map_signal(s, "MonstersEliminatedPercentage", ())
+        self._update_fractured_planes_clear_state(s, monsters)
+        # Process kill/elimination and room-clear signals before using the
+        # all-mobs-dead fallback. A cleared wave can schedule the next wave
+        # through those signals; checking first would open the boss gate in
+        # the short gap between waves. Delayed wave starts leave a pending
+        # token, and immediate starts materialize their actors before this
+        # final gate check.
         if (
             runtime is not None
+            and score_rules
             and CharacterService._is_fractured_planes_run(self, s)
-            and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
+            and _fractured_planes_floor_number_from_map(runtime.map_id)
         ):
-            combat = s.gameplay_combat_state
-            if combat is not None:
-                with combat.lock:
-                    present, alive = combat.monster_template_counts()
-                total = sum(present.values())
-                cleared = total > 0 and (
-                    1.0 - sum(alive.values()) / total
-                ) >= 0.6
-                if cleared:
-                    self._clear_fractured_planes_floor_one_traps(s, runtime)
+            self._resolve_fractured_planes_floor_clear(
+                s, runtime, score_rules=score_rules,
+            )
 
     @staticmethod
     def _notify_monsters_killed(s: Session, monsters) -> None:
@@ -903,6 +1912,9 @@ class MapEventService:
             s.gameplay_unlocked_maps.update(discoveries)
         if newly_discovered:
             CharacterService._request_account_save(s, "map discovered")
+        self._send_fractured_planes_progress(s)
+        self._send_fractured_planes_effect_choices(s)
+        start_tower_buffs(self, s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -919,7 +1931,7 @@ class MapEventService:
                 s.gameplay_fractured_planes_deadline = (
                     runtime.fractured_planes_limit_deadline
                 )
-                seconds_left = max(
+                seconds_left = 0 if runtime.fractured_planes_floor_completed else max(
                     0,
                     math.ceil(
                         runtime.fractured_planes_limit_deadline
@@ -937,6 +1949,7 @@ class MapEventService:
                 s, packet, packet_bits, label="fractured-planes-limit-time"
             )
             self._schedule_fractured_planes_limit_tick(runtime)
+            self._schedule_fractured_planes_tower_tick(runtime)
             # Publish the instance's running kill score so the panel leaves its
             # authored default (a full bar with the literal ``Text`` label) and
             # starts filling as monsters die.
@@ -956,6 +1969,51 @@ class MapEventService:
         self._fire_map_signal(
             s, "PlayerEnteredMapId", (access_group, access_id, runtime.map_id)
         )
+        if (
+            CharacterService._is_fractured_planes_run(self, s)
+            and map_key(runtime.map_id) == "fp0001_boss_01"
+            and self._fractured_planes_floor_number(s) % 10 == 0
+        ):
+            # Every tenth Fractured Planes floor routes through the separate
+            # Lythira arena. Start its authored gated boss spawn on entry so
+            # the client does not have to cross an unreliable trigger volume.
+            self._fire_map_signal(
+                s, "PlayerHitTrigger", ("fp_boss_01_lythira_spawn_trigger",)
+            )
+            boss_event = runtime.catalog.event("fp_boss_01_lythira_spawn")
+            if boss_event is None:
+                _log(
+                    "Fractured Planes floor 010 boss event is missing from "
+                    "the loaded map-signal catalog"
+                )
+            elif not boss_event.applies_to(runtime.map_id):
+                _log(
+                    "Fractured Planes floor 010 boss event does not apply to "
+                    f"{runtime.map_id!r}; catalog maps={sorted(boss_event.maps)!r}"
+                )
+            else:
+                with runtime.lock:
+                    event_running = boss_event.key in runtime.running
+                    event_pending = boss_event.key in runtime.pending
+                    enabled_sets = tuple(sorted(runtime.enabled_event_sets))
+                if not event_running and not event_pending:
+                    # Keep the authored delay, but do not depend on the
+                    # trigger-to-event signal lookup being present in every
+                    # extracted static database.
+                    self._schedule_map_local_event_start(runtime, boss_event)
+                elif event_running:
+                    # A shared map runtime may already have started this event
+                    # before the current player's initialization completed.
+                    # Replay its live boss actor to the joining session.
+                    self._spawn_event_monsters(runtime, (s,), enabled_sets)
+                    _log(
+                        "Fractured Planes floor 010 boss event was already "
+                        "running; replayed its active spawn sets"
+                    )
+            _log(
+                f"ensured Fractured Planes boss event for floor "
+                f"{self._fractured_planes_floor_number(s):03d}"
+            )
         if (
             CharacterService._is_fractured_planes_run(self, s)
             and map_key(runtime.map_id) == "h0009_endlesstower_01_sm_01"
@@ -1094,26 +2152,37 @@ class MapEventService:
         self._fire_map_signal(s, "PlayerHitTrigger", (request.trigger_id,))
 
     @staticmethod
-    def _apply_fractured_planes_floor_one_hazard_damage(
+    def _apply_fractured_planes_hazard_damage(
             s: Session, runtime: MapEventRuntime, position) -> None:
-        """Apply the authored 2%-health-per-second floor-one path aura."""
+        """Apply server-side damage for active Fractured Planes trap auras."""
 
-        if (
-            not getattr(s, "gameplay_fractured_planes_run", False)
-            or map_key(runtime.map_id) != "h0009_endlesstower_01_sm_01"
-        ):
+        access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+        is_fractured_run = (
+            bool(getattr(s, "gameplay_fractured_planes_run", False))
+            or access_id.casefold().startswith("h0009_endlesstower_floor_")
+        )
+        if not is_fractured_run or not _fractured_planes_floor_number_from_map(runtime.map_id):
             return
         combat = getattr(s, "gameplay_combat_state", None)
         if combat is None:
             return
         static_path = str(combat.encounter.static_database_path)
-        hazards = _fractured_planes_floor_one_hazards(
+        hazards = _fractured_planes_hazards(
             static_path, runtime.map_id,
         )
         if not hazards:
             return
         with runtime.lock:
-            active_sets = set(runtime.enabled_event_sets)
+            active_flags = runtime.active_flags()
+            # Recompute from the authoritative event flags at the damage
+            # point.  ``enabled_event_sets`` is also used for scene/spawn
+            # publication and may lag an event transition while a chained
+            # platform signal is being processed; hazard damage must follow
+            # the current event state immediately.
+            active_sets = set(
+                runtime.content.enabled_event_set_rows(active_flags)
+            )
+            cached_sets = set(runtime.enabled_event_sets)
         matching = tuple(
             (volume, effect_id)
             for volume, effect_id in hazards
@@ -1124,6 +2193,8 @@ class MapEventService:
         now = time.perf_counter()
         hazard_id = min(volume.row_id for volume, _effect in matching)
         with s.flow_lock:
+            if s.gameplay_combat_state is not combat or s.gameplay_map_event_runtime is not runtime:
+                return
             cooldowns = getattr(
                 s, "gameplay_fractured_hazard_next_at", None,
             )
@@ -1134,9 +2205,24 @@ class MapEventService:
                 return
             cooldowns[hazard_id] = now + 1.0
             inventory = s.gameplay_inventory
+            actor_id = int(
+                getattr(s, "gameplay_remote_actor_id", 0) or combat.player_actor_id
+            )
+        if active_sets != cached_sets:
+            _log(
+                f"Fractured Planes hazard state reconciled on {runtime.map_id}: "
+                f"event_sets={tuple(sorted(active_sets))}, "
+                f"cached_sets={tuple(sorted(cached_sets))}, "
+                f"active_events={tuple(sorted(active_flags))}"
+            )
+        _log(
+            f"Fractured Planes hazard hit on {runtime.map_id}: "
+            f"actor={actor_id}, hazards="
+            f"{tuple((volume.row_id, volume.event_set_row, effect_id) for volume, effect_id in matching)}, "
+            f"active_event_sets={tuple(sorted(active_sets))}"
+        )
         if inventory is None:
             return
-        actor_id = int(combat.player_actor_id)
         with combat.lock:
             health = combat.player_health.get(actor_id)
             if health is None or int(health[0]) <= 0:
@@ -1156,7 +2242,7 @@ class MapEventService:
                 inventory.health_points = float(current)
             server_tick = int(server_time() // 40) & 0xFFFFFFFF
         resolution = DamageResolution(
-            target_actor_id=actor_id,
+            target_actor_id=CharacterService._viewer_actor_id(s, actor_id),
             attacker_actor_id=0,
             current_health=current,
             maximum_health=maximum,
@@ -1175,11 +2261,234 @@ class MapEventService:
         )
 
     @staticmethod
-    def _check_trigger_volumes(s: Session, wire_position) -> None:
+    def _apply_tower_aura_damage(
+            s: Session, runtime: MapEventRuntime, position,
+            *, previous_position=None, previous_position_at=None) -> None:
+        """Damage a player standing inside a fixed tower's aura.
+
+        ``e_dra_fortress_normal_powernode`` is the Fractured Planes laser. It
+        has no ``Skills`` row, so the ordinary monster attack path never fires
+        for it: the floor's most visible hazard used to deal exactly nothing.
+        Its permanent aura supplies the native rotating laser effect. The
+        server applies the tower's level-scaled ``MinDamage``/``MaxDamage``
+        average when the player intersects the blue beam, instead of applying
+        damage anywhere in the aura's 8-unit target sphere.
+
+        Damage follows the rotating star beam's authored range and width. Its
+        beam cross-section is checked in 3D so it does not hit players standing
+        above or below the visible blue strip.
+        """
+
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        if not is_tower_layout(runtime.map_id):
+            return
+        encounter = combat.encounter
+        static_path = str(encounter.static_database_path)
+        now = time.perf_counter()
+        with combat.lock:
+            towers = tuple(
+                (
+                    actor_id,
+                    monster,
+                    float(combat.monster_yaws.get(actor_id, 0.0)),
+                )
+                for actor_id, monster in combat.monsters.items()
+                if is_tower_mechanism(
+                    static_path, runtime.map_id, monster.template_id,
+                )
+                and combat.monster_health.get(actor_id, 0) > 0
+            )
+        if not towers:
+            return
+        world = (
+            float(position[0]), float(position[1]), float(position[2])
+        )
+        # Permanent monster effects carry StartTick=0 in NewMonster's status
+        # snapshot. The client rotates this aura from that shared game clock,
+        # not from the moment each viewer's reliable spawn packet is sent.
+        # ``server_time`` is the same 25 Hz clock used for status StartTick.
+        phase_now = server_time() / 1000.0
+        samples = [(world, phase_now)]
+        if previous_position is not None:
+            start = tuple(float(value) for value in previous_position[:3])
+            distance = math.dist(start, world)
+            start_at = float(previous_position_at or phase_now)
+            spatial_samples = math.ceil(distance / 0.20)
+            temporal_samples = math.ceil(
+                max(0.0, phase_now - start_at)
+                / TOWER_BEAM_CHECK_INTERVAL
+            )
+            sample_count = min(
+                128, max(1, spatial_samples, temporal_samples)
+            )
+            samples = [
+                (
+                    tuple(
+                        start[axis]
+                        + (world[axis] - start[axis]) * (index / sample_count)
+                        for axis in range(3)
+                    ),
+                    start_at
+                    + (phase_now - start_at) * (index / sample_count),
+                )
+                for index in range(sample_count + 1)
+            ]
+        hits = []
+        for actor_id, monster, base_yaw in towers:
+            spec = _tower_aura_spec(static_path, monster.template_id)
+            if spec is None:
+                continue
+            radius, interval, beam_width, rotation_speed, start_angle = spec
+            centre = monster.position
+            viewer_beam_started_at = getattr(
+                s, "gameplay_tower_beam_started_at", {}
+            )
+            # The permanent aura status snapshot carries StartTick=0; this
+            # value is shared by all viewers, regardless of spawn packet time.
+            beam_started_at = viewer_beam_started_at.get(int(actor_id), 0.0)
+            # Monster yaw zero points along -Z in the game coordinate frame.
+            # Compare the player's capsule center to the closest point on the
+            # finite beam segment. This includes the authored player capsule
+            # radius without expanding the whole 8-unit aura sphere.
+            beam_radius = beam_width * 0.5
+            contact_distance = beam_radius + TOWER_PLAYER_COLLISION_RADIUS
+            beam_touched = False
+            contact = None
+            for sample, sample_at in samples:
+                if sample_at < beam_started_at:
+                    continue
+                beam_yaw = (
+                    base_yaw
+                    + math.radians(start_angle)
+                    + math.radians(
+                        rotation_speed * (sample_at - beam_started_at)
+                    )
+                )
+                dx = sample[0] - float(centre[0])
+                dy = sample[1] - float(centre[1])
+                dz = sample[2] - float(centre[2])
+                direction_x = -math.sin(beam_yaw)
+                direction_z = -math.cos(beam_yaw)
+                along = max(
+                    0.0,
+                    min(radius, dx * direction_x + dz * direction_z),
+                )
+                offset_x = dx - direction_x * along
+                offset_z = dz - direction_z * along
+                lateral_distance = math.hypot(offset_x, offset_z)
+                vertical_gap = max(
+                    0.0,
+                    abs(dy) - TOWER_PLAYER_CAPSULE_HALF_HEIGHT,
+                )
+                distance = math.sqrt(
+                    lateral_distance ** 2 + vertical_gap ** 2
+                )
+                if distance <= contact_distance:
+                    beam_touched = True
+                    contact = (
+                        sample_at,
+                        sample,
+                        distance,
+                        contact_distance,
+                    )
+                    break
+            if not beam_touched:
+                continue
+            hits.append((actor_id, monster, interval, contact))
+        if not hits:
+            return
+        applied_any = False
+        for actor_id, monster, interval, _contact in hits:
+            with s.flow_lock:
+                if (
+                    s.gameplay_combat_state is not combat
+                    or s.gameplay_map_event_runtime is not runtime
+                ):
+                    return
+                cooldowns = getattr(s, "gameplay_tower_aura_next_at", None)
+                if cooldowns is None:
+                    cooldowns = {}
+                    s.gameplay_tower_aura_next_at = cooldowns
+                if now < float(cooldowns.get(actor_id, 0.0)):
+                    continue
+                cooldowns[actor_id] = now + interval
+                inventory = s.gameplay_inventory
+                actor = int(
+                    getattr(s, "gameplay_remote_actor_id", 0)
+                    or combat.player_actor_id
+                )
+            if inventory is None:
+                return
+            damage = max(
+                1,
+                int(round(
+                    (float(monster.minimum_damage)
+                     + float(monster.maximum_damage)) / 2.0
+                )),
+            )
+            with combat.lock:
+                health = combat.player_health.get(actor)
+                if health is None or int(health[0]) <= 0:
+                    continue
+                previous, maximum = int(health[0]), int(health[1])
+                current = max(0, previous - damage)
+                applied = previous - current
+                health[0] = current
+                if actor == int(combat.player_actor_id):
+                    combat.player_current_health = current
+            if applied <= 0:
+                continue
+            applied_any = True
+            CharacterService._cancel_respawn_protection(s)
+            with s.flow_lock:
+                if s.gameplay_inventory is inventory:
+                    inventory.health_points = float(current)
+                server_tick = int(server_time() // 40) & 0xFFFFFFFF
+            CharacterService._send_combat_resolution(
+                s,
+                DamageResolution(
+                    target_actor_id=CharacterService._viewer_actor_id(s, actor),
+                    attacker_actor_id=0,
+                    current_health=current,
+                    maximum_health=maximum,
+                    damage=applied,
+                    killed=current <= 0,
+                    position=tuple(float(value) for value in position),
+                    server_tick=server_tick,
+                    hit_tags=(0,),
+                    skill_index=0,
+                    source_actor_id=0,
+                    periodic_damage=True,
+                ),
+                label="fractured-planes-tower-aura",
+                include_item_set_procs=False,
+            )
+        if applied_any:
+            contact_summary = tuple(
+                (
+                    tower_id,
+                    round(contact[2], 3),
+                    round(contact[3], 3),
+                )
+                for tower_id, _monster, _interval, contact in hits
+            )
+            _log(
+                f"Fractured Planes tower aura hit on {runtime.map_id}: "
+                f"actor={actor}, position="
+                f"{tuple(round(value, 3) for value in world)}, "
+                f"contacts={contact_summary}"
+            )
+
+    @staticmethod
+    def _check_trigger_volumes(
+            s: Session, wire_position, *, previous_wire_position=None,
+            previous_wire_position_at=None) -> None:
         """Detect trigger-volume entry from the player's own movement."""
 
         runtime = getattr(s, "gameplay_map_event_runtime", None)
-        if runtime is None or not runtime.content.trigger_volumes:
+        if runtime is None:
             return
         frame = getattr(s, "gameplay_coordinate_frame", None)
         if frame is None:
@@ -1188,9 +2497,20 @@ class MapEventService:
                 return
             frame = combat.encounter.coordinate_frame
         world = frame.wire_to_world(wire_position)
-        MapEventService._apply_fractured_planes_floor_one_hazard_damage(
+        previous_world = (
+            frame.wire_to_world(previous_wire_position)
+            if previous_wire_position is not None
+            else None
+        )
+        MapEventService._apply_fractured_planes_hazard_damage(
             s, runtime, world,
         )
+        MapEventService._apply_tower_aura_damage(
+            s, runtime, world, previous_position=previous_world,
+            previous_position_at=previous_wire_position_at,
+        )
+        if not runtime.content.trigger_volumes:
+            return
         with runtime.lock:
             volumes = runtime.active_trigger_volumes()
         inside = {
@@ -1405,6 +2725,7 @@ class MapEventService:
             scheduler = runtime.scheduler
             if (
                 deadline is None
+                or runtime.fractured_planes_floor_completed
                 or scheduler is None
                 or runtime.fractured_planes_limit_timer is not None
             ):
@@ -1423,9 +2744,10 @@ class MapEventService:
         with runtime.lock:
             runtime.fractured_planes_limit_timer = None
             deadline = runtime.fractured_planes_limit_deadline
-            if deadline is None:
+            if deadline is None or runtime.fractured_planes_floor_completed:
                 return
             seconds_left = max(0, math.ceil(deadline - time.perf_counter()))
+            floor_clear_check_armed = runtime.fractured_planes_kill_seen
         packet, packet_bits = encode_server_command_batch((
             ServerCommand(
                 KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
@@ -1435,6 +2757,34 @@ class MapEventService:
         ))
         for viewer in self._map_event_sessions(runtime):
             try:
+                with runtime.lock:
+                    if runtime.fractured_planes_floor_completed:
+                        return
+                with viewer.flow_lock:
+                    combat = viewer.gameplay_combat_state
+                    move = viewer.gameplay_last_move
+                    position = viewer.gameplay_spawn_position
+                # Reconcile the boss gate on the normal floor heartbeat too.
+                # A final kill notification can be missed during a disconnect
+                # or actor retirement; without this check the score bar can
+                # remain below its authored threshold forever even though the
+                # player cleared every visible slot.
+                if (
+                    combat is not None
+                    and floor_clear_check_armed
+                    and _fractured_planes_floor_number_from_map(runtime.map_id)
+                ):
+                    self._resolve_fractured_planes_floor_clear(
+                        viewer, runtime, log_blockers=False,
+                    )
+                if combat is not None and move is not None:
+                    position = combat.encounter.coordinate_frame.wire_to_world(
+                        move.relative_position
+                    )
+                if seconds_left and position is not None:
+                    self._apply_fractured_planes_hazard_damage(
+                        viewer, runtime, position,
+                    )
                 CharacterService._send_world_loot_state_batch(
                     viewer, packet, packet_bits,
                     label="fractured-planes-limit-time",
@@ -1446,6 +2796,56 @@ class MapEventService:
                 )
         if seconds_left:
             self._schedule_fractured_planes_limit_tick(runtime)
+
+    def _schedule_fractured_planes_tower_tick(self, runtime) -> None:
+        with runtime.lock:
+            scheduler = runtime.scheduler
+            if (
+                runtime.fractured_planes_limit_deadline is None
+                or runtime.fractured_planes_floor_completed
+                or scheduler is None
+                or runtime.fractured_planes_tower_timer is not None
+            ):
+                return
+            handle = scheduler.timer(
+                TOWER_BEAM_CHECK_INTERVAL,
+                self._run_fractured_planes_tower_tick,
+                args=(runtime,),
+            )
+            runtime.fractured_planes_tower_timer = handle
+        handle.start()
+
+    def _run_fractured_planes_tower_tick(self, runtime) -> None:
+        with runtime.lock:
+            runtime.fractured_planes_tower_timer = None
+            active = (
+                runtime.fractured_planes_limit_deadline is not None
+                and not runtime.fractured_planes_floor_completed
+            )
+        if not active:
+            return
+        sessions = self._map_event_sessions(runtime)
+        if not sessions:
+            return
+        for viewer in sessions:
+            with viewer.flow_lock:
+                combat = viewer.gameplay_combat_state
+                move = viewer.gameplay_last_move
+                position = viewer.gameplay_spawn_position
+            if combat is None or position is None:
+                continue
+            if move is not None:
+                position = combat.encounter.coordinate_frame.wire_to_world(
+                    move.relative_position
+                )
+            try:
+                self._apply_tower_aura_damage(viewer, runtime, position)
+            except Exception as exc:
+                _log(
+                    "Fractured Planes tower beam tick failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        self._schedule_fractured_planes_tower_tick(runtime)
 
     def _broadcast_wave_message(self, runtime, packet, *, label) -> None:
         for viewer in self._map_event_sessions(runtime):
@@ -1561,23 +2961,45 @@ class MapEventService:
 
     def _broadcast_map_event_update(self, runtime, sessions, transition) -> None:
         definition = transition.event
-        # One entry, event id 0, the map-local flag: the exact shape retail
-        # used for BOSS_spawn/BOSS_start/BOSS_death mid-map.
-        update = EventUpdate((
+        # A map-local EventUpdate must describe the full state of the map's
+        # event flags. Sending only currently running events leaves any event
+        # that ended earlier latched on the client, which can keep an EventSet
+        # (and its trap effects) visible after a later platform interaction.
+        with runtime.lock:
+            active_flags = set(runtime.active_flags())
+            catalog = runtime.catalog
+            referenced = set(runtime.content.referenced_events)
+            referenced.update(runtime.running)
+            referenced.add(definition.key)
+        definitions = {}
+        for event_key in referenced:
+            event = catalog.event(event_key)
+            if event is not None and event.applies_to(runtime.map_id):
+                definitions[event.key] = event
+        entries = tuple(
             EventUpdateEntry(
                 event_id=0,
-                event_name=definition.event_id,
-                flags=(bool(transition.active), True, False, False),
+                event_name=event.event_id,
+                flags=(event_key in active_flags, True, False, False),
                 starts_at=None,
                 ends_at=None,
                 tags=(),
-            ),
-        ))
+            )
+            for event_key, event in sorted(definitions.items())
+        )
+        update = EventUpdate(tuple(entries))
         packet, packet_bits = encode_event_update(update)
         for viewer in sessions:
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-update"
             )
+        _log(
+            f"published map-event state update on {runtime.map_id}: "
+            f"changed={definition.event_id} active={transition.active}, "
+            f"snapshot_events={len(entries)}, active_events="
+            f"{tuple(sorted(key for key in definitions if key in active_flags))}, "
+            f"sessions={len(sessions)}"
+        )
 
     def _publish_event_props(self, runtime, sessions, event_sets) -> None:
         with runtime.lock:
@@ -1631,41 +3053,6 @@ class MapEventService:
             return
         for viewer in sessions:
             viewer_definitions = definitions
-            if CharacterService._is_fractured_planes_run(self, viewer):
-                access_id = str(
-                    getattr(viewer, "gameplay_map_access_id", "") or ""
-                ).casefold()
-                prefix = "h0009_endlesstower_floor_"
-                floor_text = access_id.removeprefix(prefix)
-                if access_id.startswith(prefix) and floor_text.isdecimal():
-                    floor_number = int(floor_text)
-                    if 1 <= floor_number < 100:
-                        next_floor = f"{prefix}{floor_number + 1:03d}"
-                        redirected = False
-                        viewer_definitions = tuple(
-                            replace(
-                                definition,
-                                destination_map_id=next_floor,
-                            )
-                            if (
-                                definition.exit_id.casefold()
-                                == "fracturedplanes_rift_entrance"
-                                and int(definition.event_set_row) == 1841
-                            )
-                            else definition
-                            for definition in definitions
-                        )
-                        redirected = any(
-                            definition.exit_id.casefold()
-                            == "fracturedplanes_rift_entrance"
-                            and definition.destination_map_id == next_floor
-                            for definition in viewer_definitions
-                        )
-                        if redirected:
-                            _log(
-                                f"Fractured Planes exit on floor "
-                                f"{floor_number:03d} routes to {next_floor}"
-                            )
             exit_info = ExitInfo(tuple(
                 ExitInfoEntry(
                     definition.name,
@@ -1787,6 +3174,16 @@ class MapEventService:
 
     def _spawn_event_monsters(self, runtime, sessions, event_sets) -> None:
         rows = runtime.gated_spawn_rows(event_sets)
+        # Scene controllers are event-graph objects, not renderable combatants.
+        # In particular, publishing one as a NewMonster can leave the client
+        # with a registered actor that has no effect module and abort the rest
+        # of the initial spawn batch.
+        rows = tuple(
+            row for row in rows
+            if not is_tower_controller(
+                self.static_database_path, runtime.map_id, row.template_id
+            )
+        )
         authored_rotations = {row.row_id: row.rotation for row in rows}
         # An EventSet keeps one row per difficulty variant of its boss (the
         # Heredur arena's BOSS_spawn set holds ten ``boss_heredur_scaling``
@@ -1823,16 +3220,106 @@ class MapEventService:
         # Its idle is start_idle; the staff theft uses its scripted despawn
         # transition, not with an extra Grimmag/China scene carrier.
         if not rows:
+            # Endless Tower floors 2-100 keep their room density areas
+            # unassigned (EventSetRow=-1), so their monsters are already in
+            # the shared encounter but are not owned/announced by the room's
+            # gated spawn set. When the room event opens, bind and publish the
+            # living actors in the area nearest that room's authored start
+            # prop. This makes the trap objective's blockers visible and
+            # keeps their combat/clear state tied to the right room.
+            if _fractured_planes_floor_number_from_map(runtime.map_id) > 1:
+                room_rows = _fractured_planes_room_event_rows(runtime)
+                props = tuple(
+                    (str(prop.instance_id), tuple(prop.position))
+                    for prop in runtime.content.props
+                )
+                regions = dict(_fractured_planes_floor_regions(
+                    str(database_path), runtime.map_id, room_rows, props,
+                ))
+                row_rooms = {
+                    int(row_id): (room, signal)
+                    for row_id, room, signal in room_rows
+                }
+                for event_set in event_sets:
+                    room_info = row_rooms.get(int(event_set))
+                    if room_info is None:
+                        continue
+                    room, signal = room_info
+                    volumes = regions.get(signal, ())
+                    if not volumes:
+                        continue
+                    with combat.lock:
+                        room_actor_ids = tuple(sorted(
+                            int(actor_id)
+                            for actor_id, monster in combat.monsters.items()
+                            if combat.monster_health.get(actor_id, 0) > 0
+                            and not is_tower_mechanism(
+                                database_path, runtime.map_id, monster.template_id,
+                            )
+                            and any(volume.contains((
+                                monster.position[0], volume.matrix[13],
+                                monster.position[2],
+                            )) for volume in volumes)
+                        ))
+                        if room_actor_ids:
+                            combat.activate_monsters(room_actor_ids)
+                    if not room_actor_ids:
+                        continue
+                    with runtime.lock:
+                        runtime.event_set_actor_ids.setdefault(
+                            int(event_set), set()
+                        ).update(room_actor_ids)
+                    groups = {}
+                    for actor_id in room_actor_ids:
+                        group = combat.group_for_actor(actor_id)
+                        if group is not None:
+                            groups.setdefault(id(group), (group, set()))[1].add(
+                                actor_id
+                            )
+                    for viewer in sessions:
+                        with viewer.flow_lock:
+                            ready = viewer.gameplay_presence_ready
+                        if ready:
+                            for group, actor_ids in groups.values():
+                                self._announce_runtime_group(
+                                    viewer, combat, group,
+                                    force_actor_ids=actor_ids,
+                                )
+                    _log(
+                        f"Fractured Planes room {room} activated and "
+                        f"published {len(room_actor_ids)} authored monster(s) "
+                        f"for {signal}: {room_actor_ids}"
+                    )
             return
         with combat.lock:
+            alive_actor_ids = set(combat.alive_actor_ids)
+            existing_by_row = {
+                row.row_id: tuple(sorted(
+                    set(combat.find_monsters(
+                        row.template_id, row.position,
+                        radius=EVENT_SPAWN_DUPLICATE_RADIUS,
+                    )) & alive_actor_ids
+                ))
+                for row in rows
+            }
             pending = tuple(
-                row for row in rows
-                if not (set(combat.find_monsters(
-                    row.template_id, row.position,
-                    radius=EVENT_SPAWN_DUPLICATE_RADIUS,
-                )) & set(combat.alive_actor_ids))
+                row for row in rows if not existing_by_row[row.row_id]
             )
             actor_ids = combat.allocate_runtime_actor_ids(len(pending))
+        # A map can materialize an event-gated spawn while assembling its
+        # initial world.  In that case the duplicate guard correctly avoids a
+        # second actor, but the actor still needs ownership by this EventSet so
+        # it can be announced, counted for the objective, and retired later.
+        # Register only live matching actors; a dead actor at the authored
+        # point must not suppress a fresh event spawn.
+        if any(existing_by_row.values()):
+            with runtime.lock:
+                for row in rows:
+                    actor_ids_for_row = existing_by_row[row.row_id]
+                    if actor_ids_for_row:
+                        runtime.event_set_actor_ids.setdefault(
+                            int(row.event_set_row), set()
+                        ).update(actor_ids_for_row)
         if not pending:
             # A map-local event can start from a trigger while the player's
             # first 0x85 initialization is still being assembled. In that
@@ -1848,21 +3335,40 @@ class MapEventService:
                 )) if event_sets else set()
             groups = []
             seen_groups = set()
+            actor_positions = {}
             for actor_id in sorted(event_actor_ids):
-                group = combat.runtime_group_for_actor(actor_id)
+                # The map loader can materialize gated bosses as part of the
+                # encounter's authored population. Resolve both authored and
+                # runtime groups so the duplicate guard can still publish
+                # that existing actor when its event starts.
+                group = combat.group_for_actor(actor_id)
                 if group is None or id(group) in seen_groups:
                     continue
                 seen_groups.add(id(group))
                 groups.append(group)
+                with combat.lock:
+                    actor_positions[actor_id] = combat.monster_positions.get(
+                        actor_id
+                    )
             for viewer in sessions:
                 with viewer.flow_lock:
                     ready = viewer.gameplay_presence_ready
                 if ready:
                     for group in groups:
+                        # Existing in server combat state does not mean the
+                        # client received NewMonster. The announcement helper
+                        # reserves each sent ID under the viewer's flow lock.
                         self._announce_runtime_group(viewer, combat, group)
+            matched_actor_ids = tuple(sorted(set().union(*(
+                set(actor_ids_for_row)
+                for actor_ids_for_row in existing_by_row.values()
+            ))))
             _log(
                 f"{len(rows)} gated spawn row(s) on {runtime.map_id} already "
-                "materialized"
+                f"materialized as actor(s) {matched_actor_ids} at "
+                f"{actor_positions!r}; replayed actor state to "
+                f"{sum(1 for viewer in sessions if viewer.gameplay_presence_ready)} "
+                "ready session(s)"
             )
             return
         monsters = []
@@ -1873,9 +3379,21 @@ class MapEventService:
             scripted_cultist = (
                 row.template_id.casefold() == _TUTORIAL_CULTIST_TEMPLATE
             )
+            mounted = is_tower_mechanism(
+                database_path, runtime.map_id, row.template_id,
+            )
+            # Lythira's level-100 template is authored with coefficient-like
+            # values (50 HP, 6-8 damage) but carries CharLevel=100. Treating
+            # those as already-scaled legacy stats strips the level curve and
+            # leaves the tenth-floor boss with only a few hundred HP. Keep the
+            # full player-level curve for this boss, like level-one templates.
+            coefficient_stats = (
+                mounted
+                or row.template_id.casefold() == "fp_boss_01_lythira"
+            )
             # The cinematic's staff, portal and root motion are authored
             # against this exact transform, not a navigable combat position.
-            if not scripted_cultist:
+            if not scripted_cultist and not mounted:
                 try:
                     position = _grounded_spawn_position(
                         encounter.navigation,
@@ -1887,7 +3405,7 @@ class MapEventService:
                 except (NavigationError, CollisionTerrainError, ValueError):
                     position = tuple(float(value) for value in row.position)
             runtime_definition = _load_runtime_definition(
-                database_path, row.template_id, actor_id
+                database_path, row.template_id, actor_id, stationary=mounted,
             )
             if runtime_definition is None:
                 _log(f"no runtime template for {row.template_id!r}; skipped")
@@ -1900,10 +3418,16 @@ class MapEventService:
                     position,
                     monster_level=runtime.monster_level,
                     scaling_difficulty=runtime.scaling_difficulty,
+                    coefficient_stats=coefficient_stats,
+                    non_targetable=is_tower_hardware(
+                        database_path, runtime.map_id, row.template_id
+                    ),
                 )
             except ValueError as exc:
                 _log(f"cannot load {row.template_id!r}: {exc}")
                 continue
+            if mounted:
+                monster = replace(monster, field_a0=float(row.rotation))
             if scripted_cultist:
                 monster = replace(monster, field_a0=float(row.rotation))
                 _log(
@@ -2047,7 +3571,8 @@ class MapEventService:
             f"actor(s) {retired_scene_ids!r}"
         )
 
-    def _announce_runtime_group(self, viewer: Session, combat, group) -> None:
+    def _announce_runtime_group(
+            self, viewer: Session, combat, group, *, force_actor_ids=()) -> None:
         """Offer a freshly spawned group to one viewer, like a MoveCommand does."""
 
         with viewer.flow_lock:
@@ -2056,6 +3581,10 @@ class MapEventService:
             encounter = viewer.gameplay_monster_encounter
             move = viewer.gameplay_last_move
             announced = set(viewer.gameplay_announced_monster_actor_ids)
+            spawned = set(viewer.gameplay_spawned_monster_actor_ids)
+            fractured_run = bool(
+                getattr(viewer, "gameplay_fractured_planes_run", False)
+            )
         if encounter is None:
             return
         if move is not None:
@@ -2075,12 +3604,37 @@ class MapEventService:
                 for actor_id in group.actor_id_set & alive
                 if (
                     combat.monsters.get(actor_id) is not None
-                    and combat.monsters[actor_id].template_id.casefold()
-                    in _FORCE_ANNOUNCE_EVENT_ACTORS
+                    and (
+                        combat.monsters[actor_id].template_id.casefold()
+                        in _FORCE_ANNOUNCE_EVENT_ACTORS
+                        or is_tower_hardware(
+                            combat.encounter.static_database_path,
+                            combat.encounter.map_id,
+                            combat.monsters[actor_id].template_id,
+                        )
+                        or (
+                            fractured_run
+                            and combat.monsters[actor_id].rank_id.casefold()
+                            == "rank_boss_endlesstower"
+                        )
+                    )
                 )
             }
         candidates = (group.actor_id_set & alive) - announced
-        forced = candidates & scripted_actor_ids
+        # Tower bosses already carry the native gold minimap icon. Publish
+        # their actor at spawn regardless of distance so that icon is visible
+        # across the map. Reserve NewMonster below to avoid duplicate actors.
+        # Fixed tower hardware behaves the same way: a power node or shooter
+        # that an event unlocks has to appear where it was authored, not when
+        # the player happens to walk into it.
+        forced = (
+            (candidates | (scripted_actor_ids - spawned)) & scripted_actor_ids
+        ) | (
+            set(int(value) for value in force_actor_ids)
+            & group.actor_id_set
+            & alive
+            - spawned
+        )
         groups = list(CharacterService._monster_groups_within_radius(
             None,
             world_position=player_world,
@@ -2139,41 +3693,90 @@ class MapEventService:
                 scripted_spawn_ids, positions=positions
             )
             if spawn_group is not None:
-                packet, packet_bits = encode_monster_spawn_batch(
-                    spawn_group.spawn_batch
+                batch = CharacterService._new_monster_batch_for_viewer(
+                    viewer, combat, spawn_group.spawn_batch,
+                    label="map-event-forced-monster-spawn",
                 )
+            else:
+                batch = None
+            if batch is not None:
+                packet, packet_bits = encode_monster_spawn_batch(batch)
                 if len(packet) > TAIL_FRAG_SIZE:
                     viewer.send_reliable_ordered_split(
                         packet,
                         total_bit_length=packet_bits,
                         track=True,
-                        label_prefix="map-event-scripted-monster-spawn",
+                        label_prefix="map-event-forced-monster-spawn",
                     )
                 else:
                     viewer.send_reliable_ordered(
                         (packet, packet_bits),
                         track=True,
-                        label="map-event-scripted-monster-spawn",
+                        label="map-event-forced-monster-spawn",
                     )
                 with combat.lock:
                     combat.activate_monsters(scripted_spawn_ids)
+                    # A blocker can die after the alive snapshot above but
+                    # before this retry's NewMonster is delivered. Do not let
+                    # that late snapshot leave an idle actor over the newer
+                    # Kill command; end the ordered stream with a discard.
+                    dead_after_spawn = tuple(
+                        actor_id
+                        for actor_id in scripted_spawn_ids
+                        if combat.monster_health.get(actor_id, 0) <= 0
+                    )
                     delivered_positions = {
                         actor_id: combat.monster_positions[actor_id]
                         for actor_id in scripted_spawn_ids
                         if actor_id in combat.monster_positions
+                        and actor_id not in dead_after_spawn
                     }
+                if dead_after_spawn:
+                    with viewer.flow_lock:
+                        if viewer.gameplay_combat_state is combat:
+                            viewer.gameplay_spawned_monster_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            CharacterService._forget_published_monsters(
+                                viewer, dead_after_spawn
+                            )
+                            viewer.gameplay_announced_monster_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            viewer.gameplay_requested_actor_ids.difference_update(
+                                dead_after_spawn
+                            )
+                            for actor_id in dead_after_spawn:
+                                viewer.gameplay_delivered_monster_positions.pop(
+                                    actor_id, None
+                                )
+                            viewer.gameplay_monsters_spawned = bool(
+                                viewer.gameplay_spawned_monster_actor_ids
+                            )
+                            viewer.gameplay_vicinity_announced = bool(
+                                viewer.gameplay_announced_monster_actor_ids
+                            )
+                    viewer.send_reliable_ordered(
+                        encode_discard_monster_batch(dead_after_spawn),
+                        track=True,
+                        label="map-event-monster-spawn-race-discard",
+                    )
+                    _log(
+                        "discarded blocker(s) killed during map-event "
+                        f"NewMonster retry: {dead_after_spawn!r}"
+                    )
                 with viewer.flow_lock:
                     if viewer.gameplay_combat_state is combat:
                         viewer.gameplay_delivered_monster_positions.update(
                             delivered_positions
                         )
                 _log(
-                    f"sent scripted NewMonster state "
+                    f"sent forced NewMonster state "
                     f"{tuple(sorted(scripted_spawn_ids))} to {viewer.addr!r}"
                 )
         if forced:
             _log(
-                f"announced scripted actor(s) {tuple(sorted(forced))} "
+                f"force-published actor(s) {tuple(sorted(forced))} "
                 f"to {viewer.addr!r}"
             )
 
@@ -2206,6 +3809,7 @@ class MapEventService:
                     retired_set & viewer.gameplay_spawned_monster_actor_ids
                 ))
                 viewer.gameplay_spawned_monster_actor_ids.difference_update(retired_set)
+                CharacterService._forget_published_monsters(viewer, retired_set)
                 viewer.gameplay_announced_monster_actor_ids.difference_update(retired_set)
                 viewer.gameplay_requested_actor_ids.difference_update(retired_set)
                 for actor_id in retired_set:

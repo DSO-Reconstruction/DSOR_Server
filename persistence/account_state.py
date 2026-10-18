@@ -6,6 +6,7 @@ import copy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import threading
 
 from dso_server.persistence.player_database import AsyncPlayerDatabase
@@ -15,12 +16,24 @@ from dso_server.protocol.currency_protocol import (
     normalize_game_currency_balances,
 )
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
-from dso_server.protocol.inventory_codec import InventoryInfo, ItemEnchantmentInfo, ItemInfo
+from dso_server.protocol.inventory_codec import (
+    InventoryInfo,
+    ItemEnchantmentInfo,
+    ItemInfo,
+    owned_inventory_items,
+)
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.gameplay.local_mount_state import MountDefinition, MountEffectState, find_mount
 from dso_server.protocol.membership_protocol import (
     DELUXE_MEMBERSHIP,
     default_deluxe_expiry,
     parse_membership_expiry,
+)
+from dso_server.gameplay.achievement_content import (
+    AchievementProgress,
+    complete_achievement,
+    load_achievement_catalog,
+    refresh_derived_achievements,
 )
 from dso_server.protocol.talent_protocol import ACTIVE_SKILL_TALENT_PRESELECTION
 from dso_server.protocol.player_init_protocol import (
@@ -982,7 +995,12 @@ class AccountStateStore:
     intentionally reserved for startup migrations, tests, and shutdown.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        static_database_path: str | Path = DEFAULT_STATIC_DB_PATH,
+    ) -> None:
         self.path = Path(path)
         self.lock = threading.RLock()
         self.states: dict[int, AccountState] = {}
@@ -996,8 +1014,154 @@ class AccountStateStore:
         raw_states, raw_profiles = self._database.load_documents()
         self.warnings.extend(self._database.warnings)
         self._load_database_documents(raw_states, raw_profiles)
+        self._migrate_rune_trinket_equipment_slots(static_database_path)
         self.account_registry = None
         self.account_wallets = self._database.load_wallets()
+
+    def _migrate_rune_trinket_equipment_slots(
+        self, static_database_path: str | Path
+    ) -> None:
+        """Unlock RuneTrinket equipment slots six and seven for saved players.
+
+        The client treats an occupied RuneTrinket equipment slot as unlocked.
+        Add a blank base trinket to each missing slot so it can be replaced by
+        the player's own item through normal inventory actions.
+        """
+
+        path = Path(static_database_path)
+        if not self.states or not path.is_file():
+            return
+        try:
+            database = sqlite3.connect(
+                f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+            )
+            try:
+                rune_templates = {
+                    str(row[0])
+                    for row in database.execute(
+                        "SELECT Id FROM _Template_Item "
+                        "WHERE ItemCategory='RuneTrinket'"
+                    )
+                }
+            finally:
+                database.close()
+        except (OSError, sqlite3.Error) as exc:
+            self.warnings.append(
+                f"could not migrate RuneTrinket equipment slots: {exc}"
+            )
+            return
+        if not rune_templates:
+            return
+        template_id = (
+            "all_base_trinket_rune_01"
+            if "all_base_trinket_rune_01" in rune_templates
+            else sorted(rune_templates)[0]
+        )
+        achievement_catalog = load_achievement_catalog(path)
+        unlock_achievements = tuple(
+            achievement_catalog.achievement(achievement_id)
+            for achievement_id in (
+                "item_use_item_rune_extension_stone",
+                "item_use_item_rune_extension_stone_02",
+            )
+        )
+        if any(definition is None for definition in unlock_achievements):
+            self.warnings.append(
+                "RuneTrinket slot unlock achievements are missing from the "
+                "static database"
+            )
+            unlock_achievements = tuple(
+                definition for definition in unlock_achievements
+                if definition is not None
+            )
+
+        migrated = []
+        for character_id, state in self.states.items():
+            changed = False
+            achievement_state = {
+                str(key).casefold(): AchievementProgress.from_document(value)
+                for key, value in state.achievements.items()
+                if isinstance(value, dict)
+            }
+            for definition in unlock_achievements:
+                changed = complete_achievement(
+                    achievement_state, definition
+                ) or changed
+            if changed:
+                refresh_derived_achievements(
+                    achievement_catalog, achievement_state
+                )
+                state.achievements = {
+                    key: progress.to_document()
+                    for key, progress in achievement_state.items()
+                    if progress.progress or progress.completed
+                }
+
+            occupied_slots = {
+                int(slot)
+                for slots in state.inventory.equipment_slots.values()
+                for slot in slots
+            }
+            missing_slots = [
+                slot for slot in (18, 19) if slot not in occupied_slots
+            ]
+            if not missing_slots:
+                if changed:
+                    migrated.append((character_id, state))
+                continue
+            next_item_id = max(
+                int(state.next_item_id),
+                max(
+                    (
+                        int(item.item_id)
+                        for item in owned_inventory_items(state.inventory)
+                    ),
+                    default=0,
+                ) + 1,
+            )
+            if next_item_id + len(missing_slots) - 1 > 0xFFFFFFFF:
+                self.warnings.append(
+                    f"could not unlock RuneTrinket equipment slots for "
+                    f"character {character_id}: item ID range exhausted"
+                )
+                if changed:
+                    migrated.append((character_id, state))
+                continue
+            now = datetime.now(timezone.utc)
+            for slot in missing_slots:
+                item_id = next_item_id
+                next_item_id += 1
+                item = ItemInfo(
+                    item_id=item_id,
+                    template_id=template_id,
+                    socket_count=5,
+                    socketed_templates=["", "", "", "", ""],
+                    item_level=1,
+                    field_08=0,
+                    field_18=item_id & 0xFFFF,
+                    field_30=1,
+                    field_38=0,
+                    created_at=(
+                        now.year, now.month, now.day,
+                        now.hour, now.minute, now.second,
+                    ),
+                )
+                state.inventory.items.append(item)
+                state.inventory.equipment_slots[item_id] = (slot,)
+            state.next_item_id = next_item_id
+            if missing_slots:
+                changed = True
+            if changed:
+                migrated.append((character_id, state))
+
+        for character_id, state in migrated:
+            self._database.queue_state(character_id, state)
+        if migrated:
+            self._database.flush()
+            print(
+                "[PlayerDatabase] completed both RuneTrinket slot-unlock "
+                f"achievements for {len(migrated)} saved character(s)"
+            )
 
     def _load_database_documents(
         self,

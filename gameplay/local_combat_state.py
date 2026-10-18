@@ -51,6 +51,12 @@ from dso_server.gameplay.player_summon_lifecycle import (
     summon_startup_seconds,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.fractured_planes_layout import (
+    TOWER_FIRE_BURST_COOLDOWN,
+    TOWER_FIRE_BURST_SHOTS,
+    TOWER_FIRE_ACQUISITION_RANGE,
+    is_tower_mechanism,
+)
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 
@@ -396,6 +402,10 @@ class MonsterCombatant:
     attack: MonsterAttackDefinition
     attacks: tuple[MonsterAttackDefinition, ...] = ()
     target_radius: float | None = None
+    # Fixed tower hardware (power nodes, trap shooters) is scenery that shoots.
+    # Retail marks it with ``e_mark_no_damage``/invulnerability, so no player
+    # skill, damage-over-time, or summon may take its health down.
+    invulnerable: bool = False
 
 
 def _monster_health_after_damage(
@@ -405,6 +415,8 @@ def _monster_health_after_damage(
 ) -> tuple[int, bool]:
     """Apply damage while keeping arena training dummies available forever."""
 
+    if monster.invulnerable:
+        return int(previous_health), False
     current = max(0, int(previous_health) - max(0, int(damage)))
     if current == 0 and str(monster.template_id).casefold().startswith(
         "damage_doll"
@@ -663,6 +675,7 @@ class _PendingPlayerSummonAttack:
     geometry: PlayerSkillGeometry
     player_damage_range: tuple[float, float]
     target_actor_ids: tuple[int, ...]
+    target_due_times: tuple[tuple[int, float, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -981,7 +994,24 @@ class LocalCombatState:
             self.monster_navigation_offsets[actor_id] = (
                 monster.position[1] - navigation_ground[1]
             )
-        self.monster_yaws = {actor_id: 0.0 for actor_id in self.monsters}
+        initialized_at = time.perf_counter()
+        self._monster_spawn_yaws = {
+            int(command.value.actor_id): float(command.value.field_a0)
+            for command in encounter.spawn_batch.commands
+            if isinstance(command, NewMonsterServerCommand)
+        }
+        self.monster_yaws = dict(self._monster_spawn_yaws)
+        self.tower_beam_started_at: dict[int, float] = {
+            # Permanent aura effects are sent with StartTick=0, so the client
+            # rotates these beams from the shared server clock origin.
+            actor_id: 0.0
+            for actor_id, monster in self.monsters.items()
+            if is_tower_mechanism(
+                encounter.static_database_path, encounter.map_id,
+                monster.template_id,
+            )
+            and "powernode" in monster.template_id.casefold()
+        }
         self.monster_moving = {
             actor_id: False for actor_id in self.monsters
         }
@@ -1002,7 +1032,6 @@ class LocalCombatState:
         self.active_monster_actor_ids = (
             set(self.monsters) if initially_active else set()
         )
-        initialized_at = time.perf_counter()
         self.last_monster_attack_at = {
             actor_id: initialized_at for actor_id in self.monsters
         }
@@ -1011,6 +1040,11 @@ class LocalCombatState:
             actor_id: 0 for actor_id in self.monsters
         }
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
+        self.pending_tower_projectile_attacks: dict[
+            int, list[MonsterAttack]
+        ] = {}
+        self.tower_fire_burst_remaining: dict[int, int] = {}
+        self.tower_fire_burst_cooldown_until: dict[int, float] = {}
         # Animation locks outlive early impacts and can end before a projectile
         # lands. Keep them separate from the pending damage transaction.
         self.monster_motion_unblock_at: dict[int, float] = {}
@@ -1118,6 +1152,10 @@ class LocalCombatState:
                 target_radius=monster_target_radii(encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
+                invulnerable=is_tower_mechanism(
+                    encounter.static_database_path, encounter.map_id,
+                    monster.template_id,
+                ),
             )
         if set(result) != set(encounter.actor_ids):
             raise ValueError("monster spawn batch and encounter actor ids differ")
@@ -1314,6 +1352,11 @@ class LocalCombatState:
                 target_radius=monster_target_radii(self.encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
+                invulnerable=is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                ),
             )
             self.monsters[actor_id] = combatant
             self.monster_health[actor_id] = combatant.maximum_health
@@ -1328,7 +1371,17 @@ class LocalCombatState:
                 )
             except (NavigationError, CollisionTerrainError, ValueError):
                 self.monster_navigation_offsets[actor_id] = 0.0
-            self.monster_yaws[actor_id] = 0.0
+            self._monster_spawn_yaws[actor_id] = float(monster.field_a0)
+            self.monster_yaws[actor_id] = float(monster.field_a0)
+            if (
+                is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+                and "powernode" in monster.template_id.casefold()
+            ):
+                self.tower_beam_started_at[actor_id] = 0.0
             self.monster_moving[actor_id] = False
             self.monster_last_published_positions[actor_id] = combatant.position
             self.last_monster_attack_at[actor_id] = time.perf_counter()
@@ -1427,6 +1480,9 @@ class LocalCombatState:
             self.monster_target_actor_ids.pop(actor_id, None)
             self.monster_moving[actor_id] = False
             self.pending_monster_attacks.pop(actor_id, None)
+            self.pending_tower_projectile_attacks.pop(actor_id, None)
+            self.tower_fire_burst_remaining.pop(actor_id, None)
+            self.tower_fire_burst_cooldown_until.pop(actor_id, None)
             self.monster_motion_unblock_at.pop(actor_id, None)
             self.monster_skill_unblock_at.pop(actor_id, None)
             self.monster_routes.pop(actor_id, None)
@@ -1446,7 +1502,7 @@ class LocalCombatState:
                 self.monster_status_effects[actor_id].clear()
                 self.monster_status_immunities.pop(actor_id, None)
                 self.monster_positions[actor_id] = monster.position
-                self.monster_yaws[actor_id] = 0.0
+                self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
                 self.monster_moving[actor_id] = False
         discarded = set(int(value) for value in actor_ids)
         self._return_home_transitions = [
@@ -1863,7 +1919,7 @@ class LocalCombatState:
         )
         self.monster_positions[actor_id] = monster.position
         self.monster_health[actor_id] = monster.maximum_health
-        self.monster_yaws[actor_id] = 0.0
+        self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
         self.monster_moving[actor_id] = False
         self.monster_routes.pop(actor_id, None)
         active = self.monster_status_effects.get(actor_id)
@@ -1913,6 +1969,9 @@ class LocalCombatState:
                 self.monster_positions[actor_id], self.monsters[actor_id].position)
             self.monster_target_actor_ids.pop(actor_id, None)
             self.pending_monster_attacks.pop(actor_id, None)
+            self.pending_tower_projectile_attacks.pop(actor_id, None)
+            self.tower_fire_burst_remaining.pop(actor_id, None)
+            self.tower_fire_burst_cooldown_until.pop(actor_id, None)
             self.monster_motion_unblock_at.pop(actor_id, None)
             self.monster_skill_unblock_at.pop(actor_id, None)
             for cast_id, pending in tuple(self.pending_player_hits.items()):
@@ -3099,6 +3158,9 @@ class LocalCombatState:
         except (NavigationError, CollisionTerrainError, ValueError):
             pass
         offset = definition.spawn_offset
+        spawn_yaw = float(yaw)
+        if getattr(definition, 'fixed_direction', False):
+            spawn_yaw += math.radians(offset[3])
         grounded = (
             grounded[0] + offset[0],
             grounded[1] + offset[1],
@@ -3148,7 +3210,7 @@ class LocalCombatState:
                 summon_position,
                 level=max(1, int(level)),
                 server_tick=server_tick,
-                yaw=yaw,
+                yaw=spawn_yaw,
                 # The summon scales with its owner. Map-difficulty modifiers
                 # apply to hostile actors, not player-owned constructions.
                 scaling_difficulty=0,
@@ -3176,7 +3238,7 @@ class LocalCombatState:
                 definition=definition,
                 spawn_group=spawn_group,
                 position=summon_position,
-                yaw=float(yaw),
+                yaw=spawn_yaw,
                 created_at=current_time,
                 expires_at=expires_at,
                 player_damage_range=(
@@ -4569,6 +4631,32 @@ class LocalCombatState:
                         amount,
                         arguments[1],
                         stack_count,
+                    )
+                    continue
+                if normalized_kind == "targetadddamage":
+                    # Fractured Planes elemental damage blessings are
+                    # authored as TargetAddDamage on the persistent status.
+                    # Treat the element as a scope and apply its absolute or
+                    # relative amount to matching outgoing skill damage.
+                    if len(arguments) < 3:
+                        continue
+                    target_elements = {
+                        self._clean_modifier_token(value).casefold()
+                        for value in arguments[2:]
+                        if self._clean_modifier_token(value)
+                    }
+                    skill_elements = {
+                        self._clean_modifier_token(value.partition(":")[0]).casefold()
+                        for value in str(geometry.damage_type or "Physical").split(";")
+                        if self._clean_modifier_token(value.partition(":")[0])
+                    }
+                    if not target_elements.intersection(skill_elements):
+                        continue
+                    amount = self._modifier_amount(database, arguments[0], details)
+                    if amount is None:
+                        continue
+                    damage_modifier = self._apply_numeric_modifier(
+                        damage_modifier, amount, arguments[1], stack_count
                     )
                     continue
                 numeric_kinds = {
@@ -6220,6 +6308,13 @@ class LocalCombatState:
             start = self.monster_positions[actor_id]
             previous_yaw = self.monster_yaws[actor_id]
             was_moving = self.monster_moving[actor_id]
+            # Mounted trap actors keep their authored transform. Separation
+            # and route grounding must not drag a stationary tower off its
+            # pedestal, even when a player or another monster overlaps it.
+            if monster.run_speed <= 0.0:
+                self.monster_moving[actor_id] = False
+                occupied.append(start)
+                continue
             direct_distance = self._distance(start, player_position)
             home_distance = self._distance(start, home)
             player_home_distance = self._distance(player_position, home)
@@ -8038,7 +8133,23 @@ class LocalCombatState:
                 and geometry.targeting_type.casefold()
                 in {"angle", "cone"}
             )
-            if is_covering_fire:
+            fixed_direction = bool(getattr(definition, 'fixed_direction', False))
+            if fixed_direction:
+                yaw = summon.yaw
+                direction = (-math.sin(yaw), 0.0, -math.cos(yaw), 0.0)
+                reach = max(1.0, geometry.projectile_range or geometry.attack_range)
+                ray = replace(geometry, attack_range=reach, hit_range=reach,
+                              player_width=2 * geometry.projectile_radius,
+                              end_width=2 * geometry.projectile_radius)
+                targets = self._stationary_directional_targets(
+                    summon.position, direction, ray,
+                )[:max(1, geometry.impact_count)]
+                target_actor_ids = tuple(target.actor_id for target in targets)
+                target_actor_id = target_actor_ids[0] if target_actor_ids else 0
+                target_position = tuple(
+                    summon.position[i] + direction[i] * reach for i in range(3)
+                )
+            elif is_covering_fire:
                 target_actor_id = summon.owner_actor_id
                 target_position = player_positions.get(target_actor_id)
                 if target_position is None:
@@ -8143,7 +8254,7 @@ class LocalCombatState:
                 )
                 target_actor_ids = (target_actor_id,)
 
-            if not is_stationary_sustained:
+            if not is_stationary_sustained and not fixed_direction:
                 dx = target_position[0] - summon.position[0]
                 dy = target_position[1] - summon.position[1]
                 dz = target_position[2] - summon.position[2]
@@ -8276,12 +8387,27 @@ class LocalCombatState:
                     effect.effect_id for effect in skillstart_effects
                 )
             if target_actor_ids:
+                target_due_times = ()
+                if fixed_direction:
+                    arrivals = []
+                    for target in target_actor_ids:
+                        travel = geometry.bullet_emit_delay + self._distance(
+                            summon.position, self.monster_positions[target],
+                        ) / max(.01, geometry.projectile_velocity)
+                        arrivals.append((
+                            target, current_time + travel,
+                            (start_tick + round(travel * SERVER_TICKS_PER_SECOND)) & 0xffffffff,
+                        ))
+                    target_due_times = tuple(sorted(arrivals, key=lambda item: item[1]))
+                    attack = replace(attack, due_at=target_due_times[0][1],
+                                     impact_tick=target_due_times[0][2])
                 self.pending_player_summon_attacks[actor_id] = (
                     _PendingPlayerSummonAttack(
                         attack,
                         geometry,
                         summon.player_damage_range,
                         target_actor_ids,
+                        target_due_times,
                     )
                 )
             if emit_playback or skillstart_effects:
@@ -8322,6 +8448,17 @@ class LocalCombatState:
             if current_time < attack.due_at:
                 continue
             del self.pending_player_summon_attacks[actor_id]
+            if pending.target_due_times:
+                due = tuple(item for item in pending.target_due_times if item[1] <= current_time)
+                remaining = tuple(item for item in pending.target_due_times if item[1] > current_time)
+                if remaining:
+                    self.pending_player_summon_attacks[actor_id] = replace(
+                        pending, attack=replace(attack, due_at=remaining[0][1],
+                                                impact_tick=remaining[0][2]),
+                        target_actor_ids=tuple(item[0] for item in remaining),
+                        target_due_times=remaining,
+                    )
+                pending = replace(pending, target_actor_ids=tuple(item[0] for item in due))
             summon = self.player_summons.get(actor_id)
             if (summon is None or self.player_summon_health.get(actor_id, [0])[0] <= 0
                     or self._monster_actions_disabled(actor_id, now=current_time)):
@@ -8419,6 +8556,19 @@ class LocalCombatState:
                     or target.actor_id in self.returning_home_actor_ids
                 ):
                     continue
+                if getattr(summon.definition, 'fixed_direction', False):
+                    reach = max(1.0, pending.geometry.projectile_range)
+                    ray = replace(
+                        pending.geometry, attack_range=reach, hit_range=reach,
+                        player_width=2 * pending.geometry.projectile_radius,
+                        end_width=2 * pending.geometry.projectile_radius,
+                    )
+                    if not self._stationary_directional_position_is_target(
+                        summon.position, attack.direction, ray,
+                        self.monster_positions[target.actor_id],
+                        collision_radius=target.collision_radius,
+                    ):
+                        continue
                 previous = self.monster_health[target.actor_id]
                 base_damage = sum(pending.player_damage_range) * 0.5 * (
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
@@ -8977,8 +9127,26 @@ class LocalCombatState:
                 and actor_id not in eligible_actor_ids
             ):
                 continue
+            monster = self.monsters[actor_id]
+            tower_fire_burst = (
+                monster.invulnerable
+                and "fire_shooter" in monster.template_id.casefold()
+                and is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+            )
             if (
-                actor_id in self.pending_monster_attacks
+                (
+                    actor_id in self.pending_monster_attacks
+                    and not tower_fire_burst
+                )
+                or (
+                    tower_fire_burst
+                    and current_time
+                    < self.tower_fire_burst_cooldown_until.get(actor_id, 0.0)
+                )
                 or current_time < self.monster_skill_unblock_at.get(actor_id, 0.0)
                 or actor_id in self.returning_home_actor_ids
                 or self._monster_actions_disabled(
@@ -8991,8 +9159,10 @@ class LocalCombatState:
                 if target is None:
                     continue
                 target_actor_id, player_world = target
-            monster = self.monsters[actor_id]
             definitions = monster.attacks or (monster.attack,)
+            if not monster.attack.resource_id:
+                # Aura-only mounts and scene controllers have no cast skill.
+                continue
             if not definitions or definitions[0] != monster.attack:
                 definitions = (
                     monster.attack,
@@ -9009,21 +9179,37 @@ class LocalCombatState:
             home_distance = self._distance(
                 monster_position, monster.position
             )
+            acquisition_range = min(
+                monster.aggro_range,
+                monster.travel_distance,
+                (
+                    max(
+                        MONSTER_ACQUISITION_RADIUS,
+                        TOWER_FIRE_ACQUISITION_RANGE,
+                    )
+                    if tower_fire_burst
+                    else MONSTER_ACQUISITION_RADIUS
+                ),
+            )
             if (
                 home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
                 and self._distance(player_world, monster_position)
-                > min(
-                    monster.aggro_range,
-                    monster.travel_distance,
-                    MONSTER_ACQUISITION_RADIUS,
-                )
+                > acquisition_range
             ):
                 continue
+            simulation_radius = (
+                max(
+                    MONSTER_SIMULATION_RADIUS,
+                    TOWER_FIRE_ACQUISITION_RANGE,
+                )
+                if tower_fire_burst
+                else MONSTER_SIMULATION_RADIUS
+            )
             if (
                 self._distance(player_world, monster.position)
-                > MONSTER_SIMULATION_RADIUS
+                > simulation_radius
                 or self._distance(player_world, monster_position)
-                > MONSTER_SIMULATION_RADIUS
+                > simulation_radius
             ):
                 continue
             attack_target_actor_id = target_actor_id
@@ -9088,7 +9274,22 @@ class LocalCombatState:
             eligible_definitions = tuple(
                 definition
                 for definition in definitions
-                if target_distance <= definition.attack_range
+                if target_distance <= min(
+                    definition.attack_range,
+                    # A native cast range does not extend a straight bullet
+                    # beyond its authored lifetime. Trap shooters often have
+                    # AttackRange=100 while their V4/L10 projectile only
+                    # travels 40 world units.
+                    (definition.projectile_velocity
+                     * definition.projectile_lifetime
+                     + max(0.15, definition.projectile_radius)
+                     + PLAYER_PROJECTILE_COLLISION_RADIUS)
+                    if (
+                        definition.motion_type == "Straight"
+                        and definition.projectile_velocity > 1e-6
+                        and definition.projectile_lifetime > 1e-6
+                    ) else definition.attack_range
+                )
             )
             if not eligible_definitions:
                 continue
@@ -9238,6 +9439,24 @@ class LocalCombatState:
                 self.monster_last_movement_publish_ticks[actor_id] = start_tick
                 self.monster_last_published_positions[actor_id] = monster_position
             self._monster_skill_cursors[actor_id] = skill_cursor + 1
+            if tower_fire_burst:
+                previous = self.pending_monster_attacks.get(actor_id)
+                if previous is not None:
+                    self.pending_tower_projectile_attacks.setdefault(
+                        actor_id, []
+                    ).append(previous)
+                remaining = self.tower_fire_burst_remaining.get(actor_id)
+                if remaining is None:
+                    self.tower_fire_burst_remaining[actor_id] = (
+                        TOWER_FIRE_BURST_SHOTS - 1
+                    )
+                elif remaining <= 1:
+                    self.tower_fire_burst_remaining.pop(actor_id, None)
+                    self.tower_fire_burst_cooldown_until[actor_id] = (
+                        current_time + TOWER_FIRE_BURST_COOLDOWN
+                    )
+                else:
+                    self.tower_fire_burst_remaining[actor_id] = remaining - 1
             self.pending_monster_attacks[actor_id] = attack
             attacks.append(attack)
             next_cursor = (
@@ -9266,6 +9485,17 @@ class LocalCombatState:
         target_dx = attack.target_position[0] - origin_x
         target_dz = attack.target_position[2] - origin_z
         path_length = math.hypot(target_dx, target_dz)
+        maximum_range = max(0.0, float(attack.maximum_projectile_range))
+        projectile_distance = math.dist(
+            attack.projectile_origin, attack.target_position
+        )
+        collision_allowance = (
+            max(0.15, float(attack.projectile_radius))
+            + PLAYER_PROJECTILE_COLLISION_RADIUS
+        )
+        if (maximum_range > 0.0
+                and projectile_distance > maximum_range + collision_allowance):
+            return False
         player_dx = player_position[0] - origin_x
         player_dz = player_position[2] - origin_z
         along = player_dx * direction_x + player_dz * direction_z
@@ -9282,6 +9512,23 @@ class LocalCombatState:
             player_dx * direction_z - player_dz * direction_x
         )
         return lateral <= collision_radius
+
+    def _remove_pending_monster_attack(
+        self, actor_id: int, attack: MonsterAttack,
+    ) -> None:
+        actor_id = int(actor_id)
+        if self.pending_monster_attacks.get(actor_id) is attack:
+            self.pending_monster_attacks.pop(actor_id, None)
+            return
+        flights = self.pending_tower_projectile_attacks.get(actor_id)
+        if flights is None:
+            return
+        for index, pending in enumerate(flights):
+            if pending is attack:
+                del flights[index]
+                break
+        if not flights:
+            self.pending_tower_projectile_attacks.pop(actor_id, None)
 
     def resolve_due_monster_attacks(
         self,
@@ -9307,14 +9554,21 @@ class LocalCombatState:
             player_position
         )
         resolutions = []
-        for actor_id, attack in tuple(self.pending_monster_attacks.items()):
+        pending_attacks = list(self.pending_monster_attacks.items())
+        pending_attacks.extend(
+            (actor_id, attack)
+            for actor_id, flights in self.pending_tower_projectile_attacks.items()
+            for attack in flights
+        )
+        for actor_id, attack in pending_attacks:
             if current_time < attack.due_at:
                 continue
             if (
                 self.monster_health.get(actor_id, 0) <= 0
                 or actor_id in self.returning_home_actor_ids
             ):
-                del self.pending_monster_attacks[actor_id]
+                self.pending_monster_attacks.pop(actor_id, None)
+                self.pending_tower_projectile_attacks.pop(actor_id, None)
                 continue
             monster_position = self.monster_positions[actor_id]
             monster = self.monsters[actor_id]
@@ -9327,7 +9581,7 @@ class LocalCombatState:
             )
             if not targets_monster and attack.target_actor_id != player_actor_id:
                 continue
-            del self.pending_monster_attacks[actor_id]
+            self._remove_pending_monster_attack(actor_id, attack)
             if (
                 targets_monster
                 and self.monster_health.get(attack.target_actor_id, 0) <= 0
@@ -9413,6 +9667,19 @@ class LocalCombatState:
                 * outgoing_multiplier
                 * defense_multiplier
             )
+            # Some authored fixed shooters omit MinDamage/MaxDamage. Their
+            # visual projectile still hits, so do not silently turn that hit
+            # into zero damage on the server.
+            if (
+                monster.invulnerable
+                and "fire_shooter" in monster.template_id.casefold()
+                and is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+            ):
+                raw_damage = max(1.0, raw_damage)
             damage = (
                 max(1, int(round(raw_damage)))
                 if raw_damage > 0.0

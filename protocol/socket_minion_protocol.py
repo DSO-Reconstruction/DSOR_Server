@@ -56,6 +56,7 @@ class SocketMinionDefinition:
     startup_duration_seconds: float = 0.0
     follows_owner: bool = False
     map_companion: bool = False
+    fixed_direction: bool = False
     patrol_points: tuple[tuple[float, float, float], ...] = ()
 
 
@@ -105,7 +106,7 @@ def load_socket_minion_definition(
                        COALESCE(HitFrame, 0),
                        COALESCE(LoopStartFrame, 0),
                        COALESCE(MotionUnblockFrame, 0),
-                       COALESCE(ExecuteSequenceMapping, '')
+                       COALESCE(ExecuteSequenceMapping, ''), COALESCE(CoolDown, 0)
                 FROM _Template_Skill WHERE Id=? LIMIT 1
                 """,
                 (skill_id,),
@@ -113,6 +114,17 @@ def load_socket_minion_definition(
             if attack_row is not None:
                 break
         aura = load_player_summon_aura(database, monster_template_id)
+        fixed_direction = monster_template_id in {
+            'minion_fp_s2_fire_shot', 'minion_fp_s3_light_shot', 'minion_fp_s4_ice_shot',
+        }
+        projectile_lifetime = 0.0
+        if fixed_direction and attack_row is not None:
+            bullet = database.execute(
+                'SELECT COALESCE(b.LifeTime, 0) FROM _Template_Skill s '
+                'JOIN _Template_SkillBullet b ON b.Id=s.SkillBulletId '
+                'WHERE s.rowid=?', (int(attack_row[0]) + 1,),
+            ).fetchone()
+            projectile_lifetime = float(bullet[0] or 0) if bullet else 0.0
 
     attack_index = int(attack_row[0]) if attack_row is not None else None
     attack_type = str(attack_row[1]) if attack_row is not None else ""
@@ -127,6 +139,12 @@ def load_socket_minion_definition(
             hit_frame if attack_type == "Sustained" else skill_unblock
         ) / SERVER_TICKS_PER_SECOND,
     )
+    if fixed_direction:
+        # These short-lived emitters fire once. Keep their server source
+        # alive until its bullets land, without turning it into a turret.
+        attack_interval = max(
+            projectile_lifetime + 1.0, attack_interval, float(attack_row[7] or 0.0),
+        )
     count = max(1, int(amount))
     normalized_offset = tuple(float(value) for value in offset)
     if len(normalized_offset) != 4:
@@ -138,11 +156,13 @@ def load_socket_minion_definition(
         client_monster_template_id=monster_template_id,
         amount=count,
         limit=count,
-        category=f"socket:{monster_template_id}",
+        category=(f"socket:{monster_template_id}:{normalized_offset[3]}"
+                  if fixed_direction else f"socket:{monster_template_id}"),
         spawn_delay_seconds=0.0,
-        lifetime_seconds=max(0.0, float(row[0] or 0.0)),
+        lifetime_seconds=max(0.0, float(row[0] or 0.0), projectile_lifetime + .5
+                             if fixed_direction else 0.0),
         despawn_duration_seconds=max(0.0, float(row[2] or 0.0)),
-        owner_despawn_range=SOCKET_SUMMON_OWNER_RANGE,
+        owner_despawn_range=(100.0 if fixed_direction else SOCKET_SUMMON_OWNER_RANGE),
         spawn_offset=normalized_offset,
         attack_skill_database_index=attack_index,
         attack_skill_index=attack_index,
@@ -158,6 +178,8 @@ def load_socket_minion_definition(
         attack_motion_unblock_frame=motion_unblock,
         attack_skill_unblock_frame=skill_unblock,
         aura=aura,
+        fixed_direction=fixed_direction,
+        stationary=fixed_direction,
         move_speed=max(0.0, float(row[3] or 0.0)),
         aggro_range=max(0.0, float(row[4] or 0.0)),
     )

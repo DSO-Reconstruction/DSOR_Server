@@ -607,10 +607,12 @@ class DispatchService:
             elif command_id == QUEST_TRIGGER_INDICATION_REQUEST_COMMAND:
                 self._handle_quest_trigger_indication_request(s, payload)
             elif command_id == 0x0170:
-                # ServerToClientMsgCommand is emitted by the server. Some
-                # clients echo an empty instance while initializing; it has
-                # no client-side gameplay action and must not flood the log.
                 self._accept_gameplay_state_command(s, command_id)
+                self._send_fractured_planes_effect_choices(s)
+            elif command_id == 0x0174:
+                self._handle_fractured_planes_first_clear_acceptance(
+                    s, payload
+                )
             elif command_id in {
                 0x00BB, 0x00E2, 0x00E8,
                 0x00EA, CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND,

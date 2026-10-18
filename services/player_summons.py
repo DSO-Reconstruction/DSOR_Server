@@ -133,7 +133,6 @@ class PlayerSummonService:
             if (
                 combat is None
                 or character is None
-                or last_move is None
                 or not s.connected
             ):
                 return
@@ -141,8 +140,9 @@ class PlayerSummonService:
                 s.gameplay_remote_actor_id
                 or CharacterService._remote_actor_id(character.character_id)
             )
-            position = combat.encounter.coordinate_frame.wire_to_world(
-                last_move.relative_position
+            position = (
+                combat.encounter.coordinate_frame.wire_to_world(last_move.relative_position)
+                if last_move is not None else tuple(s.gameplay_spawn_position)
             )
             generation = s.gameplay_chase_generation
             character_level = max(1, int(character.level))

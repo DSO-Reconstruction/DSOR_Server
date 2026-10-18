@@ -414,6 +414,18 @@ class InventoryMapService:
 
     def _handle_inventory_item_action(
             self, s: Session, payload: bytes) -> None:
+        # Socket insertion updates the item, consumes the rune, and persists
+        # one copy-on-write inventory. Serialize that whole transaction with
+        # source-map snapshots so a concurrent handoff cannot save the old
+        # empty socket after the client has already completed the action.
+        with s.gameplay_inventory_action_lock:
+            with s.flow_lock:
+                if s.gameplay_exit_transition_started:
+                    return
+            self._handle_inventory_item_action_locked(s, payload)
+
+    def _handle_inventory_item_action_locked(
+            self, s: Session, payload: bytes) -> None:
         action = decode_inventory_item_action(payload)
         with s.flow_lock:
             s.gameplay_client_command_state[0x0055] = action
