@@ -228,6 +228,10 @@ class MonsterAttackDefinition:
     cooldown_category: str = ""
     min_difficulty: int = 0
     max_difficulty: int = 99
+    # A Melee skill with no damage whose UserStatusEffects buff the monster
+    # itself (heredur_bonus_enrage): played as a SkillCommand, its effects put
+    # on the caster at its start, no blow.
+    self_buff: bool = False
 
 
 @dataclass(frozen=True)
@@ -1208,12 +1212,20 @@ def _load_runtime_template(
                 continue
             skill_type = str(skill_row[6])
             targeting_type = str(skill_row[7])
+            self_buff = False
             if (
                 skill_type == "Melee"
                 and float(skill_row[16]) > 0.0
                 and "hostile" in str(skill_row[17]).casefold()
             ):
                 command_id = SKILL_COMMAND
+            elif (
+                skill_type == "Melee"
+                and float(skill_row[16]) <= 0.0
+                and str(skill_row[11] or "").strip()
+            ):
+                command_id = SKILL_COMMAND
+                self_buff = True
             elif skill_type == "Ranged":
                 command_id = BULLET_SKILL_COMMAND
             elif skill_type == "RangedTarget":
@@ -1273,6 +1285,7 @@ def _load_runtime_template(
                         cooldown_category=str(skill_row[23] or "").strip(),
                         min_difficulty=int(skill_row[24] or 0),
                         max_difficulty=int(skill_row[25] if skill_row[25] is not None else 99),
+                        self_buff=self_buff,
                     ),
                 )
             )
@@ -1290,6 +1303,15 @@ def _load_runtime_template(
     # Resource ids are stable while a few generated rows repeat the same skill
     # in comma/semicolon forms.  Rotate authored skills, not duplicate tokens.
     attacks = tuple({value.resource_id: value for value in attacks}.values())
+    # A monster's own buffs ride with its attacks: the primary attack (its
+    # approach range and interval) is a blow, and a monster with buffs only
+    # fights as before, not at all.
+    attacks = (
+        tuple(value for value in attacks if not value.self_buff)
+        + tuple(value for value in attacks if value.self_buff)
+    )
+    if attacks[0].self_buff:
+        return None
     attack = attacks[0]
     return (
         attacks,

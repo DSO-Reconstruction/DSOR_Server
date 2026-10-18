@@ -3169,6 +3169,27 @@ class LocalCombatStateTests(unittest.TestCase):
         self.state._monster_skill_ready_at[actor_id]["Skill05"] = 140.1
         self.assertEqual(choose(106.0), "plain")
 
+    def test_monster_self_buff_puts_its_effect_on_the_caster_and_strikes_nothing(self):
+        from pathlib import Path
+        from dso_server.gameplay import local_monster_state
+        attacks = local_monster_state._load_runtime_template(
+            Path(DEFAULT_STATIC_DB_PATH), "boss_heredur_scaling")[0]
+        enrage = next(a for a in attacks if a.resource_id == "heredur_bonus_enrage")
+        self.assertTrue(enrage.self_buff)
+        self.assertFalse(attacks[0].self_buff)
+        actor_id = sorted(self.state.monsters)[0]
+        monster = self.state.monsters[actor_id]
+        self.state.monsters[actor_id] = replace(monster, attacks=(enrage,), attack=enrage)
+        self.state._monster_skill_ready_at[actor_id] = {}
+        self.state.last_monster_attack_at[actor_id] = 0.0
+        position = self.state.monster_positions[actor_id]
+        target = self._wire((position[0] + 1.0, position[1], position[2]))
+        attacks = self.state.maybe_start_monster_attacks(target, server_tick=500, now=100.0)
+        self.assertEqual([a.definition.resource_id for a in attacks], ["heredur_bonus_enrage"])
+        self.assertIn("enrage", self.state.monster_status_effects.get(actor_id, {}))
+        self.assertEqual(
+            self.state.resolve_due_monster_attacks(target, now=attacks[0].due_at + 1.0), ())
+
     def test_player_summon_can_damage_only_explicit_hostile_player(self):
         definition = self.state.player_summon_definition(1877)
         owner_actor_id = 0x000103C1

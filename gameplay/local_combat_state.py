@@ -9242,6 +9242,16 @@ class LocalCombatState:
                 self._monster_skill_ready_at.setdefault(actor_id, {})[
                     _cooldown_key(definition)
                 ] = current_time + definition.cooldown
+            if definition.self_buff and attack.user_status_effects:
+                # Its effects (enrage: speed, skill speed, immunities) are on
+                # the caster from its start; clients get them with the cast
+                # (monster-skillstart-status-effects).
+                self._record_monster_status_effects(
+                    actor_id,
+                    attack.user_status_effects,
+                    now=current_time,
+                    source_actor_id=actor_id,
+                )
             self.pending_monster_attacks[actor_id] = attack
             attacks.append(attack)
             next_cursor = (
@@ -9344,6 +9354,9 @@ class LocalCombatState:
             if not targets_monster and attack.target_actor_id != player_actor_id:
                 continue
             del self.pending_monster_attacks[actor_id]
+            if attack.definition is not None and attack.definition.self_buff:
+                # A buff on the caster: no blow lands.
+                continue
             if (
                 targets_monster
                 and self.monster_health.get(attack.target_actor_id, 0) <= 0
