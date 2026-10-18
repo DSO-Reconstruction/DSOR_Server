@@ -38,6 +38,18 @@ Install the server from a clean clone in this order:
 
 The server provides the account registration/login API over HTTP on port `8080`. The admin panel uses HTTP port `8081` and listens on loopback by default. Game services use UDP ports `80`, `2190`, `2191`, and `2192`. `DSO_PUBLIC_HOST` must be reachable by game clients.
 
+## Join the game with Launcher GUI
+
+The Windows launcher provides account registration, sign-in, and game startup:
+
+1. Start the server with `start.bat` and keep its window open.
+2. Open another terminal in the repository folder and run `py -3 launcher_gui.py`.
+3. In **Server IP Address**, enter `127.0.0.1` when playing on the same computer as the server. For a remote server, enter its reachable IP address. The launcher uses API port `8080` by default; include a custom port as `IP:PORT` if the server uses another API port.
+4. To create an account, choose **No account yet? Create one**, enter a username and password twice, then click **Create Account**. The launcher signs in and starts the game after registration succeeds. For an existing account, enter the username and password and click **Sign In**. Check **Remember account** to save the account for later launches on this Windows user account.
+5. The launcher looks for `dro_client64.exe` in the repository's `DSOClient/dlcache` or `Client/dlcache` folders and the official client's `%LOCALAPPDATA%\Temp\DSOClient\dlcache` folder. If it cannot find the executable, select the client folder when prompted. The setup script does not copy the game executable.
+
+Keep the server running while playing. If sign-in cannot connect, check that the server is running and that the launcher has the correct server IP and API port.
+
 `data/events.json` starts with an empty event schedule. Events can be configured through the server's admin panel.
 
 ## Fork and attribution
