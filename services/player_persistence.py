@@ -318,19 +318,21 @@ class PlayerPersistenceService:
             membership_type = int(s.gameplay_membership_type)
             membership_expires_at = str(s.gameplay_membership_expires_at)
             membership_active = bool(s.gameplay_membership_active)
-            # Event buffs are rebuilt from the schedule on every map entry;
-            # saving them would outlive the event that granted them.
-            event_effect_instance_ids = (
+            # Event and map-scoped buffs are rebuilt from their catalog on
+            # every map entry; saving them would outlive the event or carry
+            # the arena's PvP ruleset into the hub.
+            transient_effect_instance_ids = (
                 set(s.gameplay_event_status_effect_instance_ids)
                 | set(
                     s.gameplay_fractured_planes_status_effect_instance_ids
                 )
+                | set(s.gameplay_map_status_effect_instance_ids)
             )
             status_effects = {
                 instance_id: effect
                 for instance_id, effect
                 in s.gameplay_persistent_status_effects.items()
-                if instance_id not in event_effect_instance_ids
+                if instance_id not in transient_effect_instance_ids
             }
             timed_status_effect_expiries = dict(
                 s.gameplay_timed_status_effect_expiries

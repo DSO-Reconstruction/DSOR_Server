@@ -663,6 +663,12 @@ class MatchmakingService:
         # The battleground id itself already went out ahead of the
         # initialization batch; see _announce_battleground.
         CharacterService._force_battleground_pvp(self, s)
+        # Shadow Soul summons are retired at match start; clear their separate
+        # permanent buff now so it cannot linger after the pet disappears.
+        CharacterService._clear_battleground_mercenary_effects(self, s)
+        # The arena's map-access row authors the PvP balance buff
+        # (``pvp_char_modifier``); install it with the rest of the entry state.
+        CharacterService._apply_battleground_map_effects(self, s)
         self._send_match_info(s, match)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} entered PvP "

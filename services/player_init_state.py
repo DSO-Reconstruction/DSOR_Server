@@ -1572,6 +1572,7 @@ class PlayerInitializationStateService:
             s.gameplay_fractured_planes_status_effect_instance_ids = (
                 frozenset(state.fractured_planes_status_effect_instance_ids)
             )
+            s.gameplay_map_status_effect_instance_ids = frozenset()
             s.gameplay_item_set_effects = state.item_set_effects
             s.gameplay_item_set_evaluation = state.item_set_evaluation
             s.gameplay_socket_effects = state.socket_effects

@@ -741,6 +741,9 @@ class Session:
         # Buffs granted by active game events; excluded from persistence.
         self.gameplay_event_status_effect_instance_ids = frozenset()
         self.gameplay_fractured_planes_status_effect_instance_ids = frozenset()
+        # Map-scoped effects (arena ``pvp_char_modifier``) installed on entry
+        # and removed on the way out; they are never written to the save.
+        self.gameplay_map_status_effect_instance_ids = frozenset()
         self.gameplay_item_set_effects = {}
         self.gameplay_item_set_evaluation = None
         self.gameplay_socket_effects = {}
