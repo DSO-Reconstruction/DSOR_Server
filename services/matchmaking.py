@@ -19,6 +19,7 @@ Reproduces the flow recorded from retail up to the point the match starts;
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
@@ -65,23 +66,58 @@ class MatchmakingService:
 
     @staticmethod
     def _restore_pvp_career(s: Session, persisted_state) -> None:
-        """Load the account's PvP flag and career totals onto a session."""
+        """Load the account's PvP flag, career totals, and daily stats onto a session."""
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        saved_date = str(getattr(persisted_state, "pvp_stats_date", "") or "") if persisted_state is not None else ""
+        is_same_day = (saved_date == today_str)
 
         s.gameplay_pvp_enabled = bool(
             getattr(persisted_state, "pvp_enabled", False)
             if persisted_state is not None
             else False
         )
-        for attribute in (
-            "honor_points", "pvp_matches_won", "pvp_matches_lost",
-            "pvp_kills", "pvp_deaths",
-        ):
-            value = (
-                getattr(persisted_state, attribute, 0)
-                if persisted_state is not None
-                else 0
-            )
-            setattr(s, f"gameplay_{attribute}", max(0, int(value)))
+        s.gameplay_pvp_stats_date = today_str
+
+        honor_points = max(0, int(getattr(persisted_state, "honor_points", 0) or 0)) if persisted_state is not None else 0
+        matches_won = max(0, int(getattr(persisted_state, "pvp_matches_won", 0) or 0)) if persisted_state is not None else 0
+        matches_lost = max(0, int(getattr(persisted_state, "pvp_matches_lost", 0) or 0)) if persisted_state is not None else 0
+        kills = max(0, int(getattr(persisted_state, "pvp_kills", 0) or 0)) if persisted_state is not None else 0
+        deaths = max(0, int(getattr(persisted_state, "pvp_deaths", 0) or 0)) if persisted_state is not None else 0
+
+        s.gameplay_honor_points = honor_points
+        s.gameplay_pvp_matches_won = matches_won
+        s.gameplay_pvp_matches_lost = matches_lost
+        s.gameplay_pvp_kills = kills
+        s.gameplay_pvp_deaths = deaths
+
+        solo_won = getattr(persisted_state, "pvp_solo_matches_won", None) if persisted_state is not None else None
+        solo_played = getattr(persisted_state, "pvp_solo_matches_played", None) if persisted_state is not None else None
+        s.gameplay_pvp_solo_matches_won = max(0, int(solo_won)) if solo_won is not None and int(solo_won) > 0 else matches_won
+        s.gameplay_pvp_solo_matches_played = max(0, int(solo_played)) if solo_played is not None and int(solo_played) > 0 else (matches_won + matches_lost)
+        s.gameplay_pvp_team_matches_won = max(0, int(getattr(persisted_state, "pvp_team_matches_won", 0) or 0)) if persisted_state is not None else 0
+        s.gameplay_pvp_team_matches_played = max(0, int(getattr(persisted_state, "pvp_team_matches_played", 0) or 0)) if persisted_state is not None else 0
+
+        kills_alone = getattr(persisted_state, "pvp_kills_alone_total", None) if persisted_state is not None else None
+        kills_battle = getattr(persisted_state, "pvp_kills_battle_total", None) if persisted_state is not None else None
+        s.gameplay_pvp_kills_total = kills
+        s.gameplay_pvp_kills_alone_total = max(0, int(kills_alone)) if kills_alone is not None and int(kills_alone) > 0 else kills
+        s.gameplay_pvp_kills_group_total = max(0, int(getattr(persisted_state, "pvp_kills_group_total", 0) or 0)) if persisted_state is not None else 0
+        s.gameplay_pvp_kills_battle_total = max(0, int(kills_battle)) if kills_battle is not None and int(kills_battle) > 0 else kills
+        s.gameplay_pvp_dishonorable_kills = max(0, int(getattr(persisted_state, "pvp_dishonorable_kills", 0) or 0)) if persisted_state is not None else 0
+
+        if is_same_day and persisted_state is not None:
+            s.gameplay_honor_points_today = max(0, int(getattr(persisted_state, "honor_points_today", 0) or 0))
+            s.gameplay_pvp_kills_today = max(0, int(getattr(persisted_state, "pvp_kills_today", 0) or 0))
+            s.gameplay_pvp_kills_alone_today = max(0, int(getattr(persisted_state, "pvp_kills_alone_today", 0) or 0))
+            s.gameplay_pvp_kills_group_today = max(0, int(getattr(persisted_state, "pvp_kills_group_today", 0) or 0))
+            s.gameplay_pvp_kills_battle_today = max(0, int(getattr(persisted_state, "pvp_kills_battle_today", 0) or 0))
+        else:
+            s.gameplay_honor_points_today = 0
+            s.gameplay_pvp_kills_today = 0
+            s.gameplay_pvp_kills_alone_today = 0
+            s.gameplay_pvp_kills_group_today = 0
+            s.gameplay_pvp_kills_battle_today = 0
 
     def _announce_battleground(self, s: Session) -> None:
         """Send SetBattlegroundId before the arena's initialization batch.
@@ -139,6 +175,14 @@ class MatchmakingService:
         if character is None:
             return None
         return int(character.character_id)
+
+    def _match_class_id(self, s: Session) -> int:
+        """Return the class enum from the character being queued."""
+
+        character = s.gameplay_character
+        if character is None:
+            return 0
+        return max(0, int(getattr(character, "class_id", 0)))
 
     def _send_pvp(self, s: Session, payload, *, label: str) -> None:
         """Send one encoded PvP command, tolerating a dead socket.
@@ -209,6 +253,7 @@ class MatchmakingService:
             match_mode=int(request.match_mode),
             queue_kind=int(request.queue_kind),
             session=s,
+            class_id=CharacterService._match_class_id(self, s),
         ))
         with s.flow_lock:
             s.gameplay_match_queue_entry = entry
@@ -476,6 +521,7 @@ class MatchmakingService:
                     match_mode=match.match_mode,
                     queue_kind=QUEUE_KIND_SINGLE,
                     session=session,
+                    class_id=entry.class_id,
                 ))
                 with session.flow_lock:
                     session.gameplay_match_queue_entry = queued

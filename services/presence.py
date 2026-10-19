@@ -132,6 +132,12 @@ class PresenceService:
             animation_set=animation_set,
             title_type=int(session.gameplay_title_type),
             achievement_title=str(session.gameplay_achievement_title),
+            honor_points=int(getattr(session, "gameplay_honor_points", 0) or 0),
+            team=(
+                0xFFFFFFFF
+                if getattr(session, "gameplay_match_team", None) is None
+                else int(session.gameplay_match_team)
+            ),
         )
 
     def _announce_remote_presence(self, session: Session) -> None:

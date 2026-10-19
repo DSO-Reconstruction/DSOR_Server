@@ -377,6 +377,43 @@ class AdminService:
         self.repository.audit(account.username, "character.wisdom", cid, details)
         return {"ok": True, "wisdom_level": level, "gameplay_sessions": int(target is not None)}
 
+    def change_honor_points(self, cid, mode, amount, account, reason):
+        """Set or increase a character's career PvP honor total."""
+        if mode not in {"set", "increase"}:
+            raise ValueError("choose whether to set or increase honor points")
+        if type(amount) is not int or amount < 0:
+            raise ValueError("honor points must be a non-negative whole number")
+        if amount > 0xFFFFFFFF:
+            raise ValueError("honor points cannot exceed 4,294,967,295")
+        state = self.store.get(cid)
+        if state is None:
+            raise ValueError("This character must enter the game once before honor can be changed")
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("Character is changing maps or initializing; try again shortly")
+        current = max(0, int(state.honor_points))
+        if target is not None:
+            with target[1].flow_lock:
+                current = max(0, int(target[1].gameplay_honor_points))
+        updated = amount if mode == "set" else current + amount
+        if updated > 0xFFFFFFFF:
+            raise ValueError("resulting honor points cannot exceed 4,294,967,295")
+        if updated == current:
+            raise ValueError("honor points already have that value")
+        if target is not None:
+            if not self.live.set_honor_points(cid, updated):
+                raise ValueError("Character session changed; refresh and try again")
+            self.store.flush()
+        else:
+            self.store.put(replace(state, honor_points=updated), flush=True)
+        self.repository.audit(account.username, "character.honor_points", cid, {
+            "mode": mode, "from": current, "to": updated,
+            "amount": amount, "reason": reason, "online": target is not None,
+        })
+        return {"ok": True, "honor_points": updated,
+                "gameplay_sessions": int(target is not None)}
+
     def set_identity(self, cid, changes, account, reason):
         """Rename a character or move it to another level.
 
@@ -1051,6 +1088,10 @@ class AdminService:
                 return self.set_identity(cid, payload.get("changes"), account, reason)
             if parts[3] == "wisdom":
                 return self.set_wisdom_level(cid, payload.get("level"), account, reason)
+            if parts[3] == "honor-points":
+                return self.change_honor_points(
+                    cid, payload.get("mode"), payload.get("amount"), account, reason
+                )
             if parts[3] == "copy-inventory":
                 return self.copy_character_inventory(
                     cid, payload.get("target_character_id"), account, reason

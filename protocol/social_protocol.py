@@ -11,6 +11,7 @@ from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
 
 from dso_server.protocol.character_selection import BitReader, BitWriter
+from dso_server.protocol.pvp_match_protocol import honor_level_title_for
 
 
 DISCARD_PLAYER_COMMAND = command_id("Commands::DiscardPlayerCommand", 0x001E)
@@ -867,6 +868,8 @@ class RemotePlayer:
     title_type: int = 0
     achievement_title: str = ""
     pvp_rank_title: str = ""
+    honor_points: int = 0
+    team: int = 0xFFFFFFFF
 
     @property
     def faction_id(self) -> int:
@@ -918,7 +921,7 @@ def _remote_title_fields(value: RemotePlayer) -> tuple[int, str, str]:
     if title_type == 1 and not achievement_title:
         title_type = 0
     if title_type == 2 and not pvp_rank_title:
-        pvp_rank_title = "pvptitle00"
+        pvp_rank_title = honor_level_title_for(value.honor_points)
     return title_type, achievement_title, pvp_rank_title
 
 
@@ -988,8 +991,8 @@ def encode_new_remote_player(value: RemotePlayer) -> tuple[bytes, int]:
     # +0x150 is copied into GamePlayer::level before SetupPlayerAttributes.
     # Zero makes setup fail even when the visible level field is non-zero.
     writer.write_uint32_le(max(1, value.level))
-    writer.write_uint32_le(0xFFFFFFFF)
-    writer.write_uint32_le(max(0, value.fighting_power))
+    writer.write_uint32_le(value.team & 0xFFFFFFFF)
+    writer.write_uint32_le(max(0, int(value.honor_points)))
     title_type, achievement_title, pvp_rank_title = _remote_title_fields(value)
     writer.write_uint8(title_type)
     writer.write_string(achievement_title)
@@ -1030,7 +1033,7 @@ def encode_remote_player_info(value: RemotePlayer) -> tuple[bytes, int]:
     writer.write_bool(False)
     writer.write_bool(False)
     writer.write_uint32_le(max(1, value.level))
-    writer.write_uint32_le(0xFFFFFFFF)
+    writer.write_uint32_le(value.team & 0xFFFFFFFF)
     title_type, achievement_title, pvp_rank_title = _remote_title_fields(value)
     writer.write_uint8(title_type)
     writer.write_string(achievement_title)

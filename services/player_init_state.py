@@ -8,6 +8,7 @@ stays readable while the individual derivations keep their original shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import math
 import time
 from typing import Any
@@ -614,6 +615,55 @@ class PlayerInitializationStateService:
         if store is not None:
             premium = store.currency_for_character(character.character_id,
                 CurrencyChanged(premium, 0, (0, 0, 0), 0, False)).andermant
+        honor_points = (
+            max(0, int(persisted_state.honor_points))
+            if persisted_state is not None
+            else 0
+        )
+        title_type = (
+            int(persisted_state.title_type)
+            if persisted_state is not None
+            else 0
+        )
+        achievement_title = (
+            str(persisted_state.achievement_title)
+            if persisted_state is not None
+            else ""
+        )
+        pvp_matches_won = max(0, int(getattr(persisted_state, "pvp_matches_won", 0) or 0)) if persisted_state is not None else 0
+        pvp_matches_lost = max(0, int(getattr(persisted_state, "pvp_matches_lost", 0) or 0)) if persisted_state is not None else 0
+        pvp_kills = max(0, int(getattr(persisted_state, "pvp_kills", 0) or 0)) if persisted_state is not None else 0
+
+        pvp_solo_won = getattr(persisted_state, "pvp_solo_matches_won", None) if persisted_state is not None else None
+        pvp_solo_played = getattr(persisted_state, "pvp_solo_matches_played", None) if persisted_state is not None else None
+        pvp_solo_matches_won = max(0, int(pvp_solo_won)) if pvp_solo_won is not None and int(pvp_solo_won) > 0 else pvp_matches_won
+        pvp_solo_matches_played = max(0, int(pvp_solo_played)) if pvp_solo_played is not None and int(pvp_solo_played) > 0 else (pvp_matches_won + pvp_matches_lost)
+        pvp_team_matches_won = max(0, int(getattr(persisted_state, "pvp_team_matches_won", 0) or 0)) if persisted_state is not None else 0
+        pvp_team_matches_played = max(0, int(getattr(persisted_state, "pvp_team_matches_played", 0) or 0)) if persisted_state is not None else 0
+
+        kills_alone = getattr(persisted_state, "pvp_kills_alone_total", None) if persisted_state is not None else None
+        kills_battle = getattr(persisted_state, "pvp_kills_battle_total", None) if persisted_state is not None else None
+        pvp_kills_total = pvp_kills
+        pvp_kills_alone_total = max(0, int(kills_alone)) if kills_alone is not None and int(kills_alone) > 0 else pvp_kills
+        pvp_kills_group_total = max(0, int(getattr(persisted_state, "pvp_kills_group_total", 0) or 0)) if persisted_state is not None else 0
+        pvp_kills_battle_total = max(0, int(kills_battle)) if kills_battle is not None and int(kills_battle) > 0 else pvp_kills
+        pvp_dishonorable_kills = max(0, int(getattr(persisted_state, "pvp_dishonorable_kills", 0) or 0)) if persisted_state is not None else 0
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        saved_date = str(getattr(persisted_state, "pvp_stats_date", "") or "") if persisted_state is not None else ""
+        if saved_date == today_str and persisted_state is not None:
+            honor_points_today = max(0, int(getattr(persisted_state, "honor_points_today", 0) or 0))
+            pvp_kills_today = max(0, int(getattr(persisted_state, "pvp_kills_today", 0) or 0))
+            pvp_kills_alone_today = max(0, int(getattr(persisted_state, "pvp_kills_alone_today", 0) or 0))
+            pvp_kills_group_today = max(0, int(getattr(persisted_state, "pvp_kills_group_today", 0) or 0))
+            pvp_kills_battle_today = max(0, int(getattr(persisted_state, "pvp_kills_battle_today", 0) or 0))
+        else:
+            honor_points_today = 0
+            pvp_kills_today = 0
+            pvp_kills_alone_today = 0
+            pvp_kills_group_today = 0
+            pvp_kills_battle_today = 0
+
         new_player_packet, new_player_bits = encode_new_player(
             character,
             state.template_row_index,
@@ -649,7 +699,24 @@ class PlayerInitializationStateService:
             game_currencies=game_currency_balances,
             knowledge_xp=state.talent_category_points[1],
             fame_xp=state.talent_category_points[3],
+            honor_points=honor_points,
+            title_type=title_type,
+            achievement_title=achievement_title,
             armament_state=inventory_armament_state(state.inventory),
+            pvp_kills_total=pvp_kills_total,
+            pvp_kills_today=pvp_kills_today,
+            pvp_kills_alone_total=pvp_kills_alone_total,
+            pvp_kills_alone_today=pvp_kills_alone_today,
+            pvp_kills_group_total=pvp_kills_group_total,
+            pvp_kills_group_today=pvp_kills_group_today,
+            pvp_kills_battle_total=pvp_kills_battle_total,
+            pvp_kills_battle_today=pvp_kills_battle_today,
+            pvp_dishonorable_kills=pvp_dishonorable_kills,
+            honor_points_today=honor_points_today,
+            pvp_solo_matches_played=pvp_solo_matches_played,
+            pvp_solo_matches_won=pvp_solo_matches_won,
+            pvp_team_matches_played=pvp_team_matches_played,
+            pvp_team_matches_won=pvp_team_matches_won,
             **state.player_xp_state,
         )
         new_player, consumed = decode_new_player_prefix(

@@ -120,6 +120,56 @@ function bindWisdom(wisdom, id) {
   });
 }
 
+function honorSection(points) {
+  return section("Honor points", `<form id="honor-form" class="form-page">
+    <fieldset class="form-section"><legend>Career PvP honor</legend><div class="form-grid">
+      <label>Current honor points<input value="${Number(points).toLocaleString()}" disabled></label>
+      <label>Action<select name="mode"><option value="set">Set total</option><option value="increase">Increase by</option></select></label>
+      <label id="honor-amount-label">New total<input name="amount" type="number" min="0" max="4294967295" step="1" value="${Number(points)}" required></label>
+      <p class="help">Career PvP honor is separate from the spendable Badge of Honor currency. Changes are saved immediately and update the game client while the character is online.</p>
+    </div></fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="honor-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Save honor points</button></div></form>`);
+}
+
+function bindHonor(points, id) {
+  const form = $("#honor-form"), mode = form.elements.mode, amount = form.elements.amount;
+  const label = $("#honor-amount-label");
+  mode.addEventListener("change", () => {
+    label.firstChild.textContent = mode.value === "increase" ? "Increase by" : "New total";
+    amount.value = mode.value === "increase" ? "0" : String(points);
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = form.querySelector("button[type=submit]"), values = new FormData(form);
+    const selectedMode = String(values.get("mode")), value = Number(values.get("amount"));
+    button.disabled = true;
+    try {
+      if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295)
+        throw new Error("Honor points must be a whole number from 0 to 4,294,967,295.");
+      if (selectedMode === "increase" && value === 0)
+        throw new Error("Enter an amount greater than zero.");
+      const resulting = selectedMode === "set" ? value : Number(points) + value;
+      if (resulting > 4294967295)
+        throw new Error("Resulting honor points cannot exceed 4,294,967,295.");
+      if (resulting === Number(points)) throw new Error("Honor points already have that value.");
+      const description = selectedMode === "set" ? `${Number(points).toLocaleString()} → ${resulting.toLocaleString()}`
+        : `add ${value.toLocaleString()} (${Number(points).toLocaleString()} → ${resulting.toLocaleString()})`;
+      if (!(await confirmAction("Change honor points?", `${description}.`, "Save honor points"))) return;
+      await api(`/api/characters/${id}/honor-points`, {
+        mode: selectedMode, amount: value, reason: values.get("reason")
+      });
+      notice(`Honor points updated to ${resulting.toLocaleString()}.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#honor-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function inventoryCopySection(id, itemCount) {
   return section("Copy items to another character", `<form id="inventory-copy-form" class="form-page">
     <fieldset class="form-section"><legend>Destination</legend><div class="form-stack">
@@ -254,7 +304,8 @@ export async function characterPage(route) {
     result.mount = () => { bindIdentity(p, id, data.level_range); bindPrivileges(p, id); };
     if (s) {
       result.html += wisdomSection(data.wisdom);
-      result.mount = () => { bindIdentity(p, id, data.level_range); bindWisdom(data.wisdom, id); bindPrivileges(p, id); };
+      result.html += honorSection(s.honor_points ?? 0);
+      result.mount = () => { bindIdentity(p, id, data.level_range); bindWisdom(data.wisdom, id); bindHonor(s.honor_points ?? 0, id); bindPrivileges(p, id); };
       const balances = {...s.currencies}; delete balances.game;
       result.html += '<div class="columns">' + section("Currencies", table(["Currency", "Balance"], Object.entries(balances).map(([k, v]) => [esc(human(k)), esc(v)]))) +
         section("Additional currencies", table(["Currency", "Balance"], Object.entries(s.currencies.game || {}).map(([k, v]) => [esc(human(k)), esc(v)]))) + '</div>';

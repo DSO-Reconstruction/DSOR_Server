@@ -18,6 +18,9 @@ from dso_server.protocol.player_init_protocol import (
     TALENT_CATEGORY_POINTS_INFO_COMMAND, TALENT_SELECTION_INFO_COMMAND,
     TalentCategoryPointsInfo, TalentSelectionInfo,
 )
+from dso_server.protocol.pvp_match_protocol import (
+    HonorPointsChanged, encode_honor_points_changed,
+)
 from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.reward_protocol import (
     NOTIFICATION_COMMAND, OCP_BOOKING_NOTIFICATION_KIND, OCP_BOOKING_NOTIFICATION_VALUES,
@@ -329,6 +332,31 @@ class LiveAdministration:
                 s, packet, packet_bits, label="admin-cms-wisdom")
             CharacterService._request_account_save(
                 s, "admin-cms-wisdom", flush=True)
+            return True
+
+        return bool(server.admin_commands.call(execute))
+
+    def set_honor_points(self, cid, honor_points):
+        """Apply a career honor total to a ready live character and save it."""
+        target = self.find(cid)
+        if target is None:
+            return False
+        server, s = target
+
+        def execute():
+            if not server.is_session_current(s):
+                return False
+            with s.flow_lock:
+                if not ready(s, cid):
+                    return False
+                s.gameplay_honor_points = int(honor_points)
+            packet, packet_bits = encode_honor_points_changed(
+                HonorPointsChanged(int(honor_points), LOCAL_PLAYER_ACTOR_ID)
+            )
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="admin-cms-honor-points")
+            CharacterService._request_account_save(
+                s, "admin-cms-honor-points", flush=True)
             return True
 
         return bool(server.admin_commands.call(execute))

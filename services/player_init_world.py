@@ -128,6 +128,65 @@ class PlayerInitializationWorldService:
             server_player_actor_id = (
                 CharacterService._session_remote_actor_id(self, s)
             )
+            match_registry = getattr(self, "_pvp_matchmaking", None)
+            match = (
+                match_registry.match_for_character(
+                    int(character.character_id)
+                )
+                if match_registry is not None
+                and CharacterService._entering_battleground(
+                    self, s, gameplay_map
+                )
+                else None
+            )
+
+            if match is not None:
+                # Match entrants may both be inside world initialization at
+                # once, so neither is discoverable through the ready-peer
+                # presence list yet. Publish one combat state on the roster
+                # under its lock and have both sessions register in that state.
+                with match.lock:
+                    combat_state = match.gameplay_combat_state
+                if combat_state is None:
+                    candidate = LocalCombatState(
+                        monster_encounter,
+                        player_actor_id=server_player_actor_id,
+                        player_health=state.maximum_health,
+                        player_current_health=max(
+                            1, int(round(state.inventory.health_points))
+                        ),
+                        player_health_regeneration_fraction=(
+                            state.health_regeneration_fraction
+                        ),
+                        player_health_regeneration_absolute=(
+                            state.health_regeneration_absolute
+                        ),
+                        player_health_regeneration_interval=(
+                            state.health_regeneration_interval
+                        ),
+                        player_maximum_resource=state.maximum_resource,
+                        player_current_resource=float(
+                            state.inventory.secondary_resource
+                        ),
+                        player_resource_regeneration_fraction=(
+                            state.resource_regeneration_fraction
+                        ),
+                        player_resource_regeneration_absolute=(
+                            state.resource_regeneration_absolute
+                        ),
+                        player_resource_regeneration_interval=(
+                            state.resource_regeneration_interval
+                        ),
+                        player_resource_regeneration_delay=(
+                            state.resource_regeneration_delay
+                        ),
+                        initially_active=False,
+                    )
+                    with match.lock:
+                        if match.gameplay_combat_state is None:
+                            match.gameplay_combat_state = candidate
+                        combat_state = match.gameplay_combat_state
+
             def shared_combat_state():
                 return next(
                     (
@@ -145,8 +204,9 @@ class PlayerInitializationWorldService:
                     None,
                 )
 
-            with self.gameplay_world_lock:
-                combat_state = shared_combat_state()
+            if combat_state is None:
+                with self.gameplay_world_lock:
+                    combat_state = shared_combat_state()
             if combat_state is None:
                 candidate = LocalCombatState(
                     monster_encounter,
@@ -631,6 +691,16 @@ class PlayerInitializationWorldService:
                 track=True,
                 label="restore-pvp-flag",
             )
+
+        # Ensure the client's GamePlayer +0x5e4 mirrors the restored career honor points.
+        honor = int(getattr(s, "gameplay_honor_points", 0) or 0)
+        s.send_reliable_ordered(
+            encode_honor_points_changed(
+                HonorPointsChanged(honor, LOCAL_PLAYER_ACTOR_ID)
+            ),
+            track=True,
+            label="sync-initial-honor-points",
+        )
 
         # Social membership is durable server state. The client does not
         # reliably request GroupStatus after a relog/map handoff, so without

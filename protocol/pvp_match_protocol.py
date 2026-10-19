@@ -891,75 +891,110 @@ def decode_honor_points_changed(
     return HonorPointsChanged(honor, actor_id or 0)
 
 
+HONOR_LEVEL_THRESHOLDS: tuple[tuple[int, str], ...] = (
+    (75_000_000, "pvptitle20"),
+    (32_500_000, "pvptitle19"),
+    (15_000_000, "pvptitle18"),
+    (6_750_000, "pvptitle17"),
+    (3_600_000, "pvptitle16"),
+    (2_250_000, "pvptitle15"),
+    (1_450_000, "pvptitle14"),
+    (1_000_000, "pvptitle13"),
+    (750_000, "pvptitle12"),
+    (550_000, "pvptitle11"),
+    (410_000, "pvptitle10"),
+    (300_000, "pvptitle09"),
+    (210_000, "pvptitle08"),
+    (140_000, "pvptitle07"),
+    (90_000, "pvptitle06"),
+    (50_000, "pvptitle05"),
+    (25_000, "pvptitle04"),
+    (11_000, "pvptitle03"),
+    (3_200, "pvptitle02"),
+    (400, "pvptitle01"),
+    (0, "pvptitle00"),
+)
+
+
+def honor_level_title_for(honor_points: int) -> str:
+    points = max(0, int(honor_points))
+    for threshold, title in HONOR_LEVEL_THRESHOLDS:
+        if points >= threshold:
+            return title
+    return "pvptitle00"
+
+
 # ---------------------------------------------------------------------------
 # Scoreboard
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class MatchPlayer:
-    """One scoreboard row, serialized by 0x140a5eda8.
+    """One scoreboard row, serialized by 0x140aa11d4 / decoded by 0x140aa0e94.
 
     Ten ``uint32`` fields, a float, a ``uint32``, a ``uint16``, a bool, the
-    player name, a ``uint32``, an array of ``uint32``, and finally the member
-    at +0x28 -- which the client writes *after* the array even though it sits
-    earlier in the object.  That ordering is not cosmetic; getting it wrong
-    desynchronizes every following row.
+    player name, a ``uint32`` (class_id), an array of ``uint32`` (stats), and
+    finally the member at +0x28 (rounds_lost). That ordering consumes the
+    exact bit stream expected by the client.
 
-    The labelled fields were read off the recorded match: ``rounds_won`` and
-    ``rounds_lost`` tracked the 1-2 scoreline exactly, ``kills`` reached 2 for
-    the winner and 1 for the loser, and ``damage_dealt`` grew monotonically
-    through each round.
+    RE of ``ScoreboardWidget::FillTable`` and
+    ``ClientBattlegroundManager::HandlePVPMatchInfoCommand`` shows that
+    field 16 (written after player name) is copied to ``PvPMember + 0x0c``,
+    which the scoreboard uses for the class emblem (Warrior=0, Mage=1,
+    Ranger=2, Dwarf=3).
     """
 
     actor_id: int = 0
     honor_total: int = 0
     honor_rounds_won: int = 0
-    honor_unknown: int = 0
     honor_participation: int = 0
     honor_bonus: int = 0
     rounds_won: int = 0
-    rounds_lost: int = 0
-    damage_dealt: int = 0
     kills: int = 0
-    score: float = 0.0
+    deaths: int = 0
+    damage_dealt: int = 0
+    score: int = 0
+    support: float = 0.0
     rating: int = 0
     level: int = 0
     enemy: bool = False
     name: str = ""
-    team_slot: int = 0
+    class_id: int = 0
     stats: tuple[int, ...] = ()
-    deaths: int = 0
+    rounds_lost: int = 0
 
     def write(self, writer: BitWriter) -> None:
-        for value in (self.actor_id, self.honor_total, self.honor_rounds_won,
-                      self.honor_unknown, self.honor_participation,
-                      self.honor_bonus, self.rounds_won, self.rounds_lost,
-                      self.damage_dealt, self.kills):
+        for value in (self.actor_id, self.honor_total,
+                      self.honor_rounds_won, self.honor_participation,
+                      self.honor_bonus, self.rounds_won,
+                      self.kills, self.deaths,
+                      self.damage_dealt, self.score):
             writer.write_uint32_le(int(value))
-        writer.write_float(float(self.score))
+        writer.write_float(float(self.support))
         writer.write_uint32_le(int(self.rating))
         writer.write_bytes((int(self.level) & 0xFFFF).to_bytes(2, "little"))
         writer.write_bool(bool(self.enemy))
         writer.write_string(self.name)
-        writer.write_uint32_le(int(self.team_slot))
+        writer.write_uint32_le(int(self.class_id))
         writer.write_uint32_le(len(self.stats))
         for entry in self.stats:
             writer.write_uint32_le(int(entry))
-        writer.write_uint32_le(int(self.deaths))
+        writer.write_uint32_le(int(self.rounds_lost))
 
     @classmethod
     def read(cls, reader: BitReader) -> "MatchPlayer":
         head = [reader.read_uint32_le() for _ in range(10)]
-        score = reader.read_float()
+        support = reader.read_float()
         rating = reader.read_uint32_le()
         level = int.from_bytes(reader.read_bytes(2), "little")
         enemy = reader.read_bool()
         name = reader.read_string()
-        team_slot = reader.read_uint32_le()
+        class_id = reader.read_uint32_le()
         count = reader.read_uint32_le()
         stats = tuple(reader.read_uint32_le() for _ in range(count))
-        return cls(*head, score, rating, level, enemy, name, team_slot,
-                   stats, reader.read_uint32_le())
+        rounds_lost = reader.read_uint32_le()
+        return cls(*head, support, rating, level, enemy, name, class_id,
+                   stats, rounds_lost)
 
 
 @dataclass(frozen=True)

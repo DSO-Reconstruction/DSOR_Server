@@ -18,6 +18,7 @@ from functools import lru_cache, partial
 from dso_server.persistence.readonly_db import connect
 from dso_server.protocol.gameplay_protocol import Message, MessageArgument
 from dso_server.protocol.player_init_protocol import MESSAGE_COMMAND
+from dso_server.protocol.pvp_match_protocol import MATCH_MODE_BEST_OF_3_1V1
 
 from dso_server.gameplay.pvp_match_state import (
     MATCH_COUNTDOWN_SECONDS,
@@ -571,6 +572,9 @@ class BattlegroundService:
             if credit:
                 with session.flow_lock:
                     session.gameplay_honor_points = total + honor
+                    session.gameplay_honor_points_today = (
+                        int(getattr(session, "gameplay_honor_points_today", 0)) + honor
+                    )
                     attribute = (
                         "gameplay_pvp_matches_won" if won
                         else "gameplay_pvp_matches_lost"
@@ -583,6 +587,45 @@ class BattlegroundService:
                         int(getattr(session, "gameplay_pvp_kills", 0)) + entry.kills)
                     session.gameplay_pvp_deaths = (
                         int(getattr(session, "gameplay_pvp_deaths", 0)) + entry.deaths)
+                    session.gameplay_pvp_kills_today = (
+                        int(getattr(session, "gameplay_pvp_kills_today", 0)) + entry.kills)
+                    session.gameplay_pvp_kills_battle_total = (
+                        int(getattr(session, "gameplay_pvp_kills_battle_total", 0)) + entry.kills)
+                    session.gameplay_pvp_kills_battle_today = (
+                        int(getattr(session, "gameplay_pvp_kills_battle_today", 0)) + entry.kills)
+
+                    is_solo = (
+                        getattr(match, "mode", None) == MATCH_MODE_BEST_OF_3_1V1
+                        or len(match.participants) <= 2
+                    )
+                    if is_solo:
+                        session.gameplay_pvp_solo_matches_played = (
+                            int(getattr(session, "gameplay_pvp_solo_matches_played", 0)) + 1
+                        )
+                        if won:
+                            session.gameplay_pvp_solo_matches_won = (
+                                int(getattr(session, "gameplay_pvp_solo_matches_won", 0)) + 1
+                            )
+                        session.gameplay_pvp_kills_alone_total = (
+                            int(getattr(session, "gameplay_pvp_kills_alone_total", 0)) + entry.kills
+                        )
+                        session.gameplay_pvp_kills_alone_today = (
+                            int(getattr(session, "gameplay_pvp_kills_alone_today", 0)) + entry.kills
+                        )
+                    else:
+                        session.gameplay_pvp_team_matches_played = (
+                            int(getattr(session, "gameplay_pvp_team_matches_played", 0)) + 1
+                        )
+                        if won:
+                            session.gameplay_pvp_team_matches_won = (
+                                int(getattr(session, "gameplay_pvp_team_matches_won", 0)) + 1
+                            )
+                        session.gameplay_pvp_kills_group_total = (
+                            int(getattr(session, "gameplay_pvp_kills_group_total", 0)) + entry.kills
+                        )
+                        session.gameplay_pvp_kills_group_today = (
+                            int(getattr(session, "gameplay_pvp_kills_group_today", 0)) + entry.kills
+                        )
             # Publish each row's final payout and this account's new career
             # total before opening the result panel.
             server._send_match_info(session, match)
@@ -768,25 +811,25 @@ class BattlegroundService:
                         honor_rounds_won=(
                             HONOR_PER_ROUND_WON * entry.rounds_won
                         ),
-                        honor_unknown=0,
                         honor_participation=(
                             HONOR_PER_ROUND_PLAYED * rounds
                         ),
                         honor_bonus=HONOR_PER_KILL * entry.kills,
                         rounds_won=entry.rounds_won,
-                        rounds_lost=entry.rounds_lost,
-                        damage_dealt=entry.damage_dealt,
                         kills=entry.kills,
-                        score=float(entry.damage_dealt),
+                        deaths=entry.deaths,
+                        damage_dealt=entry.damage_dealt,
+                        score=entry.damage_dealt,
+                        support=0.0,
                         # Career honor is retained as captured metadata;
                         # honor_total above is the actual match payout.
                         rating=entry.honor_at_start,
                         level=entry.level,
                         enemy=entry.team != viewer_team,
                         name=entry.name,
-                        team_slot=entry.team,
+                        class_id=entry.class_id,
                         stats=(),
-                        deaths=entry.deaths,
+                        rounds_lost=entry.rounds_lost,
                     ))
                 teams.append(MatchTeam(
                     team_id=team,

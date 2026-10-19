@@ -73,6 +73,9 @@ class QueueEntry:
     queue_kind: int
     joined_at: float = field(default_factory=time.perf_counter)
     session: object | None = None
+    # Snapshot the selected character's class when joining the queue. The
+    # participant slot survives the map-transfer socket replacement.
+    class_id: int | None = None
 
 
 @dataclass
@@ -83,6 +86,7 @@ class MatchParticipant:
     account_id: int | None
     name: str
     level: int
+    class_id: int
     team: int
     session: object | None = None
     accepted: bool = False
@@ -161,6 +165,11 @@ class PVPMatch:
         self.round_start_tick = 0
         self.team_rounds_won = [0] * self.team_count
         self.winning_team = 0
+        # Both duelists can initialize the arena concurrently, before either
+        # socket is presence-ready. Keep their player-only combat world on the
+        # match itself so that readiness timing cannot create two isolated
+        # combat states (which would make every PvP hit look cross-instance).
+        self.gameplay_combat_state = None
         self.timers: dict[str, object] = {}
         self.info_generation = 0
         # Completion can be reached from the round timer or from the last
@@ -392,6 +401,10 @@ class MatchmakingRegistry:
                         account_id=entry.account_id,
                         name=str(getattr(character, "name", "")),
                         level=max(1, int(getattr(character, "level", 1))),
+                        class_id=max(0, int(
+                            entry.class_id if entry.class_id is not None
+                            else getattr(character, "class_id", 0)
+                        )),
                         team=team,
                         session=session,
                     ))

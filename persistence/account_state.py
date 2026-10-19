@@ -175,6 +175,20 @@ class AccountState:
     pvp_matches_lost: int = 0
     pvp_kills: int = 0
     pvp_deaths: int = 0
+    honor_points_today: int = 0
+    pvp_kills_today: int = 0
+    pvp_solo_matches_won: int = 0
+    pvp_solo_matches_played: int = 0
+    pvp_team_matches_won: int = 0
+    pvp_team_matches_played: int = 0
+    pvp_kills_alone_total: int = 0
+    pvp_kills_alone_today: int = 0
+    pvp_kills_group_total: int = 0
+    pvp_kills_group_today: int = 0
+    pvp_kills_battle_total: int = 0
+    pvp_kills_battle_today: int = 0
+    pvp_dishonorable_kills: int = 0
+    pvp_stats_date: str = ""
     title_type: int = 0
     achievement_title: str = ""
     saved_at: str = ""
@@ -658,6 +672,20 @@ def _state_to_document(state: AccountState) -> dict:
         "pvp_matches_lost": int(state.pvp_matches_lost),
         "pvp_kills": int(state.pvp_kills),
         "pvp_deaths": int(state.pvp_deaths),
+        "honor_points_today": int(state.honor_points_today),
+        "pvp_kills_today": int(state.pvp_kills_today),
+        "pvp_solo_matches_won": int(state.pvp_solo_matches_won),
+        "pvp_solo_matches_played": int(state.pvp_solo_matches_played),
+        "pvp_team_matches_won": int(state.pvp_team_matches_won),
+        "pvp_team_matches_played": int(state.pvp_team_matches_played),
+        "pvp_kills_alone_total": int(state.pvp_kills_alone_total),
+        "pvp_kills_alone_today": int(state.pvp_kills_alone_today),
+        "pvp_kills_group_total": int(state.pvp_kills_group_total),
+        "pvp_kills_group_today": int(state.pvp_kills_group_today),
+        "pvp_kills_battle_total": int(state.pvp_kills_battle_total),
+        "pvp_kills_battle_today": int(state.pvp_kills_battle_today),
+        "pvp_dishonorable_kills": int(state.pvp_dishonorable_kills),
+        "pvp_stats_date": str(state.pvp_stats_date),
         "title_type": int(state.title_type),
         "achievement_title": str(state.achievement_title),
         "membership": {
@@ -848,6 +876,20 @@ def _state_from_document(document: dict) -> AccountState:
         pvp_matches_lost=max(0, int(document.get("pvp_matches_lost", 0))),
         pvp_kills=max(0, int(document.get("pvp_kills", 0))),
         pvp_deaths=max(0, int(document.get("pvp_deaths", 0))),
+        honor_points_today=max(0, int(document.get("honor_points_today", 0))),
+        pvp_kills_today=max(0, int(document.get("pvp_kills_today", 0))),
+        pvp_solo_matches_won=max(0, int(document.get("pvp_solo_matches_won", document.get("pvp_matches_won", 0)))),
+        pvp_solo_matches_played=max(0, int(document.get("pvp_solo_matches_played", int(document.get("pvp_matches_won", 0)) + int(document.get("pvp_matches_lost", 0))))),
+        pvp_team_matches_won=max(0, int(document.get("pvp_team_matches_won", 0))),
+        pvp_team_matches_played=max(0, int(document.get("pvp_team_matches_played", 0))),
+        pvp_kills_alone_total=max(0, int(document.get("pvp_kills_alone_total", document.get("pvp_kills", 0)))),
+        pvp_kills_alone_today=max(0, int(document.get("pvp_kills_alone_today", document.get("pvp_kills_today", 0)))),
+        pvp_kills_group_total=max(0, int(document.get("pvp_kills_group_total", 0))),
+        pvp_kills_group_today=max(0, int(document.get("pvp_kills_group_today", 0))),
+        pvp_kills_battle_total=max(0, int(document.get("pvp_kills_battle_total", document.get("pvp_kills", 0)))),
+        pvp_kills_battle_today=max(0, int(document.get("pvp_kills_battle_today", document.get("pvp_kills_today", 0)))),
+        pvp_dishonorable_kills=max(0, int(document.get("pvp_dishonorable_kills", 0))),
+        pvp_stats_date=str(document.get("pvp_stats_date", "")),
         title_type=max(0, min(2, int(document.get("title_type", 0)))),
         achievement_title=str(document.get("achievement_title", "")),
         saved_at=str(document.get("saved_at", "")),
