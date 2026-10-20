@@ -125,7 +125,10 @@ class BookingDelivery:
             definition = load_purchase_item_definition(self.static_database_path, resource)
             if definition.item_category in {"Currency", "InstantConsumable"}:
                 raise ValueError("this item category cannot be delivered to inventory")
-            if type(amount) is not int or not 1 <= amount <= min(definition.max_stack_size, 1_000_000_000):
+            # Up to 1,000 units as before (several equipment pieces or stacks),
+            # or one whole stack of a template that stacks higher.
+            limit = min(max(1000, definition.max_stack_size), 1_000_000_000)
+            if type(amount) is not int or not 1 <= amount <= limit:
                 raise ValueError(
                     "item amount exceeds the limit for this template"
                 )

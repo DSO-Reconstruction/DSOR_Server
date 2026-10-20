@@ -940,14 +940,10 @@ class WorldService:
                     spawn_batch = requested_group.spawn_batch
                     spawned_actor_ids = requested_group.actor_ids
                     activate_actor_ids = requested_group.actor_ids
-                    # ActorRequest can be delivered more than once (or be
-                    # processed concurrently with another request for the
-                    # same actor). Reserve the IDs while still holding the
-                    # session lock so only one request can enqueue NewMonster.
-                    s.gameplay_spawned_monster_actor_ids.update(
-                        spawned_actor_ids
-                    )
-                    s.gameplay_monsters_spawned = True
+                    # Not visible yet: map workers read this set, and must not
+                    # send Move/attacks before NewMonster has its ordered
+                    # slot (below). A repeated or concurrent ActorRequest is
+                    # deduplicated by _new_monster_batch_for_viewer's ledger.
         CharacterService._accept_gameplay_state_command(s, 0x001C)
         if (
             original_group is None
@@ -983,7 +979,6 @@ class WorldService:
                     track=True,
                     label="monster-spawn-batch",
                 )
-            # The IDs were reserved atomically before releasing flow_lock.
             # Keep the visibility publication here, after NewMonster has an
             # ordered slot, so map workers cannot send Move/attacks ahead of
             # actor creation.
@@ -1461,6 +1456,8 @@ class WorldService:
                     mutation = add_world_drop_to_inventory(
                         inventory, drop,
                         max_stack_size=item_definition.max_stack_size,
+                        next_item_id=int(s.gameplay_next_item_id),
+                        reserved_item_ids=tuple(s.gameplay_world_loot),
                     )
                     response_packet, response_bits = (
                         encode_world_pickup_response(

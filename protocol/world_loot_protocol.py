@@ -2399,9 +2399,16 @@ def credit_currency_drop(
 
 
 def add_world_drop_to_inventory(
-    info: InventoryInfo, drop: WorldLootDrop, *, max_stack_size: int = 1
+    info: InventoryInfo, drop: WorldLootDrop, *, max_stack_size: int = 1,
+    next_item_id: int = 0, reserved_item_ids=(),
 ) -> InventoryLootMutation:
-    """Move one non-currency world item into an ordinary or premium bag slot."""
+    """Move one non-currency world item into an ordinary or premium bag slot.
+
+    A stack it lands on is reissued under a fresh id, past ``next_item_id``
+    and every ``reserved_item_ids`` (the items still on the ground: one loot's
+    drops have consecutive ids, so the inventory's highest id + 1 can be the
+    next drop's, which then could no longer be picked up).
+    """
 
     if drop.item_category in {"Currency", "InstantConsumable"}:
         raise ValueError(f"{drop.item_category} is not stored in ordinary inventory")
@@ -2431,8 +2438,11 @@ def add_world_drop_to_inventory(
             continue
         added = min(remaining, maximum - int(old_item.amount))
         new_id = max(
-            [int(item.item_id) for item in inventory.items] + [int(stored.item_id)]
+            [int(item.item_id) for item in inventory.items]
+            + [int(stored.item_id), int(next_item_id) - 1]
+            + [int(value) for value in reserved_item_ids]
         ) + 1
+        reserved_item_ids = (*reserved_item_ids, new_id)
         replacement = replace(
             old_item,
             item_id=new_id,

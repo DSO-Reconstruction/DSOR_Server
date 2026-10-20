@@ -102,6 +102,9 @@ from dso_server.protocol.player_init_protocol import (
     encode_endless_tower_progress,
     encode_endless_tower_buffs,
     encode_kill_monster_get_total_scores,
+    command_available,
+    GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND,
+    KILL_MONSTER_GET_TOTAL_SCORES_COMMAND,
     encode_server_command_batch,
 )
 from dso_server.protocol.prop_protocol import (
@@ -1259,6 +1262,8 @@ class MapEventService:
             character = s.gameplay_character
         if character is None:
             return
+        if not command_available(GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND):
+            return
         selection = endless_tower_player_buffs(
             self.static_database_path, "",
             character_id=int(character.character_id),
@@ -1374,6 +1379,8 @@ class MapEventService:
         authored default (a full bar and the literal ``Text`` label).
         """
 
+        if not command_available(KILL_MONSTER_GET_TOTAL_SCORES_COMMAND):
+            return
         packet, packet_bits = encode_kill_monster_get_total_scores(
             max(0, int(score)), actor_id=LOCAL_PLAYER_ACTOR_ID,
         )
@@ -1983,12 +1990,13 @@ class MapEventService:
             # starts filling as monsters die.
             with runtime.lock:
                 entry_score = runtime.kill_score
-            score_packet, score_bits = encode_kill_monster_get_total_scores(
-                entry_score, actor_id=LOCAL_PLAYER_ACTOR_ID,
-            )
-            CharacterService._send_world_loot_state_batch(
-                s, score_packet, score_bits, label="fractured-planes-score"
-            )
+            if command_available(KILL_MONSTER_GET_TOTAL_SCORES_COMMAND):
+                score_packet, score_bits = encode_kill_monster_get_total_scores(
+                    entry_score, actor_id=LOCAL_PLAYER_ACTOR_ID,
+                )
+                CharacterService._send_world_loot_state_batch(
+                    s, score_packet, score_bits, label="fractured-planes-score"
+                )
         access_group = str(getattr(s, "gameplay_map_access_group_id", "") or "")
         access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
         self._fire_map_signal(

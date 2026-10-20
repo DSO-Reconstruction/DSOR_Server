@@ -8,7 +8,7 @@ batch can be decoded, edited, and serialized without replaying opaque bytes.
 
 from __future__ import annotations
 
-from dso_server.protocol.command_ids import command_id
+from dso_server.protocol.command_ids import UNAVAILABLE_COMMAND_ID, command_id
 from dso_server.protocol.shop_protocol import OFFER_COMMAND, read_offer_command_body, write_offer_command_body
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -98,31 +98,40 @@ UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND = command_id("Commands::UpdatePr
 EVENT_PROGRESS_INFO_COMMAND = command_id("Commands::EventProgressInfoCommand", 0x00E0)
 EVENT_PARTICIPATION_INFO_COMMAND = command_id("Commands::EventParticipationInfoCommand", 0x00DF)
 EXIT_INFO_COMMAND = command_id("Commands::ExitInfoCommand", 0x0044)
-# The checked-in command table is from a different client build: its 0x0168
-# slot is the timer command there, while this client's log identifies 0x0168
-# (360) as GetWantedThiefInfoResultCommand. The same registration order puts
-# KickOutToHubLimitTimeLeftCommand at 0x016b on the installed client.
+# The literals here are the current client's (dro_client64-patch5,
+# docs/command_ids.json). release261_192 registers three more commands before
+# the Season Pass block, so from there on its ids are three higher
+# (KickOutToHubLimitTimeLeftCommand 0x016b, GetWantedThiefInfoResultCommand
+# 0x0168): serve it with its own DSO_COMMAND_IDS table.
 KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
-    "Commands::KickOutToHubLimitTimeLeftCommand", 0x016B,
+    "Commands::KickOutToHubLimitTimeLeftCommand", 0x0168,
 )
-# The installed client registers 364/0x016b+1 as
-# ``Commands::KillMonsterGetTotalScoresCommand``. The checked-in command table
-# instead maps 0x016c to the unrelated ``GetSecondDaySignedAwardCommand``.
-# These two ids collide, so the Endless Tower / Fractured Planes score command
-# is written directly from this literal -- never through ``command_id`` (whose
-# selected-table fallback is :data:`UNAVAILABLE_COMMAND_ID`) and never through
-# ``_BODY_WRITERS`` (whose 0x016c entry emits the award body).
-KILL_MONSTER_GET_TOTAL_SCORES_COMMAND = 0x016C
-# The installed client registers this after the two high-score commands.
-# Like the score command above, the older selected table has a different
-# command at this slot, so this codec uses the verified registration directly.
-GET_SELF_ENDLESS_TOWER_DATA_COMMAND = 0x016F
-GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND = 0x0171
+# release261_192 registers KillMonsterGetTotalScoresCommand (0x016c there) and
+# GetEndlessTowerAllBuffsResultCommand (0x0171); the current client has neither
+# (its 0x016c is GetSecondDaySignedAwardCommand), so they are unavailable unless
+# a table names them, and the Fractured Planes panel and buff choices are only
+# sent when they are (command_available). Never through ``_BODY_WRITERS``,
+# whose 0x016c entry emits the award body.
+KILL_MONSTER_GET_TOTAL_SCORES_COMMAND = command_id(
+    "Commands::KillMonsterGetTotalScoresCommand", UNAVAILABLE_COMMAND_ID,
+)
+GET_SELF_ENDLESS_TOWER_DATA_COMMAND = command_id(
+    "Commands::GetSelfEndlessTowerDataCommand", 0x016B,
+)
+GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND = command_id(
+    "Commands::GetEndlessTowerAllBuffsResultCommand", UNAVAILABLE_COMMAND_ID,
+)
+
+
+def command_available(command: int) -> bool:
+    """Whether the client build being served defines this command."""
+
+    return command != UNAVAILABLE_COMMAND_ID
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
-SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x0162)
-SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassMissionsInfoResultCommand", 0x0166)
+SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x015F)
+SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassMissionsInfoResultCommand", 0x0163)
 GET_SECOND_DAY_SIGNED_AWARD_COMMAND = command_id("Commands::GetSecondDaySignedAwardCommand", 0x016C)
 OBSTACLE_UPDATE_COMMAND = command_id("Commands::ObstacleUpdateCommand", 0x0072)
 COMMAND_0173 = 0x0173

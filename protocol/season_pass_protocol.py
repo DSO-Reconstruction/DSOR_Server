@@ -1,4 +1,9 @@
-"""Season Pass client requests confirmed against the release261 client."""
+"""Season Pass client requests.
+
+The literals are the current client's (dro_client64-patch5, docs/command_ids.json);
+release261 registers three more commands before these, so its numbers are
+three higher: serve it with its own DSO_COMMAND_IDS table.
+"""
 
 from __future__ import annotations
 
@@ -9,16 +14,16 @@ from dso_server.protocol.command_ids import command_id
 
 
 GET_SEASON_PASS_REWARDS_INFO_COMMAND = command_id(
-    "Commands::GetSeasonPassRewardsInfoCommand", 0x0161,
+    "Commands::GetSeasonPassRewardsInfoCommand", 0x015E,
 )
 GET_SEASON_PASS_AWARD_COMMAND = command_id(
-    "Commands::GetSeasonPassAwardCommand", 0x0163,
+    "Commands::GetSeasonPassAwardCommand", 0x0160,
 )
 ADD_SEASON_PASS_EXP_COMMAND = command_id(
-    "Commands::AddSeasonPassExpCommand", 0x0164,
+    "Commands::AddSeasonPassExpCommand", 0x0161,
 )
 GET_SEASON_PASS_MISSIONS_INFO_COMMAND = command_id(
-    "Commands::GetSeasonPassMissionsInfoCommand", 0x0165,
+    "Commands::GetSeasonPassMissionsInfoCommand", 0x0162,
 )
 SEASON_PASS_QUERY_COMMANDS = frozenset({
     GET_SEASON_PASS_REWARDS_INFO_COMMAND,
