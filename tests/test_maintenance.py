@@ -191,10 +191,16 @@ def test_ready_hook_notifies_only_after_initialization_followups(maintenance):
     m.clock.now += 30
     server = CharacterServer.__new__(CharacterServer)
     server.maintenance = m.controller
-    state = SimpleNamespace(persisted_state=None, gameplay_map="a0200_kingscity")
+    state = SimpleNamespace(
+        persisted_state=None, gameplay_map="a0200_kingscity",
+        map_access=SimpleNamespace(
+            request_map_id="a0200_kingscity", access_group_id="",
+            map_difficulty=0, scaling_difficulty=0,
+        ),
+    )
     completed = []
     methods = (
-        "_resolve_initialization_inventory", "_encode_initialization_new_player",
+        "_select_dungeon_instance", "_resolve_initialization_inventory", "_encode_initialization_new_player",
         "_resolve_initialization_talents", "_resolve_initialization_persistent_effects",
         "_resolve_initialization_vitals", "_apply_initialization_state",
         "_initialize_respawn_state", "_announce_battleground", "_load_initialization_world",

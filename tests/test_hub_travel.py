@@ -11,7 +11,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from dso_server.gameplay.local_map_state import load_local_spawn_position
+from dso_server.gameplay.local_map_state import load_local_travel_point_position
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.persistence.account_state import _state_from_document, _state_to_document
 from dso_server.protocol.gameplay_protocol import MapTravelRequest
@@ -104,9 +104,10 @@ class HubTravelTests(unittest.TestCase):
         session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
         call = self._travel(session)
         self.assertEqual(call.args[2], "b1100_hub")
+        # The hub is entered at its travel stone, not its Respawnpoint.
         self.assertEqual(
             call.kwargs["spawn_position"],
-            load_local_spawn_position(DEFAULT_STATIC_DB_PATH, "b1100_hub"),
+            load_local_travel_point_position(DEFAULT_STATIC_DB_PATH, "b1100_hub"),
         )
         self.assertEqual(call.kwargs["reason"], "fast-travel")
 
@@ -127,7 +128,7 @@ class HubTravelTests(unittest.TestCase):
             self.server._resolve_hub_travel_destination(session), "a0200_kingscity"
         )
 
-    def test_ordinary_destinations_are_untouched(self):
+    def test_ordinary_destinations_arrive_at_their_travel_stone(self):
         session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
         session.gameplay_unlocked_maps.add("a0200_kingscity")
         request = MapTravelRequest(
@@ -137,8 +138,13 @@ class HubTravelTests(unittest.TestCase):
             CharacterServer, "_begin_map_transfer", return_value=True
         ) as begin:
             self.server._perform_map_travel(session, request, command_id=0x0061)
+        # Not renamed like "Hub", but placed at the map's travel stone
+        # (map_transition), as the world map and travel stones arrive.
         self.assertEqual(begin.call_args.args[2], "a0200_kingscity")
-        self.assertIsNone(begin.call_args.kwargs["spawn_position"])
+        self.assertEqual(
+            begin.call_args.kwargs["spawn_position"],
+            load_local_travel_point_position(DEFAULT_STATIC_DB_PATH, "a0200_kingscity"),
+        )
 
 
 if __name__ == "__main__":

@@ -611,7 +611,9 @@ class QuestServiceTests(unittest.TestCase):
         self.assertEqual(progress.state, QUEST_STATE_FINISHED)
         data, bits, label = self.session.recorder.messages[-1]
         self.assertEqual(label, "npc-info-response")
-        self.assertEqual(decode_npc_batch(data, bits).commands[0].actor_id, 0)
+        # The reply names the resolved NPC rather than echoing actor 0: an
+        # actor-0 NPCInfo made the client drop its interaction list.
+        self.assertEqual(decode_npc_batch(data, bits).commands[0].actor_id, npc.actor_id)
 
     def test_vithrandir_conversation_requires_live_npc_and_prior_tasks(self):
         for reveal, prerequisites in ((False, True), (True, False)):

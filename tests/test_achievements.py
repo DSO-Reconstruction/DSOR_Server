@@ -253,7 +253,7 @@ class AchievementServiceTests(unittest.TestCase):
         self.assertTrue(all(values[1] > 0 for values in recipe_gates.values()))
         self.assertEqual(first["general_score_50"][0], 50)
         self.assertTrue(first["general_score_50"][1] > 0)
-        self.assertIn("achievements granted", self.saves)
+        self.assertIn("initialization achievements granted", self.saves)
         self.saves.clear()
         second = {a.resource_id: a.values for a in server._achievement_init_info(s).achievements}
         self.assertEqual(first, second)

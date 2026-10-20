@@ -16,8 +16,9 @@ from unittest.mock import patch
 
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_map_state import (
-    LOCAL_PROP_ID_BASE,
     _enabled_event_set_ids,
+    local_npc_actor_id,
+    local_prop_actor_base,
     load_local_npc_definitions,
     load_local_map_exits,
     load_map_coordinate_frame,
@@ -264,7 +265,11 @@ class SignalCatalogTests(unittest.TestCase):
             player_level=50, class_name="dwarf", player_count=1,
         ))
         self.assertFalse(any(
-            rule.signal_type == "clientsignal" and rule.event_type not in {"playerenteredmap", "playerlevelup"}
+            # Prop interactions are client signals the server resolves from
+            # its own prop table (map_event_state.server_evaluated).
+            rule.signal_type == "clientsignal" and rule.event_type not in {
+                "playerenteredmap", "playerlevelup", "playerinteractedprop",
+            }
             for rules in self.catalog.rules_by_event_type.values()
             for rule in rules
         ))
@@ -426,11 +431,17 @@ class MapEventServiceTests(unittest.TestCase):
         ]
         self.assertEqual([(e.prop_id, e.field_24, e.field_28) for e in refresh],
                          [(chest.prop_id, PROP_STATE_USED, 333)])
-        self.assertEqual(self.runtime.props[chest.prop_id].state, PROP_STATE_USED)
+        # The chest is opened per player (individual_usage): the clicker sees
+        # it used, the map's shared state stays active for everyone else.
+        self.assertTrue(self.runtime.props[chest.prop_id].definition.individual_usage)
+        self.assertEqual(self.runtime.props[chest.prop_id].state, PROP_STATE_ACTIVE)
+        usage = set(self.runtime.individual_prop_usage)
+        self.assertEqual(len(usage), 1)
         # A second click on the used chest changes nothing.
         self.session.recorder.messages.clear()
         self.server._handle_prop_interaction(self.session, payload)
-        self.assertEqual(self.runtime.props[chest.prop_id].state, PROP_STATE_USED)
+        self.assertEqual(self.runtime.individual_prop_usage, usage)
+        self.assertEqual(self.runtime.props[chest.prop_id].state, PROP_STATE_ACTIVE)
 
     def test_late_joiner_gets_running_events_and_props(self):
         self._trigger_boss_spawn()
@@ -488,10 +499,20 @@ class PropIdAllocationTests(unittest.TestCase):
         content = load_map_event_content(DEFAULT_STATIC_DB_PATH, map_id)
         indices = [prop_index(prop.prop_id) for prop in content.props]
         self.assertEqual(len(indices), len(set(indices)), map_id)
+        # Props share the client's actor-id space with NPCs: the scene rows
+        # start after the map's highest NPC slot, event-gated NPCs included.
+        base = local_prop_actor_base(DEFAULT_STATIC_DB_PATH, map_id)
+        npc_slots = {
+            local_npc_actor_id(definition) & 0xFFFF
+            for definition in load_local_npc_definitions(
+                DEFAULT_STATIC_DB_PATH, map_id, include_inactive_event_sets=True,
+            )
+        }
         for prop in content.props:
             if prop.kind == "scene":
-                self.assertEqual(prop.prop_id, LOCAL_PROP_ID_BASE + prop.row_id - 1)
+                self.assertEqual(prop.prop_id, base + prop.row_id - 1)
             self.assertLess(prop_index(prop.prop_id), 0x10000)
+            self.assertNotIn(prop_index(prop.prop_id), npc_slots)
         return content
 
     def test_kingscrypt_spawn_chests_do_not_shadow_progress_props(self):

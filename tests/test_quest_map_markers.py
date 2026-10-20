@@ -59,7 +59,10 @@ def test_pvp_offers_on_entry_match_npc_dialog(quest_case, map_id, prefix, level,
 
     # Read the initial NewNPC/NPCInfo wire batch before sending any request.
     initial = initial_npc_info(case, session, f"{prefix}_merchant_arena")
-    assert initial.actor_id >= 0x20000
+    # Arena merchants share the one generation-1 NPC sequence (gameplay/
+    # local_map_state.py local_npc_actor_id): a generation-2 id moved their
+    # client slot onto the props'.
+    assert initial.actor_id < 0x20000
     offers = {i.source: i for i in initial.interactions}
     if level < 15:
         assert not offers

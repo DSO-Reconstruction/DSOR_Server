@@ -221,10 +221,43 @@ def test_malformed_buddy_refresh_is_rejected(packet):
         decode_buddy_list_request(packet)
 
 
-def test_buddy_edit_is_not_falsely_acknowledged_as_a_refresh(popup):
+def buddy_request(action, name=""):
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(BUDDY_LIST_COMMAND.to_bytes(2, "little"))
+    writer.write_uint8(action)
+    writer.write_uint32_le(0)
+    writer.write_string(name)
+    writer.write_bool(False)
+    return writer.finish()
+
+
+def send_buddy_request(popup, action, name=""):
+    packet, bits = buddy_request(action, name)
+    popup.viewer.current_message_bit_length = bits
+    popup.server._on_char_op(popup.viewer, packet)
+
+
+def test_buddy_add_and_remove_by_name_answer_with_the_full_list(popup):
     p = popup
-    packet = RECORDED_BUDDY_REFRESH[:3] + b"\x01" + RECORDED_BUDDY_REFRESH[4:]
-    p.viewer.current_message_bit_length = len(packet) * 8
-    with pytest.raises(ValueError, match="modification"):
-        p.server._on_char_op(p.viewer, packet)
+    send_buddy_request(p, 1, "remote")
+    assert p.social.buddies_for(99) == (12,)
+    assert p.viewer.recorder.messages[-1][2] == "buddy-list-status"
+    send_buddy_request(p, 2, "Remote")
+    assert p.social.buddies_for(99) == ()
+    assert p.viewer.recorder.messages[-1][2] == "buddy-list-status"
+
+
+@pytest.mark.parametrize("name", ["", "Nobody", "Viewer"])
+def test_buddy_add_of_an_unknown_name_or_self_changes_nothing(popup, name):
+    p = popup
+    send_buddy_request(p, 1, name)
+    assert p.social.buddies_for(99) == ()
+    assert p.viewer.recorder.messages[-1][2] == "buddy-list-status"
+
+
+def test_unknown_buddy_operation_is_not_acknowledged_as_a_refresh(popup):
+    p = popup
+    with pytest.raises(ValueError, match="unsupported buddy-list operation"):
+        send_buddy_request(p, 3)
     assert not p.viewer.recorder.messages

@@ -163,7 +163,11 @@ class MonsterWorkerDiagnosticsTests(unittest.TestCase):
         entered = threading.Event()
         release = threading.Event()
 
-        def blocked_monster_fanout(*args):
+        def blocked_monster_fanout(tick_session, *args):
+            # The patch is class-wide: a monster worker another test left
+            # running must neither block here nor signal ``entered``.
+            if tick_session is not session:
+                return True
             mark_phase(session, "monster-activity-fanout")
             entered.set()
             release.wait(5.0)

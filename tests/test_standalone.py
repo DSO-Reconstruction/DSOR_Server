@@ -14,11 +14,18 @@ import unittest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_PACKAGES = ("services", "protocol", "gameplay", "persistence", "runtime")
+# The Windows launcher (tkinter/ctypes) is a separate program run beside the
+# server, importing its settings module directly; it is not part of the package.
+LAUNCHER_SOURCES = frozenset({"launcher_gui.py", "client_settings.py"})
+
+
+def _package_root_sources():
+    return [path for path in PROJECT_ROOT.glob("*.py") if path.name not in LAUNCHER_SOURCES]
 
 
 class StandaloneProjectTests(unittest.TestCase):
     def test_source_imports_are_owned_by_the_project(self):
-        sources = list(PROJECT_ROOT.glob("*.py"))
+        sources = _package_root_sources()
         for folder in (*RUNTIME_PACKAGES, "tests"):
             sources.extend((PROJECT_ROOT / folder).rglob("*.py"))
         for source in sources:
@@ -66,7 +73,7 @@ class StandaloneProjectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="dso-standalone-") as directory:
             project = Path(directory) / "server"
             project.mkdir()
-            for source in PROJECT_ROOT.glob("*.py"):
+            for source in _package_root_sources():
                 shutil.copy2(source, project / source.name)
             for folder in RUNTIME_PACKAGES:
                 shutil.copytree(
