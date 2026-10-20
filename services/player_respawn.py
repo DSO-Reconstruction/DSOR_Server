@@ -333,7 +333,7 @@ class PlayerRespawnService:
                 tick = int(s.gameplay_chase_server_tick)
             if position is None:
                 raise ValueError("dead player has no authoritative position")
-            if request.nearest_exit or request.same_spot:
+            if request.nearest_exit:
                 position, heading = _nearest_exit_transform(
                     self.static_database_path, s.gameplay_map, s.gameplay_map_exits, position
                 )

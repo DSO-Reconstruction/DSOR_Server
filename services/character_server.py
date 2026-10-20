@@ -20,6 +20,7 @@ from dso_server.services.player_resources import PlayerResourceService
 from dso_server.services.player_progression import PlayerProgressionService
 from dso_server.services.combat_resolution import CombatResolutionService
 from dso_server.services.monster_combat import MonsterCombatService
+from dso_server.services.monster_summons import MonsterSummonService
 from dso_server.services.pvp_combat import PVPCombatService
 from dso_server.services.matchmaking import MatchmakingService
 from dso_server.services.battleground import BattlegroundService
@@ -66,6 +67,7 @@ class CharacterServer(
         PlayerProgressionService,
         CombatResolutionService,
         MonsterCombatService,
+        MonsterSummonService,
         PVPCombatService,
         MatchmakingService,
         BattlegroundService,

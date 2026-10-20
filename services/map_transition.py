@@ -292,9 +292,33 @@ class MapTransitionService:
             CharacterService._persist_gameplay_session(
                 self, s, reason=f'{reason} source', flush=True
             )
+        # Build the one-shot route from the state after the durable source
+        # snapshot. A QuickSlotsCommand already in flight can be applied after
+        # the transition flag is set; taking the route copy before the flush
+        # lets that older copy override the newer persisted shortcuts on the
+        # destination map.
+        with s.flow_lock:
+            quick_slots = copy.deepcopy(s.gameplay_quick_slots)
+        account_store = getattr(self, 'account_store', None)
+        character_id = getattr(character, 'character_id', None)
+        if account_store is not None and character_id is not None:
+            persisted_state = account_store.get(character_id)
+            persisted_quick_slots = getattr(
+                persisted_state, 'quick_slots', None
+            )
+            if persisted_quick_slots is not None:
+                if quick_slots is None:
+                    quick_slots = copy.deepcopy(persisted_quick_slots)
+                else:
+                    quick_slots = CharacterService._merge_quick_slots(
+                        quick_slots, persisted_quick_slots
+                    )
         route_character = copy.deepcopy(character)
         if route_character is not None:
             route_character.map_id = physical_map_id
+            # Carry the latest client-assigned shortcuts on the one-shot map
+            # route so initialization cannot reuse a stale account snapshot.
+            route_character.route_quick_slots = quick_slots
             # This route-only marker distinguishes Fractured Planes from the
             # Endless Tower floors whose physical maps it reuses.
             route_character.fractured_planes_run = bool(fractured_planes_run)

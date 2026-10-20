@@ -754,6 +754,145 @@ class AdminService:
         return {"ok": True, "quest_count": len(quests),
                 "newly_completed": completed, "online": target is not None}
 
+    def complete_character_ammon_parallel_world_quests(self, cid, actor, reason):
+        from dso_server.gameplay.map_unlocks import (
+            map_unlock_catalog, quest_map_unlocks,
+        )
+
+        profile = self.store.get_profile(cid)
+        owner = self.registry.character_owner(cid)
+        if profile is None or owner is None:
+            raise ValueError("character must exist and belong to an account")
+        catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
+        class_name = CLASS_NAMES.get(int(profile.class_id), "")
+        quest_ids = {
+            quest.quest_id.casefold()
+            for quest in catalog.quests.values()
+            if quest.quest_id.casefold().startswith("pw")
+            and not quest.repeatable
+            and "ammon" in f"{quest.giver} {quest.goal}".casefold()
+        }
+        # Ammon's hub doors and PW boss routes are gated by follow-up unlock
+        # quests whose giver/goal is the regional quest NPC, not Ammon. Include
+        # every non-repeatable quest explicitly named by a PW map access row.
+        _travel_maps, map_accesses = map_unlock_catalog(
+            str(self.static_database_path)
+        )
+        quest_ids.update(
+            quest_id.casefold()
+            for access_id, access_group, quest_id in map_accesses
+            if quest_id
+            and (access_id.casefold().startswith("pw")
+                 or access_group.casefold().startswith("pw"))
+        )
+        quests = tuple(
+            quest for quest in catalog.quests.values()
+            if quest.quest_id.casefold() in quest_ids
+            and not quest.repeatable
+            and quest.accepts_class(class_name)
+        )
+        if not quests:
+            raise ValueError("no Ammon Parallel Worlds quests are available")
+        # Keep the unlock quest IDs for audit/UI reporting. The hub's entry
+        # events use the persistent map grants to keep completed gates open.
+        gate_quest_ids = {
+            quest_id.casefold()
+            for access_id, access_group, quest_id in map_accesses
+            if quest_id
+            and (access_id.casefold().startswith("pw")
+                 or access_group.casefold().startswith("pw"))
+        }
+        gate_quest_ids.intersection_update(quest.quest_id.casefold() for quest in quests)
+        unlocked_maps = quest_map_unlocks(
+            str(self.static_database_path),
+            (quest.quest_id for quest in quests),
+        )
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("character is changing maps or initializing; try again shortly")
+
+        completed = 0
+        if target is None:
+            state = self.store.get(cid)
+            if state is None:
+                raise ValueError("character must enter the game once before quests can be changed")
+            quest_log = dict(state.quest_log or {})
+            for quest in quests:
+                previous = quest_log.get(quest.quest_id, {})
+                if int(previous.get("state", -1)) != QUEST_STATE_CLOSED:
+                    completed += 1
+                finished_mask = sum(1 << task.index for task in quest.tasks)
+                quest_log[quest.quest_id] = QuestProgress(
+                    quest.quest_id, state=QUEST_STATE_CLOSED,
+                    finished_mask=finished_mask, completed_at=stamp,
+                ).to_document()
+            self.store.put(replace(
+                state,
+                quest_log=quest_log,
+                unlocked_maps=tuple(sorted(
+                    {*(state.unlocked_maps or ()), *unlocked_maps}
+                )),
+            ), flush=True)
+        else:
+            server, session = target
+            from dso_server.services.quests import _quest_log
+            def commit():
+                nonlocal completed
+                if not server.is_session_current(session):
+                    raise ValueError("character session changed; refresh and retry")
+                with session.flow_lock:
+                    if not ready(session, cid):
+                        raise ValueError("character must remain fully loaded in a map")
+                    log = _quest_log(session)
+                    commands = []
+                    for quest in quests:
+                        progress = log.get(quest.quest_id)
+                        if progress is None or progress.state != QUEST_STATE_CLOSED:
+                            completed += 1
+                        finished_mask = sum(1 << task.index for task in quest.tasks)
+                        if progress is None:
+                            progress = QuestProgress(quest.quest_id)
+                            log[quest.quest_id] = progress
+                        progress.state = QUEST_STATE_CLOSED
+                        progress.finished_mask = finished_mask
+                        progress.completed_at = stamp
+                        progress.tokens.clear()
+                        commands.append(ServerCommand(
+                            QUEST_UPDATE_COMMAND,
+                            QuestUpdate.quest_state(quest.quest_id, QUEST_STATE_CLOSED, stamp),
+                            1,
+                        ))
+                    commands.extend(server._quest_npc_info_commands(session))
+                    commands.append(ServerCommand(
+                        CHAPTER_PROGRESS_COMMAND,
+                        server._quest_chapter_progress(session), 1,
+                    ))
+                for quest in quests:
+                    server._quest_unlock_maps(session, quest.quest_id)
+                server._quest_spawn_revealed_npcs(session)
+                server._quest_refresh_map_phases(session)
+                server._quest_sync_props(session)
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason="CMS Ammon Parallel Worlds quests completed", flush=True
+                )
+                server._send_quest_commands(
+                    session, commands, label="admin-ammon-pw-quests-completed"
+                )
+                return True
+            if not server.admin_commands.call(commit):
+                raise ValueError("character session changed; refresh and retry")
+        self.repository.audit(actor.username, "character.quests.complete_ammon_parallel_worlds", cid, {
+            "quest_count": len(quests), "newly_completed": completed,
+            "gate_quest_count": len(gate_quest_ids),
+            "online": target is not None, "reason": reason,
+        })
+        return {"ok": True, "quest_count": len(quests),
+                "newly_completed": completed,
+                "gate_quest_count": len(gate_quest_ids),
+                "online": target is not None}
+
     def delete_character_item(self, cid, item_id, actor, reason):
         if type(item_id) is not int or item_id <= 0:
             raise ValueError("item ID must be a positive integer")
@@ -1098,6 +1237,8 @@ class AdminService:
                 )
             if parts[3] == "complete-main-quests":
                 return self.complete_character_main_quests(cid, account, reason)
+            if parts[3] == "complete-ammon-pw-quests":
+                return self.complete_character_ammon_parallel_world_quests(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

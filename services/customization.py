@@ -55,17 +55,16 @@ class CustomizationService:
             ):
                 return False
 
-            empty = next(
-                (
-                    index for index in range(8, 13)
-                    if first_bar[index].kind == 0xFFFFFFFF
-                ),
-                None,
-            )
-            if empty is None:
-                return False
-            first_bar[empty] = QuickSlotInfo(2, resource_id)
-            bars[0] = tuple(first_bar)
+            target = 9
+            first_bar[target] = QuickSlotInfo(2, resource_id)
+            for b_idx in range(len(bars)):
+                b_list = list(bars[b_idx])
+                while len(b_list) < 17:
+                    b_list.append(QuickSlotInfo(0xFFFFFFFF, None))
+                b_list[target] = QuickSlotInfo(2, resource_id)
+                if b_list[8].kind == 2 and "mercenary" in str(b_list[8].resource_id or ""):
+                    b_list[8] = QuickSlotInfo(0xFFFFFFFF, None)
+                bars[b_idx] = tuple(b_list)
             updated = QuickSlotsInfo(tuple(bars))
             s.gameplay_quick_slots = updated
 
@@ -112,28 +111,20 @@ class CustomizationService:
                     )
                 return value if value.startswith("item_mercenary_") else ""
 
-            shortcuts = [
-                index for index in range(8, 13)
-                if first_bar[index].kind == 2
-                and mercenary_resource(first_bar[index])
-            ]
-            if shortcuts:
-                target = shortcuts[0]
-                if first_bar[target].resource_id == resource_id:
-                    return False
-            else:
-                target = next(
-                    (
-                        index for index in range(8, 13)
-                        if first_bar[index].kind == 0xFFFFFFFF
-                    ),
-                    None,
-                )
-                if target is None:
-                    return False
+            target = 9
+            has_slot8_mercenary = first_bar[8].kind == 2 and bool(mercenary_resource(first_bar[8]))
+            if not has_slot8_mercenary and first_bar[target].resource_id == resource_id:
+                return False
 
             first_bar[target] = QuickSlotInfo(2, resource_id)
-            bars[0] = tuple(first_bar)
+            for b_idx in range(len(bars)):
+                b_list = list(bars[b_idx])
+                while len(b_list) < 17:
+                    b_list.append(QuickSlotInfo(0xFFFFFFFF, None))
+                b_list[target] = QuickSlotInfo(2, resource_id)
+                if b_list[8].kind == 2 and bool(mercenary_resource(b_list[8])):
+                    b_list[8] = QuickSlotInfo(0xFFFFFFFF, None)
+                bars[b_idx] = tuple(b_list)
             updated = QuickSlotsInfo(tuple(bars))
             s.gameplay_quick_slots = updated
 

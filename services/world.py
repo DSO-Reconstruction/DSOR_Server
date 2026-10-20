@@ -11,6 +11,9 @@ from dso_server.protocol.consumable_protocol import load_instant_consumable_defi
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.fractured_planes_layout import is_tower_hardware
+from dso_server.gameplay.boss_encounter_policy import (
+    APPROACH_BOSS_MAPS, boss_entrance_presentation, load_map_encounter_policy,
+)
 from dso_server.services import movement_validation
 
 _PERSISTENT_SCRIPTED_ACTORS = frozenset({
@@ -63,6 +66,20 @@ class WorldService:
     """Movement, actor discovery, world loot, and vicinity state."""
 
     @staticmethod
+    def _pending_entrance_actor_ids(s, combat):
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if combat is None or runtime is None or runtime.map_id.casefold() not in APPROACH_BOSS_MAPS:
+            return frozenset()
+        with runtime.lock:
+            if "boss_spawn" in runtime.running:
+                return frozenset()
+        with combat.lock:
+            return frozenset(
+                actor_id for actor_id, monster in combat.monsters.items()
+                if monster.rank_id.casefold().startswith("rank_boss")
+            )
+
+    @staticmethod
     def _is_tower_hardware_actor(encounter, combat, actor_id) -> bool:
         """Whether ``actor_id`` is fixed tower hardware on this map."""
 
@@ -85,6 +102,17 @@ class WorldService:
             if combat is not None
             else None
         )
+        if (
+            monster is not None
+            and encounter is not None
+            and monster.rank_id.casefold().startswith("rank_boss")
+            and load_map_encounter_policy(
+                encounter.static_database_path, encounter.map_id
+            ).is_boss_room
+        ):
+            # Arena entrances can be farther than the ordinary vicinity
+            # radius. Do not discard a freshly published boss mid-entrance.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             monster is not None
             and encounter is not None
@@ -180,6 +208,8 @@ class WorldService:
         if combat is None:
             return batch
         commands = tuple(batch.commands)
+        startup_overrides = {}
+        presentation_changed = False
         with s.flow_lock:
             if s.gameplay_combat_state is not combat:
                 return batch
@@ -194,8 +224,34 @@ class WorldService:
                     if actor_id in sent:
                         duplicates.append(actor_id)
                         continue
+                    if (
+                        combat.encounter.map_id.casefold() in APPROACH_BOSS_MAPS
+                        and command.value.rank.casefold().startswith("rank_boss")
+                    ):
+                        visual, duration = boss_entrance_presentation(
+                            combat.encounter.static_database_path,
+                            command.value.template_id,
+                        )
+                        move = getattr(s, "gameplay_last_move", None)
+                        spawn_tick = int(getattr(s, "gameplay_chase_server_tick", 0) or (
+                            move.start_tick if move is not None else 0
+                        )) & 0xFFFFFFFF
+                        command = NewMonsterServerCommand(replace(
+                            command.value, template_id=visual, field_c4=spawn_tick,
+                        ))
+                        startup_overrides[actor_id] = duration
+                        presentation_changed = True
                     sent.add(actor_id)
                 kept.append(command)
+        published_actor_ids = tuple(
+            int(command.value.actor_id) for command in kept
+            if isinstance(command, NewMonsterServerCommand)
+        )
+        if published_actor_ids:
+            with combat.lock:
+                combat.begin_monster_spawn(
+                    published_actor_ids, startup_overrides=startup_overrides,
+                )
         if duplicates:
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] suppressed duplicate NewMonster for "
@@ -220,7 +276,7 @@ class WorldService:
                 s.gameplay_tower_beam_started_at = started_at
             for actor_id in tower_ids:
                 started_at[actor_id] = 0.0
-        if not duplicates:
+        if not duplicates and not presentation_changed:
             return batch
         if new_monsters and not any(
             isinstance(command, NewMonsterServerCommand) for command in kept
@@ -624,7 +680,8 @@ class WorldService:
             nearby_groups = CharacterService._monster_groups_within_radius(
                 encounter,
                 world_position=player_world,
-                actor_ids=alive_actor_ids - announced_actor_ids,
+                actor_ids=(alive_actor_ids - announced_actor_ids
+                           - CharacterService._pending_entrance_actor_ids(s, combat)),
                 positions=current_positions,
                 radius=MONSTER_VISIBILITY_ENTER_RADIUS,
                 extra_groups=combat.runtime_groups,
@@ -799,6 +856,8 @@ class WorldService:
             if encounter is not None
             else None
         )
+        if decoded.value in CharacterService._pending_entrance_actor_ids(s, combat):
+            return
         requested_group = (
             original_group.runtime_subset(
                 {int(decoded.value)},
@@ -811,14 +870,19 @@ class WorldService:
             else None
         )
         actor_is_near = False
+        player_world = None
+        if encounter is not None:
+            if last_move is not None:
+                player_world = encounter.coordinate_frame.wire_to_world(
+                    last_move.relative_position
+                )
+            elif s.gameplay_spawn_position is not None:
+                player_world = tuple(float(v) for v in s.gameplay_spawn_position)
         if (
             requested_group is not None
             and decoded.value in requested_group.actor_ids
-            and last_move is not None
+            and player_world is not None
         ):
-            player_world = encounter.coordinate_frame.wire_to_world(
-                last_move.relative_position
-            )
             actor_position = current_positions.get(decoded.value)
             if actor_position is not None:
                 actor_is_near = (

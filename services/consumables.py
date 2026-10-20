@@ -809,13 +809,14 @@ class ConsumableService:
                 LOCAL_PLAYER_ACTOR_ID,
             ))
         effect_values = tuple(command.value for command in commands)
-        s.send_reliable_ordered(
-            encode_status_effect_command_batch(
-                StatusEffectCommandBatch(tuple(commands))
-            ),
-            track=True,
-            label='instant-consumable-status-effect',
-        )
+        if commands:
+            s.send_reliable_ordered(
+                encode_status_effect_command_batch(
+                    StatusEffectCommandBatch(tuple(commands))
+                ),
+                track=True,
+                label='instant-consumable-status-effect',
+            )
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(
                 s, ('status_effects', effect_values)
@@ -1042,13 +1043,14 @@ class ConsumableService:
                 LOCAL_PLAYER_ACTOR_ID,
             ))
         effect_values = tuple(command.value for command in commands)
-        s.send_reliable_ordered(
-            encode_status_effect_command_batch(
-                StatusEffectCommandBatch(tuple(commands))
-            ),
-            track=True,
-            label="consumable-status-effect",
-        )
+        if commands:
+            s.send_reliable_ordered(
+                encode_status_effect_command_batch(
+                    StatusEffectCommandBatch(tuple(commands))
+                ),
+                track=True,
+                label="consumable-status-effect",
+            )
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(
                 s, ("status_effects", effect_values)

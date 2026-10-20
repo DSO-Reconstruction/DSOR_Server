@@ -237,6 +237,36 @@ function bindMainQuests(id) {
   });
 }
 
+function ammonPWQuestSection() {
+  return section("Ammon Parallel Worlds quests", `<form id="ammon-pw-quests-form" class="form-page">
+    <fieldset class="form-section"><legend>Quest progress</legend>
+      <p class="help">Completes and closes Ammon’s one-time Parallel Worlds quests and the map-gated unlock quests, including every task stage. Records permanent map access so the authored PW doors restore when the character enters the hub. Repeatable quests are skipped; quest rewards are not granted.</p>
+    </fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="ammon-pw-quests-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Complete Ammon’s Aradünya quests</button></div></form>`);
+}
+
+function bindAmmonPWQuests(id) {
+  $("#ammon-pw-quests-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
+    button.disabled = true;
+    try {
+      if (!(await confirmAction("Complete Ammon’s Parallel Worlds quests?",
+        "This completes and closes Ammon’s one-time Aradünya quests and the follow-up quests required by Parallel Worlds map gates. Permanent map access is recorded so the hub doors can restore on entry. Repeatable quests are skipped and rewards are not granted.",
+        "Complete Ammon quests"))) return;
+      const result = await api(`/api/characters/${id}/complete-ammon-pw-quests`, {reason: values.get("reason")});
+      notice(`Completed ${result.quest_count} Ammon Aradünya quests and recorded ${result.gate_quest_count} map-gate unlocks.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#ammon-pw-quests-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function bindInventoryItemDelete(id, item) {
   $("#inventory-item-delete-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -353,8 +383,8 @@ export async function characterPage(route) {
     result.html += section("Quest log", records(s.quest_log, "Quest")) + section("Achievements", records(s.achievements, "Achievement")) +
       '<div class="columns">' + section("Events", tree({progress: s.event_progress, participation: s.event_participation})) +
       section("Talent presets", tree({skills: s.skill_talent_presets, categories: s.category_talent_presets})) + '</div>';
-    result.html += mainQuestSection();
-    result.mount = () => bindMainQuests(id);
+    result.html += mainQuestSection() + ammonPWQuestSection();
+    result.mount = () => { bindMainQuests(id); bindAmmonPWQuests(id); };
   } else if (tab === "state") {
     result.html += '<div class="columns">' + section("Position and map access", tree({map: s.map_id, position: s.position, last_visited_town: s.last_visited_town,
       map_access: s.map_access_id, map_difficulty: s.map_difficulty, scaling_difficulty: s.scaling_difficulty, unlocked_maps: s.unlocked_maps})) +

@@ -215,7 +215,6 @@ class StaticGameDatabase:
             "MercenaryAmuletSlot": (25,),
             "MercenaryCloakSlot": (26,),
             "MercenaryBeltSlot": (27,),
-            "ConsumableSlot": (37,),
         }
         if slot_type in fixed_slots:
             return fixed_slots[slot_type]
@@ -224,6 +223,7 @@ class StaticGameDatabase:
             "RuneTrinketSlot": (13, 14, 15, 16, 17, 18, 19),
             "JewelTrinketSlot": (20, 21, 22),
             "AmmoSlot": AMMUNITION_SLOTS,
+            "ConsumableSlot": (37, 38, 39, 40),
         }
         try:
             candidates = equivalent_slots[slot_type]

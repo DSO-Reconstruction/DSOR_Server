@@ -668,3 +668,71 @@ class PlayerPersistenceService:
             'level_base_xp': level_base_xp,
             'next_level_base_xp': next_level_base_xp,
         }
+
+    @staticmethod
+    def _merge_quick_slots(
+        primary: QuickSlotsInfo | None,
+        fallback: QuickSlotsInfo | None,
+    ) -> QuickSlotsInfo | None:
+        """Merge two QuickSlotsInfo objects, preferring populated slots and preserving consumable shortcuts."""
+        if primary is None and fallback is None:
+            return None
+        if primary is None:
+            primary = fallback
+            fallback = None
+
+        fallback_bars = fallback.quickbars if fallback else ()
+        bar_count = max(len(primary.quickbars), len(fallback_bars))
+        merged_bars = []
+        for bar_idx in range(bar_count):
+            bar_p = primary.quickbars[bar_idx] if bar_idx < len(primary.quickbars) else None
+            bar_f = fallback_bars[bar_idx] if bar_idx < len(fallback_bars) else None
+
+            merged_slots = []
+            for slot_idx in range(17):
+                slot_p = bar_p[slot_idx] if bar_p and slot_idx < len(bar_p) else None
+                slot_f = bar_f[slot_idx] if bar_f and slot_idx < len(bar_f) else None
+
+                if slot_p is not None and slot_p.kind != 0xFFFFFFFF:
+                    merged_slots.append(slot_p)
+                elif slot_f is not None and slot_f.kind != 0xFFFFFFFF:
+                    merged_slots.append(slot_f)
+                elif slot_p is not None:
+                    merged_slots.append(slot_p)
+                elif slot_f is not None:
+                    merged_slots.append(slot_f)
+                else:
+                    merged_slots.append(QuickSlotInfo(0xFFFFFFFF, None))
+            merged_bars.append(tuple(merged_slots))
+
+        # Ensure common bottombar slots (8..16) are mirrored across all bars
+        for slot_idx in range(8, 17):
+            populated = next(
+                (bar[slot_idx] for bar in merged_bars if bar[slot_idx].kind != 0xFFFFFFFF),
+                None,
+            )
+            if populated is not None:
+                for b_idx in range(len(merged_bars)):
+                    if merged_bars[b_idx][slot_idx].kind == 0xFFFFFFFF:
+                        bar_list = list(merged_bars[b_idx])
+                        bar_list[slot_idx] = populated
+                        merged_bars[b_idx] = tuple(bar_list)
+
+        # Sanitize slot 8 (Mount only) and slot 9 (Mercenary/Pet only)
+        for b_idx in range(len(merged_bars)):
+            bar_list = list(merged_bars[b_idx])
+            s8 = bar_list[8]
+            res8 = str(s8.resource_id or "")
+            if s8.kind == 2 and ("mercenary" in res8 or "pet" in res8):
+                if bar_list[9].kind == 0xFFFFFFFF:
+                    bar_list[9] = s8
+                bar_list[8] = QuickSlotInfo(0xFFFFFFFF, None)
+            s9 = bar_list[9]
+            res9 = str(s9.resource_id or "")
+            if s9.kind in (1, 2) and "mount" in res9:
+                if bar_list[8].kind == 0xFFFFFFFF:
+                    bar_list[8] = s9
+                bar_list[9] = QuickSlotInfo(0xFFFFFFFF, None)
+            merged_bars[b_idx] = tuple(bar_list)
+
+        return QuickSlotsInfo(tuple(merged_bars))

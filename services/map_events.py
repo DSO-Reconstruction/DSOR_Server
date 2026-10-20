@@ -36,7 +36,12 @@ from dso_server.gameplay.local_map_state import (
     local_npc_actor_id,
     local_npc_info,
 )
-from dso_server.gameplay.boss_encounter_policy import select_boss_spawn_rows
+from dso_server.gameplay.boss_encounter_policy import (
+    APPROACH_BOSS_MAPS,
+    is_boss_spawn_template,
+    load_map_encounter_policy,
+    select_boss_spawn_rows,
+)
 from dso_server.gameplay.event_spawn_areas import event_area_spawn_rows
 from dso_server.gameplay.local_monster_state import (
     _grounded_spawn_position,
@@ -59,6 +64,7 @@ from dso_server.gameplay.map_event_state import (
     load_map_signal_catalog,
     map_key,
 )
+from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.combat_protocol import (
@@ -1501,7 +1507,8 @@ class MapEventService:
         )
 
     @staticmethod
-    def _map_event_encounter_fallback(static_database_path, map_id: str):
+    def _map_event_encounter_fallback(
+            static_database_path, map_id: str, *, scaling_difficulty: int = 0):
         """A player-only encounter for maps whose monsters all come from events."""
 
         try:
@@ -1510,7 +1517,10 @@ class MapEventService:
             return None
         if not content.spawn_rows:
             return None
-        return load_local_player_only_encounter(static_database_path, map_id)
+        return replace(
+            load_local_player_only_encounter(static_database_path, map_id),
+            scaling_difficulty=max(0, int(scaling_difficulty)),
+        )
 
     # ------------------------------------------------------------------
     # Signal evaluation
@@ -1575,6 +1585,24 @@ class MapEventService:
             CharacterService._quest_on_triggers(self, s, params)
         with s.flow_lock:
             unlocked_maps = frozenset(s.gameplay_unlocked_maps)
+        if kind == "playerenteredmap" and map_key(runtime.map_id) == "pw000_hub":
+            # PW hub gate events were authored to start while their unlock
+            # quest is accepted. After turn-in, the quest is closed, but its
+            # access grant is permanent. Treat that grant as satisfying the
+            # hub's entry signal so the door EventSets are restored on re-entry.
+            _travel_maps, accesses = map_unlock_catalog(
+                str(self.static_database_path)
+            )
+            unlocked_gate_quests = frozenset(
+                quest_id.casefold()
+                for access_id, access_group, quest_id in accesses
+                if quest_id
+                and (access_id.casefold().startswith("pw")
+                     or access_group.casefold().startswith("pw"))
+                and (map_key(access_id) in unlocked_maps
+                     or map_key(access_group) in unlocked_maps)
+            )
+            quests_accepted = quests_accepted | unlocked_gate_quests
         context = SignalContext(
             map_id=runtime.map_id,
             params=frozenset(str(value).casefold() for value in params),
@@ -2024,6 +2052,18 @@ class MapEventService:
             self._emit_map_signal(
                 s, runtime, "h0009_endlesstower_01_room_01_start_signal"
             )
+        combat = getattr(s, "gameplay_combat_state", None)
+        if runtime.map_id.casefold() == "h0008_boss":
+            # A direct boss-ration arrival has no preceding lamp interaction.
+            # Start the authored encounter (including its real Djinn spawn),
+            # rather than leaving this dedicated arena with only its socket.
+            djinn_event = runtime.catalog.event("h0008_start_bossfight_01")
+            if djinn_event is not None and djinn_event.applies_to(runtime.map_id):
+                self._schedule_map_local_event_start(runtime, djinn_event)
+        with runtime.lock:
+            entrance_started = "boss_spawn" in runtime.running
+        if entrance_started:
+            self._publish_entrance_bosses(runtime, (s,))
         CharacterService._quest_on_map_entered(self, s)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
@@ -2954,6 +2994,29 @@ class MapEventService:
             self._spawn_event_npcs(runtime, sessions, transition.enabled_sets)
         if transition.enabled_sets or transition.disabled_sets:
             self._publish_map_exits(runtime, sessions)
+        if transition.active and transition.event.key == "boss_spawn":
+            self._publish_entrance_bosses(runtime, sessions)
+
+    def _publish_entrance_bosses(self, runtime, sessions) -> None:
+        """Release baseline encounter actors only after their entrance signal."""
+        if runtime.map_id.casefold() not in APPROACH_BOSS_MAPS:
+            return
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            return
+        with combat.lock:
+            boss_ids = tuple(
+                actor_id for actor_id, monster in combat.monsters.items()
+                if monster.rank_id.casefold().startswith("rank_boss")
+                and combat.monster_health.get(actor_id, 0) > 0
+            )
+        for viewer in sessions:
+            if not viewer.gameplay_presence_ready:
+                continue
+            for actor_id in boss_ids:
+                group = combat.group_for_actor(actor_id)
+                if group is not None:
+                    self._announce_runtime_group(viewer, combat, group, force_actor_ids=boss_ids)
 
     # ------------------------------------------------------------------
     # Effects
@@ -3293,15 +3356,24 @@ class MapEventService:
             return
         with combat.lock:
             alive_actor_ids = set(combat.alive_actor_ids)
-            existing_by_row = {
-                row.row_id: tuple(sorted(
+            alive_bosses_by_template: dict[str, list[int]] = {}
+            for aid in alive_actor_ids:
+                m = combat.monsters.get(aid)
+                if m is not None and is_boss_spawn_template(database_path, m.template_id):
+                    alive_bosses_by_template.setdefault(m.template_id.casefold(), []).append(aid)
+
+            existing_by_row = {}
+            for row in rows:
+                existing = tuple(sorted(
                     set(combat.find_monsters(
                         row.template_id, row.position,
                         radius=EVENT_SPAWN_DUPLICATE_RADIUS,
                     )) & alive_actor_ids
                 ))
-                for row in rows
-            }
+                if not existing and is_boss_spawn_template(database_path, row.template_id):
+                    existing = tuple(sorted(alive_bosses_by_template.get(row.template_id.casefold(), ())))
+                existing_by_row[row.row_id] = existing
+
             pending = tuple(
                 row for row in rows if not existing_by_row[row.row_id]
             )
@@ -3393,7 +3465,10 @@ class MapEventService:
             )
             # The cinematic's staff, portal and root motion are authored
             # against this exact transform, not a navigable combat position.
-            if not scripted_cultist and not mounted:
+            if (
+                not scripted_cultist and not mounted
+                and not is_boss_spawn_template(database_path, row.template_id)
+            ):
                 try:
                     position = _grounded_spawn_position(
                         encounter.navigation,
@@ -3596,8 +3671,9 @@ class MapEventService:
             if spawn is None:
                 return
             player_world = tuple(float(value) for value in spawn)
+        pending_entrance = CharacterService._pending_entrance_actor_ids(viewer, combat)
         with combat.lock:
-            alive = set(combat.alive_actor_ids)
+            alive = set(combat.alive_actor_ids) - pending_entrance
             positions = dict(combat.monster_positions)
             scripted_actor_ids = {
                 actor_id
@@ -3607,6 +3683,14 @@ class MapEventService:
                     and (
                         combat.monsters[actor_id].template_id.casefold()
                         in _FORCE_ANNOUNCE_EVENT_ACTORS
+                        or (
+                            load_map_encounter_policy(
+                                combat.encounter.static_database_path,
+                                combat.encounter.map_id,
+                            ).is_boss_room
+                            and combat.monsters[actor_id].rank_id.casefold()
+                            .startswith("rank_boss")
+                        )
                         or is_tower_hardware(
                             combat.encounter.static_database_path,
                             combat.encounter.map_id,
@@ -3643,10 +3727,8 @@ class MapEventService:
             radius=MONSTER_VISIBILITY_ENTER_RADIUS,
             extra_groups=(group,),
         ))
-        # Scripted story actors must appear when their event starts even if
-        # the trigger volume is wider than the ordinary monster visibility
-        # radius. Keep the exception template-scoped; ordinary event waves
-        # retain the normal per-actor distance filter.
+        # Scripted story actors and arena bosses must appear when their event
+        # starts even outside the ordinary monster visibility radius.
         if forced:
             scripted_group = group.runtime_subset(
                 forced, positions=positions
@@ -3770,6 +3852,13 @@ class MapEventService:
                         viewer.gameplay_delivered_monster_positions.update(
                             delivered_positions
                         )
+                # Event-owned bosses and blockers bypass the ordinary
+                # ActorRequest path. That path normally starts the map's
+                # chase loop after NewMonster is delivered; without the same
+                # wake-up here, these actors stay idle until a player casts a
+                # skill (whose combat handler happens to restart the worker).
+                if delivered_positions:
+                    CharacterService._start_monster_chase(viewer)
                 _log(
                     f"sent forced NewMonster state "
                     f"{tuple(sorted(scripted_spawn_ids))} to {viewer.addr!r}"

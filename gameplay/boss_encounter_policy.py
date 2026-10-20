@@ -28,6 +28,34 @@ _BOSS_TEMPLATE_OVERRIDES = {
 # never be materialized as local combat actors.
 _BOSS_SELECTOR_MAPS = {"e_bgh_boss_all"}
 
+# These arenas reveal their boss only when the player reaches its entrance.
+APPROACH_BOSS_MAPS = frozenset({"a0407_boss", "c2310_boss", "a0404_culttower03"})
+
+
+@lru_cache(maxsize=32)
+def boss_entrance_presentation(
+    static_database_path: str | Path, template_id: str,
+) -> tuple[str, float]:
+    """Keep scaling combat stats while using the authored entrance model."""
+
+    visual_id = str(template_id)
+    candidates = (
+        "a0406_normal_g_miniboss_03_bear_q_goddessOfHunt03_scale",
+        "a0503_g_miniboss_02_witch_q_FoulArtefact05_scale",
+        "c2310_boss_snake_scale",
+        "a0404_normal_boss_cultistleader_scale",
+    )
+    if visual_id in candidates:
+        visual_id = visual_id.removesuffix("_scale")
+    path = Path(static_database_path)
+    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+        row = database.execute(
+            "SELECT COALESCE(StartupDuration, 0) FROM _Template_Monster WHERE Id=?",
+            (visual_id,),
+        ).fetchone()
+    duration = max(0.0, float(row[0])) if row else 0.0
+    return visual_id, duration
+
 
 @dataclass(frozen=True)
 class MapEncounterPolicy:
@@ -70,6 +98,8 @@ def load_map_encounter_policy(
             (str(map_id),),
         ).fetchone()
     if row is None:
+        if "boss" in str(map_id).casefold():
+            return MapEncounterPolicy("Boss", "Standard")
         return MapEncounterPolicy()
     return MapEncounterPolicy(str(row[0]), str(row[1]))
 
@@ -285,7 +315,7 @@ def density_spawn_templates(
     )
 
 
-def select_boss_spawn_rows(
+def _select_boss_spawn_candidates(
     static_database_path: str | Path,
     map_id: str,
     rows: tuple[tuple, ...],
@@ -346,7 +376,7 @@ def select_boss_spawn_rows(
                 resolved == authored_template_id
                 and any(
                     marker in authored_key
-                    for marker in ("scaling", "_heroic", "_pw_")
+                    for marker in ("scaling", "_scale", "_heroic", "_pw_")
                 )
             )
             (scaling_bosses if is_scaling_variant else ordinary_bosses).append(
@@ -383,3 +413,82 @@ def select_boss_spawn_rows(
         anchor = rows[0]
         return ((anchor[0], anchor[1], override, -1),)
     return rows
+
+
+@lru_cache(maxsize=1024)
+def _preferred_boss_templates(
+    static_database_path: str | Path, map_id: str, scaling_difficulty: int,
+) -> tuple[frozenset[str], frozenset[str]]:
+    """Choose the encounter once across both baseline and event-gated rows."""
+
+    from dso_server.gameplay.local_map_state import map_database_path
+
+    path = map_database_path(static_database_path, map_id)
+    if not path.is_file():
+        return frozenset(), frozenset()
+    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+        spawn_sets = {
+            int(row_id) for row_id, flags in database.execute(
+                "SELECT Id, EventFlags FROM _Instance_EventSets"
+            )
+            if "boss_spawn=true" in {
+                token.strip().replace(" ", "").casefold()
+                for token in str(flags or "").split(";")
+            }
+        }
+        rows = tuple(database.execute(
+            "SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1) "
+            "FROM _Instance_SpawnPoint "
+            "WHERE TRIM(COALESCE(NpcId, ''))<>'' "
+            "AND COALESCE(AlliedToPlayer, 0)=0 ORDER BY rowid"
+        ))
+    rows = tuple(row for row in rows if int(row[3]) == -1 or int(row[3]) in spawn_sets)
+    # Only reconcile normal/scaling alternatives of the entry encounter.
+    # Later scripted phase bosses keep their own event-owned lifecycles.
+    if not any(
+        resolve_boss_template_id(static_database_path, str(row[2])) == str(row[2])
+        and any(marker in str(row[2]).casefold() for marker in ("scaling", "_scale"))
+        for row in rows
+    ):
+        return frozenset(), frozenset()
+    alternatives = frozenset(
+        resolved.casefold() for row in rows
+        if (resolved := resolve_boss_template_id(static_database_path, str(row[2])))
+    )
+    selected = _select_boss_spawn_candidates(
+        static_database_path, map_id, rows,
+        scaling_difficulty=scaling_difficulty,
+    )
+    preferred = frozenset(
+        str(row[2]).casefold() for row in selected
+        if _is_concrete_boss(static_database_path, str(row[2]))
+    )
+    return preferred, alternatives
+
+
+def select_boss_spawn_rows(
+    static_database_path: str | Path, map_id: str, rows: tuple[tuple, ...],
+    *, scaling_difficulty: int = 0,
+) -> tuple[tuple, ...]:
+    """Keep baseline loading and event spawning on the same boss variant.
+
+    Selecting from each active subset independently admitted the normal boss
+    at map load and a second scaling boss when BOSS_spawn opened later.
+    """
+
+    if load_map_encounter_policy(static_database_path, map_id).is_boss_room:
+        preferred, alternatives = _preferred_boss_templates(
+            static_database_path, map_id, int(scaling_difficulty)
+        )
+        if preferred:
+            rows = tuple(
+                row for row in rows
+                if not (resolved := resolve_boss_template_id(
+                    static_database_path, str(row[2])
+                )) or resolved.casefold() not in alternatives
+                or resolved.casefold() in preferred
+            )
+    return _select_boss_spawn_candidates(
+        static_database_path, map_id, rows,
+        scaling_difficulty=scaling_difficulty,
+    )

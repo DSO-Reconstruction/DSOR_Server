@@ -135,10 +135,11 @@ class InventoryInteractionService:
                 )
             slots.append(QuickSlotInfo(kind, resource_id))
 
-        empty_bar = tuple(
-            QuickSlotInfo(0xFFFFFFFF, None) for _ in range(17)
-        )
         new_slots = tuple(slots)
+        empty_bar = tuple(
+            new_slots[i] if i >= 8 else QuickSlotInfo(0xFFFFFFFF, None)
+            for i in range(17)
+        )
         with s.flow_lock:
             current = s.gameplay_quick_slots
             bars = (
@@ -151,6 +152,15 @@ class InventoryInteractionService:
             changed = bars[bar_index] != new_slots
             if changed:
                 bars[bar_index] = new_slots
+                for idx in range(len(bars)):
+                    if idx == bar_index:
+                        continue
+                    bar_l = list(bars[idx])
+                    while len(bar_l) < 17:
+                        bar_l.append(QuickSlotInfo(0xFFFFFFFF, None))
+                    for slot_idx in range(8, 17):
+                        bar_l[slot_idx] = new_slots[slot_idx]
+                    bars[idx] = tuple(bar_l)
                 s.gameplay_quick_slots = QuickSlotsInfo(tuple(bars))
             s.gameplay_client_command_state[0x0051] = decoded
         if not changed:

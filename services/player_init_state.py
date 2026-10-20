@@ -1396,14 +1396,23 @@ class PlayerInitializationStateService:
                 if persisted_state is not None
                 else QuickbarInfo(1, 0)
             )
-            s.gameplay_quick_slots = (
-                copy.deepcopy(persisted_state.quick_slots)
-                if (
-                    persisted_state is not None
-                    and persisted_state.quick_slots is not None
-                )
+            route_quick_slots = getattr(state.character, "route_quick_slots", None)
+            persisted_quick_slots = (
+                persisted_state.quick_slots
+                if persisted_state is not None
                 else None
             )
+            if isinstance(route_quick_slots, QuickSlotsInfo):
+                if isinstance(persisted_quick_slots, QuickSlotsInfo):
+                    s.gameplay_quick_slots = CharacterService._merge_quick_slots(
+                        route_quick_slots, persisted_quick_slots
+                    )
+                else:
+                    s.gameplay_quick_slots = copy.deepcopy(route_quick_slots)
+            elif isinstance(persisted_quick_slots, QuickSlotsInfo):
+                s.gameplay_quick_slots = copy.deepcopy(persisted_quick_slots)
+            else:
+                s.gameplay_quick_slots = None
             s.gameplay_membership_type = state.membership_type
             s.gameplay_membership_expires_at = state.membership_expires_at
             s.gameplay_membership_active = state.membership_active

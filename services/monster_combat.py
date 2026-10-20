@@ -409,7 +409,7 @@ class MonsterCombatService(
         with combat.lock:
             due_attack_actor_ids = frozenset(
                 int(attack.target_actor_id)
-                for attack in combat.pending_monster_attacks.values()
+                for _caster_id, attack in combat.pending_monster_attack_items()
                 if attack.due_at <= now
             )
         mark_phase(s, "target-stats")
@@ -435,6 +435,7 @@ class MonsterCombatService(
                 # worker retire with authoritative work still queued.
                 and not combat.pending_runtime_player_hits
                 and not combat.pending_monster_attacks
+                and not combat.pending_monster_projectile_attacks
             ):
                 idle = True
             else:
@@ -576,7 +577,9 @@ class MonsterCombatService(
                 periodic_monster_resolutions = []
                 periodic_owner_resolutions = []
                 target_stats_by_actor = prepared_target_stats
-                for actor_id, position, target_session in combat_targets:
+                for target_index, (actor_id, position, target_session) in enumerate(
+                    combat_targets
+                ):
                     incoming_multipliers = 1.0
                     block_chance = 0.0
                     block_damage_reduction = 0.0
@@ -608,6 +611,9 @@ class MonsterCombatService(
                             block_chance=block_chance,
                             block_damage_reduction=(
                                 block_damage_reduction
+                            ),
+                            finalize_area_attacks=(
+                                target_index == len(combat_targets) - 1
                             ),
                         )
                     )
@@ -725,6 +731,8 @@ class MonsterCombatService(
             return_home_transitions = (
                 combat.drain_return_home_transitions()
             )
+            monster_summons = tuple(combat.pending_monster_summons)
+            combat.pending_monster_summons.clear()
             health_regeneration = combat.regenerate_players(now=now)
             resource_regeneration = (
                 combat.regenerate_player_resources(now=now)
@@ -739,6 +747,9 @@ class MonsterCombatService(
             now=now,
         ):
             return False
+
+        if monster_summons and callback is not None:
+            callback(s, ("monster_summons", monster_summons))
 
         mark_phase(s, "console-heartbeat")
         CharacterService._report_monster_control(
@@ -887,21 +898,21 @@ class MonsterCombatService(
                 f"[{GAMEPLAY_SERVICE_NAME}] started autonomous attack(s) "
                 + ", ".join(
                     f"{(
-                        combat.monsters[
-                            value.attacker_actor_id
-                        ].attack.resource_id
-                        if value.attacker_actor_id in combat.monsters
+                        value.definition.resource_id
+                        if value.definition is not None
                         else (
-                            combat.player_summons[
+                            combat.monsters[
                                 value.attacker_actor_id
-                            ].definition.monster_template_id
-                            if value.attacker_actor_id
-                            in combat.player_summons
+                            ].attack.resource_id
+                            if value.attacker_actor_id in combat.monsters
                             else "expired-player-summon"
                         )
                     )}"
                     f"/0x{value.command_id:02x}"
                     f"@{value.attacker_actor_id}"
+                    f"#skill={value.skill_index}"
+                    f"#cast={value.cast_id}"
+                    f"#tick={value.server_tick}"
                     for value in attacks
                 )
             )

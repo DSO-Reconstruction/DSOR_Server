@@ -2,14 +2,72 @@
 
 from __future__ import annotations
 
+import math
+import os
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
 from dso_server.services import movement_validation
 
 
+SKILL_TRACE = os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {
+    "1", "true", "yes",
+}
+
+
 class PlayerCombatService(PlayerCastTimingService):
     """Player skill validation, targeting, projectiles, and impacts."""
+
+    @staticmethod
+    def _trace_spatial_skill(
+        combat,
+        skill_index,
+        position,
+        plan,
+        eligible_actor_ids,
+        visible_actor_positions,
+    ) -> None:
+        try:
+            geometry = combat._load_player_skill_geometry(skill_index)
+            origin = combat.encounter.coordinate_frame.wire_to_world(position)
+            hit_ids = {
+                impact.target.actor_id
+                for impact in (plan.impacts if plan is not None else ())
+            }
+            nearby = []
+            for actor_id in combat.living_actor_ids:
+                at = combat.monster_positions[actor_id]
+                flat_distance = math.hypot(
+                    at[0] - origin[0], at[2] - origin[2]
+                )
+                if flat_distance > 8.0:
+                    continue
+                seen = visible_actor_positions.get(actor_id)
+                entry = (
+                    f"{actor_id}:{flat_distance:.1f}m "
+                    f"dy{at[1] - origin[1]:+.1f}"
+                    f"{' HIT' if actor_id in hit_ids else ''}"
+                    f"{' not-sent' if eligible_actor_ids is not None and actor_id not in eligible_actor_ids else ''}"
+                    f"{' home' if actor_id in combat.returning_home_actor_ids else ''}"
+                )
+                if seen is not None:
+                    entry += (
+                        " seen@"
+                        f"{math.hypot(seen[0] - origin[0], seen[2] - origin[2]):.1f}m"
+                    )
+                nearby.append(entry)
+            resource_id = geometry.resource_id if geometry else str(skill_index)
+            targeting = geometry.targeting_type if geometry else "?"
+            hit_range = geometry.hit_range if geometry else 0.0
+            print(
+                f"[skill-trace] {resource_id} ({targeting}, hit range "
+                f"{hit_range:.2f}) at {tuple(round(v, 1) for v in origin)}: "
+                f"{len(hit_ids)} hit; " + ", ".join(nearby)
+            )
+        except Exception as exc:
+            # Diagnostics must not interrupt an accepted player cast.
+            print(f"[skill-trace] failed: {exc!r}")
 
     @staticmethod
     def _record_monster_targeting_result(
@@ -844,6 +902,15 @@ class PlayerCombatService(PlayerCastTimingService):
                         visible_actor_positions=visible_actor_positions, additional_entities=pvp_snapshot[1],
                         attack_speed_multiplier=skill_speed_multiplier, now=now,
                     )
+                    if SKILL_TRACE:
+                        CharacterService._trace_spatial_skill(
+                            combat,
+                            client_skill.skill_index,
+                            position,
+                            entity_plan,
+                            eligible_actor_ids,
+                            visible_actor_positions,
+                        )
                     pending_hits = combat.start_spatial_skill_hits(
                         hit_plan=entity_plan,
                         skill_index=client_skill.skill_index,

@@ -514,6 +514,11 @@ def _write_skill_base(writer: BitWriter, value) -> None:
     followed by ``No game actor found for attacker id '<id> * 2>'``).
     """
 
+    # Historical API name: skill_level is the native uint16 SkillCounter.
+    # ClientSkillManager::HandleSkillCommand compares command +0x20 against
+    # actor +0x72 and ignores nonzero values that do not increase. Zero opts
+    # autonomous server casts out of client prediction reconciliation.
+    # Never populate this field from a monster's authored Skills entry level.
     _write_uint16_le(writer, value.skill_level)
     _write_uint16_le(writer, value.skill_index)
     writer.write_float(value.aim_angle)

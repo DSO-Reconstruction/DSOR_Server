@@ -58,8 +58,15 @@ class MonsterActivityService:
             pending.update((int(command.actor_id), command) for command in commands)
             if combat is not None:
                 visible = s.gameplay_spawned_monster_actor_ids | s.gameplay_summon_actor_ids
+                now = time.perf_counter()
                 for actor_id in tuple(pending):
-                    if actor_id not in visible:
+                    if (
+                        actor_id not in visible
+                        or now < combat.monster_motion_unblock_at.get(actor_id, 0.0)
+                    ):
+                        # The reliable skill batch already carries the cast
+                        # origin. A retained chase/idle sample must not arrive
+                        # afterwards and replace the attack animation.
                         pending.pop(actor_id, None)
             queued = tuple(pending.values())
         # Submit final positions first, so subsequent sequenced movement is
@@ -117,6 +124,10 @@ class MonsterActivityService:
                 )
                 for actor_id in wanted
                 if actor_id in combat.monster_positions
+                and not (
+                    time.perf_counter()
+                    < combat.monster_motion_unblock_at.get(actor_id, 0.0)
+                )
             )
         if not commands:
             return 0
@@ -201,6 +212,55 @@ class MonsterActivityService:
             skill_commands = []
             sustained_skill_commands = []
             for attack in attacks:
+                if attack.definition is not None:
+                    location_visuals = combat.player_skill_location_visuals(
+                        attack.skill_index
+                    )
+                    if (
+                        location_visuals
+                        and combat.claim_monster_location_visual_cast(
+                            attack.attacker_actor_id,
+                            attack.skill_index,
+                            attack.server_tick,
+                        )
+                    ):
+                        impact_ticks = (
+                            int(attack.impact_tick)
+                            - int(attack.server_tick)
+                        ) & 0xFFFFFFFF
+                        if impact_ticks > 0x7FFFFFFF:
+                            impact_ticks = 0
+                        location_delay = (
+                            impact_ticks / SERVER_TICKS_PER_SECOND
+                        )
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] scheduled monster "
+                            f"location visual(s) actor="
+                            f"{attack.attacker_actor_id} "
+                            f"skill={attack.skill_index} "
+                            f"cast={attack.cast_id} "
+                            f"tick={attack.server_tick} "
+                            f"count={len(location_visuals)} "
+                            f"delay={location_delay:.3f}s"
+                        )
+                        CharacterService._schedule_player_location_visuals(
+                            s,
+                            combat,
+                            location_visuals,
+                            position=tuple(
+                                float(value)
+                                for value in attack.target_position[:3]
+                            ),
+                            yaw=float(attack.aim_angle),
+                            server_tick=attack.server_tick,
+                            owner_actor_id=int(attack.attacker_actor_id),
+                            cast_id=int(attack.server_tick),
+                            delay_seconds=location_delay,
+                            source_skill_index=int(attack.skill_index),
+                            cast_started_at=(
+                                float(attack.due_at) - location_delay
+                            ),
+                        )
                 CharacterService._send_entity_status_effects(
                     s,
                     attack.user_status_effects,
@@ -242,6 +302,43 @@ class MonsterActivityService:
                             context,
                         )
                     )
+                elif attack.command_id == SHIFTED_SKILL_COMMAND:
+                    definition = attack.definition
+                    target_position = tuple(
+                        float(value)
+                        for value in attack.target_position[:3]
+                    )
+                    bullet_count = max(
+                        1,
+                        int(
+                            getattr(definition, "bullet_count", 1)
+                            if definition is not None else 1
+                        ),
+                    )
+                    skill_commands.append(
+                        ShiftedSkillServerCommand(
+                            ShiftedSkill(
+                                skill_level=attack.skill_level,
+                                skill_index=attack.skill_index,
+                                aim_angle=attack.aim_angle,
+                                server_tick=attack.server_tick,
+                                cast_id=attack.cast_id,
+                                variant=1,
+                                target_position=target_position,
+                                # Native multi-projectile ground skills read
+                                # one point per authored bullet. Keep the point
+                                # array aligned with BulletCount so the client
+                                # never indexes past the supplied positions.
+                                additional_target_positions=(
+                                    (target_position,) * (bullet_count - 1)
+                                ),
+                            ),
+                            attack.attacker_actor_id,
+                            context,
+                            max(1, int(definition.hit_frame))
+                            if definition is not None else 1,
+                        )
+                    )
                 elif attack.command_id == TARGET_SKILL_COMMAND:
                     skill_commands.append(
                         TargetSkillServerCommand(
@@ -274,6 +371,20 @@ class MonsterActivityService:
                         )
                     )
                 elif attack.command_id == TARGET_BULLET_SKILL_COMMAND:
+                    bullet_count = max(1, getattr(attack, "bullet_count", 1))
+                    if bullet_count == 1 and attack.definition is not None:
+                        bullet_count = max(
+                            1, getattr(attack.definition, "bullet_count", 1)
+                        )
+                    additional_targets = ()
+                    if bullet_count > 1 and target_actor_id > 0:
+                        additional_targets = (target_actor_id,) * (
+                            bullet_count - 1
+                        )
+                    target_position = tuple(
+                        float(value)
+                        for value in attack.target_position[:3]
+                    )
                     skill_commands.append(
                         TargetBulletSkillServerCommand(
                             TargetBulletSkill(
@@ -285,7 +396,9 @@ class MonsterActivityService:
                                 direction=attack.direction,
                                 variant=attack.variant,
                                 target_actor_id=target_actor_id,
-                                target_positions=(attack.target_position,),
+                                additional_target_actor_ids=additional_targets,
+                                target_positions=(target_position,)
+                                * bullet_count,
                             ),
                             attack.attacker_actor_id,
                             context,
@@ -407,7 +520,11 @@ class MonsterActivityService:
                                 0.0,
                                 attack.aim_angle,
                                 attack.aim_angle,
-                                int(attack.server_tick) & 0xFFFFFFFF,
+                                # The stop precedes the skill on the actor's
+                                # timeline as well as in packet order. Giving
+                                # both commands the same tick lets the idle
+                                # transition supersede the cast animation.
+                                (int(attack.server_tick) - 1) & 0xFFFFFFFF,
                                 0,
                             ),
                             attacker_actor_id,

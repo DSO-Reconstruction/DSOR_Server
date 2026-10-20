@@ -17,6 +17,7 @@ from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
 from dso_server.protocol.reward_protocol import daily_login_offers
 from dso_server.protocol.player_init_protocol import (
+    QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
 )
@@ -86,7 +87,8 @@ class PlayerInitializationWorldService:
             # into once the event fires.
             monster_encounter = (
                 CharacterService._map_event_encounter_fallback(
-                    self.static_database_path, gameplay_map
+                    self.static_database_path, gameplay_map,
+                    scaling_difficulty=map_access.monster_scaling_difficulty,
                 )
             )
         if monster_encounter is None and CharacterService._entering_battleground(
@@ -513,6 +515,15 @@ class PlayerInitializationWorldService:
         )
         self._season_pass_daily_login(s)
         season_pass_state = CharacterService._season_pass_document(s)
+        route_quick_slots = getattr(character, "route_quick_slots", None)
+        if isinstance(s.gameplay_quick_slots, QuickSlotsInfo):
+            quick_slots_info = copy.deepcopy(s.gameplay_quick_slots)
+        elif isinstance(route_quick_slots, QuickSlotsInfo):
+            quick_slots_info = copy.deepcopy(route_quick_slots)
+        elif persisted_state is not None:
+            quick_slots_info = copy.deepcopy(persisted_state.quick_slots)
+        else:
+            quick_slots_info = None
         commands = list(build_local_player_init_commands(
             state.new_player,
             state.inventory,
@@ -546,14 +557,7 @@ class PlayerInitializationWorldService:
                 in s.gameplay_stickerbook_entries
             )
             else (),
-            quick_slots_info=(
-                copy.deepcopy(persisted_state.quick_slots)
-                if (
-                    persisted_state is not None
-                    and persisted_state.quick_slots is not None
-                )
-                else None
-            ),
+            quick_slots_info=quick_slots_info,
             stickerbook_entries=tuple(
                 s.gameplay_stickerbook_entries[key]
                 for key in sorted(s.gameplay_stickerbook_entries)

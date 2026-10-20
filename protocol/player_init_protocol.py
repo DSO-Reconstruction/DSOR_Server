@@ -2304,11 +2304,6 @@ def build_local_player_init_commands(
                 "local quickbar supports at most eight skill slots"
             )
         mount_slot_start = 8
-        shortcut_count = mount_slot_start + len(
-            quickbar_stickerbook_ids
-        )
-        if shortcut_count > 13:
-            raise ValueError("local quickbar supports at most 13 shortcuts")
         local_quickbar = [
             (
                 QuickSlotInfo(0, str(resource_id))
@@ -2324,17 +2319,25 @@ def build_local_player_init_commands(
             empty_slot
             for _ in range(mount_slot_start - len(local_quickbar))
         )
-        local_quickbar.extend(
-            QuickSlotInfo(2, str(resource_id))
-            for resource_id in quickbar_stickerbook_ids
-        )
-        local_quickbar.extend(
-            empty_slot for _ in range(13 - shortcut_count)
-        )
+        # Slots 8..10 are stickerbook shortcuts (Mount: 8, Pet/Mercenary: 9, Emote: 10).
+        mount_id = next((r for r in (quickbar_stickerbook_ids or ()) if "mount" in str(r)), None)
+        mercenary_id = next((r for r in (quickbar_stickerbook_ids or ()) if "mercenary" in str(r) or "pet" in str(r)), None)
+        local_quickbar.append(QuickSlotInfo(2, str(mount_id)) if mount_id else empty_slot)
+        local_quickbar.append(QuickSlotInfo(2, str(mercenary_id)) if mercenary_id else empty_slot)
+        local_quickbar.append(empty_slot)
+        # Consumable and widget slots:
+        # Slot 11: QuickSkillResource (Key D)
+        local_quickbar.append(empty_slot)
+        # Slot 12: QuickSkillResource2 (Key U)
+        local_quickbar.append(empty_slot)
+        # Slot 13: QuickHealth (Key H)
         local_quickbar.append(
             QuickSlotInfo(1, "potion_combined_health_rarity_05")
         )
-        local_quickbar.extend(empty_slot for _ in range(3))
+        # Slot 14: QuickHealth2 (Key R)
+        local_quickbar.append(empty_slot)
+        # Slots 15..16: Extra widget slots
+        local_quickbar.extend(empty_slot for _ in range(2))
         if len(local_quickbar) != 17:
             raise AssertionError("invalid local quickbar layout")
         quick_slots_info = QuickSlotsInfo((tuple(local_quickbar),))

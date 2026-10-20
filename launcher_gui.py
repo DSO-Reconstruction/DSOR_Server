@@ -673,7 +673,7 @@ def launch_game(
         "-sid", str(session_id),
         "-w", "1024",
         "-h", "768",
-        "-language", lang,
+        "-language", "en",
         "-serverlanguage", lang,
         "-instanceid", str(instance_id),
         "-bica", str(host),
@@ -681,6 +681,12 @@ def launch_game(
         "-useDeltaDNA",
         "-standalone",
     ]
+    for log_dir in (working_dir, Path(os.path.expandvars(r"%LOCALAPPDATA%\Temp\DSOClient\dlcache"))):
+        for name in ("crashlog", "callstacklog", "crashsysinfolog"):
+            try:
+                (log_dir / name).unlink(missing_ok=True)
+            except OSError:
+                pass
     enable_all_cooldown_timers(working_dir)
     subprocess.Popen(cmd, cwd=str(working_dir))
 
