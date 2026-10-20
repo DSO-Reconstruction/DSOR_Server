@@ -13,9 +13,9 @@ Simplifications, all deliberate and logged where they apply:
 * Ground ``<Drop>`` items are returned to the service for materialization;
   only a successful pickup feeds ``collect``. Direct-inventory drops retain
   immediate collection credit (their inventory grant is not modeled here).
-* ``pay``, ``crafting``, ``holdground``, ``victory``
-  and ``battle`` events are not fed by the server yet, so tasks that need
-  them never complete.
+* ``pay``, ``crafting`` and ``holdground`` events are not fed by the server
+  yet, so tasks that need them never complete. ``battle`` and ``victory`` are
+  fed when a battleground finishes, with the match's battleground id.
 * ``<Config>`` elements (hold-ground setups) are parsed but not executed.
 """
 
@@ -53,7 +53,6 @@ QUEST_TYPE_IDS = MappingProxyType({
 
 UNSUPPORTED_EVENT_TYPES = frozenset({
     "pay", "crafting", "holdgroundsucceeded", "holdgroundfailed",
-    "victory", "battle",
 })
 
 

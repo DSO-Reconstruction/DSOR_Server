@@ -343,6 +343,26 @@ class BattlegroundTests(unittest.TestCase):
         # The result timer and a leaving participant can both get here.
         CharacterService._finish_match(self.server, self.match, 0)
         self.assertEqual(self.away.gameplay_honor_points, credited)
+
+    def test_a_finished_match_feeds_arena_quests_once(self):
+        self._arrive(self.home)
+        self._arrive(self.away)
+        self.match.phase = MatchPhase.RUNNING
+        CharacterService._finish_match_round(self.server, self.match, 1)
+        self.match.phase = MatchPhase.RUNNING
+        CharacterService._finish_match_round(self.server, self.match, 1)
+        with patch.object(CharacterServer, "_quest_feed") as feed:
+            CharacterService._finish_match(self.server, self.match, 0)
+            CharacterService._finish_match(self.server, self.match, 0)
+        battleground = "BestOf3_1v1_01_default"
+        self.assertEqual(
+            [tuple(c.args) for c in feed.call_args_list],
+            [
+                (self.home, "battle", battleground),
+                (self.away, "battle", battleground),
+                (self.away, "victory", battleground),
+            ],
+        )
         self.assertEqual(self.away.gameplay_pvp_matches_won, 1)
 
     def test_a_round_that_times_out_goes_to_the_higher_damage_side(self):

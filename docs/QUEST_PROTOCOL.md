@@ -276,7 +276,8 @@ Ground quest `<Drop inventory="false">` items now use personal world loot and
 credit only their owning quest on successful pickup; see [QUEST_DROPS.md](QUEST_DROPS.md).
 Known simplifications: direct-inventory quest drops retain immediate collection
 credit without a physical item grant; `pay`,
-`crafting`, `holdground`, `victory` and `battle` events are not fed;
+`crafting` and `holdground` events are not fed (`battle` and `victory` are fed
+by `services/battleground.py` when a match finishes, with its battleground id);
 `<Spawn>`/`<Config>` are not executed; `statuseffect`
 rewards are logged, not granted; monster indications are sent on request
 and on each change rather than every 30 ticks; quests with a giver ignore

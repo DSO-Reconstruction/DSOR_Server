@@ -68,7 +68,7 @@ and drains the player-database writer.
 | `DSO_GC_UNFREEZE_EVERY_CYCLES` | `6` | every this many managed collections the frozen heap is walked as well and re-frozen |
 | `DSO_MONSTER_ENCOUNTER_CACHE_SIZE` | `12` | generated map populations kept resident (about 30-40 MiB each); a miss costs 1-1.6 s of generation |
 | `DSO_SPAWN_AREA_DENSITY_SCALE` | `0.85` | multiplier on every spawn area's authored `SpawnPerMeter`; `1.0` restores the database population |
-| `DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS` | `650` | whole-map cap on the density-driven population (was 768) |
+| `DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS` | `162` | whole-map cap on the density-driven population (was 650, and 768 before that); big maps hit it, so they carry a quarter of the previous population |
 | `DSO_EVENT_NOTIFICATION_KIND` | `7` | notification kind used to announce active events on the first map join (`_Template_Notifications` row order; 6 is the daily-reward popup, 8 the persistent event popup) |
 | `DSO_MONSTER_HEARTBEAT_SECONDS` | `1.0` | how often each map reports what its simulation published |
 | `DSO_DISABLE_VICTIM_STATUS_EFFECTS` | `0` | diagnostic: monsters receive no debuffs or crowd control |

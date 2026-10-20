@@ -172,6 +172,25 @@ class QuestCatalogTests(unittest.TestCase):
         # A finished quest ignores further events.
         self.assertEqual(apply_quest_event(quest, progress, "kill", ROOTS).changes, ())
 
+    def test_arena_quests_count_battles_and_victories(self):
+        # Both task events accept the plain and the _default id; a match feeds
+        # its one battleground id, so each match counts once.
+        quest = self.catalog.quest("pvp-a0200-victory-01-n")
+        progress = QuestProgress(quest.quest_id)
+        result = apply_quest_event(quest, progress, "victory", "BestOf5_5v5_01_default")
+        self.assertEqual(result.unsupported, ())
+        self.assertEqual([(c.task.index, c.progress, c.target) for c in result.changes], [(0, 1, 15)])
+        self.assertEqual(apply_quest_event(quest, progress, "battle", "BestOf5_5v5_01_default").changes, ())
+        self.assertEqual(apply_quest_event(quest, progress, "victory", "BestOf3_1v1_01_default").changes, ())
+        result = apply_quest_event(quest, progress, "victory", "BestOf5_5v5_01_default", count=14)
+        self.assertEqual([(c.task.index, c.finished) for c in result.changes], [(0, True)])
+
+        quest = self.catalog.quest("pvp-f4100-participation-01-n")
+        progress = QuestProgress(quest.quest_id)
+        result = apply_quest_event(quest, progress, "battle", "AssaultTheFortress_5v5_01", count=6)
+        self.assertEqual(result.unsupported, ())
+        self.assertEqual([(c.task.index, c.progress, c.finished) for c in result.changes], [(0, 6, True)])
+
     def test_progress_document_round_trip(self):
         progress = QuestProgress("q", QUEST_STATE_FINISHED, {"a": 2}, 0x3, "2026-09-26 13:04:32")
         restored = QuestProgress.from_document("q", progress.to_document())
