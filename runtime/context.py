@@ -269,6 +269,7 @@ from dso_server.gameplay.local_map_state import (
     load_local_crafting_props,
     load_local_entry_position,
     load_local_map_exits,
+    filter_parallel_world_exits_for_access,
     load_map_coordinate_frame,
     load_local_map_initialization,
     load_local_npc_definition,

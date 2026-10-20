@@ -16,8 +16,7 @@ Simplifications, all deliberate and logged where they apply:
 * ``pay``, ``crafting``, ``holdground``, ``victory``
   and ``battle`` events are not fed by the server yet, so tasks that need
   them never complete.
-* ``<Spawn>`` and ``<Config>`` elements (quest-driven monster spawns and
-  hold-ground setups) are parsed but not executed.
+* ``<Config>`` elements (hold-ground setups) are parsed but not executed.
 """
 
 from __future__ import annotations
@@ -90,6 +89,14 @@ class Drop:
 
 
 @dataclass(frozen=True)
+class QuestSpawn:
+    template_id: str
+    difficulty: str
+    level: int
+    location: str
+
+
+@dataclass(frozen=True)
 class TaskEvent:
     kind: str                       # kill, collect, interact, talk, trigger, ...
     value: str
@@ -97,6 +104,7 @@ class TaskEvent:
     returns: tuple[str, ...]
     drops: tuple[Drop, ...]
     return_amounts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    spawns: tuple[QuestSpawn, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -334,6 +342,7 @@ class QuestEventResult:
     quest_finished: bool
     unsupported: tuple[str, ...] = ()
     drops: tuple[Drop, ...] = ()
+    spawns: tuple[QuestSpawn, ...] = ()
 
 
 def _parse_guards(element: ET.Element) -> tuple[Guard, ...]:
@@ -372,6 +381,16 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
                 )
                 for d in child.findall("Drop")
                 if d.get("value")
+            ),
+            spawns=tuple(
+                QuestSpawn(
+                    template_id=str(spawn.get("value", "")),
+                    difficulty=str(spawn.get("difficulty", "")),
+                    level=int(spawn.get("level", 1) or 1),
+                    location=str(spawn.get("location", "")),
+                )
+                for spawn in child.findall("Spawn")
+                if spawn.get("value") and spawn.get("location")
             ),
         ))
     switch_definitions = tuple(
@@ -680,6 +699,7 @@ def apply_quest_event(
     changes: list[TaskChange] = []
     unsupported: list[str] = []
     drops: list[Drop] = []
+    spawns = []
     rng = rng or random.Random()
     for _ in range(max(1, int(count))):
         for task in active_tasks(quest, progress):
@@ -693,6 +713,7 @@ def apply_quest_event(
                 if not all(guard.holds(progress.tokens) for guard in event.guards):
                     continue
                 matched = True
+                spawns.extend(event.spawns)
                 for token in event.returns:
                     progress.tokens[token] = progress.tokens.get(token, 0) + event.return_amounts.get(token, 1)
                 for drop in event.drops:
@@ -725,7 +746,7 @@ def apply_quest_event(
         quest_finished = True
     return QuestEventResult(
         _collapse_changes(changes), quest_finished, tuple(dict.fromkeys(unsupported)),
-        tuple(drops),
+        tuple(drops), tuple(spawns),
     )
 
 
@@ -771,6 +792,7 @@ __all__ = [
     "PropSwitchBinding",
     "QuestProgress",
     "QuestReward",
+    "QuestSpawn",
     "SwitchDefinition",
     "TaskChange",
     "TaskDefinition",

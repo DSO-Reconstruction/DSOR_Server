@@ -63,14 +63,14 @@ foreach ($RelativePath in @('data/db', 'data/logs', 'data/diagnostics', 'data/st
 $PythonLauncher = Get-Command py -ErrorAction SilentlyContinue
 if ($env:DSO_PYTHON) {
     $PythonPath = $env:DSO_PYTHON
-    & $PythonPath -c 'import struct,sys; sys.exit(0 if sys.version_info >= (3,12) and struct.calcsize("P") == 8 else 1)'
+    & $PythonPath -c 'import struct,sys; sys.exit(0 if sys.version_info >= (3,12) and struct.calcsize(chr(80)) == 8 else 1)'
     if ($LASTEXITCODE -ne 0) {
         throw "This server requires 64-bit Python 3.12 or newer. Check DSO_PYTHON ($PythonPath)."
     }
     Write-Host "Starting DSO server on $env:COMPUTERNAME and advertising $env:DSO_PUBLIC_HOST."
     & $PythonPath -u run.py @ServerArgs
 } elseif ($PythonLauncher) {
-    & py -3-64 -c 'import struct,sys; sys.exit(0 if sys.version_info >= (3,12) and struct.calcsize("P") == 8 else 1)'
+    & py -3-64 -c 'import struct,sys; sys.exit(0 if sys.version_info >= (3,12) and struct.calcsize(chr(80)) == 8 else 1)'
     if ($LASTEXITCODE -ne 0) {
         throw 'This server requires 64-bit Python 3.12 or newer. Install it with the Python launcher or set DSO_PYTHON in .env.'
     }

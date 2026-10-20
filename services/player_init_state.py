@@ -374,7 +374,7 @@ class PlayerInitializationStateService:
             ).active_event_flags(),
             *map_access.event_set_flags,
         })
-        map_exits = tuple(
+        map_exit_definitions = tuple(
             definition
             for definition in load_local_map_exits(
                 self.static_database_path,
@@ -387,6 +387,12 @@ class PlayerInitializationStateService:
                 and has_local_destination(definition)
             )
         )
+        map_exits = tuple(filter_parallel_world_exits_for_access(
+            self.static_database_path,
+            gameplay_map,
+            map_exit_definitions,
+            selected_map_access_id=map_access.request_map_id,
+        ))
         unlocked_travel_maps = unlocked_travel_map_ids(
             self.static_database_path,
             restored_map_unlocks(persisted_state, (

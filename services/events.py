@@ -11,7 +11,7 @@ import threading
 import time
 import uuid
 
-from dso_server.gameplay.map_event_state import load_map_event_content
+from dso_server.gameplay.map_event_state import load_map_event_content, map_key
 from dso_server.persistence.account_registry import DEFAULT_SESSION_TTL_SECONDS
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -204,7 +204,10 @@ def _baseline_map_local_event_entries(
         ).fetchall()
     return tuple(
         EventUpdateEntry(
-            event_id=int(row[0]),
+            # Map-local controllers are keyed by name and always use event 0.
+            # The catalog row id belongs to scheduled/global events; sending
+            # it here makes the client ignore the scene EventSet update.
+            event_id=0,
             event_name=str(row[1]),
             flags=(True, True, False, False),
             starts_at=None,
@@ -243,27 +246,32 @@ def _declared_map_local_event_entries(
     if not referenced:
         return ()
     database = Path(database_path).resolve()
+    target_map = map_key(map_id)
     with sqlite3.connect(
         f'file:{database.as_posix()}?mode=ro', uri=True
     ) as connection:
         rows = connection.execute(
-            'SELECT rowid - 1, Id FROM _Template_Events '
+            'SELECT rowid - 1, Id, Map FROM _Template_Events '
             'WHERE MapLocal=1 AND LOWER(Id) IN '
-            f'({",".join("?" for _value in referenced)}) '
-            "AND (TRIM(COALESCE(Map, '')) = '' "
-            'OR LOWER(TRIM(Map)) = ?)',
-            (*tuple(sorted(referenced)), str(map_id).casefold()),
+            f'({",".join("?" for _value in referenced)})',
+            tuple(sorted(referenced)),
         ).fetchall()
+    matched_rows = [
+        row for row in rows
+        if target_map in {map_key(part) for part in str(row[2] or '').split(';') if part.strip()}
+    ]
     return tuple(
         EventUpdateEntry(
-            event_id=int(row[0]),
+            # Match targeted map-event updates and the retail map-local
+            # controller contract: local events always carry id 0.
+            event_id=0,
             event_name=str(row[1]),
             flags=(False, True, False, False),
             starts_at=None,
             ends_at=None,
             tags=(),
         )
-        for row in sorted(rows, key=lambda value: str(value[1]))
+        for row in sorted(matched_rows, key=lambda value: str(value[1]))
     )
 
 

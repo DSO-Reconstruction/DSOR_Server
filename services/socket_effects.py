@@ -285,6 +285,11 @@ class SocketEffectService:
             for trigger, server_tick, event_seed in occurrences:
                 rules = tuple(evaluation.rules_for_event(trigger))
                 if not rules:
+                    if VERBOSE_PACKET_LOGGING:
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] socket proc "
+                            f"event={trigger!r}: no active rules"
+                        )
                     results.append(())
                     continue
                 state_key = ("event-count", trigger)
@@ -317,6 +322,14 @@ class SocketEffectService:
                         chance <= 0.0
                         or not rule.operation.casefold().startswith("add")
                     ):
+                        if VERBOSE_PACKET_LOGGING:
+                            print(
+                                f"[{GAMEPLAY_SERVICE_NAME}] socket proc "
+                                f"event={trigger!r} "
+                                f"jewel={rule.socket_template_id!r} "
+                                f"effect={rule.definition.resource_id!r}: "
+                                "not an add rule"
+                            )
                         continue
                     cooldown_key = (
                         rule.socket_template_id,
@@ -326,6 +339,17 @@ class SocketEffectService:
                         event_now
                         < cooldown_deadlines.get(cooldown_key, 0.0)
                     ):
+                        if VERBOSE_PACKET_LOGGING:
+                            remaining = (
+                                cooldown_deadlines[cooldown_key] - event_now
+                            )
+                            print(
+                                f"[{GAMEPLAY_SERVICE_NAME}] socket proc "
+                                f"event={trigger!r} "
+                                f"jewel={rule.socket_template_id!r} "
+                                f"effect={rule.definition.resource_id!r}: "
+                                f"cooldown remaining={remaining:.2f}s"
+                            )
                         continue
                     roll_bits = (
                         int(server_tick) * 1_103_515_245
@@ -338,8 +362,24 @@ class SocketEffectService:
                         chance < 1.0
                         and roll_bits / 0x1_0000_0000 >= chance
                     ):
+                        if VERBOSE_PACKET_LOGGING:
+                            print(
+                                f"[{GAMEPLAY_SERVICE_NAME}] socket proc "
+                                f"event={trigger!r} "
+                                f"jewel={rule.socket_template_id!r} "
+                                f"effect={rule.definition.resource_id!r}: "
+                                f"chance miss ({chance:.3f})"
+                            )
                         continue
                     passed.append(rule)
+                    if VERBOSE_PACKET_LOGGING:
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] socket proc "
+                            f"event={trigger!r} "
+                            f"jewel={rule.socket_template_id!r} "
+                            f"effect={rule.definition.resource_id!r}: "
+                            "passed; applying status effect"
+                        )
                     if float(rule.cooldown_seconds) > 0.0:
                         s.gameplay_socket_event_state[
                             (
@@ -347,9 +387,7 @@ class SocketEffectService:
                                 rule.socket_template_id,
                                 int(rule.definition.effect_id),
                             )
-                        ] = (
-                            event_now + float(rule.cooldown_seconds)
-                        )
+                        ] = event_now + float(rule.cooldown_seconds)
                 passed_result = tuple(passed)
                 results.append(passed_result)
                 if passed_result:
@@ -366,6 +404,7 @@ class SocketEffectService:
             return tuple(results)
 
         user_definitions = {}
+        jewel_user_effect_ids = set()
         enemy_auras = {}
         ally_auras = {}
         location_applications = {}
@@ -382,6 +421,10 @@ class SocketEffectService:
                         rule.definition, *rule.nested_user_definitions
                     ):
                         normalized = replace(definition, chance=1.0)
+                        if rule.category.casefold() == "equipmentjewel":
+                            jewel_user_effect_ids.add(
+                                int(normalized.effect_id)
+                            )
                         user_definitions.setdefault(
                             CharacterService._socket_definition_key(
                                 normalized
@@ -474,15 +517,19 @@ class SocketEffectService:
                     )
 
         if user_definitions:
+            definitions = tuple(
+                value[0] for value in user_definitions.values()
+            )
             CharacterService._send_player_skill_status_effects(
                 s,
-                tuple(
-                    value[0] for value in user_definitions.values()
-                ),
+                definitions,
                 server_tick=max(
                     value[1] for value in user_definitions.values()
                 ),
                 label="socket-cast-status-effects",
+                # Socket procs refresh the current buff from its first
+                # occurrence instead of accumulating stale stack state.
+                force_fresh_effect_ids=jewel_user_effect_ids,
             )
             # _send_player_skill_status_effects already reconciles vitality
             # modifiers; a second refresh here invalidated equipment again.

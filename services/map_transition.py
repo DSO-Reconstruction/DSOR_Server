@@ -17,6 +17,8 @@ import time
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
+from dso_server.gameplay.map_event_state import map_key
+from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 
 LOGOUT_COUNTDOWN_SECONDS = 10.0
@@ -477,6 +479,59 @@ class MapTransitionService:
                 coordinate_frame = s.gameplay_coordinate_frame
                 world_position = s.gameplay_spawn_position
             if not candidates:
+                authored_exits = load_local_map_exits(
+                    self.static_database_path,
+                    gameplay_map,
+                    include_inactive_event_sets=True,
+                )
+                matching_authored = tuple(
+                    d for d in authored_exits
+                    if (
+                        d.exit_id == request.exit_id
+                        or d.name == request.exit_id
+                    )
+                )
+                if matching_authored:
+                    clicked_authored = matching_authored[0]
+                    player_level = max(
+                        1,
+                        int(getattr(s.gameplay_character, 'level', 1)),
+                    )
+                    try:
+                        clicked_dest = resolve_map_access(
+                            self.static_database_path,
+                            clicked_authored.destination_map_id,
+                            player_level=player_level,
+                        )
+                    except ValueError:
+                        clicked_dest = None
+                    if clicked_dest is not None:
+                        for active_exit in s.gameplay_map_exits:
+                            if (
+                                math.hypot(
+                                    active_exit.position[0] - clicked_authored.position[0],
+                                    active_exit.position[2] - clicked_authored.position[2],
+                                ) <= 2.0
+                                or (
+                                    clicked_authored.event_set_row >= 0
+                                    and active_exit.event_set_row == clicked_authored.event_set_row
+                                )
+                            ):
+                                try:
+                                    active_dest = resolve_map_access(
+                                        self.static_database_path,
+                                        active_exit.destination_map_id,
+                                        player_level=player_level,
+                                    )
+                                except ValueError:
+                                    continue
+                                if (
+                                    active_dest.physical_map_id.casefold()
+                                    == clicked_dest.physical_map_id.casefold()
+                                ):
+                                    candidates = (active_exit,)
+                                    break
+            if not candidates:
                 raise ValueError(
                     f"unknown or unavailable exit {request.exit_id!r}"
                 )
@@ -533,11 +588,6 @@ class MapTransitionService:
             elif current_map_representation:
                 destination_access_id = authored_exit_url
             else:
-                if request_exit_url != authored_exit_url:
-                    raise ValueError(
-                        f"request ExitURL {request_exit_url!r} does not match "
-                        f"authored exit destination {authored_exit_url!r}"
-                    )
                 player_level = max(
                     1,
                     int(getattr(s.gameplay_character, 'level', 1)),
@@ -547,6 +597,30 @@ class MapTransitionService:
                     authored_exit_url,
                     player_level=player_level,
                 )
+                if request_exit_url != authored_exit_url:
+                    try:
+                        request_access = resolve_map_access(
+                            self.static_database_path,
+                            request_exit_url,
+                            player_level=player_level,
+                        )
+                    except ValueError:
+                        request_access = None
+                    if (
+                        request_access is None
+                        or (
+                            request_access.physical_map_id.casefold()
+                            != authored_access.physical_map_id.casefold()
+                        )
+                        or (
+                            request_access.access_group_id.casefold()
+                            != authored_access.access_group_id.casefold()
+                        )
+                    ):
+                        raise ValueError(
+                            f"request ExitURL {request_exit_url!r} does not match "
+                            f"authored exit destination {authored_exit_url!r}"
+                        )
                 selected_access = resolve_map_access(
                     self.static_database_path,
                     selected_map_id,
@@ -568,7 +642,13 @@ class MapTransitionService:
                         f"tier of exit destination "
                         f"{authored_exit_url!r}"
                     )
-                destination_access_id = selected_access.request_map_id
+                if (
+                    request.exit_id != definition.exit_id
+                    and map_key(gameplay_map) in _PARALLEL_WORLD_EXIT_BOSSES
+                ):
+                    destination_access_id = authored_exit_url
+                else:
+                    destination_access_id = selected_access.request_map_id
             CharacterService._accept_gameplay_state_command(s, 0x0060)
         except ValueError as exc:
             print(

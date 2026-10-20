@@ -563,6 +563,13 @@ class PresenceService:
             isinstance(event, tuple)
             and event[0] == "monster_groups_announced"
         ):
+            # The client resolves quest indication entries against actors it
+            # has already created. A tracker refresh sent on map entry can
+            # therefore omit a champion that is still outside the announce
+            # radius. Re-publish the living list after each newly announced
+            # group so every required commander receives a marker as soon as
+            # the client is able to render it.
+            self._quest_send_monster_indication(session)
             announced_actor_ids = {int(value) for value in event[1]}
             source_combat = session.gameplay_combat_state
             for viewer in vicinity_peers:

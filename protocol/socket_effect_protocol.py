@@ -104,13 +104,11 @@ SOCKET_TRIGGER_OVERRIDES = {
     ("unique_gem_ce2023_offensive", "ce2023_jewel_offensive_effect"):
         "hitcritical",
 }
+
 SOCKET_COOLDOWN_OVERRIDES = {
-    # The shipped status graph omits the documented cooldown child, while the
-    # English effect description explicitly specifies sixty seconds.
+    # The shipped rune status graph omits this documented sixty-second gate.
     ("mythic_gem_ce2025_blessing_stars", "mh_rings_set_aura"): 60.0,
 }
-
-
 def normalize_trigger(value: str) -> str:
     """Normalize the generated event vocabulary to stable server names."""
 
@@ -204,6 +202,7 @@ class SocketStatusDefinition:
 @dataclass(frozen=True)
 class SocketEffectRule:
     socket_template_id: str
+    category: str
     kind: str
     operation: str
     skill_group: str
@@ -510,7 +509,8 @@ class SocketEffectDatabase:
         return False
 
     def _rule(
-        self, template_id: str, modifier: SocketModifier
+        self, template_id: str, modifier: SocketModifier, *,
+        category: str = "EquipmentRune",
     ) -> SocketEffectRule | None:
         kind = modifier.kind.casefold()
         arguments = modifier.arguments
@@ -550,8 +550,17 @@ class SocketEffectDatabase:
         nested_user_definitions, event_auras, generated_cooldown = (
             self._nested_runtime_effects(definition)
         )
+        cooldown_seconds = 0.0
+        if str(category).casefold() != "equipmentjewel":
+            cooldown_seconds = max(
+                generated_cooldown,
+                SOCKET_COOLDOWN_OVERRIDES.get(
+                    (str(template_id), str(resource_id)), 0.0
+                ),
+            )
         return SocketEffectRule(
             socket_template_id=str(template_id),
+            category=str(category),
             kind=modifier.kind,
             operation=operation,
             skill_group=skill_group,
@@ -564,12 +573,7 @@ class SocketEffectDatabase:
             raw=modifier.raw,
             nested_user_definitions=nested_user_definitions,
             event_auras=event_auras,
-            cooldown_seconds=max(
-                generated_cooldown,
-                SOCKET_COOLDOWN_OVERRIDES.get(
-                    (str(template_id), str(resource_id)), 0.0
-                ),
-            ),
+            cooldown_seconds=cooldown_seconds,
         )
 
     def _nested_runtime_effects(
@@ -605,9 +609,8 @@ class SocketEffectDatabase:
                     cooldown_seconds,
                     child.duration_ticks / SERVER_TICKS_PER_SECOND,
                 )
-                # The root status creates this UI gate through its native
-                # StartModifiers. The server keeps the authoritative deadline
-                # below; sending a second explicit instance duplicates it.
+                # The root status creates this client-side cooldown child.
+                # Its duration also governs server-side rune procs.
                 continue
             definitions.append(child)
             child_row = self._status_rows.get(resource_id)
@@ -745,7 +748,13 @@ class SocketEffectDatabase:
             )
             rules = tuple(
                 rule for modifier in modifiers
-                for rule in (self._rule(str(row["Id"]), modifier),)
+                for rule in (
+                    self._rule(
+                        str(row["Id"]),
+                        modifier,
+                        category=str(row["ItemCategory"]),
+                    ),
+                )
                 if rule is not None
             )
             result[str(row["Id"])] = SocketItemProgram(

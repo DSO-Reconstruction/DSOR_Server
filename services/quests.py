@@ -29,6 +29,10 @@ from dso_server.gameplay.local_map_state import (
     local_npc_actor_id,
     local_npc_info,
 )
+from dso_server.gameplay.map_event_state import (
+    PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    prop_visible_to_player,
+)
 from dso_server.gameplay.quest_content import (
     MAX_TASKS,
     NO_TIMESTAMP,
@@ -111,7 +115,10 @@ from dso_server.services.player_progression import load_player_progression_catal
 from dso_server.gameplay.status_modifier_runtime import (
     evaluate_active_status_modifiers, load_status_modifier_catalog, snapshot_active_status_entries,
 )
-from dso_server.services.map_events import _send_prop_info_entries
+from dso_server.services.map_events import (
+    _PARALLEL_WORLD_BOSS_REWARD_CHESTS,
+    _send_prop_info_entries,
+)
 
 
 QUEST_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] quest:"
@@ -481,6 +488,21 @@ class QuestService:
             for task, switch in active_prop_switches(quest, progress):
                 if task.index == binding.task_index and switch == binding.switch:
                     return switch.switch_id
+        # The parallel-world boss arena chests are also named by the
+        # repeatable quest's final task. That task only becomes active after
+        # the boss dies. Each arena publishes a visually identical,
+        # non-QuestControlled template so players without the quest can still
+        # see the locked chest; leave its operation empty for them.
+        # MapEventService enforces the boss-death lock before consuming
+        # IndividualUsage or awarding loot.
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        runtime_map = str(getattr(runtime, "map_id", "")).strip().casefold()
+        if (
+            runtime_map in _PARALLEL_WORLD_BOSS_REWARD_CHESTS
+            and definition.instance_id.casefold()
+            in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+        ):
+            return ""
         return None
 
     @staticmethod
@@ -515,6 +537,7 @@ class QuestService:
             states = [
                 state for state in runtime.published_props()
                 if state.definition.quest_switch_id
+                and prop_visible_to_player(state.definition, s)
             ]
         shown = getattr(s, "gameplay_quest_props_visible", None)
         if shown is None:
@@ -1068,6 +1091,19 @@ class QuestService:
                         int(actor_id), template,
                         tuple(float(v) for v in position[:3]),
                     ))
+        if "pw011" in str(getattr(s, "gameplay_map", "")).casefold():
+            summary = [
+                (
+                    m.actor_id,
+                    m.template_id,
+                    tuple(round(v, 1) for v in m.position),
+                )
+                for m in monsters
+            ]
+            _log(
+                "pw011 monster indication "
+                f"quest={quest_id!r} task={task_index} actors={summary}"
+            )
         tick = int(getattr(s, "gameplay_chase_server_tick", 0) or 0) & 0xFFFFFFFF
         self._send_quest_commands(s, (ServerCommand(
             QUEST_MONSTER_INDICATION_INFO_COMMAND,
@@ -1383,6 +1419,14 @@ class QuestService:
             result = apply_quest_event(quest, progress, kind, value, count=count)
             for unsupported in result.unsupported:
                 _log(f"{quest_id!r} needs unsupported event {unsupported!r}")
+            if result.spawns:
+                try:
+                    self._quest_spawn_monsters(s, result.spawns)
+                except Exception as exc:
+                    _log(
+                        f"quest monster spawn failed for {quest_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             if result.drops:
                 self._quest_spawn_drops(s, quest, result.drops, position=position)
                 CharacterService._request_account_save(s, "quest drop event")

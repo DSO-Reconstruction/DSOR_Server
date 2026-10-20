@@ -139,6 +139,45 @@ TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID = LOCAL_MONSTER_ACTOR_BASE + 0x1000
 FRACTURED_PLANES_BOSS_MAP_ID = "fp0001_boss_01"
 FRACTURED_PLANES_BOSS_TEMPLATE_ID = "fp_boss_01_lythira"
 FRACTURED_PLANES_BOSS_ACTOR_ID = LOCAL_MONSTER_ACTOR_BASE + 0x1000
+# Eternal Grove's ClearRegion quest requires these two commanders, but the
+# shipped map database has no SpawnPoint rows for them. Keep them on the
+# single-layer walkable path near the map entry so the client can discover
+# them without searching remote, vertically-overlapped map edges.
+ETERNAL_GROVE_MAP_ID = "pw011_eternal_grove_01_dun"
+ETERNAL_GROVE_MISSING_COMMANDER_SPAWNS: tuple[
+    tuple[str, tuple[float, float, float]], ...
+] = (
+    ("pw011_02_champion_troll_heroic", (-64.9, 10.0, 73.6)),
+    # The guidance marker is pw011_spawn_leader near (-82.42, -61.83).
+    # This nearby point is on single-layer walkable ground, clear of the
+    # leader object and existing actors, so the missing commander is visible
+    # where the map directs the player to look.
+    ("pw011_02_champion_satyr_ranged_heroic", (-85.4, 8.0, -60.8)),
+)
+# The client never renders the stag commander that the map authors on
+# Eternal Grove's north-east terrace (23.25, 18.0, -17.76). The server
+# simulates it, the quest marker points at it, and the actor payload is
+# byte-identical to the sibling stag that does render, so the terrace
+# placement is what the client refuses. Replace that single commander with
+# a different champion model on the main level beside the map entry, where
+# the player always starts and where the other commanders were seen.
+ETERNAL_GROVE_COMMANDER_REPLACEMENTS: tuple[
+    tuple[str, tuple[float, float, float], str, tuple[float, float, float]],
+    ...,
+] = (
+    (
+        "pw011_01_champion_beastman_stag_heroic",
+        (23.25, 18.0, -17.76),
+        "pw011_01_champion_thing_roots_heroic",
+        (-60.0, 10.0, 74.0),
+    ),
+)
+# The Eternal Grove client scene already owns the second local-monster actor
+# slot (0x30001). A NewMonster that reuses that slot never produces a model,
+# and the quest indication still points at the actor, so the commander looks
+# present but empty. Leave the client-owned slot alone and hand the authored
+# population the slots after it.
+ETERNAL_GROVE_RESERVED_ACTOR_IDS = frozenset({LOCAL_MONSTER_ACTOR_BASE + 1})
 TRAVEL_STONE_MONSTER_EXCLUSION_RADIUS = max(
     8.0,
     float(os.environ.get("DSO_TRAVEL_STONE_MONSTER_RADIUS", "12")),
@@ -174,6 +213,32 @@ def _occupy_spawn_position(
         occupied: dict[tuple[int, int], list[tuple[float, float, float]]],
         position: tuple[float, float, float]) -> None:
     occupied.setdefault(_spawn_spacing_cell(position), []).append(position)
+
+
+def _eternal_grove_commander_replacement(
+        map_id: str,
+        template_id: str,
+        position: tuple[float, float, float],
+) -> tuple[str, tuple[float, float, float]]:
+    """Swap the commander the client refuses to render for a visible one."""
+
+    if str(map_id).casefold() != ETERNAL_GROVE_MAP_ID:
+        return template_id, position
+    for (
+        source_template,
+        source_position,
+        target_template,
+        target_position,
+    ) in ETERNAL_GROVE_COMMANDER_REPLACEMENTS:
+        if (
+            str(template_id).casefold() == source_template.casefold()
+            and abs(float(position[0]) - source_position[0]) <= 0.75
+            and abs(float(position[2]) - source_position[2]) <= 0.75
+        ):
+            return target_template, target_position
+    return template_id, position
+
+
 SPAWN_AREA_MONSTERS_ENABLED = (
     os.environ.get("DSO_SPAWN_AREA_MONSTERS", "1").strip().lower()
     not in {"0", "false", "no", "off"}
@@ -2282,7 +2347,18 @@ def _navigation_for_map(
         / f"{map_id}.tok"
     )
     try:
-        return load_navigation_mesh(navigation_path)
+        # Atlantis Above Water has several authored bridges just under the
+        # generic 1 m portal cutoff. They are walkable in the client and join
+        # the map's main ground regions, so retain those connections for
+        # movement validation and monster pathing on this map.
+        portal_width = (
+            0.9
+            if str(map_id).casefold() == "pw023_atlantis_above_water_01_dun"
+            else 1.0
+        )
+        return load_navigation_mesh(
+            navigation_path, minimum_portal_width=portal_width,
+        )
     except (OSError, ValueError):
         return _DirectNavigationMesh()
 
@@ -2353,21 +2429,58 @@ def _load_dynamic_monster_encounter(
             active_local_map_event_flags(map_id, active_event_flags),
             map_id=map_id,
         )
-        all_fixed_rows = tuple(database.execute(
+        authored_fixed_rows = tuple(database.execute(
             """
-            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1)
+            SELECT rowid, Transform, COALESCE(NpcId, ''),
+                   COALESCE(EventSetRow, -1), COALESCE(_ID, ''),
+                   COALESCE(Rank, '')
             FROM _Instance_SpawnPoint
-            WHERE TRIM(COALESCE(NpcId, ''))<>''
-              AND COALESCE(AlliedToPlayer, 0)=0
+            WHERE COALESCE(AlliedToPlayer, 0)=0
+              AND (
+                  TRIM(COALESCE(NpcId, ''))<>''
+                  OR lower(COALESCE(Rank, '')) IN (
+                      'rank_champion', 'rank_guardian', 'rank_leader',
+                      'rank_leader_no_entchantments', 'rank_sentinel'
+                  )
+              )
             ORDER BY CASE WHEN COALESCE(EventSetRow, -1)=-1 THEN 0 ELSE 1 END,
                      rowid
             """
         ).fetchall())
+        all_fixed_rows = []
+        for row_id, transform, npc_id, event_set, object_id, _rank in authored_fixed_rows:
+            template_id = str(npc_id or "").strip()
+            if not template_id:
+                # Some shipped PW map records put the monster template
+                # directly in _ID and leave NpcId empty. Resolve only exact
+                # template IDs; *_spawnpoint IDs are quest-gated anchors and
+                # must wait for their task interaction.
+                candidate = str(object_id or "").strip()
+                if candidate and _load_runtime_definition(
+                    static_database_path, candidate, 0,
+                ) is not None:
+                    template_id = candidate
+            # Mount Suvius's Gorgon guardians are authored as blank-NpcId
+            # SpawnPoints whose StateObject templates name them as the result
+            # of clicking a bust. Keep them out of the map-entry population;
+            # services.map_events materializes the matching guardian when its
+            # one-shot bust is used.
+            if (
+                str(map_id).casefold() == "pw022_mount_suvius_01_dun"
+                and template_id.casefold().startswith("pw022_guardian_gorgon_")
+            ):
+                continue
+            if template_id:
+                all_fixed_rows.append((
+                    row_id, transform, template_id, event_set,
+                ))
+        all_fixed_rows = tuple(all_fixed_rows)
         # Tier-only rows: the bloody sludges exist in every dungeon's table
         # without an EventSet but belong to Bloodshed (tier 8) alone.
         from dso_server.gameplay.map_event_state import (
             BLOODSHED_DIFFICULTY,
             bloodshed_only_template,
+            deduplicate_pw002_wave_three_warriors,
             load_map_event_content,
             load_map_signal_catalog,
         )
@@ -2376,6 +2489,9 @@ def _load_dynamic_monster_encounter(
                 row for row in all_fixed_rows
                 if not bloodshed_only_template(row[2])
             )
+        all_fixed_rows = deduplicate_pw002_wave_three_warriors(
+            map_id, all_fixed_rows,
+        )
         # Invisible scene controllers are consumed by the client's map event
         # graph. Creating them as NewMonster actors gives them no renderable
         # model/effect module and can collide with the first real actor id.
@@ -2499,6 +2615,25 @@ def _load_dynamic_monster_encounter(
         if is_tower_layout(map_id)
         else map_monster_actor_base(map_id, static_database_path=static_database_path)
     )
+    reserved_actor_ids = (
+        ETERNAL_GROVE_RESERVED_ACTOR_IDS
+        if str(map_id).casefold() == ETERNAL_GROVE_MAP_ID
+        else frozenset()
+    )
+    # Claim the client-owned slots up front so neither the authored rows nor
+    # the density allocator can hand them to a server monster.
+    used_actor_ids.update(reserved_actor_ids)
+    next_fixed_actor_id = actor_base
+
+    def allocate_fixed_actor_id() -> int:
+        """Return the next free actor id for the authored population."""
+
+        nonlocal next_fixed_actor_id
+        while next_fixed_actor_id in used_actor_ids:
+            next_fixed_actor_id += 1
+        result = next_fixed_actor_id
+        next_fixed_actor_id += 1
+        return result
 
     def inside_protected_waypoint(
         position: tuple[float, float, float],
@@ -2696,6 +2831,9 @@ def _load_dynamic_monster_encounter(
                     # not at the placeholder's distant staging position.
                     position = TUTORIAL_GRIMMAG_ARENA_POSITION
                 is_bloodshed_sludge = bloodshed_only_template(raw_template_id)
+                template_id, position = _eternal_grove_commander_replacement(
+                    map_id, str(raw_template_id), position,
+                )
                 if is_bloodshed_sludge:
                     # The map tables duplicate each sludge spawn point twice
                     # with identical transforms. Keep one actor per authored
@@ -2704,7 +2842,7 @@ def _load_dynamic_monster_encounter(
                     if position_key in bloodshed_spawn_positions:
                         continue
                     bloodshed_spawn_positions.add(position_key)
-                actor_id = actor_base + len(monsters)
+                actor_id = allocate_fixed_actor_id()
                 if (
                     str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
                     and str(raw_template_id).casefold()
@@ -2718,7 +2856,7 @@ def _load_dynamic_monster_encounter(
                 ):
                     actor_id = FRACTURED_PLANES_BOSS_ACTOR_ID
                 placed = append_monster(
-                    str(raw_template_id), actor_id, position,
+                    template_id, actor_id, position,
                     authored_yaw=math.atan2(
                         struct.unpack("<16f", bytes(raw_transform))[8],
                         struct.unpack("<16f", bytes(raw_transform))[0],
@@ -2762,6 +2900,53 @@ def _load_dynamic_monster_encounter(
                             break
             if len(monsters) > before:
                 break
+
+        if str(map_id).casefold() == ETERNAL_GROVE_MAP_ID:
+            present_templates = {
+                monster.template_id.casefold() for monster in monsters
+            }
+            for template_id, position in ETERNAL_GROVE_MISSING_COMMANDER_SPAWNS:
+                if template_id.casefold() in present_templates:
+                    continue
+                actor_id = allocate_fixed_actor_id()
+                placed = append_monster(
+                    template_id,
+                    actor_id,
+                    position,
+                    resolve_projected_overlap=True,
+                )
+                if (
+                    not placed
+                    and allowed_component is not None
+                    and player_position is not None
+                    and isinstance(navigation, PathEngineNavigationMesh)
+                ):
+                    try:
+                        candidates = navigation.component_positions(
+                            allowed_component,
+                            around=player_position,
+                            minimum_distance=6.0,
+                            maximum_distance=24.0,
+                            limit=128,
+                        )
+                    except NavigationError:
+                        candidates = ()
+                    for candidate in candidates:
+                        if (
+                            terrain is not None
+                            and len(terrain.heights_at(candidate)) != 1
+                        ):
+                            continue
+                        if append_monster(
+                            template_id,
+                            allocate_fixed_actor_id(),
+                            candidate,
+                            resolve_projected_overlap=True,
+                        ):
+                            placed = True
+                            break
+                if placed:
+                    present_templates.add(template_id.casefold())
 
     fixed_monster_count = len(monsters)
     authored_templates = tuple(

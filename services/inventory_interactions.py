@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_map_state import LocalNPCDefinition, local_npc_actor_id
@@ -136,16 +138,40 @@ class InventoryInteractionService:
             slots.append(QuickSlotInfo(kind, resource_id))
 
         new_slots = tuple(slots)
-        empty_bar = tuple(
-            new_slots[i] if i >= 8 else QuickSlotInfo(0xFFFFFFFF, None)
-            for i in range(17)
-        )
+        preserved_mount = False
         with s.flow_lock:
             current = s.gameplay_quick_slots
             bars = (
                 list(current.quickbars)
                 if isinstance(current, QuickSlotsInfo)
                 else []
+            )
+            # The client sends an initial full QuickSlots snapshot while
+            # rebuilding the map UI. That snapshot can still contain an empty
+            # O/mount slot even though the authoritative initialization sent
+            # the saved mount shortcut. Do not let that startup echo erase it.
+            if (
+                time.monotonic()
+                < float(getattr(
+                    s, "gameplay_quick_slots_init_echo_until", 0.0
+                ))
+                and new_slots[8].kind == 0xFFFFFFFF
+            ):
+                saved_mount = next((
+                    bar[8]
+                    for bar in bars
+                    if len(bar) > 8
+                    and bar[8].kind != 0xFFFFFFFF
+                    and "mount" in str(bar[8].resource_id or "").casefold()
+                ), None)
+                if saved_mount is not None:
+                    updated_slots = list(new_slots)
+                    updated_slots[8] = saved_mount
+                    new_slots = tuple(updated_slots)
+                    preserved_mount = True
+            empty_bar = tuple(
+                new_slots[i] if i >= 8 else QuickSlotInfo(0xFFFFFFFF, None)
+                for i in range(17)
             )
             while len(bars) <= bar_index:
                 bars.append(empty_bar)
@@ -176,6 +202,8 @@ class InventoryInteractionService:
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] saved 17 quick slots for "
             f"bar {bar_index}"
+            + (" (preserved mount during map initialization)"
+               if preserved_mount else "")
         )
 
     def _handle_prop_request(self, s: Session, payload: bytes) -> None:
