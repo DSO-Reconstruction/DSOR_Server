@@ -865,19 +865,9 @@ class PlayerInitializationStateService:
                 mount_ride.definition.stickerbook_resource_id,
             )
             if sticker_definition is not None and sticker_definition.mount is not None:
+                # Effect indexes refreshed from the active database, with
+                # the captured timing (stickerbook_state).
                 resolved_mount = sticker_definition.mount
-                local_mount = find_mount(
-                    mount_ride.definition.stickerbook_resource_id
-                )
-                if local_mount is not None:
-                    # Keep the captured local cast timing while refreshing
-                    # effect indexes from the active database.
-                    resolved_mount = replace(
-                        resolved_mount,
-                        cast_duration_seconds=local_mount.cast_duration_seconds,
-                        cast_duration_ticks=local_mount.cast_duration_ticks,
-                        ride_duration_ticks=local_mount.ride_duration_ticks,
-                    )
                 mount_ride = replace(
                     mount_ride,
                     definition=resolved_mount,

@@ -1298,25 +1298,14 @@ class CustomizationService:
             )
             return
 
-        # Resolve status-effect wire IDs from the active static database. The
-        # local black-bear entry keeps the captured cast timing, but its old
-        # hard-coded effect indexes can point at an unrelated effect after a
-        # client database update.
+        # The database's own definition first: its effect ids are its rows'
+        # (gameplay/local_mount_state.py find_mount, with the captured timing).
         definition = (
             database_definition.mount
             if database_definition is not None
-            else None
+            and database_definition.mount is not None
+            else find_mount(request.value, self.static_database_path)
         )
-        local_definition = find_mount(request.value)
-        if definition is not None and local_definition is not None:
-            definition = replace(
-                definition,
-                cast_duration_seconds=local_definition.cast_duration_seconds,
-                cast_duration_ticks=local_definition.cast_duration_ticks,
-                ride_duration_ticks=local_definition.ride_duration_ticks,
-            )
-        if definition is None:
-            definition = local_definition
         if definition is None:
             raise ValueError(
                 f"owned sticker-book item {request.value!r} has no "
