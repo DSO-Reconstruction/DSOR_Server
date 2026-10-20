@@ -117,6 +117,12 @@ def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
 
 
 MONSTER_STOP_DISTANCE = 1.75
+# DSO_BOSS_BASIC_ATTACK_ROTATION=1: a boss with a close basic hit keeps it in
+# rotation and casts a ready special only every third choice (the xm1rth
+# fork's tuning). Off, a ready special goes first, as for every monster.
+BOSS_BASIC_ATTACK_ROTATION = os.getenv(
+    "DSO_BOSS_BASIC_ATTACK_ROTATION", "0"
+).strip().lower() in {"1", "true", "yes"}
 # A melee blow reaches a player no more than this far above or below the
 # monster's feet (metres). Range checks are flat (x/z): without it a monster on
 # a ledge struck a player standing under it ("a monster on high ground attacked
@@ -9789,7 +9795,9 @@ class LocalCombatState:
         basic_melees = tuple(
             definition
             for definition in eligible_definitions
-            if is_boss and self._is_basic_monster_melee(definition)
+            if is_boss
+            and BOSS_BASIC_ATTACK_ROTATION
+            and self._is_basic_monster_melee(definition)
         )
         basic_melee_ids = {id(definition) for definition in basic_melees}
 
@@ -9820,7 +9828,10 @@ class LocalCombatState:
         supports = tuple(
             definition
             for definition in usable
-            if is_boss and definition.support and definition.cooldown > 0.0
+            if is_boss
+            and BOSS_BASIC_ATTACK_ROTATION
+            and definition.support
+            and definition.cooldown > 0.0
         )
         if supports:
             return min(

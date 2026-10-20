@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import math
+import os
 from pathlib import Path
 import sqlite3
 from types import MappingProxyType
@@ -27,7 +28,9 @@ from dso_server.protocol.skill_book_protocol import experience_commands
 
 
 UINT32_MAX = 0xFFFFFFFF
-PLAYER_LEVEL_CAP = 100
+# The playable level cap: the database's top authored level unless
+# DSO_PLAYER_LEVEL_CAP lowers it (100 matches the retail level cap).
+PLAYER_LEVEL_CAP = int(os.getenv("DSO_PLAYER_LEVEL_CAP", "0") or 0) or UINT32_MAX
 
 
 @dataclass(frozen=True)
@@ -103,7 +106,7 @@ class PlayerProgressionCatalog:
         if not thresholds:
             return 0
         current = max(0, int(current_xp), thresholds.get(int(current_level), 0))
-        cap = thresholds[min(PLAYER_LEVEL_CAP, max(thresholds))]
+        cap = thresholds[min(100, PLAYER_LEVEL_CAP, max(thresholds))]
         if current >= cap:
             return 0
         level = max(level for level, xp in thresholds.items() if xp <= current)
@@ -246,7 +249,7 @@ def load_player_progression_catalog(
 
 
 def player_level_range(database_path, class_name: str) -> tuple[int, int]:
-    """Playable level range, bounded by the game's level-100 cap."""
+    """Playable level range, bounded by PLAYER_LEVEL_CAP."""
 
     thresholds = _level_thresholds(database_path, class_name)
     return min(thresholds), min(PLAYER_LEVEL_CAP, max(thresholds))

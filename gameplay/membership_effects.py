@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 import math
+import os
 
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
@@ -11,6 +12,12 @@ from dso_server.protocol.membership_protocol import (
     parse_membership_expiry,
 )
 
+
+# Off unless DSO_MEMBERSHIP_XP_BUFF=1: every new character is Deluxe for five
+# years (services/player_init_state.py), so the buff would double everyone's XP.
+MEMBERSHIP_XP_BUFF = os.getenv("DSO_MEMBERSHIP_XP_BUFF", "0").strip().lower() in {
+    "1", "true", "yes",
+}
 
 _MEMBERSHIP_EFFECTS = {
     PREMIUM_MEMBERSHIP: ("Premium", 0.5),
@@ -41,6 +48,8 @@ def membership_status_effect(
 ):
     """Build a membership XP buff whose UI timer matches its UTC expiry."""
 
+    if not MEMBERSHIP_XP_BUFF:
+        return None
     definition = _MEMBERSHIP_EFFECTS.get(int(membership_type))
     if definition is None:
         return None

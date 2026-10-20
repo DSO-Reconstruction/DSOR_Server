@@ -181,18 +181,19 @@ SPAWN_AREA_MONSTERS_ENABLED = (
 SPAWN_AREA_MAX_MONSTERS = max(
     0, int(os.environ.get("DSO_SPAWN_AREA_MAX_MONSTERS", "0"))
 )
-# Multiplier on every spawn area's authored SpawnPerMeter density. The
-# database values produced overly dense populations across large maps, so the
-# default keeps 35% of the authored density while retaining its relative
-# distribution between maps and regions.
+# Multiplier on every spawn area's authored SpawnPerMeter density.  1.0 is
+# the database value; the default trims the generated population by about
+# 15% per map, which is the reduction the populated-map work asked for.
+# (0.35 with a 250 cap below gives the sparser maps of the xm1rth fork.)
 SPAWN_AREA_DENSITY_SCALE = max(
-    0.0, float(os.environ.get("DSO_SPAWN_AREA_DENSITY_SCALE", "0.35"))
+    0.0, float(os.environ.get("DSO_SPAWN_AREA_DENSITY_SCALE", "0.85"))
 )
-# Whole-map cap on the density-driven population. Keep very large maps from
-# exceeding 250 density-driven actors even when their authored areas are
-# unusually large or numerous.
+# Whole-map cap on the density-driven population.  768 was the historical
+# value; the live packed-map maps (a0303, a0203, a0302, a0406) all sat exactly
+# on it.  650 trims those by about 15%, matching the density scale above so
+# density-bound and cap-bound maps shrink by a similar fraction.
 SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
-    0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "250"))
+    0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "650"))
 )
 
 # Spawn-list membership is server-owned and is not shipped in static.db4.

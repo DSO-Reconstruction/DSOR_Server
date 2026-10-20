@@ -3,11 +3,15 @@
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest import mock
 
+from dso_server.gameplay import local_combat_state
 from dso_server.gameplay.local_combat_state import LocalCombatState, MonsterCombatant
 from dso_server.gameplay.local_monster_state import _load_runtime_definition
 
 
+# The melee that follows the frost orb is the basic-attack rotation's choice.
+@mock.patch.object(local_combat_state, "BOSS_BASIC_ATTACK_ROTATION", True)
 class BossProjectileRecoveryTests(unittest.TestCase):
     def test_sigrismarr_melee_while_frostorb_is_still_flying(self):
         for template in ("e_bos_02_boss_sigrismar_normal", "boss_sigrismarr"):
