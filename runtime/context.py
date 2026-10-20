@@ -593,6 +593,7 @@ from dso_server.protocol.world_loot_protocol import (
     encode_discard_item_batch,
     encode_new_item_batch,
     encode_pickup_info_batch,
+    encode_wisdom_pickup_response,
     encode_world_pickup_response,
     generate_monster_loot,
     prime_world_loot_cache,

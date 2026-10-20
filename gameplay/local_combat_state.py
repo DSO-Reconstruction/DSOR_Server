@@ -117,6 +117,23 @@ def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
 
 
 MONSTER_STOP_DISTANCE = 1.75
+# A melee blow reaches a player no more than this far above or below the
+# monster's feet (metres). Range checks are flat (x/z): without it a monster on
+# a ledge struck a player standing under it ("a monster on high ground attacked
+# me ... but I still took the damage", 2026-10-18). 1.5 m keeps slopes and
+# steps, where both feet sit on the same ground, unaffected.
+MONSTER_MELEE_VERTICAL_REACH = 1.5
+# A projectile's lane (from the monster's centre to its cast-time target) is
+# also a height: the player is hit where the lane passes through their capsule,
+# within this much above their head or below their feet.
+PROJECTILE_VERTICAL_SLACK = 1.0
+PLAYER_CAPSULE_HEIGHT = 2.0
+
+
+def _cooldown_key(definition) -> str:
+    """Skills of one CoolDownCategory share a timer; others have their own."""
+
+    return definition.cooldown_category or definition.resource_id
 RANGED_STANDOFF_RATIO = 0.80
 MONSTER_HOME_ARRIVAL_DISTANCE = 0.20
 # Player-owned mercenaries must not autonomously engage players in the city
@@ -798,6 +815,8 @@ class MonsterAttack:
 
 @dataclass(frozen=True)
 class MonsterSummonRequest:
+    """A monster's summon that landed: the service spawns the monsters."""
+
     caster_actor_id: int
     template_id: str
     amount: int
@@ -1061,10 +1080,16 @@ class LocalCombatState:
         self._monster_skill_cursors: dict[int, int] = {
             actor_id: 0 for actor_id in self.monsters
         }
+        # When each monster's skill (or cooldown category) can be used again,
+        # set once it starts fighting: its InitialCoolDown, then its CoolDown
+        # after each use (_monster_skill_choice).
         self._monster_skill_ready_at: dict[int, dict[str, float]] = {}
-        self._monster_cooldown_random = random.Random(0x0B055)
+        # The monsters each monster summoned (still counted while alive), and
+        # the summons landed this tick, for the service to spawn
+        # (services/monster_summons.py).
         self.monster_summoned_actor_ids: dict[int, set[int]] = {}
         self.pending_monster_summons: list[MonsterSummonRequest] = []
+        self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
         # Released projectiles may still be flying when a boss recovers and
         # starts its next cast. Keep their impacts independently of that cast.
@@ -2001,6 +2026,7 @@ class LocalCombatState:
                 self.monster_status_damage.pop((actor_id, resource_id), None)
         # A reset actor is a fresh spawn; it carries no diminishing returns.
         self.monster_status_immunities.pop(actor_id, None)
+        # Its skill cooldowns start over with its next fight.
         self._monster_skill_ready_at.pop(actor_id, None)
         # Clears MonsterReturnHome: the actor is already home.
         self._set_returning_home(actor_id, False, server_tick)
@@ -9450,8 +9476,19 @@ class LocalCombatState:
             target_distance = self._distance(
                 attack_target_world, monster_position
             )
+            vertical_gap = abs(attack_target_world[1] - monster_position[1])
             eligible_definitions_list = []
             for definition in definitions:
+                if (
+                    definition.command_id not in {
+                        BULLET_SKILL_COMMAND,
+                        TARGET_BULLET_SKILL_COMMAND,
+                    }
+                    and vertical_gap > MONSTER_MELEE_VERTICAL_REACH
+                ):
+                    # A blow does not reach a player on a ledge above or
+                    # below the monster; only projectiles fly there.
+                    continue
                 if (
                     definition.motion_type == "Straight"
                     and definition.projectile_velocity > 1e-6
@@ -9468,6 +9505,10 @@ class LocalCombatState:
                         + max(0.15, definition.projectile_radius)
                         + PLAYER_PROJECTILE_COLLISION_RADIUS,
                     )
+                elif definition.support:
+                    # A summon or a self-buff strikes nobody: its HitRange is
+                    # no reach, only its AttackRange says when it is cast.
+                    effective_range = definition.attack_range
                 else:
                     # Melee skills commonly author a smaller AttackRange than
                     # HitRange (Bearach's strike is 4 vs. 5). Let the cast
@@ -9561,10 +9602,13 @@ class LocalCombatState:
                     else definition.loop_start_frame
                 )
             elif definition.command_id == SHIFTED_SKILL_COMMAND:
+                # A Shifted cast: its release at LoopStartFrame (the context's
+                # hit frame), then its impact HitFrame later, at least one tick
+                # (ShiftedSkillCommand's pre-impact delay; a zero-length phase
+                # is a native client assert, presence_visuals).
                 projectile_origin = monster_position
                 impact_delay = (
-                    definition.loop_start_frame
-                    + max(1, definition.hit_frame)
+                    definition.loop_start_frame + max(1, definition.hit_frame)
                 ) / SERVER_TICKS_PER_SECOND
                 animation_hit_frame = definition.loop_start_frame
             else:
@@ -9601,12 +9645,10 @@ class LocalCombatState:
                 motion_unblock_frame=definition.motion_unblock_frame,
                 skill_unblock_frame=definition.skill_unblock_frame,
                 position=(*monster_position, 1.0),
+                # A summon is cast on the caster's own place.
                 target_position=(
                     monster_position
-                    if (
-                        definition.summon_template
-                        and definition.command_id != SHIFTED_SKILL_COMMAND
-                    )
+                    if definition.summon_template
                     else attack_target_world
                 ),
                 direction=direction,
@@ -9655,11 +9697,13 @@ class LocalCombatState:
                 self.monster_last_published_positions[actor_id] = monster_position
             self._monster_skill_cursors[actor_id] = skill_cursor + 1
             if definition.cooldown > 0.0:
-                key = definition.cooldown_category or definition.resource_id
-                self._monster_skill_ready_at.setdefault(actor_id, {})[key] = (
-                    current_time + definition.cooldown
-                )
+                self._monster_skill_ready_at.setdefault(actor_id, {})[
+                    _cooldown_key(definition)
+                ] = current_time + definition.cooldown
             if definition.self_buff and attack.user_status_effects:
+                # Its effects (enrage: speed, skill speed, immunities) are on
+                # the caster from its start; clients get them with the cast
+                # (monster-skillstart-status-effects).
                 self._record_monster_status_effects(
                     actor_id,
                     attack.user_status_effects,
@@ -9719,6 +9763,7 @@ class LocalCombatState:
                 )
             self._monster_skill_ready_at[actor_id] = ready_at
 
+        difficulty = int(getattr(self.encounter, "scaling_difficulty", 0))
         alive_ids = set(self.living_actor_ids)
         living_summons = len(
             self.monster_summoned_actor_ids.get(actor_id, set()) & alive_ids
@@ -9736,7 +9781,6 @@ class LocalCombatState:
             and not primary.self_buff
             and not primary.summon_template
         )
-        primary_in_range = primary in eligible_definitions if primary else False
         # A monster's first skill is not necessarily its basic attack. Some
         # bosses list a long-range special first (for example Balor's
         # player-targeted cast), which can otherwise suppress their melee
@@ -9752,7 +9796,8 @@ class LocalCombatState:
         usable = tuple(
             definition
             for definition in eligible_definitions
-            if (
+            if definition.min_difficulty <= difficulty <= definition.max_difficulty
+            and (
                 id(definition) in basic_melee_ids
                 or (not is_boss and is_melee_primary and definition is primary)
                 or current_time + 1e-9 >= ready_at.get(
@@ -9762,11 +9807,26 @@ class LocalCombatState:
             and not (
                 definition.summon_template
                 and definition.summon_limit > 0
-                and living_summons >= definition.summon_limit
+                and living_summons + definition.summon_amount
+                > definition.summon_limit
             )
         )
         if not usable:
             return None
+
+        # A boss's summons and self-buffs come as soon as their cooldown
+        # allows (their InitialCoolDown first: Heredur's skeletons after a few
+        # seconds), outside its rotation below; the one ready the longest.
+        supports = tuple(
+            definition
+            for definition in usable
+            if is_boss and definition.support and definition.cooldown > 0.0
+        )
+        if supports:
+            return min(
+                supports,
+                key=lambda definition: ready_at.get(_cooldown_key(definition), 0.0),
+            )
 
         specials = tuple(
             skill
@@ -9774,7 +9834,6 @@ class LocalCombatState:
             if (
                 skill not in basic_melees
                 and skill.cooldown > 0.0
-                and (is_boss or skill is not primary)
             )
         )
 
@@ -9803,9 +9862,6 @@ class LocalCombatState:
                     skill.skill_manager_index,
                 ),
             )
-
-        if not is_boss and primary_in_range and primary in usable:
-            return primary
 
         if specials:
             return min(
@@ -9838,7 +9894,7 @@ class LocalCombatState:
     ) -> bool:
         """Test the player capsule against a fixed cast-time trajectory."""
 
-        origin_x, _origin_y, origin_z = attack.projectile_origin
+        origin_x, origin_y, origin_z = attack.projectile_origin
         direction_x = float(attack.direction[0])
         direction_z = float(attack.direction[2])
         direction_length = math.hypot(direction_x, direction_z)
@@ -9875,7 +9931,19 @@ class LocalCombatState:
         lateral = abs(
             player_dx * direction_z - player_dz * direction_x
         )
-        return lateral <= collision_radius
+        if lateral > collision_radius:
+            return False
+        # The lane's height where it meets the player: from the origin's height
+        # to the cast-time target's, along the flight.
+        fraction = (
+            min(1.0, max(0.0, along / path_length)) if path_length > 1e-6 else 1.0
+        )
+        lane_y = origin_y + (attack.target_position[1] - origin_y) * fraction
+        return (
+            player_position[1] - PROJECTILE_VERTICAL_SLACK
+            <= lane_y
+            <= player_position[1] + PLAYER_CAPSULE_HEIGHT + PROJECTILE_VERTICAL_SLACK
+        )
 
     @staticmethod
     def _directional_skill_intersects_player(
@@ -10084,6 +10152,8 @@ class LocalCombatState:
             elif (
                 self._distance(target_world, monster_position)
                 > definition.hit_range
+                or abs(target_world[1] - monster_position[1])
+                > MONSTER_MELEE_VERTICAL_REACH
             ):
                 continue
             if isinstance(incoming_damage_multiplier, (int, float)):

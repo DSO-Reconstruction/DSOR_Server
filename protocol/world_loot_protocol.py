@@ -2158,9 +2158,51 @@ def _loot_received_currency_type(drop: WorldLootDrop) -> int:
         return 0
     if drop.item.template_id == ANDERMANT_ITEM_TEMPLATE:
         return 1
+    if drop.item.template_id == WISDOM_ITEM_TEMPLATE:
+        # The client's loot-received case shows types 3 and 5 as GrindCurrency
+        # (the violet text); its currency names put Ancient Wisdom at 3.
+        return 3
     raise ValueError(
         f"item {drop.item.template_id!r} is not a direct currency"
     )
+
+
+def _write_loot_received(writer: BitWriter, drop: WorldLootDrop, actor_id: int) -> None:
+    """MessageCommand 0x19: the "<amount> <currency> received" text over the player."""
+
+    writer.write_bytes(MESSAGE_COMMAND.to_bytes(2, "little"))
+    writer.write_uint8(LOOT_RECEIVED_MESSAGE)
+    writer.write_uint32_le(4)
+    writer.write_uint8(1)
+    writer.write_uint32_le(_loot_received_currency_type(drop))
+    writer.write_uint8(1)
+    writer.write_uint32_le(max(0, int(drop.item.amount)))
+    writer.write_uint8(4)
+    writer.write_uint32_le(int(drop.item.item_id))
+    writer.write_uint8(2)
+    writer.write_string(drop.item.template_id)
+    writer.write_uint32_le(int(actor_id))
+    writer.write_uint8(0xFF)
+
+
+def encode_wisdom_pickup_response(drop: WorldLootDrop, *, actor_id: int) -> tuple[bytes, int]:
+    """Ancient Wisdom picked up: its loot-received text, then its DiscardItem.
+
+    Wisdom is credited to talent progression, not to a wallet, so no currency
+    state follows; without the message the client showed no text at all.
+    """
+
+    if drop.item.template_id != WISDOM_ITEM_TEMPLATE:
+        raise ValueError("wisdom pickup requires the wisdom item")
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    _write_loot_received(writer, drop, actor_id)
+    writer.write_bytes(DISCARD_ITEM_COMMAND.to_bytes(2, "little"))
+    writer.write_uint32_le(int(drop.item.item_id))
+    writer.write_bool(True)
+    writer.write_uint32_le(0)
+    writer.write_uint8(0xFF)
+    return writer.finish()
 
 
 def encode_world_pickup_response(
@@ -2190,19 +2232,7 @@ def encode_world_pickup_response(
     writer = BitWriter()
     writer.write_uint8(0x85)
     if currency is not None:
-        writer.write_bytes(MESSAGE_COMMAND.to_bytes(2, "little"))
-        writer.write_uint8(LOOT_RECEIVED_MESSAGE)
-        writer.write_uint32_le(4)
-        writer.write_uint8(1)
-        writer.write_uint32_le(_loot_received_currency_type(drop))
-        writer.write_uint8(1)
-        writer.write_uint32_le(max(0, int(drop.item.amount)))
-        writer.write_uint8(4)
-        writer.write_uint32_le(int(drop.item.item_id))
-        writer.write_uint8(2)
-        writer.write_string(drop.item.template_id)
-        writer.write_uint32_le(int(actor_id))
-        writer.write_uint8(0xFF)
+        _write_loot_received(writer, drop, actor_id)
 
     writer.write_bytes(DISCARD_ITEM_COMMAND.to_bytes(2, "little"))
     writer.write_uint32_le(int(drop.item.item_id))

@@ -2281,6 +2281,81 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertLess(result[0].current_health, result[0].maximum_health)
 
+    def test_melee_does_not_reach_a_player_far_above_or_below(self):
+        # A monster on a ledge must not strike a player standing under it:
+        # range is flat, the vertical reach is MONSTER_MELEE_VERTICAL_REACH.
+        player_world = (-70.0, 2.0, 35.0)
+        player_position = self._wire(player_world)
+        self.state.last_monster_attack_at = {
+            actor_id: 0.0 for actor_id in self.state.monsters
+        }
+        for tick in range(101, 151):
+            self.state.advance_monsters(
+                player_position, elapsed_seconds=0.2, server_tick=tick
+            )
+            if any(
+                self.state._distance(player_world, position)
+                <= self.encounter.attack.attack_range
+                for position in self.state.monster_positions.values()
+            ):
+                break
+        above = (player_world[0], player_world[1] + 4.0, player_world[2])
+        self.assertEqual(
+            self.state.maybe_start_monster_attacks(
+                self._wire(above), server_tick=151, now=11.1
+            ),
+            (),
+        )
+        attacks = self.state.maybe_start_monster_attacks(
+            player_position, server_tick=152, now=11.2
+        )
+        self.assertTrue(attacks)
+        # Gone up a ledge before the blow lands: it misses.
+        self.assertEqual(
+            self.state.resolve_due_monster_attacks(
+                self._wire(above),
+                now=max(attack.due_at for attack in attacks),
+            ),
+            (),
+        )
+
+    def test_radius_skill_reaches_a_monster_standing_higher(self):
+        # bloody360 (Radius, HitRange 4.62): a monster 4.2 m away on flat
+        # ground, standing 3 m higher, is inside its radius as the Angle and
+        # Cone shapes measure it (flat).
+        database = sqlite3.connect(f"file:{DEFAULT_STATIC_DB_PATH}?mode=ro", uri=True)
+        try:
+            index = database.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='bloody360'"
+            ).fetchone()[0]
+        finally:
+            database.close()
+        actor = sorted(self.state.living_actor_ids)[0]
+        monster = self.state.monster_positions[actor]
+        for other in list(self.state.monster_positions):
+            if other != actor:
+                self.state.monster_positions[other] = (1e4, 0.0, 1e4)
+        player = (monster[0], monster[1] - 3.0, monster[2] - 4.2)
+        plan = self.state.plan_entity_skill_hits(
+            skill_index=index, player_position=self._wire(player),
+            projectile=False, aim_angle=math.pi,
+        )
+        self.assertEqual(len(plan.impacts), 1)
+
+    def test_straight_projectile_lane_has_a_height(self):
+        attack = SimpleNamespace(
+            projectile_origin=(0.0, 10.0, 0.0),
+            direction=(0.0, -0.5, 1.0, 0.0),
+            target_position=(0.0, 0.0, 20.0),
+            projectile_radius=0.3,
+            maximum_projectile_range=0.0,
+        )
+        hit = LocalCombatState._fixed_projectile_intersects_player
+        self.assertTrue(hit(attack, (0.0, 0.0, 20.0)))
+        # Halfway the lane is 5 m up: a player on the ground there is under it.
+        self.assertFalse(hit(attack, (0.0, 0.0, 10.0)))
+        self.assertTrue(hit(attack, (0.0, 4.0, 10.0)))
+
     def test_collision_correction_never_exceeds_run_speed_step(self):
         player_world = (-51.75, 2.0, 12.45)
         player_position = self._wire(player_world)
@@ -2337,6 +2412,8 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         state.activate_monsters((shaman_actor_id,))
         state.last_monster_attack_at[shaman_actor_id] = 0.0
+        # Its InitialCoolDown has run out.
+        state._monster_skill_ready_at[shaman_actor_id] = {}
         monster_position = state.monster_positions[shaman_actor_id]
         player_position = encounter.coordinate_frame.world_to_wire(
             (
@@ -2610,6 +2687,8 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         state.activate_monsters((actor_id,))
         state.last_monster_attack_at[actor_id] = 0.0
+        # Its shot's InitialCoolDown (1-3 s) has run out.
+        state._monster_skill_ready_at[actor_id] = {}
         monster_position = state.monster_positions[actor_id]
         cast_target = (
             monster_position[0] + 6.0,
@@ -3055,20 +3134,63 @@ class LocalCombatStateTests(unittest.TestCase):
             monster.position[1],
             monster.position[2],
         ))
-        selected = []
-        for ordinal in range(3):
+        # Every 2 s for 40 s: the specials come when their cooldown allows
+        # (double strike 5 s, missile 20 s), the plain strike fills the rest.
+        used = []
+        for ordinal in range(20):
+            now = 1000.0 + ordinal * 2.0
             state.pending_monster_attacks.clear()
             state.last_monster_attack_at[actor_id] = 0.0
             attacks = state.maybe_start_monster_attacks(
-                target,
-                server_tick=1000 + ordinal * 100,
-                now=1000.0 + ordinal * 10.0,
+                target, server_tick=1000 + ordinal * 50, now=now,
             )
-            self.assertEqual(len(attacks), 1)
-            selected.append(attacks[0].definition.resource_id)
+            # The previous skill's own lock can still hold it.
+            used.extend((now, attack.definition.resource_id) for attack in attacks)
 
-        self.assertEqual(len(set(selected)), 3)
-        self.assertIn("heredur_base_missile", selected)
+        names = [name for _now, name in used]
+        self.assertEqual(
+            set(names),
+            {"heredur_base_strike", "heredur_base_doublestrike", "heredur_base_missile",
+             "heredur_summon_01"},
+        )
+        for skill, cooldown in (("heredur_base_doublestrike", 5.0), ("heredur_base_missile", 20.0)):
+            times = [now for now, name in used if name == skill]
+            self.assertTrue(all(b - a >= cooldown for a, b in zip(times, times[1:])))
+        self.assertEqual(names.count("heredur_base_missile"), 2)
+
+    def test_monster_skills_wait_their_initial_cooldown_and_match_difficulty(self):
+        actor_id = sorted(self.state.monsters)[0]
+        base = self.state.monsters[actor_id].attack
+        plain = replace(base, resource_id="plain", cooldown=0.0, initial_cooldown=(0.0, 0.0), cooldown_category="")
+        hounds = replace(base, resource_id="hounds", cooldown=35.0, initial_cooldown=(3.0, 5.0), cooldown_category="Skill05")
+        hard = replace(base, resource_id="hard_only", cooldown=10.0, cooldown_category="Skill06", min_difficulty=4)
+        skills = (plain, hounds, hard)
+        choose = lambda now: self.state._monster_skill_choice(actor_id, skills, skills, 0, now).resource_id
+        self.assertEqual(choose(100.0), "plain")  # hounds wait 3-5 s; hard_only is not this difficulty
+        self.assertEqual(choose(105.1), "hounds")
+        self.state._monster_skill_ready_at[actor_id]["Skill05"] = 140.1
+        self.assertEqual(choose(106.0), "plain")
+
+    def test_monster_self_buff_puts_its_effect_on_the_caster_and_strikes_nothing(self):
+        from pathlib import Path
+        from dso_server.gameplay import local_monster_state
+        attacks = local_monster_state._load_runtime_template(
+            Path(DEFAULT_STATIC_DB_PATH), "boss_heredur_scaling")[0]
+        enrage = next(a for a in attacks if a.resource_id == "heredur_bonus_enrage")
+        self.assertTrue(enrage.self_buff)
+        self.assertFalse(attacks[0].self_buff)
+        actor_id = sorted(self.state.monsters)[0]
+        monster = self.state.monsters[actor_id]
+        self.state.monsters[actor_id] = replace(monster, attacks=(enrage,), attack=enrage)
+        self.state._monster_skill_ready_at[actor_id] = {}
+        self.state.last_monster_attack_at[actor_id] = 0.0
+        position = self.state.monster_positions[actor_id]
+        target = self._wire((position[0] + 1.0, position[1], position[2]))
+        attacks = self.state.maybe_start_monster_attacks(target, server_tick=500, now=100.0)
+        self.assertEqual([a.definition.resource_id for a in attacks], ["heredur_bonus_enrage"])
+        self.assertIn("enrage", self.state.monster_status_effects.get(actor_id, {}))
+        self.assertEqual(
+            self.state.resolve_due_monster_attacks(target, now=attacks[0].due_at + 1.0), ())
 
     def test_player_summon_can_damage_only_explicit_hostile_player(self):
         definition = self.state.player_summon_definition(1877)

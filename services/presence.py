@@ -353,6 +353,7 @@ class PresenceService:
                 self, session, event[1], event[2]
             )
         if isinstance(event, tuple) and event[0] == "monster_summons":
+            # Monsters' summons landed this tick (services/monster_summons.py).
             return CharacterService._spawn_monster_summons(
                 self, session, event[1]
             )

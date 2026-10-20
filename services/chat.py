@@ -576,7 +576,10 @@ class ChatServer(RakNetServer):
                 ),
             )
             return False
-        if record.character_ids and hello.user_id not in record.character_ids:
+        # An account with no character owns none: it must not chat as any
+        # character id it names (an admin's included). The list is read live
+        # from account_characters, so a character made after login counts.
+        if hello.user_id not in record.character_ids:
             self._audit(
                 s, 'rejected',
                 f'user_id={hello.user_id} session={hello.session_id.hex()} '

@@ -291,13 +291,25 @@ class MonsterAttackDefinition:
     )
     loop_start_frame: int = 0
     damage_types: tuple[tuple[str, float], ...] = (("Physical", 1.0),)
+    # _Template_Skill CoolDown (seconds), InitialCoolDown ("3|5": a first wait
+    # drawn in that range once the monster fights), CoolDownCategory (skills
+    # sharing one timer) and MinDifficulty/MaxDifficulty (the map difficulties
+    # the variant is used on: boss_khalys_base_melee 0-3, _melee_plus 4-10).
     cooldown: float = 0.0
     initial_cooldown: tuple[float, float] = (0.0, 0.0)
     cooldown_category: str = ""
     min_difficulty: int = 0
     max_difficulty: int = 99
     damage_modifier: float = 1.0
+    # A Melee skill with no damage whose UserStatusEffects buff the monster
+    # itself (heredur_bonus_enrage): played as a SkillCommand, its effects put
+    # on the caster at its start, no blow.
     self_buff: bool = False
+    # A summon (_Template_Skill Summons): SummonMonsterId (else the caster
+    # template's, SummonCategory FromMonsterTemplate), that many per cast, at
+    # most SummonMonsterLimit of the caster's alive at once. A Shifted one is
+    # played as a ShiftedSkillCommand on the caster's place (Bearach's hounds,
+    # Heredur's skeletons), a Melee one as a SkillCommand (Arachna's spiders).
     summon_template: str = ""
     summon_amount: int = 0
     summon_limit: int = 0
@@ -309,6 +321,8 @@ class MonsterAttackDefinition:
 
     @property
     def support(self) -> bool:
+        """A skill that strikes nobody: a buff on the caster or a summon."""
+
         return self.self_buff or bool(self.summon_template)
 
 
@@ -508,6 +522,7 @@ class LocalMonsterEncounter:
     # Density volumes materialized even though their EventSet gate was still
     # closed. A later event start must not populate them a second time.
     prematerialized_spawn_area_rows: frozenset[int] = frozenset()
+    # The map's difficulty, which picks the skill variants monsters use.
     scaling_difficulty: int = 0
 
     def player_is_near(self, position: tuple[float, float, float]) -> bool:
@@ -1334,43 +1349,40 @@ def _load_runtime_template(
             targeting_type = str(skill_row[7])
             skill_bullet_id = str(skill_row[35] or "").strip()
             has_bullet = bool(skill_bullet_id)
+            self_buff = False
+            summon = (
+                int(skill_row[26] or 0) != 0
+                and float(skill_row[16]) <= 0.0
+            )
+            summon_template = summon_amount = summon_limit = None
+            if summon:
+                summon_template = str(skill_row[27] or "").strip() or str(movement_row[7] or "").strip()
+                summon_amount = int(skill_row[28] or 0) or int(movement_row[8] or 0)
+                summon_limit = int(skill_row[29] or 0) or int(movement_row[9] or 0)
+                summon = bool(summon_template) and summon_amount > 0 and skill_type in ("Shifted", "Melee")
             # Charge and Jump use movement-specific command payloads we do not
             # model. Shifted ground-target skills are supported below, but
             # only for radius/point targeting, whose native command receives a
             # target point for every authored bullet. This avoids routing
             # movement skills through BulletSkillCommand with an empty point
-            # array (the source of the client Math::point assertion).
+            # array (the source of the client Math::point assertion). A summon
+            # is cast on the caster's own place, whatever its targeting.
             if skill_type.casefold() in {
                 "charge", "chargethrough", "jump",
             } or (
                 skill_type.casefold() == "shifted"
                 and has_bullet
+                and not summon
                 and targeting_type.casefold() not in {
                     "radius", "point", "location",
                 }
             ):
                 continue
-            self_buff = False
-            summon_template = ""
-            summon_amount = 0
-            summon_limit = 0
-            is_summon = bool(int(skill_row[26] or 0))
-            if is_summon:
-                self_buff = bool(str(skill_row[11] or "").strip())
-                summon_template = (
-                    str(skill_row[27] or "").strip()
-                    or str(movement_row[7] or "").strip()
-                )
-                summon_amount = (
-                    int(skill_row[28] or 0)
-                    or int(movement_row[8] or 0)
-                )
-                summon_limit = (
-                    int(skill_row[29] or 0)
-                    or int(movement_row[9] or 0)
-                )
-                is_summon = bool(summon_template) and summon_amount > 0
-            if has_bullet:
+            if summon and skill_type == "Shifted":
+                command_id = SHIFTED_SKILL_COMMAND
+            elif summon and skill_type == "Melee":
+                command_id = SKILL_COMMAND
+            elif has_bullet:
                 # Ranged skills with a bullet require BulletSkillCommand on
                 # the client. Radius-targeted Shifted skills instead carry
                 # their ground-point array in ShiftedSkillCommand.
@@ -1383,10 +1395,6 @@ def _load_runtime_template(
                     command_id = TARGET_BULLET_SKILL_COMMAND
                 else:
                     command_id = BULLET_SKILL_COMMAND
-            elif is_summon and skill_type == "Shifted":
-                command_id = SHIFTED_SKILL_COMMAND
-            elif is_summon and skill_type == "Melee":
-                command_id = SKILL_COMMAND
             elif skill_type == "Melee" and float(skill_row[16]) > 0.0:
                 command_id = SKILL_COMMAND
             elif (
@@ -1461,9 +1469,9 @@ def _load_runtime_template(
                         ),
                         damage_modifier=max(0.0, float(skill_row[16] or 0.0)),
                         self_buff=self_buff,
-                        summon_template=summon_template if is_summon else "",
-                        summon_amount=max(0, summon_amount) if is_summon else 0,
-                        summon_limit=max(0, summon_limit) if is_summon else 0,
+                        summon_template=summon_template if summon else "",
+                        summon_amount=max(0, int(summon_amount or 0)) if summon else 0,
+                        summon_limit=max(0, int(summon_limit or 0)) if summon else 0,
                         bullet_count=max(1, int(skill_row[30] or 1)),
                         targeting_type=str(skill_row[31] or "Actor"),
                         player_width=max(0.0, float(skill_row[32] or 0.0)),
@@ -1486,6 +1494,9 @@ def _load_runtime_template(
     # Resource ids are stable while a few generated rows repeat the same skill
     # in comma/semicolon forms.  Rotate authored skills, not duplicate tokens.
     attacks = tuple({value.resource_id: value for value in attacks}.values())
+    # A monster's own buffs ride with its attacks: the primary attack (its
+    # approach range and interval) is a blow, and a monster with buffs only
+    # fights as before, not at all.
     attacks = (
         tuple(value for value in attacks if not value.support)
         + tuple(value for value in attacks if value.support)

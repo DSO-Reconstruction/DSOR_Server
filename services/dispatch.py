@@ -8,6 +8,7 @@ import sys
 import threading
 
 from dso_server.runtime.context import *
+from dso_server.protocol.trade_protocol import TRADE_CLIENT_COMMANDS
 from dso_server.protocol.prop_protocol import (
     PROP_INTERACTION_COMMAND,
     QUEST_TRIGGER_SIGNAL_COMMAND,
@@ -494,6 +495,9 @@ class DispatchService:
                 GROUP_LEAVE_COMMAND,
             }:
                 self._handle_group_command(s, payload, command_id)
+            elif command_id in TRADE_CLIENT_COMMANDS:
+                # DSOR player trade (services/trade.py).
+                self._handle_trade_command(s, payload)
             elif command_id in {
                 GROUP_INVITE_COMMAND,
                 GUILD_INVITE_COMMAND,
