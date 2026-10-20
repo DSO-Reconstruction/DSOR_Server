@@ -34,7 +34,6 @@ APP_TITLE = "TEST CLIENT"
 _SERVER_HOST_MASK = 0x5A
 _SERVER_HOST_DATA = (107, 106, 116, 107, 98, 107, 116, 110, 116, 98, 109)
 DEFAULT_API_PORT = 8080
-DEFAULT_CDN_PORT = 8082
 ICON_PATH = app_dir() / "icon.ico"
 
 
@@ -647,26 +646,8 @@ def launch_game(
     chat_port = launch["chat_port"]
     instance_id = launch["instance_id"]
 
-    rootkey = "f910a2e8a4a19589c8f96e07d4c0051d"
-    root_txt = working_dir / "__root.txt"
-    if root_txt.exists():
-        try:
-            val = root_txt.read_text(encoding="utf-8").strip()
-            if val:
-                rootkey = val
-        except Exception:
-            pass
-
-    cdn_url = (
-        f"httpnz://{address_host}:{launch.get('cdn_port', DEFAULT_CDN_PORT)}/cdndata"
-        if server_host_override
-        else launch.get("cdn_url") or f"httpnz://{address_host}:{DEFAULT_CDN_PORT}/cdndata"
-    )
     cmd = [
         str(client_exe),
-        "-rooturl", cdn_url,
-        "-cdnurl", cdn_url,
-        "-rootkey", rootkey,
         "-ip", f"{address_host}:{port}",
         "-uid", str(account_id),
         "-accid", str(account_id),

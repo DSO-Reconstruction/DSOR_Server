@@ -24,7 +24,6 @@ from dso_server.services.accounts import (
     AccountService,
 )
 from dso_server.services.admin import AdminService, DEFAULT_ADMIN_PORT
-from dso_server.services.cdn import CdnService, DEFAULT_CDN_PORT
 from dso_server.services.chat import ChatServer
 from dso_server.services.gateway import GatewayLoginServer
 from dso_server.services.login_game import LoginGameServer
@@ -388,15 +387,6 @@ class ServerApplication:
                 raise ValueError("admin and account HTTP services require different ports")
             self.login.admin_booking_delivery = self.admin.delivery
             self.characters.admin_booking_delivery = self.admin.delivery
-        cdn_service_enabled = _environment_flag("DSO_CDN_SERVICE", True)
-        self.cdn: CdnService | None = None
-        if cdn_service_enabled:
-            cdn_host = os.getenv("DSO_CDN_HOST") or ("0.0.0.0" if host not in ("127.0.0.1", "localhost") else host)
-            cdn_port = int(os.getenv("DSO_CDN_PORT", str(DEFAULT_CDN_PORT)))
-            self.cdn = CdnService(
-                host=cdn_host, port=cdn_port,
-                verbose=_environment_flag("DSO_CDN_VERBOSE", False),
-            )
 
     def start(self) -> None:
         if self._started:
@@ -427,14 +417,10 @@ class ServerApplication:
                 self.accounts.start()
             if self.admin is not None:
                 self.admin.start()
-            if self.cdn is not None:
-                self.cdn.start()
             self.autosaver.start()
             self.stall_watchdog.start()
             self.garbage_collector.install()
         except Exception:
-            if getattr(self, "cdn", None) is not None:
-                self.cdn.stop()
             if self.admin is not None:
                 self.admin.stop()
             self.autosaver.stop()
@@ -455,8 +441,6 @@ class ServerApplication:
         self.maintenance.close()
         if not self._started:
             return
-        if getattr(self, "cdn", None) is not None:
-            self.cdn.stop()
         if getattr(self, "admin", None) is not None:
             self.admin.stop()
         self.stall_watchdog.stop()
@@ -564,8 +548,6 @@ class ServerApplication:
         )
         if self.admin is not None:
             print(f"  {self.admin.port:<4} -> admin CMS: {self.admin.url}")
-        if self.cdn is not None:
-            print(f"  {self.cdn.port:<4} -> local CDN service: {self.cdn.url}")
         print("\nCtrl+C to stop\n")
 
 
