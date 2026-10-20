@@ -58,4 +58,4 @@ This is an independent, unofficial research project. It is not affiliated with, 
 Client files listed above are not distributed here. Do not commit or redistribute game client files, database dumps, maps, language files, account data, captures, or other third-party material unless you have the necessary rights and permission. Keep local-only assets out of Git. Repository privacy does not grant rights to third-party material.
 
 
-made by S
+The original code and architecture almost 90% of the actual project was made by S <3
