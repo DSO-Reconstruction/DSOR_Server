@@ -1,6 +1,5 @@
-# DSO-SERVER
+# DSO_SERVER
 
-This repository is a fork used to develop the Drakensang Online server software. The upstream project is [DSO-Reconstruction/DSOR_Server](https://github.com/DSO-Reconstruction/DSOR_Server). This fork is hosted at [xm1rth/DSO-SERVER](https://github.com/xm1rth/DSO-SERVER).
 
 ## Required client assets
 
@@ -52,12 +51,11 @@ Keep the server running while playing. If sign-in cannot connect, check that the
 
 `data/events.json` starts with an empty event schedule. Events can be configured through the server's admin panel.
 
-## Fork and attribution
-
-This project is a fork of [DSO Reconstruction](https://github.com/DSO-Reconstruction/DSOR_Server), a project focused on reverse engineering components related to Drakensang Online. Changes and additions in this repository are developed as part of this fork.
-
 ## Copyright, trademarks, and third-party material
 
 This is an independent, unofficial research project. It is not affiliated with, endorsed by, or sponsored by Bigpoint GmbH or the owners of Drakensang Online. “Drakensang Online,” related names, logos, characters, artwork, music, client software, and game content remain the property of their respective rights holders. This repository does not claim ownership of or grant rights to that material.
 
 Client files listed above are not distributed here. Do not commit or redistribute game client files, database dumps, maps, language files, account data, captures, or other third-party material unless you have the necessary rights and permission. Keep local-only assets out of Git. Repository privacy does not grant rights to third-party material.
+
+
+made by S
