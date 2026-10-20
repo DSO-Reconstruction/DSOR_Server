@@ -546,6 +546,23 @@ class MonsterActivityService:
                 CharacterService._record_delivered_monster_movements(
                     s, combat, attack_moves
                 )
+                # Those stops sit one tick before their cast, so the record
+                # above keeps a chase queued on the cast's own tick; resent
+                # after the cast, it would walk the caster through it.
+                with s.flow_lock:
+                    pending = s.gameplay_pending_monster_movements
+                    for attack in attacks:
+                        actor_id = int(attack.attacker_actor_id)
+                        queued = pending.get(actor_id)
+                        if (
+                            actor_id in framed_actor_ids
+                            and queued is not None
+                            and (
+                                (int(attack.server_tick)
+                                 - int(queued.value.start_tick)) & 0xFFFFFFFF
+                            ) < 0x80000000
+                        ):
+                            pending.pop(actor_id, None)
                 if ambient_moves:
                     CharacterService._send_monster_movement_batches(
                         s, ambient_moves, combat=combat

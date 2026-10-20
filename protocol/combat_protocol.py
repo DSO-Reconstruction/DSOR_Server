@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
+import os
 import struct
 
 from dso_server.protocol.character_selection import BitReader, BitWriter
@@ -42,6 +43,14 @@ KILL_COMMAND = command_id("Commands::KillCommand", 0x006C)
 # trips that manager's range assertion.  Synthesized commands therefore omit
 # it; captured payloads that do carry it still round-trip.
 SKILL_COMMAND_DERIVED_FLAG: bool | None = None
+
+# DSO_SKILL_HIT_MARKER_BITS=1: the release261_192 client's layout (the xm1rth
+# fork's), which always carries the skill inheritance marker and the Hit
+# tag-boundary bit. Off, both are written only when a value carries them, the
+# layout this server and the DSOR client (crates/proto combat.rs) use.
+SKILL_HIT_MARKER_BITS = os.getenv(
+    "DSO_SKILL_HIT_MARKER_BITS", "0"
+).strip().lower() in {"1", "true", "yes"}
 
 # One owner ``MoveCommand`` followed by one summon ``SustainedSkillCommand``.
 # The retail sample measures 1,026 bits with the inheritance marker.
@@ -311,7 +320,10 @@ def _read_skill_base(reader: BitReader) -> tuple[int, int, float, int, int, bool
     """Read the shared skill header plus the inheritance marker emitted by
     :func:`_write_skill_base`."""
 
-    return *_read_skill_cast_body(reader), reader.read_bool()
+    return (
+        *_read_skill_cast_body(reader),
+        reader.read_bool() if SKILL_HIT_MARKER_BITS else None,
+    )
 
 
 def _read_optional_derived_flag(reader: BitReader) -> bool | None:
@@ -524,7 +536,10 @@ def _write_skill_base(writer: BitWriter, value) -> None:
     writer.write_float(value.aim_angle)
     writer.write_uint32_le(value.server_tick)
     writer.write_uint32_le(value.cast_id)
-    writer.write_bool(bool(value.derived_flag))
+    if value.derived_flag is not None:
+        writer.write_bool(value.derived_flag)
+    elif SKILL_HIT_MARKER_BITS:
+        writer.write_bool(False)
 
 
 def _write_target_skill_body(writer: BitWriter, value: TargetSkill) -> None:
@@ -1049,12 +1064,16 @@ def _write_uint64_le(writer: BitWriter, value: int) -> None:
     writer.write_uint64_le(value)
 
 
-def _write_hit_body(writer: BitWriter, value: Hit) -> None:
+def _write_hit_body(
+        writer: BitWriter, value: Hit, *,
+        legacy_hit_tag_boundary_bit: bool | None = None) -> None:
     writer.write_uint32_le(value.server_tick)
     writer.write_uint32_le(len(value.hit_tags))
     for tag in value.hit_tags:
         writer.write_uint8(tag)
-    writer.write_bool(value.tag_boundary_bit)
+    if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
+            else legacy_hit_tag_boundary_bit):
+        writer.write_bool(value.tag_boundary_bit)
     writer.write_bool(value.field_48)
     writer.write_bool(value.field_49)
     _write_uint64_le(writer, value.current_health)
@@ -1072,10 +1091,17 @@ def _write_hit_body(writer: BitWriter, value: Hit) -> None:
     writer.write_string(value.combat_text_type)
 
 
-def _read_hit_body(reader: BitReader) -> Hit:
+def _read_hit_body(
+        reader: BitReader, *,
+        legacy_hit_tag_boundary_bit: bool | None = None) -> Hit:
     server_tick = reader.read_uint32_le()
     tags = tuple(reader.read_uint8() for _ in range(reader.read_uint32_le()))
-    tag_boundary_bit = reader.read_bool()
+    tag_boundary_bit = (
+        reader.read_bool()
+        if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
+            else legacy_hit_tag_boundary_bit)
+        else False
+    )
     field_48 = reader.read_bool()
     field_49 = reader.read_bool()
     current_health = reader.read_uint64_le()
@@ -1132,7 +1158,9 @@ def _read_kill_body(reader: BitReader) -> Kill:
     )
 
 
-def encode_combat_batch(value: CombatBatch) -> tuple[bytes, int]:
+def encode_combat_batch(
+        value: CombatBatch, *,
+        legacy_hit_tag_boundary_bit: bool | None = None) -> tuple[bytes, int]:
     if not value.commands:
         raise ValueError("CombatBatch requires at least one command")
     writer = BitWriter()
@@ -1142,7 +1170,11 @@ def encode_combat_batch(value: CombatBatch) -> tuple[bytes, int]:
             writer.write_uint8(0xFF)
         if isinstance(command, HitServerCommand):
             _write_uint16_le(writer, HIT_COMMAND)
-            _write_hit_body(writer, command.value)
+            _write_hit_body(
+                writer,
+                command.value,
+                legacy_hit_tag_boundary_bit=legacy_hit_tag_boundary_bit,
+            )
         elif isinstance(command, StatusEffectServerCommand):
             _write_uint16_le(writer, STATUS_EFFECT_COMMAND)
             _write_status_effect_body(writer, command.value)
@@ -1156,7 +1188,9 @@ def encode_combat_batch(value: CombatBatch) -> tuple[bytes, int]:
     return writer.finish()
 
 
-def decode_combat_batch(payload: bytes, bit_length: int) -> CombatBatch:
+def decode_combat_batch(
+        payload: bytes, bit_length: int, *,
+        legacy_hit_tag_boundary_bit: bool | None = None) -> CombatBatch:
     reader = BitReader(payload, bit_length)
     if reader.read_uint8() != 0x85:
         raise ValueError("CombatBatch is not a server batch")
@@ -1167,7 +1201,10 @@ def decode_combat_batch(payload: bytes, bit_length: int) -> CombatBatch:
         command_id = int.from_bytes(reader.read_bytes(2), "little")
         if command_id == HIT_COMMAND:
             command = HitServerCommand(
-                _read_hit_body(reader), reader.read_uint32_le()
+                _read_hit_body(
+                    reader,
+                    legacy_hit_tag_boundary_bit=legacy_hit_tag_boundary_bit,
+                ), reader.read_uint32_le()
             )
         elif command_id == STATUS_EFFECT_COMMAND:
             command = StatusEffectServerCommand(
