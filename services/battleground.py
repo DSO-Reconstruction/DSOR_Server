@@ -797,6 +797,21 @@ class BattlegroundService:
                 server._daily_challenge_feed(session, 'BattlegroundsPlayed')
                 if won:
                     server._daily_challenge_feed(session, 'MatchesWon')
+                # Arena quests count finished battles and wins per
+                # battleground id (<Event type="battle|victory"
+                # value="BestOf5_5v5_01_default">).
+                try:
+                    server._quest_feed(session, "battle", match.battleground_id)
+                    if won:
+                        server._quest_feed(
+                            session, "victory", match.battleground_id
+                        )
+                except Exception as exc:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] PvP quest progress failed "
+                        f"for character {entry.character_id}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
                 CharacterService._request_account_save(
                     session, "pvp match finished", flush=True
                 )

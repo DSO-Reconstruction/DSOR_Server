@@ -35,8 +35,8 @@ class SpawnAreaDensityScaleTests(unittest.TestCase):
         with patch.object(monster_state, "SPAWN_AREA_DENSITY_SCALE", 0.5):
             self.assertEqual(len(area.candidate_positions()), 50)
 
-    def test_whole_map_cap_is_below_the_historical_value(self):
-        self.assertEqual(monster_state.SPAWN_AREA_MAX_TOTAL_MONSTERS, 650)
+    def test_whole_map_cap_is_a_quarter_of_the_previous_value(self):
+        self.assertEqual(monster_state.SPAWN_AREA_MAX_TOTAL_MONSTERS, 650 // 4)
         self.assertLess(monster_state.SPAWN_AREA_MAX_TOTAL_MONSTERS, 768)
 
     def test_encounter_cache_holds_a_live_evening_of_maps(self):
