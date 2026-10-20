@@ -14,7 +14,7 @@ below is read-only content; the mutable per-map-instance state lives in
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 import math
 from pathlib import Path
@@ -24,6 +24,7 @@ import sqlite3
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
@@ -97,6 +98,11 @@ BLOODSHED_DIFFICULTY = 8
 CHEST_LOCATION_RADIUS = 1.5
 _CHEST_TIER_MARKERS = ("_epic_", "_rare_", "_magic_")
 
+# Authored per-difficulty reward chests in the parallel-world boss arenas.
+PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS = frozenset({
+    "pw_run_lootchest", "pw_run_lootchest_gold",
+})
+
 SERVER_SIGNAL_TYPES = frozenset({"serversignal", "mapsignal"})
 CLIENT_REPORTED_SIGNAL_TYPES = frozenset({"clienttoserversignal", "clientsignal"})
 
@@ -160,6 +166,11 @@ class SignalRule:
             and self.event_type in {
                 "playerenteredmap",
                 "playerlevelup",
+                # PlayerKilledMonster is also raised from the server's
+                # authoritative combat callback. Evaluate ClientSignal rules
+                # for that event there so boss-death gates do not depend on
+                # the client reporting its own kill back as a staging signal.
+                "playerkilledmonster",
                 # Resolve prop signals from the server's authoritative prop
                 # table instead of trusting a client StagingSignal payload.
                 "playerinteractedprop",
@@ -479,6 +490,13 @@ class MapPropDefinition:
     signal_referenced: bool
     workbench: bool
     quest_switch_id: str = ""
+    # ``MapVariation`` node this scene object belongs to, if any, plus the
+    # variation family and the difficulty tier that node selects
+    # (variationType 1).
+    parent_node_index: int = 0
+    variation_group: int = 0
+    variation_difficulty: int = 0
+    variation_level: int = 0
 
     @property
     def always_present(self) -> bool:
@@ -514,6 +532,115 @@ class MapPropDefinition:
             state=state,
             operation=WIRE_PROP_OPERATION,
         )
+
+
+def selected_map_difficulty(player) -> int:
+    """The access-group tier chosen for this player's map instance."""
+
+    difficulty = int(getattr(player, "gameplay_map_difficulty", 0) or 0)
+    if difficulty <= 0:
+        runtime = getattr(player, "gameplay_map_event_runtime", None)
+        difficulty = int(getattr(runtime, "scaling_difficulty", 0) or 0)
+    return max(0, difficulty)
+
+
+def selected_map_level(player) -> int:
+    """Effective level used by level-based MapVariation nodes."""
+
+    level = int(getattr(player, "gameplay_monster_level", 0) or 0)
+    if level <= 0:
+        character = getattr(player, "gameplay_character", None)
+        level = int(getattr(character, "level", 0) or 0)
+    if level <= 0:
+        runtime = getattr(player, "gameplay_map_event_runtime", None)
+        level = int(getattr(runtime, "monster_level", 0) or 0)
+    return max(0, level)
+
+
+def prop_visible_to_player(
+    definition: MapPropDefinition, player,
+) -> bool:
+    """Whether a ``MapVariation`` prop belongs to the player's difficulty.
+
+    The client merges PropInfo records into one scene.  Overlapping variants
+    authored for different difficulty tiers therefore all appear unless the
+    server publishes only the variation selected by the map-access group.
+    """
+
+    if not int(definition.variation_group or 0):
+        return True
+    required_level = int(definition.variation_level or 0)
+    if required_level > 0:
+        level = selected_map_level(player)
+        runtime = getattr(player, "gameplay_map_event_runtime", None)
+        siblings = {
+            int(prop.variation_level)
+            for prop in getattr(getattr(runtime, "content", None), "props", ())
+            if int(prop.variation_group or 0) == int(definition.variation_group or 0)
+            and int(prop.variation_level or 0) > 0
+        }
+        if level > 0:
+            eligible = [value for value in siblings if value <= level]
+            selected = max(eligible) if eligible else min(siblings or {required_level})
+        else:
+            selected = min(siblings or {required_level})
+        return required_level == selected
+
+    required = int(definition.variation_difficulty or 0)
+    difficulty = selected_map_difficulty(player)
+    if difficulty > 0:
+        return required == difficulty
+    # Sessions without map-access metadata (tests or direct map entry) still
+    # see one deterministic variant instead of every overlapping copy.
+    runtime = getattr(player, "gameplay_map_event_runtime", None)
+    siblings = {
+        int(prop.variation_difficulty or 0)
+        for prop in getattr(getattr(runtime, "content", None), "props", ())
+        if int(prop.variation_group or 0) == int(definition.variation_group or 0)
+    }
+    return required == min(siblings) if siblings else True
+
+
+def _map_variations(path: Path) -> dict[int, tuple[int, int]]:
+    """``MapVariation`` node index -> (family node, difficulty tier)."""
+
+    try:
+        root = ET.parse(path.with_suffix(".mvr")).getroot()
+    except (OSError, ET.ParseError):
+        return {}
+    variations: dict[int, tuple[int, int]] = {}
+    for node in root.iter("LevelNode"):
+        if str(node.get("variationType", "")).strip() != "1":
+            continue
+        try:
+            index = int(node.get("nodeIndex", ""))
+            group = int(node.get("parentNodeIndex", ""))
+            value = int(node.get("variationValue", ""))
+        except (TypeError, ValueError):
+            continue
+        variations[index] = (group, value)
+    return variations
+
+
+def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
+    """Level-based MapVariation node index -> (family node, level)."""
+
+    try:
+        root = ET.parse(path.with_suffix(".mvr")).getroot()
+    except (OSError, ET.ParseError):
+        return {}
+    variations: dict[int, tuple[int, int]] = {}
+    for node in root.iter("LevelNode"):
+        if str(node.get("variationType", "")).strip() != "3":
+            continue
+        try:
+            index = int(node.get("nodeIndex", ""))
+            group = int(node.get("parentNodeIndex", ""))
+            value = int(node.get("variationValue", ""))
+        except (TypeError, ValueError):
+            continue
+        variations[index] = (group, value)
+    return variations
 
 
 @dataclass(frozen=True)
@@ -615,6 +742,48 @@ def _read_transform(value: bytes) -> tuple[tuple[float, ...], tuple[float, float
     return matrix, position, rotation
 
 
+def deduplicate_pw002_wave_three_warriors(map_id: str, rows):
+    """Collapse the stacked PW002 gatekeeper rows into one authored actor.
+
+    The Alliance Fortress map database contains eleven rows for the same
+    leader template in EventSet 3438, all at one transform (eight leader rows
+    and three sentinel rows whose NpcId also points at the leader). Those
+    duplicated scene nodes materialize as a pile of identical dragon
+    warriors. Keep one row at that location; preserve every other map spawn.
+    """
+
+    if map_key(map_id) != "pw002_alliance_fortress_01_dun":
+        return tuple(rows)
+    result = []
+    seen = set()
+    for row in rows:
+        if isinstance(row, GatedSpawnRow):
+            row_id = row.row_id
+            event_set = row.event_set_row
+            template = row.template_id
+            position = row.position
+        else:
+            row_id, transform, template, event_set = row[:4]
+            try:
+                position = _read_transform(transform)[1]
+            except (TypeError, ValueError):
+                result.append(row)
+                continue
+        key = (
+            int(event_set), str(template).casefold(),
+            tuple(round(float(axis), 5) for axis in position),
+        )
+        if (
+            int(event_set) == 3438
+            and str(template).casefold() == "pw002_01_leader_warrior_heroic"
+        ):
+            if key in seen:
+                continue
+            seen.add(key)
+        result.append(row)
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class MapEventContent:
     map_id: str
@@ -692,6 +861,10 @@ def _load_map_event_content(
     signal_props = frozenset(signal_props_key)
     quest_switches = _quest_switch_props()
     path = map_database_path(Path(database_path), map_id)
+    level_variations = (
+        _map_level_variations(path)
+        if map_key(map_id) == "pw017_dragonslair_01_dun" else {}
+    )
     with sqlite3.connect(
         f"file:{path.as_posix()}?mode=ro", uri=True
     ) as database:
@@ -744,6 +917,9 @@ def _load_map_event_content(
                 int(row_id), int(event_set_row), str(template_id).strip(),
                 position, rotation,
             ))
+        spawn_rows = list(deduplicate_pw002_wave_three_warriors(
+            map_id, spawn_rows,
+        ))
 
         templates: dict[str, tuple[str, bool, str, str]] = {}
         chest_tier_chances: dict[int, tuple[int, int, int, int]] = {}
@@ -792,7 +968,8 @@ def _load_map_event_content(
             SELECT rowid, Guid, _ID, Id, Transform, COALESCE(EventSetRow, -1),
                    COALESCE(InteractOperation, ''), COALESCE(OperationId, ''),
                    COALESCE(OneShot, 0), COALESCE(LootListId, ''),
-                   COALESCE(ChestId, ''), COALESCE(State, 'active')
+                   COALESCE(ChestId, ''), COALESCE(State, 'active'),
+                   COALESCE(ParentNodeIndex, 0)
             FROM _Instance_StateObject
             ORDER BY rowid
             """
@@ -800,7 +977,7 @@ def _load_map_event_content(
             (
                 row_id, guid, instance_id, template_id, transform,
                 event_set_row, interact_operation, operation_id, one_shot,
-                loot_list_id, chest_id, state,
+                loot_list_id, chest_id, state, parent_node_index,
             ) = row
             try:
                 _matrix, position, rotation = _read_transform(transform)
@@ -819,13 +996,23 @@ def _load_map_event_content(
                 )
             )
             signal_referenced = instance_id.casefold() in signal_props
+            level_variation = level_variations.get(int(parent_node_index or 0))
+            # The PW017 seals are QuestControlled scene nodes.  Their scene
+            # entities are absent on the client until the matching quest task
+            # is active, so PropInfo with the authored GUID is silently
+            # discarded by ClientPropManager.  An empty GUID makes the client
+            # instantiate the same authored template at its database transform.
+            quest_seal = (
+                map_key(map_id) == "pw017_dragonslair_01_dun"
+                and instance_id.casefold() in {"pw017_seal_01", "pw017_seal_02"}
+            )
             props.append(MapPropDefinition(
                 prop_id=prop_actor_base + int(row_id) - 1,
                 row_id=int(row_id),
                 kind="scene",
                 instance_id=instance_id,
                 template_id=template_id,
-                instance_guid=bytes(guid) if guid else ZERO_GUID,
+                instance_guid=ZERO_GUID if quest_seal else bytes(guid) if guid else ZERO_GUID,
                 position=position,
                 rotation=rotation,
                 event_set_row=int(event_set_row),
@@ -837,6 +1024,9 @@ def _load_map_event_content(
                 signal_referenced=signal_referenced,
                 workbench=workbench,
                 quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+                parent_node_index=int(parent_node_index or 0),
+                variation_group=(level_variation[0] if level_variation else 0),
+                variation_level=(level_variation[1] if level_variation else 0),
             ))
         try:
             spawn_point_rows = database.execute(
@@ -915,6 +1105,59 @@ def _load_map_event_content(
                 matrix=matrix,
                 triggered_event_id=str(triggered_event_id or ""),
             ))
+    # Authored reward chests in the parallel-world boss arenas are
+    # MapVariation nodes for the difficulty tiers.  They share one transform
+    # per arena, so publishing every variant makes all difficulties' chests
+    # stack.  Tag each with its variation tier; the PropInfo senders keep only
+    # the viewer's tier.
+    chest_props = [
+        prop for prop in props
+        if prop.instance_id.casefold() in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+    ]
+    if chest_props:
+        variations = _map_variations(path)
+        # ClientPropManager::HandlePropInfoCommand only creates a prop
+        # entity when the entry carries a zero GUID; a non-zero GUID goes
+        # through LookupPropEntity and the whole entry is dropped when the
+        # scene has no entity with that GUID.  The authored chest GUIDs are
+        # quest-controlled, so they never exist for a player without the
+        # reward quest and both the initial snapshot and the map-entry
+        # replay were silently ignored.  Publish the chests under fresh
+        # prop ids with a zero GUID so the client instantiates them from
+        # the non-quest templates instead.
+        next_index = max(prop_index(prop.prop_id) for prop in props) + 1
+        if (
+            prop_index(prop_actor_base) + next_index + len(chest_props)
+            > PROP_INDEX_LIMIT
+        ):
+            raise ValueError(
+                f"map {map_id!r} has no free reward chest prop slots"
+            )
+        replacements = {}
+        for offset, prop in enumerate(chest_props):
+            replacements[prop.prop_id] = replace(
+                prop,
+                prop_id=prop_actor_base + next_index + offset,
+                # These visual twins use the same chest graphics and state
+                # files as pw_run_lootchest, but are not QuestControlled in
+                # the client data.
+                template_id=(
+                    "t000_state_chest_loot_05"
+                    if prop.instance_id.casefold() == "pw_run_lootchest_gold"
+                    else "t000_state_chest_loot_04"
+                ),
+                instance_guid=ZERO_GUID,
+                variation_group=variations.get(
+                    prop.parent_node_index, (0, 0),
+                )[0],
+                variation_difficulty=variations.get(
+                    prop.parent_node_index, (0, 0),
+                )[1],
+            )
+        props = [
+            replacements.get(prop.prop_id, prop) for prop in props
+        ]
+
     return MapEventContent(
         map_id=str(map_id),
         event_sets=MappingProxyType(event_sets),
@@ -1009,11 +1252,15 @@ class MapEventRuntime:
     props: dict[int, PropRuntimeState] = field(default_factory=dict)
     # StateObject IndividualUsage is scoped to a player and this map instance.
     individual_prop_usage: set[tuple[int, int]] = field(default_factory=set)
+    # Parallel-world arena reward chest props are visible on entry but must
+    # reject interaction until the arena boss dies.
+    boss_reward_chests_unlocked: set[str] = field(default_factory=set)
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
     # Monotonic animation anchors for rotating tower beams, shared by every
     # player in this map instance so server hit checks agree with one another.
     tower_beam_started_at: dict[int, float] = field(default_factory=dict)
     fired_once: set[str] = field(default_factory=set)
+    published_exit_events: set[tuple[int, str]] = field(default_factory=set)
     kill_score: int = 0
     fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))

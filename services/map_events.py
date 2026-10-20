@@ -16,6 +16,7 @@ import sqlite3
 import struct
 import time
 from dataclasses import replace
+from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 
@@ -31,10 +32,12 @@ from dso_server.gameplay.fractured_planes_layout import (
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     active_local_map_event_flags,
+    filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_npc_definitions,
     local_npc_actor_id,
     local_npc_info,
+    map_database_path,
 )
 from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS,
@@ -54,6 +57,7 @@ from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
 from dso_server.gameplay.map_event_state import (
     CLIENT_REPORTED_SIGNAL_TYPES,
     GatedSpawnRow,
+    PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
     WIRE_PROP_OPERATION,
     MapEventRuntime,
     MapLocalEventDefinition,
@@ -63,6 +67,7 @@ from dso_server.gameplay.map_event_state import (
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
+    prop_visible_to_player,
 )
 from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
@@ -635,6 +640,93 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "fp_boss_01_lythira",
 })
 _TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
+_PARALLEL_WORLD_EXIT_BOSSES = {
+    "pw001_grimmagstone_01_dun": (
+        "pw001_01_leader_undeadmage_heroic", "pw001_spawn_exit",
+    ),
+    "pw002_alliance_fortress_01_dun": (
+        "pw002_01_leader_warrior_heroic", "pw002_spawn_exit",
+    ),
+    "pw004_hagastove_grotto_01_dun": (
+        "pw004_01_leader_meanie_summoner_heroic", "pw004_spawn_exit",
+    ),
+    "pw005_caverns_loxley_01_dun": (
+        "pw005_01_leader_troll_heroic", "pw005_spawn_exit",
+    ),
+    "pw007_stonekeep_01_dun": (
+        "pw007_01_leader_undead_mage_heroic", "pw007_spawn_exit",
+    ),
+    "pw008_kingscrypt_01_dun": (
+        "pw008_01_leader_ranger_heroic", "pw008_spawn_exit",
+    ),
+    "pw010_wildcave_01_dun": (
+        "pw010_01_leader_stag_heroic", "pw010_spawn_exit",
+    ),
+    "pw011_eternal_grove_01_dun": (
+        "pw011_01_leader_boar_heroic", "pw011_spawn_exit",
+    ),
+    "pw013_wizard_garden_01_dun": (
+        "pw013_01_leader_jabbax_priest_heroic",
+        "pw013_spawn_exit_to_pw014",
+    ),
+    "pw014_cult_tower_01_dun": (
+        "pw014_01_leader_swamp_thing_heroic",
+        "pw014_spawn_exit_to_pw015",
+    ),
+    "pw016_teganswall_01_dun": (
+        "pw016_01_leader_tank", "pw016_spawn_exit",
+    ),
+    "pw017_dragonslair_01_dun": (
+        "pw017_01_leader_dragon_brood_warrior_01", "pw017_spawn_exit",
+    ),
+    "pw019_hailstone_mountains_01_dun": (
+        "pw019_01_leader_lightning_minion_01", "pw019_spawn_exit",
+    ),
+    "pw020_eternal_watch_01_dun": (
+        "pw020_01_leader_soulless_norseman_01", "pw020_spawn_exit",
+    ),
+    "pw022_mount_suvius_01_dun": (
+        "pw022_leader_centaur_01", "pw022_spawn_exit",
+    ),
+    "pw023_atlantis_above_water_01_dun": (
+        "pw023_leader_beastman_lobster_01", "pw023_spawn_exit",
+    ),
+    "pw025_ship_graveyard_01_dun": (
+        "", "pw025_spawn_exit",
+    ),
+    "pw026_heart_of_atlantis_01_dun": (
+        "", "pw026_spawn_exit",
+    ),
+}
+_PARALLEL_WORLD_BOSS_REWARD_CHESTS = {
+    "pw003_grimmag_01_boss": (
+        "boss_grimmag", "pw003_spawn_chest",
+    ),
+    "pw006_arachna_01_boss": (
+        "boss_arachna", "pw006_spawn_chest",
+    ),
+    "pw009_heredur_01_boss": (
+        "boss_heredur", "pw009_spawn_chest",
+    ),
+    "pw012_bearach_01_boss": (
+        "boss_bearach", "pw012_spawn_chest",
+    ),
+    "pw015_khalys_boss_01": (
+        "boss_khalys", "pw015_spawn_chest",
+    ),
+    "pw018_herold_01_boss": (
+        "boss_herald", "pw018_spawn_chest",
+    ),
+    "pw021_sigrismarr_01_boss": (
+        "boss_sigrismarr", "pw021_spawn_chest",
+    ),
+    "pw024_medusa_01_boss": (
+        "boss_medusa", "pw024_spawn_chest",
+    ),
+    "pw027_gorga_01_boss": (
+        "boss_gorga", "pw027_spawn_chest",
+    ),
+}
 _BLOOD_CHEST_GEM_TEMPLATES = (
     "gem_amethyst_e", "gem_cyanit_e", "gem_diamond_e",
     "gem_onyx_e", "gem_ruby_e",
@@ -644,6 +736,18 @@ _BLOOD_CHEST_LOOT_LIST = "chest_lootlist_bloodshed"
 
 def _log(message: str) -> None:
     print(f"{MAP_EVENT_LOG_PREFIX} {message}")
+
+
+@lru_cache(maxsize=4)
+def _exit_access_difficulties(database_path: str) -> dict[str, int]:
+    path = Path(database_path).resolve().as_uri()
+    with closing(sqlite3.connect(f"{path}?mode=ro", uri=True)) as database:
+        return {
+            str(access_id): int(difficulty or 0)
+            for access_id, difficulty in database.execute(
+                "SELECT Id, Difficulty FROM _Template_MapAccessGroup"
+            )
+        }
 
 
 def _prop_info_entry(
@@ -691,9 +795,15 @@ def _session_game_tick(s: Session) -> int:
 def _send_prop_info(viewer: Session, states, *, label: str) -> None:
     """Retail creates and refreshes mid-map props with PropInfo, never NewProp.
 
-    Quest-controlled props are filtered per viewer (services/quests.py).
+    Quest-controlled props are filtered per viewer (services/quests.py), and
+    map-variation props are limited to the viewer's difficulty tier so
+    overlapping authoring variants do not stack in one scene.
     """
 
+    states = tuple(
+        state for state in states
+        if prop_visible_to_player(state.definition, viewer)
+    )
     personalized = tuple(_prop_state_for_viewer(viewer, state) for state in states)
     _send_prop_info_entries(
         viewer, CharacterService._quest_prop_entries(viewer, personalized), label=label,
@@ -1482,6 +1592,10 @@ class MapEventService:
             return None
         with runtime.lock:
             states = runtime.published_props()
+        states = tuple(
+            state for state in states
+            if prop_visible_to_player(state.definition, s)
+        )
         states = tuple(_prop_state_for_viewer(s, state) for state in states)
         tick = _session_game_tick(s)
         return PropInfo(tuple(
@@ -1897,6 +2011,12 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        self._unlock_parallel_world_boss_reward_chest(
+            runtime, templates,
+        )
+        self._open_parallel_world_exit_after_boss_kill(
+            s, runtime, templates,
+        )
         self._fire_map_signal(s, "MonstersEliminated", templates)
         self._fire_map_signal(s, "MonstersEliminatedPercentage", ())
         self._update_fractured_planes_clear_state(s, monsters)
@@ -1915,6 +2035,135 @@ class MapEventService:
             self._resolve_fractured_planes_floor_clear(
                 s, runtime, score_rules=score_rules,
             )
+
+    def _unlock_parallel_world_boss_reward_chest(
+            self, runtime: MapEventRuntime | None, templates: tuple[str, ...],
+    ) -> None:
+        """Allow interaction with the arena reward chests after the boss dies.
+
+        Their PropInfo is published on map entry alongside the boss. This
+        runtime flag keeps the visible chest from being consumed too early.
+        """
+
+        if runtime is None:
+            return
+        gate = _PARALLEL_WORLD_BOSS_REWARD_CHESTS.get(map_key(runtime.map_id))
+        if gate is None or gate[0] not in templates:
+            return
+        with runtime.lock:
+            runtime.boss_reward_chests_unlocked.add(gate[1])
+        _log(
+            f"boss reward chest unlocked on {runtime.map_id} after "
+            f"{gate[0]} was defeated"
+        )
+
+    def _ensure_parallel_world_boss_reward_chest_visible(
+            self, runtime: MapEventRuntime | None,
+    ) -> None:
+        """Publish the arena's authored chest props as soon as it loads."""
+
+        if runtime is None:
+            return
+        gate = _PARALLEL_WORLD_BOSS_REWARD_CHESTS.get(map_key(runtime.map_id))
+        if gate is None:
+            return
+        definition = runtime.catalog.event(gate[1])
+        if definition is None or not definition.applies_to(runtime.map_id):
+            _log(
+                f"reward chest event {gate[1]!r} is missing for "
+                f"{runtime.map_id}"
+            )
+            return
+        self._schedule_map_local_event_start(runtime, definition)
+
+    def _publish_parallel_world_boss_reward_chest_props(
+            self, s: Session, runtime: MapEventRuntime | None,
+    ) -> None:
+        """Resend arena chest props after the client has entered the map.
+
+        The chest EventSet is enabled in the initialization snapshot, so the
+        event-start transition has no newly enabled props to publish. Some
+        clients process that initial PropInfo before the arena scene is ready;
+        explicitly replay the props after PlayerEnteredMap to make the chest
+        visible in the loaded scene.
+        """
+
+        if runtime is None:
+            return
+        gate = _PARALLEL_WORLD_BOSS_REWARD_CHESTS.get(map_key(runtime.map_id))
+        if gate is None:
+            return
+        with runtime.lock:
+            states = tuple(
+                state for state in runtime.published_props()
+                if state.definition.instance_id.casefold()
+                in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+                and prop_visible_to_player(state.definition, s)
+            )
+        if not states:
+            _log(
+                f"no published reward chest props found on {runtime.map_id}"
+            )
+            return
+        placements = "; ".join(
+            f"{state.definition.instance_id}->"
+            f"{state.definition.template_id}@{tuple(round(axis, 2) for axis in state.definition.position)}"
+            for state in states
+        )
+        _send_prop_info(
+            s, states, label="parallel-world-boss-reward-chest"
+        )
+        _log(
+            f"replayed {len(states)} reward chest prop(s) to player "
+            f"on {runtime.map_id} after map entry: {placements}"
+        )
+
+    def _open_parallel_world_exit_after_boss_kill(
+            self, s: Session, runtime: MapEventRuntime | None,
+            templates: tuple[str, ...],
+    ) -> None:
+        """Start the next-map exit event after its gatekeeper or map clear."""
+
+        if runtime is None:
+            return
+        with s.flow_lock:
+            if getattr(s, "gameplay_exit_transition_started", False):
+                return
+        gate = _PARALLEL_WORLD_EXIT_BOSSES.get(map_key(runtime.map_id))
+        if gate is None:
+            return
+        boss_template, event_key = gate
+        if boss_template:
+            if boss_template not in templates:
+                return
+        else:
+            # The final two Atlantis maps use authored clear events instead
+            # of a single leader actor. Their exit event is client-only, so
+            # start it server-side once the encounter has no living enemies.
+            combat = getattr(s, "gameplay_combat_state", None)
+            if combat is None:
+                return
+            _present, alive = combat.monster_template_counts()
+            if alive:
+                return
+        with runtime.lock:
+            already_started = (
+                event_key in runtime.running
+                or event_key in runtime.pending
+            )
+        if already_started:
+            # The authored kill/quest signal already ran the transition,
+            # including the staged ExitInfo -> EventUpdate -> active ExitInfo
+            # sequence. Replaying an active edge here does not create a new
+            # entity and can make the scene gate disappear without a portal.
+            return
+        _log(
+            f"Parallel World gatekeeper defeated on {runtime.map_id}: "
+            f"starting exit event {event_key!r}"
+        )
+        definition = runtime.catalog.event(event_key)
+        if definition is not None:
+            self._schedule_map_local_event_start(runtime, definition)
 
     @staticmethod
     def _notify_monsters_killed(s: Session, monsters) -> None:
@@ -2079,6 +2328,11 @@ class MapEventService:
         CharacterService._restore_map_companion_handoffs(self, s)
         if s.gameplay_last_move is not None:
             CharacterService._check_map_companions(s, s.gameplay_last_move.relative_position)
+        # Publish after map entry signals, boss actor replay, and quest state
+        # synchronization so the arena chest appears with its boss in the
+        # fully loaded client scene.
+        self._ensure_parallel_world_boss_reward_chest_visible(runtime)
+        self._publish_parallel_world_boss_reward_chest_props(s, runtime)
 
     # ------------------------------------------------------------------
     # Client-reported signals
@@ -2613,6 +2867,52 @@ class MapEventService:
         if runtime is None:
             _log(f"PropInteraction {request!r} without a map runtime")
             return
+        reward_gate = _PARALLEL_WORLD_BOSS_REWARD_CHESTS.get(
+            map_key(runtime.map_id)
+        )
+        if reward_gate is not None:
+            with runtime.lock:
+                candidate = runtime.props.get(int(request.prop_id))
+                chest_definition = (
+                    candidate.definition if candidate is not None else None
+                )
+                chest_unlocked = reward_gate[1] in runtime.boss_reward_chests_unlocked
+            if (
+                chest_definition is not None
+                and chest_definition.instance_id.casefold()
+                in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+                and not chest_unlocked
+            ):
+                # Keep the chest visible and restore its closed state after a
+                # premature click. Do this before IndividualUsage consumes
+                # the one-shot prop.
+                update = PropUpdate(
+                    prop_id=chest_definition.prop_id,
+                    state=PROP_STATE_ACTIVE,
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    counter=_session_game_tick(s),
+                    state_changed=True,
+                    operation=WIRE_PROP_OPERATION,
+                    task_index=0,
+                    keep_visual_state=False,
+                )
+                packet, packet_bits = encode_prop_update_batch(
+                    (update,), actor_id=0,
+                )
+                s.send_reliable_ordered(
+                    (packet, packet_bits), track=True,
+                    label="boss-chest-locked",
+                )
+                _send_prop_info(
+                    s,
+                    (PropRuntimeState(chest_definition, PROP_STATE_ACTIVE),),
+                    label="boss-chest-locked-info",
+                )
+                _log(
+                    f"locked boss reward chest {chest_definition.instance_id!r} "
+                    f"until {reward_gate[0]} dies"
+                )
+                return
         with runtime.lock:
             existing = runtime.props.get(int(request.prop_id))
             definition = existing.definition if existing is not None else None
@@ -2653,6 +2953,8 @@ class MapEventService:
             f"operation {request.operation!r}) used; state now {state.state}"
             f"{' (changed)' if flipped else ''}"
         )
+        if flipped:
+            self._spawn_pw022_gorgon_from_bust(s, runtime, definition)
         # Retail's reply to a click (docs/PROP_AND_TRIGGER_COMMANDS.md §6):
         # the clicking player's actor in the body, the new state, the game
         # tick, every flag false, trailing actor 0, then a one-record
@@ -2693,6 +2995,85 @@ class MapEventService:
             )
             CharacterService._achievement_on_prop_interacted(
                 self, s, definition.instance_id, definition.template_id,
+            )
+
+    def _spawn_pw022_gorgon_from_bust(self, s, runtime, definition) -> None:
+        """Spawn the guardian linked to a one-shot Mount Suvius bust prop."""
+
+        if map_key(runtime.map_id) != "pw022_mount_suvius_01_dun":
+            return
+        prop_id = str(definition.instance_id or "").casefold()
+        prop_suffix = prop_id.removeprefix("pw022_gorgon_busts_spawn_")
+        if (
+            not prop_id.startswith("pw022_gorgon_busts_spawn_")
+            or len(prop_suffix) != 2
+            or not prop_suffix.isdigit()
+        ):
+            return
+        try:
+            map_path = map_database_path(self.static_database_path, runtime.map_id)
+            with closing(sqlite3.connect(
+                f"file:{Path(self.static_database_path).as_posix()}?mode=ro", uri=True
+            )) as static_database:
+                state_object = static_database.execute(
+                    "SELECT COALESCE(MonsterId, ''), COALESCE(SpawnPoint, '') "
+                    "FROM _Template_StateObject WHERE Id=? LIMIT 1",
+                    (definition.template_id,),
+                ).fetchone()
+            if state_object is None:
+                _log(f"Gorgon bust template {definition.template_id!r} was not found")
+                return
+            monster_id, spawn_point = (str(value or "").strip() for value in state_object)
+            if not monster_id or not spawn_point:
+                _log(
+                    f"Gorgon bust template {definition.template_id!r} has no "
+                    "monster or spawn-point binding"
+                )
+                return
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True
+            )) as map_database:
+                anchor = map_database.execute(
+                    "SELECT rowid, Transform FROM _Instance_SpawnPoint "
+                    "WHERE lower(COALESCE(_ID, ''))=? "
+                    "OR lower(COALESCE(Id, ''))=? "
+                    "OR lower(COALESCE(Name, ''))=? "
+                    "ORDER BY rowid LIMIT 1",
+                    (spawn_point.casefold(),) * 3,
+                ).fetchone()
+            if anchor is None:
+                _log(
+                    f"Gorgon bust {definition.instance_id!r} spawn point "
+                    f"{spawn_point!r} was not found on {runtime.map_id}"
+                )
+                return
+            try:
+                matrix = struct.unpack("<16f", bytes(anchor[1]))
+                position = (float(matrix[12]), float(matrix[13]), float(matrix[14]))
+            except (TypeError, ValueError, struct.error) as exc:
+                _log(
+                    f"Gorgon bust {definition.instance_id!r} has an invalid "
+                    f"spawn transform: {exc}"
+                )
+                return
+            if _load_runtime_definition(self.static_database_path, monster_id, 0) is None:
+                _log(f"Gorgon bust monster template {monster_id!r} is unavailable")
+                return
+            row = GatedSpawnRow(
+                -2_000_000 - int(anchor[0]), -1, monster_id, position,
+            )
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            self._spawn_event_monsters(runtime, sessions, (), extra_rows=(row,))
+            _log(
+                f"Gorgon bust {definition.instance_id!r} spawned {monster_id!r} "
+                f"at {position!r}"
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            _log(
+                f"Gorgon bust spawn failed for {definition.instance_id!r}: "
+                f"{type(exc).__name__}: {exc}"
             )
 
     # ------------------------------------------------------------------
@@ -2960,11 +3341,11 @@ class MapEventService:
             f"disabled sets {transition.disabled_sets}"
         )
         self._apply_map_event_transition(runtime, transition)
-        if definition.wave_label is not None:
-            self._broadcast_wave_message(
-                runtime, encode_screen_message(definition.wave_label),
-                label="map-wave-start",
-            )
+        # if definition.wave_label is not None:
+        #     self._broadcast_wave_message(
+        #         runtime, encode_screen_message(definition.wave_label),
+        #         label="map-wave-start",
+        #     )
         scheduler = getattr(runtime, "scheduler", None)
         if definition.duration > 0.0 and scheduler is not None:
             handle = scheduler.timer(
@@ -2991,6 +3372,18 @@ class MapEventService:
     def _apply_map_event_transition(self, runtime: MapEventRuntime,
                                     transition) -> None:
         sessions = self._map_event_sessions(runtime)
+        if transition.enabled_sets:
+            # Cache newly gated exits without activating them. The event-set
+            # controller creates their scene entities on EventUpdate; sending
+            # active=True before that edge can hide the closed gate while the
+            # portal entity is still absent. The normal refresh below marks
+            # them active after the entity has been created.
+            self._publish_map_exits(
+                runtime, sessions,
+                event_sets=transition.enabled_sets,
+                active_override=False,
+                update_session_state=False,
+            )
         if transition.announce:
             self._broadcast_map_event_update(runtime, sessions, transition)
         if transition.disabled_sets:
@@ -3004,6 +3397,19 @@ class MapEventService:
             self._publish_map_exits(runtime, sessions)
         if transition.active and transition.event.key == "boss_spawn":
             self._publish_entrance_bosses(runtime, sessions)
+            if map_key(runtime.map_id) in _PARALLEL_WORLD_BOSS_REWARD_CHESTS:
+                # The arena boss is spawned by its BOSS_spawn EventSet after
+                # the client enters. Publish the reward props again after
+                # _spawn_event_monsters has sent the boss actor, so the chest
+                # is created in the loaded scene alongside the boss.
+                for viewer in sessions:
+                    self._publish_parallel_world_boss_reward_chest_props(
+                        viewer, runtime,
+                    )
+                _log(
+                    f"published boss reward chests after boss spawn on "
+                    f"{runtime.map_id} to {len(sessions)} player(s)"
+                )
 
     def _publish_entrance_bosses(self, runtime, sessions) -> None:
         """Release baseline encounter actors only after their entrance signal."""
@@ -3043,12 +3449,17 @@ class MapEventService:
             referenced.update(runtime.running)
             referenced.add(definition.key)
         definitions = {}
+        target_map = map_key(runtime.map_id)
         for event_key in referenced:
             event = catalog.event(event_key)
-            if event is not None and event.applies_to(runtime.map_id):
+            if event is not None and target_map in event.maps:
                 definitions[event.key] = event
         entries = tuple(
             EventUpdateEntry(
+                # Retail encodes every map-local event with id 0; the client
+                # resolves the local controller from the event name. Sending
+                # the catalog id here makes full snapshots disagree with the
+                # targeted portal update and can leave gated exits unsynced.
                 event_id=0,
                 event_name=event.event_id,
                 flags=(event_key in active_flags, True, False, False),
@@ -3106,7 +3517,9 @@ class MapEventService:
                 viewer, packet, packet_bits, label="map-event-discard-prop"
             )
 
-    def _publish_map_exits(self, runtime, sessions) -> None:
+    def _publish_map_exits(
+            self, runtime, sessions, *, event_sets=None,
+            active_override=None, update_session_state=True) -> None:
         with runtime.lock:
             flags = runtime.active_flags()
         try:
@@ -3122,32 +3535,103 @@ class MapEventService:
         except Exception as exc:
             _log(f"exit refresh failed: {type(exc).__name__}: {exc}")
             return
+        parallel_world_boss_map = map_key(runtime.map_id) in _PARALLEL_WORLD_EXIT_BOSSES
+        tiers = _exit_access_difficulties(str(self.static_database_path)) if parallel_world_boss_map else {}
+        available = (
+            {
+                tiers[d.destination_map_id] for d in definitions
+                if d.destination_map_id in tiers
+            }
+            if parallel_world_boss_map else set()
+        )
+        if event_sets is not None:
+            wanted_event_sets = {int(value) for value in event_sets}
+            definitions = tuple(
+                d for d in definitions
+                if d.event_set_row in wanted_event_sets
+            )
+        if not definitions:
+            return
         for viewer in sessions:
-            viewer_definitions = definitions
-            exit_info = ExitInfo(tuple(
-                ExitInfoEntry(
-                    definition.name,
-                    definition.destination_map_id,
-                    int(definition.active),
-                    definition.instance_guid,
+            with viewer.flow_lock:
+                if getattr(viewer, "gameplay_exit_transition_started", False):
+                    continue
+            # The runtime's scaling difficulty is used for monster stats and
+            # may combine the selected map difficulty with a scaling slider.
+            # Exit labels must follow the actual access group chosen for this
+            # session, which is stored separately on the session.
+            selected_access_id = str(
+                getattr(viewer, "gameplay_map_access_id", "") or ""
+            )
+            selected_tier = (
+                int(tiers.get(
+                    selected_access_id,
+                    getattr(
+                        viewer, "gameplay_map_difficulty",
+                        runtime.scaling_difficulty,
+                    ),
+                ))
+                if parallel_world_boss_map else 0
+            )
+            if available and selected_tier not in available:
+                _log(
+                    f"no boss exit tier {selected_tier} for selected access "
+                    f"{selected_access_id!r} on {runtime.map_id}; "
+                    f"available={sorted(available)}"
                 )
-                for definition in viewer_definitions
-            ))
+            exit_entries = []
+            active_viewer_definitions = []
+            # Filter before the closed-gate snapshot too. The native client
+            # merges ExitInfo into its Name/GUID cache; a nonselected GUID
+            # cached even once allows that overlapping variation to spawn.
+            viewer_definitions = filter_parallel_world_exits_for_access(
+                self.static_database_path,
+                runtime.map_id,
+                definitions,
+                selected_map_access_id=selected_access_id,
+                selected_map_difficulty=selected_tier,
+            )
+            for definition in viewer_definitions:
+                is_active = definition.active
+                if active_override is not None:
+                    entry_active = active_override
+                else:
+                    entry_active = is_active
+                if is_active:
+                    active_viewer_definitions.append(definition)
+                exit_entries.append(
+                    ExitInfoEntry(
+                        definition.name,
+                        definition.destination_map_id,
+                        int(entry_active),
+                        definition.instance_guid,
+                    )
+                )
+            exit_info = ExitInfo(tuple(exit_entries))
             packet, packet_bits = encode_server_command_batch(
                 (ServerCommand(
-                    EXIT_INFO_COMMAND, exit_info, LOCAL_PLAYER_ACTOR_ID,
+                    EXIT_INFO_COMMAND, exit_info, 0,
                 ),),
                 include_terminator=True,
             )
             with viewer.flow_lock:
                 if viewer.gameplay_map != runtime.map_id:
                     continue
-                viewer.gameplay_map_exits = viewer_definitions
+                if update_session_state:
+                    viewer.gameplay_map_exits = tuple(active_viewer_definitions)
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-exit-info"
             )
+            if parallel_world_boss_map:
+                _log(
+                    f"boss exits for {getattr(viewer, 'addr', '?')}: access="
+                    f"{getattr(viewer, 'gameplay_map_access_id', '')!r} "
+                    f"difficulty={selected_tier}; wire_guids={len(exit_entries)}; "
+                    f"stage={'closed' if active_override is False else 'open'}; active="
+                    f"{[d.destination_map_id for d in active_viewer_definitions]}"
+                )
         _log(
-            f"published {len(definitions)} exit(s) on {runtime.map_id} to "
+            f"refreshed exits on {runtime.map_id} for "
             f"{len(sessions)} session(s)"
         )
 
@@ -3243,8 +3727,118 @@ class MapEventService:
                 viewer, packet, packet_bits, label="map-event-new-npc"
             )
 
-    def _spawn_event_monsters(self, runtime, sessions, event_sets) -> None:
-        rows = runtime.gated_spawn_rows(event_sets)
+    def _quest_spawn_monsters(self, s: Session, specifications) -> None:
+        """Materialize quest ``<Spawn>`` entries at their authored map points."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or not specifications:
+            return
+        try:
+            difficulty = int(getattr(
+                s, "gameplay_map_difficulty", runtime.scaling_difficulty,
+            ))
+        except (TypeError, ValueError):
+            difficulty = int(runtime.scaling_difficulty)
+        selected = []
+        seen_specs = set()
+        for specification in specifications:
+            if specification.difficulty:
+                try:
+                    if int(specification.difficulty) != difficulty:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+            key = (
+                str(specification.template_id).casefold(),
+                str(specification.location).casefold(),
+            )
+            if key not in seen_specs:
+                seen_specs.add(key)
+                selected.append(specification)
+        if not selected:
+            return
+
+        path = map_database_path(self.static_database_path, runtime.map_id)
+        with sqlite3.connect(path) as database:
+            locations = {}
+            for specification in selected:
+                location = str(specification.location).casefold()
+                if location in locations:
+                    continue
+                rows = database.execute(
+                    """
+                    SELECT rowid, ParentNodeIndex, Transform
+                    FROM _Instance_SpawnPoint
+                    WHERE lower(COALESCE(Name, ''))=?
+                       OR lower(COALESCE(_ID, ''))=?
+                    ORDER BY rowid
+                    """,
+                    (location, location),
+                ).fetchall()
+                points = []
+                for row_id, parent_index, transform in rows:
+                    try:
+                        matrix = struct.unpack("<16f", bytes(transform))
+                    except (TypeError, ValueError, struct.error):
+                        continue
+                    points.append((
+                        int(row_id), int(parent_index or 0),
+                        (float(matrix[12]), float(matrix[13]), float(matrix[14])),
+                    ))
+                if points:
+                    # A few PW maps reuse one location name for difficulty
+                    # variants that sit in different regions. Use the same
+                    # ordered-parent selection as density-area variants.
+                    parents = {}
+                    for point in points:
+                        parents.setdefault(point[1], point)
+                    if 0 in parents:
+                        locations[location] = parents[0]
+                    else:
+                        variants = [parents[key] for key in sorted(parents)]
+                        index = min(
+                            max(0, int(runtime.scaling_difficulty)),
+                            len(variants) - 1,
+                        )
+                        locations[location] = variants[index]
+
+        spawn_rows = []
+        for index, specification in enumerate(selected):
+            location = str(specification.location).casefold()
+            point = locations.get(location)
+            if point is None:
+                _log(
+                    f"quest spawn point {specification.location!r} was not "
+                    f"found on {runtime.map_id}"
+                )
+                continue
+            row_id, _parent_index, position = point
+            if _load_runtime_definition(
+                self.static_database_path, specification.template_id, 0,
+            ) is None:
+                _log(
+                    f"quest spawn template {specification.template_id!r} "
+                    "has no runtime definition"
+                )
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                -1_000_000 - row_id - index,
+                -1,
+                str(specification.template_id),
+                position,
+            ))
+        if spawn_rows:
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            self._spawn_event_monsters(
+                runtime, sessions, (), extra_rows=tuple(spawn_rows),
+            )
+
+    def _spawn_event_monsters(
+            self, runtime, sessions, event_sets, *, extra_rows=(),
+    ) -> None:
+        rows = (*runtime.gated_spawn_rows(event_sets), *tuple(extra_rows))
         # Scene controllers are event-graph objects, not renderable combatants.
         # In particular, publishing one as a NewMonster can leave the client
         # with a registered actor that has no effect module and abort the rest

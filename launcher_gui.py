@@ -31,17 +31,9 @@ def app_dir() -> Path:
 
 
 APP_TITLE = "TEST CLIENT"
-_SERVER_HOST_MASK = 0x5A
-_SERVER_HOST_DATA = (107, 106, 116, 107, 98, 107, 116, 110, 116, 98, 109)
+DEFAULT_SERVER_HOST = "127.0.0.1"
 DEFAULT_API_PORT = 8080
-DEFAULT_CDN_PORT = 8082
 ICON_PATH = app_dir() / "icon.ico"
-
-
-def _server_host() -> str:
-    """Decode the fixed server address without storing it as a plain string."""
-    return bytes(value ^ _SERVER_HOST_MASK
-                 for value in _SERVER_HOST_DATA).decode("ascii")
 
 
 def _parse_server_endpoint(value: str) -> tuple[str, str]:
@@ -347,7 +339,7 @@ class App(tk.Tk):
         self.username_var = tk.StringVar()
         self.password_var = tk.StringVar()
         self.password2_var = tk.StringVar()
-        self.server_ip_var = tk.StringVar(value=_server_host())
+        self.server_ip_var = tk.StringVar(value=DEFAULT_SERVER_HOST)
         self.remember_var = tk.BooleanVar(value=False)
 
         self.server_ip_row = self._field(inner, s["server_ip"], self.server_ip_var)
@@ -473,8 +465,6 @@ class App(tk.Tk):
         self._busy_refresh()
 
     def _set_status(self, msg: str, color: str = TEXT_DIM) -> None:
-        host = _server_host()
-        msg = msg.replace(host, "server")
         self.status_var.set(msg)
         self.status_lbl.config(fg=color)
 
@@ -647,26 +637,8 @@ def launch_game(
     chat_port = launch["chat_port"]
     instance_id = launch["instance_id"]
 
-    rootkey = "f910a2e8a4a19589c8f96e07d4c0051d"
-    root_txt = working_dir / "__root.txt"
-    if root_txt.exists():
-        try:
-            val = root_txt.read_text(encoding="utf-8").strip()
-            if val:
-                rootkey = val
-        except Exception:
-            pass
-
-    cdn_url = (
-        f"httpnz://{address_host}:{launch.get('cdn_port', DEFAULT_CDN_PORT)}/cdndata"
-        if server_host_override
-        else launch.get("cdn_url") or f"httpnz://{address_host}:{DEFAULT_CDN_PORT}/cdndata"
-    )
     cmd = [
         str(client_exe),
-        "-rooturl", cdn_url,
-        "-cdnurl", cdn_url,
-        "-rootkey", rootkey,
         "-ip", f"{address_host}:{port}",
         "-uid", str(account_id),
         "-accid", str(account_id),

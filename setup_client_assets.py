@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare local server assets and the CDN cache from the Windows DSO cache.
+"""Prepare local server assets from the Windows DSO cache.
 
-The official client keeps downloaded CDN content under
+The official client keeps downloaded content under
 %LOCALAPPDATA%\\Temp\\DSOClient. This script extracts the server data files
-from that cache and copies only CDN resources into this repository's DSOClient
-folder. It does not download, install, or redistribute the game client.
+from that cache. It does not download, install, or redistribute the game
+client.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from dataclasses import dataclass
 import os
 from pathlib import Path
 import re
-import shutil
 import struct
 import zlib
 import xml.etree.ElementTree as ET
@@ -26,7 +25,6 @@ _MAP_KEY = re.compile(r"^export_win32_maps_(?P<name>.+\.(?:db4|map|col))$", re.I
 _LANGUAGE_KEY = re.compile(
     r"^export_win32_language_(?P<locale>[^_]+)_(?P<file>db\..+\.xml)$", re.I
 )
-_HASHED_CDN_FILE = re.compile(r"\.[0-9a-fA-F]{32}\.nz$|\._[0-9a-fA-F]{32}$")
 _BXML_NO_INDEX = 0x7FFFFFFF
 
 
@@ -283,71 +281,9 @@ def convert_quests_pbxml(source: Path, destination: Path) -> int:
     return quest_count
 
 
-def _is_cdn_resource(path: Path) -> bool:
-    name = path.name
-    return (
-        name == "__root.txt"
-        or name.startswith("__toc")
-        or name.endswith(".nbi")
-        or bool(_HASHED_CDN_FILE.search(name))
-    )
-
-
-def _cdn_source_files(source: Path) -> list[tuple[Path, Path]]:
-    files: list[tuple[Path, Path]] = []
-    for path in source.iterdir():
-        if path.is_file() and _is_cdn_resource(path):
-            files.append((path, Path(path.name)))
-
-    bundles = source / "bundles"
-    if bundles.is_dir():
-        for path in bundles.rglob("*"):
-            if path.is_file() and _is_cdn_resource(path):
-                files.append((path, Path("bundles") / path.relative_to(bundles)))
-
-    # These are CDN data only. Do not copy the client executable, DLLs, logs,
-    # local-storage/session files, or decompressed .unc duplicates.
-    event_mapping = source / "dlcache" / "eventbankmapping.txt"
-    if event_mapping.is_file():
-        files.append((event_mapping, Path("dlcache") / event_mapping.name))
-    dlcache_assets = source / "dlcache" / "export_win32"
-    if dlcache_assets.is_dir():
-        for path in dlcache_assets.rglob("*"):
-            if path.is_file():
-                files.append((path, Path("dlcache") / "export_win32" / path.relative_to(dlcache_assets)))
-
-    return files
-
-
-def _human_size(value: int) -> str:
-    size = float(value)
-    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
-        if size < 1024 or unit == "TiB":
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TiB"
-
-
-def copy_cdn_cache(files: list[tuple[Path, Path]], destination: Path) -> int:
-    total_bytes = sum(path.stat().st_size for path, _ in files)
-    say(f"Copying {len(files):,} CDN files ({_human_size(total_bytes)}) to {destination}.")
-    copied_bytes = 0
-    for index, (source, relative) in enumerate(files, 1):
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-        copied_bytes += source.stat().st_size
-        if index == len(files) or index % 5000 == 0:
-            say(
-                f"  CDN cache: {index:,}/{len(files):,} files "
-                f"({_human_size(copied_bytes)} copied)"
-            )
-    return copied_bytes
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Extract DSO server assets and prepare its local CDN cache."
+        description="Extract DSO server assets from the official client cache."
     )
     parser.add_argument(
         "--source",
@@ -363,7 +299,7 @@ def main() -> int:
     parser.add_argument(
         "--yes",
         action="store_true",
-        help="Skip the confirmation before copying the CDN cache.",
+        help="Skip the confirmation before extracting the server assets.",
     )
     parser.add_argument(
         "--overwrite-quests-xml",
@@ -374,7 +310,6 @@ def main() -> int:
 
     server_dir = args.server_dir.expanduser().resolve()
     data_root = server_dir / "data"
-    cdn_destination = server_dir / "DSOClient"
     try:
         source = source_directory(args.source)
     except RuntimeError as exc:
@@ -385,7 +320,6 @@ def main() -> int:
     say("This script reads the official client's local cache; it does not download game files.")
     say(f"Client cache: {source}")
     say(f"Server data:  {data_root}")
-    say(f"CDN cache:    {cdn_destination}")
 
     root_file = source / "__root.txt"
     toc_files = list(source.glob("__toc*"))
@@ -412,15 +346,6 @@ def main() -> int:
         say("Let the official client finish downloading its content, then run this script again.")
         return 2
 
-    if not root_file.read_text(encoding="utf-8", errors="replace").strip():
-        say("ERROR: The client's __root.txt is empty; the CDN cache is incomplete.")
-        return 2
-
-    cdn_files = _cdn_source_files(source)
-    if not cdn_files:
-        say("ERROR: No CDN cache files were found in the official client folder.")
-        return 2
-    total_cdn_bytes = sum(path.stat().st_size for path, _ in cdn_files)
     quests_xml = data_root / "quests.xml"
 
     say()
@@ -429,8 +354,6 @@ def main() -> int:
     say("  - Save the client's binary quests.pbxml as data/quests.pbxml and decode its quest definitions into data/quests.xml.")
     if quests_xml.is_file() and not args.overwrite_quests_xml:
         say("    Existing data/quests.xml will be preserved; use --overwrite-quests-xml to replace it.")
-    say(f"  - Copy {len(cdn_files):,} CDN resources ({_human_size(total_cdn_bytes)}) into DSOClient for the server's CDN service.")
-    say("  - Exclude client executables, DLLs, logs, local-storage/session files, and decompressed cache duplicates from the CDN copy.")
     if quests_pbxml not in selected_destinations:
         say("  NOTE: No quests.pbxml was found in the client cache; quest XML conversion will be skipped.")
 
@@ -472,16 +395,12 @@ def main() -> int:
                 return 2
             say(f"  Quest XML: {decoded_quest_count:,} quests written to {quests_xml}")
 
-    cdn_destination.mkdir(parents=True, exist_ok=True)
-    copied_bytes = copy_cdn_cache(cdn_files, cdn_destination)
-
     say()
     say("Setup finished.")
     say(f"  Static database: {static_db}")
     say(f"  Map databases:  {len(map_databases):,}")
     say(f"  Navigation:     {len(navigation_meshes):,} .tok files and navshapes.bin")
     say(f"  Language files: {len(language_files):,}")
-    say(f"  CDN resources:  {_human_size(copied_bytes)} copied to {cdn_destination}")
     if quests_pbxml in selected_destinations:
         say(f"  Quest source:   {quests_pbxml}")
     if quests_xml.is_file():

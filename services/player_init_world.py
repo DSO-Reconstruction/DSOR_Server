@@ -9,6 +9,7 @@ request on its own are sent.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +73,8 @@ class PlayerInitializationWorldService:
             # gated NPC is first announced after that update, the client has
             # already reserved the row's actor id and rejects our NewNPC.
             include_inactive_event_sets=True,
+            selected_map_difficulty=map_access.map_difficulty,
+            selected_map_access_id=map_access.request_map_id,
         )
         monster_encounter = load_local_monster_encounter(
             self.static_database_path,
@@ -318,9 +321,11 @@ class PlayerInitializationWorldService:
                 gameplay_map,
                 active_event_flags=active_event_flags | runtime_flags | reveal_flags,
                 include_inactive_event_sets=True,
+                selected_map_difficulty=map_access.map_difficulty,
+                selected_map_access_id=map_access.request_map_id,
             )
             with s.flow_lock:
-                s.gameplay_map_exits = tuple(
+                late_join_exits = tuple(
                     definition
                     for definition in load_local_map_exits(
                         self.static_database_path,
@@ -328,6 +333,15 @@ class PlayerInitializationWorldService:
                         active_event_flags=active_event_flags | runtime_flags | reveal_flags,
                     )
                     if definition.active and definition.destination_map_id
+                )
+                s.gameplay_map_exits = tuple(
+                    definition
+                    for definition in filter_parallel_world_exits_for_access(
+                        self.static_database_path,
+                        gameplay_map,
+                        late_join_exits,
+                        selected_map_access_id=map_access.request_map_id,
+                    )
                 )
         with s.flow_lock:
             old_chase_timer = s.gameplay_chase_timer
@@ -638,6 +652,10 @@ class PlayerInitializationWorldService:
             )
         with s.flow_lock:
             s.gameplay_quick_slots = copy.deepcopy(quick_slots_snapshot)
+            # Ignore the client's stale empty mount-slot echo while its map
+            # UI is still loading. The first real user edit can clear it once
+            # this short handoff window expires.
+            s.gameplay_quick_slots_init_echo_until = time.monotonic() + 15.0
         return local_client_player_init_commands(commands)
 
     def _send_initialization_commands(
@@ -669,14 +687,27 @@ class PlayerInitializationWorldService:
                 s.gameplay_stickerbook_entries[key]
                 for key in sorted(s.gameplay_stickerbook_entries)
             )
+            quick_slots = copy.deepcopy(s.gameplay_quick_slots)
+        followup_commands = []
+        if isinstance(quick_slots, QuickSlotsInfo):
+            # The client can discard the quickbar snapshot sent inside the
+            # initial map batch while it is rebuilding its UI. Reapply the
+            # server's persisted bars after PlayerReady so shortcuts (notably
+            # the mount bound to O) survive map handoffs.
+            followup_commands.append(ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                quick_slots,
+                LOCAL_PLAYER_ACTOR_ID,
+            ))
+        followup_commands.append(ServerCommand(
+            STICKERBOOK_INFO_COMMAND,
+            StickerbookInfo(2, stickerbook_entries),
+            LOCAL_PLAYER_ACTOR_ID,
+        ))
         CharacterService._send_stickerbook_commands(
             s,
-            (ServerCommand(
-                STICKERBOOK_INFO_COMMAND,
-                StickerbookInfo(2, stickerbook_entries),
-                LOCAL_PLAYER_ACTOR_ID,
-            ),),
-            label="restore-stickerbook",
+            tuple(followup_commands),
+            label="restore-player-ui-state",
         )
 
         # Global PvP mode belongs to the character, not the socket.  The

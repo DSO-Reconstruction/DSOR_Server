@@ -14,6 +14,34 @@ from dso_server.gameplay.local_monster_state import (
 from dso_server.gameplay.map_event_state import GatedSpawnRow, map_key
 
 
+# Stonekeep's mill script uses five overlapping SpawnAreas for the sequence.
+# The final champion area is the authored Demonic Miller encounter, but its
+# SpawnListId is only ``special_spawn`` (the spawn-list contents are not
+# present in static.db4), so the generic fallback would select a normal mob.
+_EVENT_AREA_TEMPLATE_OVERRIDES = {
+    ("pw007_stonekeep_01_dun", 3460): (
+        "pw007_01_leader_undead_mage_heroic",
+    ),
+    # The PW017 seal's main wave is authored as ``group_seal_01_wave_main``.
+    # Without the retail spawn-list registry, the generic name matcher picks
+    # the invisible ``pw017_seal_01`` controller (it is also a Rank_monster
+    # template), leaving it alive after every visible wave mob is killed and
+    # blocking the quest's ClearRegion task. Use that task's actual wave mobs.
+    ("pw017_dragonslair_01_dun", 3506): (
+        "pw017_01_normal_dragon_berserker_02",
+        "pw017_01_normal_dragon_brood_warrior_02",
+        "pw017_01_normal_dragon_broodling_02",
+        "pw017_01_normal_minion_fire_02",
+    ),
+    ("pw017_dragonslair_01_dun", 3509): (
+        "pw017_01_normal_dragon_berserker_02",
+        "pw017_01_normal_dragon_brood_warrior_02",
+        "pw017_01_normal_dragon_broodling_02",
+        "pw017_01_normal_minion_fire_02",
+    ),
+}
+
+
 def event_area_spawn_rows(runtime, encounter, event_sets):
     wanted = frozenset(event_set for event_set in event_sets
                        if not runtime.event_set_actor_ids.get(event_set))
@@ -31,6 +59,21 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
         )
     if not areas:
         return ()
+    overrides = {
+        area.row_id: _EVENT_AREA_TEMPLATE_OVERRIDES.get(
+            (map_key(runtime.map_id), area.event_set_row),
+        )
+        for area in areas
+    }
+    # Reserve the shared mill arena for its boss before placing the regular
+    # waves, which use overlapping authored volumes and the same candidate
+    # positions.
+    areas = tuple(sorted(
+        areas,
+        key=lambda area: (
+            not bool(overrides.get(area.row_id)), area.row_id,
+        ),
+    ))
     # The shipped client has SpawnListId references but no server spawn-list
     # table. Scripted clear conditions supply authoritative eligible templates
     # for the running wave; only fall back to the ordinary map pool if absent.
@@ -53,29 +96,41 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
     for area in areas:
         if not area.spawn_list_id.strip():
             continue
-        pool = (
-            _area_template_pool(encounter.static_database_path, runtime.map_id, area, ())
-            if is_tower_layout(runtime.map_id)
-            else tuple(metadata) or _area_template_pool(
-                encounter.static_database_path, runtime.map_id, area, ())
-        )
+        override = overrides.get(area.row_id)
+        if override:
+            pool = tuple(
+                template for template in override
+                if _load_runtime_definition(
+                    encounter.static_database_path, template, 0,
+                ) is not None
+            )
+        else:
+            pool = (
+                _area_template_pool(encounter.static_database_path, runtime.map_id, area, ())
+                if is_tower_layout(runtime.map_id)
+                else tuple(metadata) or _area_template_pool(
+                    encounter.static_database_path, runtime.map_id, area, ())
+            )
         name = area.spawn_list_id.casefold()
         # Adds/main populations exclude the bosses/guardians placed as fixed
         # points in the same script. Explicit leader/sentinel areas keep them.
         rank = ("sentinel" if "sentinel" in name and "add" not in name else
                 "leader" if "leader" in name and "add" not in name else "monster")
-        ranked = tuple(t for t in pool if rank in metadata.get(t, "rank_monster"))
-        pool = ranked or pool
-        tokens = set(name.split("_")) - {
-            "random", "main", "add", "adds", "group", "wave", "normal",
-            "duria", "norselands", "atlantis", "myrdosch", "lortac", "qaizah",
-        }
-        matched = tuple(t for t in pool if tokens <= set(t.casefold().split("_")))
-        pool = matched or pool
+        if not override:
+            ranked = tuple(t for t in pool if rank in metadata.get(t, "rank_monster"))
+            pool = ranked or pool
+            tokens = set(name.split("_")) - {
+                "random", "main", "add", "adds", "group", "wave", "normal",
+                "duria", "norselands", "atlantis", "myrdosch", "lortac", "qaizah",
+            }
+            matched = tuple(t for t in pool if tokens <= set(t.casefold().split("_")))
+            pool = matched or pool
         if not pool:
             continue
         positions = _grounded_spawn_area_candidates(
             encounter.navigation, encounter.terrain, area, area.candidate_positions())
+        if override:
+            positions = positions[:1]
         for position in positions:
             if any((position[0]-p[0])**2 + (position[2]-p[2])**2 < 1.0 for p in occupied):
                 continue

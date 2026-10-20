@@ -789,6 +789,7 @@ class Session:
         self.gameplay_world_loot_allocator = None
         self.gameplay_quickbar_info = QuickbarInfo(1, 0)
         self.gameplay_quick_slots = None
+        self.gameplay_quick_slots_init_echo_until = 0.0
         self.gameplay_membership_type = DELUXE_MEMBERSHIP
         self.gameplay_membership_expires_at = default_deluxe_expiry()
         self.gameplay_membership_active = True
@@ -1348,9 +1349,20 @@ class RakNetServer:
             raise RuntimeError(f"{self.service_name} is already running")
         self._stop_event.clear()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        # On Windows SO_REUSEADDR lets another server silently take over the
+        # same UDP endpoint, mixing services from old and new processes.
+        address_option = (
+            socket.SO_EXCLUSIVEADDRUSE if os.name == "nt"
+            else socket.SO_REUSEADDR
+        )
+        self.sock.setsockopt(socket.SOL_SOCKET, address_option, 1)
         self._size_socket_buffers()
-        self.sock.bind((self.host, self.port))
+        try:
+            self.sock.bind((self.host, self.port))
+        except OSError:
+            self.sock.close()
+            self.sock = None
+            raise
         self.gameplay_deadline_scheduler.start()
         if self.gameplay_ingress_scheduler is not self.gameplay_deadline_scheduler:
             self.gameplay_ingress_scheduler.start()

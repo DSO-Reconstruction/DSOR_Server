@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
 import math
 import os
 import sqlite3
@@ -103,13 +104,33 @@ BASELINE_MAP_EVENT_FLAGS = {
         "a0200_unlock_zumpe",
         "a0200_unlock_fairground_npc",
     }),
-    # The Parallel Worlds hub authors each portal behind a permanent,
-    # map-local EventSet.  Enable only Grimmagstone for the local baseline;
-    # the other Parallel Worlds portals remain gated until their own unlock
-    # flags are explicitly supplied.
+    # The classic Parallel Worlds hub authors each chapter portal behind a
+    # permanent, map-local EventSet. Keep all of those entrances available
+    # alongside Grimmagstone so every chapter can be played through locally.
     PARALLEL_WORLDS_HUB_MAP_ID: frozenset({
         "pw000_unlock_pw001_exit",
+        "pw000_unlock_pw004_exit",
+        "pw000_unlock_pw007_exit",
+        "pw000_unlock_pw010_exit",
+        "pw000_unlock_pw013_exit",
+        "pw000_unlock_pw016_exit",
+        "pw000_unlock_pw019_exit",
+        "pw000_unlock_pw022_exit",
+        "pw000_unlock_pw025_exit",
     }),
+    # Parallel World boss-reward chests must be present in the initial prop
+    # snapshot. Their map-local events still start on entry, but relying only
+    # on that later EventUpdate can miss the scene props during map loading.
+    # Interaction stays locked server-side until the arena boss dies.
+    "pw003_grimmag_01_boss": frozenset({"pw003_spawn_chest"}),
+    "pw006_arachna_01_boss": frozenset({"pw006_spawn_chest"}),
+    "pw009_heredur_01_boss": frozenset({"pw009_spawn_chest"}),
+    "pw012_bearach_01_boss": frozenset({"pw012_spawn_chest"}),
+    "pw015_khalys_boss_01": frozenset({"pw015_spawn_chest"}),
+    "pw018_herold_01_boss": frozenset({"pw018_spawn_chest"}),
+    "pw021_sigrismarr_01_boss": frozenset({"pw021_spawn_chest"}),
+    "pw024_medusa_01_boss": frozenset({"pw024_spawn_chest"}),
+    "pw027_gorga_01_boss": frozenset({"pw027_spawn_chest"}),
 }
 
 
@@ -676,13 +697,76 @@ def load_local_map_exits(
                     destination_entry_name=str(row[4] or "").strip(),
                     position=position,
                     picking_range=max(1.0, float(row[6] or 0.0)),
-                    active=str(row[7] or "").casefold() == "active",
+                    active=(
+                        str(row[7] or "").casefold() == "active"
+                        and (event_set_row < 0 or event_set_row in enabled_event_sets)
+                    ),
                     event_set_row=event_set_row,
                 )
             )
         return tuple(exits)
     finally:
         database.close()
+
+
+def filter_parallel_world_exits_for_access(
+    static_database_path: str | Path,
+    map_id: str,
+    exits: tuple[LocalMapExit, ...],
+    *,
+    selected_map_access_id: str = "",
+    selected_map_difficulty: int | None = None,
+) -> tuple[LocalMapExit, ...]:
+    """Keep only the PW exit matching the access group used to enter the map."""
+
+    target_group = {
+        "pw001_grimmagstone_01_dun": "pw002_alliance_fortress_01_dun",
+        "pw002_alliance_fortress_01_dun": "pw003_grimmag_01_boss",
+        "pw004_hagastove_grotto_01_dun": "pw005_caverns_loxley_01_dun",
+        "pw005_caverns_loxley_01_dun": "pw006_arachna_01_boss",
+        "pw007_stonekeep_01_dun": "pw008_kingscrypt_01_dun",
+        "pw008_kingscrypt_01_dun": "pw009_heredur_01_boss",
+        "pw010_wildcave_01_dun": "pw011_eternal_grove_01_dun",
+        "pw011_eternal_grove_01_dun": "pw012_bearach_01_boss",
+        "pw013_wizard_garden_01_dun": "pw014_cult_tower_01_dun",
+        "pw014_cult_tower_01_dun": "pw015_khalys_boss_01",
+        "pw016_teganswall_01_dun": "pw017_dragonslair_01_dun",
+        "pw017_dragonslair_01_dun": "pw018_herold_01_boss",
+        "pw019_hailstone_mountains_01_dun": "pw020_eternal_watch_01_dun",
+        "pw020_eternal_watch_01_dun": "pw021_sigrismarr_01_boss",
+        "pw022_mount_suvius_01_dun": "pw023_atlantis_above_water_01_dun",
+        "pw023_atlantis_above_water_01_dun": "pw024_medusa_01_boss",
+        "pw025_ship_graveyard_01_dun": "pw026_heart_of_atlantis_01_dun",
+        "pw026_heart_of_atlantis_01_dun": "pw027_gorga_01_boss",
+    }.get(str(map_id).casefold())
+    if target_group is None:
+        return exits
+    with closing(_open_read_only(static_database_path)) as database:
+        source = database.execute(
+            "SELECT Difficulty FROM _Template_MapAccessGroup WHERE Id=?",
+            (str(selected_map_access_id),),
+        ).fetchone()
+        if source is None and selected_map_difficulty is None:
+            return exits
+        selected_difficulty = (
+            int(source[0] or 0) if source is not None
+            else int(selected_map_difficulty)
+        )
+        destination_difficulties = {
+            str(access_id): int(difficulty or 0)
+            for access_id, difficulty in database.execute(
+                "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
+                "WHERE AccessGroup=?", (target_group,),
+            )
+        }
+    # EntityEventController selects a variation by cached Name/GUID, even
+    # when ExitInfo.field_10 is zero. Never cache the other tier GUIDs: the
+    # client merges subsequent ExitInfo batches instead of replacing them.
+    return tuple(
+        exit for exit in exits
+        if exit.destination_map_id not in destination_difficulties
+        or destination_difficulties[exit.destination_map_id] == selected_difficulty
+    )
 
 
 def load_local_map_initialization(
@@ -693,6 +777,8 @@ def load_local_map_initialization(
     required_professions: tuple[str, ...] = ("banker",),
     active_event_flags: frozenset[str] = frozenset(),
     include_inactive_event_sets: bool = False,
+    selected_map_difficulty: int | None = None,
+    selected_map_access_id: str | None = None,
 ) -> tuple[tuple[ServerCommand, ...], ExitInfo]:
     """Return every map NPC service and all active map exits.
 
@@ -740,26 +826,30 @@ def load_local_map_initialization(
             commands.append(ServerCommand(NEW_NPC_COMMAND, new_npc, actor_id))
             commands.append(ServerCommand(NPC_INFO_COMMAND, npc_info, actor_id))
 
-        exits = []
-        for definition in load_local_map_exits(
+        exit_definitions = filter_parallel_world_exits_for_access(
             static_database_path,
             map_id,
-            active_event_flags=active_event_flags,
-        ):
-            exits.append(
-                ExitInfoEntry(
-                    # ExitInfoCommand's client handler passes this string to
-                    # ClientGameWorld::UpdateExitState(), which looks up the
-                    # concrete scene entity by Name. InteractExit.Id is often
-                    # the shared template "exit_general_01" and belongs only
-                    # in the later client UnlockMapCommand.
-                    definition.name,
-                    definition.destination_map_id,
-                    int(definition.active),
-                    definition.instance_guid,
-                )
+            load_local_map_exits(
+                static_database_path,
+                map_id,
+                active_event_flags=active_event_flags,
+                include_inactive_event_sets=include_inactive_event_sets,
+            ),
+            selected_map_access_id=selected_map_access_id or "",
+            selected_map_difficulty=selected_map_difficulty,
+        )
+        exits = tuple(
+            ExitInfoEntry(
+                # The client resolves the scene entity by Name, and caches
+                # its GUID before EventUpdate can create the tier variation.
+                definition.name,
+                definition.destination_map_id,
+                int(definition.active),
+                definition.instance_guid,
             )
-        return tuple(commands), ExitInfo(tuple(exits))
+            for definition in exit_definitions
+        )
+        return tuple(commands), ExitInfo(exits)
     finally:
         database.close()
 

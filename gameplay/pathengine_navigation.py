@@ -202,12 +202,20 @@ class PathEngineNavigationMesh:
         self._components = tuple(components)
 
     @classmethod
-    def from_tokenised_mesh(cls, path: str | Path) -> "PathEngineNavigationMesh":
+    def from_tokenised_mesh(
+        cls,
+        path: str | Path,
+        *,
+        minimum_portal_width: float = SMALL_AGENT_DIAMETER,
+    ) -> "PathEngineNavigationMesh":
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
         vertices, triangles = _read_mesh3d(path.read_bytes())
-        return cls(vertices, triangles)
+        return cls(
+            vertices, triangles,
+            minimum_portal_width=minimum_portal_width,
+        )
 
     def _centroid(self, triangle_id: int) -> tuple[float, float, float]:
         points = [self.vertices[index] for index in self.triangles[triangle_id].vertices]
@@ -876,5 +884,11 @@ def _read_mesh3d(
 # travel/test sweeps even though a local server normally has only one active
 # map (plus a handoff destination).
 @lru_cache(maxsize=4)
-def load_navigation_mesh(path: str | Path) -> PathEngineNavigationMesh:
-    return PathEngineNavigationMesh.from_tokenised_mesh(Path(path))
+def load_navigation_mesh(
+    path: str | Path,
+    *,
+    minimum_portal_width: float = SMALL_AGENT_DIAMETER,
+) -> PathEngineNavigationMesh:
+    return PathEngineNavigationMesh.from_tokenised_mesh(
+        Path(path), minimum_portal_width=minimum_portal_width,
+    )
