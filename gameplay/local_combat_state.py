@@ -30,6 +30,7 @@ from dso_server.protocol.combat_protocol import (
     SKILL_COMMAND,
     SUSTAINED_SKILL_COMMAND,
     TARGET_BULLET_SKILL_COMMAND,
+    TARGET_SKILL_COMMAND,
     BulletSkill,
 )
 from dso_server.protocol.gameplay_protocol import (
@@ -38,6 +39,7 @@ from dso_server.protocol.gameplay_protocol import (
 )
 from dso_server.gameplay.local_monster_state import (
     LOCAL_MONSTER_ACTOR_BASE,
+    map_monster_actor_base,
     LocalMonsterEncounter,
     MonsterAttackDefinition,
     MonsterRuntimeDefinition,
@@ -53,6 +55,12 @@ from dso_server.gameplay.player_summon_lifecycle import (
     summon_startup_seconds,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.fractured_planes_layout import (
+    TOWER_FIRE_BURST_COOLDOWN,
+    TOWER_FIRE_BURST_SHOTS,
+    TOWER_FIRE_ACQUISITION_RANGE,
+    is_tower_mechanism,
+)
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 
@@ -109,6 +117,12 @@ def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
 
 
 MONSTER_STOP_DISTANCE = 1.75
+# DSO_BOSS_BASIC_ATTACK_ROTATION=1: a boss with a close basic hit keeps it in
+# rotation and casts a ready special only every third choice (the xm1rth
+# fork's tuning). Off, a ready special goes first, as for every monster.
+BOSS_BASIC_ATTACK_ROTATION = os.getenv(
+    "DSO_BOSS_BASIC_ATTACK_ROTATION", "0"
+).strip().lower() in {"1", "true", "yes"}
 # A melee blow reaches a player no more than this far above or below the
 # monster's feet (metres). Range checks are flat (x/z): without it a monster on
 # a ledge struck a player standing under it ("a monster on high ground attacked
@@ -128,6 +142,10 @@ def _cooldown_key(definition) -> str:
     return definition.cooldown_category or definition.resource_id
 RANGED_STANDOFF_RATIO = 0.80
 MONSTER_HOME_ARRIVAL_DISTANCE = 0.20
+# Player-owned mercenaries must not autonomously engage players in the city
+# hubs, even when both players have opted into PvP. Other summon behavior is
+# unchanged; this only gates player actors as targets for Shadow Souls.
+MERCENARY_PVP_SAFE_MAP_IDS = frozenset({"a0200_kingscity", "b1200_hub"})
 # ``_Template_StatusEffect`` row ``MonsterReturnHome`` (15 s, group "Special").
 # The wire id is that table's zero-based row order, so it shifts whenever the
 # table is edited. 701 is the fallback only; ``_return_home_effect_id``
@@ -415,6 +433,27 @@ class MonsterCombatant:
     attack: MonsterAttackDefinition
     attacks: tuple[MonsterAttackDefinition, ...] = ()
     target_radius: float | None = None
+    # Fixed tower hardware (power nodes, trap shooters) is scenery that shoots.
+    # Retail marks it with ``e_mark_no_damage``/invulnerability, so no player
+    # skill, damage-over-time, or summon may take its health down.
+    invulnerable: bool = False
+
+
+def _monster_health_after_damage(
+    monster: MonsterCombatant,
+    previous_health: int,
+    damage: int,
+) -> tuple[int, bool]:
+    """Apply damage while keeping arena training dummies available forever."""
+
+    if monster.invulnerable:
+        return int(previous_health), False
+    current = max(0, int(previous_health) - max(0, int(damage)))
+    if current == 0 and str(monster.template_id).casefold().startswith(
+        "damage_doll"
+    ):
+        return max(1, int(monster.maximum_health)), False
+    return current, current == 0
 
 
 @dataclass(frozen=True)
@@ -604,6 +643,7 @@ class PlayerSummonActor:
     initial_aura_instance_id: int | None
     cast_id: int = 0
     patrol_index: int = 0
+    moving: bool = False
 
     @property
     def spawn_ready_at(self) -> float:
@@ -666,6 +706,7 @@ class _PendingPlayerSummonAttack:
     geometry: PlayerSkillGeometry
     player_damage_range: tuple[float, float]
     target_actor_ids: tuple[int, ...]
+    target_due_times: tuple[tuple[int, float, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -774,6 +815,8 @@ class MonsterAttack:
     sustained_hit_range: int = 0
     definition: MonsterAttackDefinition | None = None
     execution_context_tick: int | None = None
+    bullet_count: int = 1
+    resolved_target_actor_ids: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -904,10 +947,12 @@ class LocalCombatState:
         self.monsters = self._combatants(encounter)
         # Actors that map-local events spawn after the encounter was built.
         # The encounter itself is immutable and shared through a cache, so
-        # their spawn groups and runtime definitions live here instead.
         self._runtime_spawn_groups: list[MonsterSpawnGroup] = []
         self._runtime_definitions: dict[int, MonsterRuntimeDefinition] = {}
-        self._next_runtime_actor_id = LOCAL_MONSTER_ACTOR_BASE
+        self._next_runtime_actor_id = map_monster_actor_base(
+            encounter.map_id,
+            static_database_path=encounter.static_database_path,
+        )
         self.monster_health = {
             actor_id: monster.maximum_health
             for actor_id, monster in self.monsters.items()
@@ -996,7 +1041,24 @@ class LocalCombatState:
             self.monster_navigation_offsets[actor_id] = (
                 monster.position[1] - navigation_ground[1]
             )
-        self.monster_yaws = {actor_id: 0.0 for actor_id in self.monsters}
+        initialized_at = time.perf_counter()
+        self._monster_spawn_yaws = {
+            int(command.value.actor_id): float(command.value.field_a0)
+            for command in encounter.spawn_batch.commands
+            if isinstance(command, NewMonsterServerCommand)
+        }
+        self.monster_yaws = dict(self._monster_spawn_yaws)
+        self.tower_beam_started_at: dict[int, float] = {
+            # Permanent aura effects are sent with StartTick=0, so the client
+            # rotates these beams from the shared server clock origin.
+            actor_id: 0.0
+            for actor_id, monster in self.monsters.items()
+            if is_tower_mechanism(
+                encounter.static_database_path, encounter.map_id,
+                monster.template_id,
+            )
+            and "powernode" in monster.template_id.casefold()
+        }
         self.monster_moving = {
             actor_id: False for actor_id in self.monsters
         }
@@ -1017,7 +1079,6 @@ class LocalCombatState:
         self.active_monster_actor_ids = (
             set(self.monsters) if initially_active else set()
         )
-        initialized_at = time.perf_counter()
         self.last_monster_attack_at = {
             actor_id: initialized_at for actor_id in self.monsters
         }
@@ -1036,10 +1097,18 @@ class LocalCombatState:
         self.pending_monster_summons: list[MonsterSummonRequest] = []
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
+        # Released projectiles may still be flying when a boss recovers and
+        # starts its next cast. Keep their impacts independently of that cast.
+        self.pending_monster_projectile_attacks: dict[
+            int, list[MonsterAttack]
+        ] = {}
+        self.tower_fire_burst_remaining: dict[int, int] = {}
+        self.tower_fire_burst_cooldown_until: dict[int, float] = {}
         # Animation locks outlive early impacts and can end before a projectile
         # lands. Keep them separate from the pending damage transaction.
         self.monster_motion_unblock_at: dict[int, float] = {}
         self.monster_skill_unblock_at: dict[int, float] = {}
+        self.monster_spawn_started_at: dict[int, float] = {}
         # Block rolls are per resolved impact, not per actor or render tick.
         # The sequence also protects against repeated authored attacks that
         # legitimately reuse a zero cast id and the same skill index.
@@ -1067,6 +1136,9 @@ class LocalCombatState:
         self.player_location_visuals: dict[int, PlayerLocationVisual] = {}
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self._next_player_location_visual_id = 0x00010000
+        self._monster_location_visual_casts: set[
+            tuple[int, int, int]
+        ] = set()
         self.pending_player_summon_attacks: dict[
             int, _PendingPlayerSummonAttack
         ] = {}
@@ -1134,15 +1206,23 @@ class LocalCombatState:
                 run_speed=float(runtime.run_speed),
                 aggro_range=float(runtime.aggro_range),
                 escape_range=float(runtime.escape_range),
-                travel_distance=min(
-                    float(runtime.travel_distance),
-                    MONSTER_NAVIGATION_RADIUS_CAP,
+                travel_distance=(
+                    float(runtime.travel_distance)
+                    if str(monster.rank or "").casefold().startswith("rank_boss")
+                    else min(
+                        float(runtime.travel_distance),
+                        MONSTER_NAVIGATION_RADIUS_CAP,
+                    )
                 ),
                 attack_interval=float(runtime.attack_interval),
                 collision_radius=float(runtime.capsule_radius),
                 target_radius=monster_target_radii(encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
+                invulnerable=is_tower_mechanism(
+                    encounter.static_database_path, encounter.map_id,
+                    monster.template_id,
+                ),
             )
         if set(result) != set(encounter.actor_ids):
             raise ValueError("monster spawn batch and encounter actor ids differ")
@@ -1285,6 +1365,38 @@ class LocalCombatState:
                     result[actor_id] = frozenset(ammo_types)
         return result
 
+    def begin_monster_spawn(
+        self, actor_ids, *, now: float | None = None, startup_overrides=None,
+    ) -> None:
+        """Let each actor finish its authored entrance before AI can act.
+
+        Anchor this to the first published NewMonster, since an encounter can
+        exist long before a client enters its vicinity. Shared-map viewers and
+        culling must not restart the server's entrance lock.
+        """
+
+        current_time = time.perf_counter() if now is None else float(now)
+        for raw_actor_id in actor_ids:
+            actor_id = int(raw_actor_id)
+            if actor_id in self.monster_spawn_started_at or actor_id not in self.monsters:
+                continue
+            runtime = self._runtime_definitions.get(actor_id)
+            if runtime is None:
+                runtime = self.encounter.runtime_for_actor(actor_id)
+            self.monster_spawn_started_at[actor_id] = current_time
+            duration = max(0.0, float((startup_overrides or {}).get(
+                actor_id, runtime.startup_duration
+            )))
+            if duration <= 0.0:
+                continue
+            ready_at = current_time + duration
+            self.monster_motion_unblock_at[actor_id] = max(
+                ready_at, self.monster_motion_unblock_at.get(actor_id, 0.0)
+            )
+            self.monster_skill_unblock_at[actor_id] = max(
+                ready_at, self.monster_skill_unblock_at.get(actor_id, 0.0)
+            )
+
     def add_runtime_monsters(
         self,
         group: MonsterSpawnGroup,
@@ -1339,6 +1451,11 @@ class LocalCombatState:
                 target_radius=monster_target_radii(self.encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
+                invulnerable=is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                ),
             )
             self.monsters[actor_id] = combatant
             self.monster_health[actor_id] = combatant.maximum_health
@@ -1353,7 +1470,17 @@ class LocalCombatState:
                 )
             except (NavigationError, CollisionTerrainError, ValueError):
                 self.monster_navigation_offsets[actor_id] = 0.0
-            self.monster_yaws[actor_id] = 0.0
+            self._monster_spawn_yaws[actor_id] = float(monster.field_a0)
+            self.monster_yaws[actor_id] = float(monster.field_a0)
+            if (
+                is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+                and "powernode" in monster.template_id.casefold()
+            ):
+                self.tower_beam_started_at[actor_id] = 0.0
             self.monster_moving[actor_id] = False
             self.monster_last_published_positions[actor_id] = combatant.position
             self.last_monster_attack_at[actor_id] = time.perf_counter()
@@ -1453,6 +1580,9 @@ class LocalCombatState:
             self.monster_target_actor_ids.pop(actor_id, None)
             self.monster_moving[actor_id] = False
             self.pending_monster_attacks.pop(actor_id, None)
+            self.pending_monster_projectile_attacks.pop(actor_id, None)
+            self.tower_fire_burst_remaining.pop(actor_id, None)
+            self.tower_fire_burst_cooldown_until.pop(actor_id, None)
             self.monster_motion_unblock_at.pop(actor_id, None)
             self.monster_skill_unblock_at.pop(actor_id, None)
             self.monster_routes.pop(actor_id, None)
@@ -1472,7 +1602,7 @@ class LocalCombatState:
                 self.monster_status_effects[actor_id].clear()
                 self.monster_status_immunities.pop(actor_id, None)
                 self.monster_positions[actor_id] = monster.position
-                self.monster_yaws[actor_id] = 0.0
+                self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
                 self.monster_moving[actor_id] = False
         discarded = set(int(value) for value in actor_ids)
         self._return_home_transitions = [
@@ -1883,10 +2013,13 @@ class LocalCombatState:
         monster = self.monsters[actor_id]
         # Raises MonsterReturnHome and drops this actor's queued swings and
         # every player impact already in flight toward it.
-        self._set_returning_home(actor_id, True, server_tick, reason="hard leash: pulled past its reset radius, reset at spawn")
+        self._set_returning_home(
+            actor_id, True, server_tick,
+            reason="hard leash: pulled past its reset radius, reset at spawn",
+        )
         self.monster_positions[actor_id] = monster.position
         self.monster_health[actor_id] = monster.maximum_health
-        self.monster_yaws[actor_id] = 0.0
+        self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
         self.monster_moving[actor_id] = False
         self.monster_routes.pop(actor_id, None)
         active = self.monster_status_effects.get(actor_id)
@@ -1909,25 +2042,38 @@ class LocalCombatState:
         actor_id: int,
         active: bool,
         server_tick: int,
-        *, now: float | None = None,
-        reason: str = "",
+        *, now: float | None = None, reason: str = "",
     ) -> bool:
         actor_id = int(actor_id)
         active = bool(active)
         if active == (actor_id in self.returning_home_actor_ids):
             return False
-        if active and reason:
-            dropped = sum(1 for p in self.pending_player_hits.values() if p.target_actor_id == actor_id) + sum(
-                1 for p in self.pending_runtime_player_hits.values() if p.target_actor_id == actor_id)
-            print(f"[{self.__class__.__name__}] monster {actor_id} gives up: {reason}"
-                  + (f"; {dropped} player hit(s) in flight cancelled" if dropped else ""))
         if active:
+            if reason:
+                cancelled_hits = sum(
+                    pending.target_actor_id == actor_id
+                    for pending in self.pending_player_hits.values()
+                ) + sum(
+                    pending.target_actor_id == actor_id
+                    for pending in self.pending_runtime_player_hits.values()
+                )
+                print(
+                    f"[{self.__class__.__name__}] monster {actor_id} gives up: "
+                    f"{reason}"
+                    + (
+                        f"; {cancelled_hits} player hit(s) in flight cancelled"
+                        if cancelled_hits else ""
+                    )
+                )
             self.returning_home_actor_ids.add(actor_id)
             self.returning_home_started_at[actor_id] = time.perf_counter() if now is None else now
             self.returning_home_progress[actor_id] = self._distance(
                 self.monster_positions[actor_id], self.monsters[actor_id].position)
             self.monster_target_actor_ids.pop(actor_id, None)
             self.pending_monster_attacks.pop(actor_id, None)
+            self.pending_monster_projectile_attacks.pop(actor_id, None)
+            self.tower_fire_burst_remaining.pop(actor_id, None)
+            self.tower_fire_burst_cooldown_until.pop(actor_id, None)
             self.monster_motion_unblock_at.pop(actor_id, None)
             self.monster_skill_unblock_at.pop(actor_id, None)
             for cast_id, pending in tuple(self.pending_player_hits.items()):
@@ -2042,7 +2188,12 @@ class LocalCombatState:
 
     @staticmethod
     def _preferred_stop_distance(monster: MonsterCombatant) -> float:
-        if monster.attack.command_id in {
+        has_melee = any(
+            attack.command_id in {SKILL_COMMAND, TARGET_SKILL_COMMAND}
+            and attack.attack_range <= 8.0
+            for attack in (monster.attacks or (monster.attack,))
+        )
+        if not has_melee and monster.attack.command_id in {
             BULLET_SKILL_COMMAND,
             TARGET_BULLET_SKILL_COMMAND,
         }:
@@ -2135,6 +2286,13 @@ class LocalCombatState:
                 if row is not None
                 else ()
             )
+            # Normal Arachna's legacy summon omits the ground-pool entry
+            # present in the newer encounter. Use the existing pool resource
+            # for its visual at the caster's summon position.
+            if row is not None and row[0] == "arachna_base_summon" and not location_visual_effects:
+                location_visual_effects = self._load_victim_status_effects(
+                    db, "poisonous_puddle_aura,C:1.0,D:30.0,DP:30.0,$0:-0.10"
+                )
             bullet_location_effects = (
                 self._load_location_aura_effects(db, row[31])
                 if row is not None
@@ -2918,6 +3076,24 @@ class LocalCombatState:
             )
         return self.active_player_location_visuals(now=current_time)
 
+    def claim_monster_location_visual_cast(
+        self, actor_id: int, skill_index: int, server_tick: int,
+    ) -> bool:
+        """Deduplicate one monster cast's location VFX across map viewers."""
+
+        key = (
+            int(actor_id),
+            int(skill_index),
+            int(server_tick) & 0xFFFFFFFF,
+        )
+        with self.lock:
+            if key in self._monster_location_visual_casts:
+                return False
+            if len(self._monster_location_visual_casts) >= 4096:
+                self._monster_location_visual_casts.clear()
+            self._monster_location_visual_casts.add(key)
+        return True
+
     def active_player_location_visuals(
             self, *, now: float | None = None
     ) -> tuple[PlayerLocationVisual, ...]:
@@ -3114,6 +3290,9 @@ class LocalCombatState:
         except (NavigationError, CollisionTerrainError, ValueError):
             pass
         offset = definition.spawn_offset
+        spawn_yaw = float(yaw)
+        if getattr(definition, 'fixed_direction', False):
+            spawn_yaw += math.radians(offset[3])
         grounded = (
             grounded[0] + offset[0],
             grounded[1] + offset[1],
@@ -3163,7 +3342,7 @@ class LocalCombatState:
                 summon_position,
                 level=max(1, int(level)),
                 server_tick=server_tick,
-                yaw=yaw,
+                yaw=spawn_yaw,
                 # The summon scales with its owner. Map-difficulty modifiers
                 # apply to hostile actors, not player-owned constructions.
                 scaling_difficulty=0,
@@ -3191,7 +3370,7 @@ class LocalCombatState:
                 definition=definition,
                 spawn_group=spawn_group,
                 position=summon_position,
-                yaw=float(yaw),
+                yaw=spawn_yaw,
                 created_at=current_time,
                 expires_at=expires_at,
                 player_damage_range=(
@@ -3245,11 +3424,9 @@ class LocalCombatState:
         for key in tuple(self.monster_status_damage):
             if key[0] == actor_id:
                 self.monster_status_damage.pop(key, None)
-        for monster_actor_id, attack in tuple(
-            self.pending_monster_attacks.items()
-        ):
+        for monster_actor_id, attack in self.pending_monster_attack_items():
             if int(attack.target_actor_id) == actor_id:
-                self.pending_monster_attacks.pop(monster_actor_id, None)
+                self._remove_pending_monster_attack(monster_actor_id, attack)
         self.pending_player_summon_attacks.pop(actor_id, None)
         self.last_player_summon_attack_at.pop(actor_id, None)
         self.last_player_summon_playback_at.pop(actor_id, None)
@@ -3359,6 +3536,25 @@ class LocalCombatState:
         elapsed = max(0.0, min(0.5, float(elapsed_seconds)))
         movements = []
         for actor_id, summon in tuple(self.player_summons.items()):
+            def stop_if_moving(value):
+                if not value.moving:
+                    return value
+                stopped = replace(value, moving=False)
+                self.player_summons[actor_id] = stopped
+                movements.append(
+                    MonsterMovement(
+                        actor_id,
+                        stopped.position,
+                        self.encounter.coordinate_frame.world_to_wire(
+                            stopped.position
+                        ),
+                        stopped.yaw,
+                        False,
+                        int(server_tick) & 0xFFFFFFFF,
+                    )
+                )
+                return stopped
+
             definition = summon.definition
             if getattr(definition, "map_companion", False):
                 from dso_server.gameplay.map_companions import companion_combat_phase
@@ -3375,6 +3571,7 @@ class LocalCombatState:
                 or definition.move_speed <= 0.0
                 or definition.attack_skill_database_index is None
             ):
+                stop_if_moving(summon)
                 continue
             owner = (player_positions or {}).get(summon.owner_actor_id)
             follows = bool(getattr(definition, "follows_owner", False))
@@ -3401,8 +3598,14 @@ class LocalCombatState:
             elif follows and owner is not None:
                 target = owner
                 distance = self._distance(summon.position, target)
-                stop_distance = 2.5
+                stop_distance = (
+                    4.0
+                    if str(getattr(definition, "category", "")).casefold()
+                    == "mercenary"
+                    else 2.5
+                )
             else:
+                stop_if_moving(summon)
                 continue
             patrol = getattr(definition, "patrol_points", ())
             if (follows and patrol and nearest is not None
@@ -3411,9 +3614,7 @@ class LocalCombatState:
                 # Authored CompanionStrategy paths place allies inside the
                 # arena's behavior-change aura before their boss-facing cast.
                 index = summon.patrol_index
-                # The step below stops exactly at its 0.75 stop distance: compare
-                # with a margin, or reaching the point hinged on float rounding.
-                if self._distance(summon.position, patrol[index]) <= 0.75 + 0.05 and index + 1 < len(patrol):
+                if self._distance(summon.position, patrol[index]) <= 0.80 and index + 1 < len(patrol):
                     index += 1
                     summon = replace(summon, patrol_index=index)
                     self.player_summons[actor_id] = summon
@@ -3421,6 +3622,7 @@ class LocalCombatState:
                 distance = self._distance(summon.position, target)
                 stop_distance = 0.75
             if distance <= stop_distance + 1e-6:
+                stop_if_moving(summon)
                 continue
             dx = target[0] - summon.position[0]
             dz = target[2] - summon.position[2]
@@ -3450,6 +3652,10 @@ class LocalCombatState:
             except (
                 NavigationError, CollisionTerrainError, ValueError
             ):
+                stop_if_moving(summon)
+                continue
+            if self._distance(summon.position, candidate) <= 1e-5:
+                stop_if_moving(summon)
                 continue
             yaw = math.atan2(-dx, -dz)
             spawn_group = summon.spawn_group.runtime_subset(
@@ -3460,6 +3666,7 @@ class LocalCombatState:
                 position=candidate,
                 yaw=yaw,
                 spawn_group=spawn_group or summon.spawn_group,
+                moving=True,
             )
             self.player_summons[actor_id] = updated
             movements.append(
@@ -3556,12 +3763,12 @@ class LocalCombatState:
         '''Consume due hostile attacks aimed at a taunting summon.'''
 
         current_time = time.perf_counter() if now is None else float(now)
-        for actor_id, attack in tuple(self.pending_monster_attacks.items()):
+        for actor_id, attack in self.pending_monster_attack_items():
             if current_time < attack.due_at:
                 continue
             summon = self.player_summons.get(attack.target_actor_id)
             if summon is not None and summon.definition.taunt_radius > 0.0:
-                self.pending_monster_attacks.pop(actor_id, None)
+                self._remove_pending_monster_attack(actor_id, attack)
 
     def active_player_summon_groups(self) -> tuple[MonsterSpawnGroup, ...]:
         return tuple(
@@ -4554,6 +4761,32 @@ class LocalCombatState:
                         amount,
                         arguments[1],
                         stack_count,
+                    )
+                    continue
+                if normalized_kind == "targetadddamage":
+                    # Fractured Planes elemental damage blessings are
+                    # authored as TargetAddDamage on the persistent status.
+                    # Treat the element as a scope and apply its absolute or
+                    # relative amount to matching outgoing skill damage.
+                    if len(arguments) < 3:
+                        continue
+                    target_elements = {
+                        self._clean_modifier_token(value).casefold()
+                        for value in arguments[2:]
+                        if self._clean_modifier_token(value)
+                    }
+                    skill_elements = {
+                        self._clean_modifier_token(value.partition(":")[0]).casefold()
+                        for value in str(geometry.damage_type or "Physical").split(";")
+                        if self._clean_modifier_token(value.partition(":")[0])
+                    }
+                    if not target_elements.intersection(skill_elements):
+                        continue
+                    amount = self._modifier_amount(database, arguments[0], details)
+                    if amount is None:
+                        continue
+                    damage_modifier = self._apply_numeric_modifier(
+                        damage_modifier, amount, arguments[1], stack_count
                     )
                     continue
                 numeric_kinds = {
@@ -6205,6 +6438,13 @@ class LocalCombatState:
             start = self.monster_positions[actor_id]
             previous_yaw = self.monster_yaws[actor_id]
             was_moving = self.monster_moving[actor_id]
+            # Mounted trap actors keep their authored transform. Separation
+            # and route grounding must not drag a stationary tower off its
+            # pedestal, even when a player or another monster overlaps it.
+            if monster.run_speed <= 0.0:
+                self.monster_moving[actor_id] = False
+                occupied.append(start)
+                continue
             direct_distance = self._distance(start, player_position)
             home_distance = self._distance(start, home)
             player_home_distance = self._distance(player_position, home)
@@ -6216,8 +6456,10 @@ class LocalCombatState:
                 player_home_distance = self._distance(player_position, home)
                 if target is None and not returning_home:
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                                 reason="no target left for it")
+                        self._set_returning_home(
+                            actor_id, True, server_tick, now=current_time,
+                            reason="no target left for it",
+                        )
                         returning_home = True
                     else:
                         self.monster_routes.pop(actor_id, None)
@@ -6318,8 +6560,10 @@ class LocalCombatState:
                 not returning_home
                 and self._near_protected_waypoint(start)
             ):
-                self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                         reason="it entered a travel stone's safe zone")
+                self._set_returning_home(
+                    actor_id, True, server_tick, now=current_time,
+                    reason="it entered a travel stone's safe zone",
+                )
                 returning_home = True
 
             # Travel stones are hard safe-zone obstacles, not merely points
@@ -6332,8 +6576,10 @@ class LocalCombatState:
             ):
                 self.monster_routes.pop(actor_id, None)
                 if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                    self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                             reason="the player is in a travel stone's safe zone")
+                    self._set_returning_home(
+                        actor_id, True, server_tick, now=current_time,
+                        reason="the player is in a travel stone's safe zone",
+                    )
                     returning_home = True
                 else:
                     self.monster_moving[actor_id] = False
@@ -6386,9 +6632,15 @@ class LocalCombatState:
             ):
                 self._set_returning_home(
                     actor_id, True, server_tick, now=current_time,
-                    reason=(f"outrun ({direct_distance:.1f} m > escape range {monster.escape_range:.1f})"
-                            if direct_distance > monster.escape_range else
-                            f"player {player_home_distance:.1f} m from its home > reset radius {reset_radius:.1f}"),
+                    reason=(
+                        f"outrun ({direct_distance:.1f} m > escape range "
+                        f"{monster.escape_range:.1f})"
+                        if direct_distance > monster.escape_range
+                        else (
+                            f"player {player_home_distance:.1f} m from its home "
+                            f"> reset radius {reset_radius:.1f}"
+                        )
+                    ),
                 )
                 returning_home = True
 
@@ -6432,6 +6684,12 @@ class LocalCombatState:
                     )
                 continue
 
+            is_boss = str(monster.rank_id or "").casefold().startswith("rank_boss")
+            max_acq = (
+                max(monster.aggro_range, monster.travel_distance)
+                if is_boss
+                else MONSTER_ACQUISITION_RADIUS
+            )
             engaged = (
                 returning_home
                 or home_distance > MONSTER_HOME_ARRIVAL_DISTANCE
@@ -6439,7 +6697,7 @@ class LocalCombatState:
                 <= min(
                     monster.aggro_range,
                     monster.travel_distance,
-                    MONSTER_ACQUISITION_RADIUS,
+                    max_acq,
                 )
             )
             if not engaged:
@@ -6617,8 +6875,10 @@ class LocalCombatState:
                     start, destination
                 ):
                     if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
-                        self._set_returning_home(actor_id, True, server_tick, now=current_time,
-                                                 reason="its path crosses a travel stone's safe zone")
+                        self._set_returning_home(
+                            actor_id, True, server_tick, now=current_time,
+                            reason="its path crosses a travel stone's safe zone",
+                        )
                     destination = start
             maximum_step = monster.run_speed * movement_elapsed
             destination = self.ground_monster_position(
@@ -7527,9 +7787,10 @@ class LocalCombatState:
                         )
                     ),
                 )
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    self.monsters[actor_id], previous, damage
+                )
                 self.monster_health[actor_id] = current
-                killed = current == 0
                 resolutions.append(
                     DamageResolution(
                         target_actor_id=actor_id,
@@ -7566,6 +7827,7 @@ class LocalCombatState:
         *,
         player_damage_range: tuple[float, float],
         player_incoming_damage_multipliers=(),
+        player_invulnerable: bool = False,
         now: float | None = None,
         server_tick: int = 0,
     ) -> tuple[tuple[DamageResolution, ...], tuple[DamageResolution, ...]]:
@@ -7606,7 +7868,9 @@ class LocalCombatState:
                 previous = self.monster_health.get(actor_id, 0)
                 if previous <= 0 or damage <= 0:
                     continue
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    monster, previous, damage
+                )
                 self.monster_health[actor_id] = current
                 monster_results.append(
                     DamageResolution(
@@ -7615,7 +7879,7 @@ class LocalCombatState:
                         current_health=current,
                         maximum_health=monster.maximum_health,
                         damage=damage,
-                        killed=current == 0,
+                        killed=killed,
                         position=self.monster_positions[actor_id],
                         server_tick=int(server_tick) & 0xFFFFFFFF,
                         hit_tags=damage_types or (5,),
@@ -7640,7 +7904,10 @@ class LocalCombatState:
                     )
                     self_damage += raw * incoming_by_type.get(normalized, 1.0)
                     self_types.extend(damage_type_ids(damage_type))
-            requested = max(0, int(math.ceil(self_damage)))
+            requested = (
+                0 if player_invulnerable
+                else max(0, int(math.ceil(self_damage)))
+            )
             if requested <= 0:
                 continue
             health = self.player_health.setdefault(
@@ -7823,7 +8090,9 @@ class LocalCombatState:
         if previous <= 0:
             return None
         damage = max(1, int(round(int(incoming.damage) * float(fraction))))
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
         return DamageResolution(
             target_actor_id=monster.actor_id,
@@ -7831,7 +8100,7 @@ class LocalCombatState:
             current_health=current,
             maximum_health=monster.maximum_health,
             damage=damage,
-            killed=current == 0,
+            killed=killed,
             position=self.monster_positions[monster.actor_id],
             server_tick=(int(incoming.server_tick) + 1) & 0xFFFFFFFF,
             hit_tags=(0,),
@@ -7960,6 +8229,12 @@ class LocalCombatState:
         started = []
         for actor_id, summon in tuple(self.player_summons.items()):
             definition = summon.definition
+            can_target_players = not (
+                str(getattr(definition, "category", "")).casefold()
+                == "mercenary"
+                and str(self.encounter.map_id).casefold()
+                in MERCENARY_PVP_SAFE_MAP_IDS
+            )
             skill_index = definition.attack_skill_index
             database_skill_index = (
                 definition.attack_skill_database_index
@@ -8000,7 +8275,23 @@ class LocalCombatState:
                 and geometry.targeting_type.casefold()
                 in {"angle", "cone"}
             )
-            if is_covering_fire:
+            fixed_direction = bool(getattr(definition, 'fixed_direction', False))
+            if fixed_direction:
+                yaw = summon.yaw
+                direction = (-math.sin(yaw), 0.0, -math.cos(yaw), 0.0)
+                reach = max(1.0, geometry.projectile_range or geometry.attack_range)
+                ray = replace(geometry, attack_range=reach, hit_range=reach,
+                              player_width=2 * geometry.projectile_radius,
+                              end_width=2 * geometry.projectile_radius)
+                targets = self._stationary_directional_targets(
+                    summon.position, direction, ray,
+                )[:max(1, geometry.impact_count)]
+                target_actor_ids = tuple(target.actor_id for target in targets)
+                target_actor_id = target_actor_ids[0] if target_actor_ids else 0
+                target_position = tuple(
+                    summon.position[i] + direction[i] * reach for i in range(3)
+                )
+            elif is_covering_fire:
                 target_actor_id = summon.owner_actor_id
                 target_position = player_positions.get(target_actor_id)
                 if target_position is None:
@@ -8029,8 +8320,9 @@ class LocalCombatState:
                 )
                 hostile_player_ids = tuple(
                     target_actor_id
-                    for target_actor_id in hostile_by_owner.get(
-                        summon.owner_actor_id, ()
+                    for target_actor_id in (
+                        hostile_by_owner.get(summon.owner_actor_id, ())
+                        if can_target_players else ()
                     )
                     if target_actor_id in player_positions
                     and self._stationary_directional_position_is_target(
@@ -8088,7 +8380,8 @@ class LocalCombatState:
                     for target_actor_id in hostile_by_owner.get(
                         summon.owner_actor_id, ()
                     )
-                    if target_actor_id in player_positions
+                    if can_target_players
+                    and target_actor_id in player_positions
                 )
                 if not candidates:
                     continue
@@ -8105,7 +8398,7 @@ class LocalCombatState:
                 )
                 target_actor_ids = (target_actor_id,)
 
-            if not is_stationary_sustained:
+            if not is_stationary_sustained and not fixed_direction:
                 dx = target_position[0] - summon.position[0]
                 dy = target_position[1] - summon.position[1]
                 dz = target_position[2] - summon.position[2]
@@ -8227,6 +8520,7 @@ class LocalCombatState:
                     if command_id == SUSTAINED_SKILL_COMMAND
                     else None
                 ),
+                bullet_count=getattr(geometry, "bullet_count", 1),
             )
             self.last_player_summon_attack_at[actor_id] = current_time
             if emit_playback:
@@ -8238,12 +8532,27 @@ class LocalCombatState:
                     effect.effect_id for effect in skillstart_effects
                 )
             if target_actor_ids:
+                target_due_times = ()
+                if fixed_direction:
+                    arrivals = []
+                    for target in target_actor_ids:
+                        travel = geometry.bullet_emit_delay + self._distance(
+                            summon.position, self.monster_positions[target],
+                        ) / max(.01, geometry.projectile_velocity)
+                        arrivals.append((
+                            target, current_time + travel,
+                            (start_tick + round(travel * SERVER_TICKS_PER_SECOND)) & 0xffffffff,
+                        ))
+                    target_due_times = tuple(sorted(arrivals, key=lambda item: item[1]))
+                    attack = replace(attack, due_at=target_due_times[0][1],
+                                     impact_tick=target_due_times[0][2])
                 self.pending_player_summon_attacks[actor_id] = (
                     _PendingPlayerSummonAttack(
                         attack,
                         geometry,
                         summon.player_damage_range,
                         target_actor_ids,
+                        target_due_times,
                     )
                 )
             if emit_playback or skillstart_effects:
@@ -8284,6 +8593,17 @@ class LocalCombatState:
             if current_time < attack.due_at:
                 continue
             del self.pending_player_summon_attacks[actor_id]
+            if pending.target_due_times:
+                due = tuple(item for item in pending.target_due_times if item[1] <= current_time)
+                remaining = tuple(item for item in pending.target_due_times if item[1] > current_time)
+                if remaining:
+                    self.pending_player_summon_attacks[actor_id] = replace(
+                        pending, attack=replace(attack, due_at=remaining[0][1],
+                                                impact_tick=remaining[0][2]),
+                        target_actor_ids=tuple(item[0] for item in remaining),
+                        target_due_times=remaining,
+                    )
+                pending = replace(pending, target_actor_ids=tuple(item[0] for item in due))
             summon = self.player_summons.get(actor_id)
             if (summon is None or self.player_summon_health.get(actor_id, [0])[0] <= 0
                     or self._monster_actions_disabled(actor_id, now=current_time)):
@@ -8309,14 +8629,36 @@ class LocalCombatState:
                     )
                 continue
 
+            is_sustained_directional = (
+                attack.command_id == SUSTAINED_SKILL_COMMAND
+                and pending.geometry.targeting_type.casefold()
+                in {"angle", "cone"}
+            )
             for target_actor_id in pending.target_actor_ids:
                 target = self.monsters.get(target_actor_id)
                 if target is None:
+                    if (
+                        str(getattr(summon.definition, "category", "")).casefold()
+                        == "mercenary"
+                        and str(self.encounter.map_id).casefold()
+                        in MERCENARY_PVP_SAFE_MAP_IDS
+                    ):
+                        continue
                     if (
                         target_actor_id
                         not in hostile_by_owner.get(summon.owner_actor_id, ())
                         or player_positions is None
                         or target_actor_id not in player_positions
+                    ):
+                        continue
+                    if (
+                        is_sustained_directional
+                        and not self._stationary_directional_position_is_target(
+                            summon.position,
+                            attack.direction,
+                            pending.geometry,
+                            player_positions[target_actor_id],
+                        )
                     ):
                         continue
                     health = self.player_health.get(target_actor_id)
@@ -8381,6 +8723,30 @@ class LocalCombatState:
                     or target.actor_id in self.returning_home_actor_ids
                 ):
                     continue
+                if getattr(summon.definition, 'fixed_direction', False):
+                    reach = max(1.0, pending.geometry.projectile_range)
+                    ray = replace(
+                        pending.geometry, attack_range=reach, hit_range=reach,
+                        player_width=2 * pending.geometry.projectile_radius,
+                        end_width=2 * pending.geometry.projectile_radius,
+                    )
+                    if not self._stationary_directional_position_is_target(
+                        summon.position, attack.direction, ray,
+                        self.monster_positions[target.actor_id],
+                        collision_radius=target.collision_radius,
+                    ):
+                        continue
+                elif (
+                    is_sustained_directional
+                    and not self._stationary_directional_position_is_target(
+                        summon.position,
+                        attack.direction,
+                        pending.geometry,
+                        self.monster_positions[target.actor_id],
+                        collision_radius=target.collision_radius,
+                    )
+                ):
+                    continue
                 previous = self.monster_health[target.actor_id]
                 base_damage = sum(pending.player_damage_range) * 0.5 * (
                         self._summon_status_scale(actor_id, "Damage", "Min", now=current_time)
@@ -8420,11 +8786,12 @@ class LocalCombatState:
                     )
                 )
                 damage += immediate_damage
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    target, previous, damage
+                )
                 if damage <= 0:
                     continue
                 self.monster_health[target.actor_id] = current
-                killed = current == 0
                 effects = tuple(
                     effect
                     for effect in pending.geometry.victim_status_effects
@@ -8614,9 +8981,10 @@ class LocalCombatState:
         # uses ``resolve_runtime_player_hit`` below, which applies the actual
         # database/talent damage coefficient.
         damage = previous if pending.damage_modifier > 0.0 else 0
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
-        killed = current == 0
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -8801,9 +9169,10 @@ class LocalCombatState:
             now=current_time,
         )
         damage += immediate_damage
-        current = max(0, previous - damage)
+        current, killed = _monster_health_after_damage(
+            monster, previous, damage
+        )
         self.monster_health[monster.actor_id] = current
-        killed = current == 0
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -8880,66 +9249,6 @@ class LocalCombatState:
             pending.cast_id, now=pending.due_at
         )
 
-    def _monster_skill_choice(
-        self,
-        actor_id: int,
-        definitions,
-        eligible_definitions,
-        skill_cursor: int,
-        current_time: float,
-    ):
-        """The skill a monster uses now, or None.
-
-        Only the variants of the map's difficulty count (MinDifficulty /
-        MaxDifficulty), and only skills whose cooldown has run out: a skill's
-        CoolDown starts at each use, its InitialCoolDown when the monster first
-        fights (Bearach's hounds come after 3 to 5 s). A ready skill with a
-        cooldown, a special, goes before the plain attacks, which take turns as
-        before; among ready specials, the one ready the longest.
-        UNVERIFIED: the retail choice among several ready specials and the
-        meaning of the Skills ":N" suffix.
-        """
-
-        difficulty = int(getattr(self.encounter, "scaling_difficulty", 0))
-        ready_at = self._monster_skill_ready_at.get(actor_id)
-        if ready_at is None:
-            ready_at = {}
-            for definition in definitions:
-                low, high = definition.initial_cooldown
-                if high > 0.0:
-                    key = _cooldown_key(definition)
-                    wait = self._monster_cooldown_random.uniform(low, high)
-                    ready_at[key] = max(ready_at.get(key, 0.0), current_time + wait)
-            self._monster_skill_ready_at[actor_id] = ready_at
-        alive_summons = len(
-            self.monster_summoned_actor_ids.get(actor_id, set())
-            & set(self.living_actor_ids)
-        )
-        usable = tuple(
-            definition
-            for definition in eligible_definitions
-            if definition.min_difficulty <= difficulty <= definition.max_difficulty
-            and current_time + 1e-9 >= ready_at.get(_cooldown_key(definition), 0.0)
-            # A summon waits while the caster's summons fill its limit.
-            and not (
-                definition.summon_template
-                and definition.summon_limit > 0
-                and alive_summons + definition.summon_amount > definition.summon_limit
-            )
-        )
-        if not usable:
-            return None
-        specials = tuple(d for d in usable if d.cooldown > 0.0)
-        if specials:
-            # The one ready the longest: a short-cooldown special must not keep
-            # a longer one from ever coming (Heredur's 5 s double strike and
-            # 20 s missile).
-            return min(
-                specials,
-                key=lambda d: ready_at.get(_cooldown_key(d), 0.0),
-            )
-        return usable[skill_cursor % len(usable)]
-
     def maybe_start_monster_attacks(
         self,
         player_position: tuple[float, float, float],
@@ -8996,8 +9305,35 @@ class LocalCombatState:
                 and actor_id not in eligible_actor_ids
             ):
                 continue
+            monster = self.monsters[actor_id]
+            tower_fire_burst = (
+                monster.invulnerable
+                and "fire_shooter" in monster.template_id.casefold()
+                and is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+            )
+            pending_attack = self.pending_monster_attacks.get(actor_id)
+            boss_projectile_in_flight = (
+                pending_attack is not None
+                and str(monster.rank_id or "").casefold().startswith("rank_boss")
+                and pending_attack.command_id in {
+                    BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND,
+                }
+            )
             if (
-                actor_id in self.pending_monster_attacks
+                (
+                    pending_attack is not None
+                    and not tower_fire_burst
+                    and not boss_projectile_in_flight
+                )
+                or (
+                    tower_fire_burst
+                    and current_time
+                    < self.tower_fire_burst_cooldown_until.get(actor_id, 0.0)
+                )
                 or current_time < self.monster_skill_unblock_at.get(actor_id, 0.0)
                 or actor_id in self.returning_home_actor_ids
                 or self._monster_actions_disabled(
@@ -9010,8 +9346,10 @@ class LocalCombatState:
                 if target is None:
                     continue
                 target_actor_id, player_world = target
-            monster = self.monsters[actor_id]
             definitions = monster.attacks or (monster.attack,)
+            if not monster.attack.resource_id:
+                # Aura-only mounts and scene controllers have no cast skill.
+                continue
             if not definitions or definitions[0] != monster.attack:
                 definitions = (
                     monster.attack,
@@ -9021,6 +9359,17 @@ class LocalCombatState:
                         if value.resource_id != monster.attack.resource_id
                     ),
                 )
+            difficulty = int(
+                getattr(self.encounter, "scaling_difficulty", 0)
+            )
+            definitions = tuple(
+                definition
+                for definition in definitions
+                if definition.min_difficulty <= difficulty
+                <= definition.max_difficulty
+            )
+            if not definitions:
+                continue
             maximum_attack_range = max(
                 definition.attack_range for definition in definitions
             )
@@ -9028,21 +9377,50 @@ class LocalCombatState:
             home_distance = self._distance(
                 monster_position, monster.position
             )
+            is_boss = str(monster.rank_id or "").casefold().startswith("rank_boss")
+            boss_range = max(monster.aggro_range, monster.travel_distance)
+            acquisition_range = min(
+                monster.aggro_range,
+                monster.travel_distance,
+                (
+                    boss_range
+                    if is_boss
+                    else (
+                        max(
+                            MONSTER_ACQUISITION_RADIUS,
+                            TOWER_FIRE_ACQUISITION_RANGE,
+                        )
+                        if tower_fire_burst
+                        else MONSTER_ACQUISITION_RADIUS
+                    )
+                ),
+            )
             if (
                 home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
                 and self._distance(player_world, monster_position)
-                > min(
-                    monster.aggro_range,
-                    monster.travel_distance,
-                    MONSTER_ACQUISITION_RADIUS,
-                )
+                > acquisition_range
             ):
                 continue
+            simulation_radius = (
+                max(
+                    boss_range,
+                    MONSTER_SIMULATION_RADIUS,
+                )
+                if is_boss
+                else (
+                    max(
+                        MONSTER_SIMULATION_RADIUS,
+                        TOWER_FIRE_ACQUISITION_RANGE,
+                    )
+                    if tower_fire_burst
+                    else MONSTER_SIMULATION_RADIUS
+                )
+            )
             if (
                 self._distance(player_world, monster.position)
-                > MONSTER_SIMULATION_RADIUS
+                > simulation_radius
                 or self._distance(player_world, monster_position)
-                > MONSTER_SIMULATION_RADIUS
+                > simulation_radius
             ):
                 continue
             attack_target_actor_id = target_actor_id
@@ -9105,36 +9483,70 @@ class LocalCombatState:
                 attack_target_world, monster_position
             )
             vertical_gap = abs(attack_target_world[1] - monster_position[1])
-            eligible_definitions = tuple(
-                definition
-                for definition in definitions
-                if target_distance <= definition.attack_range
-                and (
-                    definition.command_id in {
+            eligible_definitions_list = []
+            for definition in definitions:
+                if (
+                    definition.command_id not in {
                         BULLET_SKILL_COMMAND,
                         TARGET_BULLET_SKILL_COMMAND,
                     }
-                    or vertical_gap <= MONSTER_MELEE_VERTICAL_REACH
-                )
-            )
+                    and vertical_gap > MONSTER_MELEE_VERTICAL_REACH
+                ):
+                    # A blow does not reach a player on a ledge above or
+                    # below the monster; only projectiles fly there.
+                    continue
+                if (
+                    definition.motion_type == "Straight"
+                    and definition.projectile_velocity > 1e-6
+                    and definition.projectile_lifetime > 1e-6
+                ):
+                    # A native cast range does not extend a straight bullet
+                    # beyond its authored lifetime. Trap shooters often have
+                    # AttackRange=100 while their V4/L10 projectile only
+                    # travels 40 world units.
+                    effective_range = min(
+                        definition.attack_range,
+                        definition.projectile_velocity
+                        * definition.projectile_lifetime
+                        + max(0.15, definition.projectile_radius)
+                        + PLAYER_PROJECTILE_COLLISION_RADIUS,
+                    )
+                elif definition.support:
+                    # A summon or a self-buff strikes nobody: its HitRange is
+                    # no reach, only its AttackRange says when it is cast.
+                    effective_range = definition.attack_range
+                else:
+                    # Melee skills commonly author a smaller AttackRange than
+                    # HitRange (Bearach's strike is 4 vs. 5). Let the cast
+                    # begin anywhere its authored hit can still connect.
+                    effective_range = max(
+                        definition.attack_range, definition.hit_range
+                    )
+                if target_distance <= effective_range:
+                    eligible_definitions_list.append(definition)
+            eligible_definitions = tuple(eligible_definitions_list)
             skill_cursor = self._monster_skill_cursors.get(actor_id, 0)
             definition = self._monster_skill_choice(
-                actor_id, definitions, eligible_definitions,
-                skill_cursor, current_time,
+                actor_id,
+                definitions,
+                eligible_definitions,
+                skill_cursor,
+                current_time,
             )
             if definition is None:
                 continue
+            # The previous cast owns the recovery lock checked above. Using
+            # the newly selected skill's duration here starves long specials:
+            # every intervening basic hit restarts the interval they require.
+            minimum_attack_interval = 0.1
+            if not is_boss:
+                minimum_attack_interval = max(
+                    minimum_attack_interval, monster.attack_interval
+                )
             if (
                 current_time - self.last_monster_attack_at[actor_id]
                 + 1e-9
-                < max(
-                    0.1,
-                    monster.attack_interval,
-                    definition.motion_unblock_frame
-                    / SERVER_TICKS_PER_SECOND,
-                    definition.skill_unblock_frame
-                    / SERVER_TICKS_PER_SECOND,
-                )
+                < minimum_attack_interval
             ):
                 continue
             dx = attack_target_world[0] - monster_position[0]
@@ -9218,14 +9630,22 @@ class LocalCombatState:
             attack = MonsterAttack(
                 attacker_actor_id=actor_id,
                 target_actor_id=attack_target_actor_id,
-                skill_level=definition.skill_level,
+                # This legacy wire field is SkillCounter, not the authored
+                # skill level. The client rejects a nonzero counter <= the
+                # actor's last counter, so a fixed template level plays once
+                # and silences every following attack. Autonomous casts use
+                # zero, which explicitly bypasses that prediction-counter
+                # check (as player-owned autonomous summons already do).
+                skill_level=0,
                 skill_index=definition.skill_manager_index,
                 command_id=definition.command_id,
                 aim_angle=yaw,
                 server_tick=start_tick,
-                # Retail autonomous monster commands use zero; random cast
-                # IDs are a client-player prediction mechanism.
-                cast_id=0,
+                # Keep autonomous casts distinguishable to the client. Reusing
+                # zero for every attack lets the first animation play but can
+                # cause later casts from the same actor to be treated as an
+                # already-seen event while server-side damage still resolves.
+                cast_id=(start_tick + actor_id) & 0xFFFFFFFF,
                 impact_tick=impact_tick,
                 hit_frame=animation_hit_frame,
                 motion_unblock_frame=definition.motion_unblock_frame,
@@ -9264,6 +9684,7 @@ class LocalCombatState:
                     )
                 ),
                 definition=definition,
+                bullet_count=definition.bullet_count,
             )
             self.last_monster_attack_at[actor_id] = current_time
             self.monster_skill_unblock_at[actor_id] = (
@@ -9295,6 +9716,25 @@ class LocalCombatState:
                     now=current_time,
                     source_actor_id=actor_id,
                 )
+            if tower_fire_burst or boss_projectile_in_flight:
+                previous = self.pending_monster_attacks.get(actor_id)
+                if previous is not None:
+                    self.pending_monster_projectile_attacks.setdefault(
+                        actor_id, []
+                    ).append(previous)
+            if tower_fire_burst:
+                remaining = self.tower_fire_burst_remaining.get(actor_id)
+                if remaining is None:
+                    self.tower_fire_burst_remaining[actor_id] = (
+                        TOWER_FIRE_BURST_SHOTS - 1
+                    )
+                elif remaining <= 1:
+                    self.tower_fire_burst_remaining.pop(actor_id, None)
+                    self.tower_fire_burst_cooldown_until[actor_id] = (
+                        current_time + TOWER_FIRE_BURST_COOLDOWN
+                    )
+                else:
+                    self.tower_fire_burst_remaining[actor_id] = remaining - 1
             self.pending_monster_attacks[actor_id] = attack
             attacks.append(attack)
             next_cursor = (
@@ -9304,6 +9744,159 @@ class LocalCombatState:
                 break
         self._monster_attack_cursor = next_cursor
         return tuple(attacks)
+
+    def _monster_skill_choice(
+        self,
+        actor_id: int,
+        definitions,
+        eligible_definitions,
+        skill_cursor: int,
+        current_time: float,
+    ) -> MonsterAttackDefinition | None:
+        """Choose a difficulty-valid, cooled-down monster skill."""
+
+        ready_at = self._monster_skill_ready_at.get(actor_id)
+        if ready_at is None:
+            ready_at = {}
+            for definition in definitions:
+                low, high = definition.initial_cooldown
+                if high <= 0.0:
+                    continue
+                key = definition.cooldown_category or definition.resource_id
+                wait = self._monster_cooldown_random.uniform(low, high)
+                ready_at[key] = max(
+                    ready_at.get(key, 0.0), current_time + wait
+                )
+            self._monster_skill_ready_at[actor_id] = ready_at
+
+        difficulty = int(getattr(self.encounter, "scaling_difficulty", 0))
+        alive_ids = set(self.living_actor_ids)
+        living_summons = len(
+            self.monster_summoned_actor_ids.get(actor_id, set()) & alive_ids
+        )
+        monster = self.monsters.get(actor_id)
+        is_boss = bool(
+            monster
+            and str(monster.rank_id or "").casefold().startswith("rank_boss")
+        )
+        primary = definitions[0] if definitions else None
+        is_melee_primary = (
+            primary is not None
+            and primary.command_id in {SKILL_COMMAND, TARGET_SKILL_COMMAND, 0x49}
+            and primary.attack_range <= 8.0
+            and not primary.self_buff
+            and not primary.summon_template
+        )
+        # A monster's first skill is not necessarily its basic attack. Some
+        # bosses list a long-range special first (for example Balor's
+        # player-targeted cast), which can otherwise suppress their melee
+        # attack after direct travel to the map. Identify close, damaging
+        # actor-targeted melee skills independently of their list position.
+        basic_melees = tuple(
+            definition
+            for definition in eligible_definitions
+            if is_boss
+            and BOSS_BASIC_ATTACK_ROTATION
+            and self._is_basic_monster_melee(definition)
+        )
+        basic_melee_ids = {id(definition) for definition in basic_melees}
+
+        usable = tuple(
+            definition
+            for definition in eligible_definitions
+            if definition.min_difficulty <= difficulty <= definition.max_difficulty
+            and (
+                id(definition) in basic_melee_ids
+                or (not is_boss and is_melee_primary and definition is primary)
+                or current_time + 1e-9 >= ready_at.get(
+                    definition.cooldown_category or definition.resource_id, 0.0
+                )
+            )
+            and not (
+                definition.summon_template
+                and definition.summon_limit > 0
+                and living_summons + definition.summon_amount
+                > definition.summon_limit
+            )
+        )
+        if not usable:
+            return None
+
+        # A boss's summons and self-buffs come as soon as their cooldown
+        # allows (their InitialCoolDown first: Heredur's skeletons after a few
+        # seconds), outside its rotation below; the one ready the longest.
+        supports = tuple(
+            definition
+            for definition in usable
+            if is_boss
+            and BOSS_BASIC_ATTACK_ROTATION
+            and definition.support
+            and definition.cooldown > 0.0
+        )
+        if supports:
+            return min(
+                supports,
+                key=lambda definition: ready_at.get(_cooldown_key(definition), 0.0),
+            )
+
+        specials = tuple(
+            skill
+            for skill in usable
+            if (
+                skill not in basic_melees
+                and skill.cooldown > 0.0
+            )
+        )
+
+        available_basic_melees = tuple(
+            definition
+            for definition in basic_melees
+            if definition in usable
+        )
+        if available_basic_melees:
+            # Reserve every third boss attack selection for a ready special,
+            # while keeping a close basic hit in the rotation even when its
+            # authored cooldown would otherwise leave only ranged abilities.
+            if specials and skill_cursor % 3 == 2:
+                special = min(
+                    specials,
+                    key=lambda skill: ready_at.get(
+                        skill.cooldown_category or skill.resource_id, 0.0
+                    ),
+                )
+                return special
+            return min(
+                available_basic_melees,
+                key=lambda skill: (
+                    skill.cooldown,
+                    max(skill.attack_range, skill.hit_range),
+                    skill.skill_manager_index,
+                ),
+            )
+
+        if specials:
+            return min(
+                specials,
+                key=lambda skill: ready_at.get(
+                    skill.cooldown_category or skill.resource_id, 0.0
+                ),
+            )
+        return usable[skill_cursor % len(usable)]
+
+    @staticmethod
+    def _is_basic_monster_melee(
+        definition: MonsterAttackDefinition,
+    ) -> bool:
+        """Whether this is a close, damaging, actor-targeted melee skill."""
+
+        return (
+            definition.command_id in {SKILL_COMMAND, TARGET_SKILL_COMMAND}
+            and max(definition.attack_range, definition.hit_range) <= 12.0
+            and definition.cooldown <= 2.0
+            and definition.damage_modifier > 0.0
+            and not definition.self_buff
+            and not definition.summon_template
+        )
 
     @staticmethod
     def _fixed_projectile_intersects_player(
@@ -9323,6 +9916,17 @@ class LocalCombatState:
         target_dx = attack.target_position[0] - origin_x
         target_dz = attack.target_position[2] - origin_z
         path_length = math.hypot(target_dx, target_dz)
+        maximum_range = max(0.0, float(attack.maximum_projectile_range))
+        projectile_distance = math.dist(
+            attack.projectile_origin, attack.target_position
+        )
+        collision_allowance = (
+            max(0.15, float(attack.projectile_radius))
+            + PLAYER_PROJECTILE_COLLISION_RADIUS
+        )
+        if (maximum_range > 0.0
+                and projectile_distance > maximum_range + collision_allowance):
+            return False
         player_dx = player_position[0] - origin_x
         player_dz = player_position[2] - origin_z
         along = player_dx * direction_x + player_dz * direction_z
@@ -9352,6 +9956,85 @@ class LocalCombatState:
             <= player_position[1] + PLAYER_CAPSULE_HEIGHT + PROJECTILE_VERTICAL_SLACK
         )
 
+    @staticmethod
+    def _directional_skill_intersects_player(
+        attack: MonsterAttack,
+        player_position: tuple[float, float, float],
+        definition: MonsterAttackDefinition,
+    ) -> bool:
+        """Test cast-time cone/angle geometry at the player's impact position."""
+
+        origin_x, _origin_y, origin_z = attack.projectile_origin
+        direction_x = float(attack.direction[0])
+        direction_z = float(attack.direction[2])
+        direction_length = math.hypot(direction_x, direction_z)
+        if direction_length <= 1e-6:
+            return False
+        direction_x /= direction_length
+        direction_z /= direction_length
+
+        dx = player_position[0] - origin_x
+        dz = player_position[2] - origin_z
+        distance = math.hypot(dx, dz)
+        forward = dx * direction_x + dz * direction_z
+        collision_radius = PLAYER_PROJECTILE_COLLISION_RADIUS
+        maximum_range = max(
+            0.0,
+            float(definition.attack_range),
+            float(definition.hit_range),
+        )
+        if (
+            forward < -collision_radius
+            or distance > maximum_range + collision_radius
+        ):
+            return False
+
+        lateral = abs(dx * direction_z - dz * direction_x)
+        targeting_type = definition.targeting_type.casefold()
+        if targeting_type == "angle":
+            half_width = max(0.0, forward) * math.tan(
+                math.radians(definition.angle_degrees / 2.0)
+            )
+        else:
+            progress = min(
+                1.0,
+                max(0.0, forward) / max(maximum_range, 1e-6),
+            )
+            half_width = (
+                definition.player_width / 2.0
+                + (definition.end_width - definition.player_width)
+                / 2.0
+                * progress
+            )
+        return lateral <= max(0.0, half_width) + collision_radius
+
+    def pending_monster_attack_items(self) -> tuple[tuple[int, MonsterAttack], ...]:
+        """Snapshot active casts and independently travelling projectiles."""
+
+        return (
+            *self.pending_monster_attacks.items(),
+            *((actor_id, attack)
+              for actor_id, flights in self.pending_monster_projectile_attacks.items()
+              for attack in flights),
+        )
+
+    def _remove_pending_monster_attack(
+        self, actor_id: int, attack: MonsterAttack,
+    ) -> None:
+        actor_id = int(actor_id)
+        if self.pending_monster_attacks.get(actor_id) is attack:
+            self.pending_monster_attacks.pop(actor_id, None)
+            return
+        flights = self.pending_monster_projectile_attacks.get(actor_id)
+        if flights is None:
+            return
+        for index, pending in enumerate(flights):
+            if pending is attack:
+                del flights[index]
+                break
+        if not flights:
+            self.pending_monster_projectile_attacks.pop(actor_id, None)
+
     def resolve_due_monster_attacks(
         self,
         player_position: tuple[float, float, float],
@@ -9363,6 +10046,7 @@ class LocalCombatState:
         ) = 1.0,
         block_chance: float = 0.0,
         block_damage_reduction: float = 0.0,
+        finalize_area_attacks: bool = False,
     ) -> tuple[DamageResolution, ...]:
         """Apply autonomous skill damage if the target remains in range."""
 
@@ -9376,14 +10060,15 @@ class LocalCombatState:
             player_position
         )
         resolutions = []
-        for actor_id, attack in tuple(self.pending_monster_attacks.items()):
+        for actor_id, attack in self.pending_monster_attack_items():
             if current_time < attack.due_at:
                 continue
             if (
                 self.monster_health.get(actor_id, 0) <= 0
                 or actor_id in self.returning_home_actor_ids
             ):
-                del self.pending_monster_attacks[actor_id]
+                self.pending_monster_attacks.pop(actor_id, None)
+                self.pending_monster_projectile_attacks.pop(actor_id, None)
                 continue
             monster_position = self.monster_positions[actor_id]
             monster = self.monsters[actor_id]
@@ -9394,23 +10079,52 @@ class LocalCombatState:
                 if targets_monster
                 else player_world
             )
-            if not targets_monster and attack.target_actor_id != player_actor_id:
+            is_directional_shape = (
+                attack.command_id not in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                }
+                and definition.targeting_type.casefold() in {"angle", "cone"}
+            )
+            is_ground_target_area = (
+                attack.command_id == SHIFTED_SKILL_COMMAND
+                and definition.targeting_type.casefold()
+                in {"radius", "point", "location"}
+            )
+            is_multi_target_area = (
+                (is_directional_shape or is_ground_target_area)
+                and not targets_monster
+                and not definition.self_buff
+            )
+            if (
+                not targets_monster
+                and attack.target_actor_id != player_actor_id
+                and not is_multi_target_area
+            ):
                 continue
-            del self.pending_monster_attacks[actor_id]
-            if attack.definition is not None and attack.definition.summon_template:
-                # The summon lands: the service spawns its monsters around the
-                # caster (services/monster_summons.py).
+            if (
+                is_multi_target_area
+                and player_actor_id in attack.resolved_target_actor_ids
+            ):
+                continue
+            if not is_multi_target_area:
+                self._remove_pending_monster_attack(actor_id, attack)
+            if (
+                attack.definition is not None
+                and attack.definition.summon_template
+                and attack.target_actor_id == player_actor_id
+            ):
                 self.pending_monster_summons.append(MonsterSummonRequest(
                     caster_actor_id=int(actor_id),
                     template_id=attack.definition.summon_template,
                     amount=int(attack.definition.summon_amount),
                     limit=int(attack.definition.summon_limit),
                     position=tuple(float(v) for v in monster_position[:3]),
-                    level=int(self.monsters[actor_id].level),
+                    level=int(monster.level),
                 ))
-                continue
             if attack.definition is not None and attack.definition.self_buff:
-                # A buff on the caster: no blow lands.
+                continue
+            if definition.damage_modifier <= 0.0:
                 continue
             if (
                 targets_monster
@@ -9432,6 +10146,18 @@ class LocalCombatState:
                     and not self._fixed_projectile_intersects_player(
                         attack, target_world
                     )
+                ):
+                    continue
+            elif is_directional_shape:
+                if not self._directional_skill_intersects_player(
+                    attack, target_world, definition
+                ):
+                    continue
+            elif is_ground_target_area:
+                if (
+                    self._distance(target_world, attack.target_position)
+                    > max(0.0, definition.hit_range)
+                    + PLAYER_PROJECTILE_COLLISION_RADIUS
                 ):
                     continue
             elif (
@@ -9498,7 +10224,21 @@ class LocalCombatState:
                 (monster.minimum_damage + monster.maximum_damage) / 2
                 * outgoing_multiplier
                 * defense_multiplier
+                * max(0.0, float(definition.damage_modifier))
             )
+            # Some authored fixed shooters omit MinDamage/MaxDamage. Their
+            # visual projectile still hits, so do not silently turn that hit
+            # into zero damage on the server.
+            if (
+                monster.invulnerable
+                and "fire_shooter" in monster.template_id.casefold()
+                and is_tower_mechanism(
+                    self.encounter.static_database_path,
+                    self.encounter.map_id,
+                    monster.template_id,
+                )
+            ):
+                raw_damage = max(1.0, raw_damage)
             damage = (
                 max(1, int(round(raw_damage)))
                 if raw_damage > 0.0
@@ -9509,11 +10249,12 @@ class LocalCombatState:
             if targets_monster:
                 target = self.monsters[attack.target_actor_id]
                 previous = self.monster_health[attack.target_actor_id]
-                current = max(0, previous - damage)
+                current, killed = _monster_health_after_damage(
+                    target, previous, damage
+                )
                 if damage <= 0:
                     continue
                 self.monster_health[attack.target_actor_id] = current
-                killed = current == 0
                 victim_effects = tuple(
                     definition
                     for definition in self._load_monster_attack_effects(
@@ -9584,6 +10325,14 @@ class LocalCombatState:
             current = max(0, previous - damage)
             damage = previous - current
             if damage <= 0 and not blocked:
+                if is_multi_target_area:
+                    self.pending_monster_attacks[actor_id] = replace(
+                        attack,
+                        resolved_target_actor_ids=(
+                            *attack.resolved_target_actor_ids,
+                            player_actor_id,
+                        ),
+                    )
                 continue
             self.note_player_attacked(player_actor_id, now=current_time)
             health[0] = current
@@ -9618,4 +10367,25 @@ class LocalCombatState:
                     blocked=blocked,
                 )
             )
+            if is_multi_target_area:
+                self.pending_monster_attacks[actor_id] = replace(
+                    attack,
+                    resolved_target_actor_ids=(
+                        *attack.resolved_target_actor_ids,
+                        player_actor_id,
+                    ),
+                )
+        if finalize_area_attacks:
+            for actor_id, attack in tuple(self.pending_monster_attacks.items()):
+                definition = attack.definition or self.monsters[actor_id].attack
+                if (
+                    attack.due_at <= current_time
+                    and definition.targeting_type.casefold()
+                    in {"angle", "cone", "radius", "point", "location"}
+                    and attack.command_id not in {
+                        BULLET_SKILL_COMMAND,
+                        TARGET_BULLET_SKILL_COMMAND,
+                    }
+                ):
+                    self._remove_pending_monster_attack(actor_id, attack)
         return tuple(resolutions)

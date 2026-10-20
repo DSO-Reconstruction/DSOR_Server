@@ -8,7 +8,7 @@ batch can be decoded, edited, and serialized without replaying opaque bytes.
 
 from __future__ import annotations
 
-from dso_server.protocol.command_ids import command_id
+from dso_server.protocol.command_ids import UNAVAILABLE_COMMAND_ID, command_id
 from dso_server.protocol.shop_protocol import OFFER_COMMAND, read_offer_command_body, write_offer_command_body
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -22,11 +22,13 @@ from dso_server.protocol.currency_protocol import (
     write_game_currency_changed_body,
 )
 from dso_server.protocol.gameplay_protocol import (
+    ACTORS_ENTER_VICINITY_COMMAND,
     MESSAGE_COMMAND,
     NEW_NPC_COMMAND,
     NPC_INFO_COMMAND,
     PROP_INFO_COMMAND,
     STATUS_EFFECT_COMMAND,
+    ActorsEnterVicinity,
     Message,
     MessageArgument,
     PropInfo,
@@ -96,10 +98,40 @@ UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND = command_id("Commands::UpdatePr
 EVENT_PROGRESS_INFO_COMMAND = command_id("Commands::EventProgressInfoCommand", 0x00E0)
 EVENT_PARTICIPATION_INFO_COMMAND = command_id("Commands::EventParticipationInfoCommand", 0x00DF)
 EXIT_INFO_COMMAND = command_id("Commands::ExitInfoCommand", 0x0044)
+# The literals here are the current client's (dro_client64-patch5,
+# docs/command_ids.json). release261_192 registers three more commands before
+# the Season Pass block, so from there on its ids are three higher
+# (KickOutToHubLimitTimeLeftCommand 0x016b, GetWantedThiefInfoResultCommand
+# 0x0168): serve it with its own DSO_COMMAND_IDS table.
+KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND = command_id(
+    "Commands::KickOutToHubLimitTimeLeftCommand", 0x0168,
+)
+# release261_192 registers KillMonsterGetTotalScoresCommand (0x016c there) and
+# GetEndlessTowerAllBuffsResultCommand (0x0171); the current client has neither
+# (its 0x016c is GetSecondDaySignedAwardCommand), so they are unavailable unless
+# a table names them, and the Fractured Planes panel and buff choices are only
+# sent when they are (command_available). Never through ``_BODY_WRITERS``,
+# whose 0x016c entry emits the award body.
+KILL_MONSTER_GET_TOTAL_SCORES_COMMAND = command_id(
+    "Commands::KillMonsterGetTotalScoresCommand", UNAVAILABLE_COMMAND_ID,
+)
+GET_SELF_ENDLESS_TOWER_DATA_COMMAND = command_id(
+    "Commands::GetSelfEndlessTowerDataCommand", 0x016B,
+)
+GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND = command_id(
+    "Commands::GetEndlessTowerAllBuffsResultCommand", UNAVAILABLE_COMMAND_ID,
+)
+
+
+def command_available(command: int) -> bool:
+    """Whether the client build being served defines this command."""
+
+    return command != UNAVAILABLE_COMMAND_ID
 ACTIVITY_SIGNIN_CALENDAR_COMMAND = 0x014B
 ACTIVITY_EXTRA_RECORD_COMMAND = 0x014A
 USER_HATCH_EGGS_INFO_COMMAND = command_id("Commands::UserHatchEggsInfoCommand", 0x015B)
 SEASON_PASS_REWARDS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassRewardsInfoResultCommand", 0x015F)
+SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND = command_id("Commands::GetSeasonPassMissionsInfoResultCommand", 0x0163)
 GET_SECOND_DAY_SIGNED_AWARD_COMMAND = command_id("Commands::GetSecondDaySignedAwardCommand", 0x016C)
 OBSTACLE_UPDATE_COMMAND = command_id("Commands::ObstacleUpdateCommand", 0x0072)
 COMMAND_0173 = 0x0173
@@ -110,9 +142,16 @@ COMMAND_0173 = 0x0173
 # produces ``invalid command ending in multi command 364`` when sent by the
 # server.  Keep both codecs so captures remain fully reversible, but omit them
 # from packets targeting this client build.
+#
+# 0x015b reproduces the same 0x016c symptom on this build (``invalid command
+# ending in multi command 347``). This client
+# build's 0x0083 decoder expects four maps: daily, bonus, tiered spender, and
+# comeback daily. The older checked-in capture has only three, so the reader
+# accepts that legacy form while the writer emits the current four-map form.
 LOCAL_CLIENT_UNSUPPORTED_INIT_COMMANDS = frozenset({
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND,
     COMMAND_0173,
+    USER_HATCH_EGGS_INFO_COMMAND,
 })
 
 
@@ -121,6 +160,108 @@ class ServerCommand:
     command_id: int
     value: object
     actor_id: int | None
+
+
+@dataclass(frozen=True)
+class KickOutToHubLimitTimeLeft:
+    """Native floor timer; zero selects the panel's Level completed phase.
+
+    PlanarFissureInfoWidget::SetTimeLeft (0x1405b7f2c) calls the phase-three
+    setter on zero; it is also the boss-clear notification for this panel.
+    """
+
+    seconds: int
+
+
+def _read_kick_out_to_hub_limit_time_left_body(
+    reader: BitReader,
+) -> KickOutToHubLimitTimeLeft:
+    return KickOutToHubLimitTimeLeft(reader.read_uint32_le())
+
+
+def _write_kick_out_to_hub_limit_time_left_body(
+    writer: BitWriter, value: KickOutToHubLimitTimeLeft,
+) -> None:
+    writer.write_uint32_le(max(0, int(value.seconds)))
+
+
+def encode_kill_monster_get_total_scores(
+    score: int, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Push the running Endless Tower / Fractured Planes kill score.
+
+    ``Commands::KillMonsterGetTotalScoresCommand``'s decoder (0x14097a09c)
+    reads one u32 into ``[command + 0x20]``, and the inherited-actor slot every
+    Endless Tower command shares (vtable +0x48, 0x140a2297c) then reads a
+    trailing u32 into ``[command + 0x18]``.  Both fields are mandatory: the
+    earlier one-field shape let the actor reader swallow the ``0xff``
+    separator, which is what the client logged as
+    ``could not decode command's additional server data (ID: '364')``.
+
+    The handler (0x1401cf938) forwards ``[+0x20]`` to
+    ``UI::DrasaUIManager`` (0x14040f268), which lazily loads and shows
+    PlanarFissureInfoWidget and then drives its bar and ``%0.f%%`` label
+    (0x1405b7fd4/0x1405b8080).  Showing the widget is also what stamps the
+    panel's phase-one state and score target, so the first command both
+    activates the panel and replaces its authored ``Text`` placeholder.
+    """
+
+    if type(score) is not int or not 0 <= score <= 0x7FFFFFFF:
+        raise ValueError("kill score must be a non-negative int32")
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(
+        KILL_MONSTER_GET_TOTAL_SCORES_COMMAND.to_bytes(2, "little")
+    )
+    writer.write_uint32_le(score)
+    writer.write_uint32_le(actor_id)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def encode_endless_tower_buffs(
+    resources: tuple[str, ...], *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Native 0x171: u32 count, u16-length StringAtom entries, actor ID.
+
+    Verified in rel261_192: vtable 0x14117c310, decoder 0x140979484,
+    StringAtom-array reader 0x14095dc2c. The portal displays the first
+    ActNumber entries from ClientActivityManager +0xc0 (0x1405b2c08).
+    """
+
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(GET_ENDLESS_TOWER_ALL_BUFFS_RESULT_COMMAND.to_bytes(2, "little"))
+    writer.write_uint32_le(len(resources))
+    for resource in resources:
+        writer.write_string(resource)
+    writer.write_uint32_le(actor_id)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def encode_endless_tower_progress(
+    cleared_floor: int, claimed_floor: int, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Refresh the native Fractured Planes floor selection.
+
+    GetSelfEndlessTowerDataCommand reads three u32s (0x140979364):
+    highest cleared floor, ranking score, highest rewarded floor. Its handler
+    stores them in ClientRankingManager +0x1a0/+0x1a4/+0x1a8. The map-access
+    widget selects cleared_floor + 1 (0x1405b5be8). A trailing actor is read
+    by the inherited decoder, just like KillMonsterGetTotalScoresCommand.
+    No leaderboard score is published by this local progression update.
+    """
+
+    if not 0 <= claimed_floor <= cleared_floor <= 100:
+        raise ValueError("invalid Endless Tower floor progress")
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(GET_SELF_ENDLESS_TOWER_DATA_COMMAND.to_bytes(2, "little"))
+    for value in (cleared_floor, 0, claimed_floor, actor_id):
+        writer.write_uint32_le(value)
+    writer.write_uint8(0xFF)
+    return writer.finish()
 
 
 @dataclass(frozen=True)
@@ -511,15 +652,19 @@ class TimedChallenge:
 
 @dataclass(frozen=True)
 class TimedChallengesInfo:
-    """Daily, bonus-objective, and RC-spender maps, in native wire order.
+    """Timed-challenge maps, in native wire order.
 
     weekly/monthly are legacy field names; these are not calendar periods.
+    comeback_daily is the fourth map required by the installed client.
     """
 
     server_time: int
     daily: tuple[TimedChallenge, ...]
     weekly: tuple[TimedChallenge, ...]
     monthly: tuple[TimedChallenge, ...]
+    # None preserves the older captured three-map form on decode/encode.
+    # Server-generated messages must pass an explicit tuple, even when empty.
+    comeback_daily: tuple[TimedChallenge, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -667,8 +812,13 @@ class UserHatchEggsInfo:
 class SeasonPassRewardsInfoResult:
     field_20: int
     field_24: int
-    claimed_free: tuple[int, ...]
-    claimed_premium: tuple[int, ...]
+    pass_types: tuple[int, ...]
+    claimed_awards: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class SeasonPassMissionsInfoResult:
+    missions: tuple[tuple[int, int], ...]
 
 
 @dataclass(frozen=True)
@@ -1332,7 +1482,11 @@ def decode_event_update(payload: bytes, bit_length: int) -> EventUpdate:
     return value
 
 
-def _read_timed_challenges(reader: BitReader) -> tuple[TimedChallenge, ...]:
+def _read_timed_challenges(
+    reader: BitReader, *, count: int | None = None,
+) -> tuple[TimedChallenge, ...]:
+    if count is None:
+        count = reader.read_uint32_le()
     return tuple(
         TimedChallenge(
             reader.read_string(),
@@ -1341,7 +1495,7 @@ def _read_timed_challenges(reader: BitReader) -> tuple[TimedChallenge, ...]:
             reader.read_uint32_le(),
             tuple(reader.read_uint32_le() for _ in range(6)),
         )
-        for _ in range(reader.read_uint32_le())
+        for _ in range(count)
     )
 
 
@@ -1376,11 +1530,27 @@ def _read_daily_challenge_progress_body(reader):
 
 
 def _read_timed_challenges_info_body(reader: BitReader) -> TimedChallengesInfo:
+    server_time = reader.read_uint64_le()
+    daily = _read_timed_challenges(reader)
+    weekly = _read_timed_challenges(reader)
+    monthly = _read_timed_challenges(reader)
+
+    # A 2026-09 retail capture ends after the three legacy maps. The installed
+    # client reads a fourth comeback-daily map before the actor context. Try
+    # that map, but rewind on malformed/truncated legacy tails so old captures
+    # remain decodable. Counts are bounded before allocating or iterating.
+    comeback_position = reader.position
+    try:
+        count = reader.read_uint32_le()
+        if count > 4096:
+            raise ValueError(f"unreasonable timed-challenge count {count}")
+        comeback_daily = _read_timed_challenges(reader, count=count)
+    except (ValueError, IndexError):
+        reader.position = comeback_position
+        comeback_daily = None
+
     return TimedChallengesInfo(
-        reader.read_uint64_le(),
-        _read_timed_challenges(reader),
-        _read_timed_challenges(reader),
-        _read_timed_challenges(reader),
+        server_time, daily, weekly, monthly, comeback_daily,
     )
 
 
@@ -1391,6 +1561,8 @@ def _write_timed_challenges_info_body(
     _write_timed_challenges(writer, value.daily)
     _write_timed_challenges(writer, value.weekly)
     _write_timed_challenges(writer, value.monthly)
+    if value.comeback_daily is not None:
+        _write_timed_challenges(writer, value.comeback_daily)
 
 
 def _read_offer_string_floats(reader: BitReader) -> tuple[OfferStringFloat, ...]:
@@ -1622,6 +1794,25 @@ def _write_exit_info_body(writer: BitWriter, value: ExitInfo) -> None:
         _write_blob16(writer, exit_info.instance_guid)
 
 
+def _read_actors_enter_vicinity_body(
+    reader: BitReader,
+) -> ActorsEnterVicinity:
+    count = reader.read_uint32_le()
+    if count > 1_000_000:
+        raise ValueError("ActorsEnterVicinity actor count is unreasonable")
+    return ActorsEnterVicinity(tuple(
+        reader.read_uint32_le() for _ in range(count)
+    ))
+
+
+def _write_actors_enter_vicinity_body(
+    writer: BitWriter, value: ActorsEnterVicinity,
+) -> None:
+    writer.write_uint32_le(len(value.actor_ids))
+    for actor_id in value.actor_ids:
+        writer.write_uint32_le(actor_id)
+
+
 def _read_activity_signin_calendar_body(
     reader: BitReader,
 ) -> ActivitySigninCalendar:
@@ -1723,8 +1914,26 @@ def _write_season_pass_rewards_info_result_body(
 ) -> None:
     writer.write_uint32_le(value.field_20)
     writer.write_uint32_le(value.field_24)
-    _write_u32_array(writer, value.claimed_free)
-    _write_u32_array(writer, value.claimed_premium)
+    _write_u32_array(writer, value.pass_types)
+    _write_u32_array(writer, value.claimed_awards)
+
+
+def _read_season_pass_missions_info_result_body(
+    reader: BitReader,
+) -> SeasonPassMissionsInfoResult:
+    return SeasonPassMissionsInfoResult(tuple(
+        (reader.read_uint32_le(), reader.read_uint32_le())
+        for _ in range(reader.read_uint32_le())
+    ))
+
+
+def _write_season_pass_missions_info_result_body(
+    writer: BitWriter, value: SeasonPassMissionsInfoResult
+) -> None:
+    writer.write_uint32_le(len(value.missions))
+    for mission_id, progress in value.missions:
+        writer.write_uint32_le(mission_id)
+        writer.write_uint32_le(progress)
 
 
 def _read_fieldless_body(reader: BitReader) -> Fieldless:
@@ -1770,6 +1979,8 @@ def _write_obstacle_update_body(writer: BitWriter, value: ObstacleUpdate) -> Non
 
 
 _BODY_READERS = {
+    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND:
+        _read_kick_out_to_hub_limit_time_left_body,
     MEMBERSHIP_UPDATE_COMMAND: read_membership_update_body,
     MESSAGE_COMMAND: _read_message_body,
     NOTIFICATION_COMMAND: _read_notification_body,
@@ -1813,15 +2024,20 @@ _BODY_READERS = {
     USER_HATCH_EGGS_INFO_COMMAND: _read_user_hatch_eggs_info_body,
     SEASON_PASS_REWARDS_INFO_RESULT_COMMAND:
         _read_season_pass_rewards_info_result_body,
+    SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND:
+        _read_season_pass_missions_info_result_body,
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND: _read_second_day_signed_award_body,
     OBSTACLE_UPDATE_COMMAND: _read_obstacle_update_body,
     PLAYER_READY_COMMAND: _read_fieldless_body,
     NEW_NPC_COMMAND: _read_new_npc_body,
     NPC_INFO_COMMAND: _read_npc_info_body,
     PROP_INFO_COMMAND: _read_prop_info_body,
+    ACTORS_ENTER_VICINITY_COMMAND: _read_actors_enter_vicinity_body,
 }
 
 _BODY_WRITERS = {
+    KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND:
+        _write_kick_out_to_hub_limit_time_left_body,
     MEMBERSHIP_UPDATE_COMMAND: write_membership_update_body,
     MESSAGE_COMMAND: _write_message_body,
     NOTIFICATION_COMMAND: _write_notification_body,
@@ -1865,12 +2081,15 @@ _BODY_WRITERS = {
     USER_HATCH_EGGS_INFO_COMMAND: _write_user_hatch_eggs_info_body,
     SEASON_PASS_REWARDS_INFO_RESULT_COMMAND:
         _write_season_pass_rewards_info_result_body,
+    SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND:
+        _write_season_pass_missions_info_result_body,
     GET_SECOND_DAY_SIGNED_AWARD_COMMAND: _write_second_day_signed_award_body,
     OBSTACLE_UPDATE_COMMAND: _write_obstacle_update_body,
     PLAYER_READY_COMMAND: _write_fieldless_body,
     NEW_NPC_COMMAND: _write_new_npc_body,
     NPC_INFO_COMMAND: _write_npc_info_body,
     PROP_INFO_COMMAND: _write_prop_info_body,
+    ACTORS_ENTER_VICINITY_COMMAND: _write_actors_enter_vicinity_body,
 }
 
 _ACTORLESS_COMMANDS = {
@@ -2043,10 +2262,12 @@ def build_local_player_init_commands(
     prop_info: PropInfo | None = None,
     notifications: tuple[NotificationEntry, ...] = (),
     activity_signin_calendar: ActivitySigninCalendar | None = None,
+    item_customizations: tuple[ItemCustomization, ...] = (),
     membership_update: MembershipUpdate | None = None,
     event_update: EventUpdate | None = None,
     event_progress_info: EventProgressInfo | None = None,
     event_participation_info: EventParticipationInfo | None = None,
+    season_pass_info: SeasonPassRewardsInfoResult | None = None,
     quest_log: QuestLogInfo | None = None,
     chapter_progress: ChapterProgress | None = None,
     timed_challenges: TimedChallengesInfo | None = None,
@@ -2092,11 +2313,6 @@ def build_local_player_init_commands(
                 "local quickbar supports at most eight skill slots"
             )
         mount_slot_start = 8
-        shortcut_count = mount_slot_start + len(
-            quickbar_stickerbook_ids
-        )
-        if shortcut_count > 13:
-            raise ValueError("local quickbar supports at most 13 shortcuts")
         local_quickbar = [
             (
                 QuickSlotInfo(0, str(resource_id))
@@ -2112,17 +2328,25 @@ def build_local_player_init_commands(
             empty_slot
             for _ in range(mount_slot_start - len(local_quickbar))
         )
-        local_quickbar.extend(
-            QuickSlotInfo(2, str(resource_id))
-            for resource_id in quickbar_stickerbook_ids
-        )
-        local_quickbar.extend(
-            empty_slot for _ in range(13 - shortcut_count)
-        )
+        # Slots 8..10 are stickerbook shortcuts (Mount: 8, Pet/Mercenary: 9, Emote: 10).
+        mount_id = next((r for r in (quickbar_stickerbook_ids or ()) if "mount" in str(r)), None)
+        mercenary_id = next((r for r in (quickbar_stickerbook_ids or ()) if "mercenary" in str(r) or "pet" in str(r)), None)
+        local_quickbar.append(QuickSlotInfo(2, str(mount_id)) if mount_id else empty_slot)
+        local_quickbar.append(QuickSlotInfo(2, str(mercenary_id)) if mercenary_id else empty_slot)
+        local_quickbar.append(empty_slot)
+        # Consumable and widget slots:
+        # Slot 11: QuickSkillResource (Key D)
+        local_quickbar.append(empty_slot)
+        # Slot 12: QuickSkillResource2 (Key U)
+        local_quickbar.append(empty_slot)
+        # Slot 13: QuickHealth (Key H)
         local_quickbar.append(
             QuickSlotInfo(1, "potion_combined_health_rarity_05")
         )
-        local_quickbar.extend(empty_slot for _ in range(3))
+        # Slot 14: QuickHealth2 (Key R)
+        local_quickbar.append(empty_slot)
+        # Slots 15..16: Extra widget slots
+        local_quickbar.extend(empty_slot for _ in range(2))
         if len(local_quickbar) != 17:
             raise AssertionError("invalid local quickbar layout")
         quick_slots_info = QuickSlotsInfo((tuple(local_quickbar),))
@@ -2193,6 +2417,8 @@ def build_local_player_init_commands(
         event_progress_info = EventProgressInfo(())
     if event_participation_info is None:
         event_participation_info = EventParticipationInfo(())
+    if season_pass_info is None:
+        season_pass_info = SeasonPassRewardsInfoResult(0, 0, (), ())
     aggregate_achievement = ServerCommand(
         ACHIEVEMENT_INFO_COMMAND, achievements, actor_id
     )
@@ -2249,7 +2475,7 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 ITEM_CUSTOMIZATION_INFO_COMMAND,
-                ItemCustomizationInfo(()),
+                ItemCustomizationInfo(tuple(item_customizations)),
                 actor_id,
             ),
             ServerCommand(INVENTORY_INFO_COMMAND, inventory, actor_id),
@@ -2305,7 +2531,7 @@ def build_local_player_init_commands(
             ServerCommand(
                 TIMED_CHALLENGES_INFO_COMMAND,
                 timed_challenges if timed_challenges is not None
-                else TimedChallengesInfo(0, (), (), ()),
+                else TimedChallengesInfo(0, (), (), (), ()),
                 actor_id,
             ),
             ServerCommand(
@@ -2337,9 +2563,6 @@ def build_local_player_init_commands(
     commands.extend(map_entity_commands)
     commands.extend(
         (
-            # Retail sends PropInfo in the local player's command context.
-            # The prop entry still carries its own prop id; actor 0 leaves
-            # the visible workbench detached from its interaction owner.
             ServerCommand(PROP_INFO_COMMAND, prop_info, actor_id),
             ServerCommand(
                 ACTIVITY_SIGNIN_CALENDAR_COMMAND,
@@ -2356,7 +2579,7 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
-                SeasonPassRewardsInfoResult(0, 0, (), ()),
+                season_pass_info,
                 0,
             ),
             ServerCommand(
@@ -2374,7 +2597,8 @@ def build_local_player_init_commands(
         )
     )
     expected_command_count = (
-        91 + len(map_entity_commands) + int(membership_update is not None)
+        91 + len(map_entity_commands)
+        + int(membership_update is not None)
     )
     if len(commands) != expected_command_count:
         raise AssertionError(

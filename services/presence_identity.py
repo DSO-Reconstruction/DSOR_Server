@@ -68,6 +68,21 @@ class PresenceIdentityService:
         """Private dungeon runs; only a group member can supply an existing run."""
         from uuid import uuid4
         from dso_server.gameplay.boss_encounter_policy import load_map_encounter_policy
+        registry = getattr(self, "_pvp_matchmaking", None)
+        character = getattr(s, "gameplay_character", None)
+        match = (
+            registry.match_for_character(int(character.character_id))
+            if registry is not None and character is not None
+            else None
+        )
+        if match is not None and str(match.map_id) == str(s.gameplay_map or ""):
+            # Battleground maps use ClosedPVE templates, but a match is a
+            # single shared world. Assign its stable instance key before the
+            # encounter and remote-player presence are assembled; otherwise
+            # each arriving duelist gets a private dungeon instance and never
+            # sees (or shares combat state with) the other participant.
+            s.gameplay_instance_id = f"pvp-match-{int(match.match_id)}"
+            return
         policy = load_map_encounter_policy(self.static_database_path, s.gameplay_map)
         if policy.area_type.casefold() not in {'closedpve', 'boss'}:
             s.gameplay_instance_id = ''

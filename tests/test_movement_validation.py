@@ -146,7 +146,9 @@ def test_teleport_destination_is_clamped_to_range_and_ground(mesh):
     landed = mv.clamp_movement_destination(s, Geometry(10.0), origin_wire, b)
     assert mv._flat_distance(a, landed) <= 10.0 + mv.RANGE_TOLERANCE + 1e-6
     assert mesh.is_reachable(a, landed)
-    # Its moves may follow the jump, once.
+    # Its moves may follow the jump, once, the cast having been accepted
+    # (services/player_combat.py records the allowance only then).
+    mv.record_movement_allowance(s, origin_wire, landed)
     s.gameplay_last_move = move(frame, a, 1000)
     assert accept(s, frame, landed, 1001) is None
     # A destination in the void stays on the ground the caster can reach.

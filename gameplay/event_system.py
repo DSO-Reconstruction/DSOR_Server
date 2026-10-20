@@ -736,6 +736,20 @@ def _load_catalog(
                     target_key
                 )
 
+    # The Azar boss ration is authored as a LootGenItem with an empty
+    # TravelItemTarget, while the client still sends the ordinary inventory
+    # use action for it. Its intended destination is the first Azar access
+    # group; that group's normal MapAccess selection supplies the difficulty
+    # choices. Keep this compatibility mapping explicit instead of treating
+    # arbitrary LootGenItems as travel items.
+    azar_ration_id = "boss_j0003_lava_dun_boss_travelitem"
+    azar_destination_id = "boss_j0003_lava_dun_boss_01_travelitem"
+    azar_destination = travel_items.get(azar_destination_id)
+    if azar_destination is not None and azar_ration_id not in travel_items:
+        travel_items[azar_ration_id] = replace(
+            azar_destination, template_id=azar_ration_id
+        )
+
     # Several global event definitions leave _Template_Events.Map empty.
     # Their authoritative map ownership is instead encoded on the event's
     # TravelItems. Without carrying those targets into the loot gate, every

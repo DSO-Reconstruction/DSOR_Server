@@ -8,26 +8,40 @@ stays readable while the individual derivations keep their original shape.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 import math
 import time
 from typing import Any
 
 from dso_server.protocol.currency_protocol import (
-    DEFAULT_BADGE_OF_HONOR_BALANCE,
-    DEFAULT_DRAKEN_BALANCE,
-    DEFAULT_GLYPH_OF_POWER_BALANCE,
+    GAME_CURRENCY_DEFINITIONS,
+    STARTER_GOLD_UNITS,
     normalize_game_currency_balances,
 )
 
 from dso_server.runtime.context import *
 from dso_server.gameplay.premium_bags import reconcile_premium_bags
 from dso_server.protocol.membership_protocol import membership_is_active
-from dso_server.protocol.inventory_codec import owned_inventory_items
+from dso_server.protocol.inventory_codec import (
+    BOOTSTRAP_ITEM_ID,
+    BOOTSTRAP_ITEM_TEMPLATE,
+    BOOTSTRAP_SECOND_RUNE_ID,
+    owned_inventory_items,
+)
 from dso_server.gameplay.map_unlocks import (
     restored_map_unlocks, saved_quest_map_unlocks, unlocked_travel_map_ids,
 )
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.endless_tower_effects import (
+    endless_tower_player_buffs,
+)
+from dso_server.gameplay.event_system import event_status_entry
+from dso_server.gameplay.membership_effects import (
+    membership_status_effect,
+    membership_status_effect_ids,
+)
+from dso_server.gameplay.skin_unlocks import repair_skin_source_inventory
 from dso_server.services.admin_effects import restore_admin_effects, limited_admin_speed_entries
 
 
@@ -46,6 +60,34 @@ def normalize_stickerbook_entry(entry):
         field_14=3 if favorite else 2,
         field_18=0,
     )
+
+
+def _upgrade_legacy_starter_gold(persisted_state) -> None:
+    """Upgrade only an unsaved old starter balance with its bootstrap runes.
+
+    The previous starter snapshot can already be persisted by the time the
+    server is updated. Its exact 10,000-gold balance plus one of the old
+    server-issued rune IDs identifies that untouched starter state.
+    """
+
+    if persisted_state is None or int(persisted_state.currency.amount) not in {
+        10_000,
+        100_000_000,
+    }:
+        return
+    old_rune_ids = {BOOTSTRAP_ITEM_ID, BOOTSTRAP_SECOND_RUNE_ID}
+    has_legacy_starter_rune = any(
+        int(item.item_id) in old_rune_ids
+        or (
+            item.template_id == BOOTSTRAP_ITEM_TEMPLATE
+            and int(item.item_level) >= 140
+        )
+        for item in owned_inventory_items(persisted_state.inventory)
+    )
+    if has_legacy_starter_rune:
+        persisted_state.currency = replace(
+            persisted_state.currency, amount=STARTER_GOLD_UNITS
+        )
 
 
 @dataclass
@@ -92,6 +134,7 @@ class PlayerInitializationState:
     membership_type: int = 0
     membership_expires_at: str = ""
     membership_active: bool = False
+    membership_status_effect_ids: frozenset = frozenset()
     mount_ride: Any = None
     persistent_status_effects: dict = field(default_factory=dict)
     timed_status_effect_expiries: dict = field(default_factory=dict)
@@ -100,6 +143,7 @@ class PlayerInitializationState:
     # persistent set so combat, XP and the client see them, but they are
     # rebuilt from the schedule on every initialization and never saved.
     event_status_effect_instance_ids: frozenset = frozenset()
+    fractured_planes_status_effect_instance_ids: frozenset = frozenset()
     next_status_effect_instance_id: int = 0
     item_set_evaluation: Any = None
     item_set_effects: dict = field(default_factory=dict)
@@ -272,6 +316,25 @@ class PlayerInitializationStateService:
             if account_store is not None
             else None
         )
+        # The bundled XP table includes post-cap rows for compatibility with
+        # source data. They are not playable levels on this server. Normalize
+        # old/admin-set characters before map scaling and NewPlayer are built.
+        try:
+            level_cap_xp, _next_level_xp = self.static_database.player_xp_bounds(
+                int(character.class_id), 100
+            )
+            current_level = max(1, int(getattr(character, 'level', 1)))
+            current_xp = max(0, int(getattr(character, 'progression_u32', 0)))
+            if current_level > 100 or current_xp > level_cap_xp:
+                character.level = 100
+                character.progression_u32 = level_cap_xp
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] capped character "
+                    f"{getattr(character, 'name', character.character_id)!r} "
+                    "at level 100"
+                )
+        except (AttributeError, CharacterSelectionError, OSError, TypeError, ValueError):
+            pass
         map_access, spawn_position = (
             CharacterService._resolve_map_entry_route(
                 self,
@@ -391,7 +454,8 @@ class PlayerInitializationStateService:
         )
 
     def _resolve_initialization_inventory(
-            self, state: PlayerInitializationState) -> None:
+            self, state: PlayerInitializationState,
+            session: Session | None = None) -> None:
         """Bootstrap, restore, repair and rekey the local player's inventory."""
 
         character = state.character
@@ -455,13 +519,18 @@ class PlayerInitializationStateService:
                     f"item(s) to level {max(1, int(character.level))}: "
                     f"{promoted_item_ids}"
                 )
+        inventory = repair_skin_source_inventory(
+            inventory,
+            static_database_path=self.static_database_path,
+            class_name=CLASS_NAMES[int(character.class_id)],
+        )
         refresh_inventory_economy_values(
             self.static_database_path,
             inventory,
         )
         rekeyed_next_item_id = None
         if persisted_state is not None:
-            first_item_id = max(
+            inventory_next_item_id = max(
                 RUNTIME_ITEM_ID_BASE,
                 int(persisted_state.next_item_id),
                 max(
@@ -469,12 +538,46 @@ class PlayerInitializationStateService:
                     default=RUNTIME_ITEM_ID_BASE - 1,
                 ) + 1,
             )
-            inventory, item_id_mapping, rekeyed_next_item_id = (
-                rekey_inventory_items(
-                    inventory,
-                    first_item_id=first_item_id,
+            if session is not None:
+                # Reserve the inventory's entire ID range in the same
+                # per-world allocator used for mob and quest drops. Without
+                # this reservation, a character entering a busy map could
+                # reuse an ID already assigned to a live world item.
+                with self.gameplay_world_lock:
+                    world_key = CharacterService._gameplay_instance_key(session)
+                    first_item_id = max(
+                        inventory_next_item_id,
+                        int(self.gameplay_world_next_item_ids.get(
+                            world_key, RUNTIME_ITEM_ID_BASE
+                        )),
+                    )
+                    inventory, item_id_mapping, rekeyed_next_item_id = (
+                        rekey_inventory_items(
+                            inventory,
+                            first_item_id=first_item_id,
+                        )
+                    )
+                    self.gameplay_world_next_item_ids[world_key] = max(
+                        int(self.gameplay_world_next_item_ids.get(
+                            world_key, RUNTIME_ITEM_ID_BASE
+                        )),
+                        int(rekeyed_next_item_id),
+                    )
+                    map_id = str(session.gameplay_map or '')
+                    self.gameplay_world_next_item_ids[map_id] = max(
+                        int(self.gameplay_world_next_item_ids.get(
+                            map_id, RUNTIME_ITEM_ID_BASE
+                        )),
+                        int(rekeyed_next_item_id),
+                    )
+            else:
+                first_item_id = inventory_next_item_id
+                inventory, item_id_mapping, rekeyed_next_item_id = (
+                    rekey_inventory_items(
+                        inventory,
+                        first_item_id=first_item_id,
+                    )
                 )
-            )
             if item_id_mapping:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] rekeyed "
@@ -491,19 +594,76 @@ class PlayerInitializationStateService:
 
         character = state.character
         persisted_state = state.persisted_state
+        starter_currency = 100_000_000
+        _upgrade_legacy_starter_gold(persisted_state)
         game_currency_balances = normalize_game_currency_balances(
-            (
-                persisted_state.game_currencies
-                if persisted_state is not None
-                else None
-            )
+            persisted_state.game_currencies
+            if persisted_state is not None
+            else {
+                definition.wire_id: starter_currency
+                for definition in GAME_CURRENCY_DEFINITIONS
+            }
         )
         premium = (persisted_state.currency.andermant if persisted_state is not None
-                   else getattr(character, "premium_currency", 9_999_999))
+                   else getattr(character, "premium_currency", 100_000_000))
         store = getattr(self, "account_store", None)
+        starter_gold = STARTER_GOLD_UNITS
+        if persisted_state is None and store is not None:
+            profile = store.get_profile(character.character_id)
+            if profile is not None and int(profile.gold) > 0:
+                starter_gold = int(profile.gold)
         if store is not None:
             premium = store.currency_for_character(character.character_id,
                 CurrencyChanged(premium, 0, (0, 0, 0), 0, False)).andermant
+        honor_points = (
+            max(0, int(persisted_state.honor_points))
+            if persisted_state is not None
+            else 0
+        )
+        title_type = (
+            int(persisted_state.title_type)
+            if persisted_state is not None
+            else 0
+        )
+        achievement_title = (
+            str(persisted_state.achievement_title)
+            if persisted_state is not None
+            else ""
+        )
+        pvp_matches_won = max(0, int(getattr(persisted_state, "pvp_matches_won", 0) or 0)) if persisted_state is not None else 0
+        pvp_matches_lost = max(0, int(getattr(persisted_state, "pvp_matches_lost", 0) or 0)) if persisted_state is not None else 0
+        pvp_kills = max(0, int(getattr(persisted_state, "pvp_kills", 0) or 0)) if persisted_state is not None else 0
+
+        pvp_solo_won = getattr(persisted_state, "pvp_solo_matches_won", None) if persisted_state is not None else None
+        pvp_solo_played = getattr(persisted_state, "pvp_solo_matches_played", None) if persisted_state is not None else None
+        pvp_solo_matches_won = max(0, int(pvp_solo_won)) if pvp_solo_won is not None and int(pvp_solo_won) > 0 else pvp_matches_won
+        pvp_solo_matches_played = max(0, int(pvp_solo_played)) if pvp_solo_played is not None and int(pvp_solo_played) > 0 else (pvp_matches_won + pvp_matches_lost)
+        pvp_team_matches_won = max(0, int(getattr(persisted_state, "pvp_team_matches_won", 0) or 0)) if persisted_state is not None else 0
+        pvp_team_matches_played = max(0, int(getattr(persisted_state, "pvp_team_matches_played", 0) or 0)) if persisted_state is not None else 0
+
+        kills_alone = getattr(persisted_state, "pvp_kills_alone_total", None) if persisted_state is not None else None
+        kills_battle = getattr(persisted_state, "pvp_kills_battle_total", None) if persisted_state is not None else None
+        pvp_kills_total = pvp_kills
+        pvp_kills_alone_total = max(0, int(kills_alone)) if kills_alone is not None and int(kills_alone) > 0 else pvp_kills
+        pvp_kills_group_total = max(0, int(getattr(persisted_state, "pvp_kills_group_total", 0) or 0)) if persisted_state is not None else 0
+        pvp_kills_battle_total = max(0, int(kills_battle)) if kills_battle is not None and int(kills_battle) > 0 else pvp_kills
+        pvp_dishonorable_kills = max(0, int(getattr(persisted_state, "pvp_dishonorable_kills", 0) or 0)) if persisted_state is not None else 0
+
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        saved_date = str(getattr(persisted_state, "pvp_stats_date", "") or "") if persisted_state is not None else ""
+        if saved_date == today_str and persisted_state is not None:
+            honor_points_today = max(0, int(getattr(persisted_state, "honor_points_today", 0) or 0))
+            pvp_kills_today = max(0, int(getattr(persisted_state, "pvp_kills_today", 0) or 0))
+            pvp_kills_alone_today = max(0, int(getattr(persisted_state, "pvp_kills_alone_today", 0) or 0))
+            pvp_kills_group_today = max(0, int(getattr(persisted_state, "pvp_kills_group_today", 0) or 0))
+            pvp_kills_battle_today = max(0, int(getattr(persisted_state, "pvp_kills_battle_today", 0) or 0))
+        else:
+            honor_points_today = 0
+            pvp_kills_today = 0
+            pvp_kills_alone_today = 0
+            pvp_kills_group_today = 0
+            pvp_kills_battle_today = 0
+
         new_player_packet, new_player_bits = encode_new_player(
             character,
             state.template_row_index,
@@ -514,32 +674,49 @@ class PlayerInitializationStateService:
             gold=(
                 max(0, int(persisted_state.currency.amount))
                 if persisted_state is not None
-                else LOCAL_GOLD_BALANCE
+                else starter_gold
             ),
             badge_of_honor=(
                 max(0, int(persisted_state.currency.badge_of_honor))
                 if persisted_state is not None
-                else DEFAULT_BADGE_OF_HONOR_BALANCE
+                else starter_currency
             ),
             legacy_progression_currency=(
                 max(0, int(persisted_state.currency.legacy_progression))
                 if persisted_state is not None
-                else 0
+                else starter_currency
             ),
             draken=(
                 max(0, int(persisted_state.currency.draken))
                 if persisted_state is not None
-                else DEFAULT_DRAKEN_BALANCE
+                else starter_currency
             ),
             glyph_of_power=(
                 max(0, int(persisted_state.currency.glyph_of_power))
                 if persisted_state is not None
-                else DEFAULT_GLYPH_OF_POWER_BALANCE
+                else starter_currency
             ),
             game_currencies=game_currency_balances,
             knowledge_xp=state.talent_category_points[1],
             fame_xp=state.talent_category_points[3],
+            honor_points=honor_points,
+            title_type=title_type,
+            achievement_title=achievement_title,
             armament_state=inventory_armament_state(state.inventory),
+            pvp_kills_total=pvp_kills_total,
+            pvp_kills_today=pvp_kills_today,
+            pvp_kills_alone_total=pvp_kills_alone_total,
+            pvp_kills_alone_today=pvp_kills_alone_today,
+            pvp_kills_group_total=pvp_kills_group_total,
+            pvp_kills_group_today=pvp_kills_group_today,
+            pvp_kills_battle_total=pvp_kills_battle_total,
+            pvp_kills_battle_today=pvp_kills_battle_today,
+            pvp_dishonorable_kills=pvp_dishonorable_kills,
+            honor_points_today=honor_points_today,
+            pvp_solo_matches_played=pvp_solo_matches_played,
+            pvp_solo_matches_won=pvp_solo_matches_won,
+            pvp_team_matches_played=pvp_team_matches_played,
+            pvp_team_matches_won=pvp_team_matches_won,
             **state.player_xp_state,
         )
         new_player, consumed = decode_new_player_prefix(
@@ -682,6 +859,25 @@ class PlayerInitializationStateService:
             if persisted_state is not None
             else s.gameplay_mount_ride
         )
+        if mount_ride is not None:
+            sticker_definition = load_sticker_definition(
+                self.static_database_path,
+                mount_ride.definition.stickerbook_resource_id,
+            )
+            if sticker_definition is not None and sticker_definition.mount is not None:
+                # Effect indexes refreshed from the active database, with
+                # the captured timing (stickerbook_state).
+                resolved_mount = sticker_definition.mount
+                mount_ride = replace(
+                    mount_ride,
+                    definition=resolved_mount,
+                    effect_id=resolved_mount.ride_effect_id,
+                    # Every map initialization resets the chase clock to 0.
+                    # A saved ride's start tick belongs to the previous map
+                    # (or server process), so carry the active ride forward
+                    # on the new map's clock instead of replaying a stale tick.
+                    start_tick=0,
+                )
         persistent_status_effects = {
             effect.field_04: effect
             for effect in (
@@ -690,6 +886,15 @@ class PlayerInitializationStateService:
                 else ()
             )
         }
+        if mount_ride is not None:
+            saved_ride_effect = persistent_status_effects.get(
+                mount_ride.instance_id
+            )
+            if saved_ride_effect is not None:
+                persistent_status_effects[mount_ride.instance_id] = replace(
+                    saved_ride_effect,
+                    effect_id=mount_ride.definition.ride_effect_id,
+                )
         persistent_status_effects = restore_admin_effects(
             persistent_status_effects,
             load_status_runtime_catalog(self.static_database_path),
@@ -777,6 +982,14 @@ class PlayerInitializationStateService:
             for instance_id, effect in persistent_status_effects.items()
             if effect.effect_id not in talent_effect_wire_ids
         }
+        membership_effect_ids = membership_status_effect_ids(
+            self.static_database_path
+        )
+        persistent_status_effects = {
+            instance_id: effect
+            for instance_id, effect in persistent_status_effects.items()
+            if effect.effect_id not in membership_effect_ids
+        }
         next_status_effect_instance_id = max(
             s.gameplay_next_status_effect_instance_id,
             (
@@ -790,6 +1003,18 @@ class PlayerInitializationStateService:
                 else 0
             ),
         )
+        if membership_active:
+            membership_effect = membership_status_effect(
+                self.static_database_path,
+                membership_type,
+                instance_id=next_status_effect_instance_id,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                expires_at=membership_expires_at,
+                server_tick=0,
+            )
+            if membership_effect is not None:
+                persistent_status_effects[membership_effect.field_04] = membership_effect
+                next_status_effect_instance_id += 1
         if persisted_state is not None:
             for resource_id in (
                 persisted_state.active_costume,
@@ -805,11 +1030,24 @@ class PlayerInitializationStateService:
                 )
                 if definition is None:
                     continue
-                matching = any(
-                    effect.effect_id == definition.status_effect_wire_id
-                    for effect in persistent_status_effects.values()
+                matching_instance_id = next(
+                    (
+                        instance_id
+                        for instance_id, effect
+                        in persistent_status_effects.items()
+                        if effect.effect_id
+                        == definition.status_effect_wire_id
+                    ),
+                    None,
                 )
-                if matching:
+                if matching_instance_id is not None:
+                    # Cosmetic statuses are active for the new map too, but
+                    # their saved start tick was measured on the old map's
+                    # clock. Rebase it just like newly reconstructed effects.
+                    persistent_status_effects[matching_instance_id] = replace(
+                        persistent_status_effects[matching_instance_id],
+                        field_08=0,
+                    )
                     continue
                 effect = sticker_status_entry(
                     definition,
@@ -862,6 +1100,51 @@ class PlayerInitializationStateService:
                 persistent_status_effects[effect.field_04] = effect
                 event_status_effect_instance_ids.add(effect.field_04)
                 next_status_effect_instance_id += 1
+        fractured_planes_status_effect_instance_ids = set()
+        tower_buffs = endless_tower_player_buffs(
+            self.static_database_path,
+            state.map_access.request_map_id,
+            character_id=int(character.character_id),
+        )
+        # These run-specific buffs are rebuilt on every floor entry. Remove
+        # any stale saved tower effects first, then restore the acts reached
+        # by this Fractured Planes run.
+        stale_tower_instance_ids = {
+            instance_id
+            for instance_id, effect in persistent_status_effects.items()
+            if int(effect.effect_id) in tower_buffs.all_effect_ids
+        }
+        persistent_status_effects = {
+            instance_id: effect
+            for instance_id, effect in persistent_status_effects.items()
+            if int(effect.effect_id) not in tower_buffs.all_effect_ids
+        }
+        timed_status_effect_expiries = {
+            instance_id: expires_at
+            for instance_id, expires_at in timed_status_effect_expiries.items()
+            if instance_id not in stale_tower_instance_ids
+        }
+        if (
+            bool(getattr(character, "fractured_planes_run", False))
+            and tower_buffs.act_number > 0
+        ):
+            for spec in tower_buffs.specs:
+                effect = event_status_entry(
+                    spec,
+                    instance_id=next_status_effect_instance_id,
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                )
+                persistent_status_effects[effect.field_04] = effect
+                fractured_planes_status_effect_instance_ids.add(
+                    effect.field_04
+                )
+                next_status_effect_instance_id += 1
+            if tower_buffs.specs:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] restored Fractured Planes "
+                    f"act {tower_buffs.act_number} player effects: "
+                    f"{len(tower_buffs.specs)}"
+                )
         collector_owned = {
             entry.resource_id
             for entry in (
@@ -949,12 +1232,16 @@ class PlayerInitializationStateService:
         state.membership_type = membership_type
         state.membership_expires_at = membership_expires_at
         state.membership_active = membership_active
+        state.membership_status_effect_ids = membership_effect_ids
         state.mount_ride = mount_ride
         state.persistent_status_effects = persistent_status_effects
         state.timed_status_effect_expiries = timed_status_effect_expiries
         state.talent_effect_instance_ids = talent_effect_instance_ids
         state.event_status_effect_instance_ids = frozenset(
             event_status_effect_instance_ids
+        )
+        state.fractured_planes_status_effect_instance_ids = frozenset(
+            fractured_planes_status_effect_instance_ids
         )
         state.next_status_effect_instance_id = next_status_effect_instance_id
         state.item_set_evaluation = item_set_evaluation
@@ -1043,6 +1330,10 @@ class PlayerInitializationStateService:
             s.gameplay_admin_booking_ids = (
                 persisted_state.admin_booking_ids if persisted_state is not None else ()
             )
+            s.gameplay_gm_invulnerable = bool(
+                persisted_state.admin_invulnerable
+                if persisted_state is not None else False
+            )
             s.gameplay_spawn_position = state.spawn_position
             s.gameplay_coordinate_frame = state.coordinate_frame
             s.gameplay_map_exits = state.map_exits
@@ -1052,6 +1343,12 @@ class PlayerInitializationStateService:
             s.gameplay_map_access_id = state.map_access.request_map_id
             s.gameplay_map_access_group_id = (
                 state.map_access.access_group_id
+            )
+            s.gameplay_fractured_planes_run = bool(
+                getattr(state.character, "fractured_planes_run", False)
+            )
+            s.gameplay_fractured_planes_deadline = getattr(
+                state.character, "fractured_planes_deadline", None
             )
             s.gameplay_map_difficulty = state.map_access.map_difficulty
             s.gameplay_scaling_difficulty = (
@@ -1089,17 +1386,29 @@ class PlayerInitializationStateService:
                 if persisted_state is not None
                 else QuickbarInfo(1, 0)
             )
-            s.gameplay_quick_slots = (
-                copy.deepcopy(persisted_state.quick_slots)
-                if (
-                    persisted_state is not None
-                    and persisted_state.quick_slots is not None
-                )
+            route_quick_slots = getattr(state.character, "route_quick_slots", None)
+            persisted_quick_slots = (
+                persisted_state.quick_slots
+                if persisted_state is not None
                 else None
             )
+            if isinstance(route_quick_slots, QuickSlotsInfo):
+                if isinstance(persisted_quick_slots, QuickSlotsInfo):
+                    s.gameplay_quick_slots = CharacterService._merge_quick_slots(
+                        route_quick_slots, persisted_quick_slots
+                    )
+                else:
+                    s.gameplay_quick_slots = copy.deepcopy(route_quick_slots)
+            elif isinstance(persisted_quick_slots, QuickSlotsInfo):
+                s.gameplay_quick_slots = copy.deepcopy(persisted_quick_slots)
+            else:
+                s.gameplay_quick_slots = None
             s.gameplay_membership_type = state.membership_type
             s.gameplay_membership_expires_at = state.membership_expires_at
             s.gameplay_membership_active = state.membership_active
+            s.gameplay_membership_status_effect_ids = (
+                state.membership_status_effect_ids
+            )
             s.gameplay_timed_offer_purchases = (
                 dict(persisted_state.timed_offer_purchases)
                 if persisted_state is not None
@@ -1108,6 +1417,7 @@ class PlayerInitializationStateService:
             CharacterService._restore_event_state(s, persisted_state)
             CharacterService._restore_quest_state(s, persisted_state)
             CharacterService._restore_wanted_thief_state(s, persisted_state)
+            CharacterService._restore_season_pass_state(s, persisted_state)
             CharacterService._restore_daily_challenge_state(s, persisted_state)
             CharacterService._restore_map_unlocks(self, s, persisted_state)
             CharacterService._restore_achievement_state(s, persisted_state)
@@ -1146,10 +1456,51 @@ class PlayerInitializationStateService:
                 if persisted_state is not None
                 else ""
             )
+            s.gameplay_hidden_equipment_skins = (
+                dict(persisted_state.hidden_equipment_skins)
+                if persisted_state is not None
+                else {}
+            )
+            # Older saves may have the durable HideSkin selection but still
+            # have ItemInfo's render-skin gate enabled. Reconcile the item on
+            # load so the local player's first appearance snapshot uses the
+            # same hidden state as presence and character selection.
+            hidden_skins = s.gameplay_hidden_equipment_skins
+            if hidden_skins and s.gameplay_inventory is not None:
+                items_by_id = {
+                    int(item.item_id): item
+                    for item in s.gameplay_inventory.items
+                }
+                for item_id, slots in s.gameplay_inventory.equipment_slots.items():
+                    item = items_by_id.get(int(item_id))
+                    if item is None:
+                        continue
+                    item_skin = str(item.field_f8 or item.field_80 or "")
+                    for equipment_slot in slots:
+                        customization_slot = (
+                            12 if int(equipment_slot) == 7
+                            else int(equipment_slot)
+                        )
+                        hidden_skin = str(
+                            hidden_skins.get(customization_slot, "")
+                        )
+                        if hidden_skin and (
+                            not item_skin or item_skin == hidden_skin
+                        ):
+                            item.field_3e = False
+                            break
             s.gameplay_active_pet = (
                 persisted_state.active_pet
                 if persisted_state is not None
                 else ""
+            )
+            s.gameplay_active_mercenary = (
+                persisted_state.active_mercenary
+                if persisted_state is not None
+                else ""
+            )
+            s.gameplay_mercenary_restore_pending = bool(
+                s.gameplay_active_mercenary
             )
             decoration_resources = list(
                 persisted_state.active_decorations if persisted_state is not None else ()
@@ -1217,6 +1568,10 @@ class PlayerInitializationStateService:
             s.gameplay_event_status_effect_instance_ids = frozenset(
                 state.event_status_effect_instance_ids
             )
+            s.gameplay_fractured_planes_status_effect_instance_ids = (
+                frozenset(state.fractured_planes_status_effect_instance_ids)
+            )
+            s.gameplay_map_status_effect_instance_ids = frozenset()
             s.gameplay_item_set_effects = state.item_set_effects
             s.gameplay_item_set_evaluation = state.item_set_evaluation
             s.gameplay_socket_effects = state.socket_effects

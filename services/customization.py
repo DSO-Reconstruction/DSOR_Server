@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+import sqlite3
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.item_customization_protocol import (
-    APPLY_ITEM_CUSTOMIZATION_COMMAND, decode_item_customization_changes,
-    apply_item_customizations,
+    APPLY_ITEM_CUSTOMIZATION_COMMAND, CUSTOMIZATION_SLOTS,
+    decode_item_customization_changes, apply_item_customizations,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.services.admin_effects import (
@@ -22,29 +25,442 @@ ADMIN_SPEED_EFFECT_VALUES = ADMIN_EFFECTS["speed"]["values"]
 class CustomizationService:
     """Equipment appearance, mounts, costumes, pets, and sticker-book interactions."""
 
+    @staticmethod
+    def _ensure_mercenary_quickbar_shortcut(
+            s: Session, resource_id: str) -> bool:
+        """Put an owned Shadow Soul in the first free sticker shortcut slot."""
+
+        resource_id = str(resource_id).strip()
+        if resource_id.startswith("sb_mercenary_"):
+            resource_id = "item_mercenary_" + resource_id.removeprefix(
+                "sb_mercenary_"
+            )
+        if not resource_id.startswith("item_mercenary_"):
+            return False
+
+        with s.flow_lock:
+            if resource_id not in s.gameplay_stickerbook_entries:
+                return False
+            quick_slots = s.gameplay_quick_slots
+            if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
+                return False
+            bars = list(quick_slots.quickbars)
+            first_bar = list(bars[0])
+            if len(first_bar) != 17:
+                return False
+            if any(
+                slot.kind == 2 and slot.resource_id == resource_id
+                for bar in bars
+                for slot in bar
+            ):
+                return False
+
+            target = 9
+            first_bar[target] = QuickSlotInfo(2, resource_id)
+            for b_idx in range(len(bars)):
+                b_list = list(bars[b_idx])
+                while len(b_list) < 17:
+                    b_list.append(QuickSlotInfo(0xFFFFFFFF, None))
+                b_list[target] = QuickSlotInfo(2, resource_id)
+                if b_list[8].kind == 2 and "mercenary" in str(b_list[8].resource_id or ""):
+                    b_list[8] = QuickSlotInfo(0xFFFFFFFF, None)
+                bars[b_idx] = tuple(b_list)
+            updated = QuickSlotsInfo(tuple(bars))
+            s.gameplay_quick_slots = updated
+
+        CharacterService._send_stickerbook_commands(
+            s,
+            (ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                updated,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),),
+            label="mercenary-quickbar-shortcut",
+        )
+        return True
+
+    @staticmethod
+    def _select_mercenary_quickbar_shortcut(
+            s: Session, resource_id: str) -> bool:
+        """Point the mercenary quick slot at the Shadow Soul just activated."""
+
+        resource_id = str(resource_id).strip()
+        if resource_id.startswith("sb_mercenary_"):
+            resource_id = "item_mercenary_" + resource_id.removeprefix(
+                "sb_mercenary_"
+            )
+        if not resource_id.startswith("item_mercenary_"):
+            return False
+
+        with s.flow_lock:
+            if resource_id not in s.gameplay_stickerbook_entries:
+                return False
+            quick_slots = s.gameplay_quick_slots
+            if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
+                return False
+            bars = list(quick_slots.quickbars)
+            first_bar = list(bars[0])
+            if len(first_bar) != 17:
+                return False
+
+            def mercenary_resource(slot):
+                value = str(slot.resource_id or "").strip()
+                if value.startswith("sb_mercenary_"):
+                    value = "item_mercenary_" + value.removeprefix(
+                        "sb_mercenary_"
+                    )
+                return value if value.startswith("item_mercenary_") else ""
+
+            target = 9
+            has_slot8_mercenary = first_bar[8].kind == 2 and bool(mercenary_resource(first_bar[8]))
+            if not has_slot8_mercenary and first_bar[target].resource_id == resource_id:
+                return False
+
+            first_bar[target] = QuickSlotInfo(2, resource_id)
+            for b_idx in range(len(bars)):
+                b_list = list(bars[b_idx])
+                while len(b_list) < 17:
+                    b_list.append(QuickSlotInfo(0xFFFFFFFF, None))
+                b_list[target] = QuickSlotInfo(2, resource_id)
+                if b_list[8].kind == 2 and bool(mercenary_resource(b_list[8])):
+                    b_list[8] = QuickSlotInfo(0xFFFFFFFF, None)
+                bars[b_idx] = tuple(b_list)
+            updated = QuickSlotsInfo(tuple(bars))
+            s.gameplay_quick_slots = updated
+
+        CharacterService._send_stickerbook_commands(
+            s,
+            (ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                updated,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),),
+            label="active-mercenary-quickbar-shortcut",
+        )
+        return True
+
+    @staticmethod
+    def _mercenary_owner_aura_effect(
+            s: Session, monster_id: str) -> tuple[int, tuple[float, ...]] | None:
+        """Resolve the BuffUI child of a mercenary's Summoner aura."""
+
+        path = s.gameplay_combat_state.encounter.static_database_path
+        with sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT PermanentStatusEffect FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
+                (str(monster_id),),
+            ).fetchone()
+            if row is None:
+                return None
+            for resource_id in str(row[0] or "").split(";"):
+                resource_id = resource_id.strip()
+                if not resource_id:
+                    continue
+                aura = database.execute(
+                    "SELECT AuraEffectId, COALESCE(AuraTargets, '') "
+                    "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                    (resource_id,),
+                ).fetchone()
+                if aura is None or "summoner" not in {
+                    token.strip().casefold()
+                    for token in str(aura[1] or "").replace(",", ";").split(";")
+                }:
+                    continue
+                for child_id in str(aura[0] or "").split(";"):
+                    child_id = child_id.strip()
+                    if not child_id:
+                        continue
+                    child = database.execute(
+                        "SELECT rowid-1, Groups FROM _Template_StatusEffect "
+                        "WHERE Id=? LIMIT 1",
+                        (child_id,),
+                    ).fetchone()
+                    if child is None:
+                        continue
+                    groups = {
+                        token.strip().casefold()
+                        for token in str(child[1] or "").replace(",", ";").split(";")
+                    }
+                    if "buffui" in groups:
+                        return int(child[0]), (0.0, 0.0, 0.0, 0.0, 0.0)
+        return None
+
+    @staticmethod
+    def _activate_mercenary(
+            self, s: Session, definition, *, source: str) -> bool:
+        """Activate an authored ShadowSoul item and publish its companion.
+
+        Mercenary items are reusable inventory/sticker-book entries, not
+        consumables.  Their ``ShadowSoul:<monster>`` status program starts the
+        client effect, while the ordinary player-summon lifecycle creates the
+        authoritative actor visible to every player on the map.
+        """
+
+        if definition is None or definition.kind != "mercenary":
+            return False
+        monster_id = ""
+        for encoded in str(definition.start_modifiers or "").split(";"):
+            kind, separator, arguments = encoded.partition(":")
+            if not separator or kind.strip().casefold() != "shadowsoul":
+                continue
+            monster_id = arguments.split(";", 1)[0].strip()
+            break
+        if not monster_id:
+            raise ValueError(
+                f"mercenary {definition.resource_id!r} has no ShadowSoul target"
+            )
+
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            move = s.gameplay_last_move
+            if (
+                not s.connected
+                or combat is None
+                or character is None
+                or (move is None and s.gameplay_spawn_position is None)
+            ):
+                raise ValueError("mercenary use requires an active map session")
+            owner_actor_id = (
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            generation = s.gameplay_chase_generation
+            tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
+            if tick == 0:
+                tick = int(
+                    move.start_tick if move is not None else server_time() // 40
+                ) & 0xFFFFFFFF
+            level = max(1, int(character.level))
+            class_name = CLASS_NAMES.get(int(character.class_id), "mage")
+            position = (
+                combat.encounter.coordinate_frame.wire_to_world(
+                    move.relative_position
+                )
+                if move is not None
+                else tuple(float(value) for value in s.gameplay_spawn_position)
+            )
+            yaw = float(getattr(move, "yaw", 0.0))
+
+        summon_definition = load_socket_minion_definition(
+            self.static_database_path,
+            monster_id,
+            1,
+            (0.0, 0.0, 0.0, 0.0),
+        )
+        if summon_definition is None:
+            raise ValueError(
+                f"mercenary target {monster_id!r} is missing from the static database"
+            )
+        owner_aura = self._mercenary_owner_aura_effect(s, monster_id)
+        summon_definition = replace(
+            summon_definition,
+            category="mercenary",
+            amount=1,
+            limit=1,
+            lifetime_seconds=0.0,
+            owner_despawn_range=float("inf"),
+            follows_owner=True,
+        )
+        modifier_sources = tuple(
+            CharacterService._active_skill_modifier_sources(s)
+        )
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+        stats = calculate_player_combat_stats(
+            combat.encounter.static_database_path,
+            cache_owner=s,
+            class_name=class_name,
+            level=level,
+            inventory=inventory,
+            modifier_sources=modifier_sources,
+        )
+
+        # Apply the database-authored status effect locally and to nearby
+        # viewers. The summon lifecycle below owns the actual actor/combat;
+        # the item's separate CoolDownCategory belongs to the client action UI.
+        with s.flow_lock:
+            instance_id = int(s.gameplay_next_status_effect_instance_id)
+            s.gameplay_next_status_effect_instance_id += 1
+            start_tick = int(s.gameplay_chase_server_tick or tick) & 0xFFFFFFFF
+        status_entry = StatusEffectEntry(
+            effect_id=int(definition.status_effect_wire_id),
+            field_04=instance_id,
+            # The companion remains active until another Shadow Soul replaces
+            # it. A one-second database duration made the buff icon disappear
+            # while the summoned actor kept following the player.
+            field_0c=0,
+            field_14=0,
+            field_08=0,
+            field_18=0,
+            field_10=0,
+            field_1c=100,
+            field_20=LOCAL_PLAYER_ACTOR_ID,
+            field_25=False,
+            field_26=False,
+            field_39=True,
+            has_details=True,
+            values=tuple(definition.values),
+        )
+        aura_entry = None
+        if owner_aura is not None:
+            with s.flow_lock:
+                aura_instance_id = int(s.gameplay_next_status_effect_instance_id)
+                s.gameplay_next_status_effect_instance_id += 1
+            aura_entry = StatusEffectEntry(
+                effect_id=owner_aura[0],
+                field_04=aura_instance_id,
+                field_0c=0,
+                field_14=0,
+                field_08=0,
+                field_18=0,
+                field_10=0,
+                field_1c=100,
+                field_20=LOCAL_PLAYER_ACTOR_ID,
+                field_25=False,
+                field_26=False,
+                field_39=True,
+                has_details=True,
+                values=owner_aura[1],
+            )
+        with s.flow_lock:
+            previous_status = getattr(
+                s, "gameplay_mercenary_status_effect", None
+            )
+            previous_aura = getattr(
+                s, "gameplay_mercenary_aura_status_effect", None
+            )
+            s.gameplay_mercenary_status_effect = status_entry
+            s.gameplay_mercenary_aura_status_effect = aura_entry
+            s.gameplay_active_mercenary = str(definition.resource_id)
+            s.gameplay_mercenary_restore_pending = False
+        status_entries = []
+        if previous_status is not None:
+            status_entries.append(replace(
+                previous_status,
+                has_details=False,
+                values=(),
+            ))
+        if previous_aura is not None:
+            status_entries.append(replace(
+                previous_aura,
+                has_details=False,
+                values=(),
+            ))
+        status_entries.append(status_entry)
+        if aura_entry is not None:
+            status_entries.append(aura_entry)
+        status = StatusEffect(False, tuple(status_entries))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(status, actor_id=LOCAL_PLAYER_ACTOR_ID),
+            track=True,
+            label="mercenary-shadow-soul-activated",
+        )
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (status,)))
+
+        CharacterService._resolve_player_summon(
+            s,
+            generation,
+            ("mercenary-summon", owner_actor_id, start_tick),
+            summon_definition,
+            int(owner_actor_id),
+            position,
+            yaw,
+            level,
+            start_tick,
+            (stats.minimum_damage, stats.maximum_damage),
+            modifier_sources,
+            round_token=CharacterService._pvp_round_token(s),
+        )
+        quickbar_updated = CharacterService._select_mercenary_quickbar_shortcut(
+            s, definition.resource_id
+        )
+        CharacterService._persist_gameplay_session(
+            self,
+            s,
+            reason=(
+                f"Shadow Soul activated: {definition.resource_id}"
+                + (" and quickbar shortcut added" if quickbar_updated else "")
+            ),
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] activated mercenary "
+            f"{definition.resource_id!r} -> {monster_id!r} from {source}"
+        )
+        return True
+
     def _handle_item_customization(self, s: Session, payload: bytes) -> None:
         changes = decode_item_customization_changes(payload)
         with s.flow_lock:
             if (s.gameplay_inventory is None or s.gameplay_currency_state is None
                     or s.gameplay_character is None):
                 raise ValueError('customization requires initialized player state')
+            previous_currency = s.gameplay_currency_state
             mutation, currency, items = apply_item_customizations(
                 s.gameplay_inventory, s.gameplay_currency_state, changes,
                 database_path=self.static_database_path,
                 class_id=s.gameplay_character.class_id, level=s.gameplay_character.level,
                 next_item_id=s.gameplay_next_item_id,
             )
-            packets = [encode_server_command_batch((
-                ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
-                ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
-                ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
-            ))]
-            packets.extend(encode_item_info_response(item, actor_id=LOCAL_PLAYER_ACTOR_ID)
-                           for item in items)
+            inventory_changed = bool(items) or currency != previous_currency
+            response_items = {
+                int(item.item_id): item for item in items
+            }
+            # GameItem::GetSkins returns no render skins when ItemInfo.field_3e
+            # is false. Change that flag in authoritative item state, then send
+            # the normal ItemUpdateCommand so the local client posts its
+            # RefreshItemSkin event. The item and equipment allocation remain
+            # intact; only this item's render-skin gate changes.
+            for change in changes:
+                if not (change.skin or change.effect_skin):
+                    continue
+                inventory_slot = CUSTOMIZATION_SLOTS[int(change.slot_type)]
+                for item_id, slots in mutation.inventory.equipment_slots.items():
+                    if inventory_slot not in slots:
+                        continue
+                    item = next(
+                        (
+                            value for value in mutation.inventory.items
+                            if int(value.item_id) == int(item_id)
+                        ),
+                        None,
+                    )
+                    if item is not None:
+                        item.field_3e = not bool(change.effect_skin)
+                        response_items[int(item.item_id)] = item
+                    break
+            packets = []
+            if inventory_changed:
+                packets.append(encode_server_command_batch((
+                    ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
+                )))
+            packets.extend(
+                encode_item_info_response(
+                    item, actor_id=LOCAL_PLAYER_ACTOR_ID
+                )
+                for item in response_items.values()
+            )
             s.gameplay_inventory = mutation.inventory
             s.gameplay_currency_state = currency
             s.gameplay_next_item_id = mutation.next_item_id
             s.gameplay_client_command_state[APPLY_ITEM_CUSTOMIZATION_COMMAND] = changes
+            hidden_skins = dict(
+                getattr(s, "gameplay_hidden_equipment_skins", {})
+            )
+            for change in changes:
+                if change.effect_skin:
+                    # Client enum order: AddCustomization, RemoveCustomization,
+                    # ShowSkin, HideSkin, AddColor, RemoveColor.
+                    hidden_skins[int(change.slot_type)] = change.effect_skin
+                elif change.skin:
+                    hidden_skins.pop(int(change.slot_type), None)
+            s.gameplay_hidden_equipment_skins = hidden_skins
         CharacterService._accept_gameplay_state_command(s, APPLY_ITEM_CUSTOMIZATION_COMMAND)
         for packet, bits in packets:
             CharacterService._send_world_loot_state_batch(
@@ -446,6 +862,10 @@ class CustomizationService:
                 'stickerbook-unlock-stickerbook-unlock'
             ),
         )
+        if definition.kind == "mercenary":
+            CharacterService._ensure_mercenary_quickbar_shortcut(
+                s, definition.resource_id
+            )
         CharacterService._persist_gameplay_session(
             self,
             s,
@@ -869,16 +1289,22 @@ class CustomizationService:
                 self, s, database_definition
             )
             return
+        if (
+            database_definition is not None
+            and database_definition.kind == "mercenary"
+        ):
+            CharacterService._activate_mercenary(
+                self, s, database_definition, source="sticker book"
+            )
+            return
 
-        # The database's own definition first: its effect ids are its rows'.
-        # LOCAL_MOUNTS' black bear carries ids from an older database (cast
-        # 4100 / ride 4099); with this static.db4 those rows are other effects
-        # (cast_mount_black_bear_01 is row 4241), so the client drew a boss's
-        # aura instead of the bear.
+        # The database's own definition first: its effect ids are its rows'
+        # (gameplay/local_mount_state.py find_mount, with the captured timing).
         definition = (
             database_definition.mount
-            if database_definition is not None and database_definition.mount is not None
-            else find_mount(request.value)
+            if database_definition is not None
+            and database_definition.mount is not None
+            else find_mount(request.value, self.static_database_path)
         )
         if definition is None:
             raise ValueError(

@@ -251,7 +251,7 @@ class SocketEffectService:
 
     @staticmethod
     def _dispatch_socket_event_batch(
-            s: Session, events, *, _depth: int = 0) -> tuple:
+            s: Session, events, *, _depth: int = 0, _evaluation=None) -> tuple:
         """Resolve several authoritative events as one cast transaction.
 
         Every occurrence still advances its trigger counter and performs its
@@ -273,7 +273,7 @@ class SocketEffectService:
         empty_results = tuple(() for _ in occurrences)
         if _depth > 2:
             return empty_results
-        evaluation = getattr(
+        evaluation = _evaluation if _evaluation is not None else getattr(
             s, "gameplay_socket_effect_evaluation", None
         )
         if evaluation is None:
@@ -490,13 +490,14 @@ class SocketEffectService:
         combat = s.gameplay_combat_state
         character = s.gameplay_character
         last_move = s.gameplay_last_move
-        if combat is not None and character is not None and last_move is not None:
+        if combat is not None and character is not None:
             owner_actor_id = (
                 s.gameplay_remote_actor_id
                 or CharacterService._remote_actor_id(character.character_id)
             )
-            position = combat.encounter.coordinate_frame.wire_to_world(
-                last_move.relative_position
+            position = (
+                combat.encounter.coordinate_frame.wire_to_world(last_move.relative_position)
+                if last_move is not None else tuple(s.gameplay_spawn_position)
             )
             actor_definitions = {}
             actor_positions = {}
@@ -564,6 +565,7 @@ class SocketEffectService:
                 )
             if (
                 ally_auras
+                and last_move is not None
                 and s.gameplay_presence_callback is not None
             ):
                 s.gameplay_presence_callback(
@@ -582,6 +584,13 @@ class SocketEffectService:
                 event_seed,
                 ordinal,
             ) in location_applications.values():
+                location_damage_range = (1.0, 1.0)
+                if _evaluation is not None:
+                    from dso_server.services.endless_tower_buffs import tower_damage_range
+                    location_damage_range = tower_damage_range(
+                        combat.encounter.static_database_path, s,
+                        CharacterService._active_skill_modifier_sources(s),
+                    )
                 CharacterService._schedule_player_location_visuals(
                     s,
                     combat,
@@ -599,6 +608,7 @@ class SocketEffectService:
                         definition.delay_ticks / SERVER_TICKS_PER_SECOND
                     ),
                     receiver_status_effects=receivers,
+                    player_damage_range=location_damage_range,
                 )
 
         chained_events = {}
@@ -640,6 +650,7 @@ class SocketEffectService:
                 s,
                 tuple(chained_events.values()),
                 _depth=_depth + 1,
+                _evaluation=_evaluation,
             )
         return tuple(results)
 

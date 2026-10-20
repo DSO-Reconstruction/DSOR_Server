@@ -279,7 +279,7 @@ class LoginGameServer(DispatchService, LoginServer):
             return
         if s.gameplay_mode or claimed is not None:
             s.gameplay_mode = True
-            CharacterServer._bind_gameplay_route(s, claimed)
+            CharacterServer._bind_gameplay_route(s, claimed, claimed=True)
             map_name = s.gameplay_map or DEFAULT_GAMEPLAY_MAP
             s.gameplay_map = map_name
             map_spec = self._gameplay_map_load_spec(
@@ -392,6 +392,8 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_ocp_booking(self, s, payload)
         elif command_id == ACCEPTED_TIER_SPENDER_COMMAND:
             CharacterServer._handle_tier_spender_accept(self, s, payload)
+        elif command_id == SHUFFLE_TIER_SPENDER_DEALS_COMMAND:
+            CharacterServer._handle_tier_spender_shuffle(self, s, payload)
         elif command_id == CLIENT_NOTIFICATION_COMMAND:
             CharacterServer._handle_notification_action(self, s, payload)
         elif command_id == ACTIVITY_SIGNIN_PROTOCOL_COMMAND:
@@ -472,6 +474,13 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_quest_trigger_signal(self, s, payload)
         elif command_id == 0x0113:
             CharacterServer._handle_staging_signal(self, s, payload)
+        elif command_id == 0x0170:
+            CharacterServer._accept_gameplay_state_command(s, command_id)
+            CharacterServer._send_fractured_planes_effect_choices(self, s)
+        elif command_id == 0x0174:
+            CharacterServer._handle_fractured_planes_first_clear_acceptance(
+                self, s, payload
+            )
         elif command_id in {
             0x00BB, 0x00E2, 0x00E8, 0x00EA,
         }:

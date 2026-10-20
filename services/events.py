@@ -11,6 +11,7 @@ import threading
 import time
 import uuid
 
+from dso_server.gameplay.map_event_state import load_map_event_content
 from dso_server.persistence.account_registry import DEFAULT_SESSION_TTL_SECONDS
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -215,6 +216,57 @@ def _baseline_map_local_event_entries(
     )
 
 
+@lru_cache(maxsize=64)
+def _declared_map_local_event_entries(
+    database_path: str | Path, map_id: str,
+) -> tuple[EventUpdateEntry, ...]:
+    """Explicit "not running" entries for every event the map's sets name.
+
+    The client resolves an EventSet from the event states it was told, so an
+    event it never heard about leaves the sets that reference it unresolved
+    and the actors they gate inert, even when initialization already carried
+    them. The baseline unlocks and the instance runtime override these with
+    running entries where the event is on.
+
+    The client validates a map-local name against the event's template map
+    and aborts the whole update on the first mismatching entry, so names
+    authored for other maps are excluded even though this map's sets still
+    reference them.
+    """
+
+    try:
+        referenced = load_map_event_content(
+            database_path, map_id
+        ).referenced_events
+    except Exception:
+        return ()
+    if not referenced:
+        return ()
+    database = Path(database_path).resolve()
+    with sqlite3.connect(
+        f'file:{database.as_posix()}?mode=ro', uri=True
+    ) as connection:
+        rows = connection.execute(
+            'SELECT rowid - 1, Id FROM _Template_Events '
+            'WHERE MapLocal=1 AND LOWER(Id) IN '
+            f'({",".join("?" for _value in referenced)}) '
+            "AND (TRIM(COALESCE(Map, '')) = '' "
+            'OR LOWER(TRIM(Map)) = ?)',
+            (*tuple(sorted(referenced)), str(map_id).casefold()),
+        ).fetchall()
+    return tuple(
+        EventUpdateEntry(
+            event_id=int(row[0]),
+            event_name=str(row[1]),
+            flags=(False, True, False, False),
+            starts_at=None,
+            ends_at=None,
+            tags=(),
+        )
+        for row in sorted(rows, key=lambda value: str(value[1]))
+    )
+
+
 class EventService:
     """Bridge the static event catalog to one character session."""
 
@@ -325,10 +377,18 @@ class EventService:
             raise ValueError("event initialization requires a character")
         player_level = max(1, int(getattr(character, "level", 1)))
         scheduled_update = catalog.event_update()
+        try:
+            quest_reveal_flags = tuple(
+                CharacterService._quest_reveal_flags(
+                    self, s, active_map_id,
+                )
+            )
+        except Exception:
+            quest_reveal_flags = ()
         local_entries = _baseline_map_local_event_entries(
             self.static_database_path,
             active_map_id,
-            (active_access_group_id,),
+            (active_access_group_id, *quest_reveal_flags),
         )
         scheduled_names = {
             entry.event_name.casefold()
@@ -336,6 +396,8 @@ class EventService:
         }
         local_entries = tuple(local_entries) + tuple(
             CharacterService._running_map_event_entries(s)
+        ) + _declared_map_local_event_entries(
+            self.static_database_path, active_map_id
         )
         seen_local: set[str] = set()
         update = EventUpdate((
@@ -349,6 +411,15 @@ class EventService:
                 )
             ),
         ))
+        if os.getenv("DSO_NPC_TRACE") == "1":
+            local_state = [
+                f"{entry.event_name}={'on' if entry.flags[0] else 'off'}"
+                for entry in update.events if entry.flags[1]
+            ]
+            print(
+                f"[npc-trace] init EventUpdate {active_map_id}: "
+                f"{len(update.events)} entries; map-local: {local_state}"
+            )
         return (
             update,
             catalog.progress_info(progress, player_level=player_level),

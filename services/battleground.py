@@ -18,6 +18,12 @@ from functools import lru_cache, partial
 from dso_server.persistence.readonly_db import connect
 from dso_server.protocol.gameplay_protocol import Message, MessageArgument
 from dso_server.protocol.player_init_protocol import MESSAGE_COMMAND
+from dso_server.protocol.pvp_match_protocol import MATCH_MODE_BEST_OF_3_1V1
+
+from dso_server.gameplay.map_status_effects import (
+    map_status_effect_definitions,
+    map_status_effect_entry,
+)
 
 from dso_server.gameplay.pvp_match_state import (
     MATCH_COUNTDOWN_SECONDS,
@@ -77,6 +83,9 @@ class BattlegroundService:
                     entry.arena_heading, entry.arena_heading,
                     int(s.gameplay_chase_server_tick), 0,
                 )
+                s.gameplay_move_budget = 0.0
+                s.gameplay_movement_allowance = None
+                s.gameplay_move_correction_at = 0.0
         self._send_pvp(
             s,
             encode_force_transform_batch(
@@ -237,11 +246,162 @@ class BattlegroundService:
                 s.gameplay_presence_callback(s, ("status_effects", (value,)))
 
     @staticmethod
+    def _apply_battleground_map_effects(server, s: Session) -> None:
+        """Install the arena's authored map effects (``pvp_char_modifier``).
+
+        The PvP balance buff is not carried in the character save; it belongs
+        to the arena's map-access row. Applying it here, after the arena's
+        initialization batch, is what gives the client -- and the authoritative
+        stat engine -- the PvP damage/health/speed/mitigation ruleset.
+        """
+
+        access_id = str(
+            getattr(s, "gameplay_map_access_id", "") or s.gameplay_map or ""
+        )
+        definitions = map_status_effect_definitions(
+            str(server.static_database_path), access_id,
+        )
+        if not definitions:
+            return
+        entries = []
+        instance_ids = set()
+        seen_effect_ids = set()
+        with s.flow_lock:
+            for definition in definitions:
+                effect_id = int(definition.effect_id)
+                if effect_id in seen_effect_ids:
+                    continue
+                seen_effect_ids.add(effect_id)
+                # A re-bound session must refresh the buff, never stack it.
+                for instance_id, entry in tuple(
+                    s.gameplay_persistent_status_effects.items()
+                ):
+                    if int(entry.effect_id) == effect_id:
+                        s.gameplay_persistent_status_effects.pop(instance_id)
+                        entries.append(replace(
+                            entry, has_details=False, values=(),
+                        ))
+                instance_id = s.gameplay_next_status_effect_instance_id
+                s.gameplay_next_status_effect_instance_id += 1
+                entry = map_status_effect_entry(
+                    definition, instance_id=instance_id,
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                )
+                s.gameplay_persistent_status_effects[instance_id] = entry
+                instance_ids.add(instance_id)
+                entries.append(entry)
+            s.gameplay_map_status_effect_instance_ids = frozenset(
+                instance_ids
+            )
+        value = StatusEffect(False, tuple(entries))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-map-effects")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] applied map effects "
+            f"{sorted(seen_effect_ids)} on {access_id}"
+        )
+
+    @staticmethod
+    def _clear_battleground_mercenary_effects(server, s: Session) -> None:
+        """Remove the Shadow Soul and its owner aura from an arena entrant.
+
+        The summoned actor is retired with the arena's player-summon cleanup,
+        but the permanent ShadowSoul status is tracked separately on the
+        session and would otherwise remain as a player buff after the pet
+        disappears. Keep the selected mercenary in saved character state so
+        it can be restored after the player leaves the arena.
+        """
+
+        removed: dict[int, object] = {}
+        with s.flow_lock:
+            for attribute in (
+                "gameplay_mercenary_status_effect",
+                "gameplay_mercenary_aura_status_effect",
+            ):
+                entry = getattr(s, attribute, None)
+                setattr(s, attribute, None)
+                if entry is None:
+                    continue
+                instance_id = int(entry.field_04)
+                current = s.gameplay_persistent_status_effects.pop(
+                    instance_id, entry,
+                )
+                removed[instance_id] = current
+                s.gameplay_timed_status_effect_expiries.pop(
+                    instance_id, None,
+                )
+            # The active selection remains saved, but must not respawn its
+            # actor or recreate the buff while this arena session is active.
+            s.gameplay_mercenary_restore_pending = False
+
+        if not removed:
+            return
+        value = StatusEffect(False, tuple(replace(
+            entry, has_details=False, values=(), field_25=False,
+            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+        ) for entry in removed.values()))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-shadow-soul-cleanse")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
+    def _clear_battleground_map_effects(server, s: Session) -> None:
+        """Retire the arena's map-scoped effects before leaving it.
+
+        They are permanent while on the map, so the removal batch has to say
+        so explicitly; otherwise the client keeps the PvP stats in the hub.
+        """
+
+        with s.flow_lock:
+            instance_ids = tuple(
+                getattr(s, "gameplay_map_status_effect_instance_ids", ())
+            )
+            s.gameplay_map_status_effect_instance_ids = frozenset()
+            entries = []
+            for instance_id in instance_ids:
+                s.gameplay_timed_status_effect_expiries.pop(
+                    instance_id, None
+                )
+                entry = s.gameplay_persistent_status_effects.pop(
+                    instance_id, None
+                )
+                if entry is not None:
+                    entries.append(entry)
+        if not entries:
+            return
+        value = StatusEffect(False, tuple(replace(
+            entry, has_details=False, values=(), field_25=False,
+            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+        ) for entry in entries))
+        server._send_pvp(s, encode_status_effect_batch(
+            value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+        ), label="pvp-map-effects-cleanse")
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False,
+        )
+
+    @staticmethod
     def _clear_battleground_world_effects(server, match):
         """Retire arena casts, including their map actors and client visuals."""
         sessions = tuple(p.session for p in match.participants if p.session is not None)
         worlds = {}
         for session in sessions:
+            CharacterService._clear_battleground_mercenary_effects(
+                server, session,
+            )
             with session.flow_lock:
                 timers = tuple(session.gameplay_projectile_timers.values())
                 session.gameplay_projectile_timers.clear()
@@ -568,6 +728,9 @@ class BattlegroundService:
             if credit:
                 with session.flow_lock:
                     session.gameplay_honor_points = total + honor
+                    session.gameplay_honor_points_today = (
+                        int(getattr(session, "gameplay_honor_points_today", 0)) + honor
+                    )
                     attribute = (
                         "gameplay_pvp_matches_won" if won
                         else "gameplay_pvp_matches_lost"
@@ -580,6 +743,45 @@ class BattlegroundService:
                         int(getattr(session, "gameplay_pvp_kills", 0)) + entry.kills)
                     session.gameplay_pvp_deaths = (
                         int(getattr(session, "gameplay_pvp_deaths", 0)) + entry.deaths)
+                    session.gameplay_pvp_kills_today = (
+                        int(getattr(session, "gameplay_pvp_kills_today", 0)) + entry.kills)
+                    session.gameplay_pvp_kills_battle_total = (
+                        int(getattr(session, "gameplay_pvp_kills_battle_total", 0)) + entry.kills)
+                    session.gameplay_pvp_kills_battle_today = (
+                        int(getattr(session, "gameplay_pvp_kills_battle_today", 0)) + entry.kills)
+
+                    is_solo = (
+                        getattr(match, "mode", None) == MATCH_MODE_BEST_OF_3_1V1
+                        or len(match.participants) <= 2
+                    )
+                    if is_solo:
+                        session.gameplay_pvp_solo_matches_played = (
+                            int(getattr(session, "gameplay_pvp_solo_matches_played", 0)) + 1
+                        )
+                        if won:
+                            session.gameplay_pvp_solo_matches_won = (
+                                int(getattr(session, "gameplay_pvp_solo_matches_won", 0)) + 1
+                            )
+                        session.gameplay_pvp_kills_alone_total = (
+                            int(getattr(session, "gameplay_pvp_kills_alone_total", 0)) + entry.kills
+                        )
+                        session.gameplay_pvp_kills_alone_today = (
+                            int(getattr(session, "gameplay_pvp_kills_alone_today", 0)) + entry.kills
+                        )
+                    else:
+                        session.gameplay_pvp_team_matches_played = (
+                            int(getattr(session, "gameplay_pvp_team_matches_played", 0)) + 1
+                        )
+                        if won:
+                            session.gameplay_pvp_team_matches_won = (
+                                int(getattr(session, "gameplay_pvp_team_matches_won", 0)) + 1
+                            )
+                        session.gameplay_pvp_kills_group_total = (
+                            int(getattr(session, "gameplay_pvp_kills_group_total", 0)) + entry.kills
+                        )
+                        session.gameplay_pvp_kills_group_today = (
+                            int(getattr(session, "gameplay_pvp_kills_group_today", 0)) + entry.kills
+                        )
             # Publish each row's final payout and this account's new career
             # total before opening the result panel.
             server._send_match_info(session, match)
@@ -653,6 +855,7 @@ class BattlegroundService:
 
         match = getattr(s, "gameplay_match", None)
         character_id = CharacterService._match_character_id(s)
+        CharacterService._clear_battleground_map_effects(self, s)
         with s.flow_lock:
             s.gameplay_match = None
             s.gameplay_match_team = None
@@ -765,25 +968,25 @@ class BattlegroundService:
                         honor_rounds_won=(
                             HONOR_PER_ROUND_WON * entry.rounds_won
                         ),
-                        honor_unknown=0,
                         honor_participation=(
                             HONOR_PER_ROUND_PLAYED * rounds
                         ),
                         honor_bonus=HONOR_PER_KILL * entry.kills,
                         rounds_won=entry.rounds_won,
-                        rounds_lost=entry.rounds_lost,
-                        damage_dealt=entry.damage_dealt,
                         kills=entry.kills,
-                        score=float(entry.damage_dealt),
+                        deaths=entry.deaths,
+                        damage_dealt=entry.damage_dealt,
+                        score=entry.damage_dealt,
+                        support=0.0,
                         # Career honor is retained as captured metadata;
                         # honor_total above is the actual match payout.
                         rating=entry.honor_at_start,
                         level=entry.level,
                         enemy=entry.team != viewer_team,
                         name=entry.name,
-                        team_slot=entry.team,
+                        class_id=entry.class_id,
                         stats=(),
-                        deaths=entry.deaths,
+                        rounds_lost=entry.rounds_lost,
                     ))
                 teams.append(MatchTeam(
                     team_id=team,

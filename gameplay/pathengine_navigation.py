@@ -663,16 +663,16 @@ class PathEngineNavigationMesh:
                 raise NavigationError(
                     f"missing portal {left_triangle}->{right_triangle}"
                 ) from exc
-            portals.append(self._oriented_portal(left_triangle, first, second))
+            portals.append(
+                self._oriented_portal(left_triangle, first, second)
+            )
         points = _string_pull(projected_start, projected_goal, portals)
         return NavigationRoute(tuple(points), tuple(triangle_path))
 
     def _oriented_portal(
         self, from_triangle: int, first: int, second: int,
     ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-        """A shared edge as (left, right) seen from inside ``from_triangle``,
-        each end pulled in by the agent's radius (so routes keep clear of the
-        walls a portal touches)."""
+        """Orient and inset a shared edge from the incoming triangle."""
 
         a, b = self.vertices[first], self.vertices[second]
         centre = self._centroids[from_triangle]
@@ -681,10 +681,10 @@ class PathEngineNavigationMesh:
         width = self._horizontal_distance(a, b)
         inset = min(SMALL_AGENT_DIAMETER / 2.0, width / 2.0)
         if width > 1e-9 and inset > 0.0:
-            f = inset / width
+            fraction = inset / width
             a, b = (
-                tuple(a[k] + (b[k] - a[k]) * f for k in range(3)),
-                tuple(b[k] + (a[k] - b[k]) * f for k in range(3)),
+                tuple(a[axis] + (b[axis] - a[axis]) * fraction for axis in range(3)),
+                tuple(b[axis] + (a[axis] - b[axis]) * fraction for axis in range(3)),
             )
         return a, b
 
@@ -738,47 +738,42 @@ class PathEngineNavigationMesh:
 
 
 def _area2(a, b, c) -> float:
-    """Twice the signed X/Z area of a, b, c."""
+    """Twice the signed area of a, b, and c in the X/Z plane."""
 
     return (c[0] - a[0]) * (b[2] - a[2]) - (b[0] - a[0]) * (c[2] - a[2])
 
 
 def _string_pull(start, goal, portals):
-    """The shortest path from start to goal through the portals (left, right):
-    the simple stupid funnel (Mononen). Without it, routes went through every
-    portal's midpoint -- every actor took the same zig-zag lane, turning at
-    each triangle edge ("des trajectoires qui n'ont aucun sens")."""
+    """Find the shortest route through a sequence of oriented portals."""
 
     portals = [(start, start)] + list(portals) + [(goal, goal)]
     points = [start]
     apex = left = right = start
     apex_index = left_index = right_index = 0
-    i = 1
-    while i < len(portals):
-        new_left, new_right = portals[i]
-        # Narrow the right side.
+    index = 1
+    while index < len(portals):
+        new_left, new_right = portals[index]
         if _area2(apex, right, new_right) <= 0.0:
             if apex == right or _area2(apex, left, new_right) > 0.0:
-                right, right_index = new_right, i
+                right, right_index = new_right, index
             else:
                 points.append(left)
                 apex, apex_index = left, left_index
                 left = right = apex
                 left_index = right_index = apex_index
-                i = apex_index + 1
+                index = apex_index + 1
                 continue
-        # Narrow the left side.
         if _area2(apex, left, new_left) >= 0.0:
             if apex == left or _area2(apex, right, new_left) < 0.0:
-                left, left_index = new_left, i
+                left, left_index = new_left, index
             else:
                 points.append(right)
                 apex, apex_index = right, right_index
                 left = right = apex
                 left_index = right_index = apex_index
-                i = apex_index + 1
+                index = apex_index + 1
                 continue
-        i += 1
+        index += 1
     if points[-1] != goal:
         points.append(goal)
     return points

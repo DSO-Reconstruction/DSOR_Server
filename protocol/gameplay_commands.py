@@ -18,6 +18,7 @@ from dso_server.protocol.currency_protocol import (
     DEFAULT_DRAKEN_BALANCE,
     DEFAULT_GAME_CURRENCY_BALANCES,
     DEFAULT_GLYPH_OF_POWER_BALANCE,
+    STARTER_GOLD_UNITS,
     normalize_game_currency_balances,
 )
 
@@ -34,7 +35,7 @@ LOCAL_PLAYER_ACTOR_ID = 1
 # Leaving this substructure at its constructor defaults makes the client treat
 # hostile monsters as neutral actors, which produces the white NPC outline.
 LOCAL_PLAYER_FACTION_ID = 0x00010002
-LOCAL_GOLD_BALANCE = 999_999_999
+LOCAL_GOLD_BALANCE = STARTER_GOLD_UNITS
 LOCAL_PREMIUM_CURRENCY_BALANCE = 9_999_999
 
 # The selected local-player bootstrap was reconstructed from an established
@@ -175,7 +176,24 @@ def encode_new_player(
     game_currencies: Mapping[str, int] | None = None,
     knowledge_xp: int = 0,
     fame_xp: int = 0,
+    honor_points: int = 0,
+    title_type: int = 0,
+    achievement_title: str = "",
     armament_state: int = 0,
+    pvp_kills_total: int = 0,
+    pvp_kills_today: int = 0,
+    pvp_kills_alone_total: int = 0,
+    pvp_kills_alone_today: int = 0,
+    pvp_kills_group_total: int = 0,
+    pvp_kills_group_today: int = 0,
+    pvp_kills_battle_total: int = 0,
+    pvp_kills_battle_today: int = 0,
+    pvp_dishonorable_kills: int = 0,
+    honor_points_today: int = 0,
+    pvp_solo_matches_played: int = 0,
+    pvp_solo_matches_won: int = 0,
+    pvp_team_matches_played: int = 0,
+    pvp_team_matches_won: int = 0,
 ) -> tuple[bytes, int]:
     """Serialize ``NewPlayerCommand`` (0x001d) for the selected character.
 
@@ -332,20 +350,52 @@ def encode_new_player(
     # +0x210 generated player-state structure: 22 scalar fields, one empty
     # dynamic array, four fixed scalar entries, then 2 * 7 scalar entries.
     player_state_scalars = [0] * 22
-    # +0x254 is the Knowledge/Wisdom progression value mirrored by retail in
-    # TalentCategoryPointsInfo category 1.
-    player_state_scalars[17] = max(0, int(knowledge_xp))
+    # In GamePlayer +0x560 (copied from NewPlayerCommand +0x210):
+    #   +0x50: kills_total
+    #   +0x54: kills_today
+    #   +0x5c: kills_alone_total
+    #   +0x60: kills_alone_today
+    #   +0x68: kills_group_total
+    #   +0x6c: kills_group_today
+    #   +0x74: kills_battle_total
+    #   +0x78: kills_battle_today
+    #   +0x80: dishonorable_kills
+    #   +0x84: lifetime honor points
+    #   +0x88: today's honor points
+    player_state_scalars[4] = max(0, int(pvp_kills_total))
+    player_state_scalars[5] = max(0, int(pvp_kills_today))
+    player_state_scalars[7] = max(0, int(pvp_kills_alone_total))
+    player_state_scalars[8] = max(0, int(pvp_kills_alone_today))
+    player_state_scalars[10] = max(0, int(pvp_kills_group_total))
+    player_state_scalars[11] = max(0, int(pvp_kills_group_today))
+    player_state_scalars[13] = max(0, int(pvp_kills_battle_total))
+    player_state_scalars[14] = max(0, int(pvp_kills_battle_today))
+    player_state_scalars[16] = max(0, int(pvp_dishonorable_kills))
+    player_state_scalars[17] = max(0, int(honor_points))
+    player_state_scalars[18] = max(0, int(honor_points_today))
     for value in player_state_scalars:
         writer.write_uint32_le(value)
+
+    # Empty item records array (+0x18 in player state struct)
     writer.write_uint32_le(0)
-    _write_zero_block(writer, 4)
+
+    # Four fixed scalar entries (copied to GamePlayer +0x564..+0x570):
+    #   [rbx + 0x04]: solo_matches_played
+    #   [rbx + 0x0c]: solo_matches_won
+    #   [rbx + 0x08]: team_matches_played
+    #   [rbx + 0x10]: team_matches_won
+    writer.write_uint32_le(max(0, int(pvp_solo_matches_played)))
+    writer.write_uint32_le(max(0, int(pvp_solo_matches_won)))
+    writer.write_uint32_le(max(0, int(pvp_team_matches_played)))
+    writer.write_uint32_le(max(0, int(pvp_team_matches_won)))
+
     _write_zero_block(writer, 14)
 
     writer.write_uint32_le(0)          # empty array at +0x368
     writer.write_uint32_le(0xFFFFFFFF) # +0x388 constructor default
     _write_zero_block(writer, 8)       # +0x38c
-    writer.write_uint8(0)              # +0x3ac enum
-    writer.write_string("")           # +0x3b0
+    writer.write_uint8(max(0, min(2, int(title_type)))) # +0x3ac enum
+    writer.write_string(str(achievement_title or ""))  # +0x3b0
     _write_zero_block(writer, 8)       # +0x3b8
     _write_command_actor(writer, actor_id)
     return writer.finish()

@@ -75,6 +75,40 @@ class ChatServer(RakNetServer):
             None,
         )
 
+    @staticmethod
+    def _admin_flags(character):
+        """Return the overhead colour and the command gate for a roster character."""
+        privileges = bool(
+            character is not None
+            and getattr(character, 'admin_privileges', False)
+        )
+        return bool(
+            character is not None
+            and (getattr(character, 'admin_name_color', False) or privileges)
+        ), privileges
+
+    def refresh_identity(self, user_id: int) -> int:
+        """Re-sync live chat sessions after a CMS privilege or name change.
+
+        Chat reads the roster, so the durable change must already be applied.
+        Returns how many sessions were refreshed.
+        """
+        character = self._character_for_user_id(user_id)
+        if character is None:
+            return 0
+        flags = self._admin_flags(character)
+        name = str(character.name)
+        updated = 0
+        for session in tuple(self.sessions.values()):
+            if (
+                session.chat_user_id is not None
+                and int(session.chat_user_id) == int(user_id)
+            ):
+                session.chat_user_name = name
+                session.chat_admin_name_color, session.chat_is_admin = flags
+                updated += 1
+        return updated
+
     def _gameplay_server_and_session_for_user_id(self, user_id: int):
         for gameplay_server in self.gameplay_servers:
             for session in tuple(gameplay_server.sessions.values()):
@@ -149,7 +183,8 @@ class ChatServer(RakNetServer):
                 s,
                 "Admin commands: !help | !item <templateId> [amount] | "
                 "!map <mapId> [difficulty] | !where | !speed [character name] | "
-                "!unlockmaps [character name] | !shutdown [minutes]",
+                "!unlockmaps [character name] | !immortal [character name] | "
+                "!killmobs | !shutdown [minutes]",
             )
             return
         if gameplay is None or gameplay_server is None:
@@ -196,6 +231,35 @@ class ChatServer(RakNetServer):
             self._send_system_message(
                 s, f"All maps unlocked for {gameplay.gameplay_character.name}. "
                 "Change maps or relog to refresh the travel menu.")
+            return
+        if command == "!immortal":
+            if len(arguments) > 1:
+                gameplay_server, gameplay = (
+                    self._gameplay_server_and_session_for_character_name(
+                        " ".join(arguments[1:])
+                    )
+                )
+            with gameplay.flow_lock:
+                gameplay.gameplay_gm_invulnerable = not bool(
+                    getattr(gameplay, "gameplay_gm_invulnerable", False)
+                )
+                enabled = gameplay.gameplay_gm_invulnerable
+            CharacterService._request_account_save(
+                gameplay, "admin invulnerability changed", flush=True
+            )
+            self._send_system_message(
+                s,
+                f"GM invulnerability {'enabled' if enabled else 'disabled'} "
+                f"for {gameplay.gameplay_character.name}.",
+            )
+            return
+        if command == "!killmobs":
+            if len(arguments) != 1:
+                raise ValueError("usage: !killmobs")
+            killed = gameplay_server._admin_kill_all_monsters(gameplay)
+            self._send_system_message(
+                s, f"Killed {killed} monster(s) on the current map instance."
+            )
             return
         if command == "!where":
             move = gameplay.gameplay_last_move
@@ -558,17 +622,7 @@ class ChatServer(RakNetServer):
         s.chat_user_name = (
             str(character.name) if character is not None else self.user_name
         )
-        s.chat_admin_name_color = bool(
-            character is not None
-            and (
-                character.admin_name_color
-                or character.admin_privileges
-            )
-        )
-        s.chat_is_admin = bool(
-            character is not None
-            and getattr(character, "admin_privileges", False)
-        )
+        s.chat_admin_name_color, s.chat_is_admin = self._admin_flags(character)
         self._audit(
             s, 'login',
             f'user_id={hello.user_id} session={hello.session_id.hex()}'

@@ -649,6 +649,8 @@ class PVPCombatService:
             or (getattr(pending, "target_is_summon", False)
                 and pending.target_actor_id not in pending.combat.player_summons)
             or CharacterService._pvp_actor_damage_locked(target, pending.target_actor_id)
+            or (not getattr(pending, "target_is_summon", False)
+                and getattr(target, "gameplay_gm_invulnerable", False))
         ):
             return
         target_is_summon = CharacterService._pvp_actor_is_summon(target, pending.target_actor_id)
@@ -707,6 +709,8 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
+        if not target_is_summon and damage > 0:
+            CharacterService._cancel_respawn_protection(s)
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(
                 s, ("pvp_combat_resolution", resolution)
@@ -863,6 +867,8 @@ class PVPCombatService:
             or (getattr(state, "target_is_summon", False)
                 and state.target_actor_id not in combat.player_summons)
             or CharacterService._pvp_actor_damage_locked(target, state.target_actor_id)
+            or (not getattr(state, "target_is_summon", False)
+                and getattr(target, "gameplay_gm_invulnerable", False))
         ):
             return
         target_is_summon = CharacterService._pvp_actor_is_summon(target, state.target_actor_id)
@@ -926,6 +932,8 @@ class PVPCombatService:
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
+        if not target_is_summon and damage > 0:
+            CharacterService._cancel_respawn_protection(s)
         resolution = DamageResolution(
             target_actor_id=state.target_actor_id,
             attacker_actor_id=state.source_actor_id,

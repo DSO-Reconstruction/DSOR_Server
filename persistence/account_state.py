@@ -6,6 +6,7 @@ import copy
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
+import sqlite3
 import threading
 
 from dso_server.persistence.player_database import AsyncPlayerDatabase
@@ -15,12 +16,24 @@ from dso_server.protocol.currency_protocol import (
     normalize_game_currency_balances,
 )
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
-from dso_server.protocol.inventory_codec import InventoryInfo, ItemEnchantmentInfo, ItemInfo
+from dso_server.protocol.inventory_codec import (
+    InventoryInfo,
+    ItemEnchantmentInfo,
+    ItemInfo,
+    owned_inventory_items,
+)
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.gameplay.local_mount_state import MountDefinition, MountEffectState, find_mount
 from dso_server.protocol.membership_protocol import (
     DELUXE_MEMBERSHIP,
     default_deluxe_expiry,
     parse_membership_expiry,
+)
+from dso_server.gameplay.achievement_content import (
+    AchievementProgress,
+    complete_achievement,
+    load_achievement_catalog,
+    refresh_derived_achievements,
 )
 from dso_server.protocol.talent_protocol import ACTIVE_SKILL_TALENT_PRESELECTION
 from dso_server.protocol.player_init_protocol import (
@@ -49,6 +62,9 @@ class CharacterProfile:
     body_stature: int
     level: int = 1
     premium_currency: int = 9_999_999
+    # Initial gold is recorded with the character profile at creation time;
+    # the first gameplay snapshot later takes over as the durable balance.
+    gold: int = 0
     admin_privileges: bool = False
     admin_name_color: bool = False
     unknown_u32_a: int = 0
@@ -77,7 +93,9 @@ class CharacterProfile:
     quickbar_skill_slots: tuple[str | None, ...] | None = None
 
     @classmethod
-    def from_character_record(cls, character) -> "CharacterProfile":
+    def from_character_record(
+        cls, character, *, gold: int = 0
+    ) -> "CharacterProfile":
         """Detach every durable roster field from a CharacterRecord."""
 
         return cls(
@@ -92,6 +110,7 @@ class CharacterProfile:
             body_stature=character.body_stature,
             level=character.level,
             premium_currency=character.premium_currency,
+            gold=max(0, int(gold)),
             admin_privileges=character.admin_privileges,
             admin_name_color=character.admin_name_color,
             unknown_u32_a=character.unknown_u32_a,
@@ -138,6 +157,8 @@ class AccountState:
     quest_log: dict[str, dict[str, object]] = field(default_factory=dict)
     # Wanted board offers, remaining attempts, and reset/VIP timestamps.
     wanted_thief: dict[str, object] = field(default_factory=dict)
+    # Season Pass level, experience, mission progress, and claimed reward IDs.
+    season_pass: dict[str, object] = field(default_factory=dict)
     daily_challenges: dict[str, object] = field(default_factory=dict)
     # Achievements: achievement id -> {progress, completed_at}
     # (gameplay/achievement_content.py); completion stamps are written
@@ -154,18 +175,36 @@ class AccountState:
     pvp_matches_lost: int = 0
     pvp_kills: int = 0
     pvp_deaths: int = 0
+    honor_points_today: int = 0
+    pvp_kills_today: int = 0
+    pvp_solo_matches_won: int = 0
+    pvp_solo_matches_played: int = 0
+    pvp_team_matches_won: int = 0
+    pvp_team_matches_played: int = 0
+    pvp_kills_alone_total: int = 0
+    pvp_kills_alone_today: int = 0
+    pvp_kills_group_total: int = 0
+    pvp_kills_group_today: int = 0
+    pvp_kills_battle_total: int = 0
+    pvp_kills_battle_today: int = 0
+    pvp_dishonorable_kills: int = 0
+    pvp_stats_date: str = ""
     title_type: int = 0
     achievement_title: str = ""
     saved_at: str = ""
     last_visited_town: str = ""
     unlocked_maps: tuple[str, ...] = ()
     admin_all_maps: bool = False
+    admin_invulnerable: bool = False
     map_access_id: str = ""
     map_difficulty: int = 0
     scaling_difficulty: int = 0
     stickerbook_entries: tuple[StickerbookEntry, ...] = ()
     active_costume: str = ""
+    # EquipmentSlotType -> skin resource hidden by the client's transmog UI.
+    hidden_equipment_skins: dict[int, str] = field(default_factory=dict)
     active_pet: str = ""
+    active_mercenary: str = ""
     active_decorations: tuple[str, ...] = ()
     quick_slots: QuickSlotsInfo | None = None
     membership_type: int = DELUXE_MEMBERSHIP
@@ -526,6 +565,7 @@ def _state_to_document(state: AccountState) -> dict:
         "last_visited_town": str(state.last_visited_town),
         "unlocked_maps": list(state.unlocked_maps),
         "admin_all_maps": bool(state.admin_all_maps),
+        "admin_invulnerable": bool(state.admin_invulnerable),
         "map_access_id": str(state.map_access_id or state.map_id),
         "map_difficulty": int(state.map_difficulty),
         "scaling_difficulty": int(state.scaling_difficulty),
@@ -583,6 +623,7 @@ def _state_to_document(state: AccountState) -> dict:
             for key, value in state.quest_log.items()
         },
         "wanted_thief": copy.deepcopy(state.wanted_thief),
+        "season_pass": copy.deepcopy(state.season_pass),
         "daily_challenges": copy.deepcopy(state.daily_challenges),
         "achievements": {
             str(key): dict(value)
@@ -617,7 +658,13 @@ def _state_to_document(state: AccountState) -> dict:
             asdict(entry) for entry in state.stickerbook_entries
         ],
         "active_costume": str(state.active_costume),
+        "hidden_equipment_skins": {
+            str(int(slot)): str(skin)
+            for slot, skin in state.hidden_equipment_skins.items()
+            if str(skin)
+        },
         "active_pet": str(state.active_pet),
+        "active_mercenary": str(state.active_mercenary),
         "active_decorations": list(state.active_decorations),
         "pvp_enabled": bool(state.pvp_enabled),
         "honor_points": int(state.honor_points),
@@ -625,6 +672,20 @@ def _state_to_document(state: AccountState) -> dict:
         "pvp_matches_lost": int(state.pvp_matches_lost),
         "pvp_kills": int(state.pvp_kills),
         "pvp_deaths": int(state.pvp_deaths),
+        "honor_points_today": int(state.honor_points_today),
+        "pvp_kills_today": int(state.pvp_kills_today),
+        "pvp_solo_matches_won": int(state.pvp_solo_matches_won),
+        "pvp_solo_matches_played": int(state.pvp_solo_matches_played),
+        "pvp_team_matches_won": int(state.pvp_team_matches_won),
+        "pvp_team_matches_played": int(state.pvp_team_matches_played),
+        "pvp_kills_alone_total": int(state.pvp_kills_alone_total),
+        "pvp_kills_alone_today": int(state.pvp_kills_alone_today),
+        "pvp_kills_group_total": int(state.pvp_kills_group_total),
+        "pvp_kills_group_today": int(state.pvp_kills_group_today),
+        "pvp_kills_battle_total": int(state.pvp_kills_battle_total),
+        "pvp_kills_battle_today": int(state.pvp_kills_battle_today),
+        "pvp_dishonorable_kills": int(state.pvp_dishonorable_kills),
+        "pvp_stats_date": str(state.pvp_stats_date),
         "title_type": int(state.title_type),
         "achievement_title": str(state.achievement_title),
         "membership": {
@@ -724,6 +785,7 @@ def _state_from_document(document: dict) -> AccountState:
         last_visited_town=str(document.get("last_visited_town", "")),
         unlocked_maps=tuple(str(value) for value in document.get("unlocked_maps", ())),
         admin_all_maps=document.get("admin_all_maps") is True,
+        admin_invulnerable=document.get("admin_invulnerable") is True,
         position=position,
         inventory=_inventory_from_document(document["inventory"]),
         vendor_buyback=tuple(
@@ -776,6 +838,7 @@ def _state_from_document(document: dict) -> AccountState:
             if isinstance(value, dict)
         },
         wanted_thief=copy.deepcopy(document.get("wanted_thief", {})),
+        season_pass=copy.deepcopy(document.get("season_pass", {})),
         daily_challenges=copy.deepcopy(document.get("daily_challenges", {})),
         achievements={
             str(key): dict(value)
@@ -813,6 +876,20 @@ def _state_from_document(document: dict) -> AccountState:
         pvp_matches_lost=max(0, int(document.get("pvp_matches_lost", 0))),
         pvp_kills=max(0, int(document.get("pvp_kills", 0))),
         pvp_deaths=max(0, int(document.get("pvp_deaths", 0))),
+        honor_points_today=max(0, int(document.get("honor_points_today", 0))),
+        pvp_kills_today=max(0, int(document.get("pvp_kills_today", 0))),
+        pvp_solo_matches_won=max(0, int(document.get("pvp_solo_matches_won", document.get("pvp_matches_won", 0)))),
+        pvp_solo_matches_played=max(0, int(document.get("pvp_solo_matches_played", int(document.get("pvp_matches_won", 0)) + int(document.get("pvp_matches_lost", 0))))),
+        pvp_team_matches_won=max(0, int(document.get("pvp_team_matches_won", 0))),
+        pvp_team_matches_played=max(0, int(document.get("pvp_team_matches_played", 0))),
+        pvp_kills_alone_total=max(0, int(document.get("pvp_kills_alone_total", document.get("pvp_kills", 0)))),
+        pvp_kills_alone_today=max(0, int(document.get("pvp_kills_alone_today", document.get("pvp_kills_today", 0)))),
+        pvp_kills_group_total=max(0, int(document.get("pvp_kills_group_total", 0))),
+        pvp_kills_group_today=max(0, int(document.get("pvp_kills_group_today", 0))),
+        pvp_kills_battle_total=max(0, int(document.get("pvp_kills_battle_total", document.get("pvp_kills", 0)))),
+        pvp_kills_battle_today=max(0, int(document.get("pvp_kills_battle_today", document.get("pvp_kills_today", 0)))),
+        pvp_dishonorable_kills=max(0, int(document.get("pvp_dishonorable_kills", 0))),
+        pvp_stats_date=str(document.get("pvp_stats_date", "")),
         title_type=max(0, min(2, int(document.get("title_type", 0)))),
         achievement_title=str(document.get("achievement_title", "")),
         saved_at=str(document.get("saved_at", "")),
@@ -833,7 +910,15 @@ def _state_from_document(document: dict) -> AccountState:
             if str(entry.get("resource_id", ""))
         ),
         active_costume=str(document.get("active_costume", "")),
+        hidden_equipment_skins={
+            int(slot): str(skin)
+            for slot, skin in document.get(
+                "hidden_equipment_skins", {}
+            ).items()
+            if str(skin)
+        },
         active_pet=str(document.get("active_pet", "")),
+        active_mercenary=str(document.get("active_mercenary", "")),
         active_decorations=tuple(
             str(value) for value in document.get("active_decorations", ()) if value
         ),
@@ -919,6 +1004,7 @@ def _profile_from_document(document: dict) -> CharacterProfile:
         body_stature=int(document["body_stature"]),
         level=int(document.get("level", 1)),
         premium_currency=int(document.get("premium_currency", 9_999_999)),
+        gold=max(0, int(document.get("gold", 0))),
         admin_privileges=bool(document.get("admin_privileges", False)),
         admin_name_color=bool(document.get("admin_name_color", False)),
         unknown_u32_a=int(document.get("unknown_u32_a", 0)),
@@ -965,7 +1051,12 @@ class AccountStateStore:
     intentionally reserved for startup migrations, tests, and shutdown.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        static_database_path: str | Path = DEFAULT_STATIC_DB_PATH,
+    ) -> None:
         self.path = Path(path)
         self.lock = threading.RLock()
         self.states: dict[int, AccountState] = {}
@@ -979,8 +1070,154 @@ class AccountStateStore:
         raw_states, raw_profiles = self._database.load_documents()
         self.warnings.extend(self._database.warnings)
         self._load_database_documents(raw_states, raw_profiles)
+        self._migrate_rune_trinket_equipment_slots(static_database_path)
         self.account_registry = None
         self.account_wallets = self._database.load_wallets()
+
+    def _migrate_rune_trinket_equipment_slots(
+        self, static_database_path: str | Path
+    ) -> None:
+        """Unlock RuneTrinket equipment slots six and seven for saved players.
+
+        The client treats an occupied RuneTrinket equipment slot as unlocked.
+        Add a blank base trinket to each missing slot so it can be replaced by
+        the player's own item through normal inventory actions.
+        """
+
+        path = Path(static_database_path)
+        if not self.states or not path.is_file():
+            return
+        try:
+            database = sqlite3.connect(
+                f"file:{path.resolve().as_posix()}?mode=ro", uri=True
+            )
+            try:
+                rune_templates = {
+                    str(row[0])
+                    for row in database.execute(
+                        "SELECT Id FROM _Template_Item "
+                        "WHERE ItemCategory='RuneTrinket'"
+                    )
+                }
+            finally:
+                database.close()
+        except (OSError, sqlite3.Error) as exc:
+            self.warnings.append(
+                f"could not migrate RuneTrinket equipment slots: {exc}"
+            )
+            return
+        if not rune_templates:
+            return
+        template_id = (
+            "all_base_trinket_rune_01"
+            if "all_base_trinket_rune_01" in rune_templates
+            else sorted(rune_templates)[0]
+        )
+        achievement_catalog = load_achievement_catalog(path)
+        unlock_achievements = tuple(
+            achievement_catalog.achievement(achievement_id)
+            for achievement_id in (
+                "item_use_item_rune_extension_stone",
+                "item_use_item_rune_extension_stone_02",
+            )
+        )
+        if any(definition is None for definition in unlock_achievements):
+            self.warnings.append(
+                "RuneTrinket slot unlock achievements are missing from the "
+                "static database"
+            )
+            unlock_achievements = tuple(
+                definition for definition in unlock_achievements
+                if definition is not None
+            )
+
+        migrated = []
+        for character_id, state in self.states.items():
+            changed = False
+            achievement_state = {
+                str(key).casefold(): AchievementProgress.from_document(value)
+                for key, value in state.achievements.items()
+                if isinstance(value, dict)
+            }
+            for definition in unlock_achievements:
+                changed = complete_achievement(
+                    achievement_state, definition
+                ) or changed
+            if changed:
+                refresh_derived_achievements(
+                    achievement_catalog, achievement_state
+                )
+                state.achievements = {
+                    key: progress.to_document()
+                    for key, progress in achievement_state.items()
+                    if progress.progress or progress.completed
+                }
+
+            occupied_slots = {
+                int(slot)
+                for slots in state.inventory.equipment_slots.values()
+                for slot in slots
+            }
+            missing_slots = [
+                slot for slot in (18, 19) if slot not in occupied_slots
+            ]
+            if not missing_slots:
+                if changed:
+                    migrated.append((character_id, state))
+                continue
+            next_item_id = max(
+                int(state.next_item_id),
+                max(
+                    (
+                        int(item.item_id)
+                        for item in owned_inventory_items(state.inventory)
+                    ),
+                    default=0,
+                ) + 1,
+            )
+            if next_item_id + len(missing_slots) - 1 > 0xFFFFFFFF:
+                self.warnings.append(
+                    f"could not unlock RuneTrinket equipment slots for "
+                    f"character {character_id}: item ID range exhausted"
+                )
+                if changed:
+                    migrated.append((character_id, state))
+                continue
+            now = datetime.now(timezone.utc)
+            for slot in missing_slots:
+                item_id = next_item_id
+                next_item_id += 1
+                item = ItemInfo(
+                    item_id=item_id,
+                    template_id=template_id,
+                    socket_count=5,
+                    socketed_templates=["", "", "", "", ""],
+                    item_level=1,
+                    field_08=0,
+                    field_18=item_id & 0xFFFF,
+                    field_30=1,
+                    field_38=0,
+                    created_at=(
+                        now.year, now.month, now.day,
+                        now.hour, now.minute, now.second,
+                    ),
+                )
+                state.inventory.items.append(item)
+                state.inventory.equipment_slots[item_id] = (slot,)
+            state.next_item_id = next_item_id
+            if missing_slots:
+                changed = True
+            if changed:
+                migrated.append((character_id, state))
+
+        for character_id, state in migrated:
+            self._database.queue_state(character_id, state)
+        if migrated:
+            self._database.flush()
+            print(
+                "[PlayerDatabase] completed both RuneTrinket slot-unlock "
+                f"achievements for {len(migrated)} saved character(s)"
+            )
 
     def _load_database_documents(
         self,
@@ -1058,6 +1295,12 @@ class AccountStateStore:
             if result is not None:
                 result.currency = self.currency_for_character(character_id, result.currency)
             return result
+
+    def saved_at_for_character(self, character_id: int) -> str:
+        """Read only a character's activity timestamp without copying its state."""
+        with self.lock:
+            state = self.states.get(int(character_id))
+            return str(state.saved_at or "") if state is not None else ""
 
     def get_profile(self, character_id: int) -> CharacterProfile | None:
         """Read current roster metadata without copying a player's inventory."""

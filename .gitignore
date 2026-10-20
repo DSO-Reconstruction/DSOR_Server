@@ -38,3 +38,12 @@ data/db/static.db4*
 
 # The quest definitions are supplied locally, not kept in Git.
 data/quests.xml
+
+# Added by xm1rth fork
+nohup.out
+data/logs/
+data/language/
+data/db/*
+!data/db/README.txt
+DSOClient/
+data/quests.pbxml

@@ -106,14 +106,12 @@ def apply_item_customizations(inventory, currency, changes, *, database_path,
                     raise ValueError('conflicting customization of a two-handed item')
                 continue
             seen[item.item_id] = fields
-            if item.field_3c:
-                raise ValueError('identify equipment before customizing it')
-            item_row = row('_Template_Item', item.template_id)
             before = copy.deepcopy(item)
             if change.apply_skin or change.remove_skin:
+                if item.field_3c:
+                    raise ValueError('identify equipment before customizing it')
+                item_row = row('_Template_Item', item.template_id)
                 desired = change.apply_skin
-                if any(hint and hint != desired for hint in (change.skin, change.effect_skin)):
-                    raise ValueError('inconsistent skin selection')
                 if item.field_f8 != desired:
                     # A request can name the item's default skin when replacing
                     # it for the first time. Prices come from authored rows.
@@ -134,6 +132,8 @@ def apply_item_customizations(inventory, currency, changes, *, database_path,
                                                vc=math.floor(int(skin_row['ApplyPriceVC']) * factor + .5))
                     item.field_f8 = desired
             if change.apply_color or change.remove_color:
+                if item.field_3c:
+                    raise ValueError('identify equipment before customizing it')
                 desired = change.apply_color
                 old = item.field_28 if item.field_28 not in ('', 'none') else ''
                 if desired != old:

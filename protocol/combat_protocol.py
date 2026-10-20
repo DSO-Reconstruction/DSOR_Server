@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
+import os
 import struct
 
 from dso_server.protocol.character_selection import BitReader, BitWriter
@@ -42,6 +43,14 @@ KILL_COMMAND = command_id("Commands::KillCommand", 0x006C)
 # trips that manager's range assertion.  Synthesized commands therefore omit
 # it; captured payloads that do carry it still round-trip.
 SKILL_COMMAND_DERIVED_FLAG: bool | None = None
+
+# DSO_SKILL_HIT_MARKER_BITS=1: the release261_192 client's layout (the xm1rth
+# fork's), which always carries the skill inheritance marker and the Hit
+# tag-boundary bit. Off, both are written only when a value carries them, the
+# layout this server and the DSOR client (crates/proto combat.rs) use.
+SKILL_HIT_MARKER_BITS = os.getenv(
+    "DSO_SKILL_HIT_MARKER_BITS", "0"
+).strip().lower() in {"1", "true", "yes"}
 
 # One owner ``MoveCommand`` followed by one summon ``SustainedSkillCommand``.
 # The retail sample measures 1,026 bits with the inheritance marker.
@@ -307,6 +316,16 @@ def _read_skill_cast_body(reader: BitReader) -> tuple[int, int, float, int, int]
     )
 
 
+def _read_skill_base(reader: BitReader) -> tuple[int, int, float, int, int, bool]:
+    """Read the shared skill header plus the inheritance marker emitted by
+    :func:`_write_skill_base`."""
+
+    return (
+        *_read_skill_cast_body(reader),
+        reader.read_bool() if SKILL_HIT_MARKER_BITS else None,
+    )
+
+
 def _read_optional_derived_flag(reader: BitReader) -> bool | None:
     """Consume the current retail inheritance marker when it is present.
 
@@ -496,7 +515,22 @@ def decode_target_bullet_skill(
     )
 
 
-def _write_target_skill_body(writer: BitWriter, value: TargetSkill) -> None:
+def _write_skill_base(writer: BitWriter, value) -> None:
+    """Write the five shared skill fields plus retail's inheritance marker.
+
+    ``SkillCommand`` and every derived server command start with the same
+    16/16/32/32/32-bit header.  Release261's decoders then consume one
+    inheritance marker before the derived fields, so omitting it shifts the
+    target, actor and execution context by a bit and the client rejects the
+    command (``DecodeCommand() invalid command ending in multi command 71!``,
+    followed by ``No game actor found for attacker id '<id> * 2>'``).
+    """
+
+    # Historical API name: skill_level is the native uint16 SkillCounter.
+    # ClientSkillManager::HandleSkillCommand compares command +0x20 against
+    # actor +0x72 and ignores nonzero values that do not increase. Zero opts
+    # autonomous server casts out of client prediction reconciliation.
+    # Never populate this field from a monster's authored Skills entry level.
     _write_uint16_le(writer, value.skill_level)
     _write_uint16_le(writer, value.skill_index)
     writer.write_float(value.aim_angle)
@@ -504,6 +538,12 @@ def _write_target_skill_body(writer: BitWriter, value: TargetSkill) -> None:
     writer.write_uint32_le(value.cast_id)
     if value.derived_flag is not None:
         writer.write_bool(value.derived_flag)
+    elif SKILL_HIT_MARKER_BITS:
+        writer.write_bool(False)
+
+
+def _write_target_skill_body(writer: BitWriter, value: TargetSkill) -> None:
+    _write_skill_base(writer, value)
     writer.write_uint32_le(value.target_actor_id)
 
 
@@ -521,14 +561,10 @@ def _write_skill_context(
 
 
 def _read_target_skill_body(reader: BitReader) -> tuple[
-    int, int, float, int, int, int
+    int, int, float, int, int, bool, int
 ]:
     return (
-        int.from_bytes(reader.read_bytes(2), "little"),
-        int.from_bytes(reader.read_bytes(2), "little"),
-        reader.read_float(),
-        reader.read_uint32_le(),
-        reader.read_uint32_le(),
+        *_read_skill_base(reader),
         reader.read_uint32_le(),
     )
 
@@ -562,13 +598,7 @@ def encode_monster_attack_batch(
         if isinstance(attack, SkillServerCommand):
             writer.write_bytes(SKILL_COMMAND.to_bytes(2, "little"))
             value = attack.value
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             writer.write_uint32_le(attack.actor_id)
             _write_skill_context(writer, attack.context)
         elif isinstance(attack, TargetSkillServerCommand):
@@ -579,13 +609,7 @@ def encode_monster_attack_batch(
         elif isinstance(attack, BulletSkillServerCommand):
             writer.write_bytes(BULLET_SKILL_COMMAND.to_bytes(2, "little"))
             value = attack.value
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
@@ -596,13 +620,7 @@ def encode_monster_attack_batch(
                 TARGET_POINT_BULLET_SKILL_COMMAND.to_bytes(2, "little")
             )
             value = attack.value
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
@@ -624,13 +642,7 @@ def encode_monster_attack_batch(
         elif isinstance(attack, ShiftedSkillServerCommand):
             writer.write_bytes(SHIFTED_SKILL_COMMAND.to_bytes(2, "little"))
             value = attack.value
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             positions = (
                 value.target_position,
                 *value.additional_target_positions,
@@ -654,13 +666,7 @@ def encode_monster_attack_batch(
         elif isinstance(attack, SustainedSkillServerCommand):
             writer.write_bytes(SUSTAINED_SKILL_COMMAND.to_bytes(2, "little"))
             value = attack.value
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             # Repeated loop header owned by SustainedSkillCommand.
             _write_uint16_le(writer, value.skill_index)
             writer.write_float(value.aim_angle)
@@ -699,13 +705,7 @@ def encode_monster_attack_batch(
                 raise ValueError(
                     "TargetBulletSkill requires 1 to 255 target positions"
                 )
-            _write_uint16_le(writer, value.skill_level)
-            _write_uint16_le(writer, value.skill_index)
-            writer.write_float(value.aim_angle)
-            writer.write_uint32_le(value.server_tick)
-            writer.write_uint32_le(value.cast_id)
-            if value.derived_flag is not None:
-                writer.write_bool(value.derived_flag)
+            _write_skill_base(writer, value)
             for component in value.direction:
                 writer.write_float(component)
             writer.write_uint8(value.variant)
@@ -746,7 +746,7 @@ def decode_monster_attack_batch(
             move = Move(*struct.unpack("<hhhBBB I H", reader.read_bytes(15)))
             movements.append(MoveServerCommand(move, reader.read_uint32_le()))
         elif command_id == SKILL_COMMAND:
-            value = SkillCast(*_read_skill_cast_body(reader))
+            value = SkillCast(*_read_skill_base(reader))
             actor_id = reader.read_uint32_le()
             attacks.append(
                 SkillServerCommand(
@@ -754,21 +754,31 @@ def decode_monster_attack_batch(
                 )
             )
         elif command_id == TARGET_SKILL_COMMAND:
-            base = _read_target_skill_body(reader)
+            level, index, angle, tick, cast_id, flag, target = (
+                _read_target_skill_body(reader)
+            )
             actor_id = reader.read_uint32_le()
             context = _read_skill_context(reader)
             attacks.append(
-                TargetSkillServerCommand(TargetSkill(*base, context), actor_id)
+                TargetSkillServerCommand(
+                    TargetSkill(
+                        level, index, angle, tick, cast_id, target,
+                        context, flag,
+                    ),
+                    actor_id,
+                )
             )
         elif command_id == BULLET_SKILL_COMMAND:
+            level, index, angle, tick, cast_id, flag = _read_skill_base(reader)
             value = BulletSkillServer(
-                skill_level=int.from_bytes(reader.read_bytes(2), "little"),
-                skill_index=int.from_bytes(reader.read_bytes(2), "little"),
-                aim_angle=reader.read_float(),
-                server_tick=reader.read_uint32_le(),
-                cast_id=reader.read_uint32_le(),
+                skill_level=level,
+                skill_index=index,
+                aim_angle=angle,
+                server_tick=tick,
+                cast_id=cast_id,
                 direction=tuple(reader.read_float() for _ in range(4)),
                 variant=reader.read_uint8(),
+                derived_flag=flag,
             )
             actor_id = reader.read_uint32_le()
             attacks.append(
@@ -777,7 +787,7 @@ def decode_monster_attack_batch(
                 )
             )
         elif command_id == TARGET_POINT_BULLET_SKILL_COMMAND:
-            base = _read_skill_cast_body(reader)
+            level, index, angle, tick, cast_id, flag = _read_skill_base(reader)
             direction = tuple(reader.read_float() for _ in range(4))
             variant = reader.read_uint8()
             target_position_count = reader.read_uint8()
@@ -790,11 +800,16 @@ def decode_monster_attack_batch(
                 for _ in range(target_position_count)
             )
             value = TargetPointBulletSkill(
-                *base,
+                level,
+                index,
+                angle,
+                tick,
+                cast_id,
                 direction,
                 variant,
                 target_positions[0],
                 target_positions[1:],
+                flag,
             )
             actor_id = reader.read_uint32_le()
             context = _read_skill_context(reader)
@@ -807,26 +822,8 @@ def decode_monster_attack_batch(
                 )
             )
         elif command_id == SHIFTED_SKILL_COMMAND:
-            base = _read_skill_cast_body(reader)
-            marker_position = reader.position
-            derived_flag: bool | None = None
+            level, index, angle, tick, cast_id, flag = _read_skill_base(reader)
             position_count = reader.read_uint8()
-            # Current generated commands place an inheritance marker before
-            # the counted position array. Legacy/local fixtures do not. A
-            # false marker aliases to a plausible count of two, so validate
-            # that the rest of that candidate can actually fit before choosing
-            # the byte-aligned legacy form.
-            required_after_count = (
-                position_count * 96
-                + 32
-                + (5 * 32 + 4 * 32 + 1)
-                + 32
-                + 8
-            )
-            if position_count == 0 or reader.remaining < required_after_count:
-                reader.position = marker_position
-                derived_flag = reader.read_bool()
-                position_count = reader.read_uint8()
             if position_count == 0:
                 raise ValueError(
                     "ShiftedSkill requires at least one target position"
@@ -836,11 +833,15 @@ def decode_monster_attack_batch(
                 for _ in range(position_count)
             )
             value = ShiftedSkill(
-                *base,
+                level,
+                index,
+                angle,
+                tick,
+                cast_id,
                 position_count,
                 target_positions[0],
                 target_positions[1:],
-                derived_flag,
+                flag,
             )
             actor_id = reader.read_uint32_le()
             context = _read_skill_context(reader)
@@ -853,27 +854,14 @@ def decode_monster_attack_batch(
                 )
             )
         elif command_id == SUSTAINED_SKILL_COMMAND:
-            skill_level = int.from_bytes(reader.read_bytes(2), "little")
-            skill_index = int.from_bytes(reader.read_bytes(2), "little")
-            aim_angle = reader.read_float()
-            server_tick = reader.read_uint32_le()
-            cast_id = reader.read_uint32_le()
-            # The repeated loop header restates the base cast, so it doubles
-            # as the probe for the optional inheritance marker: read it
-            # without the marker first and rewind when it disagrees.  The
-            # byte-alignment probe used for single-command client payloads
-            # does not apply inside a batch.
-            marker_position = reader.position
-            derived_flag: bool | None = None
+            (
+                skill_level, skill_index, aim_angle, server_tick, cast_id,
+                derived_flag,
+            ) = _read_skill_base(reader)
+            # Repeated loop header owned by SustainedSkillCommand.
             loop_skill_index = int.from_bytes(
                 reader.read_bytes(2), "little"
             )
-            if loop_skill_index != skill_index:
-                reader.position = marker_position
-                derived_flag = reader.read_bool()
-                loop_skill_index = int.from_bytes(
-                    reader.read_bytes(2), "little"
-                )
             loop_aim_angle = reader.read_float()
             loop_server_tick = reader.read_uint32_le()
             actor_id = reader.read_uint32_le()
@@ -924,11 +912,10 @@ def decode_monster_attack_batch(
                 )
             )
         elif command_id == TARGET_BULLET_SKILL_COMMAND:
-            skill_level = int.from_bytes(reader.read_bytes(2), "little")
-            skill_index = int.from_bytes(reader.read_bytes(2), "little")
-            aim_angle = reader.read_float()
-            server_tick = reader.read_uint32_le()
-            cast_id = reader.read_uint32_le()
+            (
+                skill_level, skill_index, aim_angle, server_tick, cast_id,
+                derived_flag,
+            ) = _read_skill_base(reader)
             direction = tuple(reader.read_float() for _ in range(4))
             variant = reader.read_uint8()
             target_actor_id = reader.read_uint32_le()
@@ -961,6 +948,7 @@ def decode_monster_attack_batch(
                 target_actor_id,
                 additional_target_actor_ids,
                 target_positions,
+                derived_flag,
             )
             attacks.append(
                 TargetBulletSkillServerCommand(
@@ -984,12 +972,13 @@ def decode_monster_attack_batch(
 class Hit:
     """Authoritative damage transition consumed by ``HandleHitCommand``.
 
-    Fresh retail captures from the installed client contain a reserved bit
-    between ``hit_tags`` and the two native flags at object offsets ``+0x48``
-    and ``+0x49``. Omitting it shifts every following bit field, including
-    health, damage, actor ids and combat-text data. The compatibility option
-    remains available for older reconstructed packets, but the retail layout
-    is the production default.
+    Retail always sends a reserved bit between ``hit_tags`` and the two native
+    flags at object offsets ``+0x48`` and ``+0x49``. Omitting it shifts every
+    following bit field, including health, damage, actor ids and combat-text
+    data, and the client then drops the whole 0x85 batch: release261 reports
+    ``DecodeCommand() invalid command ending in multi command 107!`` followed
+    by ``Received HitCommand with unknown actor id (...)`` for the
+    one-bit-shifted actor id it then reads.
     """
 
     server_tick: int
@@ -1013,9 +1002,9 @@ class Hit:
     # string length as a count of one-bit reactions happened to preserve an
     # empty value but corrupted every elemental hit.
     combat_text_type: str = ""
-    # Retained only so historical captures can round-trip when the codec's
-    # explicit legacy option is enabled. Normal encoding ignores this field.
-    legacy_tag_boundary_bit: bool = False
+    # The reserved retail bit described above.  Retail has always been observed
+    # clear; it is kept so captured packets round-trip.
+    tag_boundary_bit: bool = False
 
 
 @dataclass(frozen=True)
@@ -1077,13 +1066,14 @@ def _write_uint64_le(writer: BitWriter, value: int) -> None:
 
 def _write_hit_body(
         writer: BitWriter, value: Hit, *,
-        legacy_hit_tag_boundary_bit: bool = False) -> None:
+        legacy_hit_tag_boundary_bit: bool | None = None) -> None:
     writer.write_uint32_le(value.server_tick)
     writer.write_uint32_le(len(value.hit_tags))
     for tag in value.hit_tags:
         writer.write_uint8(tag)
-    if legacy_hit_tag_boundary_bit:
-        writer.write_bool(value.legacy_tag_boundary_bit)
+    if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
+            else legacy_hit_tag_boundary_bit):
+        writer.write_bool(value.tag_boundary_bit)
     writer.write_bool(value.field_48)
     writer.write_bool(value.field_49)
     _write_uint64_le(writer, value.current_health)
@@ -1103,11 +1093,14 @@ def _write_hit_body(
 
 def _read_hit_body(
         reader: BitReader, *,
-        legacy_hit_tag_boundary_bit: bool = False) -> Hit:
+        legacy_hit_tag_boundary_bit: bool | None = None) -> Hit:
     server_tick = reader.read_uint32_le()
     tags = tuple(reader.read_uint8() for _ in range(reader.read_uint32_le()))
-    legacy_boundary_bit = (
-        reader.read_bool() if legacy_hit_tag_boundary_bit else False
+    tag_boundary_bit = (
+        reader.read_bool()
+        if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
+            else legacy_hit_tag_boundary_bit)
+        else False
     )
     field_48 = reader.read_bool()
     field_49 = reader.read_bool()
@@ -1130,7 +1123,7 @@ def _read_hit_body(
         field_80,
         field_81,
         combat_text_type,
-        legacy_boundary_bit,
+        tag_boundary_bit,
     )
 
 
@@ -1167,7 +1160,7 @@ def _read_kill_body(reader: BitReader) -> Kill:
 
 def encode_combat_batch(
         value: CombatBatch, *,
-        legacy_hit_tag_boundary_bit: bool = False) -> tuple[bytes, int]:
+        legacy_hit_tag_boundary_bit: bool | None = None) -> tuple[bytes, int]:
     if not value.commands:
         raise ValueError("CombatBatch requires at least one command")
     writer = BitWriter()
@@ -1197,7 +1190,7 @@ def encode_combat_batch(
 
 def decode_combat_batch(
         payload: bytes, bit_length: int, *,
-        legacy_hit_tag_boundary_bit: bool = False) -> CombatBatch:
+        legacy_hit_tag_boundary_bit: bool | None = None) -> CombatBatch:
     reader = BitReader(payload, bit_length)
     if reader.read_uint8() != 0x85:
         raise ValueError("CombatBatch is not a server batch")
@@ -1210,11 +1203,8 @@ def decode_combat_batch(
             command = HitServerCommand(
                 _read_hit_body(
                     reader,
-                    legacy_hit_tag_boundary_bit=(
-                        legacy_hit_tag_boundary_bit
-                    ),
-                ),
-                reader.read_uint32_le(),
+                    legacy_hit_tag_boundary_bit=legacy_hit_tag_boundary_bit,
+                ), reader.read_uint32_le()
             )
         elif command_id == STATUS_EFFECT_COMMAND:
             command = StatusEffectServerCommand(

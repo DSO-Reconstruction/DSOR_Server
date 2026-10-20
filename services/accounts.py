@@ -462,11 +462,15 @@ class AccountService:
             return "127.0.0.1"
 
     def launch_document(self, host_header: str | None = None) -> dict:
+        host = self.resolved_public_host(host_header)
+        cdn_port = int(os.getenv("DSO_CDN_PORT", "8082"))
         return {
-            "host": self.resolved_public_host(host_header),
+            "host": host,
             "gateway_port": self.gateway_port,
             "chat_port": self.chat_port,
             "instance_id": self.chat_instance_id,
+            "cdn_port": cdn_port,
+            "cdn_url": f"httpnz://{host}:{cdn_port}/cdndata",
         }
 
     def status_document(self) -> dict:

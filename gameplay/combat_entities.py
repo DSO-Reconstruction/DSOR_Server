@@ -202,7 +202,17 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                 continue
             target_position = target.observed_position
             reach = distance(origin, target_position)
-            validate = point is None and not explicit
+            # Directional area/charge skills are selected by their authored
+            # cone/angle footprint above. Revalidating them as a zero-width
+            # projectile ray at impact discards valid off-center targets and
+            # produces the visible-hit/no-damage symptom. Their area check is
+            # authoritative at cast time; straight projectiles keep the
+            # impact-time movement validation below.
+            validate = (
+                point is None
+                and not explicit
+                and targeting not in {"angle", "cone"}
+            )
             travel = max(0.0, (
                 distance(origin, point) if point is not None else
                 contacts.get(target.actor_id, reach) if validate else reach

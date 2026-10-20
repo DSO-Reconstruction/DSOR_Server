@@ -33,6 +33,7 @@ class CombatModifier:
 
     kind: str
     arguments: tuple[str, ...]
+    source_set_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -906,6 +907,7 @@ def _status_instructions(
             modifier = CombatModifier(
                 str(source.kind),
                 tuple(str(value) for value in source.arguments),
+                str(getattr(source, "source_set_id", "")),
             )
             result.append(
                 _Instruction(
@@ -1327,6 +1329,7 @@ def _calculate_vitality(
 
     health_absolute = 0.0
     health_relative = 0.0
+    health_set_multipliers = 1.0
     resource_absolute = 0.0
     resource_relative = 0.0
     regeneration_relative, regeneration_absolute, interval = (
@@ -1383,7 +1386,23 @@ def _calculate_vitality(
             else:
                 resource_absolute += amount
         elif operation == "relative":
-            health_relative += amount
+            # The Shadow Soul set's advertised +20% Maximum Health is a
+            # final health multiplier. Keep it separate from ordinary
+            # relative health bonuses, which are additive against the base
+            # health pool; otherwise existing bonuses dilute the set's
+            # stated 20% effect.
+            source_set_id = str(
+                getattr(modifier, "source_set_id", "")
+            ).casefold()
+            if (
+                kind == "maxhealthpoints"
+                and source_set_id.startswith(
+                    "mercenary_souldestruction_"
+                )
+            ):
+                health_set_multipliers *= max(0.0, 1.0 + amount)
+            else:
+                health_relative += amount
         else:
             health_absolute += amount
     maximum_health = max(
@@ -1395,6 +1414,7 @@ def _calculate_vitality(
                 + health_absolute
             )
             * max(0.0, 1.0 + health_relative)
+            * health_set_multipliers
         )),
     )
     maximum_resource = max(
@@ -1796,6 +1816,7 @@ def _combat_modifier_signature(
             "modifier",
             str(source.kind),
             tuple(str(value) for value in source.arguments),
+            str(getattr(source, "source_set_id", "")),
         )
     if hasattr(source, "effect_id"):
         effect_id = int(source.effect_id)
@@ -2181,10 +2202,20 @@ def _calculate_player_combat_stats(
     }
     equipped = []
     allocations = {}
+    # Slots 25..27 are the summoned Shadow Soul's amulet, cloak, and belt.
+    # They stay equipped in InventoryInfo so ItemSetDatabase can count the
+    # companion set, but their individual item stats belong to the companion,
+    # not the player. In particular, counting old mercenary gear's
+    # HealthPoints here inflated the player's pre-set max HP and made the
+    # 20% MaxHealthPoints set tier appear to grant less than 20% when the new
+    # set replaced those pieces.
+    mercenary_equipment_slots = {25, 26, 27}
     # The secondary essence stays equipped but does not act: only the active
     # slot's essence supplies its damage factor and ammunition type here, and
     # therefore to every cast that reads ``skill_modifier_sources``.
     for item_id, allocation in active_equipment_slots(inventory).items():
+        if mercenary_equipment_slots.intersection(allocation):
+            continue
         item = items_by_id.get(item_id)
         definition = (
             database.items.get(str(item.template_id))

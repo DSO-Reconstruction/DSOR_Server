@@ -17,6 +17,66 @@ class MonsterCombatService(
         MonsterTickContextService):
     """Monster pursuit, attacks, return-home state, and vicinity delivery."""
 
+    def _admin_kill_all_monsters(self, s: Session) -> int:
+        """Resolve every living monster in this shared map instance as a GM kill."""
+        combat = s.gameplay_combat_state
+        character = s.gameplay_character
+        if combat is None or character is None:
+            raise ValueError("the current map has no combat encounter")
+        attacker_actor_id = (
+            s.gameplay_remote_actor_id
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        resolutions = []
+        killed_monsters = []
+        with combat.lock:
+            for actor_id in combat.alive_actor_ids:
+                monster = combat.monsters[actor_id]
+                if str(monster.template_id).casefold().startswith("damage_doll"):
+                    continue
+                previous = int(combat.monster_health.get(actor_id, 0))
+                if previous <= 0:
+                    continue
+                combat.monster_health[actor_id] = 0
+                combat.pending_monster_attacks.pop(actor_id, None)
+                combat.monster_status_effects.pop(actor_id, None)
+                for key in tuple(combat.monster_status_damage):
+                    if int(key[0]) == int(actor_id):
+                        combat.monster_status_damage.pop(key, None)
+                combat.monster_target_actor_ids.pop(actor_id, None)
+                resolutions.append(DamageResolution(
+                    target_actor_id=int(actor_id),
+                    attacker_actor_id=int(attacker_actor_id),
+                    current_health=0,
+                    maximum_health=int(monster.maximum_health),
+                    damage=previous,
+                    killed=True,
+                    position=combat.monster_positions[actor_id],
+                    server_tick=server_tick,
+                    hit_tags=(0,),
+                    skill_index=0,
+                    source_actor_id=int(attacker_actor_id),
+                ))
+                killed_monsters.append(monster)
+        if not resolutions:
+            return 0
+        target_sessions = {int(attacker_actor_id): s}
+        for peer in self._active_gameplay_sessions(
+                map_id=s.gameplay_map, excluding=s, instance_of=s):
+            peer_character = peer.gameplay_character
+            if peer_character is None or peer.gameplay_combat_state is not combat:
+                continue
+            peer_actor_id = (
+                peer.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(peer_character.character_id)
+            )
+            target_sessions[int(peer_actor_id)] = peer
+        self._dispatch_player_owned_resolutions(
+            combat, target_sessions, tuple(resolutions)
+        )
+        return len(killed_monsters)
+
     @staticmethod
     def _apply_base_health_regeneration(
             target_sessions, health_regeneration) -> None:
@@ -349,7 +409,7 @@ class MonsterCombatService(
         with combat.lock:
             due_attack_actor_ids = frozenset(
                 int(attack.target_actor_id)
-                for attack in combat.pending_monster_attacks.values()
+                for _caster_id, attack in combat.pending_monster_attack_items()
                 if attack.due_at <= now
             )
         mark_phase(s, "target-stats")
@@ -375,6 +435,7 @@ class MonsterCombatService(
                 # worker retire with authoritative work still queued.
                 and not combat.pending_runtime_player_hits
                 and not combat.pending_monster_attacks
+                and not combat.pending_monster_projectile_attacks
             ):
                 idle = True
             else:
@@ -516,7 +577,9 @@ class MonsterCombatService(
                 periodic_monster_resolutions = []
                 periodic_owner_resolutions = []
                 target_stats_by_actor = prepared_target_stats
-                for actor_id, position, target_session in combat_targets:
+                for target_index, (actor_id, position, target_session) in enumerate(
+                    combat_targets
+                ):
                     incoming_multipliers = 1.0
                     block_chance = 0.0
                     block_damage_reduction = 0.0
@@ -534,6 +597,11 @@ class MonsterCombatService(
                         block_damage_reduction = (
                             target_stats.block_damage_reduction
                         )
+                    invulnerable = bool(getattr(
+                        target_session, "gameplay_gm_invulnerable", False
+                    ))
+                    if invulnerable:
+                        incoming_multipliers = 0.0
                     hostile_resolutions.extend(
                         combat.resolve_due_monster_attacks(
                             position,
@@ -543,6 +611,9 @@ class MonsterCombatService(
                             block_chance=block_chance,
                             block_damage_reduction=(
                                 block_damage_reduction
+                            ),
+                            finalize_area_attacks=(
+                                target_index == len(combat_targets) - 1
                             ),
                         )
                     )
@@ -564,6 +635,7 @@ class MonsterCombatService(
                                 player_incoming_damage_multipliers=(
                                     target_stats.incoming_damage_multipliers
                                 ),
+                                player_invulnerable=invulnerable,
                                 now=now,
                                 server_tick=server_tick,
                             )
@@ -676,6 +748,9 @@ class MonsterCombatService(
         ):
             return False
 
+        if monster_summons and callback is not None:
+            callback(s, ("monster_summons", monster_summons))
+
         mark_phase(s, "console-heartbeat")
         CharacterService._report_monster_control(
             combat, movements, attacks, tick_inputs
@@ -721,8 +796,6 @@ class MonsterCombatService(
         CharacterService._dispatch_player_owned_resolutions(
             combat, target_sessions, player_owned_resolutions
         )
-        if monster_summons and callback is not None:
-            callback(s, ("monster_summons", monster_summons))
         for summon in out_of_range_summons:
             owner_session = target_sessions.get(summon.owner_actor_id)
             if owner_session is None:
@@ -825,21 +898,21 @@ class MonsterCombatService(
                 f"[{GAMEPLAY_SERVICE_NAME}] started autonomous attack(s) "
                 + ", ".join(
                     f"{(
-                        combat.monsters[
-                            value.attacker_actor_id
-                        ].attack.resource_id
-                        if value.attacker_actor_id in combat.monsters
+                        value.definition.resource_id
+                        if value.definition is not None
                         else (
-                            combat.player_summons[
+                            combat.monsters[
                                 value.attacker_actor_id
-                            ].definition.monster_template_id
-                            if value.attacker_actor_id
-                            in combat.player_summons
+                            ].attack.resource_id
+                            if value.attacker_actor_id in combat.monsters
                             else "expired-player-summon"
                         )
                     )}"
                     f"/0x{value.command_id:02x}"
                     f"@{value.attacker_actor_id}"
+                    f"#skill={value.skill_index}"
+                    f"#cast={value.cast_id}"
+                    f"#tick={value.server_tick}"
                     for value in attacks
                 )
             )

@@ -28,6 +28,7 @@ from dso_server.protocol.wanted_thief_protocol import (
     GET_WANTED_THIEF_INFO_COMMAND, ACCEPT_WANTED_THIEF_MISSION_COMMAND,
     REFRESH_WANTED_THIEF_MISSION_COMMAND,
 )
+from dso_server.protocol.season_pass_protocol import SEASON_PASS_COMMANDS
 from dso_server.protocol.gameplay_protocol import (
     CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND, LOGOUT_COMMAND, decode_logout,
 )
@@ -420,6 +421,13 @@ class DispatchService:
                 f"length={len(payload)} command="
                 f"{f'0x{command_id:04x}' if command_id is not None else 'short'}"
             )
+        if NPC_TRACE and command_id in (0x0029, 0x0066, TALK_COMMAND, DELIVER_COMMAND, QUEST_COMMAND):
+            print(
+                f"[NPC-TRACE] received cmd=0x{command_id:04x} "
+                f"map={s.gameplay_map!r} gameplay_mode={s.gameplay_mode} "
+                f"initialized={s.gameplay_initialization_sent} "
+                f"presence_ready={s.gameplay_presence_ready}"
+            )
         if s.gameplay_mode:
             if s.gameplay_presence_ready and CharacterService._refresh_premium_bags(s):
                 CharacterService._request_account_save(s, "premium bags reconciled", flush=True)
@@ -516,6 +524,8 @@ class DispatchService:
                 self._handle_ocp_booking(s, payload)
             elif command_id == ACCEPTED_TIER_SPENDER_COMMAND:
                 self._handle_tier_spender_accept(s, payload)
+            elif command_id == SHUFFLE_TIER_SPENDER_DEALS_COMMAND:
+                self._handle_tier_spender_shuffle(s, payload)
             elif command_id == CLIENT_NOTIFICATION_COMMAND:
                 self._handle_notification_action(s, payload)
             elif command_id == ACTIVITY_SIGNIN_PROTOCOL_COMMAND:
@@ -526,6 +536,17 @@ class DispatchService:
                 self._handle_salvage(s, payload)
             elif command_id == CRAFTING_COMMAND:
                 self._handle_crafting(s, payload)
+            elif command_id == CRAFTING_RESULT_ACCEPTANCE_COMMAND:
+                # Retail sends this after consuming a CraftingResult. It is an
+                # acknowledgement only; enchantment transfer sends its full
+                # inventory refresh in the same server batch as CraftingResult.
+                with s.flow_lock:
+                    s.gameplay_client_command_state[
+                        CRAFTING_RESULT_ACCEPTANCE_COMMAND
+                    ] = bytes(payload)
+                CharacterService._accept_gameplay_state_command(
+                    s, CRAFTING_RESULT_ACCEPTANCE_COMMAND
+                )
             elif command_id == 0x0029:
                 self._handle_npc_request(s, payload)
             elif command_id == 0x0066:
@@ -560,6 +581,8 @@ class DispatchService:
                 self._handle_join_battleground_response(s, payload)
             elif command_id == LEAVE_PVP_COMMAND:
                 self._handle_leave_pvp(s, payload)
+            elif command_id in SEASON_PASS_COMMANDS:
+                self._handle_season_pass_command(s, payload)
             elif command_id in {
                 GET_WANTED_THIEF_INFO_COMMAND, ACCEPT_WANTED_THIEF_MISSION_COMMAND,
                 REFRESH_WANTED_THIEF_MISSION_COMMAND,
@@ -587,6 +610,13 @@ class DispatchService:
                 self._handle_quest_monster_indication_request(s, payload)
             elif command_id == QUEST_TRIGGER_INDICATION_REQUEST_COMMAND:
                 self._handle_quest_trigger_indication_request(s, payload)
+            elif command_id == 0x0170:
+                self._accept_gameplay_state_command(s, command_id)
+                self._send_fractured_planes_effect_choices(s)
+            elif command_id == 0x0174:
+                self._handle_fractured_planes_first_clear_acceptance(
+                    s, payload
+                )
             elif command_id in {
                 0x00BB, 0x00E2, 0x00E8,
                 0x00EA, CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND,

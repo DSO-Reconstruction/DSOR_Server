@@ -345,13 +345,20 @@ class RespawnServiceTests(unittest.TestCase):
 
     def test_arena_or_match_membership_rejects_all_options(self):
         for map_id, match in [("b1102_dm", None), ("a0206_tdm", None),
-                              ("a0201_basicarena", None), ("b1201_pve", object())]:
+                              ("b1201_pve", object())]:
             for flag in (0, 0x40, 0x80):
                 self.session.gameplay_map = map_id
                 self.session.gameplay_match = match
                 self.request(flag)
         self.assertEqual(self.session.recorder.ids(), [])
         self.mocks["_begin_map_transfer"].assert_not_called()
+
+    def test_royal_arena_keeps_the_ordinary_respawn_flow(self):
+        # a0201_basicarena is OpenPVE with ordinary duels, not a match map.
+        from dso_server.services.player_respawn import respawn_map_allowed
+        self.assertTrue(respawn_map_allowed(str(DEFAULT_STATIC_DB_PATH), "a0201_basicarena"))
+        for match_map in ("b1102_dm", "a0206_tdm"):
+            self.assertFalse(respawn_map_allowed(str(DEFAULT_STATIC_DB_PATH), match_map))
 
     def test_transfer_or_concurrent_request_is_rejected(self):
         for name in ("gameplay_exit_transition_started", "gameplay_respawn_in_progress",

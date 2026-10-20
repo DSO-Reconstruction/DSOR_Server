@@ -63,6 +63,7 @@ _RARITY_HINT = re.compile(
     re.IGNORECASE,
 )
 _LEVEL_SUFFIX = re.compile(r"(?:^|_)Lv(\d+)$", re.IGNORECASE)
+_ADVENTURER_CHEST_LEVEL = re.compile(r"^levelchest_lvl_?(\d+)$", re.IGNORECASE)
 _RARITY_NAMES = {
     "common": "Common",
     "uncommon": "Uncommon",
@@ -146,6 +147,8 @@ class _MappedReward:
     template_id: str
     amount: int
     chance_percent: float | None = None
+    equipment_rarity: str | None = None
+    equipment_slot_types: tuple[str, ...] = ()
 
 
 def _positive_amount(value: Any, *, default: int = 1) -> int:
@@ -276,6 +279,7 @@ def _candidate_definition(
     *,
     player_level: int,
     rarity_hint: str = "",
+    class_name: str = "",
 ) -> PurchaseItemDefinition:
     candidates = tuple(dict.fromkeys(
         str(value).strip()
@@ -293,6 +297,17 @@ def _candidate_definition(
         _definition(static_database_path, candidate)
         for candidate in candidates
     )
+    normalized_class = str(class_name or "").casefold()
+    if normalized_class in {"warrior", "mage", "ranger", "dwarf"}:
+        class_specific = tuple(
+            definition
+            for definition in definitions
+            if definition.template_id.casefold().startswith(
+                normalized_class + "_"
+            )
+        )
+        if class_specific:
+            definitions = class_specific
     if not definitions:
         aliased = _TOOLTIP_ITEM_ALIASES.get(text.casefold().strip())
         if aliased:
@@ -427,13 +442,95 @@ def _candidate_definition(
 def _direct_entries(
     static_database_path: str | Path,
     record: dict[str, Any],
-) -> tuple[list[_MappedReward], list[_MappedReward], bool]:
+    *,
+    class_name: str = "",
+) -> tuple[list[_MappedReward], list[_MappedReward], list[_MappedReward], bool]:
     guaranteed: list[_MappedReward] = []
     choices: list[_MappedReward] = []
+    chance: list[_MappedReward] = []
     saw_choose = False
     for entry in record.get("yields") or ():
         mode = str(entry.get("mode") or "guaranteed")
         if mode == "rarity_upgrade":
+            continue
+        if mode == "one_of_equipment":
+            rarity = _RARITY_NAMES.get(
+                str(entry.get("rarity") or "").casefold()
+            )
+            if rarity not in EQUIPMENT_RARITIES:
+                raise ValueError(
+                    f"invalid generated equipment rarity "
+                    f"{entry.get('rarity')!r} for "
+                    f"{record.get('container')!r}"
+                )
+            raw_slots = entry.get("slot_types") or ()
+            if not isinstance(raw_slots, (list, tuple)):
+                raise ValueError("generated equipment slot_types must be a list")
+            choices.append(_MappedReward(
+                template_id="@equipment",
+                amount=1,
+                equipment_rarity=rarity,
+                equipment_slot_types=tuple(str(slot) for slot in raw_slots),
+            ))
+            continue
+        if mode == "class_set":
+            normalized_class = str(
+                entry.get("fixed_class") or class_name or ""
+            ).casefold()
+            class_items = (entry.get("by_class") or {}).get(normalized_class)
+            if normalized_class not in {"warrior", "mage", "ranger", "dwarf"}:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} requires a valid player class"
+                )
+            if not isinstance(class_items, list) or not class_items:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} has no rewards for "
+                    f"class {normalized_class!r}"
+                )
+            for class_item in class_items:
+                if isinstance(class_item, dict):
+                    class_template_id, class_amount = _split_embedded_amount(
+                        class_item.get("item"), class_item.get("amount")
+                    )
+                else:
+                    class_template_id, class_amount = _split_embedded_amount(
+                        class_item, None
+                    )
+                if class_template_id == str(record.get("container") or ""):
+                    raise ValueError(
+                        f"container {class_template_id!r} maps to itself"
+                    )
+                _definition(static_database_path, class_template_id)
+                guaranteed.append(_MappedReward(class_template_id, class_amount))
+            continue
+        if mode == "one_of_class":
+            normalized_class = str(class_name or "").casefold()
+            class_items = (entry.get("by_class") or {}).get(normalized_class)
+            if normalized_class not in {"warrior", "mage", "ranger", "dwarf"}:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} requires a valid player class"
+                )
+            if class_items is None:
+                raise ValueError(
+                    f"class-specific container "
+                    f"{record.get('container')!r} has no reward for "
+                    f"class {normalized_class!r}"
+                )
+            class_template_id, class_amount = _split_embedded_amount(
+                class_items.get("item") if isinstance(class_items, dict)
+                else class_items,
+                class_items.get("amount") if isinstance(class_items, dict)
+                else None,
+            )
+            if class_template_id == str(record.get("container") or ""):
+                raise ValueError(
+                    f"container {class_template_id!r} maps to itself"
+                )
+            _definition(static_database_path, class_template_id)
+            choices.append(_MappedReward(class_template_id, class_amount))
             continue
         template_id, amount = _split_embedded_amount(
             entry.get("item"), entry.get("amount")
@@ -441,16 +538,28 @@ def _direct_entries(
         if template_id == str(record.get("container") or ""):
             continue
         _definition(static_database_path, template_id)
-        reward = _MappedReward(template_id, amount)
+        chance_percent = entry.get("chance_percent")
+        reward = _MappedReward(
+            template_id,
+            amount,
+            float(chance_percent) if chance_percent is not None else None,
+        )
         if mode == "guaranteed":
             guaranteed.append(reward)
         elif mode == "one_of":
             choices.append(reward)
+        elif mode == "chance":
+            if chance_percent is None or not 0.0 < reward.chance_percent <= 100.0:
+                raise ValueError(
+                    f"invalid reward chance {chance_percent!r} for "
+                    f"{template_id!r}"
+                )
+            chance.append(reward)
         elif mode == "choose":
             saw_choose = True
         else:
             raise ValueError(f"unsupported direct reward mode {mode!r}")
-    return guaranteed, choices, saw_choose
+    return guaranteed, choices, chance, saw_choose
 
 
 def _tooltip_entries(
@@ -458,6 +567,7 @@ def _tooltip_entries(
     record: dict[str, Any],
     *,
     player_level: int,
+    class_name: str,
 ) -> tuple[list[_MappedReward], list[_MappedReward], bool]:
     ui = record.get("ui") or {}
     guaranteed: list[_MappedReward] = []
@@ -496,6 +606,7 @@ def _tooltip_entries(
             entry,
             player_level=player_level,
             rarity_hint=rarity_hint,
+            class_name=class_name,
         )
         amount = _positive_amount(entry.get("amount"))
         chance_percent = entry.get("chance_percent")
@@ -640,9 +751,13 @@ def _gem_chest_reward(
 
     loot_list = str(record.get("loot_list") or "")
     match = re.search(r"(?:^|_)gem_bag_([a-s])$", loot_list, re.IGNORECASE)
-    if match is None:
+    # This older starter bag predates the lettered bag tiers in the loot
+    # report. It still needs to yield a real gem rather than disappear.
+    rank = match.group(1).casefold() if match is not None else None
+    if rank is None and loot_list.casefold() == "lootbox_e_misc_gem_bag_01":
+        rank = "c"
+    if rank is None:
         return None
-    rank = match.group(1).casefold()
     candidates: list[PurchaseItemDefinition] = []
     for family in _STANDARD_GEM_FAMILIES:
         try:
@@ -654,6 +769,167 @@ def _gem_chest_reward(
     if not candidates:
         return None
     return ChestReward(candidates[rng.randrange(len(candidates))], 1)
+
+
+def _rune_bag_reward(
+    static_database_path: str | Path,
+    record: dict[str, Any],
+    *,
+    rng: random.Random,
+) -> ChestReward | None:
+    """Resolve the rune bag to one of its 22 base-level standard runes."""
+
+    loot_list = str(record.get("loot_list") or "").casefold()
+    if loot_list != "lootbox_lootbox_runes_00":
+        return None
+    path = Path(static_database_path)
+    database = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
+    try:
+        rows = database.execute(
+            "SELECT Id FROM _Template_Item "
+            "WHERE ItemCategory='EquipmentRune' AND RuneGem=0 "
+            "AND Id IN ("
+            "'unique_gem_xp_gain_00', "
+            "'unique_gem_wisdom_find_00', "
+            "'unique_gem_resource_00', "
+            "'unique_gem_resourceregen_00', "
+            "'unique_gem_resistance_poison_00', "
+            "'unique_gem_resistance_lightning_00', "
+            "'unique_gem_resistance_ice_00', "
+            "'unique_gem_resistance_fire_00', "
+            "'unique_gem_resistance_andermagic_00', "
+            "'unique_gem_resistance_00', "
+            "'unique_gem_materi_find_00', "
+            "'unique_gem_hitpoints_00', "
+            "'unique_gem_healthregen_00', "
+            "'unique_gem_grouptalent_all_prog_wisdom_00', "
+            "'unique_gem_grouptalent_all_prog_xp_00', "
+            "'unique_gem_grouptalent_all_prog_shards_00', "
+            "'unique_gem_grouptalent_all_essentials_vc_00', "
+            "'unique_gem_grouptalent_all_essentials_rf_00', "
+            "'unique_gem_grouptalent_all_essentials_rc_00', "
+            "'unique_gem_damage_00', "
+            "'unique_gem_faster_run_00', "
+            "'unique_gem_critical_00') AND Obsolete=0 "
+            "ORDER BY Id"
+        ).fetchall()
+    finally:
+        database.close()
+    candidates = [
+        _definition(path, str(row[0])) for row in rows
+    ]
+    if not candidates:
+        return None
+    return ChestReward(candidates[rng.randrange(len(candidates))], 1)
+
+
+def _adventurer_chest_contents(
+    static_database_path: str | Path,
+    box_template_id: str,
+    *,
+    player_level: int,
+    class_name: str,
+    rng: random.Random,
+) -> ChestContents | None:
+    """Build the authored level-up chest chain when server loot lists are absent.
+
+    The client static database contains the chest templates and their next-level
+    names, but not the server-side LOOTBOX contents. Keep the progression
+    available from the server's known item templates and the published chest
+    reward tables. Unsupported legacy rewards are omitted rather than turned
+    into guessed or invalid item templates.
+    """
+
+    match = _ADVENTURER_CHEST_LEVEL.fullmatch(str(box_template_id))
+    if match is None:
+        return None
+    level = int(match.group(1))
+    if level < 10 or level > 100 or level % 5:
+        return None
+    if int(player_level) < level:
+        raise ValueError(
+            f"container {box_template_id!r} requires level {level}"
+        )
+
+    # The first era of the chest chain has published rewards. Dark Legacy
+    # changed the 60+ contents; those rewards are represented with current
+    # server item templates (glyph currency, gem/rune bags and anxiety shards).
+    loot: dict[int, tuple[tuple[str, int], ...]] = {
+        10: (("potion_health_restore_rarity_01", 2), ("ammunition_damage_common", 250)),
+        15: (("money_vc_gold", 25), ("lockpick", 10), ("lootbox_gems_a", 2)),
+        20: (("mount_common_horse_01_3d", 1),),
+        25: (("money_vc_gold", 75), ("respawn_soulguardian_2", 3), ("ammunition_damage_common", 999)),
+        30: (("lockpick", 35), ("e_misc_gem_bag_01", 1)),
+        35: (("ammunition_damage_common", 999), ("mount_terror_horse_blue_7d", 1)),
+        40: (("respawn_soulguardian_2", 5), ("potion_health_restore_rarity_01", 5)),
+        45: (("money_vc_gold", 150), ("lootbox_gems_e", 2), ("ammunition_damage_common", 999)),
+        50: (("lockpick", 50), ("ammunition_damage_common", 1998), ("lootbox_gems_f", 1)),
+        55: (("ammunition_damage_common", 3000), ("lootbox_runes_00", 1)),
+        60: (("money_gc", 5000), ("lootbox_gems_f", 2), ("lootbox_runes_00", 1)),
+        65: (("lootbox_gems_f", 2), ("lootbox_runes_00", 1)),
+        70: (("money_gc", 17000), ("soul_shard_common", 20), ("lootbox_gems_f", 3)),
+        75: (("money_gc", 18000), ("lockpick", 50), ("lootbox_gems_f", 3)),
+        80: (("soul_shard_uncommon", 20), ("respawn_soulguardian_2", 10), ("lootbox_gems_g", 1)),
+        85: (("soul_shard_magic", 25), ("lootbox_runes_00", 1), ("lockpick", 150)),
+        90: (("money_gc", 30000), ("lootbox_gems_g", 1), ("respawn_soulguardian_2", 15)),
+        95: (("soul_shard_rare", 32), ("money_gc", 35000), ("lockpick", 175)),
+        100: (("lootbox_runes_00", 1), ("lootbox_gems_g", 1), ("money_gc", 50000), ("soul_shard_epic", 35), ("lockpick", 150), ("respawn_soulguardian_2", 15)),
+    }
+
+    rewards: list[ChestReward] = []
+    for template_id, amount in loot.get(level, ()):
+        try:
+            rewards.append(ChestReward(_definition(static_database_path, template_id), amount))
+        except ValueError:
+            # A downstream client database may be older than the server's
+            # static data. Skip an unavailable optional reward, but still keep
+            # the chest progression itself intact.
+            continue
+
+    next_level = level + 5
+    next_template_id = (
+        "levelchest_lvl_60" if next_level == 60
+        else f"levelchest_lvl{next_level}"
+    )
+    try:
+        rewards.append(
+            ChestReward(
+                _definition(static_database_path, next_template_id),
+                1,
+            )
+        )
+    except ValueError:
+        pass
+
+    if level in {60, 85, 95} and str(class_name):
+        try:
+            roll = roll_equipment_reward(
+                static_database_path,
+                class_name=str(class_name),
+                item_level=max(level, int(player_level)),
+                rarity="Epic",
+                rng=rng,
+            )
+            rewards.append(
+                ChestReward(
+                    _definition(static_database_path, roll.template_id),
+                    1,
+                    item_level=roll.item_level,
+                    rarity=roll.rarity,
+                    appearance=roll.appearance,
+                )
+            )
+        except (OSError, ValueError):
+            pass
+
+    if not rewards:
+        raise ValueError(f"adventurer chest {box_template_id!r} has no rewards")
+    return ChestContents(
+        box_template_id=box_template_id,
+        source="adventurer_chest_progression",
+        rewards=tuple(rewards),
+        used_tooltip_mapping=False,
+    )
 
 
 def roll_chest_contents(
@@ -676,6 +952,48 @@ def roll_chest_contents(
         )
     records = _load_index(map_path).get(box_template_id)
     if not records:
+        adventurer_contents = _adventurer_chest_contents(
+            static_database_path,
+            box_template_id,
+            player_level=player_level,
+            class_name=class_name,
+            rng=rng or random.SystemRandom(),
+        )
+        if adventurer_contents is not None:
+            return adventurer_contents
+        if box_template_id in {"e_misc_gem_bag_01", "lootbox_runes_00"}:
+            if int(player_level) < int(box_definition.required_level):
+                raise ValueError(
+                    f"container {box_template_id!r} requires level "
+                    f"{int(box_definition.required_level)}"
+                )
+            database = sqlite3.connect(
+                f"file:{Path(static_database_path).as_posix()}?mode=ro",
+                uri=True,
+            )
+            try:
+                row = database.execute(
+                    "SELECT Loot FROM _Template_Item WHERE Id=?",
+                    (box_template_id,),
+                ).fetchone()
+            finally:
+                database.close()
+            synthetic_record = {"loot_list": str(row[0] or "")} if row else {}
+            fallback_rng = rng or random.SystemRandom()
+            nested_reward = _gem_chest_reward(
+                static_database_path, synthetic_record, rng=fallback_rng
+            )
+            if nested_reward is None:
+                nested_reward = _rune_bag_reward(
+                    static_database_path, synthetic_record, rng=fallback_rng
+                )
+            if nested_reward is not None:
+                return ChestContents(
+                    box_template_id=box_template_id,
+                    source=str(synthetic_record.get("loot_list") or "static item loot"),
+                    rewards=(nested_reward,),
+                    used_tooltip_mapping=False,
+                )
         raise ValueError(
             f"inventory container {box_template_id!r} has no JSON mapping"
         )
@@ -688,17 +1006,18 @@ def roll_chest_contents(
     if rng is None:
         rng = random.SystemRandom()
 
-    guaranteed, one_of, saw_choose = _direct_entries(
-        static_database_path, record
+    guaranteed, one_of, chance, saw_choose = _direct_entries(
+        static_database_path, record, class_name=str(class_name)
     )
     used_tooltip = False
-    chance: list[_MappedReward] = []
-    if not guaranteed and not one_of:
-        guaranteed, chance, saw_ui_choose = _tooltip_entries(
+    if not guaranteed and not one_of and not chance:
+        guaranteed, tooltip_chance, saw_ui_choose = _tooltip_entries(
             static_database_path,
             record,
             player_level=max(1, int(player_level)),
+            class_name=str(class_name),
         )
+        chance = tooltip_chance
         saw_choose = saw_choose or saw_ui_choose
         used_tooltip = True
     if saw_choose:
@@ -731,6 +1050,16 @@ def roll_chest_contents(
                 rewards=(gem_reward,),
                 used_tooltip_mapping=False,
             )
+        rune_reward = _rune_bag_reward(
+            static_database_path, record, rng=rng
+        )
+        if rune_reward is not None:
+            return ChestContents(
+                box_template_id=box_template_id,
+                source=str(record.get("loot_list") or record.get("source")),
+                rewards=(rune_reward,),
+                used_tooltip_mapping=False,
+            )
         raise ValueError(
             f"inventory container {box_template_id!r} has no resolvable rewards"
         )
@@ -743,10 +1072,32 @@ def roll_chest_contents(
         raise ValueError(
             f"container {box_template_id!r} maps to itself rather than loot"
         )
-    rewards = tuple(
+    rewards_list: list[ChestReward] = []
+    ordinary_selected: list[_MappedReward] = []
+    for entry in selected:
+        if entry.equipment_rarity:
+            roll = roll_equipment_reward(
+                static_database_path,
+                class_name=str(class_name),
+                item_level=max(1, int(player_level)),
+                rarity=entry.equipment_rarity,
+                slot_types=entry.equipment_slot_types,
+                rng=rng,
+            )
+            rewards_list.append(ChestReward(
+                _definition(static_database_path, roll.template_id),
+                entry.amount,
+                item_level=roll.item_level,
+                rarity=roll.rarity,
+                appearance=roll.appearance,
+            ))
+        else:
+            ordinary_selected.append(entry)
+    rewards_list.extend(
         ChestReward(_definition(static_database_path, template_id), amount)
-        for template_id, amount in _aggregate(selected)
+        for template_id, amount in _aggregate(ordinary_selected)
     )
+    rewards = tuple(rewards_list)
     return ChestContents(
         box_template_id=box_template_id,
         source=str(record.get("source") or "chest_contents.json"),

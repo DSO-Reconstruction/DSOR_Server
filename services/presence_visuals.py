@@ -704,13 +704,14 @@ class PresenceVisualService:
         return fallback
 
     def _remote_equipment_visuals(
-            self, inventory) -> tuple[RemoteEquipmentVisual, ...]:
+            self, inventory, hidden_skins=None) -> tuple[RemoteEquipmentVisual, ...]:
         if inventory is None or self.static_database is None:
             return ()
         items_by_id = {
             int(item.item_id): item for item in inventory.items
         }
         visuals: dict[int, RemoteEquipmentVisual] = {}
+        hidden_skins = hidden_skins or {}
         for item_id, slots in sorted(inventory.equipment_slots.items()):
             item = items_by_id.get(int(item_id))
             if item is None:
@@ -729,12 +730,38 @@ class PresenceVisualService:
                 # visible helmet, shoulders, torso, gloves, boots, both hands
                 # and cloak. Accessories do not create actor geometry.
                 if 0 <= slot <= 7:
+                    customization_slot = 12 if slot == 7 else slot
+                    hidden_skin = str(
+                        hidden_skins.get(customization_slot, "")
+                    )
+                    item_skin = str(item.field_f8 or item.field_80 or "")
+                    if hidden_skin and (
+                        not item_skin or hidden_skin == item_skin
+                    ):
+                        continue
                     visuals[slot] = RemoteEquipmentVisual(
                         slot,
                         (skin,),
                         color,
                     )
         return tuple(visuals[slot] for slot in sorted(visuals))
+
+    @staticmethod
+    def _remote_emblem_id(inventory) -> str:
+        """Return the template id used by the client's remote emblem icon."""
+
+        if inventory is None:
+            return ""
+        items_by_id = {
+            int(item.item_id): item for item in inventory.items
+        }
+        for item_id, slots in sorted(inventory.equipment_slots.items()):
+            if 23 not in tuple(int(slot) for slot in slots):
+                continue
+            item = items_by_id.get(int(item_id))
+            if item is not None:
+                return str(item.template_id or "")
+        return ""
 
     @staticmethod
     def _remap_player_status_effect(

@@ -20,11 +20,13 @@ from dso_server.services.player_resources import PlayerResourceService
 from dso_server.services.player_progression import PlayerProgressionService
 from dso_server.services.combat_resolution import CombatResolutionService
 from dso_server.services.monster_combat import MonsterCombatService
+from dso_server.services.monster_summons import MonsterSummonService
 from dso_server.services.pvp_combat import PVPCombatService
 from dso_server.services.matchmaking import MatchmakingService
 from dso_server.services.battleground import BattlegroundService
 from dso_server.services.ranking import RankingService
 from dso_server.services.wanted_thief import WantedThiefService
+from dso_server.services.season_pass import SeasonPassService
 from dso_server.services.daily_challenges import DailyChallengeService
 from dso_server.services.summon_pvp import SummonPVPService
 from dso_server.services.player_combat import PlayerCombatService
@@ -47,7 +49,6 @@ from dso_server.services.presence_visuals import PresenceVisualService
 from dso_server.services.social import SocialService
 from dso_server.services.commerce import CommerceService
 from dso_server.services.trade import TradeService
-from dso_server.services.monster_summons import MonsterSummonService
 from dso_server.services.talents import TalentService
 from dso_server.services.dispatch import DispatchService
 class CharacterServer(
@@ -67,11 +68,13 @@ class CharacterServer(
         PlayerProgressionService,
         CombatResolutionService,
         MonsterCombatService,
+        MonsterSummonService,
         PVPCombatService,
         MatchmakingService,
         BattlegroundService,
         RankingService,
         WantedThiefService,
+        SeasonPassService,
         DailyChallengeService,
         SummonPVPService,
         PlayerSummonService,
@@ -94,7 +97,6 @@ class CharacterServer(
         SocialService,
         CommerceService,
         TradeService,
-        MonsterSummonService,
         TalentService,
         DispatchService,
         RakNetServer):

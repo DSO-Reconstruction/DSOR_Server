@@ -12,6 +12,8 @@ decoder (one u32).
 
 from __future__ import annotations
 
+import time
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
@@ -22,6 +24,32 @@ LOGOUT_COUNTDOWN_SECONDS = 10.0
 
 class MapTransitionService:
     """Validate map exits/travel and coordinate the local server handoff."""
+
+    @staticmethod
+    def _is_fractured_planes_floor_id(map_id: str) -> bool:
+        map_id = str(map_id).strip().casefold()
+        prefix = "h0009_endlesstower_floor_"
+        floor_id = map_id.removeprefix(prefix)
+        return (
+            map_id.startswith(prefix)
+            and floor_id.isdecimal()
+            and 1 <= int(floor_id) <= 100
+        )
+
+    @staticmethod
+    def _event_route_satisfies_map_gate(catalog, map_id: str) -> bool:
+        """Allow Fractured Planes to use the Endless Tower floor routes.
+
+        The Endless Tower access rows are authored for ``event_endlesstower``.
+        Fractured Planes reuses those floor access IDs, including the zero-padded
+        IDs sent by the client when entering a selected floor. Permit valid
+        floor IDs only while the Fractured Planes event is active.
+        """
+        map_id = str(map_id).strip().casefold()
+        if not MapTransitionService._is_fractured_planes_floor_id(map_id):
+            return False
+        return "event_fracturedplanes" in catalog.active_template_ids()
+
     def _handle_logout(self, s: Session, payload: bytes) -> None:
         try:
             request = decode_logout(payload)
@@ -141,12 +169,13 @@ class MapTransitionService:
         CharacterService._quest_leave_map(self, s)
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(s, "disconnect")
-        CharacterService._persist_gameplay_session(
-            self,
-            s,
-            reason="switch-character source",
-            flush=True,
-        )
+        with s.gameplay_inventory_action_lock:
+            CharacterService._persist_gameplay_session(
+                self,
+                s,
+                reason="switch-character source",
+                flush=True,
+            )
 
         gameplay_router = getattr(self, "gameplay_router", None)
         login_port = getattr(gameplay_router, "port", self.port)
@@ -170,13 +199,24 @@ class MapTransitionService:
             self, s: Session, destination_map_id: str, *,
             spawn_position=None, reason: str,
             gameplay_switch: bool = False,
-            scaling_difficulty: int = 0) -> bool:
+            scaling_difficulty: int = 0,
+            fractured_planes_run: bool = False) -> bool:
         character = s.gameplay_character
+        event_catalog = CharacterService._event_catalog(self)
+        in_fractured_planes_run = bool(
+            getattr(s, "gameplay_fractured_planes_run", False)
+            or fractured_planes_run
+        ) and CharacterService._is_fractured_planes_floor_id(destination_map_id)
         if (
             reason not in {"admin-chat", "admin-cms"}
-            and not CharacterService._event_catalog(
-                self
-            ).map_available(destination_map_id)
+            and not event_catalog.map_available(destination_map_id)
+            and not (
+                (reason == "event-travel"
+                 and CharacterService._event_route_satisfies_map_gate(
+                     event_catalog, destination_map_id,
+                 ))
+                or in_fractured_planes_run
+            )
         ):
             raise ValueError(
                 f"map {destination_map_id!r} requires an active event"
@@ -248,12 +288,48 @@ class MapTransitionService:
             # Waiting for the old UDP socket to disconnect leaves a stale
             # same-character session which breaks the later re-entry snapshot.
             s.gameplay_presence_callback(s, 'disconnect')
-        CharacterService._persist_gameplay_session(
-            self, s, reason=f'{reason} source', flush=True
-        )
+        with s.gameplay_inventory_action_lock:
+            CharacterService._persist_gameplay_session(
+                self, s, reason=f'{reason} source', flush=True
+            )
+        # Build the one-shot route from the state after the durable source
+        # snapshot. A QuickSlotsCommand already in flight can be applied after
+        # the transition flag is set; taking the route copy before the flush
+        # lets that older copy override the newer persisted shortcuts on the
+        # destination map.
+        with s.flow_lock:
+            quick_slots = copy.deepcopy(s.gameplay_quick_slots)
+        account_store = getattr(self, 'account_store', None)
+        character_id = getattr(character, 'character_id', None)
+        if account_store is not None and character_id is not None:
+            persisted_state = account_store.get(character_id)
+            persisted_quick_slots = getattr(
+                persisted_state, 'quick_slots', None
+            )
+            if persisted_quick_slots is not None:
+                if quick_slots is None:
+                    quick_slots = copy.deepcopy(persisted_quick_slots)
+                else:
+                    quick_slots = CharacterService._merge_quick_slots(
+                        quick_slots, persisted_quick_slots
+                    )
         route_character = copy.deepcopy(character)
         if route_character is not None:
             route_character.map_id = physical_map_id
+            # Carry the latest client-assigned shortcuts on the one-shot map
+            # route so initialization cannot reuse a stale account snapshot.
+            route_character.route_quick_slots = quick_slots
+            # This route-only marker distinguishes Fractured Planes from the
+            # Endless Tower floors whose physical maps it reuses.
+            route_character.fractured_planes_run = bool(fractured_planes_run)
+            fractured_deadline = None
+            runtime = getattr(s, "gameplay_map_event_runtime", None)
+            if fractured_planes_run:
+                if reason == "event-travel":
+                    fractured_deadline = time.perf_counter() + 8 * 60
+                elif runtime is not None:
+                    fractured_deadline = runtime.fractured_planes_limit_deadline
+            route_character.fractured_planes_deadline = fractured_deadline
             # CharacterRecord intentionally remains a compact wire model.
             # Route-only difficulty metadata is attached to its private copy
             # and consumed by PlayerInitializationService on reconnect.
@@ -316,7 +392,18 @@ class MapTransitionService:
             destination_physical_map_id = (
                 destination_access.physical_map_id
             )
-            if not CharacterService._map_quest_accessible(self, s, destination_access.request_map_id):
+            continuing_fractured_planes = bool(
+                getattr(s, "gameplay_fractured_planes_run", False)
+                and CharacterService._is_fractured_planes_floor_id(
+                    destination_access.request_map_id
+                )
+            )
+            if (
+                not continuing_fractured_planes
+                and not CharacterService._map_quest_accessible(
+                    self, s, destination_access.request_map_id
+                )
+            ):
                 raise ValueError("the destination requires its unlocking quest")
             try:
                 destination_position = load_local_entry_position(
@@ -341,6 +428,9 @@ class MapTransitionService:
                 spawn_position=destination_position,
                 reason='map-exit',
                 gameplay_switch=True,
+                fractured_planes_run=(
+                    continuing_fractured_planes
+                ),
             )
         except (OSError, ValueError) as exc:
             print(
@@ -359,6 +449,15 @@ class MapTransitionService:
             f"{getattr(getattr(self, 'gameplay_router', None), 'port', 2190)}"
         )
         return True
+
+    @staticmethod
+    def _is_fractured_planes_rift(definition) -> bool:
+        return (
+            str(getattr(definition, "exit_id", "")).casefold().startswith(
+                "fracturedplanes_rift_entrance"
+            )
+            and int(getattr(definition, "event_set_row", -1)) == 1841
+        )
 
     def _handle_map_exit(self, s: Session, payload: bytes) -> None:
         try:
@@ -413,7 +512,25 @@ class MapTransitionService:
                 selected_map_id == gameplay_map
                 and request_exit_url == gameplay_map
             )
-            if current_map_representation:
+            if (
+                self._is_fractured_planes_rift(definition)
+                and CharacterService._is_fractured_planes_run(self, s)
+            ):
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                if runtime is None or not runtime.fractured_planes_floor_completed:
+                    raise ValueError("the Rift Lord has not been defeated")
+                # The native portal menu chooses a concrete floor. Its
+                # authored ExitURL remains floor one for every floor choice.
+                if not CharacterService._is_fractured_planes_floor_id(selected_map_id):
+                    raise ValueError("the rift requires a selected Tower floor")
+                selected_floor = int(selected_map_id.rsplit("_", 1)[1])
+                cleared, _claimed = CharacterService._fractured_planes_progress(s)
+                if not 1 <= selected_floor <= min(100, cleared + 1):
+                    raise ValueError("the selected Tower floor is still locked")
+                with s.flow_lock:
+                    s.gameplay_fractured_planes_run = True
+                destination_access_id = selected_map_id
+            elif current_map_representation:
                 destination_access_id = authored_exit_url
             else:
                 if request_exit_url != authored_exit_url:
@@ -545,11 +662,25 @@ class MapTransitionService:
         player_level = max(1, int(getattr(s.gameplay_character, "level", 1)))
         requested = (str(request.map_id).casefold(), str(request.entry_name or "").casefold())
         destination = None
+        fractured_planes_run = False
         for event in catalog.active_events():
             template = event.template
             if (template.client_only or template.category.casefold() == "silent"
                     or not template.minimum_level <= player_level <= template.maximum_level):
                 continue
+            # Fractured Planes reuses the Endless Tower floor access IDs. The
+            # client asks for a selected floor even though the event template
+            # has no TeleportTarget of its own.
+            if (
+                template.resource_id.casefold() == "event_fracturedplanes"
+                and requested[1] == "entrypoint"
+                and CharacterService._event_route_satisfies_map_gate(
+                    catalog, requested[0],
+                )
+            ):
+                destination = (request.map_id, "Entrypoint")
+                fractured_planes_run = True
+                break
             target_map, _, target_entry = template.teleport_target.strip().partition(":")
             target_map, target_entry = target_map.strip(), target_entry.strip()
             if not target_map:
@@ -562,15 +693,46 @@ class MapTransitionService:
             elif requested == (target_map.casefold(), target_entry.casefold()):
                 destination = (target_map, target_entry)
                 break
+        selected_floor = None
+        if requested[0].startswith("h0009_endlesstower_floor_"):
+            suffix = requested[0].removeprefix("h0009_endlesstower_floor_")
+            if suffix.isdecimal():
+                selected_floor = int(suffix)
+        if (
+            destination is None
+            and requested[1] == "entrypoint"
+            and selected_floor is not None
+        ):
+            cleared, _claimed = CharacterService._fractured_planes_progress(s)
+            if 1 <= selected_floor <= cleared:
+                # Completed floors remain replayable from Kingshill after the
+                # run marker and the temporary event route have expired.
+                destination = (request.map_id, "Entrypoint")
+                fractured_planes_run = True
         if destination is None:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected event travel: no eligible active event "
                   f"targets {request.map_id!r}:{request.entry_name or ''}")
             return
         map_id, entry_name = destination
         try:
-            if not catalog.map_available(map_id):
+            cleared_floor, _claimed_floor = CharacterService._fractured_planes_progress(s)
+            replaying_cleared_floor = (
+                fractured_planes_run
+                and selected_floor is not None
+                and selected_floor <= cleared_floor
+            )
+            if (
+                not catalog.map_available(map_id)
+                and not CharacterService._event_route_satisfies_map_gate(
+                    catalog, map_id,
+                )
+                and not replaying_cleared_floor
+            ):
                 raise ValueError("the destination requires an active event")
-            if not CharacterService._map_quest_accessible(self, s, map_id):
+            if (
+                not replaying_cleared_floor
+                and not CharacterService._map_quest_accessible(self, s, map_id)
+            ):
                 raise ValueError("the destination requires its unlocking quest")
             access = resolve_map_access(self.static_database_path, map_id, player_level=player_level)
             try:
@@ -586,7 +748,8 @@ class MapTransitionService:
             CharacterService._accept_gameplay_state_command(s, command_id)
             CharacterService._begin_map_transfer(
                 self, s, map_id, spawn_position=spawn_position,
-                reason="event-travel", scaling_difficulty=0)
+                reason="event-travel", scaling_difficulty=0,
+                fractured_planes_run=fractured_planes_run)
         except (OSError, ValueError) as exc:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected event travel: {exc}")
 
@@ -611,7 +774,7 @@ class MapTransitionService:
             map_id = CharacterService._resolve_hub_travel_destination(
                 self, s
             )
-            spawn_position = load_local_spawn_position(
+            spawn_position = load_local_travel_point_position(
                 self.static_database_path, map_id
             )
             print(
@@ -730,6 +893,12 @@ class MapTransitionService:
                     scaling_difficulty=difficulty)
                 spawn_position = load_local_entry_position(
                     self.static_database_path, access.physical_map_id, request.entry_name)
+            elif spawn_position is None:
+                access = resolve_map_access(self.static_database_path, map_id,
+                    player_level=max(1, int(getattr(character, "level", 1))),
+                    scaling_difficulty=difficulty)
+                spawn_position = load_local_travel_point_position(
+                    self.static_database_path, access.physical_map_id)
             started = CharacterService._begin_map_transfer(
                 self,
                 s,
@@ -757,6 +926,10 @@ class MapTransitionService:
                     s.gameplay_next_item_id = original_next_item_id
                     s.gameplay_pending_travel_item = pending
             return
+        if consumed_travel_item:
+            self._season_pass_feed(
+                s, "UseDungeonKeys", value=str(pending["template_id"]),
+            )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] accepted typed travel request for "
             f"{map_id} (scaling difficulty {difficulty}); "

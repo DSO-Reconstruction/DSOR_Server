@@ -9,7 +9,9 @@ the player's movement speed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
+import sqlite3
 
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
 
@@ -37,8 +39,11 @@ class MountEffectState:
 
 
 # Status-effect wire numbers are zero-based FixedArray indexes, while SQLite
-# rowids are one-based.  The local black-bear database rows are cast=4101 and
-# ride=4100, so their packet IDs are respectively 4100 and 4099.
+# rowids are one-based. These ids are an older database's (cast row 4101, ride
+# 4100); they move with each client build, so find_mount takes them from the
+# active static.db4 and this entry only serves when that database lacks the
+# mount. Its timings are the retail capture's and always apply
+# (with_captured_timing): the item says 3.5 s, the client casts it in 2.4 s.
 BLACK_BEAR_MOUNT = MountDefinition(
     stickerbook_resource_id="epicmount_black_bear_01",
     mount_resource_id="mount_black_bear_01",
@@ -60,8 +65,49 @@ LOCAL_MOUNTS = {
 }
 
 
-def find_mount(resource_id: str) -> MountDefinition | None:
-    return LOCAL_MOUNTS.get(str(resource_id))
+def with_captured_timing(definition: MountDefinition) -> MountDefinition:
+    """Put the retail-captured cast and ride timings on a database mount."""
+
+    captured = LOCAL_MOUNTS.get(definition.stickerbook_resource_id)
+    if captured is None:
+        return definition
+    return replace(
+        definition,
+        cast_duration_seconds=captured.cast_duration_seconds,
+        cast_duration_ticks=captured.cast_duration_ticks,
+        ride_duration_ticks=captured.ride_duration_ticks,
+    )
+
+
+def find_mount(
+    resource_id: str,
+    static_database_path: str | Path | None = None,
+) -> MountDefinition | None:
+    """The mount an item activates, its effect ids from the static database."""
+
+    resource_id = str(resource_id)
+    local = LOCAL_MOUNTS.get(resource_id)
+    # Imported here: stickerbook_state imports this module.
+    from dso_server.gameplay.stickerbook_state import (
+        load_inventory_mount_definition,
+    )
+    from dso_server.paths import DEFAULT_STATIC_DB_PATH
+
+    try:
+        definition = load_inventory_mount_definition(
+            static_database_path or DEFAULT_STATIC_DB_PATH, resource_id
+        )
+    except (sqlite3.Error, OSError):
+        definition = None
+    if definition is None:
+        return local
+    if local is not None:
+        definition = replace(
+            definition,
+            stickerbook_state=local.stickerbook_state,
+            stickerbook_favorite_position=local.stickerbook_favorite_position,
+        )
+    return definition
 
 
 def begin_mount_cast(

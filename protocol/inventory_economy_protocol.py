@@ -36,6 +36,9 @@ from dso_server.protocol.player_init_protocol import CurrencyChanged
 
 SALVAGE_COMMAND = command_id("Commands::SalvageCommand", 0x0031)
 CRAFTING_COMMAND = command_id("Commands::CraftingCommand", 0x005C)
+CRAFTING_RESULT_ACCEPTANCE_COMMAND = command_id(
+    "Commands::CraftingResultAcceptanceCommand", 0x005E
+)
 @dataclass(frozen=True)
 class SalvageRequest:
     item_ids: tuple[int, ...]
@@ -66,6 +69,8 @@ class CraftingRecipe:
     unlock_resource_id: str
     minimum_level: int
     crafting_recipe_type: str = ""
+    scale_price_rc: bool = False
+    scale_price_vc: bool = False
 
 
 @dataclass(frozen=True)
@@ -149,7 +154,11 @@ def decode_crafting_request(payload: bytes) -> CraftingRequest:
     mode = reader.read_uint32_le()
     field_10 = reader.read_uint32_le()
     field_14 = reader.read_uint32_le()
-    if payment_currency not in (0, 1):
+    # The retail enchantment-transfer workbench reuses CraftingCommand with
+    # selector 5. It is an operation selector for that special recipe, not a
+    # wallet currency; the interaction handler routes it without debiting a
+    # currency balance.
+    if payment_currency not in (0, 1, 5):
         raise ValueError(
             f"CraftingCommand payment currency {payment_currency} "
             "is unsupported"
@@ -284,6 +293,8 @@ def _load_recipe_cached(
             str(row["RecipeItemReference"] or ""),
             max(1, int(row["UnlockLevel"] or 1)),
             crafting_recipe_type,
+            str(row["ScalePriceRC"] or "NoScaling") == "ToPlayerLevel",
+            str(row["ScalePriceVC"] or "NoScaling") == "ToPlayerLevel",
         )
     finally:
         database.close()
@@ -300,6 +311,41 @@ def load_crafting_recipe(
         str(recipe_id),
         tuple(sorted(str(value) for value in selected_template_ids)),
     )
+
+
+def load_enchantment_transfer_factor(
+    static_database_path: str | Path, recipe_id: str,
+) -> int:
+    """Read the authored Glyphs of Power factor for a transfer recipe."""
+
+    recipe_id = str(recipe_id or "").strip()
+    database = _open_database(static_database_path)
+    try:
+        row = database.execute(
+            "SELECT CraftingRecipeType, FactorUC "
+            "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
+            (recipe_id,),
+        ).fetchone()
+        if row is None and recipe_id[-1:].isdigit():
+            row = database.execute(
+                "SELECT CraftingRecipeType, FactorUC "
+                "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
+                (recipe_id[:-1],),
+            ).fetchone()
+        if row is None or str(row["CraftingRecipeType"] or "") not in {
+            "EnchantmentTransfer", "SingleEnchantmentTransfer",
+        }:
+            raise ValueError(
+                f"unknown enchantment transfer recipe {recipe_id!r}"
+            )
+        factor = int(round(float(row["FactorUC"] or 0)))
+        if factor <= 0:
+            raise ValueError(
+                f"enchantment transfer recipe {recipe_id!r} has no cost factor"
+            )
+        return factor
+    finally:
+        database.close()
 
 
 def crafting_execution_count(
@@ -323,20 +369,27 @@ def crafting_price_for_payment(
     price: PurchasePrice,
     payment_currency: int,
     executions: int,
+    *,
+    player_level: int = 1,
+    scale_rc_to_player_level: bool = False,
+    scale_vc_to_player_level: bool = False,
 ) -> PurchasePrice:
-    """Select exactly one client-chosen workbench payment branch."""
+    """Select the client's workbench payment branch and apply recipe scaling."""
 
     count = int(executions)
     if count <= 0:
         raise ValueError("crafting execution count must be positive")
+    level = max(1, int(player_level))
     if int(payment_currency) == 1:
         if int(price.rc) <= 0:
             raise ValueError("recipe cannot be paid with Andermant")
-        return PurchasePrice(rc=int(price.rc) * count)
+        unit_price = int(price.rc) * (level if scale_rc_to_player_level else 1)
+        return PurchasePrice(rc=unit_price * count)
     if int(payment_currency) != 0:
         raise ValueError("unsupported crafting payment currency")
     if int(price.vc) > 0:
-        return PurchasePrice(vc=int(price.vc) * count)
+        unit_price = int(price.vc) * (level if scale_vc_to_player_level else 1)
+        return PurchasePrice(vc=unit_price * count)
     if int(price.uc) > 0:
         return PurchasePrice(uc=int(price.uc) * count)
     # Free recipes have no price branch at all.
@@ -457,6 +510,28 @@ class InventoryMutationBuilder:
         if result is None:
             raise ValueError(f"inventory item {item_id} does not exist")
         return result
+
+    def rekey_item(self, item_id: int) -> ItemInfo:
+        """Publish an existing item as a new client object under a fresh ID.
+
+        The replacement map lets the client move equipment/storage references
+        before discarding the old object. This is needed when mutable item
+        fields cannot be refreshed in place by the workbench result handler.
+        """
+
+        item = self.item(item_id)
+        old_id = int(item.item_id)
+        new_id = int(self.next_item_id)
+        if new_id <= 0 or new_id > 0xFFFFFFFF:
+            raise ValueError("inventory item ID allocator is exhausted")
+        self.next_item_id += 1
+        item.item_id = new_id
+        item.field_18 = new_id & 0xFFFF
+        _replace_item_id(self.inventory, old_id, new_id)
+        self.removed_item_ids.append(old_id)
+        self.replacements[new_id] = old_id
+        self.changed_items.append(copy.deepcopy(item))
+        return item
 
     def restore_item(self, item: ItemInfo, *, ingredient_bag: bool = False) -> None:
         """Restore an exact sold item, retaining its identity and upgrades."""

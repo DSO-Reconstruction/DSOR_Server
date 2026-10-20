@@ -29,6 +29,8 @@ from typing import Iterable, Mapping
 
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
+    effective_event_set_declarations,
+    local_prop_actor_base,
     map_database_path,
 )
 from dso_server.protocol.prop_protocol import (
@@ -43,15 +45,12 @@ from dso_server.protocol.prop_protocol import (
 # ``ClientPropManager::RegisterPropEntity`` (0x1402197c5) and the world's
 # prop lookup (0x1409ec90e) both ``movzx`` the id's low word before indexing
 # their arrays, so two props whose ids differ only above bit 15 overwrite each
-# other on the client.  ``_Instance_StateObjectSpawnPoint`` rows share rowids
-# with the scene state objects, so a spawn-point prop cannot simply live in a
-# second base such as 0x40000: rowid 4 of each table would both land in slot
-# 3, which is how gated loot chests replaced the map's progress altars.  Every
-# prop of a map therefore gets its index from one sequence -- scene objects at
-# ``LOCAL_PROP_ID_BASE + rowid - 1`` (unchanged, shared with
-# ``load_local_crafting_props``), spawn points after the highest scene rowid.
-# Retail does the same: both 2026-09-09 captures allocate every prop of a map
-# sequentially from 0x10000.
+# other on the client. ``_Instance_StateObjectSpawnPoint`` rows share rowids
+# with scene state objects, so spawn-point props follow the scene rows in one
+# sequence. Props also share the world actor-id space with NPCs: the first prop
+# starts after the highest authored NPC id, including NPCs gated for later
+# events. This matches the working DRASA path, which allocates prop ids after
+# the map's NPC ids.
 PROP_INDEX_LIMIT = 0x10000
 
 
@@ -61,15 +60,20 @@ def prop_index(prop_id: int) -> int:
     return int(prop_id) & 0xFFFF
 
 
-def spawn_prop_id(scene_row_limit: int, row_id: int) -> int:
+def spawn_prop_id(
+    scene_row_limit: int,
+    row_id: int,
+    *,
+    prop_actor_base: int = LOCAL_PROP_ID_BASE,
+) -> int:
     """Prop id for spawn-point ``row_id`` placed after ``scene_row_limit`` rows."""
 
     index = int(scene_row_limit) + int(row_id) - 1
-    if index >= PROP_INDEX_LIMIT:
+    if prop_index(prop_actor_base) + index >= PROP_INDEX_LIMIT:
         raise ValueError(
             f"prop index {index} exceeds the client's 16-bit prop slot range"
         )
-    return LOCAL_PROP_ID_BASE + index
+    return int(prop_actor_base) + index
 # Retail sends an empty operation string in every PropInfo, even for the
 # crafting workbench and for eggs the player then clicks: the client keeps
 # the template's own operation, and an empty string does not block clicking.
@@ -153,7 +157,13 @@ class SignalRule:
     def server_evaluated(self) -> bool:
         return self.signal_type in SERVER_SIGNAL_TYPES or (
             self.signal_type == "clientsignal"
-            and self.event_type in {"playerenteredmap", "playerlevelup"}
+            and self.event_type in {
+                "playerenteredmap",
+                "playerlevelup",
+                # Resolve prop signals from the server's authoritative prop
+                # table instead of trusting a client StagingSignal payload.
+                "playerinteractedprop",
+            }
         )
 
     @property
@@ -316,6 +326,18 @@ class MapSignalCatalog:
             elif kind == "monsterseliminatedpercentage":
                 if context.dead_fraction + 1e-9 < rule.fraction:
                     continue
+            elif kind == "playerkillmonstergetscore":
+                try:
+                    current_score = max(
+                        int(value) for value in context.params
+                    )
+                    required_score = min(int(value) for value in rule.params)
+                except (TypeError, ValueError):
+                    if rule.params and not (frozenset(rule.params) & context.params):
+                        continue
+                else:
+                    if current_score < required_score:
+                        continue
             elif rule.params and not (frozenset(rule.params) & context.params):
                 continue
             fired.append(rule)
@@ -435,6 +457,7 @@ class GatedSpawnRow:
     event_set_row: int
     template_id: str
     position: tuple[float, float, float]
+    rotation: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -450,6 +473,7 @@ class MapPropDefinition:
     event_set_row: int
     operation: str
     one_shot: bool
+    individual_usage: bool
     loot_list_id: str
     chest_id: str
     signal_referenced: bool
@@ -470,6 +494,11 @@ class MapPropDefinition:
         """
 
         if self.workbench or self.signal_referenced or self.quest_switch_id:
+            return True
+        # Fractured Planes uses an otherwise plain scene rift as a clickable
+        # map transition. Its EventSet controls when it appears; it still
+        # needs a server prop id so PropInteraction can fire the map signal.
+        if self.instance_id.casefold() == "fracturedplanes_rift":
             return True
         if self.always_present:
             return False
@@ -516,6 +545,47 @@ class TriggerVolumeDefinition:
         if local is None:
             return False
         return all(abs(value) <= 0.5 + 1e-6 for value in local)
+
+    def intersects_segment(
+        self,
+        start: tuple[float, float, float],
+        end: tuple[float, float, float],
+    ) -> bool:
+        """Test whether a movement segment crosses this trigger box."""
+
+        origin = _solve_basis(
+            (
+                (self.matrix[0], self.matrix[1], self.matrix[2]),
+                (self.matrix[4], self.matrix[5], self.matrix[6]),
+                (self.matrix[8], self.matrix[9], self.matrix[10]),
+            ),
+            tuple(float(start[i]) - self.matrix[12 + i] for i in range(3)),
+        )
+        destination = _solve_basis(
+            (
+                (self.matrix[0], self.matrix[1], self.matrix[2]),
+                (self.matrix[4], self.matrix[5], self.matrix[6]),
+                (self.matrix[8], self.matrix[9], self.matrix[10]),
+            ),
+            tuple(float(end[i]) - self.matrix[12 + i] for i in range(3)),
+        )
+        if origin is None or destination is None:
+            return False
+
+        lower, upper = 0.0, 1.0
+        for start_axis, end_axis in zip(origin, destination, strict=True):
+            delta = end_axis - start_axis
+            if abs(delta) <= 1e-12:
+                if abs(start_axis) > 0.5 + 1e-6:
+                    return False
+                continue
+            first = (-0.5 - start_axis) / delta
+            second = (0.5 - start_axis) / delta
+            lower = max(lower, min(first, second))
+            upper = min(upper, max(first, second))
+            if lower > upper:
+                return False
+        return upper >= 0.0 and lower <= 1.0
 
 
 def _solve_basis(basis, vector):
@@ -629,6 +699,7 @@ def _load_map_event_content(
         for row_id, flags in database.execute(
             "SELECT Id, EventFlags FROM _Instance_EventSets"
         ):
+            flags = effective_event_set_declarations(map_id, int(row_id), flags)
             required = set()
             forbidden = set()
             for declaration in str(flags or "").split(";"):
@@ -666,11 +737,12 @@ def _load_map_event_content(
             """
         ):
             try:
-                _matrix, position, _rotation = _read_transform(transform)
+                _matrix, position, rotation = _read_transform(transform)
             except ValueError:
                 continue
             spawn_rows.append(GatedSpawnRow(
-                int(row_id), int(event_set_row), str(template_id).strip(), position
+                int(row_id), int(event_set_row), str(template_id).strip(),
+                position, rotation,
             ))
 
         templates: dict[str, tuple[str, bool, str, str]] = {}
@@ -694,7 +766,8 @@ def _load_map_event_content(
                 for row in static_database.execute(
                     "SELECT Id, COALESCE(InteractOperation, ''), "
                     "COALESCE(OperationId, ''), COALESCE(OneShot, 0), "
-                    "COALESCE(LootListId, ''), COALESCE(ChestId, '') "
+                    "COALESCE(LootListId, ''), COALESCE(ChestId, ''), "
+                    "COALESCE(IndividualUsage, 0) "
                     "FROM _Template_StateObject"
                 ):
                     templates[str(row[0])] = (
@@ -702,11 +775,13 @@ def _load_map_event_content(
                         bool(int(row[3] or 0)),
                         str(row[4]).strip(),
                         str(row[5]).strip(),
+                        bool(int(row[6] or 0)),
                     )
         except sqlite3.Error:
             templates = {}
 
         props = []
+        prop_actor_base = local_prop_actor_base(database_path, map_id)
         scene_row_limit = int(
             database.execute(
                 "SELECT COALESCE(MAX(rowid), 0) FROM _Instance_StateObject"
@@ -745,7 +820,7 @@ def _load_map_event_content(
             )
             signal_referenced = instance_id.casefold() in signal_props
             props.append(MapPropDefinition(
-                prop_id=LOCAL_PROP_ID_BASE + int(row_id) - 1,
+                prop_id=prop_actor_base + int(row_id) - 1,
                 row_id=int(row_id),
                 kind="scene",
                 instance_id=instance_id,
@@ -756,6 +831,7 @@ def _load_map_event_content(
                 event_set_row=int(event_set_row),
                 operation=authored_operation,
                 one_shot=bool(int(one_shot or 0)),
+                individual_usage=templates.get(template_id, ("", False, "", "", False))[4],
                 loot_list_id=str(loot_list_id).strip(),
                 chest_id=str(chest_id).strip(),
                 signal_referenced=signal_referenced,
@@ -781,15 +857,19 @@ def _load_map_event_content(
                 continue
             template_id = str(template_id).strip()
             instance_id = str(instance_id or template_id)
-            operation, one_shot, loot_list_id, chest_id = templates.get(
-                template_id, ("", False, "", "")
+            operation, one_shot, loot_list_id, chest_id, individual_usage = templates.get(
+                template_id, ("", False, "", "", False)
             )
             signal_referenced = (
                 instance_id.casefold() in signal_props
                 or template_id.casefold() in signal_props
             )
             props.append(MapPropDefinition(
-                prop_id=spawn_prop_id(scene_row_limit, row_id),
+                prop_id=spawn_prop_id(
+                    scene_row_limit,
+                    row_id,
+                    prop_actor_base=prop_actor_base,
+                ),
                 row_id=int(row_id),
                 kind="spawn",
                 instance_id=instance_id,
@@ -800,6 +880,7 @@ def _load_map_event_content(
                 event_set_row=int(event_set_row),
                 operation=operation,
                 one_shot=one_shot,
+                individual_usage=individual_usage,
                 loot_list_id=loot_list_id,
                 chest_id=chest_id,
                 signal_referenced=signal_referenced,
@@ -912,14 +993,29 @@ class MapEventRuntime:
     running: dict[str, float] = field(default_factory=dict)
     pending: dict[str, object] = field(default_factory=dict)
     pending_start_deadlines: dict[str, float] = field(default_factory=dict)
+    fractured_planes_limit_deadline: float | None = None
+    fractured_planes_limit_timer: object | None = None
+    fractured_planes_tower_timer: object | None = None
+    fractured_planes_floor_completed: bool = False
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
     wave_countdown_digits: dict[str, int] = field(default_factory=dict)
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     completed_quests: set[tuple[int, str]] = field(default_factory=set)
     enabled_event_sets: set[int] = field(default_factory=set)
+    # Rows the server turned off itself because the content they gate is spent
+    # (Fractured Planes trap and debuff auras). ``_transition`` must not bring
+    # them back: their authored release signal never fires on these maps.
+    suppressed_event_sets: set[int] = field(default_factory=set)
     props: dict[int, PropRuntimeState] = field(default_factory=dict)
+    # StateObject IndividualUsage is scoped to a player and this map instance.
+    individual_prop_usage: set[tuple[int, int]] = field(default_factory=set)
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
+    # Monotonic animation anchors for rotating tower beams, shared by every
+    # player in this map instance so server hit checks agree with one another.
+    tower_beam_started_at: dict[int, float] = field(default_factory=dict)
     fired_once: set[str] = field(default_factory=set)
+    kill_score: int = 0
+    fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
     generation: int = 0
 
@@ -975,6 +1071,8 @@ class MapEventRuntime:
             satisfied = event_set.satisfied(flags)
             currently = event_set.row in self.enabled_event_sets
             if satisfied and not currently:
+                if event_set.row in self.suppressed_event_sets:
+                    continue
                 self.enabled_event_sets.add(event_set.row)
                 enabled.append(event_set.row)
             elif currently and not satisfied:
@@ -1014,6 +1112,26 @@ class MapEventRuntime:
             return None
         self.generation += 1
         return self._transition(definition, False)
+
+    def suppress_event_sets(self, rows: Iterable[int]) -> tuple[int, ...]:
+        """Force these EventSet rows off for the rest of the instance.
+
+        Returns the rows that were actually enabled and are now off, so the
+        caller can tell whether anything changed. Suppression is permanent by
+        design: it is how the server retires Fractured Planes trap auras whose
+        authored release signal only ever fires from retail's static selector.
+        """
+
+        removed = []
+        for row in rows:
+            row = int(row)
+            self.suppressed_event_sets.add(row)
+            if row in self.enabled_event_sets:
+                self.enabled_event_sets.discard(row)
+                removed.append(row)
+        if removed:
+            self.generation += 1
+        return tuple(removed)
 
     def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
         """Gated monster rows for these sets, minus tiers this instance lacks."""

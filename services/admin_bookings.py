@@ -35,8 +35,6 @@ class BookingDelivery:
             if resource not in CURRENCIES:
                 raise ValueError("unknown currency")
         elif kind == "item":
-            if amount > 1000:
-                raise ValueError("item bookings are limited to 1,000 units")
             metadata = item_metadata(self.static_database_path, resource)
             if not metadata["bookable"]:
                 raise ValueError("use a currency booking; instant consumables cannot be booked")
@@ -48,24 +46,92 @@ class BookingDelivery:
             if normalized:
                 validate_equipment_rolls(self.static_database_path, metadata, normalized, class_id)
             return normalized
+        elif kind == "batch":
+            # Batch booking: resource is a JSON array of {kind, resource, amount, options} items.
+            if not isinstance(resource, str):
+                raise ValueError("batch resource must be a JSON string")
+            import json
+            try:
+                items = json.loads(resource)
+            except json.JSONDecodeError:
+                raise ValueError("batch resource is not valid JSON")
+            if not isinstance(items, list) or not items:
+                raise ValueError("batch must contain at least one item")
+            if len(items) > 50:
+                raise ValueError("batch is limited to 50 items")
+            validated = []
+            for idx, entry in enumerate(items):
+                if not isinstance(entry, dict):
+                    raise ValueError(f"batch item {idx+1} must be an object")
+                e_kind = entry.get("kind", "item")
+                e_resource = entry.get("resource")
+                e_amount = entry.get("amount", 1)
+                e_options = entry.get("options")
+                if e_kind == "currency":
+                    self.validate(e_kind, e_resource, e_amount, e_options, level=level, class_id=class_id)
+                    validated.append({"kind": e_kind, "resource": e_resource, "amount": e_amount})
+                elif e_kind == "item":
+                    opts = self.validate(e_kind, e_resource, e_amount, e_options, level=level, class_id=class_id)
+                    validated.append({"kind": e_kind, "resource": e_resource, "amount": e_amount, "options": opts})
+                else:
+                    raise ValueError(f"batch item {idx+1} has unknown kind {e_kind!r}")
+            return {"items": validated}
         else:
-            raise ValueError("booking kind must be currency or item")
+            raise ValueError("booking kind must be currency, item, or batch")
         return {}
 
     def _apply(self, state, booking, *, details=None):
         result = copy.deepcopy(state)
-        resource, amount = booking["resource"], booking["amount"]
         profile = self.store.get_profile(state.character_id)
+
+        # Batch booking: apply each item/currency in the batch.
+        if booking["kind"] == "batch":
+            import json
+            try:
+                items = json.loads(booking["resource"])
+            except json.JSONDecodeError:
+                raise ValueError("batch resource is not valid JSON")
+            if not isinstance(items, list):
+                raise ValueError("batch resource must be a JSON array")
+            batch_details = []
+            for idx, entry in enumerate(items):
+                e_kind = entry.get("kind", "item")
+                e_resource = entry.get("resource")
+                e_amount = entry.get("amount", 1)
+                e_options = entry.get("options")
+                sub_booking = {"kind": e_kind, "resource": e_resource, "amount": e_amount, "options": e_options}
+                sub_details = {}
+                # Each sub-grant shares the parent booking receipt. Record it
+                # once after the full batch succeeds so a failed partial apply
+                # cannot look committed and retries stay idempotent.
+                result = self._apply_single(result, sub_booking, profile, details=sub_details,
+                                            record_receipt=False)
+                batch_details.append(sub_details)
+            result.admin_booking_ids = (*state.admin_booking_ids, booking["id"])
+            if details is not None:
+                details["batch"] = batch_details
+            return result
+
+        return self._apply_single(result, booking, profile, details=details)
+
+    def _apply_single(self, state, booking, profile, *, details=None, record_receipt=True):
+        result = copy.deepcopy(state)
+        resource, amount = booking["resource"], booking["amount"]
         raw_options = booking.get("options") or {}
         if booking["kind"] == "item" and not raw_options:
             # Pre-configuration bookings could contain multiple base equipment
             # items or multiple stacks. Keep their original delivery semantics.
             # New equipment bookings always store normalized, nonempty options.
-            if type(amount) is not int or not 1 <= amount <= 1000:
-                raise ValueError("item amount must be from 1 to 1,000")
             definition = load_purchase_item_definition(self.static_database_path, resource)
             if definition.item_category in {"Currency", "InstantConsumable"}:
                 raise ValueError("this item category cannot be delivered to inventory")
+            # Up to 1,000 units as before (several equipment pieces or stacks),
+            # or one whole stack of a template that stacks higher.
+            limit = min(max(1000, definition.max_stack_size), 1_000_000_000)
+            if type(amount) is not int or not 1 <= amount <= limit:
+                raise ValueError(
+                    "item amount exceeds the limit for this template"
+                )
             options = {}
         else:
             options = self.validate(booking["kind"], resource, amount, raw_options,
@@ -118,7 +184,8 @@ class BookingDelivery:
                 values = list(currency.values)
                 values[0 if resource == "badge_of_honor" else 2] = balance
                 result.currency = replace(currency, values=tuple(values))
-        result.admin_booking_ids = (*state.admin_booking_ids, booking["id"])
+        if record_receipt:
+            result.admin_booking_ids = (*state.admin_booking_ids, booking["id"])
         return result
 
     def deliver(self, character_id):

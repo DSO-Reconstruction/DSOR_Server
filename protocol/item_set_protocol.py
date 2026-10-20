@@ -33,6 +33,7 @@ class ItemSetModifier:
     arguments: tuple[str, ...]
     label: str
     raw: str
+    source_set_id: str = ""
 
     @cached_property
     def metadata(self) -> dict[str, str]:
@@ -323,7 +324,10 @@ class ItemSetDatabase:
                     equipped_count,
                     len(definition.parts),
                     tier.required_parts,
-                    tier.modifiers,
+                    tuple(
+                        replace(modifier, source_set_id=definition.set_id)
+                        for modifier in tier.modifiers
+                    ),
                 )
                 active_tiers.append(active)
                 for modifier_ordinal, modifier in enumerate(tier.modifiers):

@@ -45,6 +45,15 @@ from dso_server.gameplay.map_collision_terrain import (
     MapCollisionTerrain,
     load_map_collision_terrain,
 )
+from dso_server.gameplay.fractured_planes_layout import (
+    TOWER_ATTACK_RANGE_MULTIPLIER, TOWER_ATTACK_RATE_MULTIPLIER,
+    TOWER_FIRE_BURST_INTERVAL, TOWER_FIRE_PROJECTILE_SPEED_MULTIPLIER,
+    TOWER_FIRE_ACQUISITION_RANGE,
+    TOWER_MIN_ATTACK_INTERVAL,
+    is_tower_controller, is_tower_hardware, is_tower_layout,
+    is_tower_mechanism,
+    tower_density_templates,
+)
 from dso_server.gameplay.pathengine_navigation import (
     NavigationError,
     NavigationRoute,
@@ -55,8 +64,14 @@ from dso_server.gameplay.boss_encounter_policy import (
     density_spawn_templates,
     is_boss_spawn_template,
     load_map_encounter_policy,
+    resolve_boss_template_id,
     select_boss_spawn_rows,
 )
+from dso_server.gameplay.map_event_state import (
+    load_map_event_content,
+    load_map_signal_catalog,
+)
+
 
 
 # The client map database names this server-owned spawn list but does not
@@ -77,9 +92,53 @@ _LOCAL_ENCOUNTERS = {
 }
 
 LOCAL_MONSTER_ACTOR_BASE = 0x00030000
+
+
+def map_monster_actor_base(
+    map_id: str, *, static_database_path: str | Path = "data/db/static.db4",
+) -> int:
+    from dso_server.gameplay.boss_encounter_policy import (
+        APPROACH_BOSS_MAPS,
+        load_map_encounter_policy,
+    )
+
+    # Client scene spawners and boss room entrances can reserve 0x30000.
+    # To prevent colliding with client scene actors or NPC row 1 (0x10000 -> slot 0),
+    # all boss rooms and approach arenas use the secondary actor slot range (+ 0x1000).
+    is_boss = (
+        map_id.casefold() in APPROACH_BOSS_MAPS
+        or load_map_encounter_policy(static_database_path, map_id).is_boss_room
+    )
+    return LOCAL_MONSTER_ACTOR_BASE + (0x1000 if is_boss else 0)
+
+# Tower maps already register their first authored mechanism at 0x30000 on
+# some client builds. Keep every server-published actor on those layouts in a
+# separate, stable actor-id range to avoid colliding with the client actor.
+TOWER_MONSTER_ACTOR_BASE = LOCAL_MONSTER_ACTOR_BASE + 0x1000
 MONSTER_GROUP_SIZE = 8
 MONSTER_GROUP_RADIUS = 24.0
 MONSTER_SPAWN_MINIMUM_SPACING = 0.75
+TUTORIAL_GRIMMAG_MAP_ID = "a0005_start_fortress_dun"
+TUTORIAL_GRIMMAG_TEMPLATE_ID = (
+    "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
+)
+# The Grimmag-specific spawn point is the arena anchor. EventSet 30's nearby
+# add spawns are outside the boss room, so their centroid is not a valid boss
+# position.
+TUTORIAL_GRIMMAG_ARENA_POSITION = (
+    -10.568790435791016,
+    0.05000000074505806,
+    50.022220611572266,
+)
+# The client reports an existing registration at the first default
+# local-monster ID (0x30000) on this map. Keep the server-controlled concrete
+# boss out of that sequential range so NewMonster cannot reuse the ID.
+TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID = LOCAL_MONSTER_ACTOR_BASE + 0x1000
+# The client also reports an existing registration at the first default
+# monster ID in Lythira's scene. Use a distinct ID, as in the tutorial arena.
+FRACTURED_PLANES_BOSS_MAP_ID = "fp0001_boss_01"
+FRACTURED_PLANES_BOSS_TEMPLATE_ID = "fp_boss_01_lythira"
+FRACTURED_PLANES_BOSS_ACTOR_ID = LOCAL_MONSTER_ACTOR_BASE + 0x1000
 TRAVEL_STONE_MONSTER_EXCLUSION_RADIUS = max(
     8.0,
     float(os.environ.get("DSO_TRAVEL_STONE_MONSTER_RADIUS", "12")),
@@ -125,12 +184,13 @@ SPAWN_AREA_MAX_MONSTERS = max(
 # Multiplier on every spawn area's authored SpawnPerMeter density.  1.0 is
 # the database value; the default trims the generated population by about
 # 15% per map, which is the reduction the populated-map work asked for.
+# (0.35 with a 250 cap below gives the sparser maps of the xm1rth fork.)
 SPAWN_AREA_DENSITY_SCALE = max(
     0.0, float(os.environ.get("DSO_SPAWN_AREA_DENSITY_SCALE", "0.85"))
 )
 # Whole-map cap on the density-driven population.  768 was the historical
 # value; the live packed-map maps (a0303, a0203, a0302, a0406) all sat exactly
-# on it.  650 trims those by about 15%, matching the density scale below so
+# on it.  650 trims those by about 15%, matching the density scale above so
 # density-bound and cap-bound maps shrink by a similar fraction.
 SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
     0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "650"))
@@ -141,6 +201,18 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # The Dragan fortress database has authored main-hall density areas with
+    # an 8-minute respawn interval, but its list_mainhall membership is not
+    # included in static.db4. Populate those areas with the map's ordinary
+    # fortress enemies; elemental guards remain gated by their own EventSets.
+    'e_dra_03_dun_01': {
+        'list_mainhall': (
+            'e_dra_fortress_normal_skeleton_warrior_01',
+            'e_dra_fortress_normal_skeleton_archer_01',
+            'e_dra_fortress_normal_undead_ripper_01',
+            'e_dra_fortress_normal_death_knight_01',
+        ),
+    },
     # This story map uses the shared reactivation family, not an a0702 normal
     # family. Its named lists identify the supporting species; the only a0702
     # template is Sargon, placed once by _Instance_SpawnPoint.
@@ -229,6 +301,7 @@ class MonsterAttackDefinition:
     cooldown_category: str = ""
     min_difficulty: int = 0
     max_difficulty: int = 99
+    damage_modifier: float = 1.0
     # A Melee skill with no damage whose UserStatusEffects buff the monster
     # itself (heredur_bonus_enrage): played as a SkillCommand, its effects put
     # on the caster at its start, no blow.
@@ -241,6 +314,11 @@ class MonsterAttackDefinition:
     summon_template: str = ""
     summon_amount: int = 0
     summon_limit: int = 0
+    bullet_count: int = 1
+    targeting_type: str = "Actor"
+    player_width: float = 0.0
+    end_width: float = 0.0
+    angle_degrees: float = 0.0
 
     @property
     def support(self) -> bool:
@@ -260,6 +338,7 @@ class MonsterRuntimeDefinition:
     escape_range: float
     travel_distance: float
     attacks: tuple[MonsterAttackDefinition, ...] = ()
+    startup_duration: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -441,6 +520,9 @@ class LocalMonsterEncounter:
     protected_waypoints: tuple[
         tuple[tuple[float, float, float], float], ...
     ] = ()
+    # Density volumes materialized even though their EventSet gate was still
+    # closed. A later event start must not populate them a second time.
+    prematerialized_spawn_area_rows: frozenset[int] = frozenset()
     # The map's difficulty, which picks the skill variants monsters use.
     scaling_difficulty: int = 0
 
@@ -795,6 +877,8 @@ def _load_monster(
     *,
     monster_level: int | None = None,
     scaling_difficulty: int = 0,
+    coefficient_stats: bool = False,
+    non_targetable: bool = False,
 ) -> NewMonster:
     (
         hit_points,
@@ -838,7 +922,18 @@ def _load_monster(
         # Legacy templates contain stats already evaluated at CharLevel.
         # Scaling templates use level-one coefficients. Applying the full
         # target curve to a levelled template multiplies its growth twice.
-        if level > 1:
+        #
+        # Fixed tower hardware is the exception.  ``h0009_endlesstower_01_
+        # room_fire_shooter`` carries CharLevel 100 with HitPoints 2 and
+        # MinDamage 15, which cannot be "already evaluated at 100" - a level
+        # 100 player has 450,000 base health.  Every other shooter in the same
+        # instance (``e_dra_fortress_normal_powernode``, ``i0011_scaling_
+        # ancestral_guard_poison_*``) is authored as a level-one coefficient
+        # with CharLevel 1, so the fire shooter was the only tower whose
+        # damage collapsed to 14-23 instead of 79,509-132,516.  Tower hardware
+        # is invulnerable and stationary, so its health pool is cosmetic; the
+        # damage figure is what the floor is tuned around.
+        if level > 1 and not coefficient_stats:
             base = _load_monster_scaling_factors(static_database_path, level, 0)
             health_curve /= max(base[0], 1e-9)
             shield_curve /= max(base[1], 1e-9)
@@ -938,7 +1033,17 @@ def _load_monster(
         position=tuple(float(component) for component in position),
         category=0,
         field_c4=0,
-        placement=ActorPlacement(0x00010001, actor_id, 2, False, False),
+        placement=ActorPlacement(
+            # ``0x00010004`` is the neutral/player-owned faction the client
+            # refuses to target. Fixed tower hardware uses it so a laser or a
+            # trap shooter stays a visible hazard the player can only avoid -
+            # never a mob they can click and swing at.
+            0x00010004 if non_targetable else 0x00010001,
+            actor_id,
+            2,
+            False,
+            False,
+        ),
         field_d8=0,
         field_dc=True,
         field_e0=0xFFFFFFFF,
@@ -1141,17 +1246,17 @@ def _parse_damage_types(value: object) -> tuple[tuple[str, float], ...]:
     return tuple(parsed) or (("Physical", 1.0),)
 
 
-def _parse_cooldown_range(value) -> tuple[float, float]:
-    """InitialCoolDown: "", "4", "3|5" or "12.0|15.0" -> (low, high) seconds."""
+def _parse_cooldown_range(value: object) -> tuple[float, float]:
+    """Parse InitialCoolDown values such as ``4`` or ``3|5`` seconds."""
 
-    parts = [part.strip() for part in str(value or "").split("|") if part.strip()]
+    parts = [part.strip() for part in str(value or "").split("|")]
     try:
-        numbers = [max(0.0, float(part)) for part in parts]
-    except ValueError:
+        values = [max(0.0, float(part)) for part in parts if part]
+    except (TypeError, ValueError):
         return (0.0, 0.0)
-    if not numbers:
+    if not values or not all(math.isfinite(part) for part in values):
         return (0.0, 0.0)
-    return (min(numbers), max(numbers))
+    return min(values), max(values)
 
 
 @lru_cache(maxsize=256)
@@ -1166,6 +1271,7 @@ def _load_runtime_template(
     float,
     float,
     float,
+    float,
 ] | None:
     """Resolve reusable movement and autonomous attack template data."""
 
@@ -1173,8 +1279,11 @@ def _load_runtime_template(
         movement_row = database.execute(
             "SELECT RunSpeed, AggroRange, AttackInterval, Skills, "
             "CapsuleRadius, EscapeRange, TravelDistance, "
-            "COALESCE(SummonMonsterId, ''), COALESCE(SummonMonsterAmount, 0), "
-            "COALESCE(SummonMonsterLimit, 0) "
+            "COALESCE(SummonMonsterId, ''), "
+            "COALESCE(SummonMonsterAmount, 0), "
+            "COALESCE(SummonMonsterLimit, 0), "
+            "COALESCE(BehaviorType, ''), "
+            "COALESCE(StartupDuration, 0) "
             "FROM _Template_Monster WHERE Id=? LIMIT 1",
             (str(template_id),),
         ).fetchone()
@@ -1221,7 +1330,13 @@ def _load_runtime_template(
                        COALESCE(s.Summons, 0),
                        COALESCE(s.SummonMonsterId, ''),
                        COALESCE(s.SummonMonsterAmount, 0),
-                       COALESCE(s.SummonMonsterLimit, 0)
+                       COALESCE(s.SummonMonsterLimit, 0),
+                       COALESCE(s.BulletCount, 1),
+                       COALESCE(s.TargetingType, 'Actor'),
+                       COALESCE(s.PlayerWidth, 0),
+                       COALESCE(s.EndWidth, 0),
+                       COALESCE(s.Angle, 0),
+                       COALESCE(s.SkillBulletId, '')
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id=s.SkillBulletId
@@ -1233,6 +1348,8 @@ def _load_runtime_template(
                 continue
             skill_type = str(skill_row[6])
             targeting_type = str(skill_row[7])
+            skill_bullet_id = str(skill_row[35] or "").strip()
+            has_bullet = bool(skill_bullet_id)
             self_buff = False
             summon = (
                 int(skill_row[26] or 0) != 0
@@ -1244,15 +1361,42 @@ def _load_runtime_template(
                 summon_amount = int(skill_row[28] or 0) or int(movement_row[8] or 0)
                 summon_limit = int(skill_row[29] or 0) or int(movement_row[9] or 0)
                 summon = bool(summon_template) and summon_amount > 0 and skill_type in ("Shifted", "Melee")
+            # Charge and Jump use movement-specific command payloads we do not
+            # model. Shifted ground-target skills are supported below, but
+            # only for radius/point targeting, whose native command receives a
+            # target point for every authored bullet. This avoids routing
+            # movement skills through BulletSkillCommand with an empty point
+            # array (the source of the client Math::point assertion). A summon
+            # is cast on the caster's own place, whatever its targeting.
+            if skill_type.casefold() in {
+                "charge", "chargethrough", "jump",
+            } or (
+                skill_type.casefold() == "shifted"
+                and has_bullet
+                and not summon
+                and targeting_type.casefold() not in {
+                    "radius", "point", "location",
+                }
+            ):
+                continue
             if summon and skill_type == "Shifted":
                 command_id = SHIFTED_SKILL_COMMAND
             elif summon and skill_type == "Melee":
                 command_id = SKILL_COMMAND
-            elif (
-                skill_type == "Melee"
-                and float(skill_row[16]) > 0.0
-                and "hostile" in str(skill_row[17]).casefold()
-            ):
+            elif has_bullet:
+                # Ranged skills with a bullet require BulletSkillCommand on
+                # the client. Radius-targeted Shifted skills instead carry
+                # their ground-point array in ShiftedSkillCommand.
+                if skill_type.casefold() == "shifted":
+                    command_id = SHIFTED_SKILL_COMMAND
+                elif (
+                    targeting_type.casefold() in {"actor", "target"}
+                    or skill_type == "RangedTarget"
+                ):
+                    command_id = TARGET_BULLET_SKILL_COMMAND
+                else:
+                    command_id = BULLET_SKILL_COMMAND
+            elif skill_type == "Melee" and float(skill_row[16]) > 0.0:
                 command_id = SKILL_COMMAND
             elif (
                 skill_type == "Melee"
@@ -1268,9 +1412,10 @@ def _load_runtime_template(
             elif skill_type == "MeleeTarget":
                 command_id = TARGET_SKILL_COMMAND
             else:
-                # Shifted summon/resurrect, teleport, charge, and ordinary
-                # Melee skills use other SkillCommand subclasses. Emitting
-                # them as TargetSkill (0x47) makes the client assert.
+                # Charge/ChargeThrough and remaining movement/scene skill
+                # types use distinct client command payloads. Do not guess
+                # ShiftedSkill here: malformed destinations can crash the
+                # client while it builds its point array.
                 continue
             skill_level = (
                 max(0, int(raw_skill_level) - 1)
@@ -1291,7 +1436,7 @@ def _load_runtime_template(
                         )
                         else 1
                     ),
-                    0 if targeting_type == "Actor" else 1,
+                    0 if float(skill_row[21] or 0.0) <= 0.0 else 1,
                     ordinal,
                     MonsterAttackDefinition(
                         resource_id=skill_resource_id,
@@ -1319,11 +1464,20 @@ def _load_runtime_template(
                         initial_cooldown=_parse_cooldown_range(skill_row[22]),
                         cooldown_category=str(skill_row[23] or "").strip(),
                         min_difficulty=int(skill_row[24] or 0),
-                        max_difficulty=int(skill_row[25] if skill_row[25] is not None else 99),
+                        max_difficulty=(
+                            int(skill_row[25])
+                            if skill_row[25] is not None else 99
+                        ),
+                        damage_modifier=max(0.0, float(skill_row[16] or 0.0)),
                         self_buff=self_buff,
                         summon_template=summon_template if summon else "",
                         summon_amount=max(0, int(summon_amount or 0)) if summon else 0,
                         summon_limit=max(0, int(summon_limit or 0)) if summon else 0,
+                        bullet_count=max(1, int(skill_row[30] or 1)),
+                        targeting_type=str(skill_row[31] or "Actor"),
+                        player_width=max(0.0, float(skill_row[32] or 0.0)),
+                        end_width=max(0.0, float(skill_row[33] or 0.0)),
+                        angle_degrees=max(0.0, float(skill_row[34] or 0.0)),
                     ),
                 )
             )
@@ -1353,7 +1507,16 @@ def _load_runtime_template(
     attack = attacks[0]
     return (
         attacks,
-        max(0.1, float(movement_row[0])),
+        (
+            0.0
+            if str(movement_row[10]).casefold()
+            in {
+                "staticstrategy", "noturnstaticstrategy",
+                "sleeplessstaticstrategy", "boss04strategy",
+                "boss03strategy",
+            }
+            else max(0.1, float(movement_row[0]))
+        ),
         max(0.0, float(movement_row[1])),
         max(
             0.1,
@@ -1370,6 +1533,7 @@ def _load_runtime_template(
             max(float(movement_row[1]), 1.0),
             float(movement_row[6] or 0.0),
         ),
+        max(0.0, float(movement_row[11])),
     )
 
 
@@ -1377,11 +1541,49 @@ def _load_runtime_definition(
     static_database_path: Path,
     template_id: str,
     actor_id: int,
+    *,
+    stationary: bool = False,
 ) -> MonsterRuntimeDefinition | None:
     """Resolve movement and all usable autonomous attacks for a monster."""
 
     values = _load_runtime_template(static_database_path, str(template_id))
     if values is None:
+        # Damage dolls and mounted aura-only devices intentionally have no
+        # Skills. Keep their authored actor/permanent effects in the world
+        # without inventing movement or an autonomous attack.
+        if (
+            stationary
+            or str(template_id).casefold().startswith("damage_doll")
+            or str(template_id).casefold() == "e_dra_fortress_normal_powernode"
+        ):
+            return MonsterRuntimeDefinition(
+                actor_id=int(actor_id),
+                attack=_PLAYER_ONLY_ATTACK,
+                run_speed=0.0,
+                aggro_range=0.0,
+                attack_interval=0.0,
+                capsule_radius=0.3,
+                escape_range=0.0,
+                travel_distance=0.0,
+                attacks=(),
+            )
+        # This tutorial cultist is a scripted, untargetable story actor. Its
+        # static template intentionally has no Skills, so the ordinary runtime
+        # loader rejects it even though the map event needs to publish it for
+        # the staff-theft sequence. Keep it inert in the combat simulation while
+        # still allowing the event spawn to reach the client.
+        if str(template_id).casefold() == "a0001_champion_undead_mage_01":
+            return MonsterRuntimeDefinition(
+                actor_id=int(actor_id),
+                attack=_PLAYER_ONLY_ATTACK,
+                run_speed=0.0,
+                aggro_range=0.0,
+                attack_interval=0.0,
+                capsule_radius=0.3,
+                escape_range=0.0,
+                travel_distance=0.0,
+                attacks=(),
+            )
         return None
     (
         attacks,
@@ -1391,18 +1593,68 @@ def _load_runtime_definition(
         capsule_radius,
         escape_range,
         travel_distance,
+        startup_duration,
     ) = values
     attack = attacks[0]
+    if stationary:
+        # Tower hardware is a hazard, not a duelling opponent: shorten its
+        # cycle so it pressures the player while they move, and let it acquire
+        # a target from further away. ``hit_range`` stays authored on purpose -
+        # it is the damage sphere at the impact point, so widening it splashes
+        # players the projectile visibly missed.
+        attack_interval = max(
+            TOWER_MIN_ATTACK_INTERVAL,
+            attack_interval / TOWER_ATTACK_RATE_MULTIPLIER,
+        )
+        attacks = tuple(
+            replace(
+                value,
+                attack_range=value.attack_range * TOWER_ATTACK_RANGE_MULTIPLIER,
+                projectile_velocity=(
+                    value.projectile_velocity
+                    * TOWER_FIRE_PROJECTILE_SPEED_MULTIPLIER
+                    if "fire_shooter" in str(template_id).casefold()
+                    else value.projectile_velocity
+                ),
+                motion_unblock_frame=(
+                    max(1, round(TOWER_FIRE_BURST_INTERVAL * 25))
+                    if "fire_shooter" in str(template_id).casefold()
+                    else value.motion_unblock_frame
+                ),
+                skill_unblock_frame=(
+                    max(1, round(TOWER_FIRE_BURST_INTERVAL * 25))
+                    if "fire_shooter" in str(template_id).casefold()
+                    else value.skill_unblock_frame
+                ),
+                loop_start_frame=(
+                    max(1, round(TOWER_FIRE_BURST_INTERVAL * 25))
+                    if "fire_shooter" in str(template_id).casefold()
+                    else value.loop_start_frame
+                ),
+            )
+            for value in attacks
+        )
+        if "fire_shooter" in str(template_id).casefold():
+            attack_interval = TOWER_FIRE_BURST_INTERVAL
+            aggro_range = max(aggro_range, TOWER_FIRE_ACQUISITION_RANGE)
+            travel_distance = max(
+                travel_distance, TOWER_FIRE_ACQUISITION_RANGE
+            )
+        attack = attacks[0]
     return MonsterRuntimeDefinition(
         actor_id=int(actor_id),
         attack=attack,
-        run_speed=run_speed,
+        run_speed=0.0 if stationary else run_speed,
         aggro_range=aggro_range,
         attack_interval=attack_interval,
         capsule_radius=capsule_radius,
         escape_range=escape_range,
+        # Attack acquisition also uses this authored radius. Zero speed (and
+        # the stationary movement guard) anchors the mount without disabling
+        # its ranged attacks.
         travel_distance=travel_distance,
         attacks=attacks,
+        startup_duration=startup_duration,
     )
 
 
@@ -1657,7 +1909,16 @@ def _load_spawn_areas(
     *,
     enabled_event_sets: frozenset[int] = frozenset(),
     scaling_difficulty: int = 0,
+    preload_gated: bool = False,
 ) -> tuple[_MonsterSpawnArea, ...]:
+    """Read density volumes, honouring their EventSet gate.
+
+    ``preload_gated`` keeps volumes whose gate is still closed. The Endless
+    Tower layouts gate whole rooms behind ``h0009_endlesstower_01_room_NN``
+    events that retail starts from a ``*_start`` prop interaction; Fractured
+    Planes never performs that interaction, so those rooms would otherwise be
+    permanently empty and their traps could never be cleared.
+    """
     try:
         rows = database.execute(
             """
@@ -1684,7 +1945,11 @@ def _load_spawn_areas(
         priority,
     ) in rows:
         event_set_row = int(event_set_row)
-        if event_set_row >= 0 and event_set_row not in enabled_event_sets:
+        if (
+            event_set_row >= 0
+            and not preload_gated
+            and event_set_row not in enabled_event_sets
+        ):
             continue
         try:
             matrix = struct.unpack("<16f", bytes(raw_transform))
@@ -1706,7 +1971,7 @@ def _load_spawn_areas(
         for area in result
         if area.event_set_row >= 0
     }
-    if active_signatures:
+    if active_signatures and not preload_gated:
         result = [
             area
             for area in result
@@ -1954,6 +2219,10 @@ def _area_template_pool(
     # volumes for priority exclusion, but never populate them via a fallback.
     if not area.spawn_list_id.strip():
         return ()
+    if is_tower_layout(map_id):
+        return tower_density_templates(
+            static_database_path, area.spawn_list_id, map_id
+        )
     override = _SPAWN_LIST_TEMPLATE_OVERRIDES.get(map_id, {}).get(
         area.spawn_list_id
     )
@@ -2082,6 +2351,7 @@ def _load_dynamic_monster_encounter(
         enabled_event_sets = _enabled_event_set_ids(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
+            map_id=map_id,
         )
         all_fixed_rows = tuple(database.execute(
             """
@@ -2106,10 +2376,38 @@ def _load_dynamic_monster_encounter(
                 row for row in all_fixed_rows
                 if not bloodshed_only_template(row[2])
             )
+        # Invisible scene controllers are consumed by the client's map event
+        # graph. Creating them as NewMonster actors gives them no renderable
+        # model/effect module and can collide with the first real actor id.
+        # They are not mobs and must never enter combat or objective counts.
+        if is_tower_layout(map_id):
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if not is_tower_controller(
+                    static_database_path, map_id, str(row[2])
+                )
+            )
+        # Fixed tower hardware stands on the map, it is not a reward. Power
+        # nodes sit behind the boss-appear EventSet in the authored script, so
+        # honouring that gate would make the arena's rotating towers appear
+        # only once the Rift Lord does. Fractured Planes needs them from the
+        # first step into the room, so their rows bypass the gate here; the
+        # event-spawn path already treats a matching live actor as the same
+        # actor instead of spawning a duplicate.
+        tower_layout = is_tower_layout(map_id)
         fixed_rows = tuple(
             row
             for row in all_fixed_rows
-            if int(row[3]) == -1 or int(row[3]) in enabled_event_sets
+            if (
+                int(row[3]) == -1
+                or int(row[3]) in enabled_event_sets
+                or (
+                    tower_layout
+                    and is_tower_mechanism(
+                        static_database_path, map_id, str(row[2])
+                    )
+                )
+            )
         )
         selected_event_rows = tuple(
             row
@@ -2118,10 +2416,9 @@ def _load_dynamic_monster_encounter(
         )
         if encounter_policy.is_boss_room and not selected_event_rows:
             # A boss room whose boss waits behind an EventSet: only fall back
-            # to the gated rows the map-event runtime will never enable
-            # itself.  Rows behind a server-driven event (Balor's
-            # ``BOSS_spawn`` set, started by the arena trigger) are spawned by
-            # that event; spawning them here as well doubled the boss.
+            # to the gated rows the map-event runtime will never enable. Rows
+            # behind a server-driven event are spawned by that event; loading
+            # them here as well creates duplicate bosses (notably Balor).
             try:
                 content = load_map_event_content(static_database_path, map_id)
                 scripted = content.server_driven_event_sets(
@@ -2129,10 +2426,22 @@ def _load_dynamic_monster_encounter(
                 )
             except Exception:
                 scripted = frozenset()
-            fixed_rows = tuple(
-                row for row in all_fixed_rows
-                if int(row[3]) not in scripted
-            )
+            if scripted:
+                scripted_boss_templates = set()
+                for r in all_fixed_rows:
+                    if int(r[3]) in scripted:
+                        resolved = resolve_boss_template_id(static_database_path, str(r[2])) or str(r[2])
+                        scripted_boss_templates.add(resolved.casefold())
+                fixed_rows = tuple(
+                    row for row in all_fixed_rows
+                    if int(row[3]) not in scripted
+                    and (resolve_boss_template_id(static_database_path, str(row[2])) or str(row[2])).casefold() not in scripted_boss_templates
+                )
+            else:
+                fixed_rows = tuple(
+                    row for row in all_fixed_rows
+                    if int(row[3]) not in scripted
+                )
         elif (
             not fixed_rows
             and encounter_policy.map_type.casefold() != 'event'
@@ -2149,6 +2458,7 @@ def _load_dynamic_monster_encounter(
                 database,
                 enabled_event_sets=enabled_event_sets,
                 scaling_difficulty=scaling_difficulty,
+                preload_gated=is_tower_layout(map_id),
             )
             if (
                 SPAWN_AREA_MONSTERS_ENABLED
@@ -2184,6 +2494,11 @@ def _load_dynamic_monster_encounter(
         tuple[int, int], list[tuple[float, float, float]]
     ] = {}
     used_actor_ids: set[int] = set()
+    actor_base = (
+        TOWER_MONSTER_ACTOR_BASE
+        if is_tower_layout(map_id)
+        else map_monster_actor_base(map_id, static_database_path=static_database_path)
+    )
 
     def inside_protected_waypoint(
         position: tuple[float, float, float],
@@ -2212,14 +2527,24 @@ def _load_dynamic_monster_encounter(
         *,
         resolve_projected_overlap: bool = False,
         max_navigation_snap_distance: float = 2.0,
+        authored_yaw: float = 0.0,
     ) -> bool:
+        keep_story_boss_at_authored_position = (
+            str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+            and str(template_id).casefold() == TUTORIAL_GRIMMAG_TEMPLATE_ID
+        )
         if int(actor_id) in used_actor_ids:
             return False
+        mounted = is_tower_mechanism(static_database_path, map_id, template_id)
+        authored_boss = (
+            encounter_policy.is_boss_room
+            and is_boss_spawn_template(static_database_path, template_id)
+        )
         # PathEngine owns connectivity/XZ. The transformed client collision
         # meshes own the final world Y; authored spawn transforms and spawn
         # volume centers are not reliable terrain samples.
         try:
-            position = _grounded_spawn_position(
+            position = tuple(position) if mounted or authored_boss else _grounded_spawn_position(
                 navigation,
                 terrain,
                 position,
@@ -2227,17 +2552,37 @@ def _load_dynamic_monster_encounter(
                 max_horizontal_distance=max_navigation_snap_distance,
             )
             if (
-                allowed_component is not None
+                not keep_story_boss_at_authored_position
+                and not mounted
+                and not authored_boss
+                and allowed_component is not None
                 and isinstance(navigation, PathEngineNavigationMesh)
                 and navigation.component_for_position(position)
                 != allowed_component
             ):
                 return False
         except NavigationError:
-            return False
+            if not keep_story_boss_at_authored_position:
+                return False
+            # This isolated tutorial boss arena can be a different PathEngine
+            # component from the map entry. Keep its authored X/Z placement,
+            # but still project against collision terrain so a stale or
+            # mismatched PathEngine token does not leave Grimmag below the
+            # floor (or floating at the authored placeholder height).
+            try:
+                position = _grounded_spawn_position(
+                    _DirectNavigationMesh(),
+                    terrain,
+                    position,
+                    reference_position=position,
+                )
+            except NavigationError:
+                # The direct fallback normally cannot raise NavigationError;
+                # retain the authored transform if its implementation does.
+                pass
         if inside_protected_waypoint(position):
             return False
-        if _spawn_position_is_occupied(occupied_positions, position):
+        if not mounted and _spawn_position_is_occupied(occupied_positions, position):
             if not resolve_projected_overlap:
                 return False
             # Several density-grid points can project onto the same boundary
@@ -2288,7 +2633,8 @@ def _load_dynamic_monster_encounter(
             if not resolved:
                 return False
         runtime = _load_runtime_definition(
-            static_database_path, str(template_id), int(actor_id)
+            static_database_path, str(template_id), int(actor_id),
+            stationary=mounted,
         )
         if runtime is None:
             return False
@@ -2300,9 +2646,15 @@ def _load_dynamic_monster_encounter(
                 position,
                 monster_level=monster_level,
                 scaling_difficulty=scaling_difficulty,
+                coefficient_stats=mounted,
+                non_targetable=is_tower_hardware(
+                    static_database_path, map_id, template_id
+                ),
             )
         except ValueError:
             return False
+        if is_tower_layout(map_id):
+            monster = replace(monster, field_a0=float(authored_yaw))
         _occupy_spawn_position(occupied_positions, position)
         used_actor_ids.add(int(actor_id))
         monsters.append(monster)
@@ -2327,6 +2679,7 @@ def _load_dynamic_monster_encounter(
         # Base rows and the selected EventSet form one authored population.
         # Inactive EventSets were removed before boss-phase resolution.
         row_sets = (tuple(fixed_rows),)
+        bloodshed_spawn_positions = set()
         for rows in row_sets:
             before = len(monsters)
             for _row_id, raw_transform, raw_template_id, _event_set in rows:
@@ -2334,10 +2687,79 @@ def _load_dynamic_monster_encounter(
                     position = _spawn_position(bytes(raw_transform))
                 except (TypeError, ValueError):
                     continue
-                actor_id = LOCAL_MONSTER_ACTOR_BASE + len(monsters)
-                append_monster(
-                    str(raw_template_id), actor_id, position
+                if (
+                    str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+                    and str(raw_template_id).casefold()
+                    == TUTORIAL_GRIMMAG_TEMPLATE_ID
+                ):
+                    # Spawn Grimmag at the center of the last authored wave,
+                    # not at the placeholder's distant staging position.
+                    position = TUTORIAL_GRIMMAG_ARENA_POSITION
+                is_bloodshed_sludge = bloodshed_only_template(raw_template_id)
+                if is_bloodshed_sludge:
+                    # The map tables duplicate each sludge spawn point twice
+                    # with identical transforms. Keep one actor per authored
+                    # location before applying the overlap recovery below.
+                    position_key = (round(position[0], 3), round(position[2], 3))
+                    if position_key in bloodshed_spawn_positions:
+                        continue
+                    bloodshed_spawn_positions.add(position_key)
+                actor_id = actor_base + len(monsters)
+                if (
+                    str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+                    and str(raw_template_id).casefold()
+                    == TUTORIAL_GRIMMAG_TEMPLATE_ID
+                ):
+                    actor_id = TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID
+                elif (
+                    str(map_id).casefold() == FRACTURED_PLANES_BOSS_MAP_ID
+                    and str(raw_template_id).casefold()
+                    == FRACTURED_PLANES_BOSS_TEMPLATE_ID
+                ):
+                    actor_id = FRACTURED_PLANES_BOSS_ACTOR_ID
+                placed = append_monster(
+                    str(raw_template_id), actor_id, position,
+                    authored_yaw=math.atan2(
+                        struct.unpack("<16f", bytes(raw_transform))[8],
+                        struct.unpack("<16f", bytes(raw_transform))[0],
+                    ) if is_tower_layout(map_id) else 0.0,
+                    # Bloodshed challenges author five sludges on every
+                    # eligible dungeon map. A few maps overlap one sludge's
+                    # transform with an earlier actor; keep the challenge
+                    # count by resolving that collision to nearby walkable
+                    # ground instead of silently dropping the sludge.
+                    resolve_projected_overlap=is_bloodshed_sludge,
+                    max_navigation_snap_distance=(
+                        32.0 if is_bloodshed_sludge else 2.0
+                    ),
                 )
+                if (
+                    is_bloodshed_sludge
+                    and not placed
+                    and allowed_component is not None
+                    and isinstance(navigation, PathEngineNavigationMesh)
+                    and player_position is not None
+                ):
+                    # A few composite maps author a sludge on a disconnected
+                    # navigation island. Keep the five-mob challenge playable
+                    # by placing that sludge on nearby walkable ground in the
+                    # player's connected component.
+                    try:
+                        candidates = navigation.component_positions(
+                            allowed_component,
+                            around=player_position,
+                            minimum_distance=8.0,
+                            maximum_distance=32.0,
+                            limit=32,
+                        )
+                    except NavigationError:
+                        candidates = ()
+                    for candidate in candidates:
+                        if append_monster(
+                            str(raw_template_id), actor_id, candidate,
+                            resolve_projected_overlap=True,
+                        ):
+                            break
             if len(monsters) > before:
                 break
 
@@ -2355,7 +2777,7 @@ def _load_dynamic_monster_encounter(
         ))
         or authored_templates
     )
-    next_actor_id = LOCAL_MONSTER_ACTOR_BASE
+    next_actor_id = actor_base
 
     def allocate_actor_id() -> int:
         nonlocal next_actor_id
@@ -2501,6 +2923,7 @@ def _load_dynamic_monster_encounter(
                     position,
                     resolve_projected_overlap=True,
                     max_navigation_snap_distance=0.10,
+                    authored_yaw=math.atan2(area.matrix[8], area.matrix[0]),
                 ):
                     spawn_area_monster_count += 1
                     break
@@ -2609,12 +3032,15 @@ def _load_dynamic_monster_encounter(
         ),
         spawn_batch=MonsterSpawnBatch(all_commands),
         runtime_definitions=tuple(runtime_definitions),
-        scaling_difficulty=max(0, int(scaling_difficulty)),
         spawn_groups=spawn_groups,
         fixed_monster_count=fixed_monster_count,
         spawn_area_monster_count=spawn_area_monster_count,
         spawn_area_target_count=spawn_area_target_count,
+        scaling_difficulty=max(0, int(scaling_difficulty)),
         protected_waypoints=protected_waypoints,
+        prematerialized_spawn_area_rows=frozenset(
+            area.row_id for area in spawn_areas if area.event_set_row >= 0
+        ),
     )
 
 

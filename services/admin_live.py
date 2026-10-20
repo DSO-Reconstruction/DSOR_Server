@@ -4,6 +4,7 @@ import copy
 from contextlib import closing
 from dataclasses import replace
 from functools import lru_cache
+import json
 import sqlite3
 
 from dso_server.gameplay.local_map_state import map_database_path
@@ -14,16 +15,25 @@ from dso_server.protocol.inventory_codec import INVENTORY_INFO_COMMAND
 from dso_server.protocol.world_loot_protocol import EQUIPMENT_RARITIES
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND, ServerCommand, Notification, make_notification_entry, encode_server_command_batch,
+    TALENT_CATEGORY_POINTS_INFO_COMMAND, TALENT_SELECTION_INFO_COMMAND,
+    TalentCategoryPointsInfo, TalentSelectionInfo,
 )
+from dso_server.protocol.pvp_match_protocol import (
+    HonorPointsChanged, encode_honor_points_changed,
+)
+from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.reward_protocol import (
     NOTIFICATION_COMMAND, OCP_BOOKING_NOTIFICATION_KIND, OCP_BOOKING_NOTIFICATION_VALUES,
     OCPBookingReward, ocp_booking_notification_payload,
 )
+from dso_server.protocol.skill_book_protocol import experience_commands
 from dso_server.runtime.admin_commands import AdminCommandQueue
 from dso_server.services.admin_effects import ADMIN_EFFECTS, matching_admin_effects
+from dso_server.services.base import CharacterService
 from dso_server.services.customization import CustomizationService
 from dso_server.services.map_unlocks import MapUnlockService
 from dso_server.services.player_persistence import PlayerPersistenceService
+from dso_server.services.player_progression import PlayerXPTransition, player_level_xp
 
 
 BOOKING_GUID_PREFIX = b"DSOCMS01"
@@ -66,10 +76,50 @@ def map_catalog(path):
     return tuple(result[key] for key in sorted(result))
 
 
-def booking_packet(after, booking, mutation):
+def booking_packet(after, booking, mutation, details=None):
     commands = []
     resource = booking["resource"]
-    if booking["kind"] == "item":
+    notifications = []
+    if booking["kind"] == "batch":
+        entries = json.loads(resource)
+        batch_details = (details or {}).get("batch", [])
+        mutations = [entry.get("mutation") for entry in batch_details if entry.get("mutation") is not None]
+        changed = {item.item_id for current in mutations for item in current.changed_items}
+        replaced = [item_id for current in mutations for item_id in current.replaced_item_ids]
+        replacements = {key: value for current in mutations for key, value in current.replacements.items()}
+        if changed:
+            delta = copy.deepcopy(after.inventory)
+            delta.items = [item for item in delta.items if item.item_id in changed]
+            delta.changed_item_ids = replaced
+            delta.field_158 = replacements
+            delta.field_1e0 = True
+            final = copy.deepcopy(after.inventory)
+            final.items, final.changed_item_ids, final.field_158, final.field_1e0 = [], [], {}, False
+            commands.extend((ServerCommand(INVENTORY_INFO_COMMAND, delta, 1),
+                             ServerCommand(INVENTORY_INFO_COMMAND, final, 1)))
+        fixed_currency_changed = False
+        for entry in entries:
+            entry_resource = entry["resource"]
+            if entry["kind"] == "item":
+                rarity = EQUIPMENT_RARITIES[(entry.get("options") or {}).get("rarity", 0)]
+                notifications.append((entry_resource, entry["amount"], rarity))
+            elif entry_resource in GAME_CURRENCY_BY_NAME:
+                wire_id = GAME_CURRENCY_BY_NAME[entry_resource].wire_id
+                notifications.append((wire_id, entry["amount"], "Common"))
+            else:
+                notifications.append((_CURRENCY_TEMPLATES[entry_resource], entry["amount"], "Common"))
+                fixed_currency_changed = True
+        affected_game_currencies = {
+            GAME_CURRENCY_BY_NAME[entry["resource"]].wire_id
+            for entry in entries
+            if entry["kind"] == "currency" and entry["resource"] in GAME_CURRENCY_BY_NAME
+        }
+        for wire_id in sorted(affected_game_currencies):
+            commands.append(ServerCommand(GAME_CURRENCY_CHANGED_COMMAND,
+                                          GameCurrencyChanged(wire_id, after.game_currencies[wire_id]), 1))
+        if fixed_currency_changed:
+            commands.append(ServerCommand(CURRENCY_CHANGED_COMMAND, replace(after.currency, notify=True), 1))
+    elif booking["kind"] == "item":
         changed = {item.item_id for item in mutation.changed_items}
         delta = copy.deepcopy(after.inventory)
         delta.items = [item for item in delta.items if item.item_id in changed]
@@ -80,22 +130,29 @@ def booking_packet(after, booking, mutation):
         final.items, final.changed_item_ids, final.field_158, final.field_1e0 = [], [], {}, False
         commands.extend((ServerCommand(INVENTORY_INFO_COMMAND, delta, 1),
                          ServerCommand(INVENTORY_INFO_COMMAND, final, 1)))
-        template = resource
+        notifications.append((resource, booking["amount"], EQUIPMENT_RARITIES[(booking.get("options") or {}).get("rarity", 0)]))
     elif resource in GAME_CURRENCY_BY_NAME:
         template = GAME_CURRENCY_BY_NAME[resource].wire_id
         commands.append(ServerCommand(GAME_CURRENCY_CHANGED_COMMAND,
                                        GameCurrencyChanged(template, after.game_currencies[template]), 1))
+        notifications.append((template, booking["amount"], "Common"))
     else:
         template = _CURRENCY_TEMPLATES[resource]
         commands.append(ServerCommand(CURRENCY_CHANGED_COMMAND, replace(after.currency, notify=True), 1))
-    guid = BOOKING_GUID_PREFIX + booking["id"].to_bytes(8, "big")
-    rarity = EQUIPMENT_RARITIES[(booking.get("options") or {}).get("rarity", 0)]
-    payload = ocp_booking_notification_payload(OCPBookingReward("cms", template, booking["amount"], rarity), guid)
-    # The grant has already been committed. Acknowledging this notice must
-    # never trigger another credit or require the player to accept a reward.
-    payload["ingameTransactionId"] = (booking["id"] & 0x7FFFFFFF) or 1
-    entry = make_notification_entry(OCP_BOOKING_NOTIFICATION_KIND, guid, OCP_BOOKING_NOTIFICATION_VALUES, payload)
-    commands.append(ServerCommand(NOTIFICATION_COMMAND, Notification(1, (entry,)), 0))
+        notifications.append((template, booking["amount"], "Common"))
+    notification_entries = []
+    for index, (template, amount, rarity) in enumerate(notifications):
+        # Keep each grant visible as an individual notification while sharing
+        # the booking's durable idempotency receipt.
+        guid_id = booking["id"] if index == 0 else (booking["id"] * 64 + index) & 0xFFFFFFFFFFFFFFFF
+        guid = BOOKING_GUID_PREFIX + guid_id.to_bytes(8, "big")
+        payload = ocp_booking_notification_payload(OCPBookingReward("cms", template, amount, rarity), guid)
+        # The grant has already been committed. Acknowledging this notice must
+        # never trigger another credit or require the player to accept a reward.
+        payload["ingameTransactionId"] = ((booking["id"] + index) & 0x7FFFFFFF) or 1
+        notification_entries.append(make_notification_entry(
+            OCP_BOOKING_NOTIFICATION_KIND, guid, OCP_BOOKING_NOTIFICATION_VALUES, payload))
+    commands.append(ServerCommand(NOTIFICATION_COMMAND, Notification(1, tuple(notification_entries)), 0))
     return encode_server_command_batch(tuple(commands), include_terminator=True)
 
 
@@ -205,6 +262,106 @@ class LiveAdministration:
         repository.audit(actor, "character." + action, cid, {**details, "reason": reason})
         return result
 
+    def refresh_progress(self, cid, *, previous_level):
+        """Run the gameplay-thread half of a CMS level change.
+
+        The caller has already written the new level onto the session's
+        character copy; this refreshes the combat maxima, tells the client
+        through the same XP/skill-book commands a level-up uses, and saves.
+        """
+        target = self.find(cid)
+        if target is None:
+            return False
+        server, s = target
+
+        def execute():
+            if not server.is_session_current(s):
+                return False
+            with s.flow_lock:
+                if not ready(s, cid):
+                    return False
+                character = s.gameplay_character
+                class_id, class_name = int(character.class_id), character.class_name
+                level, xp = int(character.level), int(character.progression_u32)
+                quick_slots = s.gameplay_quick_slots
+            path = self.service.static_database_path
+            base_xp, next_xp = player_level_xp(path, class_name, level)
+            transition = PlayerXPTransition(
+                awarded=0, xp=xp, level=level, level_base_xp=base_xp,
+                next_level_base_xp=next_xp, level_up=level > int(previous_level))
+            packet, packet_bits = encode_server_command_batch(experience_commands(
+                path, class_id, transition,
+                actor_id=LOCAL_PLAYER_ACTOR_ID, quick_slots=quick_slots,
+            ), include_terminator=True)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="admin-cms-level")
+            if transition.level_up:
+                CharacterService._refresh_player_combat_vitals(s)
+                CharacterService._achievement_on_level_up(s, class_id, level)
+            CharacterService._request_account_save(s, "admin-cms-level")
+            return True
+        return bool(server.admin_commands.call(execute))
+
+    def set_wisdom_level(self, cid, experience):
+        """Apply a Wisdom XP threshold to a ready live character and refresh its UI."""
+        target = self.find(cid)
+        if target is None:
+            return False
+        server, s = target
+
+        def execute():
+            if not server.is_session_current(s):
+                return False
+            with s.flow_lock:
+                if not ready(s, cid):
+                    return False
+                points = tuple(s.gameplay_talent_category_points)
+                if len(points) != 4:
+                    raise ValueError("Character has no active talent progression")
+                s.gameplay_talent_category_points = (
+                    int(points[0]), int(experience), int(points[2]), int(points[3]))
+                updated = tuple(s.gameplay_talent_category_points)
+                categories = copy.deepcopy(s.gameplay_talent_categories)
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(TALENT_CATEGORY_POINTS_INFO_COMMAND,
+                              TalentCategoryPointsInfo(0xFF, updated), 0),
+                ServerCommand(TALENT_SELECTION_INFO_COMMAND,
+                              TalentSelectionInfo(0, tuple(categories)), 0),
+            ), include_terminator=True)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="admin-cms-wisdom")
+            CharacterService._request_account_save(
+                s, "admin-cms-wisdom", flush=True)
+            return True
+
+        return bool(server.admin_commands.call(execute))
+
+    def set_honor_points(self, cid, honor_points):
+        """Apply a career honor total to a ready live character and save it."""
+        target = self.find(cid)
+        if target is None:
+            return False
+        server, s = target
+
+        def execute():
+            if not server.is_session_current(s):
+                return False
+            with s.flow_lock:
+                if not ready(s, cid):
+                    return False
+                s.gameplay_honor_points = int(honor_points)
+            packet, packet_bits = encode_honor_points_changed(
+                HonorPointsChanged(int(honor_points), LOCAL_PLAYER_ACTOR_ID)
+            )
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="admin-cms-honor-points")
+            CharacterService._request_account_save(
+                s, "admin-cms-honor-points", flush=True)
+            return True
+
+        return bool(server.admin_commands.call(execute))
+
+
     def deliver(self, booking_id):
         service = self.service
         # Same cancellation/delivery gate as offline initialization. Never held
@@ -245,7 +402,7 @@ class LiveAdministration:
                         return service.repository.booking(booking_id)
                     details = {}
                     after = service.delivery._apply(before, booking, details=details)
-                    packet, bits = booking_packet(after, booking, details.get("mutation"))
+                    packet, bits = booking_packet(after, booking, details.get("mutation"), details=details)
                     def commit():
                         if not server.is_session_current(s):
                             raise ValueError("character session changed; booking remains queued")
@@ -254,12 +411,15 @@ class LiveAdministration:
                                 raise ValueError("character is changing maps; booking remains queued")
                             if token != state_token(s) or getattr(s, "gameplay_inventory_rewards_in_progress", 0):
                                 return False
-                            if booking["kind"] == "item":
+                            if booking["kind"] in {"item", "batch"}:
                                 s.gameplay_inventory = after.inventory
                                 s.gameplay_next_item_id = after.next_item_id
-                            elif booking["resource"] in GAME_CURRENCY_BY_NAME:
+                            if booking["kind"] == "batch":
                                 s.gameplay_game_currencies = dict(after.game_currencies)
-                            else:
+                                s.gameplay_currency_state = after.currency
+                            elif booking["kind"] == "currency" and booking["resource"] in GAME_CURRENCY_BY_NAME:
+                                s.gameplay_game_currencies = dict(after.game_currencies)
+                            elif booking["kind"] == "currency":
                                 s.gameplay_currency_state = after.currency
                             s.gameplay_admin_booking_ids = after.admin_booking_ids
                         # Publication uses the normal save path. Its receipt is

@@ -10,7 +10,7 @@ no captured application payload is replayed.
 from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import sqlite3
@@ -130,6 +130,7 @@ class ShopOffer:
     scale_to_player_level: bool
     hide_not_suitable: bool
     event_timed: bool
+    directly_buy_offer: bool
     rarity: int
     category: int
     icon_brush: str
@@ -142,6 +143,12 @@ class ShopOffer:
     conversion_stories: tuple[OfferStringFloat, ...] = ()
     veteran_discounts: tuple[OfferStringFloat, ...] = ()
     timed_offer: bool = False
+    # Server-side purchase metadata; these values are not part of the wire
+    # offer, but let special jeweler offers grant a fully socketed item.
+    unlocked_socket_count: int = 0
+    item_level_override: int = 0
+    enchantment_roll_quality_override: int = -1
+    base_enchantment_tier_override: int = -1
 
 
 @dataclass(frozen=True)
@@ -247,6 +254,8 @@ def _write_shop_offer(writer: BitWriter, value: ShopOffer | None) -> None:
         value.scale_to_player_level,
         value.hide_not_suitable,
         value.event_timed,
+        # release261 reads DirectlyBuyOffer as the ninth flag before Rarity.
+        value.directly_buy_offer,
     ):
         writer.write_bool(flag)
     writer.write_uint8(value.rarity)
@@ -269,7 +278,7 @@ def _read_shop_offer(reader: BitReader) -> ShopOffer | None:
     resource_id = reader.read_string()
     wire = tuple(reader.read_uint32_le() for _ in range(12))
     numbers = (wire[0], wire[1], wire[3], wire[4], wire[5], wire[2], *wire[6:])
-    flags = tuple(reader.read_bool() for _ in range(8))
+    flags = tuple(reader.read_bool() for _ in range(9))
     rarity = reader.read_uint8()
     category = int.from_bytes(reader.read_bytes(2), "little")
     strings = tuple(reader.read_string() for _ in range(3))
@@ -430,6 +439,100 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
     return database
 
 
+def _max_tier_trinket_gems(
+    database: sqlite3.Connection, class_name: str
+) -> tuple[sqlite3.Row, ...]:
+    """Return the strongest authored trinket jewels and runes for a class."""
+
+    rows = database.execute(
+        "SELECT * FROM _Template_Item "
+        "WHERE ItemCategory IN ('EquipmentJewel', 'EquipmentRune') "
+        "AND GemSlotType IN ('JewelTrinket', 'RuneTrinket') "
+        "AND Obsolete=0 ORDER BY Id"
+    ).fetchall()
+    candidates = []
+    for row in rows:
+        allowed_classes = {
+            value.strip().casefold()
+            for value in str(row["CharClass"] or "").replace(";", ",").split(",")
+            if value.strip()
+        }
+        if allowed_classes and class_name not in allowed_classes:
+            continue
+        if not any(
+            row[name]
+            for name in (
+                "BaseEnchantments", "Enchantments", "UniqueModifier",
+                "StatusEffectId", "StatusEffectValue0", "StatusEffectValue1",
+                "StatusEffectValue2", "StatusEffectValue3", "StatusEffectValue4",
+            )
+        ):
+            continue
+        candidates.append(row)
+
+    rarity_tiers = {
+        "common": 0,
+        "uncommon": 1,
+        "magic": 2,
+        "rare": 3,
+        "epic": 4,
+    }
+    strongest: dict[tuple[str, str], tuple[tuple[int, int], sqlite3.Row]] = {}
+    for row in candidates:
+        template_id = str(row["Id"])
+        suffix = template_id.rsplit("_", 1)
+        if len(suffix) == 2 and suffix[1].casefold() in rarity_tiers:
+            key = (str(row["ItemCategory"]), suffix[0])
+            tier = (1, rarity_tiers[suffix[1].casefold()])
+        elif len(suffix) == 2 and re.fullmatch(r"\d{2}", suffix[1]):
+            key = (str(row["ItemCategory"]), suffix[0])
+            tier = (2, int(suffix[1]))
+        else:
+            # Non-tiered seasonal and special templates have no stronger
+            # variant, so retain them as their own max-tier offer.
+            key = (str(row["ItemCategory"]), template_id)
+            tier = (0, 0)
+        current = strongest.get(key)
+        if current is None or tier > current[0]:
+            strongest[key] = (tier, row)
+    return tuple(
+        row for _, row in sorted(
+            strongest.values(), key=lambda entry: str(entry[1]["Id"])
+        )
+    )
+
+
+def _socket_limit_at_level(schedule: object, level: int) -> int:
+    text = str(schedule or "0")
+    if ":" not in text:
+        return max(0, int(text))
+    result = 0
+    for entry in text.split(","):
+        if not entry.strip():
+            continue
+        threshold, count = (int(value) for value in entry.split(":", 1))
+        if level >= threshold:
+            result = count
+    return max(0, min(255, result))
+
+
+def _maximum_socket_setup(schedule: object, max_item_level: int) -> tuple[int, int]:
+    """Return the allowed item level and socket count at its highest tier."""
+
+    text = str(schedule or "0")
+    if ":" not in text:
+        return 1, max(0, min(255, int(text)))
+    thresholds = [
+        int(entry.split(":", 1)[0])
+        for entry in text.split(",")
+        if entry.strip()
+    ]
+    if not thresholds:
+        return 1, 0
+    level = min(max(1, max_item_level), max(thresholds))
+    return level, _socket_limit_at_level(text, level)
+
+
 def load_shop_offers(
     static_database_path: str | Path,
     shop_id: str,
@@ -447,6 +550,8 @@ def load_shop_offers(
         ).fetchone()
         if shop is None:
             raise ValueError(f"unknown NPC shop {shop_id!r}")
+        from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
+        cms_overrides = NpcShopOverrideStore(static_database_path).overrides(shop_id)
         class_name = CLASS_NAMES.get(int(class_id), "").casefold()
         active_events = {
             str(value).strip().casefold()
@@ -516,16 +621,17 @@ def load_shop_offers(
                 raise ValueError(
                     f"shop {shop_id!r} uses an unrecovered enum {exc.args[0]!r}"
                 ) from exc
+            price_override = cms_overrides["prices"].get(str(row["Id"]), {})
             offers.append(
                 ShopOffer(
                     resource_id=str(row["Id"]),
-                    price_rc=int(row["PriceRC"]),
-                    price_vc=int(row["PriceVC"]),
-                    price_gc=int(row["PriceGC"]),
-                    price_ec=int(row["PriceEC"]),
-                    price_uc=int(row["PriceUC"]),
-                    price_arena=int(row["PriceArena"]),
-                    price_ic=int(row["PriceIC"]),
+                    price_rc=int(price_override.get("price_rc", row["PriceRC"])),
+                    price_vc=int(price_override.get("price_vc", row["PriceVC"])),
+                    price_gc=int(price_override.get("price_gc", row["PriceGC"])),
+                    price_ec=int(price_override.get("price_ec", row["PriceEC"])),
+                    price_uc=int(price_override.get("price_uc", row["PriceUC"])),
+                    price_arena=int(price_override.get("price_arena", row["PriceArena"])),
+                    price_ic=int(price_override.get("price_ic", row["PriceIC"])),
                     amount=int(row["Amount"]),
                     difficulty=int(row["Difficulty"]),
                     timed_offer_amount=int(row["TimedOfferAmount"]),
@@ -539,6 +645,7 @@ def load_shop_offers(
                     scale_to_player_level=bool(row["ScaleToPlayerLevel"]),
                     hide_not_suitable=bool(row["HideNotSuitable"]),
                     event_timed=bool(row["EventTimed"]),
+                    directly_buy_offer=bool(row["DirectlyBuyOffer"]),
                     rarity=rarity,
                     category=category,
                     icon_brush=str(row["IconBrush"] or ""),
@@ -563,6 +670,322 @@ def load_shop_offers(
             )
             if category not in categories:
                 categories.append(category)
+        for category in cms_overrides["categories"]:
+            category_id = int(category["category_id"])
+            if category_id not in categories:
+                categories.append(category_id)
+        cms_offers = []
+        # The game client resolves shop offers by their resource id against
+        # its static offer templates. CMS-created ids do not exist there, so
+        # use an otherwise-unused static offer id for the same item on the
+        # wire. Keep the CMS id in the override database for administration.
+        # The purchase handler keys off the ShopOffer sent here, so purchasing
+        # the aliased id still uses this CMS row's item and prices.
+        used_offer_ids = set(_split_strings(shop["Offers"]))
+        # If the same item was added repeatedly while troubleshooting, give
+        # the single client-known static offer id to the newest CMS row.
+        # Older duplicate rows retain their CMS ids and cannot steal the
+        # visible slot from the latest addition.
+        custom_rows = sorted(
+            cms_overrides["offers"],
+            key=lambda row: float(row.get("created_at", 0)),
+            reverse=True,
+        )
+        for row in custom_rows:
+            category_id = int(row["category_id"])
+            if category_id not in categories:
+                categories.append(category_id)
+            item = database.execute(
+                "SELECT DefaultRarity,CharClass FROM _Template_Item WHERE Id=?",
+                (row["item_id"],),
+            ).fetchone()
+            if item is None:
+                continue
+            allowed_classes = {
+                name.casefold()
+                for name in _split_strings(item["CharClass"], ",")
+            }
+            if allowed_classes and class_name not in allowed_classes:
+                continue
+            rarity_name = str(item["DefaultRarity"] or "Common")
+            try:
+                rarity = OFFER_RARITY_IDS[rarity_name]
+            except KeyError as exc:
+                raise ValueError(
+                    f"item {row['item_id']!r} uses unknown rarity {rarity_name!r}"
+                ) from exc
+            candidates = database.execute(
+                "SELECT Id,OfferCategory FROM _Template_Offer WHERE Item=? "
+                "ORDER BY Id",
+                (row["item_id"],),
+            ).fetchall()
+            category_candidates = [
+                str(candidate["Id"])
+                for candidate in candidates
+                if OFFER_CATEGORY_IDS.get(str(candidate["OfferCategory"]), 46)
+                == category_id
+            ]
+            other_candidates = [
+                str(candidate["Id"])
+                for candidate in candidates
+                if str(candidate["Id"]) not in category_candidates
+            ]
+            resource_id = next(
+                (
+                    candidate_id
+                    for candidate_id in category_candidates
+                    if candidate_id not in used_offer_ids
+                ),
+                None,
+            )
+            if resource_id is None and not category_candidates:
+                resource_id = next(
+                    (
+                        candidate_id
+                        for candidate_id in other_candidates
+                        if candidate_id not in used_offer_ids
+                    ),
+                    str(row["offer_id"]),
+                )
+            elif resource_id is None:
+                resource_id = str(row["offer_id"])
+            used_offer_ids.add(resource_id)
+            cms_offers.append(
+                ShopOffer(
+                    resource_id=resource_id,
+                    price_rc=int(row["price_rc"]),
+                    price_vc=int(row["price_vc"]),
+                    price_gc=int(row["price_gc"]),
+                    price_ec=int(row["price_ec"]),
+                    price_uc=int(row["price_uc"]),
+                    price_arena=int(row["price_arena"]),
+                    price_ic=int(row["price_ic"]),
+                    amount=int(row["amount"]),
+                    difficulty=0,
+                    timed_offer_amount=0,
+                    min_player_level=1,
+                    max_player_level=200,
+                    is_recommended=False,
+                    dynamic_price=False,
+                    is_new=False,
+                    auto_identify=False,
+                    once_per_character=False,
+                    scale_to_player_level=False,
+                    hide_not_suitable=False,
+                    event_timed=False,
+                    directly_buy_offer=False,
+                    rarity=rarity,
+                    category=category_id,
+                    icon_brush="",
+                    icon_configuration="",
+                    item_id=str(row["item_id"]),
+                )
+            )
+        # Place CMS additions before static offers. The client preserves offer
+        # order within a category, and long NPC inventories otherwise bury new
+        # items at the very end of the shop list.
+        offers = cms_offers + offers
+        if str(shop["Id"]).casefold().startswith("smith_hub"):
+            # The local smith is the class-filtered source for the current
+            # Mythic equipment, both mythic Dragan set versions, plus unique
+            # belts and weapon modifiers. Items are generated at level 145
+            # with their strongest supported socket layout, 100% enchantment
+            # rolls, and maximum base values; no static.db4 rows are rewritten.
+            equipment_rows = database.execute(
+                "SELECT Id,DefaultRarity,CharClass,SlotType,ItemCategory,"
+                "MaxSocketCount,IconBrush,IconConfiguration "
+                "FROM _Template_Item WHERE MinDropLevel<=145 "
+                "AND MaxDropLevel>=145 AND ("
+                "(DefaultRarity='Mythic' AND lower(CharClass)=? "
+                "AND ItemCategory IN ('Armor','Weapon','SmallWeapon',"
+                "'Jewelry','OffenseBackitem','DefenseBackitem')) OR "
+                "(DefaultRarity='Set' AND lower(CharClass)=? "
+                "AND lower(Id) LIKE '%mythic%dragan%' "
+                "AND ItemCategory IN ('Armor','Weapon','SmallWeapon',"
+                "'Jewelry','OffenseBackitem','DefenseBackitem')) OR "
+                "(DefaultRarity='Unique' AND ("
+                "(lower(SlotType) LIKE '%beltslot%' AND "
+                "(lower(CharClass)=? OR coalesce(CharClass,'')='')) OR "
+                "(ItemCategory='WeaponModifier' AND lower(CharClass)=?)))"
+                ") ORDER BY Id",
+                (class_name, class_name, class_name, class_name),
+            ).fetchall()
+            present_items = {offer.item_id for offer in offers}
+            for item in equipment_rows:
+                template_id = str(item["Id"])
+                slot_types = tuple(
+                    value.strip()
+                    for value in str(item["SlotType"] or "").split(",")
+                    if value.strip()
+                )
+                category_name = {
+                    "Armor": "Armor",
+                    "Jewelry": "Jewelry",
+                    "OffenseBackitem": "Cloak",
+                    "DefenseBackitem": "Cloak",
+                    "WeaponModifier": "Armor",
+                }.get(str(item["ItemCategory"]), "TwoHand"
+                    if "LeftHandSlot" in slot_types else "OneHand")
+                category = OFFER_CATEGORY_IDS[category_name]
+                if category not in categories:
+                    categories.append(category)
+                socket_count = _socket_limit_at_level(
+                    item["MaxSocketCount"], 145
+                )
+                if template_id in present_items:
+                    offers = [
+                        replace(
+                            offer,
+                            unlocked_socket_count=socket_count,
+                            item_level_override=145,
+                            enchantment_roll_quality_override=100,
+                            base_enchantment_tier_override=16,
+                        )
+                        if offer.item_id == template_id else offer
+                        for offer in offers
+                    ]
+                    continue
+                rarity = OFFER_RARITY_IDS[str(item["DefaultRarity"])]
+                offers.append(
+                    ShopOffer(
+                        resource_id=(
+                            f"smith_{str(item['DefaultRarity']).lower()}"
+                            f"_145_{template_id}"
+                        ),
+                        price_rc=0,
+                        price_vc=1,
+                        price_gc=0,
+                        price_ec=0,
+                        price_uc=0,
+                        price_arena=0,
+                        price_ic=0,
+                        amount=1,
+                        difficulty=0,
+                        timed_offer_amount=0,
+                        min_player_level=1,
+                        max_player_level=200,
+                        is_recommended=False,
+                        dynamic_price=False,
+                        is_new=False,
+                        auto_identify=False,
+                        once_per_character=False,
+                        scale_to_player_level=False,
+                        hide_not_suitable=False,
+                        event_timed=False,
+                        directly_buy_offer=False,
+                        rarity=rarity,
+                        category=category,
+                        icon_brush=str(item["IconBrush"] or ""),
+                        icon_configuration=str(item["IconConfiguration"] or ""),
+                        item_id=template_id,
+                        unlocked_socket_count=socket_count,
+                        item_level_override=145,
+                        enchantment_roll_quality_override=100,
+                        base_enchantment_tier_override=16,
+                    )
+                )
+                present_items.add(template_id)
+        if str(shop["Id"]) == "jewelry_hub_all":
+            for item in _max_tier_trinket_gems(database, class_name):
+                template_id = str(item["Id"])
+                resource_id = f"jewelry_max_tier_{template_id}"
+                price_override = cms_overrides["prices"].get(resource_id, {})
+                rarity_name = str(item["DefaultRarity"] or "Common")
+                try:
+                    rarity = OFFER_RARITY_IDS[rarity_name]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"item {template_id!r} uses unknown rarity {rarity_name!r}"
+                    ) from exc
+                offers.append(
+                    ShopOffer(
+                        resource_id=resource_id,
+                        price_rc=int(price_override.get("price_rc", 0)),
+                        price_vc=int(price_override.get("price_vc", 1)),
+                        price_gc=int(price_override.get("price_gc", 0)),
+                        price_ec=int(price_override.get("price_ec", 0)),
+                        price_uc=int(price_override.get("price_uc", 0)),
+                        price_arena=int(price_override.get("price_arena", 0)),
+                        price_ic=int(price_override.get("price_ic", 0)),
+                        amount=1,
+                        difficulty=0,
+                        timed_offer_amount=0,
+                        min_player_level=1,
+                        max_player_level=200,
+                        is_recommended=False,
+                        dynamic_price=False,
+                        is_new=False,
+                        auto_identify=False,
+                        once_per_character=False,
+                        scale_to_player_level=False,
+                        hide_not_suitable=False,
+                        event_timed=False,
+                        directly_buy_offer=False,
+                        rarity=rarity,
+                        category=OFFER_CATEGORY_IDS["ItemGemCe55"],
+                        icon_brush="",
+                        icon_configuration="",
+                        item_id=template_id,
+                    )
+                )
+                if OFFER_CATEGORY_IDS["ItemGemCe55"] not in categories:
+                    categories.append(OFFER_CATEGORY_IDS["ItemGemCe55"])
+            trinkets = database.execute(
+                "SELECT Id, DefaultRarity, MaxSocketCount, MaxDropLevel "
+                "FROM _Template_Item "
+                "WHERE ItemCategory IN ('RuneTrinket', 'JewelTrinket') "
+                "AND Obsolete=0 ORDER BY Id"
+            ).fetchall()
+            for item in trinkets:
+                template_id = str(item["Id"])
+                rarity_name = str(item["DefaultRarity"] or "Common")
+                try:
+                    rarity = OFFER_RARITY_IDS[rarity_name]
+                except KeyError as exc:
+                    raise ValueError(
+                        f"item {template_id!r} uses unknown rarity {rarity_name!r}"
+                    ) from exc
+                max_item_level = max(1, int(item["MaxDropLevel"] or 200))
+                item_level, socket_count = _maximum_socket_setup(
+                    item["MaxSocketCount"], max_item_level
+                )
+                resource_id = f"jewelry_max_sockets_{template_id}"
+                price_override = cms_overrides["prices"].get(resource_id, {})
+                offers.append(
+                    ShopOffer(
+                        resource_id=resource_id,
+                        price_rc=int(price_override.get("price_rc", 0)),
+                        price_vc=int(price_override.get("price_vc", 1)),
+                        price_gc=int(price_override.get("price_gc", 0)),
+                        price_ec=int(price_override.get("price_ec", 0)),
+                        price_uc=int(price_override.get("price_uc", 0)),
+                        price_arena=int(price_override.get("price_arena", 0)),
+                        price_ic=int(price_override.get("price_ic", 0)),
+                        amount=1,
+                        difficulty=0,
+                        timed_offer_amount=0,
+                        min_player_level=1,
+                        max_player_level=200,
+                        is_recommended=False,
+                        dynamic_price=False,
+                        is_new=False,
+                        auto_identify=False,
+                        once_per_character=False,
+                        scale_to_player_level=False,
+                        hide_not_suitable=False,
+                        event_timed=False,
+                        directly_buy_offer=False,
+                        rarity=rarity,
+                        category=OFFER_CATEGORY_IDS["ItemGemCe55"],
+                        icon_brush="",
+                        icon_configuration="",
+                        item_id=template_id,
+                        unlocked_socket_count=socket_count,
+                        item_level_override=item_level,
+                    )
+                )
+                if OFFER_CATEGORY_IDS["ItemGemCe55"] not in categories:
+                    categories.append(OFFER_CATEGORY_IDS["ItemGemCe55"])
         return OfferCommand(
             str(shop["Id"]),
             False,

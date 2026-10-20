@@ -566,9 +566,6 @@ class LifecycleService:
             cache = getattr(self, "_account_selection_cache", None)
             if cache is None:
                 cache = self._account_selection_cache = {}
-            cached = cache.get(s.account_id)
-            if cached is not None and cached[0] == (revision, frozenset(owned_set)):
-                return cached[1], cached[2]
             selection = copy.deepcopy(self.character_selection)
 
         selection.characters = [
@@ -587,6 +584,10 @@ class LifecycleService:
         )
         selection.active_character_id = active
         # The payload carries one equipment list: the active character's.
+        # Build it from the account store on every selection request. Gameplay
+        # customization changes the inventory without changing the character
+        # roster revision, so a revision-only cache can leave the character
+        # preview showing the old skin and dye after returning to this screen.
         selection.equipment = copy.deepcopy(
             CharacterService._selection_equipment(self, active)
         )
@@ -743,16 +744,35 @@ class LifecycleService:
         print("[DrasaCharacterService] map/auth bootstrap complete; waiting for 0x8d")
 
     @staticmethod
-    def _bind_gameplay_route(s: Session, route) -> None:
-        """Copy one armed route onto the session it belongs to."""
+    def _bind_gameplay_route(s: Session, route, *, claimed: bool = False) -> None:
+        """Bind a route; only an identified, claimed route starts a new map."""
 
         if route is None:
             return
-        s.gameplay_map = route.map_name
-        s.gameplay_character = copy.deepcopy(route.character)
-        s.gameplay_template_row_index = route.template_row_index
-        s.gameplay_mount_ride = copy.deepcopy(route.mount_ride)
-        s.gameplay_route_spawn_position = route.spawn_position
+        timer_to_cancel = None
+        with s.flow_lock:
+            s.gameplay_map = route.map_name
+            s.gameplay_character = copy.deepcopy(route.character)
+            s.gameplay_template_row_index = route.template_row_index
+            s.gameplay_mount_ride = copy.deepcopy(route.mount_ride)
+            s.gameplay_route_spawn_position = route.spawn_position
+            if claimed:
+                # _on_connected peeks provisionally; _on_hello claims the
+                # identified route. Do not reset on the provisional bind.
+                timer_to_cancel = s.gameplay_initialization_timer
+                s.gameplay_initialization_timer = None
+                s.gameplay_initialization_sent = False
+                s.gameplay_ready_sent = False
+                s.gameplay_presence_ready = False
+                s.gameplay_map_access_group_id = None
+                s.gameplay_map_event_runtime = None
+        if timer_to_cancel is not None:
+            timer_to_cancel.cancel()
+        if NPC_TRACE:
+            print(
+                f"[NPC-TRACE] route bound map={route.map_name!r} "
+                f"claimed={claimed}"
+            )
 
     def _on_hello(self, s: Session, payload: bytes):
         if s.gameplay_mode or self._gameplay_is_armed(s.addr[0]):
@@ -763,7 +783,7 @@ class LifecycleService:
             if route is None and self._refuse_unrouted_gameplay(s):
                 return
             s.gameplay_mode = True
-            CharacterService._bind_gameplay_route(s, route)
+            CharacterService._bind_gameplay_route(s, route, claimed=True)
             map_name = s.gameplay_map or DEFAULT_GAMEPLAY_MAP
             s.gameplay_map = map_name
 

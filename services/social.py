@@ -70,7 +70,8 @@ class SocialService:
     def _player_summary(
             self, character, *, map_or_guild: str,
             online: bool = True, actor_id: int = 0,
-            role: int = 0xFF) -> PlayerSummary:
+            role: int = 0xFF,
+            timestamp: str = "0000-00-00 00:00:00") -> PlayerSummary:
         return PlayerSummary(
             0,
             0,
@@ -87,6 +88,7 @@ class SocialService:
             bool(online),
             bool(online),
             int(role),
+            timestamp=str(timestamp),
         )
 
     def _social_member(self, s: Session):
@@ -146,6 +148,54 @@ class SocialService:
         guild = self.social_store.guild_for(character_id)
         if guild is not None:
             self._broadcast_social_status("guild", guild.guild_id)
+        self._broadcast_buddy_presence(character_id)
+
+    def _broadcast_buddy_presence(self, character_id: int) -> None:
+        """Send updated friend lists to online characters who have this buddy."""
+        character_id = int(character_id)
+        for viewer in self._active_gameplay_sessions():
+            viewer_character = viewer.gameplay_character
+            if viewer_character is None:
+                continue
+            viewer_id = int(viewer_character.character_id)
+            if character_id not in self.social_store.buddies_for(viewer_id):
+                continue
+            viewer.send_reliable_ordered(
+                encode_buddy_status(self._buddy_summaries(viewer_id)),
+                track=True,
+                label="buddy-presence-status",
+            )
+
+    def _buddy_last_online(self, character_id: int) -> str:
+        """Format the best saved per-character activity time for the client."""
+        store = getattr(self, "account_store", None)
+        if store is not None:
+            saved_at_reader = getattr(store, "saved_at_for_character", None)
+            saved_at = (
+                saved_at_reader(character_id) if saved_at_reader is not None
+                else getattr(store.get(character_id), "saved_at", "")
+            )
+            if saved_at:
+                try:
+                    saved_at = datetime.fromisoformat(str(saved_at))
+                    if saved_at.tzinfo is None:
+                        saved_at = saved_at.replace(tzinfo=timezone.utc)
+                    return saved_at.astimezone(timezone.utc).strftime(
+                        "%Y-%m-%d %H:%M:%S"
+                    )
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        registry = getattr(self, "account_registry", None)
+        if registry is not None:
+            owner = registry.character_owner(character_id)
+            if owner is not None and owner.last_login_at > 0:
+                try:
+                    return datetime.fromtimestamp(
+                        owner.last_login_at, timezone.utc
+                    ).strftime("%Y-%m-%d %H:%M:%S")
+                except (ValueError, OverflowError, OSError):
+                    pass
+        return "0000-00-00 00:00:00"
 
     def _guild_status_for(self, character_id: int) -> SocialGuildStatus:
         guild = self.social_store.guild_for(character_id)
@@ -260,15 +310,114 @@ class SocialService:
 
     def _handle_buddy_list(self, s: Session, payload: bytes) -> None:
         request = decode_buddy_list_request(payload, s.current_message_bit_length)
-        if request.action != 0:
-            raise ValueError("buddy list modification is not implemented")
         CharacterService._accept_gameplay_state_command(s, BUDDY_LIST_COMMAND)
-        # This store has no persisted buddy relationships. A typed empty list
-        # completes the refresh performed while opening the social window.
+        owner = self._character_for_session(s)
+        owner_id = int(owner.character_id)
+        if request.action == 1:
+            target = self._resolve_buddy_target(request.name)
+            if target is None:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] ignored buddy add for "
+                    f"unknown player {request.name!r} from {owner.name!r}"
+                )
+            elif int(target.character_id) == owner_id:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] ignored self-buddy add "
+                    f"from {owner.name!r}"
+                )
+            else:
+                try:
+                    self.social_store.add_buddy(
+                        owner_id, int(target.character_id)
+                    )
+                except ValueError as exc:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] ignored buddy add "
+                        f"from {owner.name!r} to {target.name!r}: {exc}"
+                    )
+        elif request.action == 2:
+            target = self._resolve_buddy_target(request.name)
+            if target is not None:
+                self.social_store.remove_buddy(
+                    owner_id, int(target.character_id)
+                )
+        elif request.action != 0:
+            raise ValueError(
+                f"unsupported buddy-list operation {request.action}"
+            )
+
+        members = self._buddy_summaries(owner_id)
         s.send_reliable_ordered(
-            encode_buddy_status(field_1c=request.field_24),
+            encode_buddy_status(members, field_1c=request.field_24),
             track=True, label="buddy-list-status",
         )
+
+    def _resolve_buddy_target(self, name: str):
+        wanted = str(name).strip().casefold()
+        if not wanted:
+            return None
+        online = [
+            session.gameplay_character
+            for session in self._active_gameplay_sessions()
+            if session.gameplay_character.name.casefold() == wanted
+        ]
+        if len(online) == 1:
+            return online[0]
+        if len(online) > 1:
+            return None
+
+        profiles = []
+        store = getattr(self, "account_store", None)
+        if store is not None:
+            profiles.extend(store.profiles())
+        selection = getattr(self, "character_selection", None)
+        if selection is not None:
+            profiles.extend(selection.characters)
+        matches = {
+            int(character.character_id): character
+            for character in profiles
+            if str(character.name).casefold() == wanted
+        }
+        return next(iter(matches.values())) if len(matches) == 1 else None
+
+    def _buddy_summaries(
+        self, owner_character_id: int
+    ) -> tuple[PlayerSummary, ...]:
+        online_by_id = {
+            int(session.gameplay_character.character_id): session
+            for session in self._active_gameplay_sessions()
+        }
+        store = getattr(self, "account_store", None)
+        selection = getattr(self, "character_selection", None)
+        roster = (
+            {
+                int(character.character_id): character
+                for character in selection.characters
+            }
+            if selection is not None
+            else {}
+        )
+        summaries = []
+        for buddy_id in self.social_store.buddies_for(owner_character_id):
+            session = online_by_id.get(int(buddy_id))
+            character = (
+                session.gameplay_character if session is not None
+                else store.get_profile(buddy_id) if store is not None else None
+            )
+            if character is None:
+                character = roster.get(int(buddy_id))
+            if character is None:
+                continue
+            summaries.append(self._player_summary(
+                character,
+                map_or_guild=(session.gameplay_map if session is not None else ""),
+                online=session is not None,
+                actor_id=self._social_actor_id_for(
+                    owner_character_id, buddy_id
+                ),
+                timestamp=self._buddy_last_online(buddy_id),
+            ))
+        return tuple(summaries)
 
     def _handle_player_query(self, s: Session, payload: bytes) -> None:
         request = decode_player_query(payload)

@@ -116,4 +116,8 @@ class MonsterSummonService:
                 if viewer.gameplay_combat_state is combat
             ) or (session,)
             for viewer in viewers:
-                self._announce_runtime_group(viewer, combat, group)
+                # Announced even before the viewer's next move: fresh actors
+                # the vicinity has not offered yet (services/map_events.py).
+                self._announce_runtime_group(
+                    viewer, combat, group, force_actor_ids=added
+                )

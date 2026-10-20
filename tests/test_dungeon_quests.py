@@ -192,7 +192,10 @@ class DungeonQuestTests(unittest.TestCase):
         sludges = [m for m in combat.monsters.values() if m.template_id == SLUDGE]
         attacker = next(m for m in combat.monsters.values() if m.template_id != SLUDGE)
         self.assertFalse(s.gameplay_spawned_monster_actor_ids)
-        self.assertIsNone(s.gameplay_quest_tracking)
+        # Entering the dungeon tracks its map-bound clear objective; drop it so
+        # the clear below completes the quest without any tracking.
+        self.assertEqual(s.gameplay_quest_tracking, (QUEST, 0))
+        s.gameplay_quest_tracking = None
         for monster in sludges:
             combat.monster_health[monster.actor_id] = 0
         last = sludges[-1]

@@ -10,42 +10,64 @@ from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
 from dso_server.services import movement_validation
 
-# DSO_SKILL_TRACE=1: one line per spatial player skill, with the caster's
-# position and every living monster within 8 m (flat distance, height
-# difference, whether the client was sent it, and where), to see why an area
-# skill left a monster unhurt.
-SKILL_TRACE = os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {"1", "true", "yes"}
+
+SKILL_TRACE = os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {
+    "1", "true", "yes",
+}
 
 
 class PlayerCombatService(PlayerCastTimingService):
+    """Player skill validation, targeting, projectiles, and impacts."""
+
     @staticmethod
-    def _trace_spatial_skill(combat, skill_index, position, plan, eligible, visible):
+    def _trace_spatial_skill(
+        combat,
+        skill_index,
+        position,
+        plan,
+        eligible_actor_ids,
+        visible_actor_positions,
+    ) -> None:
         try:
             geometry = combat._load_player_skill_geometry(skill_index)
             origin = combat.encounter.coordinate_frame.wire_to_world(position)
-            hit = {impact.target.actor_id for impact in (plan.impacts if plan else ())}
-            near = []
+            hit_ids = {
+                impact.target.actor_id
+                for impact in (plan.impacts if plan is not None else ())
+            }
+            nearby = []
             for actor_id in combat.living_actor_ids:
                 at = combat.monster_positions[actor_id]
-                flat = math.hypot(at[0] - origin[0], at[2] - origin[2])
-                if flat > 8.0:
-                    continue
-                seen = visible.get(actor_id) if visible else None
-                near.append(
-                    f"{actor_id}:{flat:.1f}m dy{at[1] - origin[1]:+.1f}"
-                    f"{' HIT' if actor_id in hit else ''}"
-                    f"{'' if eligible is None or actor_id in eligible else ' not-sent'}"
-                    f"{' home' if actor_id in combat.returning_home_actor_ids else ''}"
-                    + (f" seen@{math.hypot(seen[0] - origin[0], seen[2] - origin[2]):.1f}m" if seen else "")
+                flat_distance = math.hypot(
+                    at[0] - origin[0], at[2] - origin[2]
                 )
-            print(f"[skill-trace] {geometry.resource_id if geometry else skill_index} "
-                  f"({geometry.targeting_type if geometry else '?'}, hit range "
-                  f"{geometry.hit_range if geometry else 0:.2f}) at "
-                  f"{tuple(round(v, 1) for v in origin)}: {len(hit)} hit; " + ", ".join(near))
-        except Exception as exc:  # a trace must never break a cast
+                if flat_distance > 8.0:
+                    continue
+                seen = visible_actor_positions.get(actor_id)
+                entry = (
+                    f"{actor_id}:{flat_distance:.1f}m "
+                    f"dy{at[1] - origin[1]:+.1f}"
+                    f"{' HIT' if actor_id in hit_ids else ''}"
+                    f"{' not-sent' if eligible_actor_ids is not None and actor_id not in eligible_actor_ids else ''}"
+                    f"{' home' if actor_id in combat.returning_home_actor_ids else ''}"
+                )
+                if seen is not None:
+                    entry += (
+                        " seen@"
+                        f"{math.hypot(seen[0] - origin[0], seen[2] - origin[2]):.1f}m"
+                    )
+                nearby.append(entry)
+            resource_id = geometry.resource_id if geometry else str(skill_index)
+            targeting = geometry.targeting_type if geometry else "?"
+            hit_range = geometry.hit_range if geometry else 0.0
+            print(
+                f"[skill-trace] {resource_id} ({targeting}, hit range "
+                f"{hit_range:.2f}) at {tuple(round(v, 1) for v in origin)}: "
+                f"{len(hit_ids)} hit; " + ", ".join(nearby)
+            )
+        except Exception as exc:
+            # Diagnostics must not interrupt an accepted player cast.
             print(f"[skill-trace] failed: {exc!r}")
-
-    """Player skill validation, targeting, projectiles, and impacts."""
 
     @staticmethod
     def _record_monster_targeting_result(
@@ -172,8 +194,10 @@ class PlayerCombatService(PlayerCastTimingService):
             )
             skill = client_skill
         if movement_validation.non_finite(client_skill):
-            # NaN passes every range and area comparison: it hit every monster.
-            print(f"[{GAMEPLAY_SERVICE_NAME}] dropped bullet skill 0x{command_id:04x} with a non-finite value")
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] dropped bullet skill "
+                f"0x{command_id:04x} with a non-finite value"
+            )
             return
         CharacterService._accept_gameplay_state_command(s, command_id)
         if CharacterService._player_victim_feature_locked(
@@ -193,6 +217,7 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_attack_speed = 0.0
         pvp_timers = ()
         entity_plan = None
         pvp_snapshot = ((), ())
@@ -275,6 +300,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     player_stats.minimum_damage,
                     player_stats.maximum_damage,
                 )
+                player_attack_speed = float(player_stats.attack_speed)
                 player_critical_hit_chance = (
                     player_stats.critical_hit_chance
                 )
@@ -539,6 +565,13 @@ class PlayerCombatService(PlayerCastTimingService):
                 server_tick=skill.server_tick,
                 label="player-skillstart-status-effects",
             )
+            if pending_hits or pvp_timers:
+                CharacterService._send_attack_speed_bonus_stack(
+                    s,
+                    attack_speed=player_attack_speed,
+                    server_tick=skill.server_tick,
+                    label="player-attack-speed-bonus-stack",
+                )
         if all((runtime_cast, combat, encounter, position, source_actor_id)):
             CharacterService._schedule_player_bullet_trail(
                 s, combat, encounter, skill, client_skill, position,
@@ -623,8 +656,10 @@ class PlayerCombatService(PlayerCastTimingService):
                 f"unsupported spatial skill command 0x{command_id:04x}"
             )
         if movement_validation.non_finite(client_skill):
-            # NaN passes every range and area comparison: it hit every monster.
-            print(f"[{GAMEPLAY_SERVICE_NAME}] dropped spatial skill 0x{command_id:04x} with a non-finite value")
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] dropped spatial skill "
+                f"0x{command_id:04x} with a non-finite value"
+            )
             return
         CharacterService._accept_gameplay_state_command(s, command_id)
         if command_id == TARGET_SKILL_COMMAND and client_skill.target_actor_id == 0:
@@ -652,9 +687,11 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_attack_speed = 0.0
         skill_speed_multiplier = 1.0
         summon_definition = None
         trap_definition = None
+        movement_skill_destination = None
         summon_timer = None
         summon_position_world = None
         location_position_world = None
@@ -732,6 +769,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 player_stats.minimum_damage,
                 player_stats.maximum_damage,
             )
+            player_attack_speed = float(player_stats.attack_speed)
             player_critical_hit_chance = (
                 player_stats.critical_hit_chance
             )
@@ -765,28 +803,33 @@ class PlayerCombatService(PlayerCastTimingService):
                     player_stats=player_stats,
                 )
             )
-            geometry = combat._load_player_skill_geometry(client_skill.skill_index)
+            geometry = combat._load_player_skill_geometry(
+                client_skill.skill_index
+            )
             if (
                 target_position is not None
                 and geometry is not None
-                and geometry.skill_type.casefold() in movement_validation.MOVEMENT_SKILL_TYPES
+                and geometry.skill_type.casefold()
+                in movement_validation.MOVEMENT_SKILL_TYPES
             ):
-                # Teleport / Jump / Charge: where the caster may land, within the
-                # skill's range on ground it can reach (its following moves are
-                # allowed along that path only).
                 with s.flow_lock:
                     clamped = movement_validation.clamp_movement_destination(
-                        s, geometry, position, target_position,
+                        s, geometry, position, target_position
                     )
-                if movement_validation._flat_distance(clamped, target_position) > 0.05:
+                if movement_validation._flat_distance(
+                    clamped, target_position
+                ) > 0.05:
                     print(
-                        f"[{GAMEPLAY_SERVICE_NAME}] {geometry.skill_type} destination "
-                        f"{tuple(round(v, 2) for v in target_position)} clamped to "
-                        f"{tuple(round(v, 2) for v in clamped)}"
+                        f"[{GAMEPLAY_SERVICE_NAME}] {geometry.skill_type} "
+                        f"destination {tuple(round(v, 2) for v in target_position)} "
+                        f"clamped to {tuple(round(v, 2) for v in clamped)}"
                     )
                 target_position = clamped
+                movement_skill_destination = clamped
                 if hasattr(client_skill, "target_position"):
-                    client_skill = replace(client_skill, target_position=clamped)
+                    client_skill = replace(
+                        client_skill, target_position=clamped
+                    )
                     with s.flow_lock:
                         s.gameplay_client_command_state[command_id] = client_skill
             if target_position is not None:
@@ -828,6 +871,12 @@ class PlayerCombatService(PlayerCastTimingService):
             )
         ):
             return
+        if rejection is None and movement_skill_destination is not None:
+            with s.flow_lock:
+                if s.gameplay_combat_state is combat:
+                    movement_validation.record_movement_allowance(
+                        s, position, movement_skill_destination
+                    )
         if (
             rejection is None
             and combat is not None
@@ -855,8 +904,13 @@ class PlayerCombatService(PlayerCastTimingService):
                     )
                     if SKILL_TRACE:
                         CharacterService._trace_spatial_skill(
-                            combat, client_skill.skill_index, position, entity_plan,
-                            eligible_actor_ids, visible_actor_positions)
+                            combat,
+                            client_skill.skill_index,
+                            position,
+                            entity_plan,
+                            eligible_actor_ids,
+                            visible_actor_positions,
+                        )
                     pending_hits = combat.start_spatial_skill_hits(
                         hit_plan=entity_plan,
                         skill_index=client_skill.skill_index,
@@ -1042,6 +1096,13 @@ class PlayerCombatService(PlayerCastTimingService):
                 server_tick=client_skill.server_tick,
                 label="player-skillstart-status-effects",
             )
+            if pending_hits or pvp_timers:
+                CharacterService._send_attack_speed_bonus_stack(
+                    s,
+                    attack_speed=player_attack_speed,
+                    server_tick=client_skill.server_tick,
+                    label="player-attack-speed-bonus-stack",
+                )
             CharacterService._send_player_skill_status_effects(
                 s,
                 location_owner_effects,

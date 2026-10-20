@@ -8,6 +8,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parent
 DATA_ROOT = PACKAGE_ROOT / "data"
 DATABASE_ROOT = DATA_ROOT / "db"
 DEFAULT_STATIC_DB_PATH = Path(os.getenv("DSO_STATIC_DB") or DATABASE_ROOT / "static.db4")
+DEFAULT_LANGUAGE_ROOT = Path(os.getenv("DSO_LANGUAGE_DIR") or DATA_ROOT / "language")
 DEFAULT_PLAYER_DATABASE_PATH = DATABASE_ROOT / "players.sqlite3"
 DEFAULT_ACCOUNT_DATABASE_PATH = DATABASE_ROOT / "accounts.sqlite3"
 DEFAULT_SOCIAL_STATE_PATH = DATA_ROOT / "state" / "social-states.json"

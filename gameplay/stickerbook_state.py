@@ -10,7 +10,10 @@ import sqlite3
 
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
-from dso_server.gameplay.local_mount_state import MountDefinition
+from dso_server.gameplay.local_mount_state import (
+    MountDefinition,
+    with_captured_timing,
+)
 
 
 SERVER_TICKS_PER_SECOND = 25
@@ -171,7 +174,7 @@ def _mount_definition_from_item(
     item_duration = float(item["StatusEffectDuration"] or 0.0)
     cast_duration = float(cast["StatusEffectDuration"] or 0.0)
     cast_seconds = max(0.1, item_duration or cast_duration)
-    return MountDefinition(
+    return with_captured_timing(MountDefinition(
         stickerbook_resource_id=str(resource_id),
         mount_resource_id=mount_resource,
         cast_effect_id=int(cast["rowid"]) - 1,
@@ -189,7 +192,7 @@ def _mount_definition_from_item(
         ),
         stickerbook_state=int(stickerbook_state),
         stickerbook_favorite_position=int(stickerbook_favorite_position),
-    )
+    ))
 
 
 @lru_cache(maxsize=1024)
@@ -340,7 +343,7 @@ def _load_sticker_definition_cached(
                     "#", 1
                 )[0].split(";", 1)[0]
             cast_seconds = max(0.1, duration_seconds)
-            mount = MountDefinition(
+            mount = with_captured_timing(MountDefinition(
                 stickerbook_resource_id=resource_id,
                 mount_resource_id=mount_resource,
                 cast_effect_id=int(status["rowid"]) - 1,
@@ -358,7 +361,7 @@ def _load_sticker_definition_cached(
                 ),
                 stickerbook_state=2,
                 stickerbook_favorite_position=0,
-            )
+            ))
 
         return StickerDefinition(
             resource_id=resource_id,
@@ -590,19 +593,18 @@ def _collector_effect_definitions_cached(
             ).fetchone()
             if status is None:
                 continue
-            duration = max(
-                1,
-                round(
-                    max(1.0, float(status["StatusEffectDuration"] or 1.0))
-                    * SERVER_TICKS_PER_SECOND
-                ),
-            )
             definitions.append(
                 CollectorEffectDefinition(
                     reward_id,
                     int(status["rowid"]) - 1,
                     1,
-                    duration,
+                    # Stickerbook rewards are derived from permanent
+                    # collection progress. The database's one-second
+                    # duration is only a template default. These entries use
+                    # field_0c=0, which the client reserves for permanent
+                    # effects, so they must also carry a zero duration rather
+                    # than an inconsistent one-second timer.
+                    0,
                 )
             )
         return tuple(definitions)

@@ -29,8 +29,11 @@ class _InsufficientRespawnFunds(ValueError):
 
 @lru_cache(maxsize=512)
 def respawn_map_allowed(database_path: str, map_id: str) -> bool:
-    # Arena templates can say OpenPVE/ClosedPVE. Match settings take priority.
-    if battleground_ruleset(map_id) is not None or map_id.endswith("_basicarena"):
+    # Match settings take priority over the generic arena template. The Royal
+    # Arena (a0201_basicarena) is OpenPVE and supports ordinary PvP duels, so
+    # players there need the normal lethal-damage and respawn flow. Other
+    # basic arenas remain governed by their AreaType below.
+    if battleground_ruleset(map_id) is not None:
         return False
     with connect(database_path) as database:
         if database.execute(
@@ -43,6 +46,17 @@ def respawn_map_allowed(database_path: str, map_id: str) -> bool:
             (map_id,),
         ).fetchone()
     return row is not None and row[0] in {"OpenPVE", "ClosedPVE", "Boss"}
+
+
+@lru_cache(maxsize=512)
+def _is_open_pve_map(database_path: str, map_id: str) -> bool:
+    with connect(database_path) as database:
+        row = database.execute(
+            "SELECT AreaType FROM _Template_MapTemplate "
+            "WHERE MapTemplate=? LIMIT 1",
+            (map_id,),
+        ).fetchone()
+    return row is not None and str(row[0] or "") == "OpenPVE"
 
 
 @lru_cache(maxsize=8)
@@ -77,6 +91,55 @@ def _nearest_exit_transform(database_path, map_id, exits, death_position):
     def distance(position, origin):
         return sum((float(a) - float(b)) ** 2 for a, b in zip(position, origin))
 
+    # If the map has a live travel stone, use its authored respawn point when
+    # one is nearby. This keeps the player close to the stone without placing
+    # them inside the travel object. Some maps have no nearby Respawn entry;
+    # in that case place them a few metres in front of the stone.
+    map_path = map_database_path(database_path, map_id)
+    with connect(map_path) as database:
+        travel_points = tuple(
+            bytes(row[0])
+            for row in database.execute(
+                "SELECT Transform FROM _Instance_TravelPoint "
+                "WHERE lower(COALESCE(State, 'active'))='active' "
+                "AND Transform IS NOT NULL"
+            )
+        )
+        respawn_entries = tuple(
+            _transform(bytes(row[0]))
+            for row in database.execute(
+                "SELECT Transform FROM _Instance_Entry "
+                "WHERE EntryType='Respawn' AND Transform IS NOT NULL"
+            )
+        )
+    if travel_points:
+        decoded_points = tuple(
+            _transform(transform)
+            for transform in travel_points
+            if len(transform) == 64
+        )
+        if decoded_points:
+            stone_position, stone_heading = min(
+                decoded_points,
+                key=lambda item: distance(item[0], death_position),
+            )
+            if respawn_entries:
+                nearby_respawn = min(
+                    respawn_entries,
+                    key=lambda entry: distance(entry[0], stone_position),
+                )
+                if distance(nearby_respawn[0], stone_position) <= 12.0:
+                    return nearby_respawn
+            offset = 4.0
+            return (
+                (
+                    stone_position[0] + math.sin(stone_heading) * offset,
+                    stone_position[1],
+                    stone_position[2] + math.cos(stone_heading) * offset,
+                ),
+                stone_heading,
+            )
+
     active_exits = tuple(exit for exit in exits if exit.active)
     nearest_position = (
         min(active_exits, key=lambda exit: distance(exit.position, death_position)).position
@@ -110,6 +173,8 @@ class PlayerRespawnService:
         s.gameplay_death_pending = False
         s.gameplay_respawn_in_progress = False
         s.gameplay_revive_movement_until = 0.0
+        s.gameplay_revive_movement_correction_until = 0.0
+        s.gameplay_respawn_protection_instance_id = None
 
     @staticmethod
     def _respawn_actor_id(s: Session) -> int:
@@ -161,6 +226,7 @@ class PlayerRespawnService:
             s.gameplay_death_pending = True
             if s.gameplay_inventory is not None:
                 s.gameplay_inventory.health_points = 0.0
+            s.gameplay_respawn_protection_instance_id = None
             allowed = getattr(s, "gameplay_respawn_allowed", False)
         CharacterService._clear_player_death_effects(s)
         if allowed and getattr(s, "gameplay_match", None) is None:
@@ -287,6 +353,20 @@ class PlayerRespawnService:
                 )
             if len(effects) != 2:
                 raise ValueError("missing revival animation or protection effect")
+            pvp_open_world = (
+                bool(getattr(s, "gameplay_pvp_enabled", False))
+                and _is_open_pve_map(
+                    str(self.static_database_path), str(s.gameplay_map)
+                )
+            )
+            if pvp_open_world:
+                effects = (
+                    effects[0],
+                    replace(
+                        effects[1],
+                        duration_ticks=5 * SERVER_TICKS_PER_SECOND,
+                    ),
+                )
             revival_seconds = effects[0].duration_ticks / SERVER_TICKS_PER_SECOND
             # Session and map locks must never overlap. Keep the corpse
             # untargetable while restoring its map-owned pool, then charge
@@ -344,13 +424,18 @@ class PlayerRespawnService:
                 inventory.health_points = float(current_health)
                 inventory.secondary_resource = resource
                 s.gameplay_revive_movement_until = time.perf_counter() + revival_seconds
+                s.gameplay_revive_movement_correction_until = 0.0
                 s.gameplay_spawn_position = tuple(position)
                 s.gameplay_last_move = respawn_move
+                s.gameplay_move_budget = 0.0
+                s.gameplay_movement_allowance = None
+                s.gameplay_move_correction_at = 0.0
                 s.gameplay_exit_inside_guids.clear()
                 s.gameplay_exit_distances.clear()
                 committed = True
             if cost:
                 s.send_reliable_ordered(cost_packet, track=True, label="respawn-cost")
+                self._credit_tier_spender_progress(s, cost)
             CharacterService._send_player_revive_to(
                 s, actor_id=LOCAL_PLAYER_ACTOR_ID, position=position,
                 heading=heading, health=current_health, resource=resource,
@@ -362,6 +447,18 @@ class PlayerRespawnService:
             CharacterService._send_player_skill_status_effects(
                 s, effects, server_tick=tick, label="player-revive-effects"
             )
+            if pvp_open_world:
+                protection_effect_id = int(effects[1].effect_id)
+                with s.flow_lock:
+                    protection_ids = tuple(
+                        int(instance_id)
+                        for instance_id, (entry, _expiry)
+                        in s.gameplay_runtime_status_effects.items()
+                        if int(entry.effect_id) == protection_effect_id
+                    )
+                    s.gameplay_respawn_protection_instance_id = (
+                        max(protection_ids) if protection_ids else None
+                    )
             with s.flow_lock:
                 s.gameplay_death_pending = False
                 revival_unlocked = True
@@ -373,6 +470,8 @@ class PlayerRespawnService:
                 s, current_health=current_health, maximum_health=current_health,
                 server_tick=tick, event_seed=tick,
             )
+            if request.same_spot:
+                self._season_pass_feed(s, "RespawnInstantly")
             CharacterService._accept_gameplay_state_command(s, 0x0062)
         except _InsufficientRespawnFunds:
             s.send_reliable_ordered(

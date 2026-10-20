@@ -2348,6 +2348,7 @@ class LocalCombatStateTests(unittest.TestCase):
             direction=(0.0, -0.5, 1.0, 0.0),
             target_position=(0.0, 0.0, 20.0),
             projectile_radius=0.3,
+            maximum_projectile_range=0.0,
         )
         hit = LocalCombatState._fixed_projectile_intersects_player
         self.assertTrue(hit(attack, (0.0, 0.0, 20.0)))

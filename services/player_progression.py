@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 import math
+import os
 from pathlib import Path
 import sqlite3
 from types import MappingProxyType
@@ -27,6 +28,9 @@ from dso_server.protocol.skill_book_protocol import experience_commands
 
 
 UINT32_MAX = 0xFFFFFFFF
+# The playable level cap: the database's top authored level unless
+# DSO_PLAYER_LEVEL_CAP lowers it (100 matches the retail level cap).
+PLAYER_LEVEL_CAP = int(os.getenv("DSO_PLAYER_LEVEL_CAP", "0") or 0) or UINT32_MAX
 
 
 @dataclass(frozen=True)
@@ -102,7 +106,7 @@ class PlayerProgressionCatalog:
         if not thresholds:
             return 0
         current = max(0, int(current_xp), thresholds.get(int(current_level), 0))
-        cap = thresholds[min(100, max(thresholds))]
+        cap = thresholds[min(100, PLAYER_LEVEL_CAP, max(thresholds))]
         if current >= cap:
             return 0
         level = max(level for level, xp in thresholds.items() if xp <= current)
@@ -133,7 +137,7 @@ class PlayerProgressionCatalog:
             int(current_xp),
             int(thresholds[level]),
         )
-        maximum_level = max(thresholds)
+        maximum_level = min(PLAYER_LEVEL_CAP, max(thresholds))
         maximum_xp = int(thresholds[maximum_level])
         if level >= maximum_level or current >= maximum_xp:
             return None
@@ -144,7 +148,11 @@ class PlayerProgressionCatalog:
             if candidate_level >= level and int(threshold) <= target
         )
         level_base = int(thresholds[new_level])
-        next_base = int(thresholds.get(new_level + 1, level_base + 1))
+        next_base = (
+            level_base + 1
+            if new_level >= PLAYER_LEVEL_CAP
+            else int(thresholds.get(new_level + 1, level_base + 1))
+        )
         if next_base <= level_base:
             next_base = min(UINT32_MAX, level_base + 1)
         awarded = max(0, target - current)
@@ -238,6 +246,45 @@ def load_player_progression_catalog(
     return _load_player_progression_catalog_cached(
         *_database_signature(database_path)
     )
+
+
+def player_level_range(database_path, class_name: str) -> tuple[int, int]:
+    """Playable level range, bounded by PLAYER_LEVEL_CAP."""
+
+    thresholds = _level_thresholds(database_path, class_name)
+    return min(thresholds), min(PLAYER_LEVEL_CAP, max(thresholds))
+
+
+def player_level_xp(database_path, class_name: str, level: int) -> tuple[int, int]:
+    """Cumulative XP at ``level`` and at the following one.
+
+    ``NewPlayerCommand`` carries both and the client asserts a positive span,
+    so the topmost authored level receives a one-point next bound.
+    """
+
+    thresholds = _level_thresholds(database_path, class_name)
+    level = int(level)
+    if level > PLAYER_LEVEL_CAP:
+        raise ValueError(
+            f"{class_name} is capped at level {PLAYER_LEVEL_CAP}"
+        )
+    if level not in thresholds:
+        raise ValueError(
+            f"{class_name} has no authored XP progression for level {level}"
+        )
+    base = int(thresholds[level])
+    if level >= min(PLAYER_LEVEL_CAP, max(thresholds)):
+        return base, base + 1
+    return base, max(base + 1, int(thresholds.get(level + 1, base + 1)))
+
+
+def _level_thresholds(database_path, class_name: str) -> Mapping[int, int]:
+    thresholds = load_player_progression_catalog(
+        database_path
+    ).player_level_xp.get(str(class_name), {})
+    if not thresholds:
+        raise ValueError(f"unknown character class {class_name!r}")
+    return thresholds
 
 
 class PlayerProgressionService:
@@ -370,5 +417,6 @@ __all__ = [
     'PlayerProgressionCatalog',
     'PlayerProgressionService',
     'PlayerXPTransition',
+    'PLAYER_LEVEL_CAP',
     'load_player_progression_catalog',
 ]

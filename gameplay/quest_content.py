@@ -587,6 +587,16 @@ _build_catalog_cached = lru_cache(maxsize=4)(_build_catalog)
 
 def load_quest_catalog(path: str | Path) -> QuestCatalog:
     path = Path(path)
+    if not path.is_file():
+        return QuestCatalog(
+            quests=MappingProxyType({}),
+            by_giver=MappingProxyType({}),
+            by_goal=MappingProxyType({}),
+            by_start_signal=MappingProxyType({}),
+            switch_props=MappingProxyType({}),
+            by_chapter=MappingProxyType({}),
+            prop_switches=MappingProxyType({}),
+        )
     stat = path.stat()
     return _build_catalog_cached(str(path), stat.st_mtime_ns, stat.st_size)
 

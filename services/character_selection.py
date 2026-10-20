@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dso_server.protocol.item_customization_protocol import item_tint
+from dso_server.protocol.currency_protocol import STARTER_GOLD_UNITS
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -231,20 +232,45 @@ class CharacterSelectionService:
         return True
 
     @staticmethod
-    def _equipment_record_for(item) -> EquipmentRecord:
+    def _equipment_record_for(
+            item, static_database=None, *, enabled: bool = True) -> EquipmentRecord:
         """One selection-screen record for an equipped inventory item.
 
         ``field_f8`` is the transmog skin and ``field_20`` is packed ARGB.
+        Character-selection previews construct models from item templates, so
+        newer skin ids are resolved to their authored ``TooltipItem`` model.
         The captured retail records also carry an ``effect_id``
         for set/weapon FX; its runtime source is not recovered, so it is left
         empty exactly as the character-creation records leave it.
         """
 
         tint = item_tint(item) or (0.0, 0.0, 0.0, 0.0)
+        appearance_id = str(item.field_f8 or item.field_80 or "")
+        item_id = str(item.template_id)
+        if appearance_id and static_database is not None:
+            try:
+                visual_item = (
+                    static_database.character_selection_visual_item_template(
+                        item.template_id, appearance_id
+                    )
+                )
+                if visual_item != item_id:
+                    item_id = visual_item
+                    # The resolved template already carries the selected
+                    # model. Keep a same-id appearance override: basic
+                    # equipment skins often use their own item template as
+                    # the preview model while that template still points at
+                    # the legacy base skin.
+                    if visual_item != appearance_id:
+                        appearance_id = ""
+            except (OSError, ValueError, CharacterSelectionError):
+                # Older static databases may not contain the preview link.
+                pass
         return EquipmentRecord(
-            item_id=str(item.template_id),
-            appearance_id=str(item.field_f8 or item.field_80 or ""),
+            item_id=item_id,
+            appearance_id=appearance_id,
             tint=tint,
+            enabled=bool(enabled),
         )
 
     def _persisted_selection_equipment(
@@ -263,6 +289,7 @@ class CharacterSelectionService:
         inventory = getattr(state, "inventory", None)
         if inventory is None:
             return None
+        hidden_skins = getattr(state, "hidden_equipment_skins", {})
         items = {int(item.item_id): item for item in inventory.items}
         by_slot = {}
         for item_id, slots in inventory.equipment_slots.items():
@@ -271,10 +298,23 @@ class CharacterSelectionService:
                 continue
             for slot in slots:
                 by_slot[int(slot)] = item
-        return [
-            CharacterSelectionService._equipment_record_for(by_slot[slot])
-            for slot in sorted(by_slot)
-        ]
+        records = []
+        for slot in sorted(by_slot):
+            item = by_slot[slot]
+            customization_slot = 12 if slot == 7 else slot
+            hidden_skin = str(hidden_skins.get(customization_slot, ""))
+            item_skin = str(item.field_f8 or item.field_80 or "")
+            enabled = not hidden_skin or bool(
+                item_skin and item_skin != hidden_skin
+            )
+            records.append(
+                CharacterSelectionService._equipment_record_for(
+                    item,
+                    getattr(self, "static_database", None),
+                    enabled=enabled,
+                )
+            )
+        return records
 
     def _selection_equipment(self, character_id: int) -> list[EquipmentRecord]:
         """Equipment for one character's selection-screen model.
@@ -603,7 +643,7 @@ class CharacterSelectionService:
                     body_stature=request.body_stature,
                     character_id=character_id,
                     unknown_u32_a=0,
-                    premium_currency=9_999_999,
+                    premium_currency=100_000_000,
                     progression_u64=0,
                     progression_u32=0,
                     level=1,
@@ -627,7 +667,9 @@ class CharacterSelectionService:
         self._reencode_character_selection()
         if self.account_store is not None:
             self.account_store.put_profile(
-                CharacterProfile.from_character_record(character),
+                CharacterProfile.from_character_record(
+                    character, gold=STARTER_GOLD_UNITS
+                ),
                 flush=False,
             )
 

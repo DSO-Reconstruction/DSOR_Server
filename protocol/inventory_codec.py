@@ -38,6 +38,13 @@ BOOTSTRAP_CONSUMABLE_ID = 0x00F00003
 BOOTSTRAP_CONSUMABLE_TEMPLATE = "potion_combined_health_rarity_05"
 BOOTSTRAP_TRAVEL_ITEM_ID = 0x00F00004
 BOOTSTRAP_TRAVEL_ITEM_TEMPLATE = "misc_travelmap"
+BOOTSTRAP_STARTER_RUNE_ID_START = 0x00F00200
+BOOTSTRAP_STARTER_JEWEL_ID_START = 0x00F00210
+BOOTSTRAP_STARTER_RING_DEATH_ID = 0x00F00220
+BOOTSTRAP_STARTER_RING_LIFE_ID = 0x00F00221
+BOOTSTRAP_STARTER_MOUNT_ID = 0x00F00222
+BOOTSTRAP_STARTER_MORTIS_PET_ID = 0x00F00223
+BOOTSTRAP_STARTER_SEASON_PASS_IDS = range(0x00F00224, 0x00F00228)
 
 # UI::TransmogWidget::UpdateEquipmentSlots iterates its eight UI slots and,
 # in normal mode, asks Game::Inventory for equipment slot ids 0 through 7.
@@ -60,6 +67,9 @@ _CLASS_CORE_EQUIPMENT: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
             (6,),
         ),
         ("warrior_base_backitem_defense_crafted", (7,)),
+        ("all_base_amulet_crafted", (10,)),
+        ("all_base_belt_crafted", (11,)),
+        ("warrior_base_weaponmod_crafted", (12,)),
     ),
     "mage": (
         ("mage_base_helmet_crafted", (0,)),
@@ -70,6 +80,9 @@ _CLASS_CORE_EQUIPMENT: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
         ("mage_base_rh_staff_speedAttack_damage", (5,)),
         ("mage_base_lh_orb_armor_healthpoints_resistanceAll", (6,)),
         ("mage_base_backitem_defense_crafted", (7,)),
+        ("all_base_amulet_crafted", (10,)),
+        ("all_base_belt_crafted", (11,)),
+        ("mage_base_weaponmod_crafted", (12,)),
     ),
     "ranger": (
         ("ranger_base_helmet_crafted", (0,)),
@@ -83,6 +96,9 @@ _CLASS_CORE_EQUIPMENT: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
             (6,),
         ),
         ("ranger_base_backitem_defense_crafted", (7,)),
+        ("all_base_amulet_crafted", (10,)),
+        ("all_base_belt_crafted", (11,)),
+        ("ranger_base_weaponmod_crafted", (12,)),
     ),
     "dwarf": (
         ("dwarf_base_helmet_crafted", (0,)),
@@ -96,6 +112,9 @@ _CLASS_CORE_EQUIPMENT: dict[str, tuple[tuple[str, tuple[int, ...]], ...]] = {
             (6,),
         ),
         ("dwarf_base_backitem_defense_crafted", (7,)),
+        ("all_base_amulet_crafted", (10,)),
+        ("all_base_belt_crafted", (11,)),
+        ("dwarf_base_weaponmod_crafted", (12,)),
     ),
 }
 
@@ -945,21 +964,105 @@ def encode_bootstrap_inventory_info(
         )
         core_allocations[item_id] = slots
 
-    rune_14 = ItemInfo(
-        item_id=BOOTSTRAP_ITEM_ID,
-        template_id=BOOTSTRAP_ITEM_TEMPLATE,
-        socket_count=7,
-        socketed_templates=["", "", "", "", "", "", ""],
+    starter_trinkets: list[ItemInfo] = []
+    trinket_allocations: dict[int, tuple[int, ...]] = {}
+    for index in range(5):
+        item_id = BOOTSTRAP_STARTER_RUNE_ID_START + index
+        starter_trinkets.append(
+            ItemInfo(
+                item_id=item_id,
+                template_id="all_base_trinket_rune_01",
+                socket_count=5,
+                socketed_templates=["", "", "", "", ""],
+                item_level=1,
+                field_08=0,
+                field_18=0x2100 + index,
+                field_30=1,
+                field_38=0,
+                created_at=created_at,
+            )
+        )
+        trinket_allocations[item_id] = (13 + index,)
+    for index in range(5, 7):
+        item_id = BOOTSTRAP_STARTER_RUNE_ID_START + index
+        starter_trinkets.append(
+            ItemInfo(
+                item_id=item_id,
+                template_id="all_base_trinket_rune_01",
+                socket_count=5,
+                socketed_templates=["", "", "", "", ""],
+                item_level=1,
+                field_08=0,
+                field_18=0x2100 + index,
+                field_30=1,
+                field_38=0,
+                created_at=created_at,
+            )
+        )
+        trinket_allocations[item_id] = (13 + index,)
+    for index in range(3):
+        item_id = BOOTSTRAP_STARTER_JEWEL_ID_START + index
+        starter_trinkets.append(
+            ItemInfo(
+                item_id=item_id,
+                template_id="all_base_trinket_jewel_01",
+                socket_count=5,
+                socketed_templates=["", "", "", "", ""],
+                item_level=1,
+                field_08=0,
+                field_18=0x2110 + index,
+                field_30=1,
+                field_38=0,
+                created_at=created_at,
+            )
+        )
+        trinket_allocations[item_id] = (20 + index,)
+    ring_death = ItemInfo(
+        item_id=BOOTSTRAP_STARTER_RING_DEATH_ID,
+        template_id="all_mythic_ring_death",
+        field_08=6,
+        socket_count=0,
+        socketed_templates=[],
+        item_level=1,
+        field_18=0x2120,
+        field_30=1,
+        field_38=0,
         created_at=created_at,
     )
-    rune_13 = ItemInfo(
-        item_id=BOOTSTRAP_SECOND_RUNE_ID,
-        template_id=BOOTSTRAP_ITEM_TEMPLATE,
-        socket_count=7,
-        socketed_templates=["", "", "", "", "", "", ""],
-        item_level=140,
-        field_18=9047,
-        field_38=8,
+    ring_life = ItemInfo(
+        item_id=BOOTSTRAP_STARTER_RING_LIFE_ID,
+        template_id="all_mythic_ring_life",
+        field_08=6,
+        socket_count=0,
+        socketed_templates=[],
+        item_level=1,
+        field_18=0x2121,
+        field_30=1,
+        field_38=0,
+        created_at=created_at,
+    )
+    manticore = ItemInfo(
+        item_id=BOOTSTRAP_STARTER_MOUNT_ID,
+        template_id="mythical_mount_manticore_01",
+        field_08=7,
+        socket_count=0,
+        socketed_templates=[],
+        item_level=1,
+        field_18=0x2122,
+        field_30=1,
+        field_38=0,
+        created_at=created_at,
+    )
+    mortis_pet = ItemInfo(
+        item_id=BOOTSTRAP_STARTER_MORTIS_PET_ID,
+        template_id="pet_mortis_phase2_epic",
+        field_08=4,
+        socket_count=0,
+        socketed_templates=[],
+        item_level=1,
+        field_18=0x2123,
+        field_30=1,
+        field_38=0,
         created_at=created_at,
     )
     health_potion = ItemInfo(
@@ -987,16 +1090,42 @@ def encode_bootstrap_inventory_info(
         field_38=0,
         created_at=created_at,
     )
-    equipment_slots = dict(core_allocations)
-    # StartEquipment owns only the class' real equipment.  Earlier localhost
-    # snapshots put development runes into locked RuneTrinket slots and the
-    # potion into the equipment map. Fresh-character clients do not yet own
-    # those UI slots while processing their first InventoryInfo, which can
-    # reach DrasaUIManager::GetInventoryWidget before inGameWidget exists.
-    # Keep the conveniences, but allocate them as ordinary inventory items.
+    season_pass_tickets = [
+        ItemInfo(
+            item_id=item_id,
+            template_id=template_id,
+            field_08=rarity,
+            socket_count=0,
+            socketed_templates=[],
+            item_level=1,
+            field_18=0x2124 + index,
+            field_30=1,
+            field_38=0,
+            created_at=created_at,
+        )
+        for index, (item_id, template_id, rarity) in enumerate(zip(
+            BOOTSTRAP_STARTER_SEASON_PASS_IDS,
+            ("gold_pass", "gold_pass_2", "red_pass", "red_pass_2"),
+            (5, 5, 7, 7),
+        ))
+    ]
+    equipment_slots = {**core_allocations, **trinket_allocations}
+    equipment_slots[ring_death.item_id] = (8,)
+    equipment_slots[ring_life.item_id] = (9,)
+    # All seven RuneTrinket equipment slots are populated. RuneTrinket and
+    # JewelTrinket items each keep their normal five gem sockets.
+    # The client's equipment table exposes seven RuneTrinket slots and three
+    # JewelTrinket slots, all populated here.
     return encode_inventory_info(
         InventoryInfo(
-            items=core_items + [rune_14, rune_13, health_potion, travel_map],
+            items=core_items + starter_trinkets + [
+                ring_death,
+                ring_life,
+                manticore,
+                mortis_pet,
+                health_potion,
+                travel_map,
+            ] + season_pass_tickets,
             equipment_slots=equipment_slots,
             # Retail places TravelMapItem in ordinary inventory storage. It
             # must never enter equipment_slots: AddItemAtEquipmentSlot calls
@@ -1004,8 +1133,12 @@ def encode_bootstrap_inventory_info(
             storage_58={
                 travel_map.item_id: 0,
                 health_potion.item_id: 1,
-                rune_14.item_id: 2,
-                rune_13.item_id: 3,
+                manticore.item_id: 2,
+                mortis_pet.item_id: 3,
+                **{
+                    item.item_id: 4 + index
+                    for index, item in enumerate(season_pass_tickets)
+                },
             },
             actor_id=actor_id,
         )

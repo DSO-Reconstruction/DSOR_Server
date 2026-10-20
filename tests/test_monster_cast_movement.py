@@ -54,10 +54,17 @@ class MonsterCastMovementTests(unittest.TestCase):
         self.use_encounter(encounter, template)
         definitions = self.combat.monsters[self.actor].attacks
         self.assertEqual({d.resource_id for d in definitions},
-                         {"boss_grimmag_arcanetorrent_01", "boss_grimmag_fireball_01"})
+                         {"boss_grimmag_arcanetorrent_01", "boss_grimmag_fireball_01",
+                          # A radius-targeted Shifted ground strike.
+                          "boss_grimmag_lightningstrike_01"})
         for definition in definitions:
             with self.subTest(skill=definition.resource_id):
                 self.use_encounter(encounter, template)
+                # Grimmag's BehaviorType is StaticStrategy, so its runtime
+                # run speed is 0; give it its authored RunSpeed to see the
+                # chase resume once the cast's motion lock ends.
+                self.combat.monsters[self.actor] = replace(
+                    self.combat.monsters[self.actor], run_speed=4.5)
                 attack = self.cast(definition=definition, distance=5)
                 origin = self.combat.monster_positions[self.actor]
                 yaw = self.combat.monster_yaws[self.actor]
@@ -65,7 +72,10 @@ class MonsterCastMovementTests(unittest.TestCase):
                 for frame in range(1, attack.motion_unblock_frame):
                     now = 100 + frame / 25
                     # Impact can finish while the animation still locks motion.
-                    self.combat.resolve_due_monster_attacks(self.wire(self.point(5)), now=now)
+                    # An area skill (the torrent's cone) is retired by the
+                    # tick's final, finalizing pass, as services/monster_combat.py does.
+                    self.combat.resolve_due_monster_attacks(
+                        self.wire(self.point(5)), now=now, finalize_area_attacks=True)
                     moves = self.advance(now, goal=self.point(23, 4))
                     self.assertEqual(moves, ())
                     self.assertEqual(self.combat.monster_positions[self.actor], origin)
@@ -179,7 +189,9 @@ class MonsterCastMovementTests(unittest.TestCase):
         move = batch.movements[0].value
         self.assertEqual(move.scalar_byte, 0)
         self.assertEqual(move.duration_ticks, 0)
-        self.assertEqual(move.start_tick, attack.server_tick)
+        # One tick before the cast, so its idle transition cannot supersede
+        # the cast animation (services/monster_activity.py).
+        self.assertEqual(move.start_tick, attack.server_tick - 1)
         for expected, actual in zip(self.wire(self.home), move.relative_position):
             self.assertAlmostEqual(actual, expected, delta=1/64)
         receiver = Session(("127.0.0.1", 40301), FakeSocket())

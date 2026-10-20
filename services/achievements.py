@@ -48,6 +48,10 @@ from dso_server.services.base import CharacterService
 
 
 ACHIEVEMENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] achievement:"
+RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS = (
+    "item_use_item_rune_extension_stone",
+    "item_use_item_rune_extension_stone_02",
+)
 
 
 def _log(message: str) -> None:
@@ -139,10 +143,18 @@ class AchievementService:
                 continue
             if complete_achievement(state, definition):
                 granted.append(definition.achievement_id)
+        for resource_id in RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS:
+            definition = catalog.achievement(resource_id)
+            if definition is not None and complete_achievement(
+                state, definition
+            ):
+                granted.append(definition.achievement_id)
         if granted:
             refresh_derived_achievements(catalog, state)
-            _log(f"granted recipe achievements {granted!r}")
-            CharacterService._request_account_save(s, "achievements granted")
+            _log(f"granted initialization achievements {granted!r}")
+            CharacterService._request_account_save(
+                s, "initialization achievements granted"
+            )
         return AchievementInfo(self._achievement_records(s))
 
     # ------------------------------------------------------------------
@@ -200,7 +212,10 @@ class AchievementService:
     def _achievement_on_map_entered(self, s: Session, map_keys) -> None:
         """``map_keys``: the map id plus its access group / access id."""
 
-        self._achievement_feed(s, "enter_map", tuple(dict.fromkeys(map_keys)))
+        map_keys = tuple(dict.fromkeys(map_keys))
+        self._achievement_feed(s, "enter_map", map_keys)
+        for map_key in map_keys:
+            self._season_pass_feed(s, "EnterMap", value=str(map_key))
 
     def _achievement_on_monsters_killed(self, s: Session, monsters) -> None:
         self._daily_challenge_monsters_killed(s, monsters)
@@ -224,6 +239,10 @@ class AchievementService:
 
     def _achievement_on_quest_closed(self, s: Session, quest_id: str) -> None:
         self._daily_challenge_feed(s, "QuestsClosed")
+        wanted = self._wanted_catalog()
+        if any(mission.quest_id.casefold() == str(quest_id).casefold()
+               for mission in wanted.missions.values()):
+            self._season_pass_feed(s, "WantedThief")
         self._achievement_feed(s, "quest", (quest_id,))
 
     def _achievement_on_dungeon_cleared(self, s: Session, map_id: str) -> None:

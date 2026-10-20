@@ -1,5 +1,6 @@
 """Keep premium capacity and recoverable overflow in sync with membership."""
 
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from dso_server.gameplay.premium_bags import (
@@ -14,6 +15,9 @@ from dso_server.protocol.membership_protocol import (
 )
 from dso_server.protocol.player_init_protocol import (
     ServerCommand, encode_server_command_batch,
+)
+from dso_server.protocol.gameplay_protocol import (
+    StatusEffect, encode_status_effect_batch,
 )
 from dso_server.services.base import CharacterService
 
@@ -52,6 +56,7 @@ class PremiumBagService:
             )
             locked_allocations = not active and bool(inventory.storage_80 or inventory.storage_d0)
             commands = []
+            membership_effect_changes = []
             if membership_changed:
                 s.gameplay_membership_active = active
                 commands.append(ServerCommand(
@@ -61,6 +66,26 @@ class PremiumBagService:
                         membership_type=s.gameplay_membership_type, active=active,
                     ), inventory.actor_id,
                 ))
+                if not active:
+                    membership_effect_ids = getattr(
+                        s, "gameplay_membership_status_effect_ids", frozenset()
+                    )
+                    for instance_id, entry in tuple(
+                            s.gameplay_persistent_status_effects.items()):
+                        if int(entry.effect_id) not in membership_effect_ids:
+                            continue
+                        s.gameplay_persistent_status_effects.pop(instance_id, None)
+                        s.gameplay_timed_status_effect_expiries.pop(instance_id, None)
+                        membership_effect_changes.append(replace(
+                            entry,
+                            has_details=False,
+                            values=(),
+                            field_25=False,
+                            field_39=False,
+                            field_38=False,
+                            field_3c=0xFF,
+                            shape_values=(),
+                        ))
             inventory_changed = False
             if capacity_changed or pending or locked_allocations:
                 updated = clone_inventory_info(inventory)
@@ -84,6 +109,17 @@ class PremiumBagService:
             CharacterService._send_world_loot_state_batch(
                 s, packet, bits, label="premium-bags-updated",
             )
+        if membership_effect_changes and s.connected and s.gameplay_presence_ready:
+            status = StatusEffect(False, tuple(membership_effect_changes))
+            packet, packet_bits = encode_status_effect_batch(
+                status, actor_id=inventory.actor_id,
+            )
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits,
+                label="membership-status-effect",
+            )
+            if s.gameplay_presence_callback is not None:
+                s.gameplay_presence_callback(s, ("status_effects", (status,)))
         CharacterService._schedule_premium_bag_expiry(s)
         return membership_changed or inventory_changed
 

@@ -384,7 +384,7 @@ class SocketEffectDatabase:
                            StatusEffectTickRate AS TickRate, MaxStackSize,
                            AuraRadius, AuraHeight,
                            AuraShape, AuraEffectId, AuraTargets, EffectHosts,
-                           StartModifiers, TickModifiers
+                           StartModifiers, TickModifiers, DoneModifiers
                     FROM _Template_StatusEffect
                     """
                 )
