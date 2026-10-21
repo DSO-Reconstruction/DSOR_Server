@@ -1729,7 +1729,11 @@ class LocalCombatState:
         )
         resource_now = time.perf_counter()
         self.last_player_resource_change_at.setdefault(actor_id, resource_now)
-        self.last_player_resource_regeneration_at[actor_id] = resource_now
+        # A refresh (every status expiry re-registers the player) must not
+        # restart the regeneration clock.
+        self.last_player_resource_regeneration_at.setdefault(
+            actor_id, resource_now
+        )
 
     def unregister_player(self, actor_id: int) -> None:
         actor_id = int(actor_id)
@@ -1813,8 +1817,10 @@ class LocalCombatState:
             return False, current, maximum, cost, gain
         current = min(maximum, max(0.0, current - cost + gain))
         resource[0] = current
+        # Only rage's out-of-combat delay counts from the last spend; mana keeps
+        # ticking on its own clock. Restarting it here meant a mage casting more
+        # often than once a second never regenerated at all.
         self.last_player_resource_change_at[actor_id] = float(now)
-        self.last_player_resource_regeneration_at[actor_id] = float(now)
         return True, current, maximum, cost, gain
 
     def note_player_attacked(self, actor_id: int, *, now: float) -> None:
@@ -1844,14 +1850,15 @@ class LocalCombatState:
             amount = float(resource[1]) * float(fraction) + float(absolute)
             if abs(amount) <= 1e-9:
                 continue
-            eligible_at = (
-                self.last_player_resource_change_at.get(actor_id, now)
-                + max(0.0, float(delay))
+            cursor = self.last_player_resource_regeneration_at.get(
+                actor_id, now
             )
-            cursor = max(
-                self.last_player_resource_regeneration_at.get(actor_id, now),
-                eligible_at,
-            )
+            if delay > 0:
+                cursor = max(
+                    cursor,
+                    self.last_player_resource_change_at.get(actor_id, now)
+                    + float(delay),
+                )
             due_count = min(
                 8,
                 max(0, int((now - cursor + 1e-6) / float(interval))),

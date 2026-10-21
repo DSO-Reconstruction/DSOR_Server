@@ -186,6 +186,25 @@ def test_hits_do_not_delay_mana_or_other_players_resource(encounter):
     assert combat.regenerate_player_resources(now=now) == ((1,60.0,100.0,10.0),)
 
 
+def test_mana_regenerates_while_casting_faster_than_its_interval(encounter):
+    """Casting every 0.8 s, mana still ticks once a second: a spend (or a vitals
+    refresh) must not restart the regeneration clock; only rage decay waits."""
+    combat = LocalCombatState(encounter, player_actor_id=1, player_health=1000)
+    combat.register_player(1, 1000, current_resource=20, maximum_resource=100,
+                           resource_regeneration_absolute=5)
+    start = combat.last_player_resource_regeneration_at[1]
+    gained = 0.0
+    for index in range(1, 11):
+        now = start + index * 0.8
+        ok, *_ = combat.apply_player_skill_resource(1, cost_fraction=0.01, gain_fraction=0.0, now=now)
+        assert ok
+        combat.register_player(1, 1000, maximum_resource=100, resource_regeneration_absolute=5)
+        gained += sum(t[3] for t in combat.regenerate_player_resources(now=now))
+    # Ten casts over 8 s: eight ticks of 5.
+    assert gained == 40
+    assert combat.player_resource[1][0] == 20 - 10 + 40
+
+
 @pytest.mark.parametrize('class_name', ['warrior', 'mage', 'ranger', 'dwarf'])
 @pytest.mark.parametrize('player_level,monster_level', [(100,15), (15,100), (100,125), (100,145)])
 @pytest.mark.parametrize('force_drops', [False, True])
