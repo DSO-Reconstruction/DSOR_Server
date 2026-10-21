@@ -531,10 +531,17 @@ class PVPCombatService:
                     frost_hit=frost_hit,
                 )
             }
+            # Only the hit half of the caster column belongs to an impact.
+            # ``skillstart`` effects already went out with the cast; sending
+            # them again per player hit charged Blood Mage's health cost once
+            # for every projectile that landed.
             user_effects = tuple(
                 effect
                 for effect in getattr(geometry, "user_status_effects", ())
-                if combat._effect_applies(
+                if normalize_socket_trigger(effect.trigger) in {
+                    "", "hit", "hitcritical", "hitlowhealth", "hitfrost",
+                }
+                and combat._effect_applies(
                     effect,
                     cast_id=int(skill.cast_id) + actor_id + projectile_index * 257,
                     killed=False,

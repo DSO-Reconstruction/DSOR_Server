@@ -195,6 +195,37 @@ class PVPPlayerEffectTests(unittest.TestCase):
         self.assertEqual(len(timers), 1)
         self.assertEqual(next(iter(self.source.gameplay_pending_pvp_hits.values())).damage, 0)
 
+    def test_impact_resends_only_hit_caster_effects(self):
+        """Blood Mage's skillstart health cost must not repeat per PvP hit."""
+
+        self_damage = self.effect(
+            "talent_bloodmage_self_damage,C:1.0,D:1.0,$0:-0.1,ON:SkillStart"
+        )
+        on_hit = self.effect("debuff_cc_stun,D:5")
+        geometry = replace(
+            self.combat._load_player_skill_geometry(1848),
+            scale_skill_timing=False, hit_frame=0, bullet_emit_delay=0.0,
+            targeting_type="Actor", hit_range=1.0, impact_radius=0.0,
+            attack_range=20.0, projectile_range=0.0, projectile_velocity=0.0,
+            damage_type="Physical", victim_status_effects=(),
+            user_status_effects=(self_damage, on_hit),
+            location_status_effects=(), bullet_location_effects=(),
+            bullet_death_effects=(),
+        )
+        with patch.object(self.combat, "_load_player_skill_geometry", return_value=geometry), \
+                patch.object(self.combat, "_modified_player_skill_geometry", side_effect=lambda g, _: g), \
+                patch.object(self.combat, "player_skill_impact_delay_seconds", return_value=0.0):
+            CharacterService._prepare_pvp_skill_hits(
+                self.source, self.combat, SkillCast(0, 0, 0.0, 200, 2),
+                source_position=self.source.gameplay_last_move.relative_position,
+                source_actor_id=self.source.gameplay_remote_actor_id,
+                player_damage_range=(100.0, 100.0), attack_speed_multiplier=1.0,
+                modifier_sources=(), explicit_target_actor_ids=(self.target.gameplay_remote_actor_id,),
+            )
+        pending = next(iter(self.source.gameplay_pending_pvp_hits.values()))
+        self.assertEqual(self_damage.trigger, "skillstart")
+        self.assertEqual(pending.user_status_effects, (on_hit,))
+
     def test_weaken_changes_victims_outgoing_damage_and_expires(self):
         def stats():
             return calculate_player_combat_stats(
