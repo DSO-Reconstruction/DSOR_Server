@@ -1237,3 +1237,52 @@ a 60 ms ACK delay).
   now off the hot path but not faster; with one worker, three players
   entering together still initialize one after another.
 
+## 14. Maps left without a simulation thread (2026-10-21)
+
+Reported: monsters stop moving and attacking while the rest of the game --
+map travel, chat, casting -- keeps working.
+
+`monster-stalls.log` held 85 server runs (2026-09-09 to 2026-10-21): 1,172
+worker samples, 118 worker exits and no worker that stopped progressing.
+Every sample showed a single combat target, so none of those sessions had two
+players on one map, and the log cannot show a map that has no worker at all.
+Three ways to stop the monsters without stalling any thread were found.
+
+- **The ownership rules disagreed.** `claim_monster_world` made every session
+  on the instance eligible to own its simulation once any player summon
+  existed; the re-elections on a visibility change and on departure ignored
+  summons. With player A (lower character id) away from the monsters and B
+  fighting, B's worker lost its claim to A, re-elected B, was refused by its
+  own claim check and retired. B's ActorRequests, casts and summons were
+  refused the same way, so the map stayed frozen until A acted or the summon
+  was gone. Reproduced with the real worker. One election,
+  `_monster_world_owner`, now serves all three paths and skips departed and
+  disconnected sessions.
+- **A start request could be lost.** `_start_monster_chase` refuses while a
+  worker is installed, including one that has already decided to retire
+  (idle timeout or hand-off) but has not released its slot yet. The request
+  is now recorded under `flow_lock`, and the worker checks it under the same
+  lock before it releases the slot.
+- **Oversized reliable datagrams.** The `monster-skill` batch has no size
+  cap: about 15 monsters starting an attack in one tick exceed the
+  1,232-byte budget, 20 reach about 1.6 KB. The client drops such a datagram
+  without acknowledging it (GAME_EVENTS.md), so it is retried forever and the
+  client's ordered stream stops behind it, and a client that keeps sending is
+  never timed out. `Session.send_reliable_ordered` now fragments any message
+  whose datagram would exceed `RELIABLE_DATAGRAM_LIMIT`, the split-fragment
+  size. A 15-hit player-owned DoT batch in the test suite (1,239 bytes) was
+  one such message. The log also holds one instance of the symptom: a
+  `prop-info-response` left unacknowledged for 108 s on 2026-09-28 while its
+  client kept sending; its size was not recorded.
+
+As a backstop the stall watchdog runs a supervisor once a second. An instance
+whose players have spawned monsters, summons or regeneration but no live
+simulation thread for `DSO_MONSTER_ORPHAN_GRACE_SECONDS` gets one started for
+its elected owner, reported on the console and in `monster-stalls.log`. The
+retransmit loop reports a reliable frame that a talking client leaves
+unacknowledged for `DSO_RELIABLE_STUCK_WARNING_SECONDS`.
+
+Still open: reliable sends from the map worker still wait on a viewer's
+`outbound_lock` without a timeout, and an exception in a tick's publishing
+phase still drops that tick's one-shot packets (attack starts, kills,
+return-home transitions) for every viewer.
