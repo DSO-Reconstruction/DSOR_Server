@@ -9,6 +9,35 @@ class PlayerOwnedResolutionDispatchService:
     """Publish DoT, summon, aura, and reflection hits by owner and tick."""
 
     @staticmethod
+    def _remove_managed_player_aura_effects(s, definitions) -> None:
+        """End a location-owned buff and its healing when its owner leaves."""
+        entries = []
+        timers = []
+        with s.flow_lock:
+            for definition in definitions:
+                running = CharacterService._running_player_status_effect(s, definition.effect_id, now=time.perf_counter())
+                if running is None:
+                    continue
+                instance_id, entry = running
+                s.gameplay_runtime_status_effects.pop(instance_id, None)
+                entries.append(replace(entry, has_details=False, values=()))
+                for key in (("player-status-tick", instance_id), ("runtime-effect-expire", instance_id)):
+                    timer = s.gameplay_projectile_timers.pop(key, None)
+                    if timer is not None:
+                        timers.append(timer)
+        for timer in timers:
+            timer.cancel()
+        if entries:
+            value = StatusEffect(False, tuple(entries))
+            s.send_reliable_ordered(
+                encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),
+                track=True, label="player-left-managed-aura",
+            )
+            if s.gameplay_presence_callback is not None:
+                s.gameplay_presence_callback(s, ("status_effects", (value,)))
+            CharacterService._refresh_player_combat_vitals(s, inventory_changed=False)
+
+    @staticmethod
     def _dispatch_location_aura_applications(
             target_sessions, applications) -> None:
         """Send same-tick ground-aura receivers in multi-actor batches.
@@ -22,6 +51,18 @@ class PlayerOwnedResolutionDispatchService:
         applications = tuple(applications)
         if not applications:
             return
+        for application in applications:
+            wearer = target_sessions.get(int(application.target_actor_id))
+            if wearer is None:
+                continue
+            if application.remove:
+                CharacterService._remove_managed_player_aura_effects(wearer, application.status_effects)
+            else:
+                CharacterService._send_player_skill_status_effects(
+                    wearer, application.status_effects, server_tick=application.server_tick,
+                    label="player-managed-aura-status-effects",
+                    force_fresh_effect_ids={effect.effect_id for effect in application.status_effects},
+                )
         actor_applications = tuple(
             (
                 int(application.target_actor_id),
@@ -29,6 +70,7 @@ class PlayerOwnedResolutionDispatchService:
                 tuple(application.status_effects),
             )
             for application in applications
+            if int(application.target_actor_id) not in target_sessions and not application.remove
         )
         server_tick = max(
             int(application.server_tick)

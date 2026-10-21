@@ -327,6 +327,17 @@ class PlayerPersistenceService:
                     s.gameplay_fractured_planes_status_effect_instance_ids
                 )
                 | set(s.gameplay_map_status_effect_instance_ids)
+                | {
+                    int(entry.field_04)
+                    for entry in (
+                        getattr(s, "gameplay_mercenary_status_effect", None),
+                        getattr(s, "gameplay_mercenary_aura_status_effect", None),
+                        *tuple(getattr(
+                            s, "gameplay_mercenary_aura_status_effects", ()
+                        )),
+                    )
+                    if entry is not None
+                }
             )
             status_effects = {
                 instance_id: effect

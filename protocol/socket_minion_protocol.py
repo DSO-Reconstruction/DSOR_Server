@@ -58,6 +58,13 @@ class SocketMinionDefinition:
     map_companion: bool = False
     fixed_direction: bool = False
     patrol_points: tuple[tuple[float, float, float], ...] = ()
+    overheat_attack_skill_database_index: int | None = None
+    overheat_attack_skill_type: str = ""
+    overheat_attack_interval_seconds: float = 0.0
+    overheat_attack_unblock_frame: int = 0
+    overheat_attack_motion_unblock_frame: int = 0
+    overheat_attack_loop_start_frame: int = 0
+    overheat_attack_skill_effect_id: int | None = None
 
 
 def _skill_ids(encoded: str) -> tuple[str, ...]:
@@ -114,6 +121,22 @@ def load_socket_minion_definition(
             if attack_row is not None:
                 break
         aura = load_player_summon_aura(database, monster_template_id)
+        overheat_attack_row = None
+        overheat_effect_row = None
+        if monster_template_id.casefold() == "mercenary_ember_knight_kain":
+            overheat_attack_row = database.execute(
+                "SELECT rowid - 1, COALESCE(SkillType, ''), "
+                "COALESCE(SkillUnblockFrame, 0), "
+                "COALESCE(LoopStartFrame, 0), "
+                "COALESCE(MotionUnblockFrame, 0) "
+                "FROM _Template_Skill "
+                "WHERE Id='mercenaryskill_lava_01_attack_02' "
+                "AND COALESCE(Hidden, 0)<>0 LIMIT 1"
+            ).fetchone()
+            overheat_effect_row = database.execute(
+                "SELECT rowid - 1 FROM _Template_StatusEffect "
+                "WHERE Id='mercenary_ember_knight_overheated' LIMIT 1"
+            ).fetchone()
         fixed_direction = monster_template_id in {
             'minion_fp_s2_fire_shot', 'minion_fp_s3_light_shot', 'minion_fp_s4_ice_shot',
         }
@@ -180,8 +203,38 @@ def load_socket_minion_definition(
         aura=aura,
         fixed_direction=fixed_direction,
         stationary=fixed_direction,
-        move_speed=max(0.0, float(row[3] or 0.0)),
+        move_speed=(0.0 if monster_template_id.startswith("minion_holysoul_") else max(0.0, float(row[3] or 0.0))),
         aggro_range=max(0.0, float(row[4] or 0.0)),
+        overheat_attack_skill_database_index=(
+            int(overheat_attack_row[0])
+            if overheat_attack_row is not None and overheat_effect_row is not None
+            else None
+        ),
+        overheat_attack_skill_type=(
+            str(overheat_attack_row[1]) if overheat_attack_row is not None else ""
+        ),
+        overheat_attack_interval_seconds=(
+            max(0.2, int(overheat_attack_row[2]) / SERVER_TICKS_PER_SECOND)
+            if overheat_attack_row is not None and overheat_effect_row is not None
+            else 0.0
+        ),
+        overheat_attack_unblock_frame=(
+            max(0, int(overheat_attack_row[2]))
+            if overheat_attack_row is not None else 0
+        ),
+        overheat_attack_motion_unblock_frame=(
+            max(0, int(overheat_attack_row[4]))
+            if overheat_attack_row is not None else 0
+        ),
+        overheat_attack_loop_start_frame=(
+            max(0, int(overheat_attack_row[3]))
+            if overheat_attack_row is not None else 0
+        ),
+        overheat_attack_skill_effect_id=(
+            int(overheat_effect_row[0])
+            if overheat_attack_row is not None and overheat_effect_row is not None
+            else None
+        ),
     )
 
 

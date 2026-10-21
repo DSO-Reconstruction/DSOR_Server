@@ -336,6 +336,18 @@ class BattlegroundService:
                 s.gameplay_timed_status_effect_expiries.pop(
                     instance_id, None,
                 )
+            for entry in tuple(getattr(
+                s, "gameplay_mercenary_aura_status_effects", ()
+            )):
+                instance_id = int(entry.field_04)
+                current = s.gameplay_persistent_status_effects.pop(
+                    instance_id, entry,
+                )
+                removed[instance_id] = current
+                s.gameplay_timed_status_effect_expiries.pop(
+                    instance_id, None,
+                )
+            s.gameplay_mercenary_aura_status_effects = ()
             # The active selection remains saved, but must not respawn its
             # actor or recreate the buff while this arena session is active.
             s.gameplay_mercenary_restore_pending = False
