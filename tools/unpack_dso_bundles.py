@@ -8,6 +8,7 @@ import hashlib
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import struct
 import sys
 import tempfile
@@ -17,8 +18,8 @@ import zlib
 _CDN_MAGIC = b"__ZN"
 _BUNDLE_MAGIC = b"_B3NHB3N"
 _BUNDLE_INPUT = re.compile(
-    r"^bundles_(?:optional|required)_bundle\d+\.nb"
-    r"(?:\._[0-9a-f]{32}|\.[0-9a-f]{32}\.nz)$",
+    r"^(?P<bundle>bundles_(?:optional|required)_bundle\d+\.nb)"
+    r"(?:\._(?P<legacy>[0-9a-f]{32})|\.(?P<canonical>[0-9a-f]{32})\.nz)$",
     re.IGNORECASE,
 )
 _CACHE_OBJECT = re.compile(r"^(?P<flat>.+)\._(?P<digest>[0-9a-f]{32})$", re.IGNORECASE)
@@ -306,15 +307,7 @@ def _write_resource(
             alias_destination = _destination(output, alias, expected_md5)
             alias_temporary = alias_destination.with_name(alias_destination.name + ".tmp")
             try:
-                with alias_temporary.open("wb") as target:
-                    _inflate_cdn(destination, target)
-                with alias_temporary.open("rb") as handle:
-                    is_nested_object = handle.read(4) == _CDN_MAGIC
-                if not is_nested_object:
-                    alias_temporary.unlink(missing_ok=True)
-                    with destination.open("rb") as source, alias_temporary.open("wb") as target:
-                        while chunk := source.read(_CHUNK):
-                            target.write(chunk)
+                shutil.copyfile(destination, alias_temporary)
                 os.replace(alias_temporary, alias_destination)
             finally:
                 alias_temporary.unlink(missing_ok=True)
@@ -339,29 +332,61 @@ def _write_resource(
             runtime_temporary.unlink(missing_ok=True)
 
 
-def _find_bundles(source: Path, output: Path) -> list[Path]:
+def _scan_source_files(
+    source: Path,
+    output: Path,
+    runtime_cache: Path | None,
+) -> list[Path]:
     if source.is_file():
         return [source]
     if not source.is_dir():
         raise ValueError(f"Input does not exist: {source}")
-    input_root, output_root = source.resolve(), output.resolve()
-    skip_output = output_root != input_root and output_root.is_relative_to(input_root)
-    bundles = []
-    for path in source.rglob("*"):
-        if not path.is_file() or (skip_output and path.resolve().is_relative_to(output_root)):
+    input_root = source.resolve()
+    excluded_roots = []
+    for candidate in (output, runtime_cache):
+        if candidate is None:
             continue
-        if _BUNDLE_INPUT.fullmatch(path.name):
-            bundles.append(path)
-    return sorted(bundles, key=lambda path: path.relative_to(source).as_posix().lower())
+        resolved = candidate.resolve()
+        if resolved != input_root and resolved.is_relative_to(input_root):
+            excluded_roots.append(resolved)
+    files = []
+    for current, directories, names in os.walk(source):
+        current_path = Path(current)
+        directories[:] = [
+            name
+            for name in directories
+            if not any((current_path / name).resolve().is_relative_to(root) for root in excluded_roots)
+        ]
+        files.extend(current_path / name for name in names)
+    return sorted(files, key=lambda path: path.relative_to(source).as_posix().casefold())
 
 
-def _check_nbi_files(source: Path, bundles: list[Path]) -> tuple[int, int, int]:
+def _find_bundles(source: Path, source_files: list[Path]) -> list[Path]:
+    if source.is_file():
+        return [source]
+    bundles: dict[tuple[str, str], Path] = {}
+    for path in source_files:
+        match = _BUNDLE_INPUT.fullmatch(path.name)
+        if match is None:
+            continue
+        digest = (match.group("legacy") or match.group("canonical")).lower()
+        key = (match.group("bundle").lower(), digest)
+        previous = bundles.get(key)
+        # Prefer the original legacy cache key when both it and a prior
+        # run's canonical .nz copy exist.
+        if previous is None or ("._" not in previous.name and "._" in path.name):
+            bundles[key] = path
+    return sorted(bundles.values(), key=lambda path: path.relative_to(source).as_posix().lower())
+
+
+def _check_nbi_files(source_files: list[Path], bundles: list[Path]) -> tuple[int, int, int, dict[str, str]]:
     """Validate NBI metadata links to bundle objects present in the input tree."""
-    if not source.is_dir():
-        return 0, 0, 0
     available = {path.name.lower() for path in bundles}
     total = matched = invalid = 0
-    for path in source.rglob("*.nbi"):
+    entries: dict[str, str] = {}
+    for path in source_files:
+        if path.suffix.lower() != ".nbi":
+            continue
         total += 1
         try:
             data = path.read_bytes()
@@ -388,10 +413,11 @@ def _check_nbi_files(source: Path, bundles: list[Path]) -> tuple[int, int, int]:
                     f"WARNING: NBI bundle is missing from input: {remote_path} ({digest})",
                     flush=True,
                 )
+            entries[remote_path] = digest
         except (OSError, UnicodeDecodeError, ValueError, struct.error) as exc:
             invalid += 1
             print(f"WARNING: Invalid NBI metadata {path}: {exc}", flush=True)
-    return total, matched, invalid
+    return total, matched, invalid, entries
 
 
 def _read_cdn_object(source: Path) -> bytes:
@@ -427,17 +453,21 @@ def _load_cache_objects(
     source: Path,
     output: Path,
     list_only: bool,
+    source_files: list[Path],
 ) -> tuple[dict[str, str], dict[str, bytes], dict[str, str], dict[str, Path], int]:
     """Copy cached standalone CDN objects and collect cached TOC metadata."""
-    if not source.is_dir():
-        return {}, {}, {}, 0
+    if source.is_file():
+        return {}, {}, {}, {}, 0
     file_digests: dict[str, str] = {}
     toc_raw: dict[str, bytes] = {}
     toc_expected: dict[str, str] = {}
     cached_by_digest: dict[str, Path] = {}
     copied = 0
-    for path in source.rglob("*"):
-        if not path.is_file():
+    for path in source_files:
+        # Bundle containers are inputs, not standalone resources. Copying them
+        # into an output directory that is also the input makes later runs
+        # rediscover and unpack the same large bundle a second time.
+        if _BUNDLE_INPUT.fullmatch(path.name):
             continue
         toc_match = _TOC_OBJECT.fullmatch(path.name) or _TOC_NZ_OBJECT.fullmatch(path.name)
         object_match = _CACHE_OBJECT.fullmatch(path.name) or _CACHE_NZ_OBJECT.fullmatch(path.name)
@@ -561,33 +591,6 @@ def _make_toc_object(raw: bytes) -> tuple[str, bytes]:
     return hashlib.md5(obj).hexdigest(), obj
 
 
-def _read_nbi_entries(source: Path) -> dict[str, str]:
-    """Return CDN paths and digests named by valid NBI bundle metadata."""
-    entries: dict[str, str] = {}
-    if not source.is_dir():
-        return entries
-    for path in source.rglob("*.nbi"):
-        try:
-            data = path.read_bytes()
-            if len(data) < 14 or data[:4] != b"IB3N":
-                continue
-            path_length = struct.unpack_from("<H", data, 6)[0]
-            path_end = 8 + path_length
-            if path_end + 6 > len(data):
-                continue
-            remote_path = data[8:path_end].decode("utf-8")
-            digest_length = struct.unpack_from("<H", data, path_end + 4)[0]
-            digest_start = path_end + 6
-            if digest_length != 32 or digest_start + digest_length != len(data):
-                continue
-            digest = data[digest_start:].decode("ascii").lower()
-            if re.fullmatch(r"[0-9a-f]{32}", digest):
-                entries[remote_path] = digest
-        except (OSError, UnicodeDecodeError, ValueError, struct.error):
-            continue
-    return entries
-
-
 def _write_toc_cache_object(output: Path, flat: str, digest: str, obj: bytes) -> None:
     """Write both the CDN URL object and its legacy client cache key."""
     for destination in (output / f"{flat}.{digest}.nz", output / f"{flat}._{digest}"):
@@ -602,11 +605,13 @@ def _write_toc_cache_object(output: Path, flat: str, digest: str, obj: bytes) ->
 
 def _rebuild_root_index(
     output: Path,
-    source: Path,
     file_digests: dict[str, str],
+    nbi_entries: dict[str, str],
     toc_raw: dict[str, bytes],
     cached_by_digest: dict[str, Path],
+    bundles: list[Path],
     list_only: bool,
+    runtime_cache: Path | None,
 ) -> tuple[int, str]:
     """Build a self-consistent local TOC tree and point __root.txt at it.
 
@@ -616,15 +621,11 @@ def _rebuild_root_index(
     valid hash and writes a new root hash that the launcher can load locally.
     """
     remote_files = dict(file_digests)
-    remote_files.update(_read_nbi_entries(source))
+    remote_files.update(nbi_entries)
     for name, digest in tuple(remote_files.items()):
         for alias in _client_path_aliases(name):
             remote_files[alias] = digest
-    local_bundle_keys = {
-        path.name.lower()
-        for path in source.rglob("*")
-        if path.is_file() and _BUNDLE_INPUT.fullmatch(path.name)
-    } if source.is_dir() else set()
+    local_bundle_keys = {path.name.lower() for path in bundles}
 
     # Keep only files available from extracted bundle resources, local CDN
     # objects, or bundle/NBI cache pairs. This prevents the rebuilt index from
@@ -642,12 +643,9 @@ def _rebuild_root_index(
         if bundle_key.lower() in local_bundle_keys or (output / bundle_key).is_file():
             available[name] = digest
 
+    # Derive the directory tree only from files available in this run. Reusing
+    # directory entries from a prior generated root TOC can preserve stale paths.
     directories: set[str] = set()
-    if "" in toc_raw:
-        for line in toc_raw[""].decode("utf-8").splitlines():
-            fields = line.rsplit("|", 2)
-            if len(fields) == 3 and fields[1] == "d":
-                directories.add(fields[0])
     for name in available:
         parts = PurePosixPath(name).parts
         for index in range(1, len(parts)):
@@ -684,20 +682,28 @@ def _rebuild_root_index(
             _write_toc_cache_object(output, flat, digest, obj)
         written += 1
 
-    root_lines = [f"{directory}|d|{toc_hashes[directory]}" for directory in sorted(directories)]
+    root_files = sorted(files_by_directory.get("", []), key=lambda item: item[0])
+    root_lines = [f"{name}|f|{digest}" for name, digest in root_files]
+    root_directories = sorted(
+        directory
+        for directory in directories
+        if PurePosixPath(directory).parent.as_posix() in ("", ".")
+    )
+    root_lines.extend(f"{directory}|d|{toc_hashes[directory]}" for directory in root_directories)
     root_raw = ("\n".join(root_lines) + "\n").encode("utf-8")
     root_digest, root_obj = _make_toc_object(root_raw)
     if not list_only:
         _write_toc_cache_object(output, "__toc", root_digest, root_obj)
         root_text = root_digest + "\n"
         root_targets = [output / "__root.txt"]
-        dlcache = output / "dlcache"
-        if dlcache.is_dir():
-            root_targets.append(dlcache / "__root.txt")
+        if runtime_cache is not None:
+            runtime_root = runtime_cache / "__root.txt"
+            if runtime_root not in root_targets:
+                root_targets.append(runtime_root)
         for target in root_targets:
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(root_text, encoding="ascii")
-        runtime_cache = output / "dlcache"
-        if runtime_cache.is_dir():
+        if runtime_cache is not None:
             generated_tocs[""] = root_raw
             for directory, raw in generated_tocs.items():
                 destination = _runtime_destination(
@@ -908,10 +914,11 @@ def main() -> int:
         source = args.input.expanduser().resolve()
         output = args.output.expanduser().resolve()
         runtime_cache = args.runtime_cache.expanduser().resolve() if args.runtime_cache else None
-        bundles = _find_bundles(source, output)
+        source_files = _scan_source_files(source, output, runtime_cache)
+        bundles = _find_bundles(source, source_files)
         if not bundles:
             raise ValueError("No .nb or recognized DSO bundle cache files were found.")
-        nbi_total, nbi_matched, nbi_invalid = _check_nbi_files(source, bundles)
+        nbi_total, nbi_matched, nbi_invalid, nbi_entries = _check_nbi_files(source_files, bundles)
         if nbi_total:
             print(
                 f"NBI check: {nbi_matched:,}/{nbi_total:,} bundle references matched; "
@@ -921,7 +928,7 @@ def main() -> int:
         if not args.list:
             output.mkdir(parents=True, exist_ok=True)
         file_digests, toc_raw, toc_expected, cached_by_digest, cached_objects = _load_cache_objects(
-            source, output, args.list
+            source, output, args.list, source_files,
         )
         if cached_objects:
             print(f"Copied {cached_objects:,} standalone cached CDN objects", flush=True)
@@ -942,7 +949,8 @@ def main() -> int:
             )
         if source.is_dir() and not args.path_prefixes:
             toc_count, root_digest = _rebuild_root_index(
-                output, source, file_digests, toc_raw, cached_by_digest, args.list
+                output, file_digests, nbi_entries, toc_raw, cached_by_digest, bundles,
+                args.list, runtime_cache,
             )
             toc_mismatches = 0
             if not args.list:

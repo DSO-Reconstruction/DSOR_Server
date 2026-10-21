@@ -28,11 +28,6 @@ _LANGUAGE_KEY = re.compile(
     r"^export_win32_language_(?P<locale>[^_]+)_(?P<file>db\..+\.xml)$", re.I
 )
 _BXML_NO_INDEX = 0x7FFFFFFF
-_BUNDLE_INPUT = re.compile(
-    r"^bundles_(?:optional|required)_bundle\d+\.nb"
-    r"(?:\._[0-9a-f]{32}|\.[0-9a-f]{32}\.nz)$",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -154,33 +149,32 @@ def _read_cached_payload(cached: CacheFile) -> bytes:
     return payload
 
 
-def _minimum_assets_present(assets: dict[Path, CacheFile], data_root: Path) -> bool:
+def _minimum_asset_status(
+    assets: dict[Path, CacheFile], data_root: Path
+) -> tuple[bool, list[Path], list[Path], bool]:
     destinations = set(assets)
     static_db = data_root / "db" / "static.db4"
     navshapes = data_root / "navigation" / "navshapes.bin"
     maps_dir = data_root / "maps"
-    return (
-        static_db in destinations
-        and navshapes in destinations
-        and any(path.parent == maps_dir and path.suffix.lower() == ".db4" for path in destinations)
-        and any(path.suffix.lower() == ".tok" for path in destinations)
-    )
+    map_databases = [path for path in destinations if path.parent == maps_dir and path.suffix.lower() == ".db4"]
+    navigation_meshes = [path for path in destinations if path.suffix.lower() == ".tok"]
+    return static_db in destinations, map_databases, navigation_meshes, navshapes in destinations
 
 
 def _client_bundles_present(source: Path) -> bool:
-    return source.is_dir() and any(
-        path.is_file() and _BUNDLE_INPUT.fullmatch(path.name)
-        for path in source.rglob("*")
-    )
+    if not source.is_dir():
+        return False
+    for current, directories, names in os.walk(source):
+        directories[:] = [name for name in directories if name.lower() != "dlcache"]
+        if any(name.startswith("bundles_") and "_bundle" in name and ".nb" in name for name in names):
+            return True
+    return False
 
 
 def _unpack_client_bundles(source: Path) -> int:
     unpacker = Path(__file__).resolve().parent / "tools" / "unpack_dso_bundles.py"
     if not unpacker.is_file():
         say(f"ERROR: Bundle extractor not found: {unpacker}")
-        return 2
-    if not _client_bundles_present(source):
-        say("No bundle files were found to unpack.")
         return 2
     say("Required local assets are missing; unpacking the downloaded client bundles first...")
     say(f"Bundle source and flat game cache output: {source}")
@@ -212,46 +206,6 @@ def _write_asset(destination: Path, data: bytes) -> None:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
-
-
-def _sync_launcher_rootkey(source: Path) -> str | None:
-    """Keep the launcher's fallback rootkey aligned with the extracted client cache."""
-    root_candidates = (source / "dlcache" / "__root.txt", source / "__root.txt")
-    root_file = next((path for path in root_candidates if path.is_file()), None)
-    if root_file is None:
-        say("WARNING: No generated __root.txt found; launcher rootkey was not updated.")
-        return None
-
-    rootkey = root_file.read_text(encoding="ascii").strip().lower()
-    if not re.fullmatch(r"[0-9a-f]{32}", rootkey):
-        say(f"WARNING: Invalid rootkey in {root_file}; launcher rootkey was not updated.")
-        return None
-
-    launcher_path = Path(__file__).resolve().parent / "launcher_gui.py"
-    try:
-        launcher_source = launcher_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        say(f"WARNING: Could not read launcher GUI to sync rootkey: {exc}")
-        return None
-
-    pattern = re.compile(r'(?m)^(\s*rootkey\s*=\s*)"[0-9a-fA-F]{32}"(\s*)$')
-    updated, replacements = pattern.subn(
-        lambda match: f'{match.group(1)}"{rootkey}"{match.group(2)}',
-        launcher_source,
-        count=1,
-    )
-    if replacements != 1:
-        say("WARNING: Could not find the launcher's default rootkey assignment to update.")
-        return None
-    if updated != launcher_source:
-        temporary = launcher_path.with_name(launcher_path.name + ".setup-tmp")
-        try:
-            temporary.write_text(updated, encoding="utf-8", newline="")
-            os.replace(temporary, launcher_path)
-        finally:
-            temporary.unlink(missing_ok=True)
-    say(f"  Launcher rootkey: {rootkey} (from {root_file})")
-    return rootkey
 
 
 def _read_cstring_table(data: bytes, offset: int, count: int) -> tuple[list[str], int]:
@@ -434,48 +388,35 @@ def main() -> int:
 
     assets = collect_assets(source, data_root)
     runtime_cache = source / "dlcache"
-    runtime_static_db = runtime_cache / "export_win32" / "db" / "static.db4"
     bundle_input_exists = _client_bundles_present(source)
-    minimum_assets_present = _minimum_assets_present(assets, data_root)
-    if bundle_input_exists and (
-        not minimum_assets_present or not runtime_static_db.is_file()
-    ):
-        say()
-        say("The DSOClient cache is missing required local assets; unpacking its downloaded bundles first.")
-        unpack_result = _unpack_client_bundles(source)
-        if unpack_result != 0:
-            say("Bundle extraction failed; server asset setup was not started.")
-            return unpack_result
-        assets = collect_assets(source, data_root)
-
-    selected_destinations = set(assets)
     static_db = data_root / "db" / "static.db4"
     navshapes = data_root / "navigation" / "navshapes.bin"
-    quests_pbxml = data_root / "quests.pbxml"
-    map_databases = [path for path in selected_destinations if path.parent == data_root / "maps" and path.suffix.lower() == ".db4"]
-    navigation_meshes = [path for path in selected_destinations if path.suffix.lower() == ".tok"]
-    language_files = [path for path in selected_destinations if data_root / "language" in path.parents]
-    if not static_db in selected_destinations or not map_databases or not navigation_meshes or not navshapes in selected_destinations:
+    static_present, map_databases, navigation_meshes, navshapes_present = _minimum_asset_status(assets, data_root)
+    minimum_assets_present = bool(
+        static_present and map_databases and navigation_meshes and navshapes_present
+    )
+    unpack_bundles = bundle_input_exists and not minimum_assets_present
+
+    if not minimum_assets_present and not bundle_input_exists:
         say()
         say("The client cache does not contain the minimum server assets yet.")
-        say(f"Found: static database={static_db in selected_destinations}, map databases={len(map_databases)}, navigation meshes={len(navigation_meshes)}, navshapes={navshapes in selected_destinations}.")
-        if bundle_input_exists:
-            say("Bundle extraction completed, but the downloaded client files do not include all required assets.")
-        else:
-            say("No bundle files were available for extraction.")
+        say(f"Found: static database={static_present}, map databases={len(map_databases)}, navigation meshes={len(navigation_meshes)}, navshapes={navshapes_present}.")
+        say("No bundle files were available for extraction.")
         say("Finish downloading the client bundles, then run setup again.")
         return 2
 
-    quests_xml = data_root / "quests.xml"
-
     say()
     say("The following operations are ready:")
-    say(f"  - Extract {len(assets):,} cached data files, including {len(map_databases):,} map databases, {len(navigation_meshes):,} navigation meshes, and {len(language_files):,} language files.")
-    say("  - Save the client's binary quests.pbxml as data/quests.pbxml and decode its quest definitions into data/quests.xml.")
+    if unpack_bundles:
+        say(f"  - Unpack the downloaded bundles into the client cache at {source} and {runtime_cache}.")
+        say(f"  - Re-scan the cache, then extract its server assets into {data_root}.")
+    else:
+        say(f"  - Extract {len(assets):,} cached data files into {data_root}.")
+    quests_xml = data_root / "quests.xml"
     if quests_xml.is_file() and not args.overwrite_quests_xml:
-        say("    Existing data/quests.xml will be preserved; use --overwrite-quests-xml to replace it.")
-    if quests_pbxml not in selected_destinations:
-        say("  NOTE: No quests.pbxml was found in the client cache; quest XML conversion will be skipped.")
+        say("  - Preserve the existing data/quests.xml file.")
+    else:
+        say("  - Decode data/quests.xml from the client's quest pack if one is available.")
 
     if not args.yes:
         try:
@@ -485,6 +426,35 @@ def main() -> int:
         if answer not in ("y", "yes"):
             say("Setup cancelled. No files were changed.")
             return 1
+
+    if unpack_bundles:
+        say()
+        say("Unpacking downloaded client bundles...")
+        unpack_result = _unpack_client_bundles(source)
+        if unpack_result != 0:
+            say("Bundle extraction failed. The client cache may have been partially updated; server asset extraction was not started.")
+            return unpack_result
+        assets = collect_assets(source, data_root)
+
+    selected_destinations = set(assets)
+    quests_pbxml = data_root / "quests.pbxml"
+    static_present, map_databases, navigation_meshes, navshapes_present = _minimum_asset_status(assets, data_root)
+    language_files = [path for path in selected_destinations if data_root / "language" in path.parents]
+    if not (static_present and map_databases and navigation_meshes and navshapes_present):
+        say()
+        say("The client cache does not contain the minimum server assets yet.")
+        say(f"Found: static database={static_present}, map databases={len(map_databases)}, navigation meshes={len(navigation_meshes)}, navshapes={navshapes_present}.")
+        if bundle_input_exists:
+            say("Bundle extraction completed, but the downloaded client files do not include all required assets.")
+        else:
+            say("No bundle files were available for extraction.")
+        say("Finish downloading the client bundles, then run setup again.")
+        return 2
+
+    say()
+    say(f"  - Extract {len(assets):,} cached data files, including {len(map_databases):,} map databases, {len(navigation_meshes):,} navigation meshes, and {len(language_files):,} language files.")
+    if quests_pbxml not in selected_destinations:
+        say("  NOTE: No quests.pbxml was found in the client cache; quest XML conversion will be skipped.")
 
     say()
     say("Extracting server data files...")
@@ -517,7 +487,6 @@ def main() -> int:
 
     say()
     say("Setup finished.")
-    _sync_launcher_rootkey(source)
     say(f"  Static database: {static_db}")
     say(f"  Map databases:  {len(map_databases):,}")
     say(f"  Navigation:     {len(navigation_meshes):,} .tok files and navshapes.bin")
