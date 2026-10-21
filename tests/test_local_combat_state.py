@@ -3374,6 +3374,19 @@ class LocalCombatStateTests(unittest.TestCase):
             original_positions,
         )
 
+    def test_fury_of_the_dragon_puts_its_crack_ahead_of_the_warrior(self):
+        """earthquake: every LocationStatusEffect carries OZ:-2.5."""
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='earthquake'"
+            ).fetchone()[0]
+        geometry = self.state._load_player_skill_geometry(index)
+        self.assertEqual(geometry.location_offset, (0.0, 0.0, -2.5))
+        self.assertEqual(
+            LocalCombatState._location_offset("a,C:1.0;b,C:1,OX:5.0,OZ:5.0"),
+            (5.0, 0.0, 5.0),
+        )
+
     def test_mage_guardians_never_walk(self):
         """arcanemanifestation and firemanifestation: their permanent idle effect
         switches Movement off, though the template has a RunSpeed."""

@@ -496,6 +496,10 @@ class PlayerSkillGeometry:
     start_offset: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     user_status_effects: tuple["VictimStatusEffectDefinition", ...] = ()
     location_status_effects: tuple["VictimStatusEffectDefinition", ...] = ()
+    # LocationStatusEffects' OX/OY/OZ: where an unaimed skill puts its ground
+    # effect, in the caster's aim frame (x right, y up, -z ahead), e.g. Fury of
+    # the Dragon's crack 2.5 ahead (earthquake, every effect OZ:-2.5).
+    location_offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     location_owner_status_effects: tuple[
         "VictimStatusEffectDefinition", ...
     ] = ()
@@ -1880,6 +1884,26 @@ class LocalCombatState:
         return tuple(transitions)
 
     @staticmethod
+    def _location_offset(encoded) -> tuple[float, float, float]:
+        """The first OX/OY/OZ offset of a LocationStatusEffects program."""
+
+        for entry in str(encoded or "").split(";"):
+            tokens = dict(
+                part.split(":", 1) for part in entry.split(",")[1:]
+                if ":" in part
+            )
+            try:
+                offset = tuple(
+                    float(tokens.get(key, "0").split("<", 1)[0].strip() or 0)
+                    for key in ("OX", "OY", "OZ")
+                )
+            except ValueError:
+                continue
+            if any(offset):
+                return offset
+        return (0.0, 0.0, 0.0)
+
+    @staticmethod
     def _distance(
         left: tuple[float, float, float],
         right: tuple[float, float, float],
@@ -2392,6 +2416,10 @@ class LocalCombatState:
                 start_offset=start_offset,
                 user_status_effects=user_status_effects,
                 location_status_effects=location_status_effects,
+                location_offset=(
+                    self._location_offset(row[26])
+                    if row is not None else (0.0, 0.0, 0.0)
+                ),
                 location_owner_status_effects=location_owner_status_effects,
                 location_visual_effects=location_visual_effects,
                 damage_type=str(row[29] or "Physical"),

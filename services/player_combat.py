@@ -849,6 +849,28 @@ class PlayerCombatService(PlayerCastTimingService):
                         position
                     )
                 )
+                # An unaimed skill's ground effect sits where its data puts
+                # it in the aim frame (Fury of the Dragon: 2.5 ahead), not on
+                # the caster's feet.
+                location_geometry = (
+                    combat._load_player_skill_geometry(
+                        int(client_skill.skill_index)
+                    )
+                    if combat is not None else None
+                )
+                offset = getattr(
+                    location_geometry, "location_offset", (0.0, 0.0, 0.0)
+                )
+                if any(offset):
+                    aim = float(client_skill.aim_angle)
+                    x, y, z = location_position_world[:3]
+                    location_position_world = (
+                        x + offset[0] * math.cos(aim)
+                        + offset[2] * math.sin(aim),
+                        y + offset[1],
+                        z - offset[0] * math.sin(aim)
+                        + offset[2] * math.cos(aim),
+                    )
 
             with s.flow_lock:
                 if (
