@@ -17,6 +17,7 @@ from dso_server.runtime.concurrency import InstrumentedRLock, MAP_COMBAT_DOMAIN
 from dso_server.gameplay.navigation_shapes import monster_target_radii
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
+    ORBITING_MOTION_TYPES,
     plan_entity_skill,
     projectile_emit_delay,
     shifted_skill_phases,
@@ -55,6 +56,10 @@ from dso_server.gameplay.player_summon_lifecycle import (
     summon_startup_seconds,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.map_static_collision import (
+    StaticLineOfSight,
+    load_static_line_of_sight,
+)
 from dso_server.gameplay.fractured_planes_layout import (
     TOWER_FIRE_BURST_COOLDOWN,
     TOWER_FIRE_BURST_SHOTS,
@@ -370,6 +375,20 @@ def effective_attack_speed(raw_attack_speed: float) -> float:
     return effective
 
 
+# Height above the feet at which a bullet flies when its StartOffset gives
+# none, and the band the authored heights are kept in (low enough that a
+# shot clears no wall, high enough that kerbs and benches never stop it).
+DEFAULT_BULLET_FLIGHT_HEIGHT = 1.2
+BULLET_FLIGHT_HEIGHT_RANGE = (0.8, 1.8)
+
+
+def _bullet_flight_height(start_offset) -> float:
+    height = float(start_offset[1]) if start_offset else 0.0
+    if height <= 0.0:
+        return DEFAULT_BULLET_FLIGHT_HEIGHT
+    return min(BULLET_FLIGHT_HEIGHT_RANGE[1], max(BULLET_FLIGHT_HEIGHT_RANGE[0], height))
+
+
 def _player_impact_tick(server_tick: int, delay_seconds: float) -> int:
     """Map an exact monotonic deadline onto the client's 25 Hz clock.
 
@@ -524,6 +543,8 @@ class PlayerSkillGeometry:
     # ``_Template_Skill.AmmoCost``: essences spent from the active ammunition
     # slot per accepted cast. Zero for utility skills such as teleport.
     ammo_cost: int = 0
+    # ``_Template_SkillBullet.StaticCollision``: the bullet stops at walls.
+    static_collision: bool = False
 
 
 def _metadata_float(metadata: dict[str, str], key: str) -> float:
@@ -570,6 +591,10 @@ class VictimStatusEffectDefinition:
     # The location effect's offset from where it is cast (the skill column's
     # OX/OY/OZ), in the caster's frame: -Z ahead along the aim.
     offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    # The AuraTargets:Creator shell this child came from, when that shell has
+    # a radius: the creator holds the child only while it stands inside
+    # (Banner of War's cheaper skills and resource regeneration, 5.75 m).
+    creator_aura: str = ""
 
 
 @dataclass(frozen=True)
@@ -614,6 +639,11 @@ class PlayerSummonDefinition:
         VictimStatusEffectDefinition, ...
     ] = ()
     stationary: bool = False
+    # A permanent effect switches its Movement feature off (the mage
+    # Guardians' ArcanemanifestationMinionIdle / guardian_idle:
+    # ``ActorFeature:off,Movement``): it never walks, though its template has a
+    # RunSpeed. Unlike ``stationary`` it keeps the ordinary summon spawn.
+    movement_locked: bool = False
     startup_duration_seconds: float = 0.0
     overheat_attack_skill_database_index: int | None = None
     overheat_attack_skill_type: str = ""
@@ -765,6 +795,9 @@ class PendingPlayerHit:
     critical_hit_chance: float = 0.0
     critical_damage_multiplier: float = 2.0
     damage_immune: bool = False
+    # An area impact's radius around ``origin`` (the aimed point), checked
+    # again when it lands: a meteor falls 2.6 s after the cast.
+    area_radius: float = 0.0
 
 
 @dataclass
@@ -1122,6 +1155,18 @@ class LocalCombatState:
         self.pending_monster_summons: list[MonsterSummonRequest] = []
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
+        self._static_line_of_sight: StaticLineOfSight | None = None
+        self._static_line_of_sight_loaded = False
+        # The map's wall collision is built in the background as the map
+        # loads: built on the first shot, its pure-Python mesh stalled that
+        # tick under the combat lock on big maps. A shot before it is ready
+        # waits for it (_map_static_line_of_sight).
+        self._static_line_of_sight_thread = threading.Thread(
+            target=self._load_static_line_of_sight,
+            name=f"walls-{getattr(encounter, 'map_id', '')}",
+            daemon=True,
+        )
+        self._static_line_of_sight_thread.start()
         # Released projectiles may still be flying when a boss recovers and
         # starts its next cast. Keep their impacts independently of that cast.
         self.pending_monster_projectile_attacks: dict[
@@ -1735,7 +1780,11 @@ class LocalCombatState:
         )
         resource_now = time.perf_counter()
         self.last_player_resource_change_at.setdefault(actor_id, resource_now)
-        self.last_player_resource_regeneration_at[actor_id] = resource_now
+        # A refresh (every status expiry re-registers the player) must not
+        # restart the regeneration clock.
+        self.last_player_resource_regeneration_at.setdefault(
+            actor_id, resource_now
+        )
 
     def unregister_player(self, actor_id: int) -> None:
         actor_id = int(actor_id)
@@ -1819,8 +1868,10 @@ class LocalCombatState:
             return False, current, maximum, cost, gain
         current = min(maximum, max(0.0, current - cost + gain))
         resource[0] = current
+        # Only rage's out-of-combat delay counts from the last spend; mana keeps
+        # ticking on its own clock. Restarting it here meant a mage casting more
+        # often than once a second never regenerated at all.
         self.last_player_resource_change_at[actor_id] = float(now)
-        self.last_player_resource_regeneration_at[actor_id] = float(now)
         return True, current, maximum, cost, gain
 
     def note_player_attacked(self, actor_id: int, *, now: float) -> None:
@@ -1850,14 +1901,15 @@ class LocalCombatState:
             amount = float(resource[1]) * float(fraction) + float(absolute)
             if abs(amount) <= 1e-9:
                 continue
-            eligible_at = (
-                self.last_player_resource_change_at.get(actor_id, now)
-                + max(0.0, float(delay))
+            cursor = self.last_player_resource_regeneration_at.get(
+                actor_id, now
             )
-            cursor = max(
-                self.last_player_resource_regeneration_at.get(actor_id, now),
-                eligible_at,
-            )
+            if delay > 0:
+                cursor = max(
+                    cursor,
+                    self.last_player_resource_change_at.get(actor_id, now)
+                    + float(delay),
+                )
             due_count = min(
                 8,
                 max(0, int((now - cursor + 1e-6) / float(interval))),
@@ -2279,7 +2331,8 @@ class LocalCombatState:
                         COALESCE(s.ResourceCost, 0),
                         COALESCE(s.ResourceGain, 0),
                         COALESCE(s.ResourceCostToDamage, 0),
-                        COALESCE(s.AmmoCost, 0)
+                        COALESCE(s.AmmoCost, 0),
+                        COALESCE(b.StaticCollision, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id = s.SkillBulletId
@@ -2408,6 +2461,7 @@ class LocalCombatState:
                 resource_gain_fraction=max(0.0, float(row[40] or 0.0)),
                 resource_cost_to_damage=max(0.0, float(row[41] or 0.0)),
                 ammo_cost=max(0, int(row[42] or 0)),
+                static_collision=bool(row[43] or 0),
             )
             if row is not None
             else None
@@ -2730,18 +2784,24 @@ class LocalCombatState:
                             default=0.0,
                         ),
                     )
+                    movement_locked = False
                     for permanent_effect in str(row[11] or "").split(";"):
                         permanent_effect = permanent_effect.strip()
                         if not permanent_effect:
                             continue
                         delay_row = database.execute(
                             """
-                            SELECT COALESCE(StatusEffectDuration, 0)
+                            SELECT COALESCE(StatusEffectDuration, 0),
+                                   COALESCE(StartModifiers, '')
                             FROM _Template_StatusEffect
                             WHERE Id=? LIMIT 1
                             """,
                             (permanent_effect,),
                         ).fetchone()
+                        if delay_row is not None and "movement" in (
+                            parse_disabled_actor_features(str(delay_row[1]))
+                        ):
+                            movement_locked = True
                         if (
                             delay_row is not None
                             and "delay" in permanent_effect.casefold()
@@ -2836,15 +2896,11 @@ class LocalCombatState:
                         heal_interval_seconds=summon_support[2],
                         taunt_radius=summon_support[3],
                         support_status_effects=summon_support[4],
-                        # The mage's Arcane Guardian holds the spot it is cast
-                        # on (a 14 m shooter); its template still says
-                        # DefaultStrategy and RunSpeed 1, so it walked up to
-                        # every monster ("le gardien se deplace", 2026-10-21).
                         stationary=(
                             str(row[0]).casefold().startswith("turret")
                             or "turret" in monster_template_id.casefold()
-                            or monster_template_id.casefold() == "minion_arcanemanifestation"
                         ),
+                        movement_locked=movement_locked,
                     )
             self._player_summon_definitions[skill_index] = definition
 
@@ -3252,6 +3308,22 @@ class LocalCombatState:
         owner_auras = {}
         for visual in visuals:
             radius = max(0.0, float(visual.definition.aura_radius))
+            # An AuraTargets:Creator ground aura (Banner of War's arena) gives
+            # its children to its creator while the creator stands inside it,
+            # and takes them back on leaving; they were applied once at the
+            # cast for the whole 10 s wherever the warrior went.
+            if (
+                radius > 0.0
+                and visual.definition.aura_targets.casefold() == "creator"
+            ):
+                position = (player_positions or {}).get(visual.owner_actor_id)
+                if position is not None and self._distance(visual.position, position) <= radius:
+                    for effect in self._creator_aura_children(visual):
+                        key = (visual.owner_actor_id, effect.effect_id)
+                        old = owner_auras.get(key)
+                        if old is None or visual.expires_at > old[1]:
+                            owner_auras[key] = (effect, visual.expires_at)
+                continue
             if not visual.receiver_status_effects or radius <= 0.0:
                 continue
             if visual.managed_aura and visual.definition.aura_targets.casefold() == "summoner":
@@ -3349,6 +3421,18 @@ class LocalCombatState:
         self.player_location_aura_members.intersection_update(inside_now)
         self.player_location_aura_members.update(inside_now)
         return tuple(resolutions), tuple(applications)
+
+    def _creator_aura_children(
+        self, visual
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        geometry = self._load_player_skill_geometry(int(visual.source_skill_index))
+        if geometry is None:
+            return ()
+        return tuple(
+            effect for effect in geometry.location_owner_status_effects
+            if effect.creator_aura == visual.definition.resource_id
+            and effect.chance > 0.0
+        )
 
     def expire_player_location_visuals_for_owner(
             self, owner_actor_id: int) -> tuple[PlayerLocationVisual, ...]:
@@ -3759,6 +3843,7 @@ class LocalCombatState:
                     self.player_summons[actor_id] = summon
             if (
                 definition.stationary
+                or getattr(definition, "movement_locked", False)
                 or current_time < summon.spawn_ready_at
                 or self.player_summon_health.get(actor_id, [0])[0] <= 0
                 or self._monster_actions_disabled(actor_id, now=current_time)
@@ -4513,6 +4598,12 @@ class LocalCombatState:
                         for raw in str(child[4] or "").split(";")
                         if raw.partition(":")[1]
                     ),
+                    creator_aura=(
+                        aura.resource_id
+                        if str(row[1] if row else "").casefold() == "creator"
+                        and aura.aura_radius > 0.0
+                        else ""
+                    ),
                 ))
         return tuple(definitions)
 
@@ -5241,7 +5332,8 @@ class LocalCombatState:
                             "BulletLocationEffect, "
                             "BulletDeathLocationEffect, "
                             "BulletLocationEffectRate, "
-                            "BulletLocationEffectStartDelay "
+                            "BulletLocationEffectStartDelay, "
+                            "COALESCE(StaticCollision, 0) "
                             "FROM _Template_SkillBullet WHERE Id=? LIMIT 1",
                             (self._clean_modifier_token(arguments[2]),),
                         ).fetchone()
@@ -5269,6 +5361,7 @@ class LocalCombatState:
                                 bullet_location_effect_start_delay=max(
                                     0.0, float(row[12] or 0.0)
                                 ),
+                                static_collision=bool(row[13] or 0),
                             )
                             bullet_location_effects = list(
                                 self._load_location_aura_effects(
@@ -6747,7 +6840,11 @@ class LocalCombatState:
             cursor = self._route_actor_cursor % len(actors)
             actors = actors[cursor:] + actors[:cursor]
             self._route_actor_cursor = (cursor + 2) % len(actors)
+        viewer_position = player_position
         for actor_id in actors:
+            # Each actor's own target below (a viewer, or the monster a mind
+            # controlled one turns on) must not leak into the next actor's.
+            player_position = viewer_position
             monster = self.monsters[actor_id]
             home = monster.position
             start = self.monster_positions[actor_id]
@@ -6785,7 +6882,45 @@ class LocalCombatState:
                                 previous_yaw, False, int(server_tick) & 0xFFFFFFFF))
                         occupied.append(start)
                         continue
+            if self._monster_is_mind_controlled(actor_id, now=current_time):
+                # Mind control turns it against its own kind for the effect's
+                # 10 s: it walks to the nearest uncontrolled monster within its
+                # aggro range (maybe_start_monster_attacks already retargets
+                # its blows) and leaves the players alone. It kept chasing the
+                # player, so it never reached anything it could strike.
+                reach = max(1.0, float(monster.aggro_range))
+                enemies = sorted(
+                    (self._distance(start, self.monster_positions[other]), other)
+                    for other in self.living_actor_ids
+                    if other != actor_id
+                    and other in self.monster_positions
+                    and not self._monster_is_mind_controlled(
+                        other, now=current_time
+                    )
+                )
+                enemies = [entry for entry in enemies if entry[0] <= reach]
+                if not enemies:
+                    self.monster_routes.pop(actor_id, None)
+                    self.monster_moving[actor_id] = False
+                    if was_moving:
+                        movements.append(MonsterMovement(
+                            actor_id, start, self.encounter.coordinate_frame.world_to_wire(start),
+                            previous_yaw, False, int(server_tick) & 0xFFFFFFFF))
+                    occupied.append(start)
+                    continue
+                player_position = self.monster_positions[enemies[0][1]]
+                direct_distance = enemies[0][0]
+                player_home_distance = self._distance(player_position, home)
             preferred_stop_distance = self._preferred_stop_distance(monster)
+            # A shooter with a wall between it and its target walks on to
+            # find a line of sight instead of standing off behind the wall.
+            if (
+                preferred_stop_distance > MONSTER_STOP_DISTANCE
+                and self._monster_shot_blocked(
+                    monster.attack, start, player_position
+                )
+            ):
+                preferred_stop_distance = MONSTER_STOP_DISTANCE
             # The authored territory, widened by the pursuit grace, and then
             # the distance at which the actor stops walking back and resets.
             pursuit_radius = (
@@ -7406,7 +7541,65 @@ class LocalCombatState:
             area_radius=max(0.0, area_radius_override or 0.0),
             require_explicit_target=require_explicit_target,
             range_tolerance=PLAYER_PROJECTILE_COLLISION_RADIUS,
+            static_reach=(self._bullet_static_reach(geometry.start_offset)
+                          if projectile and geometry.static_collision else None),
         )
+
+    def _monster_shot_blocked(self, definition, start, target) -> bool:
+        """Whether a monster bullet from ``start`` would stop at a wall
+        before ``target`` (feet positions)."""
+        if (
+            definition is None
+            or definition.command_id not in {
+                BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND,
+            }
+            or not getattr(definition, "static_collision", False)
+            or str(definition.motion_type).casefold() in ORBITING_MOTION_TYPES
+        ):
+            return False
+        reach = self._bullet_static_reach(definition.start_offset)
+        if reach is None:
+            return False
+        return reach(start, target) + PLAYER_PROJECTILE_COLLISION_RADIUS < math.dist(
+            tuple(start[:3]), tuple(target[:3])
+        )
+
+    def _map_static_line_of_sight(self) -> StaticLineOfSight | None:
+        """The map's wall collision, built in the background at map load."""
+        if not self._static_line_of_sight_loaded:
+            thread = getattr(self, "_static_line_of_sight_thread", None)
+            if thread is not None and thread is not threading.current_thread():
+                thread.join()
+            if not self._static_line_of_sight_loaded:
+                self._load_static_line_of_sight()
+        return self._static_line_of_sight
+
+    def _load_static_line_of_sight(self) -> None:
+        try:
+            map_root = Path(self.encounter.static_database_path).parent.parent / "maps"
+            map_id = str(self.encounter.map_id)
+            self._static_line_of_sight = load_static_line_of_sight(
+                map_root / f"{map_id}.map", map_root / f"{map_id}.col",
+            )
+        except (AttributeError, TypeError, OSError, CollisionTerrainError,
+                UnicodeDecodeError, struct.error):
+            # Development maps without a collision bundle keep open sight.
+            self._static_line_of_sight = None
+        self._static_line_of_sight_loaded = True
+
+    def _bullet_static_reach(self, start_offset):
+        """``static_reach`` for a bullet flying at its StartOffset height."""
+        line_of_sight = self._map_static_line_of_sight()
+        if line_of_sight is None:
+            return None
+        height = _bullet_flight_height(start_offset)
+
+        def reach(start, end):
+            return line_of_sight.clear_distance(
+                (start[0], start[1] + height, start[2]),
+                (end[0], end[1] + height, end[2]),
+            )
+        return reach
 
     def start_bullet_skill_hits(
         self,
@@ -7709,6 +7902,21 @@ class LocalCombatState:
                 emitted_at=current_time,
                 maximum_range=geometry.attack_range,
                 motion_type="Area",
+                # The same reach the victims were chosen with (combat_entities
+                # plan_entity_skill's splash): a location or death effect's
+                # aura wider than ImpactRadius picked them, so it spares only
+                # a monster that left that wider ring.
+                area_radius=max(
+                    0.25, geometry.hit_range, geometry.impact_radius,
+                    float(area_radius_override or 0.0),
+                    max((
+                        effect.aura_radius for effect in (
+                            *geometry.location_status_effects,
+                            *geometry.location_visual_effects,
+                            *geometry.bullet_death_effects,
+                        ) if effect.chance >= 1.0
+                    ), default=0.0),
+                ),
                 damage_modifier=target_geometry.damage_modifier,
                 damage_type=target_geometry.damage_type,
                 player_minimum_damage=(
@@ -7876,6 +8084,9 @@ class LocalCombatState:
         )
         result = []
         for definition in geometry.location_owner_status_effects:
+            # Held only inside its ground aura: apply_player_location_auras.
+            if definition.creator_aura:
+                continue
             if not self._effect_applies(
                 definition, cast_id=cast_id, killed=False
             ):
@@ -9556,6 +9767,21 @@ class LocalCombatState:
         previous = self.monster_health.get(monster.actor_id, 0)
         if previous <= 0:
             return None
+        # An area impact's victims were chosen at the cast; one that walked
+        # out of it before it fell is not hurt (a meteor lands 2.6 s later and
+        # struck monsters standing beside its crater).
+        current = self.monster_positions.get(monster.actor_id)
+        if (
+            pending.motion_type == "Area"
+            and pending.area_radius > 0.0
+            and (
+                current is None
+                or self._distance(current, pending.origin)
+                > pending.area_radius + monster.collision_radius
+                + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+            )
+        ):
+            return None
         if pending.damage_immune:
             return DamageResolution(
                 target_actor_id=monster.actor_id,
@@ -10022,8 +10248,15 @@ class LocalCombatState:
                     effective_range = max(
                         definition.attack_range, definition.hit_range
                     )
-                if target_distance <= effective_range:
-                    eligible_definitions_list.append(definition)
+                if target_distance > effective_range:
+                    continue
+                # A bullet that would strike a wall between them is not
+                # fired: it flew through it doing nothing.
+                if self._monster_shot_blocked(
+                    definition, monster_position, attack_target_world
+                ):
+                    continue
+                eligible_definitions_list.append(definition)
             eligible_definitions = tuple(eligible_definitions_list)
             skill_cursor = self._monster_skill_cursors.get(actor_id, 0)
             definition = self._monster_skill_choice(
@@ -10648,6 +10881,19 @@ class LocalCombatState:
                     )
                 ):
                     continue
+                if (
+                    getattr(definition, "static_collision", False)
+                    and attack.motion_type.casefold()
+                    not in ORBITING_MOTION_TYPES
+                ):
+                    # The bullet struck a wall between caster and target.
+                    reach = self._bullet_static_reach(definition.start_offset)
+                    if reach is not None and reach(
+                        attack.projectile_origin, target_world
+                    ) + PLAYER_PROJECTILE_COLLISION_RADIUS < math.dist(
+                        attack.projectile_origin[:3], target_world[:3]
+                    ):
+                        continue
             elif is_directional_shape:
                 if not self._directional_skill_intersects_player(
                     attack, target_world, definition

@@ -92,17 +92,31 @@ def projectile_emit_delay(geometry, attack_speed=1.0):
     )
 
 
+# Bullets circling their caster or a point never travel along a line of sight.
+ORBITING_MOTION_TYPES = frozenset({"orbitingactor", "orbitinglocation"})
+
+
 def plan_entity_skill(geometry, entities, *, origin, direction,
                      projectile, explicit_targets=(), point=None,
                      attack_speed=1.0, impact_delay=0.0, area_radius=0.0,
-                     require_explicit_target=False, range_tolerance=0.6):
-    """Produce one ordered impact plan across all eligible entity types."""
+                     require_explicit_target=False, range_tolerance=0.6,
+                     static_reach=None):
+    """Produce one ordered impact plan across all eligible entity types.
+
+    ``static_reach(start, end)`` returns how far a bullet flies from ``start``
+    towards ``end`` (both feet positions) before the map's static collision
+    stops it. It applies to bullets with ``static_collision`` only.
+    """
     entities = tuple({e.actor_id: e for e in entities}.values())
     explicit = tuple(dict.fromkeys(int(v) for v in explicit_targets))
     length = math.hypot(direction[0], direction[2])
     aim = (direction[0] / length, direction[2] / length) if length > 1e-6 else (0.0, 0.0)
     maximum_range = max(geometry.attack_range, geometry.projectile_range) if projectile else geometry.attack_range
-    if point is not None and maximum_range > 0 and distance(origin, point) > maximum_range + range_tolerance:
+    # Flat, as the client clamps the aimed point (skills.rs) and the radius
+    # test below measures: a meteor at full range onto ground a few metres
+    # higher or lower than the caster came back with an empty plan.
+    if point is not None and maximum_range > 0 and math.hypot(
+            origin[0] - point[0], origin[2] - point[2]) > maximum_range + range_tolerance:
         return EntitySkillPlan(geometry, ())
     radius = max(0.25, geometry.hit_range, geometry.impact_radius, area_radius)
     targeting = geometry.targeting_type.casefold()
@@ -158,16 +172,36 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     emit = projectile_emit_delay(geometry, attack_speed)
     velocity = geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier)
     offset = max(0.0, -geometry.start_offset[2])
-    splash_radius = max(geometry.impact_radius, max((
+    # ImpactRadius splashes only an exploding projectile (the dwarf's C14
+    # micro-rocket and grenade: BulletRadius 0, "Multiple Enemies"). A bullet
+    # with its own radius and one impact strikes one enemy: the fireball's
+    # 2.35 hit every monster around its victim, though its SkillTarget is
+    # "Single Enemy".
+    impact_splash = (geometry.impact_radius
+                     if geometry.impact_count > 1 or geometry.projectile_radius <= 0
+                     else 0.0)
+    splash_radius = max(impact_splash, max((
         effect.aura_radius for effect in (
             *geometry.location_status_effects, *geometry.location_visual_effects,
             *geometry.bullet_death_effects,
         ) if effect.chance >= 1.0
     ), default=0.0))
+    if (static_reach is None or point is not None
+            or not getattr(geometry, "static_collision", False)
+            or str(getattr(geometry, "motion_type", "Straight")).casefold()
+            in ORBITING_MOTION_TYPES):
+        static_reach = None
+
+    def in_sight(entity):
+        if static_reach is None:
+            return True
+        position = entity.observed_position
+        return static_reach(origin, position) + entity.collision_radius >= distance(origin, position)
+
     by_id = {e.actor_id: e for e in entities}
     direct = [by_id[v] for v in explicit if v in by_id and (
         maximum_range <= 0 or distance(origin, by_id[v].observed_position)
-        <= maximum_range + by_id[v].collision_radius)]
+        <= maximum_range + by_id[v].collision_radius) and in_sight(by_id[v])]
     contacts = {}
     if point is not None:
         direct = sorted((e for e in entities if distance(point, e.observed_position)
@@ -176,10 +210,16 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     elif not direct and not require_explicit_target:
         candidates = []
         if length > 1e-6 and maximum_range > 0:
+            # The aimed bullet stops at the first wall along its ray.
+            wall = (None if static_reach is None or targeting in {"angle", "cone"}
+                    else static_reach(origin, (origin[0] + aim[0] * maximum_range, origin[1],
+                                               origin[2] + aim[1] * maximum_range)))
             for entity in entities:
                 size = entity.collision_radius + max(0.25, geometry.projectile_radius, geometry.player_width / 2)
                 forward, miss = _contact(entity, origin, aim, maximum_range)
                 contacts[entity.actor_id] = forward
+                if wall is not None and forward - entity.collision_radius > wall:
+                    continue
                 if targeting in {"angle", "cone"}:
                     dx, dz = entity.position[0] - origin[0], entity.position[2] - origin[2]
                     forward = dx * aim[0] + dz * aim[1]
@@ -189,6 +229,8 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                     if miss > max(0.0, _directional_width(geometry, forward, maximum_range)) + size:
                         continue
                 elif miss > size:
+                    continue
+                if wall is None and not in_sight(entity):
                     continue
                 candidates.append((forward, miss, entity.actor_id, entity))
         direct = [row[3] for row in sorted(candidates)]

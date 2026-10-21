@@ -357,6 +357,8 @@ class MonsterAttackDefinition:
     start_offset: tuple[float, float, float, float] = (
         0.0, 0.0, 0.0, 0.0
     )
+    # _Template_SkillBullet.StaticCollision: the bullet stops at walls.
+    static_collision: bool = False
     loop_start_frame: int = 0
     damage_types: tuple[tuple[str, float], ...] = (("Physical", 1.0),)
     # _Template_Skill CoolDown (seconds), InitialCoolDown ("3|5": a first wait
@@ -1403,7 +1405,8 @@ def _load_runtime_template(
                        COALESCE(s.PlayerWidth, 0),
                        COALESCE(s.EndWidth, 0),
                        COALESCE(s.Angle, 0),
-                       COALESCE(s.SkillBulletId, '')
+                       COALESCE(s.SkillBulletId, ''),
+                       COALESCE(b.StaticCollision, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id=s.SkillBulletId
@@ -1525,6 +1528,7 @@ def _load_runtime_template(
                         ),
                         motion_type=str(skill_row[14] or "Straight"),
                         start_offset=start_offset,
+                        static_collision=bool(skill_row[36] or 0),
                         loop_start_frame=max(0, int(skill_row[18])),
                         damage_types=_parse_damage_types(skill_row[20]),
                         cooldown=max(0.0, float(skill_row[21] or 0.0)),

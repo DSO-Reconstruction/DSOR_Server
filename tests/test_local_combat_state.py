@@ -3134,8 +3134,12 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(state.drain_return_home_transitions(), ())
 
     def test_banner_of_war_applies_utility_and_enemy_count_buffs(self):
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='defiance'"
+            ).fetchone()[0]
         effects = self.state.player_skill_location_owner_effects(
-            1842,  # defiance / Banner of War
+            index,  # defiance / Banner of War
             cast_id=4401,
             target_count=3,
         )
@@ -3144,8 +3148,10 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(
             resource_ids.count("skill_defiance_buff_skill_damage"), 3
         )
-        self.assertIn("skill_defiance_buff_resource_reg", resource_ids)
-        self.assertIn("skill_defiance_buff_skill_costs", resource_ids)
+        # The utility buffs are held inside the arena only
+        # (test_banner_of_war_buffs_its_warrior_only_inside_the_arena).
+        self.assertNotIn("skill_defiance_buff_resource_reg", resource_ids)
+        self.assertNotIn("skill_defiance_buff_skill_costs", resource_ids)
         damage_effect = next(
             effect
             for effect in effects
@@ -3373,6 +3379,156 @@ class LocalCombatStateTests(unittest.TestCase):
             },
             original_positions,
         )
+
+    def test_fury_of_the_dragon_puts_its_crack_ahead_of_the_warrior(self):
+        """earthquake: every LocationStatusEffect carries OZ:-2.5."""
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='earthquake'"
+            ).fetchone()[0]
+        # Its ground effects as the cast places them (the essence variants,
+        # chance 0, carry no offset).
+        effects = tuple(e for e in self.state.player_skill_location_visuals(index, modifier_sources=())
+                        if e.chance > 0.0)
+        self.assertTrue(effects)
+        self.assertTrue(all(e.offset == (0.0, 0.0, -2.5) for e in effects))
+        # Placed once, 2.5 m ahead along the aim (forward (-sin, 0, -cos)).
+        for yaw, ahead in ((0.0, (10.0, 0.0, 17.5)), (-math.pi / 2, (12.5, 0.0, 20.0))):
+            visuals = self.state.start_player_location_visuals(
+                effects[:1], position=(10.0, 0.0, 20.0), yaw=yaw,
+                server_tick=100, owner_actor_id=1,
+            )
+            placed = max(visuals, key=lambda v: v.instance_id).position
+            for got, want in zip(placed, ahead):
+                self.assertAlmostEqual(got, want, places=4)
+
+    def test_a_mind_controlled_monster_walks_to_another_monster(self):
+        """skill_mindcontrol_effect: it turns on the nearest uncontrolled
+        monster instead of chasing the player."""
+        state, frame = self.state, self.encounter.coordinate_frame
+        controlled, other = sorted(state.living_actor_ids)[:2]
+        origin = state.monster_positions[controlled]
+        navigation = self.encounter.navigation
+        spot = None
+        for angle in range(0, 360, 15):
+            candidate = (origin[0] + 7.0 * math.cos(math.radians(angle)), origin[1],
+                         origin[2] + 7.0 * math.sin(math.radians(angle)))
+            try:
+                candidate = navigation.project_position(candidate, max_horizontal_distance=0.5)
+            except Exception:
+                continue
+            if navigation.is_reachable(origin, candidate):
+                spot = candidate
+                break
+        self.assertIsNotNone(spot)
+        state.monster_positions[other] = spot
+        now = 1000.0
+        state.monster_status_effects[controlled] = {
+            "skill_mindcontrol_effect": (
+                VictimStatusEffectDefinition(
+                    resource_id="skill_mindcontrol_effect", effect_id=0, chance=1.0,
+                    duration_ticks=250, values=(), trigger="",
+                ),
+                now + 10.0,
+            )
+        }
+        before = self._distance_2d(origin, spot)
+        # The player stands on the opposite side, within reach.
+        player = frame.world_to_wire(tuple(o + (o - t) for o, t in zip(origin, spot)))
+        for step in range(25):
+            state.advance_monsters(player, elapsed_seconds=0.1, server_tick=100 + step,
+                                   eligible_actor_ids={controlled}, now=now + step * 0.1)
+        after = self._distance_2d(state.monster_positions[controlled], spot)
+        self.assertLess(after, before - 1.0)
+
+    def test_an_area_impact_spares_a_monster_that_walked_out_of_it(self):
+        """A meteor's victims are chosen at the cast and hit 2.6 s later."""
+        from dso_server.gameplay.local_combat_state import PendingPlayerHit
+        state = self.state
+        actor = sorted(state.living_actor_ids)[0]
+        point = state.monster_positions[actor]
+
+        def pending(cast_id):
+            hit = PendingPlayerHit(
+                cast_id=cast_id, target_actor_id=actor, skill_index=0, due_at=10.0,
+                impact_tick=1, distance=0.0, travel_distance=0.0, emit_delay=0.0,
+                victim_status_effects=(), origin=point, motion_type="Area",
+                damage_modifier=1.0, player_minimum_damage=10.0,
+                player_maximum_damage=10.0, area_radius=3.5,
+            )
+            state.pending_runtime_player_hits[(1, cast_id, 0)] = hit
+
+        pending(1)
+        self.assertIsNotNone(state.resolve_runtime_player_hit(1, 1, 0, now=10.0))
+        state.monster_positions[actor] = (point[0] + 8.0, point[1], point[2])
+        pending(2)
+        self.assertIsNone(state.resolve_runtime_player_hit(1, 2, 0, now=10.0))
+        self.assertNotIn((1, 2, 0), state.pending_runtime_player_hits)
+
+    def test_banner_of_war_buffs_its_warrior_only_inside_the_arena(self):
+        """skill_defiance_buff_creators_aura (AuraTargets:Creator, 5.75 m)
+        gives skill_defiance_buff_skill_costs / _resource_reg to the warrior
+        while inside, and takes them back on leaving."""
+        state = self.state
+        with sqlite3.connect(state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='defiance'"
+            ).fetchone()[0]
+        at_cast = {e.resource_id for e in state.player_skill_location_owner_effects(
+            index, cast_id=1, target_count=0)}
+        self.assertNotIn("skill_defiance_buff_skill_costs", at_cast)
+        visuals = [v for v in state.player_skill_location_visuals(index)
+                   if v.resource_id == "skill_defiance_buff_creators_aura"]
+        self.assertEqual(len(visuals), 1)
+        banner = (10.0, 0.0, 10.0)
+        state.start_player_location_visuals(
+            tuple(visuals), position=banner, yaw=0.0, server_tick=100,
+            owner_actor_id=7, cast_id=1, source_skill_index=index, now=50.0)
+        _, inside = state.apply_player_location_auras(
+            now=51.0, server_tick=125, player_positions={7: (12.0, 0.0, 10.0)})
+        given = {e.resource_id for a in inside if not a.remove for e in a.status_effects}
+        self.assertIn("skill_defiance_buff_skill_costs", given)
+        self.assertIn("skill_defiance_buff_resource_reg", given)
+        _, outside = state.apply_player_location_auras(
+            now=52.0, server_tick=150, player_positions={7: (30.0, 0.0, 10.0)})
+        taken = {e.resource_id for a in outside if a.remove for e in a.status_effects}
+        self.assertEqual(taken, given)
+
+    def test_mage_guardians_never_walk(self):
+        """arcanemanifestation and firemanifestation: their permanent idle effect
+        switches Movement off, though the template has a RunSpeed."""
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            indices = [
+                db.execute(
+                    "SELECT rowid - 1 FROM _Template_Skill WHERE Id=?", (skill,)
+                ).fetchone()[0]
+                for skill in ("arcanemanifestation", "firemanifestation")
+            ]
+        target = self.state.monster_positions[self.encounter.actor_ids[0]]
+        for index in indices:
+            definition = self.state.player_summon_definition(index)
+            self.assertTrue(definition.movement_locked)
+            self.assertFalse(definition.stationary)
+            self.assertGreater(definition.move_speed, 0.0)
+            spawn = self.state.spawn_player_summon(
+                definition,
+                owner_actor_id=0x000103C1,
+                position=(target[0] - 8.0, target[1], target[2]),
+                yaw=0.0,
+                level=100,
+                server_tick=550,
+                player_damage_range=(100.0, 100.0),
+                now=100.0,
+            )
+            before = {s.actor_id: s.position for s in spawn.actors}
+            movements = self.state.advance_player_summons(
+                elapsed_seconds=5.0, server_tick=551, now=200.0
+            )
+            self.assertEqual(movements, ())
+            self.assertEqual(
+                {a: self.state.player_summons[a].position for a in before},
+                before,
+            )
 
     def test_tree_of_life_heals_owner_and_taunts_nearby_monsters(self):
         definition = self.state.player_summon_definition(1881)
