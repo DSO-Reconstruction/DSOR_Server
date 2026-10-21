@@ -1,5 +1,17 @@
 # Recovering the client's command id table
 
+## Server default: `release261_192`
+
+The server uses [`command_ids_rel261_192.json`](command_ids_rel261_192.json) by
+default, matching the `rel261_192` client revision documented in the README.
+This table and the corresponding marker-bit defaults were adapted from
+[upstream commit a2cfa7d](https://github.com/shockblaze/DSOR_Server_Kitty261/commit/a2cfa7d308ade059c788f1ef0903b27a640375de).
+For `dro_client64-patch5` or the DSOR client, set
+`DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
+
+The detailed command recovery notes below document the patch5 table in
+[`command_ids.json`](command_ids.json).
+
 The complete network command id → class map for
 `dro_client64-patch5.exe`: **341 classes, ids 1–368, no duplicates.**
 
