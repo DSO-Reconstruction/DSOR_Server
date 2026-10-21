@@ -526,6 +526,14 @@ class PlayerSkillGeometry:
     ammo_cost: int = 0
 
 
+def _metadata_float(metadata: dict[str, str], key: str) -> float:
+    """A status-effect column entry's numeric field, 0 when absent or not a number."""
+    try:
+        return float(metadata.get(key, 0) or 0)
+    except ValueError:
+        return 0.0
+
+
 @dataclass(frozen=True)
 class VictimStatusEffectDefinition:
     resource_id: str
@@ -559,6 +567,9 @@ class VictimStatusEffectDefinition:
     aura_targets: str = ""
     exclusivity_type: str = "Replace"
     stack_count: int = 1
+    # The location effect's offset from where it is cast (the skill column's
+    # OX/OY/OZ), in the caster's frame: -Z ahead along the aim.
+    offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
 
 
 @dataclass(frozen=True)
@@ -3143,11 +3154,20 @@ class LocalCombatState:
             expires_tick = (
                 starts_tick + int(definition.duration_ticks)
             ) & 0xFFFFFFFF
+            # Its OX/OY/OZ turned with the aim (forward is -Z: (-sin, 0, -cos)):
+            # Fury of the Dragon's crack opens 2.5 m ahead (OZ:-2.5), not under
+            # the warrior ("spawn toujours sous moi", 2026-10-21).
+            ox, oy, oz = definition.offset
+            cos_yaw, sin_yaw = math.cos(float(yaw)), math.sin(float(yaw))
             self.player_location_visuals[instance_id] = (
                 PlayerLocationVisual(
                     instance_id=instance_id,
                     definition=definition,
-                    position=tuple(float(value) for value in position),
+                    position=(
+                        float(position[0]) + ox * cos_yaw + oz * sin_yaw,
+                        float(position[1]) + oy,
+                        float(position[2]) - ox * sin_yaw + oz * cos_yaw,
+                    ),
                     yaw=float(yaw),
                     starts_tick=starts_tick,
                     expires_tick=expires_tick,
@@ -4240,6 +4260,9 @@ class LocalCombatState:
                             * SERVER_TICKS_PER_SECOND
                         ),
                     ),
+                    offset=tuple(
+                        _metadata_float(metadata, key) for key in ("OX", "OY", "OZ")
+                    ),
                     max_stack_size=max(1, int(effect_row[2] or 1)),
                     consume_on_max_stack=(
                         LocalCombatState._consumes_on_max_stack(
@@ -4455,7 +4478,8 @@ class LocalCombatState:
             ):
                 child = database.execute(
                     "SELECT rowid - 1, StatusEffectDuration, "
-                    "COALESCE(MaxStackSize, 1), COALESCE(EffectHosts, '') "
+                    "COALESCE(MaxStackSize, 1), COALESCE(EffectHosts, ''), "
+                    "COALESCE(StartModifiers, '') "
                     "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
                     (child_id,),
                 ).fetchone()
@@ -4481,6 +4505,14 @@ class LocalCombatState:
                     values=aura.values,
                     trigger=aura.trigger,
                     max_stack_size=max(1, int(child[2] or 1)),
+                    # What it modifies: without them a SkillResourceRegeneration
+                    # child (Banner of War's) never refreshed the owner's vitals
+                    # and its rage kept draining in the banner (2026-10-21).
+                    modifier_kinds=frozenset(
+                        raw.partition(":")[0].strip().casefold()
+                        for raw in str(child[4] or "").split(";")
+                        if raw.partition(":")[1]
+                    ),
                 ))
         return tuple(definitions)
 
