@@ -19,11 +19,14 @@ So the protocol modules declare their ids by class name rather than by number::
 
     SWITCH_MAP_COMMAND = command_id("Commands::SwitchMapCommand", 0x70)
 
-The literal stays as the current-client value and as the fallback, so with no
-table selected every constant keeps exactly the number it had. Setting
-``DSO_COMMAND_IDS`` to a table dumped from another client -- see
-``dump_command_ids.py`` for x64 and ``dump_command_ids_x86.py`` for x86 -- makes
-the same constants resolve to that build's numbering instead.
+The literal stays as the dro_client64-patch5 value and as the fallback.
+By default the server resolves against ``docs/command_ids_rel261_192.json``,
+dumped from the release261_192 ``dro_client64.exe`` it serves: ids up to 346
+match patch5, and that build inserts commands from 347 on, which moves 22 later
+classes (``ServerToClientMsgCommand`` is 381 there, 368 on patch5).
+``DSO_COMMAND_IDS`` selects a table dumped from another client -- see
+``dump_command_ids.py`` for x64 and ``dump_command_ids_x86.py`` for x86 -- and
+``DSO_COMMAND_IDS=builtin`` keeps the patch5 literals.
 
 Resolution happens once at import, so this costs nothing per packet.
 """
@@ -43,6 +46,10 @@ __all__ = [
 ]
 
 ENVIRONMENT_VARIABLE = "DSO_COMMAND_IDS"
+DEFAULT_TABLE = (
+    Path(__file__).resolve().parents[1] / "docs" / "command_ids_rel261_192.json"
+)
+BUILTIN_VALUES = frozenset({"builtin", "patch5", "none"})
 
 # Stands in for a command the selected build does not define. Keeping the
 # current-client number instead is actively dangerous: of the seven classes the
@@ -60,8 +67,10 @@ _unresolved: dict[str, int] = {}
 def active_table_path() -> Path | None:
     """The command-id table in use, or None when built-in values apply."""
 
-    configured = os.getenv(ENVIRONMENT_VARIABLE)
+    configured = (os.getenv(ENVIRONMENT_VARIABLE) or "").strip()
     if not configured:
+        return DEFAULT_TABLE if DEFAULT_TABLE.is_file() else None
+    if configured.casefold() in BUILTIN_VALUES:
         return None
     return Path(configured)
 

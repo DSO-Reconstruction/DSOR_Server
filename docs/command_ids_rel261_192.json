@@ -1,0 +1,2591 @@
+{
+ "Commands::MasterServerInfoCommand": {
+  "id": 1,
+  "vtable": "0x14118d8a8",
+  "creator": "0x1409b3944",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::MapServerInfoCommand": {
+  "id": 2,
+  "vtable": "0x14118d928",
+  "creator": "0x1409b392c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForkCommand": {
+  "id": 3,
+  "vtable": "0x14118da28",
+  "creator": "0x1409b38e4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForkResultCommand": {
+  "id": 4,
+  "vtable": "0x14118d9a8",
+  "creator": "0x1409b38ec",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::AcpForceLogoutCommand": {
+  "id": 5,
+  "vtable": "0x1411c0a90",
+  "creator": "0x140a2246c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::AcpServerShutdownCommand": {
+  "id": 6,
+  "vtable": "0x1411c0b10",
+  "creator": "0x140a22484",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::AcpSendMessageToPlayerCommand": {
+  "id": 7,
+  "vtable": "0x1411c0b90",
+  "creator": "0x140a2247c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::AcpSendMessageToAllPlayersCommand": {
+  "id": 8,
+  "vtable": "0x1411c0c10",
+  "creator": "0x140a22474",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::SuspendMasterServerCommand": {
+  "id": 9,
+  "vtable": "0x14118db28",
+  "creator": "0x1409b39a4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ResumeMasterServerCommand": {
+  "id": 10,
+  "vtable": "0x14118dba8",
+  "creator": "0x1409b398c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::KillMapServerCommand": {
+  "id": 13,
+  "vtable": "0x14118daa8",
+  "creator": "0x1409b3904",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::MapStatusCommand": {
+  "id": 14,
+  "vtable": "0x14118d828",
+  "creator": "0x1409b393c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PlayerStatusCommand": {
+  "id": 15,
+  "vtable": "0x14118d7a8",
+  "creator": "0x1409b3984",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PlayerDeletedCommand": {
+  "id": 16,
+  "vtable": "0x14118dda8",
+  "creator": "0x1409b396c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForceTransactionRequestCommand": {
+  "id": 17,
+  "vtable": "0x14118cf28",
+  "creator": "0x1409b38dc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForceLogoutCommand": {
+  "id": 18,
+  "vtable": "0x14118cea8",
+  "creator": "0x1409b38cc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::MembershipBookInfoCommand": {
+  "id": 19,
+  "vtable": "0x14118d628",
+  "creator": "0x1409b3954",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::LoginQueueWaitCommand": {
+  "id": 20,
+  "vtable": "0x14118d028",
+  "creator": "0x1409b3924",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::LoginQueueFullQueueCommand": {
+  "id": 21,
+  "vtable": "0x14118d0a8",
+  "creator": "0x1409b3914",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::LoginQueueFullInstanceCommand": {
+  "id": 22,
+  "vtable": "0x14118d128",
+  "creator": "0x1409b390c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::LoginQueueInstanceNotReadyCommand": {
+  "id": 23,
+  "vtable": "0x14118d1a8",
+  "creator": "0x1409b391c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ClientJoinedMapServerCommand": {
+  "id": 24,
+  "vtable": "0x14118d428",
+  "creator": "0x1409b38a4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForcePlayerUpdateCommand": {
+  "id": 25,
+  "vtable": "0x14118dd28",
+  "creator": "0x1409b38d4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::InstanceConfigCommand": {
+  "id": 26,
+  "vtable": "0x14118df28",
+  "creator": "0x1409b38fc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::InstanceConfigClientInfoCommand": {
+  "id": 27,
+  "vtable": "0x14118dfa8",
+  "creator": "0x1409b38f4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ActorRequestCommand": {
+  "id": 28,
+  "vtable": "0x141176f90",
+  "creator": "0x140985690",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewPlayerCommand": {
+  "id": 29,
+  "vtable": "0x141177110",
+  "creator": "0x140985a28",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DiscardPlayerCommand": {
+  "id": 30,
+  "vtable": "0x141177310",
+  "creator": "0x140985778",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PlayerReadyCommand": {
+  "id": 31,
+  "vtable": "0x141176790",
+  "creator": "0x140985aa8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PlayerUpdateCommand": {
+  "id": 32,
+  "vtable": "0x141177190",
+  "creator": "0x140985ab0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewRemotePlayerCommand": {
+  "id": 33,
+  "vtable": "0x141177210",
+  "creator": "0x140985a38",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RemotePlayerInfoCommand": {
+  "id": 34,
+  "vtable": "0x141177290",
+  "creator": "0x140985b78",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpdateShowPlayerOverheadIconsCommand": {
+  "id": 35,
+  "vtable": "0x141179d90",
+  "creator": "0x140985c58",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::MembershipUpdateCommand": {
+  "id": 36,
+  "vtable": "0x141179f90",
+  "creator": "0x1409859e0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SettingsInfoCommand": {
+  "id": 37,
+  "vtable": "0x14117a910",
+  "creator": "0x140985bd8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewNPCCommand": {
+  "id": 38,
+  "vtable": "0x141177390",
+  "creator": "0x140985a20",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DiscardNPCCommand": {
+  "id": 39,
+  "vtable": "0x141177410",
+  "creator": "0x140985770",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NPCInfoCommand": {
+  "id": 40,
+  "vtable": "0x141177490",
+  "creator": "0x1409859f8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NPCRequestCommand": {
+  "id": 41,
+  "vtable": "0x141177510",
+  "creator": "0x140985a00",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewMonsterCommand": {
+  "id": 42,
+  "vtable": "0x141177590",
+  "creator": "0x140985a18",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DiscardMonsterCommand": {
+  "id": 43,
+  "vtable": "0x141177610",
+  "creator": "0x140985768",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::MonsterUpdateCommand": {
+  "id": 44,
+  "vtable": "0x141177690",
+  "creator": "0x1409859f0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewItemCommand": {
+  "id": 45,
+  "vtable": "0x141177710",
+  "creator": "0x140985a10",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DiscardItemCommand": {
+  "id": 46,
+  "vtable": "0x141177790",
+  "creator": "0x140985760",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ItemInfoCommand": {
+  "id": 47,
+  "vtable": "0x141177810",
+  "creator": "0x1409859a0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ItemUpdateCommand": {
+  "id": 48,
+  "vtable": "0x141177890",
+  "creator": "0x1409859a8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SalvageCommand": {
+  "id": 49,
+  "vtable": "0x141178990",
+  "creator": "0x140985ba8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SalvageCookItemCommand": {
+  "id": 50,
+  "vtable": "0x141178a10",
+  "creator": "0x140985bb0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GlyphRemovalCommand": {
+  "id": 51,
+  "vtable": "0x141178a90",
+  "creator": "0x140985938",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewPropCommand": {
+  "id": 52,
+  "vtable": "0x141177990",
+  "creator": "0x140985a30",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DiscardPropCommand": {
+  "id": 53,
+  "vtable": "0x141177a10",
+  "creator": "0x140985780",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PropInfoCommand": {
+  "id": 54,
+  "vtable": "0x141177a90",
+  "creator": "0x140985ac8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PropUpdateCommand": {
+  "id": 55,
+  "vtable": "0x141177b10",
+  "creator": "0x140985ae0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PropRequestCommand": {
+  "id": 56,
+  "vtable": "0x141177b90",
+  "creator": "0x140985ad8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PropInteractionCommand": {
+  "id": 57,
+  "vtable": "0x141177c10",
+  "creator": "0x140985ad0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewDestroyableCommand": {
+  "id": 58,
+  "vtable": "0x141177c90",
+  "creator": "0x140985a08",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DestroyablePropUpdateCommand": {
+  "id": 59,
+  "vtable": "0x141177d10",
+  "creator": "0x140985758",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::NewLocationEffectCommand": {
+  "id": 60,
+  "vtable": "0x1411d6180",
+  "creator": "0x140a624f4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::DiscardLocationEffectCommand": {
+  "id": 61,
+  "vtable": "0x1411d6280",
+  "creator": "0x140a624dc",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::LocationEffectInfoCommand": {
+  "id": 62,
+  "vtable": "0x1411d6200",
+  "creator": "0x140a624ec",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::NewTrapCommand": {
+  "id": 63,
+  "vtable": "0x1411d5f80",
+  "creator": "0x140a624fc",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::DiscardTrapCommand": {
+  "id": 64,
+  "vtable": "0x1411d6080",
+  "creator": "0x140a624e4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::TrapInfoCommand": {
+  "id": 65,
+  "vtable": "0x1411d6000",
+  "creator": "0x140a62514",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::TrapTrippedCommand": {
+  "id": 66,
+  "vtable": "0x1411d6100",
+  "creator": "0x140a6251c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::VariationInfoCommand": {
+  "id": 67,
+  "vtable": "0x141176a10",
+  "creator": "0x140985ca8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ExitInfoCommand": {
+  "id": 68,
+  "vtable": "0x141176910",
+  "creator": "0x1409857b0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PositionMarkerInfoCommand": {
+  "id": 69,
+  "vtable": "0x141176990",
+  "creator": "0x140985ab8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "SkillCommand": {
+  "id": 70,
+  "vtable": "0x1411b7618",
+  "creator": "0x140a0bcac",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "TargetSkillCommand": {
+  "id": 71,
+  "vtable": "0x1411e5550",
+  "creator": "0x140a98650",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "BulletSkillCommand": {
+  "id": 72,
+  "vtable": "0x1411d3450",
+  "creator": "0x140a5b774",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "TargetPointBulletSkillCommand": {
+  "id": 73,
+  "vtable": "0x1411e5690",
+  "creator": "0x140a98c04",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "ShiftedSkillCommand": {
+  "id": 74,
+  "vtable": "0x1411e5420",
+  "creator": "0x140a97f70",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "TargetBulletSkillCommand": {
+  "id": 75,
+  "vtable": "0x1411e55f0",
+  "creator": "0x140a9896c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "SustainedSkillCommand": {
+  "id": 76,
+  "vtable": "0x1411e54b8",
+  "creator": "0x140a98420",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "SkillStopCommand": {
+  "id": 77,
+  "vtable": "0x1411d33b8",
+  "creator": "0x140a5b244",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::StatusEffectInfoCommand": {
+  "id": 78,
+  "vtable": "0x1411d6380",
+  "creator": "0x140a6250c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "StatusEffects::StatusEffectCommand": {
+  "id": 79,
+  "vtable": "0x1411d6300",
+  "creator": "0x140a62504",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuickSlotsInfoCommand": {
+  "id": 80,
+  "vtable": "0x141177d90",
+  "creator": "0x140985b40",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuickSlotsCommand": {
+  "id": 81,
+  "vtable": "0x141177e10",
+  "creator": "0x140985b38",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuickbarInfoCommand": {
+  "id": 82,
+  "vtable": "0x141177e90",
+  "creator": "0x140985b48",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::LockQuickbarCommand": {
+  "id": 83,
+  "vtable": "0x141177f10",
+  "creator": "0x1409859c8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::InventoryInfoCommand": {
+  "id": 84,
+  "vtable": "0x141178290",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::InventoryCommand": {
+  "id": 85,
+  "vtable": "0x141178310",
+  "creator": "0x140985980",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GemRemovalResponseCommand": {
+  "id": 86,
+  "vtable": "0x141177910",
+  "creator": "0x140985810",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CurrencyConversionCommand": {
+  "id": 87,
+  "vtable": "0x141179e90",
+  "creator": "0x140985710",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "SkillBookInfoCommand": {
+  "id": 88,
+  "vtable": "0x1411bc0e0",
+  "creator": "0x140a15f0c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RequestOfferCommand": {
+  "id": 89,
+  "vtable": "0x141179e10",
+  "creator": "0x140985b88",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OfferCommand": {
+  "id": 90,
+  "vtable": "0x14117a810",
+  "creator": "0x140985a70",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::TransactionCommand": {
+  "id": 91,
+  "vtable": "0x14118d6a8",
+  "creator": "0x1409b39b4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CraftingCommand": {
+  "id": 92,
+  "vtable": "0x141178810",
+  "creator": "0x1409856f0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CraftingResultCommand": {
+  "id": 93,
+  "vtable": "0x141178890",
+  "creator": "0x140985700",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CraftingResultAcceptanceCommand": {
+  "id": 94,
+  "vtable": "0x141178910",
+  "creator": "0x1409856f8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "MoveCommand": {
+  "id": 95,
+  "vtable": "0x141190818",
+  "creator": "0x1409b91f0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UnlockMapCommand": {
+  "id": 96,
+  "vtable": "0x141178e90",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::TravelCommand": {
+  "id": 97,
+  "vtable": "0x141178f10",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::RespawnCommand": {
+  "id": 98,
+  "vtable": "0x141179010",
+  "creator": "0x140985b90",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::LogoutCommand": {
+  "id": 99,
+  "vtable": "0x141178e10",
+  "creator": "0x1409859d0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PickupItemCommand": {
+  "id": 100,
+  "vtable": "0x141179090",
+  "creator": "0x140985a98",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PickupInfoCommand": {
+  "id": 101,
+  "vtable": "0x141179110",
+  "creator": "0x140985a90",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::EncounterCommand": {
+  "id": 102,
+  "vtable": "0x141179190",
+  "creator": "0x140985788",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::TalkCommand": {
+  "id": 103,
+  "vtable": "0x141179210",
+  "creator": "0x140985c28",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DeliverCommand": {
+  "id": 104,
+  "vtable": "0x141179290",
+  "creator": "0x140985750",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PayCommand": {
+  "id": 105,
+  "vtable": "0x141179310",
+  "creator": "0x140985a88",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DefendCommand": {
+  "id": 106,
+  "vtable": "0x141179390",
+  "creator": "0x140985748",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::HitCommand": {
+  "id": 107,
+  "vtable": "0x141177090",
+  "creator": "0x140985970",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::KillCommand": {
+  "id": 108,
+  "vtable": "0x141177010",
+  "creator": "0x1409859b8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ReviveCommand": {
+  "id": 109,
+  "vtable": "0x141176890",
+  "creator": "0x140985ba0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ResurrectCommand": {
+  "id": 110,
+  "vtable": "0x141179910",
+  "creator": "0x140985b98",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::StillAliveCommand": {
+  "id": 111,
+  "vtable": "0x141179410",
+  "creator": "0x140985c20",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SwitchMapCommand": {
+  "id": 112,
+  "vtable": "0x14118cfa8",
+  "creator": "0x1409b39ac",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ForceTransformCommand": {
+  "id": 113,
+  "vtable": "0x14117a590",
+  "creator": "0x1409857c8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ObstacleUpdateCommand": {
+  "id": 114,
+  "vtable": "0x141179990",
+  "creator": "0x140985a68",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ActorsLeftVicinityCommand": {
+  "id": 115,
+  "vtable": "0x141179a90",
+  "creator": "0x1409856a8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ActorsEnterVicinityCommand": {
+  "id": 116,
+  "vtable": "0x141179b10",
+  "creator": "0x1409856a0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SpectatorCameraCommand": {
+  "id": 117,
+  "vtable": "0x141179b90",
+  "creator": "0x140985c00",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SpectateActorCommand": {
+  "id": 118,
+  "vtable": "0x141179c10",
+  "creator": "0x140985bf8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpdateSpectatorCameraCommand": {
+  "id": 119,
+  "vtable": "0x141179c90",
+  "creator": "0x140985c60",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SetEventParticipationCommand": {
+  "id": 120,
+  "vtable": "0x141179d10",
+  "creator": "0x140985bc8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UseTravelItemCommand": {
+  "id": 121,
+  "vtable": "0x141178f90",
+  "creator": "0x140985c98",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::FactionInfoCommand": {
+  "id": 122,
+  "vtable": "0x141179f10",
+  "creator": "0x1409857b8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ActorStatsUpdateCommand": {
+  "id": 123,
+  "vtable": "0x141176f10",
+  "creator": "0x140985698",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PlayerLevelUpdateCommand": {
+  "id": 124,
+  "vtable": "0x141176d10",
+  "creator": "0x140985aa0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::XPChangedCommand": {
+  "id": 125,
+  "vtable": "0x141176c10",
+  "creator": "0x140985cb0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupXPChangedCommand": {
+  "id": 126,
+  "vtable": "0x141176c90",
+  "creator": "0x140985960",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::HonorPointsChangedCommand": {
+  "id": 127,
+  "vtable": "0x141176b90",
+  "creator": "0x140985978",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CurrencyChangedCommand": {
+  "id": 128,
+  "vtable": "0x141176a90",
+  "creator": "0x140985708",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ShowDeathDialogCommand": {
+  "id": 129,
+  "vtable": "0x141176810",
+  "creator": "0x140985be0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::TimedOffersInfoCommand": {
+  "id": 130,
+  "vtable": "0x141178b10",
+  "creator": "0x140985c38",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::TimedChallengesInfoCommand": {
+  "id": 131,
+  "vtable": "0x141178b90",
+  "creator": "0x140985c30",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "SpecialOfferCommand": {
+  "id": 132,
+  "vtable": "0x1411c9dc8",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "DebugSpecialOfferCommand": {
+  "id": 132,
+  "vtable": "0x1411c9dc8",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::ConversionStoryInfoCommand": {
+  "id": 133,
+  "vtable": "0x14117a110",
+  "creator": "0x1409856e8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "CharacterGenerationCommand": {
+  "id": 134,
+  "vtable": "0x1411c92b8",
+  "creator": "0x140a37578",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CharacterSelectionCommand": {
+  "id": 135,
+  "vtable": "0x1411c9648",
+  "creator": "0x140a386f0",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::NotificationCommand": {
+  "id": 136,
+  "vtable": "0x1411ca9e8",
+  "creator": "0x140a3c358",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::MessageCommand": {
+  "id": 137,
+  "vtable": "0x141176710",
+  "creator": "0x1409859e8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestCommand": {
+  "id": 138,
+  "vtable": "0x141178690",
+  "creator": "0x140985ae8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestUpdateCommand": {
+  "id": 139,
+  "vtable": "0x141178410",
+  "creator": "0x140985b28",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestLogInfoCommand": {
+  "id": 140,
+  "vtable": "0x141178390",
+  "creator": "0x140985af8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestMonsterIndicationRequestCommand": {
+  "id": 141,
+  "vtable": "0x141178510",
+  "creator": "0x140985b08",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestMonsterIndicationInfoCommand": {
+  "id": 142,
+  "vtable": "0x141178490",
+  "creator": "0x140985b00",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestTriggerIndicationRequestCommand": {
+  "id": 143,
+  "vtable": "0x141178610",
+  "creator": "0x140985b18",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestTriggerIndicationInfoCommand": {
+  "id": 144,
+  "vtable": "0x141178590",
+  "creator": "0x140985b10",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuestDisableCommand": {
+  "id": 145,
+  "vtable": "0x14117a790",
+  "creator": "0x140985af0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ChapterUnlockedCommand": {
+  "id": 146,
+  "vtable": "0x141178710",
+  "creator": "0x1409856e0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ChapterProgressCommand": {
+  "id": 147,
+  "vtable": "0x141178790",
+  "creator": "0x1409856d8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DailyChallengeSelectionCommand": {
+  "id": 148,
+  "vtable": "0x141178c90",
+  "creator": "0x140985720",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DailyChallengeProgressCommand": {
+  "id": 149,
+  "vtable": "0x141178c10",
+  "creator": "0x140985718",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupListCommand": {
+  "id": 150,
+  "vtable": "0x1411cb330",
+  "creator": "0x140a42a64",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupStatusCommand": {
+  "id": 151,
+  "vtable": "0x1411cb3b0",
+  "creator": "0x140a42a94",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupFoundationCommand": {
+  "id": 152,
+  "vtable": "0x1411cb430",
+  "creator": "0x140a42a24",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupFoundationResponseCommand": {
+  "id": 153,
+  "vtable": "0x1411cb4b0",
+  "creator": "0x140a42a2c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupInviteCommand": {
+  "id": 154,
+  "vtable": "0x1411cb530",
+  "creator": "0x140a42a3c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupMultipleInviteCommand": {
+  "id": 155,
+  "vtable": "0x1411cb5b0",
+  "creator": "0x140a42a7c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupInvitationResponseCommand": {
+  "id": 156,
+  "vtable": "0x1411cb630",
+  "creator": "0x140a42a34",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupJoinRequestCommand": {
+  "id": 157,
+  "vtable": "0x1411cb7b0",
+  "creator": "0x140a42a44",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupJoinRequestResponseCommand": {
+  "id": 158,
+  "vtable": "0x1411cb830",
+  "creator": "0x140a42a4c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupKickCommand": {
+  "id": 159,
+  "vtable": "0x1411cb6b0",
+  "creator": "0x140a42a54",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupLeaveCommand": {
+  "id": 160,
+  "vtable": "0x1411cb730",
+  "creator": "0x140a42a5c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupEditCommand": {
+  "id": 161,
+  "vtable": "0x1411cb8b0",
+  "creator": "0x140a42a14",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupEditResponseCommand": {
+  "id": 162,
+  "vtable": "0x1411cb930",
+  "creator": "0x140a42a1c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupingFailedCommand": {
+  "id": 163,
+  "vtable": "0x1411cb9b0",
+  "creator": "0x140a42a9c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupCandidatesRequestCommand": {
+  "id": 164,
+  "vtable": "0x1411cba30",
+  "creator": "0x140a42a04",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupCandidatesResponseCommand": {
+  "id": 165,
+  "vtable": "0x1411cbab0",
+  "creator": "0x140a42a0c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildListCommand": {
+  "id": 166,
+  "vtable": "0x1411cbb30",
+  "creator": "0x140a42ad4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildStatusCommand": {
+  "id": 167,
+  "vtable": "0x1411cbbb0",
+  "creator": "0x140a42b04",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GuildFoundationCommand": {
+  "id": 168,
+  "vtable": "0x1411cbc30",
+  "creator": "0x140a42aa4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildFoundationResponseCommand": {
+  "id": 169,
+  "vtable": "0x1411cbcb0",
+  "creator": "0x140a42aac",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GuildInviteCommand": {
+  "id": 170,
+  "vtable": "0x1411cbd30",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::GuildInvitationResponseCommand": {
+  "id": 171,
+  "vtable": "0x1411cbdb0",
+  "creator": "0x140a42ab4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildKickCommand": {
+  "id": 172,
+  "vtable": "0x1411cbe30",
+  "creator": "0x140a42ac4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildLeaveCommand": {
+  "id": 173,
+  "vtable": "0x1411cbeb0",
+  "creator": "0x140a42acc",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildNameEditCommand": {
+  "id": 174,
+  "vtable": "0x1411cbf30",
+  "creator": "0x140a42af4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildNameEditResponseCommand": {
+  "id": 175,
+  "vtable": "0x1411cbfb0",
+  "creator": "0x140a42afc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::BuddyListCommand": {
+  "id": 176,
+  "vtable": "0x1411cc130",
+  "creator": "0x140a429f4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::BuddyStatusCommand": {
+  "id": 177,
+  "vtable": "0x1411cc1b0",
+  "creator": "0x140a429fc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::IgnoredListCommand": {
+  "id": 178,
+  "vtable": "0x1411cc230",
+  "creator": "0x140a42b0c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::IgnoredStatusCommand": {
+  "id": 179,
+  "vtable": "0x1411cc2b0",
+  "creator": "0x140a42b14",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PlayerQueryCommand": {
+  "id": 180,
+  "vtable": "0x1411cc330",
+  "creator": "0x140a42b24",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PlayerQueryResultCommand": {
+  "id": 181,
+  "vtable": "0x1411cc3b0",
+  "creator": "0x140a42b2c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupQueryCommand": {
+  "id": 182,
+  "vtable": "0x1411cc430",
+  "creator": "0x140a42a84",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupQueryResultCommand": {
+  "id": 183,
+  "vtable": "0x1411cc4b0",
+  "creator": "0x140a42a8c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupMemberQueryCommand": {
+  "id": 184,
+  "vtable": "0x1411cc530",
+  "creator": "0x140a42a6c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GroupMemberQueryResultCommand": {
+  "id": 185,
+  "vtable": "0x1411cc5b0",
+  "creator": "0x140a42a74",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GuildMessageOfTheDayCommand": {
+  "id": 186,
+  "vtable": "0x1411cc630",
+  "creator": "0x140a42ae4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GuildMessageOfTheDayRequestCommand": {
+  "id": 187,
+  "vtable": "0x1411cc730",
+  "creator": "0x140a42aec",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GuildMessageOfTheDayChangeCommand": {
+  "id": 188,
+  "vtable": "0x1411cc6b0",
+  "creator": "0x140a42adc",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SocialUpdateLevelCommand": {
+  "id": 189,
+  "vtable": "0x1411cc030",
+  "creator": "0x140a42b3c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SocialRenamePlayerCommand": {
+  "id": 190,
+  "vtable": "0x1411cc0b0",
+  "creator": "0x140a42b34",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::TeamStatusCommand": {
+  "id": 191,
+  "vtable": "0x1411cc7b0",
+  "creator": "0x140a42b44",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPFlagCommand": {
+  "id": 192,
+  "vtable": "0x14119d6e0",
+  "creator": "0x1409db62c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::PVPMatchOverCommand": {
+  "id": 193,
+  "vtable": "0x14119dee0",
+  "creator": "0x1409db64c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPMatchStartCommand": {
+  "id": 194,
+  "vtable": "0x14119dd60",
+  "creator": "0x1409db654",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPMatchCountdownCommand": {
+  "id": 195,
+  "vtable": "0x14119dde0",
+  "creator": "0x1409db634",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPMatchInfoCommand": {
+  "id": 196,
+  "vtable": "0x14119de60",
+  "creator": "0x1409db644",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPEventCommand": {
+  "id": 197,
+  "vtable": "0x14119dfe0",
+  "creator": "0x1409db61c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::PVPStateCommand": {
+  "id": 198,
+  "vtable": "0x14119df60",
+  "creator": "0x1409db65c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::LeavePVPCommand": {
+  "id": 199,
+  "vtable": "0x14119d760",
+  "creator": "0x1409db60c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::RefillPVPServerCommand": {
+  "id": 200,
+  "vtable": "0x14119d7e0",
+  "creator": "0x1409db664",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::StageInfoCommand": {
+  "id": 201,
+  "vtable": "0x14119e060",
+  "creator": "0x1409db684",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::PVPMatchDescriptionCommand": {
+  "id": 202,
+  "vtable": "0x14119e0e0",
+  "creator": "0x1409db63c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::SetBattlegroundIdCommand": {
+  "id": 203,
+  "vtable": "0x14119e260",
+  "creator": "0x1409db674",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::ShowPVPDeathDialogCommand": {
+  "id": 204,
+  "vtable": "0x14119e2e0",
+  "creator": "0x1409db67c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::PVPEventProgressUpdateCommand": {
+  "id": 205,
+  "vtable": "0x14119e360",
+  "creator": "0x1409db624",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::JoinMatchQueueCommand": {
+  "id": 206,
+  "vtable": "0x14119d860",
+  "creator": "0x1409db5f4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::JoinMatchQueueResponseCommand": {
+  "id": 207,
+  "vtable": "0x14119d8e0",
+  "creator": "0x1409db604",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::JoinMatchQueueInfoCommand": {
+  "id": 208,
+  "vtable": "0x14119d960",
+  "creator": "0x1409db5fc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::AbortMatchQueueCommand": {
+  "id": 209,
+  "vtable": "0x14119d9e0",
+  "creator": "0x1409db5ac",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::JoinBattleGroundCommand": {
+  "id": 210,
+  "vtable": "0x14119dae0",
+  "creator": "0x1409db5e4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::JoinBattlegroundResponseCommand": {
+  "id": 211,
+  "vtable": "0x14119db60",
+  "creator": "0x1409db5ec",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::BattlegroundInviteCommand": {
+  "id": 212,
+  "vtable": "0x14119dbe0",
+  "creator": "0x1409db5c4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::BattlegroundInviteResponseCommand": {
+  "id": 213,
+  "vtable": "0x14119dc60",
+  "creator": "0x1409db5cc",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::BattlegroundEventCommand": {
+  "id": 214,
+  "vtable": "0x14119dce0",
+  "creator": "0x1409db5bc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::MatchMakingInfoCommand": {
+  "id": 215,
+  "vtable": "0x14119da60",
+  "creator": "0x1409db614",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::AutoBalanceRequestCommand": {
+  "id": 216,
+  "vtable": "0x14119e160",
+  "creator": "0x1409db5b4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::EnableAutoBalanceCommand": {
+  "id": 217,
+  "vtable": "0x14119e1e0",
+  "creator": "0x1409db5dc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "PVP::BattlegroundRegistrationResultCommand": {
+  "id": 218,
+  "vtable": "0x14119e3e0",
+  "creator": "0x1409db5d4",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::NewEventCommand": {
+  "id": 219,
+  "vtable": "0x14118d228",
+  "creator": "0x1409b395c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::DiscardEventCommand": {
+  "id": 220,
+  "vtable": "0x14118d2a8",
+  "creator": "0x1409b38bc",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::EventUpdateCommand": {
+  "id": 221,
+  "vtable": "0x14118d328",
+  "creator": "0x1409b38c4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ActiveEventsCommand": {
+  "id": 222,
+  "vtable": "0x14118d3a8",
+  "creator": "0x1409b3884",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::EventParticipationInfoCommand": {
+  "id": 223,
+  "vtable": "0x141176d90",
+  "creator": "0x140985798",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::EventProgressInfoCommand": {
+  "id": 224,
+  "vtable": "0x141176e10",
+  "creator": "0x1409857a8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::EventProgressChangedCommand": {
+  "id": 225,
+  "vtable": "0x141176e90",
+  "creator": "0x1409857a0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "ChatClientLoggedInCommand": {
+  "id": 226,
+  "vtable": "0x1411656e8",
+  "creator": "0x14093a298",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "ChatErrorReportCommand": {
+  "id": 227,
+  "vtable": "0x141165780",
+  "creator": "0x14093a7b8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "ChatServiceStartedCommand": {
+  "id": 230,
+  "vtable": "0x141165820",
+  "creator": "0x14093a950",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PreloadRessourceCommand": {
+  "id": 231,
+  "vtable": "0x141179a10",
+  "creator": "0x140985ac0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ClientAverageFrameInfoTrackingCommand": {
+  "id": 232,
+  "vtable": "0x14118d4a8",
+  "creator": "0x1409b3894",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ClientCurrentPositionFrameInfoTrackingCommand": {
+  "id": 233,
+  "vtable": "0x14118d528",
+  "creator": "0x1409b389c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ClientLogEventCommand": {
+  "id": 234,
+  "vtable": "0x14118d5a8",
+  "creator": "0x1409b38ac",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorRankingInfoCommand": {
+  "id": 235,
+  "vtable": "0x1411d1b10",
+  "creator": "0x140a56c10",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorRankingResponseCommand": {
+  "id": 236,
+  "vtable": "0x1411d1b90",
+  "creator": "0x140a56c28",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorRankingMatchUpdateCommand": {
+  "id": 237,
+  "vtable": "0x1411d1c10",
+  "creator": "0x140a56c18",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorRankingMatchUpdateResponseCommand": {
+  "id": 238,
+  "vtable": "0x1411d1c90",
+  "creator": "0x140a56c20",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorRankingUpdateCommand": {
+  "id": 239,
+  "vtable": "0x1411d1d10",
+  "creator": "0x140a56c30",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorOverallUserRankingInfoCommand": {
+  "id": 240,
+  "vtable": "0x1411d1d90",
+  "creator": "0x140a56c00",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorOverallUserRankingResponseCommand": {
+  "id": 241,
+  "vtable": "0x1411d1e10",
+  "creator": "0x140a56c08",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorLocalUserRankingInfoCommand": {
+  "id": 242,
+  "vtable": "0x1411d1e90",
+  "creator": "0x140a56be0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorLocalUserRankingInfoResponseCommand": {
+  "id": 243,
+  "vtable": "0x1411d1f10",
+  "creator": "0x140a56be8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorOverallLocalUserRankingInfoCommand": {
+  "id": 244,
+  "vtable": "0x1411d1f90",
+  "creator": "0x140a56bf0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::HonorOverallLocalUserRankingInfoResponseCommand": {
+  "id": 245,
+  "vtable": "0x1411d2010",
+  "creator": "0x140a56bf8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldUserRankingInfoCommand": {
+  "id": 246,
+  "vtable": "0x1411d2090",
+  "creator": "0x140a56c68",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldUserRankingResponseCommand": {
+  "id": 247,
+  "vtable": "0x1411d2110",
+  "creator": "0x140a56c70",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldLocalUserRankingInfoCommand": {
+  "id": 248,
+  "vtable": "0x1411d2290",
+  "creator": "0x140a56c58",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldLocalUserRankingResponseCommand": {
+  "id": 249,
+  "vtable": "0x1411d2310",
+  "creator": "0x140a56c60",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldUserRankingUpdateCommand": {
+  "id": 250,
+  "vtable": "0x1411d2490",
+  "creator": "0x140a56c78",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::ParallelWorldUserRankingUpdateResponseCommand": {
+  "id": 251,
+  "vtable": "0x1411d2510",
+  "creator": "0x140a56c80",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::OverallUserRankingInfoCommand": {
+  "id": 252,
+  "vtable": "0x1411d2190",
+  "creator": "0x140a56c48",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::OverallUserRankingResponseCommand": {
+  "id": 253,
+  "vtable": "0x1411d2210",
+  "creator": "0x140a56c50",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::OverallLocalUserRankingInfoCommand": {
+  "id": 254,
+  "vtable": "0x1411d2390",
+  "creator": "0x140a56c38",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Ranking::OverallLocalUserRankingInfoResponseCommand": {
+  "id": 255,
+  "vtable": "0x1411d2410",
+  "creator": "0x140a56c40",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ActivateGodModeCommand": {
+  "id": 256,
+  "vtable": "0x141179490",
+  "creator": "0x140985668",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GodModeKillCommand": {
+  "id": 257,
+  "vtable": "0x141179590",
+  "creator": "0x140985948",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GodModeTeleportCommand": {
+  "id": 258,
+  "vtable": "0x141179610",
+  "creator": "0x140985950",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GodModeCreateItemCommand": {
+  "id": 259,
+  "vtable": "0x141179690",
+  "creator": "0x140985940",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GodModeToggleLootDropCommand": {
+  "id": 260,
+  "vtable": "0x141179510",
+  "creator": "0x140985958",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DebugMonsterInfoCommand": {
+  "id": 261,
+  "vtable": "0x141179710",
+  "creator": "0x140985738",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DebugMonsterRequestCommand": {
+  "id": 262,
+  "vtable": "0x141179790",
+  "creator": "0x140985740",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DebugDamageComputationSkillCommand": {
+  "id": 264,
+  "vtable": "0x141179810",
+  "creator": "0x140985730",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::DebugDamageComputationEffectCommand": {
+  "id": 265,
+  "vtable": "0x141179890",
+  "creator": "0x140985728",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::PaymentForceLogoutCommand": {
+  "id": 266,
+  "vtable": "0x14118de28",
+  "creator": "0x1409b3964",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::OCPOfferRequestCommand": {
+  "id": 267,
+  "vtable": "0x14117a190",
+  "creator": "0x140985a50",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OCPMethodsCommand": {
+  "id": 268,
+  "vtable": "0x14117a290",
+  "creator": "0x140985a48",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OCPOffersChangedCommand": {
+  "id": 269,
+  "vtable": "0x14117a310",
+  "creator": "0x140985a60",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OCPOfferResponseCommand": {
+  "id": 270,
+  "vtable": "0x14117a210",
+  "creator": "0x140985a58",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OCPBookingCommand": {
+  "id": 271,
+  "vtable": "0x14117a390",
+  "creator": "0x140985a40",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RedeemVoucherCommand": {
+  "id": 272,
+  "vtable": "0x14117a410",
+  "creator": "0x140985b60",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RedeemVoucherResponseCommand": {
+  "id": 273,
+  "vtable": "0x14117a490",
+  "via": "rtti",
+  "actor_scoped": true
+ },
+ "Commands::OpenPaymentDeeplinkCommand": {
+  "id": 274,
+  "vtable": "0x14117a510",
+  "creator": "0x140985a78",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::StagingSignalCommand": {
+  "id": 275,
+  "vtable": "0x14117a090",
+  "creator": "0x140985c08",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Achievements::AchievementInfoCommand": {
+  "id": 276,
+  "vtable": "0x1410f6fa0",
+  "creator": "0x140847b28",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SetTitleCommand": {
+  "id": 277,
+  "vtable": "0x14117a010",
+  "creator": "0x140985bd0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Achievements::ClearDungeonInfoCommand": {
+  "id": 278,
+  "vtable": "0x1410f7020",
+  "creator": "0x140847b30",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::SelectTalentCommand": {
+  "id": 279,
+  "vtable": "0x1411d8680",
+  "creator": "0x140a67cf8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::DeselectTalentCommand": {
+  "id": 280,
+  "vtable": "0x1411d8700",
+  "creator": "0x140a67cd8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::EnableTalentPreselectionCommand": {
+  "id": 281,
+  "vtable": "0x1411d8880",
+  "creator": "0x140a67ce0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::TalentCategoryPointsInfoCommand": {
+  "id": 282,
+  "vtable": "0x1411d8900",
+  "creator": "0x140a67d00",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "TalentSelectionInfoCommand": {
+  "id": 283,
+  "vtable": "0x1411d8308",
+  "creator": "0x140a670d8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::UnlockSkillTalentPreselectionCommand": {
+  "id": 284,
+  "vtable": "0x1411d8980",
+  "creator": "0x140a67d08",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::UnlockSkillTalentPreselectionInfoCommand": {
+  "id": 285,
+  "vtable": "0x1411d8a00",
+  "creator": "0x140a67d10",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::ResetTalentsCommand": {
+  "id": 286,
+  "vtable": "0x1411d8780",
+  "creator": "0x140a67cf0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Talents::ResetTalentCategoryCommand": {
+  "id": 287,
+  "vtable": "0x1411d8800",
+  "creator": "0x140a67ce8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RequestFindRandomMonsterCommand": {
+  "id": 288,
+  "vtable": "0x14117a710",
+  "creator": "0x140985b80",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::BeginAutoplayCommand": {
+  "id": 289,
+  "vtable": "0x14117a610",
+  "creator": "0x1409856c8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::EndAutoplayCommand": {
+  "id": 290,
+  "vtable": "0x14117a690",
+  "creator": "0x140985790",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::QuickResurrectGroupMemberCommand": {
+  "id": 291,
+  "vtable": "0x14117a890",
+  "creator": "0x140985b30",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CharacterServiceAccountLogoutCommand": {
+  "id": 292,
+  "vtable": "0x14118dea8",
+  "creator": "0x1409b388c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::QuestTriggerSignalCommand": {
+  "id": 293,
+  "vtable": "0x14117a990",
+  "creator": "0x140985b20",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletInfoCommand": {
+  "id": 294,
+  "vtable": "0x14117aa10",
+  "creator": "0x1409857e8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletResultCommand": {
+  "id": 295,
+  "vtable": "0x14117aa90",
+  "creator": "0x140985800",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletAbortionCommand": {
+  "id": 296,
+  "vtable": "0x14117ab10",
+  "creator": "0x1409857d8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletConversionCommand": {
+  "id": 297,
+  "vtable": "0x14117ab90",
+  "creator": "0x1409857e0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletStartCommand": {
+  "id": 298,
+  "vtable": "0x14117ac10",
+  "creator": "0x140985808",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletNotificationInfoCommand": {
+  "id": 299,
+  "vtable": "0x14117ac90",
+  "creator": "0x1409857f0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GauntletNotificationResponseCommand": {
+  "id": 300,
+  "vtable": "0x14117ad10",
+  "creator": "0x1409857f8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::FastPayPurchaseSuccessfulCommand": {
+  "id": 301,
+  "vtable": "0x14117ae10",
+  "creator": "0x1409857c0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SendQuickbarsCommand": {
+  "id": 302,
+  "vtable": "0x14118d728",
+  "creator": "0x1409b399c",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::StickerbookInfoCommand": {
+  "id": 303,
+  "vtable": "0x141177f90",
+  "creator": "0x140985c10",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::StickerbookItemInfoCommand": {
+  "id": 304,
+  "vtable": "0x141178010",
+  "creator": "0x140985c18",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpdateStickerbookFavoriteCommand": {
+  "id": 305,
+  "vtable": "0x141176510",
+  "creator": "0x140985c68",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpdateStickerbookFavoritePosCommand": {
+  "id": 306,
+  "vtable": "0x141176590",
+  "creator": "0x140985c70",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::AddStickerbookFromInventoryCommand": {
+  "id": 307,
+  "vtable": "0x141176610",
+  "creator": "0x1409856b8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpgradeStickerbookItemCommand": {
+  "id": 308,
+  "vtable": "0x141176690",
+  "creator": "0x140985c78",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UseStickerBookItemCommand": {
+  "id": 309,
+  "vtable": "0x14117ad90",
+  "creator": "0x140985c90",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GameCurrencyChangedCommand": {
+  "id": 310,
+  "vtable": "0x141176b10",
+  "creator": "0x1409857d0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RecipeBookInfoCommand": {
+  "id": 311,
+  "vtable": "0x141178090",
+  "creator": "0x140985b50",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RecipeUpdateCommand": {
+  "id": 312,
+  "vtable": "0x141178110",
+  "creator": "0x140985b58",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::AcceptedTierSpenderChallengesCommand": {
+  "id": 313,
+  "vtable": "0x141178d10",
+  "creator": "0x140985660",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UpdateProgressTierSpenderChallengesCommand": {
+  "id": 314,
+  "vtable": "0x141178d90",
+  "creator": "0x140985c50",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::MapAccessLockedCommand": {
+  "id": 315,
+  "vtable": "0x14117ae90",
+  "creator": "0x1409859d8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "PVP::ResetMatchQueuesCommand": {
+  "id": 316,
+  "vtable": "0x14119e460",
+  "creator": "0x1409db66c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::GroupXPFactorChangeCommand": {
+  "id": 317,
+  "vtable": "0x14117af10",
+  "creator": "0x140985968",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RevenueRecognitionCommand": {
+  "id": 319,
+  "vtable": "0x14118e028",
+  "via": "rtti",
+  "actor_scoped": false
+ },
+ "Commands::ItemCustomizationInfoCommand": {
+  "id": 320,
+  "vtable": "0x141178190",
+  "creator": "0x140985990",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ItemCustomizationUpdateCommand": {
+  "id": 321,
+  "vtable": "0x141178210",
+  "creator": "0x140985998",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ApplyItemCustomizationChangesCommand": {
+  "id": 322,
+  "vtable": "0x14117af90",
+  "creator": "0x1409856c0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SkinPurchaseResponseCommand": {
+  "id": 323,
+  "vtable": "0x14117b010",
+  "creator": "0x140985bf0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::InformPlayerLoginStateCommand": {
+  "id": 324,
+  "vtable": "0x1411cc830",
+  "creator": "0x140a42b1c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::DeltaDNACommand": {
+  "id": 325,
+  "vtable": "0x14118e0a8",
+  "creator": "0x1409b38b4",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PlayerLoginInfoCommand": {
+  "id": 326,
+  "vtable": "0x14118e128",
+  "creator": "0x1409b3974",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::PlayerLogoutInfoCommand": {
+  "id": 327,
+  "vtable": "0x14118e1a8",
+  "creator": "0x1409b397c",
+  "via": "creator",
+  "actor_scoped": false
+ },
+ "Commands::ActivityGetExtraBonusCommand": {
+  "id": 333,
+  "vtable": "0x14117b290",
+  "creator": "0x140985680",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UseSteamInventoryCommand": {
+  "id": 334,
+  "vtable": "0x14117b310",
+  "creator": "0x140985c80",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UseSteamInventoryResultCommand": {
+  "id": 335,
+  "vtable": "0x14117b390",
+  "creator": "0x140985c88",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCraftingCakesInfoCommand": {
+  "id": 336,
+  "vtable": "0x14117b410",
+  "creator": "0x140985878",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCraftingCakesInfoResultCommand": {
+  "id": 337,
+  "vtable": "0x14117b490",
+  "creator": "0x140985880",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCraftingCakesAwardCommand": {
+  "id": 338,
+  "vtable": "0x14117b510",
+  "creator": "0x140985870",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetPaymentSigninInfoCommand": {
+  "id": 339,
+  "vtable": "0x14117b590",
+  "creator": "0x1409858d8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetPaymentSigninInfoResultCommand": {
+  "id": 340,
+  "vtable": "0x14117b610",
+  "creator": "0x1409858e0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetPaymentSigninAwardCommand": {
+  "id": 341,
+  "vtable": "0x14117b690",
+  "creator": "0x1409858d0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetPaymentLoginInfoCommand": {
+  "id": 342,
+  "vtable": "0x14117b710",
+  "creator": "0x1409858c0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetPaymentLoginInfoResultCommand": {
+  "id": 343,
+  "vtable": "0x14117b790",
+  "creator": "0x1409858c8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninInfoCommand": {
+  "id": 344,
+  "vtable": "0x14117b810",
+  "creator": "0x140985840",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninInfoResultCommand": {
+  "id": 345,
+  "vtable": "0x14117b890",
+  "creator": "0x140985850",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninAwardCommand": {
+  "id": 346,
+  "vtable": "0x14117b910",
+  "creator": "0x140985830",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninInfo2026Command": {
+  "id": 347,
+  "vtable": "0x14117c710",
+  "creator": "0x140985838",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninInfoResult2026Command": {
+  "id": 348,
+  "vtable": "0x14117c790",
+  "creator": "0x140985848",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackSigninAward2026Command": {
+  "id": 349,
+  "vtable": "0x14117c810",
+  "creator": "0x140985828",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::UserHatchEggsInfoCommand": {
+  "id": 350,
+  "vtable": "0x14117b990",
+  "creator": "0x140985ca0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::OperateHatchEggsCommand": {
+  "id": 351,
+  "vtable": "0x14117ba10",
+  "creator": "0x140985a80",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::SelectWishingWellMsgCommand": {
+  "id": 352,
+  "vtable": "0x14117ba90",
+  "creator": "0x140985bb8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSeasonPassRewardsInfoCommand": {
+  "id": 353,
+  "vtable": "0x14117bb10",
+  "creator": "0x140985900",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSeasonPassRewardsInfoResultCommand": {
+  "id": 354,
+  "vtable": "0x14117bb90",
+  "creator": "0x140985908",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSeasonPassAwardCommand": {
+  "id": 355,
+  "vtable": "0x14117bc10",
+  "creator": "0x1409858e8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::AddSeasonPassExpCommand": {
+  "id": 356,
+  "vtable": "0x14117bc90",
+  "creator": "0x1409856b0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSeasonPassMissionsInfoCommand": {
+  "id": 357,
+  "vtable": "0x14117bd10",
+  "creator": "0x1409858f0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSeasonPassMissionsInfoResultCommand": {
+  "id": 358,
+  "vtable": "0x14117bd90",
+  "creator": "0x1409858f8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetWantedThiefInfoCommand": {
+  "id": 359,
+  "vtable": "0x14117be10",
+  "creator": "0x140985928",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetWantedThiefInfoResultCommand": {
+  "id": 360,
+  "vtable": "0x14117be90",
+  "creator": "0x140985930",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::AcceptWantedThiefMissionCommand": {
+  "id": 361,
+  "vtable": "0x14117bf10",
+  "creator": "0x140985658",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::RefreshWantedThiefMissionCommand": {
+  "id": 362,
+  "vtable": "0x14117bf90",
+  "creator": "0x140985b70",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::KickOutToHubLimitTimeLeftCommand": {
+  "id": 363,
+  "vtable": "0x14117c010",
+  "creator": "0x1409859b0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::KillMonsterGetTotalScoresCommand": {
+  "id": 364,
+  "vtable": "0x14117c090",
+  "creator": "0x1409859c0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetHighScoreRankAllDataCommand": {
+  "id": 365,
+  "vtable": "0x14117c110",
+  "creator": "0x1409858a0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetHighScoreRankAllDataResultCommand": {
+  "id": 366,
+  "vtable": "0x14117c190",
+  "creator": "0x1409858a8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSelfEndlessTowerDataCommand": {
+  "id": 367,
+  "vtable": "0x14117c210",
+  "creator": "0x140985920",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetEndlessTowerAllBuffsCommand": {
+  "id": 368,
+  "vtable": "0x14117c290",
+  "creator": "0x140985888",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetEndlessTowerAllBuffsResultCommand": {
+  "id": 369,
+  "vtable": "0x14117c310",
+  "creator": "0x140985890",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetHighScoreRankGroupDataCommand": {
+  "id": 370,
+  "vtable": "0x14117c390",
+  "creator": "0x1409858b0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetHighScoreRankGroupDataResultCommand": {
+  "id": 371,
+  "vtable": "0x14117c410",
+  "creator": "0x1409858b8",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetHighRankFirstPassAwardCommand": {
+  "id": 372,
+  "vtable": "0x14117c490",
+  "creator": "0x140985898",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSecondDaySignedAwardCommand": {
+  "id": 373,
+  "vtable": "0x14117c510",
+  "creator": "0x140985910",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetSecondDaySignedAwardResultCommand": {
+  "id": 374,
+  "vtable": "0x14117c590",
+  "creator": "0x140985918",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetBlackFridayTransactionsInfoCommand": {
+  "id": 375,
+  "vtable": "0x14117c610",
+  "creator": "0x140985818",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetBlackFridayTransactionsInfoResultCommand": {
+  "id": 376,
+  "vtable": "0x14117c690",
+  "creator": "0x140985820",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackUserInfo2026Command": {
+  "id": 377,
+  "vtable": "0x14117c890",
+  "creator": "0x140985860",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackUserInfoResult2026Command": {
+  "id": 378,
+  "vtable": "0x14117c910",
+  "creator": "0x140985868",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::GetCameBackUserBindOrPointsAward2026Command": {
+  "id": 379,
+  "vtable": "0x14117c990",
+  "creator": "0x140985858",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::CameBackBindUser2026Command": {
+  "id": 380,
+  "vtable": "0x14117ca10",
+  "creator": "0x1409856d0",
+  "via": "creator",
+  "actor_scoped": true
+ },
+ "Commands::ServerToClientMsgCommand": {
+  "id": 381,
+  "vtable": "0x14117ca90",
+  "creator": "0x140985bc0",
+  "via": "creator",
+  "actor_scoped": true
+ }
+}

@@ -489,6 +489,7 @@ class MonsterCombatService(
                 pvp_summon_resolutions = ()
                 support_applications = ()
                 location_aura_applications = ()
+                location_aura_resolutions = ()
             else:
                 living_actor_ids = combat.living_actor_ids
                 ordinary_actor_ids = set(living_actor_ids)
@@ -686,9 +687,13 @@ class MonsterCombatService(
                     player_damage_multipliers=summon_context[1],
                     lethal_player_actor_ids_by_owner=summon_context[2],
                 )
-                location_aura_applications = (
+                (
+                    location_aura_resolutions,
+                    location_aura_applications,
+                ) = (
                     combat.apply_player_location_auras(
-                        now=now, server_tick=server_tick
+                        now=now, server_tick=server_tick,
+                        player_positions=player_world_positions,
                     )
                 )
                 status_resolutions = (
@@ -706,6 +711,7 @@ class MonsterCombatService(
                 resolutions = tuple(hostile_resolutions)
                 player_owned_resolutions = (
                     tuple(summon_resolutions)
+                    + tuple(location_aura_resolutions)
                     + tuple(status_resolutions)
                     + tuple(periodic_monster_resolutions)
                     + reflected_resolutions
@@ -820,6 +826,14 @@ class MonsterCombatService(
                 application.target_actor_id
             )
             if target_session is None:
+                if application.target_actor_id in combat.player_summons:
+                    for viewer in {id(v): v for v in target_sessions.values()}.values():
+                        CharacterService._send_entity_status_effects(
+                            viewer, application.status_effects,
+                            actor_id=application.target_actor_id,
+                            server_tick=application.server_tick,
+                            label="player-summon-causer-status-effects",
+                        )
                 continue
             CharacterService._send_player_skill_status_effects(
                 target_session,

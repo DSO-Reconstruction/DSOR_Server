@@ -13,6 +13,50 @@ class PlayerSummonService:
     LOCATION_VISUAL_REFRESH_SECONDS = 1.0
 
     @staticmethod
+    def _activate_player_user_effect_children(
+            s: Session, applied, *, server_tick: int, effect_position=None) -> None:
+        """Materialize immediate AE/LE children after the user effect is accepted."""
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            move = s.gameplay_last_move
+            if combat is None or character is None:
+                return
+            owner_actor_id = s.gameplay_remote_actor_id or CharacterService._remote_actor_id(character.character_id)
+            position = effect_position
+            if position is None:
+                position = (
+                    combat.encounter.coordinate_frame.wire_to_world(move.relative_position)
+                    if move is not None else s.gameplay_spawn_position
+                )
+            yaw = float(getattr(move, "yaw", 0.0))
+            inventory = s.gameplay_inventory
+        if position is None:
+            return
+        children = tuple(
+            (instance_id, aura, receivers, delay)
+            for instance_id, definition in applied
+            for aura, receivers, delay in combat.player_user_effect_location_auras((definition,))
+        )
+        if not children:
+            return
+        stats = calculate_player_combat_stats(
+            combat.encounter.static_database_path, cache_owner=s,
+            class_name=CLASS_NAMES.get(int(character.class_id), "mage"),
+            level=max(1, int(character.level)), inventory=inventory,
+            modifier_sources=CharacterService._active_skill_modifier_sources(s),
+        )
+        for instance_id, aura, receivers, delay in children:
+            CharacterService._schedule_player_location_visuals(
+                s, combat, (aura,), position=tuple(position[:3]), yaw=yaw,
+                server_tick=server_tick, owner_actor_id=int(owner_actor_id),
+                cast_id=int(instance_id), delay_seconds=delay,
+                receiver_status_effects=receivers,
+                player_damage_range=(stats.minimum_damage, stats.maximum_damage),
+            )
+        CharacterService._start_monster_chase(s)
+
+    @staticmethod
     def _resolve_player_summon(
             s: Session, generation: int, timer_key,
             definition, owner_actor_id: int,
@@ -117,13 +161,24 @@ class PlayerSummonService:
             callback(s, ("player_summon_spawn", spawn))
         else:
             CharacterService._send_player_summon_spawn_to(s, spawn)
+        for summon in spawn.actors:
+            for aura, receivers in combat.player_status_minion_auras(summon.definition.monster_template_id):
+                CharacterService._publish_player_location_visuals(
+                    s, combat, (aura,), position=summon.position,
+                    yaw=summon.yaw, server_tick=spawn_server_tick,
+                    owner_actor_id=owner_actor_id, cast_id=summon.cast_id,
+                    receiver_status_effects=receivers,
+                    player_damage_range=player_damage_range,
+                    managed_aura=True, source_actor_id=summon.actor_id,
+                )
         for timer in expiry_timers:
             timer.start()
         CharacterService._start_monster_chase(s)
 
     @staticmethod
     def _spawn_socket_status_minions(
-            s: Session, status_definition, *, server_tick: int) -> None:
+            s: Session, status_definition, *, server_tick: int,
+            position_override=None) -> None:
         """Materialize minions declared by a jewel/rune status program."""
 
         with s.flow_lock:
@@ -144,6 +199,8 @@ class PlayerSummonService:
                 combat.encounter.coordinate_frame.wire_to_world(last_move.relative_position)
                 if last_move is not None else tuple(s.gameplay_spawn_position)
             )
+            if position_override is not None:
+                position = tuple(float(v) for v in position_override[:3])
             generation = s.gameplay_chase_generation
             character_level = max(1, int(character.level))
             class_name = CLASS_NAMES.get(int(character.class_id), "mage")
@@ -297,6 +354,7 @@ class PlayerSummonService:
             "player-location-start",
             int(owner_actor_id),
             int(cast_id),
+            tuple(int(effect.effect_id) for effect in definitions),
         )
         with s.flow_lock:
             generation = s.gameplay_chase_generation
@@ -336,7 +394,8 @@ class PlayerSummonService:
             owner_actor_id: int, cast_id: int = 0,
             receiver_status_effects=(), source_skill_index: int = 0,
             player_damage_range: tuple[float, float] = (1.0, 1.0),
-            round_token=None) -> None:
+            round_token=None, managed_aura: bool = False,
+            source_actor_id: int | None = None) -> None:
         """Create and synchronize generated command 0x003e visuals."""
 
         with combat.lock:
@@ -354,6 +413,7 @@ class PlayerSummonService:
                 receiver_status_effects=tuple(receiver_status_effects),
                 source_skill_index=source_skill_index,
                 player_damage_range=player_damage_range,
+                managed_aura=managed_aura, source_actor_id=source_actor_id,
             )
         if not visuals:
             return

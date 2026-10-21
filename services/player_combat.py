@@ -551,6 +551,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     float(skill_speed_multiplier),
                 ),
             )
+        if runtime_cast and combat is not None and position is not None and source_actor_id is not None:
             CharacterService._send_player_skill_status_effects(
                 s,
                 combat.player_skill_user_effects(
@@ -1082,6 +1083,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     float(skill_speed_multiplier),
                 ),
             )
+        if combat is not None and position is not None and source_actor_id is not None:
             CharacterService._send_player_skill_status_effects(
                 s,
                 combat.player_skill_user_effects(
@@ -1095,6 +1097,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 ),
                 server_tick=client_skill.server_tick,
                 label="player-skillstart-status-effects",
+                effect_position=(location_position_world if command_id == SHIFTED_SKILL_COMMAND else None),
             )
             if pending_hits or pvp_timers:
                 CharacterService._send_attack_speed_bonus_stack(

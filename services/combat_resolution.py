@@ -526,9 +526,38 @@ class CombatResolutionService:
             int(previous.field_18) + 1
             if previous is not None else 0
         )
+        causer_stack = str(getattr(definition, "effect_hosts", "")).casefold() == "causer"
+        if causer_stack:
+            # The combat state owns minion hit stacks; every viewer receives
+            # the same occurrence, even after joining an already-hot minion.
+            # ClientActorStatusEffectModule::AddEffect rejects explicit stack
+            # indices >= MaxStackSize. Hit occurrences may keep increasing;
+            # the authored minion stack index must remain bounded.
+            stack_index = min(
+                max(1, int(definition.max_stack_size)),
+                max(1, int(getattr(definition, "stack_count", 1))),
+            ) - 1
         instance_id = int(s.gameplay_next_status_effect_instance_id)
         s.gameplay_next_status_effect_instance_id += 1
         start_tick = int(server_tick) & 0xFFFFFFFF
+        if causer_stack and previous is not None and stack_index == previous.field_18:
+            # At the authored cap there is no new stack. Native no-details
+            # field_25 refreshes the existing instance; another ADD followed
+            # by cleanup can delete the capped effect when ADD is rejected.
+            refreshed = replace(
+                previous,
+                field_08=start_tick,
+                field_0c=(start_tick + duration) & 0xFFFFFFFF,
+                field_10=duration,
+                field_25=True,
+                has_details=False,
+                values=(),
+            )
+            cache[key] = (
+                replace(refreshed, field_25=False, has_details=True, values=tuple(definition.values)),
+                float(applied_at) + duration / float(SERVER_TICKS_PER_SECOND),
+            )
+            return refreshed, None, False
         has_aura_shape = bool(
             definition.aura_radius > 0.0
             and definition.aura_height > 0.0
@@ -553,7 +582,7 @@ class CombatResolutionService:
             # detailed replacement as already present; the following stale-id
             # cleanup then removes the only visible effect.
             field_26=bool(stack_index > 0),
-            field_39=False,
+            field_39=(definition.resource_id == "mercenary_ember_knight_overheated"),
             has_details=True,
             values=tuple(definition.values),
             field_38=False,
@@ -664,6 +693,20 @@ class CombatResolutionService:
                     if resolution.source_actor_id is not None
                     else resolution.attacker_actor_id
                 )
+                effect_source_actor_id = source_actor_id
+                combat_state = getattr(s, "gameplay_combat_state", None)
+                if (
+                    combat_state is not None
+                    and int(resolution.attacker_actor_id)
+                    in getattr(combat_state, "player_summons", {})
+                ):
+                    # A mercenary's hit effects must name the mercenary as
+                    # their causer so authored AuraTargets:Minion effects
+                    # resolve to that actor. Keep the player as the damage,
+                    # loot, and life-leech owner above.
+                    effect_source_actor_id = int(
+                        resolution.attacker_actor_id
+                    )
                 definitions = (
                     ()
                     if bool(getattr(resolution, "damage_immune", False))
@@ -697,7 +740,7 @@ class CombatResolutionService:
                             key,
                             definition,
                             actor_id=target_actor_id,
-                            source_actor_id=source_actor_id,
+                            source_actor_id=effect_source_actor_id,
                             server_tick=int(resolution.server_tick),
                             applied_at=now,
                         )
@@ -863,7 +906,7 @@ class CombatResolutionService:
     def _send_player_skill_status_effects(
             s: Session, definitions, *, server_tick: int,
             label: str, max_stack_followups=None,
-            force_fresh_effect_ids=None) -> None:
+            force_fresh_effect_ids=None, effect_position=None) -> None:
         if not definitions or STATUS_EFFECTS_DISABLED:
             return
         definitions = list(definitions)
@@ -903,6 +946,8 @@ class CombatResolutionService:
                 previous_id, previous = (
                     running if running is not None else (None, None)
                 )
+                if previous is not None and str(getattr(definition, "exclusivity_type", "")).casefold() == "deny":
+                    continue
                 instance_id = int(
                     s.gameplay_next_status_effect_instance_id
                 )
@@ -1079,6 +1124,12 @@ class CombatResolutionService:
                 s,
                 definition,
                 server_tick=server_tick,
+                position_override=effect_position,
+            )
+        if commands:
+            CharacterService._activate_player_user_effect_children(
+                s, tuple((instance_id, definition) for instance_id, definition in periodic_effects),
+                server_tick=server_tick, effect_position=effect_position,
             )
 
     @staticmethod
