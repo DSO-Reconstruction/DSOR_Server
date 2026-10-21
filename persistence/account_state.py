@@ -220,6 +220,10 @@ class AccountState:
     timed_status_effect_expiries: dict[int, float] = field(
         default_factory=dict
     )
+    # Instance id -> _Template_StatusEffect Id of each saved status effect.
+    # Wire ids are row numbers that a client-data update can shift; login
+    # re-resolves these names (gameplay/status_runtime_catalog.py).
+    status_effect_names: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -639,6 +643,10 @@ def _state_to_document(state: AccountState) -> dict:
         "active_status_effects": [
             asdict(effect) for effect in state.status_effects
         ],
+        "status_effect_names": {
+            str(instance_id): str(name)
+            for instance_id, name in state.status_effect_names.items()
+        },
         "timed_status_effect_expiries": {
             str(instance_id): float(expires_at)
             for instance_id, expires_at
@@ -860,6 +868,12 @@ def _state_from_document(document: dict) -> AccountState:
             _status_from_document(effect)
             for effect in document.get("active_status_effects", ())
         ),
+        status_effect_names={
+            int(instance_id): str(name)
+            for instance_id, name in (
+                document.get("status_effect_names") or {}
+            ).items()
+        },
         mount_ride=mount,
         talent_categories=talent_categories,
         skill_talent_presets=_skill_talent_presets_from_document(
