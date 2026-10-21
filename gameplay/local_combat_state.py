@@ -563,6 +563,10 @@ class VictimStatusEffectDefinition:
     aura_targets: str = ""
     exclusivity_type: str = "Replace"
     stack_count: int = 1
+    # The AuraTargets:Creator shell this child came from, when that shell has
+    # a radius: the creator holds the child only while it stands inside
+    # (Banner of War's cheaper skills and resource regeneration, 5.75 m).
+    creator_aura: str = ""
 
 
 @dataclass(frozen=True)
@@ -3277,6 +3281,22 @@ class LocalCombatState:
         owner_auras = {}
         for visual in visuals:
             radius = max(0.0, float(visual.definition.aura_radius))
+            # An AuraTargets:Creator ground aura (Banner of War's arena) gives
+            # its children to its creator while the creator stands inside it,
+            # and takes them back on leaving; they were applied once at the
+            # cast for the whole 10 s wherever the warrior went.
+            if (
+                radius > 0.0
+                and visual.definition.aura_targets.casefold() == "creator"
+            ):
+                position = (player_positions or {}).get(visual.owner_actor_id)
+                if position is not None and self._distance(visual.position, position) <= radius:
+                    for effect in self._creator_aura_children(visual):
+                        key = (visual.owner_actor_id, effect.effect_id)
+                        old = owner_auras.get(key)
+                        if old is None or visual.expires_at > old[1]:
+                            owner_auras[key] = (effect, visual.expires_at)
+                continue
             if not visual.receiver_status_effects or radius <= 0.0:
                 continue
             if visual.managed_aura and visual.definition.aura_targets.casefold() == "summoner":
@@ -3374,6 +3394,18 @@ class LocalCombatState:
         self.player_location_aura_members.intersection_update(inside_now)
         self.player_location_aura_members.update(inside_now)
         return tuple(resolutions), tuple(applications)
+
+    def _creator_aura_children(
+        self, visual
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        geometry = self._load_player_skill_geometry(int(visual.source_skill_index))
+        if geometry is None:
+            return ()
+        return tuple(
+            effect for effect in geometry.location_owner_status_effects
+            if effect.creator_aura == visual.definition.resource_id
+            and effect.chance > 0.0
+        )
 
     def expire_player_location_visuals_for_owner(
             self, owner_actor_id: int) -> tuple[PlayerLocationVisual, ...]:
@@ -4524,6 +4556,12 @@ class LocalCombatState:
                     values=aura.values,
                     trigger=aura.trigger,
                     max_stack_size=max(1, int(child[2] or 1)),
+                    creator_aura=(
+                        aura.resource_id
+                        if str(row[1] if row else "").casefold() == "creator"
+                        and aura.aura_radius > 0.0
+                        else ""
+                    ),
                 ))
         return tuple(definitions)
 
@@ -7924,6 +7962,9 @@ class LocalCombatState:
         )
         result = []
         for definition in geometry.location_owner_status_effects:
+            # Held only inside its ground aura: apply_player_location_auras.
+            if definition.creator_aura:
+                continue
             if not self._effect_applies(
                 definition, cast_id=cast_id, killed=False
             ):

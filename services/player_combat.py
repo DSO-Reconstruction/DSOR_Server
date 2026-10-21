@@ -1175,6 +1175,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 owner_actor_id=int(source_actor_id),
                 cast_id=int(client_skill.cast_id),
                 delay_seconds=location_visual_delay,
+                source_skill_index=int(client_skill.skill_index),
             )
         for timer in timers:
             timer.start()

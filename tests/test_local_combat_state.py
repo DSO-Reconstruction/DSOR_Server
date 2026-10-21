@@ -3134,8 +3134,12 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(state.drain_return_home_transitions(), ())
 
     def test_banner_of_war_applies_utility_and_enemy_count_buffs(self):
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='defiance'"
+            ).fetchone()[0]
         effects = self.state.player_skill_location_owner_effects(
-            1842,  # defiance / Banner of War
+            index,  # defiance / Banner of War
             cast_id=4401,
             target_count=3,
         )
@@ -3144,8 +3148,10 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(
             resource_ids.count("skill_defiance_buff_skill_damage"), 3
         )
-        self.assertIn("skill_defiance_buff_resource_reg", resource_ids)
-        self.assertIn("skill_defiance_buff_skill_costs", resource_ids)
+        # The utility buffs are held inside the arena only
+        # (test_banner_of_war_buffs_its_warrior_only_inside_the_arena).
+        self.assertNotIn("skill_defiance_buff_resource_reg", resource_ids)
+        self.assertNotIn("skill_defiance_buff_skill_costs", resource_ids)
         damage_effect = next(
             effect
             for effect in effects
@@ -3449,6 +3455,35 @@ class LocalCombatStateTests(unittest.TestCase):
         pending(2)
         self.assertIsNone(state.resolve_runtime_player_hit(1, 2, 0, now=10.0))
         self.assertNotIn((1, 2, 0), state.pending_runtime_player_hits)
+
+    def test_banner_of_war_buffs_its_warrior_only_inside_the_arena(self):
+        """skill_defiance_buff_creators_aura (AuraTargets:Creator, 5.75 m)
+        gives skill_defiance_buff_skill_costs / _resource_reg to the warrior
+        while inside, and takes them back on leaving."""
+        state = self.state
+        with sqlite3.connect(state.encounter.static_database_path) as db:
+            index = db.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id='defiance'"
+            ).fetchone()[0]
+        at_cast = {e.resource_id for e in state.player_skill_location_owner_effects(
+            index, cast_id=1, target_count=0)}
+        self.assertNotIn("skill_defiance_buff_skill_costs", at_cast)
+        visuals = [v for v in state.player_skill_location_visuals(index)
+                   if v.resource_id == "skill_defiance_buff_creators_aura"]
+        self.assertEqual(len(visuals), 1)
+        banner = (10.0, 0.0, 10.0)
+        state.start_player_location_visuals(
+            tuple(visuals), position=banner, yaw=0.0, server_tick=100,
+            owner_actor_id=7, cast_id=1, source_skill_index=index, now=50.0)
+        _, inside = state.apply_player_location_auras(
+            now=51.0, server_tick=125, player_positions={7: (12.0, 0.0, 10.0)})
+        given = {e.resource_id for a in inside if not a.remove for e in a.status_effects}
+        self.assertIn("skill_defiance_buff_skill_costs", given)
+        self.assertIn("skill_defiance_buff_resource_reg", given)
+        _, outside = state.apply_player_location_auras(
+            now=52.0, server_tick=150, player_positions={7: (30.0, 0.0, 10.0)})
+        taken = {e.resource_id for a in outside if a.remove for e in a.status_effects}
+        self.assertEqual(taken, given)
 
     def test_mage_guardians_never_walk(self):
         """arcanemanifestation and firemanifestation: their permanent idle effect
