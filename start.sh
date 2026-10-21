@@ -44,7 +44,6 @@ required_files=(
   "data/db/static.db4"
   "data/events.json"
   "data/catalogs/chest_contents.json"
-  "DSOClient/__root.txt"
 )
 for relative_path in "${required_files[@]}"; do
   if [[ ! -f "$SERVER_DIR/$relative_path" ]]; then

@@ -40,8 +40,7 @@ $RequiredFiles = @(
     'run.py',
     'data/db/static.db4',
     'data/events.json',
-    'data/catalogs/chest_contents.json',
-    'DSOClient/__root.txt'
+    'data/catalogs/chest_contents.json'
 )
 foreach ($RelativePath in $RequiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $ServerDir $RelativePath) -PathType Leaf)) {
