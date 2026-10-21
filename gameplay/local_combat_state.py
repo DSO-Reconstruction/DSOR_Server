@@ -6895,6 +6895,15 @@ class LocalCombatState:
                 direct_distance = enemies[0][0]
                 player_home_distance = self._distance(player_position, home)
             preferred_stop_distance = self._preferred_stop_distance(monster)
+            # A shooter with a wall between it and its target walks on to
+            # find a line of sight instead of standing off behind the wall.
+            if (
+                preferred_stop_distance > MONSTER_STOP_DISTANCE
+                and self._monster_shot_blocked(
+                    monster.attack, start, player_position
+                )
+            ):
+                preferred_stop_distance = MONSTER_STOP_DISTANCE
             # The authored territory, widened by the pursuit grace, and then
             # the distance at which the actor stops walking back and resets.
             pursuit_radius = (
@@ -7517,6 +7526,25 @@ class LocalCombatState:
             range_tolerance=PLAYER_PROJECTILE_COLLISION_RADIUS,
             static_reach=(self._bullet_static_reach(geometry.start_offset)
                           if projectile and geometry.static_collision else None),
+        )
+
+    def _monster_shot_blocked(self, definition, start, target) -> bool:
+        """Whether a monster bullet from ``start`` would stop at a wall
+        before ``target`` (feet positions)."""
+        if (
+            definition is None
+            or definition.command_id not in {
+                BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND,
+            }
+            or not getattr(definition, "static_collision", False)
+            or str(definition.motion_type).casefold() in ORBITING_MOTION_TYPES
+        ):
+            return False
+        reach = self._bullet_static_reach(definition.start_offset)
+        if reach is None:
+            return False
+        return reach(start, target) + PLAYER_PROJECTILE_COLLISION_RADIUS < math.dist(
+            tuple(start[:3]), tuple(target[:3])
         )
 
     def _map_static_line_of_sight(self) -> StaticLineOfSight | None:
@@ -10186,8 +10214,15 @@ class LocalCombatState:
                     effective_range = max(
                         definition.attack_range, definition.hit_range
                     )
-                if target_distance <= effective_range:
-                    eligible_definitions_list.append(definition)
+                if target_distance > effective_range:
+                    continue
+                # A bullet that would strike a wall between them is not
+                # fired: it flew through it doing nothing.
+                if self._monster_shot_blocked(
+                    definition, monster_position, attack_target_world
+                ):
+                    continue
+                eligible_definitions_list.append(definition)
             eligible_definitions = tuple(eligible_definitions_list)
             skill_cursor = self._monster_skill_cursors.get(actor_id, 0)
             definition = self._monster_skill_choice(

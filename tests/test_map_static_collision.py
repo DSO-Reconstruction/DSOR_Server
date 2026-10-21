@@ -310,5 +310,28 @@ class MonsterBulletStaticCollisionTests(unittest.TestCase):
             self.assertEqual(len(results), expected, wall)
 
 
+    def test_a_monster_does_not_fire_into_a_wall(self):
+        encounter = load_local_monster_encounter(DEFAULT_STATIC_DB_PATH, "g0004_corrupted_jungle_01_pve")
+        for wall, expected in ((0.5, 0), (None, 1)):
+            state = LocalCombatState(encounter, player_actor_id=1, player_health=1000,
+                                     initially_active=False)
+            actor_id = next(actor for actor, monster in state.monsters.items()
+                            if monster.attack.command_id == BULLET_SKILL_COMMAND)
+            monster = state.monsters[actor_id]
+            walled = replace(monster.attack, static_collision=True)
+            state.monsters[actor_id] = replace(
+                monster, attack=walled,
+                attacks=tuple(walled if a == monster.attack else a for a in (monster.attacks or ())) or monster.attacks)
+            state.activate_monsters((actor_id,))
+            state.last_monster_attack_at[actor_id] = 0.0
+            state._monster_skill_ready_at[actor_id] = {}
+            position = state.monster_positions[actor_id]
+            target = encounter.coordinate_frame.world_to_wire((position[0] + 6.0, position[1], position[2]))
+            sight = None if wall is None else type("Wall", (), {
+                "clear_distance": staticmethod(lambda start, end: wall)})()
+            with patch.object(state, "_map_static_line_of_sight", return_value=sight):
+                attacks = state.maybe_start_monster_attacks(target, server_tick=500, now=100.0)
+            self.assertEqual(len(attacks), expected, wall)
+
 if __name__ == "__main__":
     unittest.main()
