@@ -480,11 +480,20 @@ class PlayerInitializationStateService:
         if persisted_state is not None:
             inventory = copy.deepcopy(persisted_state.inventory)
             inventory.actor_id = LOCAL_PLAYER_ACTOR_ID
+        overflowed_starter_ids: list[int] = []
         inventory = repair_bootstrap_class_equipment(
             inventory,
             class_name=CLASS_NAMES[int(character.class_id)],
             item_level=max(1, int(character.level)),
+            overflowed=overflowed_starter_ids,
         )
+        if overflowed_starter_ids:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] character {character.character_id}: "
+                f"inventory full, {len(overflowed_starter_ids)} displaced "
+                "starter item(s) wait in overflow until a slot frees up: "
+                f"{overflowed_starter_ids}"
+            )
         inventory, relocated_essences = repair_ammunition_slot_allocations(
             inventory
         )
