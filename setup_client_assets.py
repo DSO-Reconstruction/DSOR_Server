@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 import re
 import struct
+import subprocess
+import sys
 import zlib
 import xml.etree.ElementTree as ET
 
@@ -26,6 +28,11 @@ _LANGUAGE_KEY = re.compile(
     r"^export_win32_language_(?P<locale>[^_]+)_(?P<file>db\..+\.xml)$", re.I
 )
 _BXML_NO_INDEX = 0x7FFFFFFF
+_BUNDLE_INPUT = re.compile(
+    r"^bundles_(?:optional|required)_bundle\d+\.nb"
+    r"(?:\._[0-9a-f]{32}|\.[0-9a-f]{32}\.nz)$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -127,16 +134,74 @@ def _read_cached_payload(cached: CacheFile) -> bytes:
     if cached.kind == "unc":
         return payload
 
-    if len(payload) < 8 or payload[:4] != b"__ZN":
+    depth = 0
+    while payload.startswith(b"__ZN"):
+        if len(payload) < 8:
+            raise ValueError(f"Truncated CDN compression header: {cached.path.name}")
+        expected_size = struct.unpack_from("<I", payload, 4)[0]
+        decoded = zlib.decompress(payload[8:])
+        if len(decoded) != expected_size:
+            raise ValueError(
+                f"Decoded size mismatch for {cached.path.name}: "
+                f"expected {expected_size:,} bytes, got {len(decoded):,}"
+            )
+        payload = decoded
+        depth += 1
+        if depth > 8:
+            raise ValueError(f"Too many nested CDN compression layers: {cached.path.name}")
+    if depth == 0:
         raise ValueError(f"Unrecognized CDN compression header: {cached.path.name}")
-    expected_size = struct.unpack_from("<I", payload, 4)[0]
-    decoded = zlib.decompress(payload[8:])
-    if len(decoded) != expected_size:
-        raise ValueError(
-            f"Decoded size mismatch for {cached.path.name}: "
-            f"expected {expected_size:,} bytes, got {len(decoded):,}"
+    return payload
+
+
+def _minimum_assets_present(assets: dict[Path, CacheFile], data_root: Path) -> bool:
+    destinations = set(assets)
+    static_db = data_root / "db" / "static.db4"
+    navshapes = data_root / "navigation" / "navshapes.bin"
+    maps_dir = data_root / "maps"
+    return (
+        static_db in destinations
+        and navshapes in destinations
+        and any(path.parent == maps_dir and path.suffix.lower() == ".db4" for path in destinations)
+        and any(path.suffix.lower() == ".tok" for path in destinations)
+    )
+
+
+def _client_bundles_present(source: Path) -> bool:
+    return source.is_dir() and any(
+        path.is_file() and _BUNDLE_INPUT.fullmatch(path.name)
+        for path in source.rglob("*")
+    )
+
+
+def _unpack_client_bundles(source: Path) -> int:
+    unpacker = Path(__file__).resolve().parent / "tools" / "unpack_dso_bundles.py"
+    if not unpacker.is_file():
+        say(f"ERROR: Bundle extractor not found: {unpacker}")
+        return 2
+    if not _client_bundles_present(source):
+        say("No bundle files were found to unpack.")
+        return 2
+    say("Required local assets are missing; unpacking the downloaded client bundles first...")
+    say(f"Bundle source and flat game cache output: {source}")
+    say(f"Hierarchical client cache output: {source / 'dlcache'}")
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(unpacker),
+                str(source),
+                "-o",
+                str(source),
+                "--runtime-cache",
+                str(source / "dlcache"),
+            ],
+            check=False,
         )
-    return decoded
+    except OSError as exc:
+        say(f"ERROR: Could not start the bundle extractor: {exc}")
+        return 2
+    return result.returncode
 
 
 def _write_asset(destination: Path, data: bytes) -> None:
@@ -147,6 +212,46 @@ def _write_asset(destination: Path, data: bytes) -> None:
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _sync_launcher_rootkey(source: Path) -> str | None:
+    """Keep the launcher's fallback rootkey aligned with the extracted client cache."""
+    root_candidates = (source / "dlcache" / "__root.txt", source / "__root.txt")
+    root_file = next((path for path in root_candidates if path.is_file()), None)
+    if root_file is None:
+        say("WARNING: No generated __root.txt found; launcher rootkey was not updated.")
+        return None
+
+    rootkey = root_file.read_text(encoding="ascii").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{32}", rootkey):
+        say(f"WARNING: Invalid rootkey in {root_file}; launcher rootkey was not updated.")
+        return None
+
+    launcher_path = Path(__file__).resolve().parent / "launcher_gui.py"
+    try:
+        launcher_source = launcher_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        say(f"WARNING: Could not read launcher GUI to sync rootkey: {exc}")
+        return None
+
+    pattern = re.compile(r'(?m)^(\s*rootkey\s*=\s*)"[0-9a-fA-F]{32}"(\s*)$')
+    updated, replacements = pattern.subn(
+        lambda match: f'{match.group(1)}"{rootkey}"{match.group(2)}',
+        launcher_source,
+        count=1,
+    )
+    if replacements != 1:
+        say("WARNING: Could not find the launcher's default rootkey assignment to update.")
+        return None
+    if updated != launcher_source:
+        temporary = launcher_path.with_name(launcher_path.name + ".setup-tmp")
+        try:
+            temporary.write_text(updated, encoding="utf-8", newline="")
+            os.replace(temporary, launcher_path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    say(f"  Launcher rootkey: {rootkey} (from {root_file})")
+    return rootkey
 
 
 def _read_cstring_table(data: bytes, offset: int, count: int) -> tuple[list[str], int]:
@@ -321,17 +426,28 @@ def main() -> int:
     say(f"Client cache: {source}")
     say(f"Server data:  {data_root}")
 
-    root_file = source / "__root.txt"
-    toc_files = list(source.glob("__toc*"))
-    if not source.is_dir() or not root_file.is_file() or not toc_files:
+    if not source.is_dir():
         say()
-        say("The official DSO client cache was not found or is incomplete.")
-        say("Please install the official Drakensang Online client and let it finish downloading/updating completely.")
-        say("Launch the official client once, wait for it to finish loading, close it, then run this script again.")
-        say("No game files are downloaded by this script.")
+        say("The DSOClient folder was not found.")
+        say("Install or download the official client files into the folder above, then run setup again.")
         return 2
 
     assets = collect_assets(source, data_root)
+    runtime_cache = source / "dlcache"
+    runtime_static_db = runtime_cache / "export_win32" / "db" / "static.db4"
+    bundle_input_exists = _client_bundles_present(source)
+    minimum_assets_present = _minimum_assets_present(assets, data_root)
+    if bundle_input_exists and (
+        not minimum_assets_present or not runtime_static_db.is_file()
+    ):
+        say()
+        say("The DSOClient cache is missing required local assets; unpacking its downloaded bundles first.")
+        unpack_result = _unpack_client_bundles(source)
+        if unpack_result != 0:
+            say("Bundle extraction failed; server asset setup was not started.")
+            return unpack_result
+        assets = collect_assets(source, data_root)
+
     selected_destinations = set(assets)
     static_db = data_root / "db" / "static.db4"
     navshapes = data_root / "navigation" / "navshapes.bin"
@@ -343,7 +459,11 @@ def main() -> int:
         say()
         say("The client cache does not contain the minimum server assets yet.")
         say(f"Found: static database={static_db in selected_destinations}, map databases={len(map_databases)}, navigation meshes={len(navigation_meshes)}, navshapes={navshapes in selected_destinations}.")
-        say("Let the official client finish downloading its content, then run this script again.")
+        if bundle_input_exists:
+            say("Bundle extraction completed, but the downloaded client files do not include all required assets.")
+        else:
+            say("No bundle files were available for extraction.")
+        say("Finish downloading the client bundles, then run setup again.")
         return 2
 
     quests_xml = data_root / "quests.xml"
@@ -397,6 +517,7 @@ def main() -> int:
 
     say()
     say("Setup finished.")
+    _sync_launcher_rootkey(source)
     say(f"  Static database: {static_db}")
     say(f"  Map databases:  {len(map_databases):,}")
     say(f"  Navigation:     {len(navigation_meshes):,} .tok files and navshapes.bin")

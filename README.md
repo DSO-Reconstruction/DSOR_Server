@@ -7,7 +7,7 @@ Game client assets are not included in this repository. On Windows, run `py -3 s
 
 The client asset extraction and startup setup have been tested with client revision `rel261_192`. Use matching client and server content revisions.
 
-If `%LOCALAPPDATA%\Temp\DSOClient` is missing or incomplete, install the official Drakensang Online client and let it finish downloading/updating. Launch it once, wait until it finishes loading, close it, then run the script again. The script never downloads client files.
+If `%LOCALAPPDATA%\Temp\DSOClient` contains downloaded `.nb` bundle files but is missing local assets, the setup script first runs `tools/unpack_dso_bundles.py` into that client folder and populates its `dlcache` hierarchy, then extracts the server data into `data/`. This lets the game read the files locally without an HTTP CDN service. If the required bundles have not finished downloading, setup stops and asks you to finish the official client download. The script never downloads client files.
 
 On other platforms, copy the following files and folders from a compatible client cache manually:
 
@@ -30,7 +30,7 @@ Install the server from a clean clone in this order:
 
 1. Install 64-bit Python 3.12 or newer.
 2. Install the official Drakensang Online client and let it finish downloading and updating. Launch it once, wait until it finishes loading, then close it. Skip this step if `%LOCALAPPDATA%\Temp\DSOClient` already contains a complete client cache.
-3. Clone this repository. On Windows, open the repository folder and run `py -3 setup_client_assets.py`. If the client cache is missing or incomplete, the script stops and tells you to finish the official client installation first.
+3. Clone this repository. On Windows, open the repository folder and run `py -3 setup_client_assets.py`. If the cache contains raw bundles but not extracted assets, setup unpacks them into `%LOCALAPPDATA%\Temp\DSOClient` before preparing the server data.
 4. Review the source folder and destination paths printed by the setup script, then confirm. It extracts the server data, saves `data/quests.pbxml`, and converts its quests to `data/quests.xml`. If an XML file already exists, it is kept; pass `--overwrite-quests-xml` to replace it. On other platforms, copy the assets listed above manually, or run `python3 setup_client_assets.py --source <client-cache-folder>` when the cache is available.
 5. Start the server with `start.bat` on Windows or `bash start.sh` on Linux. On first start, the launcher creates `.env` from `.env.example` with `DSO_HOST=127.0.0.1` and `DSO_PUBLIC_HOST=127.0.0.1` if `.env` is absent. Local use needs no additional configuration. To accept remote players, edit `.env`, set `DSO_HOST=0.0.0.0`, and set `DSO_PUBLIC_HOST` to an address reachable by clients.
 

@@ -19,6 +19,44 @@ content row is changed. After a database migration, compare SHA-256 hashes of
 `export_win32\db\static.db4` before launching either process. Skill and status
 effect wire indexes are array positions in that shared content revision.
 
+## Extract client bundles as CDN `.nz` files
+
+`tools\unpack_dso_bundles.py` reads the client's raw
+`bundles_optional_bundleN.nb._<md5>` / `bundles_required_bundleN.nb._<md5>`
+cache files and writes every indexed resource as an individual CDN-compatible
+`.nz` file in one flat directory. It converts the original path separators to
+underscores and appends the resource MD5, for example
+`export_win32_maps_a0001_start.map.<md5>.nz`. Each output has the `__ZN` size
+header and zlib payload used by the client cache. It verifies the embedded
+MD5 while writing the resource.
+
+```powershell
+py -3.12-64 tools\unpack_dso_bundles.py C:\path\to\DSOClient -o C:\path\to\DSOClient
+py -3.12-64 tools\unpack_dso_bundles.py C:\path\to\bundle0.nb.<md5>.nz -o C:\path\to\DSOClient
+```
+
+Passing a folder processes recognized bundle files in that folder and all of
+its subfolders. Use `--list` to list entries without writing `.nz` files. Only
+resources in bundles already present in the cache are emitted; the script
+does not download missing bundles. It also checks `.nbi` metadata against the
+bundle files, preserves standalone cached `__ZN` CDN objects already named as
+`.nz` files or legacy `._<md5>` sidecars, and rebuilds the local TOC tree from
+the available bundle/resource index. For a folder input, the new root TOC is
+self-consistent and its hash is written to `__root.txt` (including
+`dlcache\__root.txt` when present); it does not require the original CDN TOC
+hashes, such as `7d70…`. Pass `--runtime-cache C:\path\to\DSOClient\dlcache`
+when preparing a fully local game cache: this also writes each decoded resource
+at the hierarchical path the client reads directly, alongside the flat `.nz`
+objects and rebuilt TOCs.
+
+`setup_client_assets.py` performs this bundle step automatically when the
+client cache is missing the required local assets. It writes the flat `.nz`
+objects and TOCs beside the downloaded bundles, populates the hierarchical
+`DSOClient\dlcache` with decoded files, then continues with the normal server
+asset extraction into the repository's `data/` directory. The official client
+must have already downloaded the required `.nb` bundles; setup does not fetch
+them or start a CDN service.
+
 ## Start and stop
 
 From the standalone `dso_server` directory:
