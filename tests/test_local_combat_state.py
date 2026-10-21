@@ -3387,6 +3387,45 @@ class LocalCombatStateTests(unittest.TestCase):
             (5.0, 0.0, 5.0),
         )
 
+    def test_a_mind_controlled_monster_walks_to_another_monster(self):
+        """skill_mindcontrol_effect: it turns on the nearest uncontrolled
+        monster instead of chasing the player."""
+        state, frame = self.state, self.encounter.coordinate_frame
+        controlled, other = sorted(state.living_actor_ids)[:2]
+        origin = state.monster_positions[controlled]
+        navigation = self.encounter.navigation
+        spot = None
+        for angle in range(0, 360, 15):
+            candidate = (origin[0] + 7.0 * math.cos(math.radians(angle)), origin[1],
+                         origin[2] + 7.0 * math.sin(math.radians(angle)))
+            try:
+                candidate = navigation.project_position(candidate, max_horizontal_distance=0.5)
+            except Exception:
+                continue
+            if navigation.is_reachable(origin, candidate):
+                spot = candidate
+                break
+        self.assertIsNotNone(spot)
+        state.monster_positions[other] = spot
+        now = 1000.0
+        state.monster_status_effects[controlled] = {
+            "skill_mindcontrol_effect": (
+                VictimStatusEffectDefinition(
+                    resource_id="skill_mindcontrol_effect", effect_id=0, chance=1.0,
+                    duration_ticks=250, values=(), trigger="",
+                ),
+                now + 10.0,
+            )
+        }
+        before = self._distance_2d(origin, spot)
+        # The player stands on the opposite side, within reach.
+        player = frame.world_to_wire(tuple(o + (o - t) for o, t in zip(origin, spot)))
+        for step in range(25):
+            state.advance_monsters(player, elapsed_seconds=0.1, server_tick=100 + step,
+                                   eligible_actor_ids={controlled}, now=now + step * 0.1)
+        after = self._distance_2d(state.monster_positions[controlled], spot)
+        self.assertLess(after, before - 1.0)
+
     def test_mage_guardians_never_walk(self):
         """arcanemanifestation and firemanifestation: their permanent idle effect
         switches Movement off, though the template has a RunSpeed."""

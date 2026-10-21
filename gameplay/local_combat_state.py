@@ -6755,7 +6755,11 @@ class LocalCombatState:
             cursor = self._route_actor_cursor % len(actors)
             actors = actors[cursor:] + actors[:cursor]
             self._route_actor_cursor = (cursor + 2) % len(actors)
+        viewer_position = player_position
         for actor_id in actors:
+            # Each actor's own target below (a viewer, or the monster a mind
+            # controlled one turns on) must not leak into the next actor's.
+            player_position = viewer_position
             monster = self.monsters[actor_id]
             home = monster.position
             start = self.monster_positions[actor_id]
@@ -6793,6 +6797,35 @@ class LocalCombatState:
                                 previous_yaw, False, int(server_tick) & 0xFFFFFFFF))
                         occupied.append(start)
                         continue
+            if self._monster_is_mind_controlled(actor_id, now=current_time):
+                # Mind control turns it against its own kind for the effect's
+                # 10 s: it walks to the nearest uncontrolled monster within its
+                # aggro range (maybe_start_monster_attacks already retargets
+                # its blows) and leaves the players alone. It kept chasing the
+                # player, so it never reached anything it could strike.
+                reach = max(1.0, float(monster.aggro_range))
+                enemies = sorted(
+                    (self._distance(start, self.monster_positions[other]), other)
+                    for other in self.living_actor_ids
+                    if other != actor_id
+                    and other in self.monster_positions
+                    and not self._monster_is_mind_controlled(
+                        other, now=current_time
+                    )
+                )
+                enemies = [entry for entry in enemies if entry[0] <= reach]
+                if not enemies:
+                    self.monster_routes.pop(actor_id, None)
+                    self.monster_moving[actor_id] = False
+                    if was_moving:
+                        movements.append(MonsterMovement(
+                            actor_id, start, self.encounter.coordinate_frame.world_to_wire(start),
+                            previous_yaw, False, int(server_tick) & 0xFFFFFFFF))
+                    occupied.append(start)
+                    continue
+                player_position = self.monster_positions[enemies[0][1]]
+                direct_distance = enemies[0][0]
+                player_home_distance = self._distance(player_position, home)
             preferred_stop_distance = self._preferred_stop_distance(monster)
             # The authored territory, widened by the pursuit grace, and then
             # the distance at which the actor stops walking back and resets.
