@@ -30,6 +30,8 @@ _FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
 _FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
 _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
 _FORTRESS_GRIMMAG_VISIBILITY_EXIT_RADIUS = 85.0
+_SMALL_CRYPT_MAP = "a0008_crypt_dun"
+_SMALL_CRYPT_CAPTAIN_TEMPLATE = "a0008_normal_champion_crypt_undead"
 
 
 @contextmanager
@@ -654,7 +656,7 @@ class WorldService:
             s, move.relative_position
         )
         nearby_groups = ()
-        grimmag_actor_ids = set()
+        proactive_actor_ids = set()
         with s.flow_lock:
             encounter = s.gameplay_monster_encounter
             combat = s.gameplay_combat_state
@@ -665,13 +667,24 @@ class WorldService:
             with combat.lock:
                 alive_actor_ids = set(combat.alive_actor_ids)
                 current_positions = dict(combat.monster_positions)
-                grimmag_actor_ids = {
+                proactive_actor_ids = {
                     actor_id
                     for actor_id in alive_actor_ids
                     if (
                         combat.monsters.get(actor_id) is not None
-                        and combat.monsters[actor_id].template_id.casefold()
-                        == _FORTRESS_GRIMMAG_TEMPLATE
+                        and (
+                            (
+                                encounter.map_id.casefold()
+                                == _FORTRESS_GRIMMAG_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _FORTRESS_GRIMMAG_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _SMALL_CRYPT_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _SMALL_CRYPT_CAPTAIN_TEMPLATE
+                            )
+                        )
                     )
                 }
             player_world = encounter.coordinate_frame.wire_to_world(
@@ -697,32 +710,28 @@ class WorldService:
                 or s.gameplay_monster_encounter is not encounter
             ):
                 nearby_groups = ()
-                grimmag_spawn_ids = set()
+                proactive_spawn_ids = set()
             else:
-                # This client does not request the authored Grimmag actor
-                # after vicinity is announced. Send its server actor directly,
-                # reserving the ID first so an optional late ActorRequest
-                # cannot create the same actor twice.
-                grimmag_spawn_ids = {
+                # These authored champions can be missing if the client does
+                # not request them after vicinity registration. Send them
+                # first, reserving the ID so a late ActorRequest cannot
+                # create a duplicate.
+                proactive_spawn_ids = {
                     actor_id
                     for group in nearby_groups
                     for actor_id in group.actor_ids
-                    if (
-                        encounter.map_id.casefold() == _FORTRESS_GRIMMAG_MAP
-                        and actor_id in grimmag_actor_ids
-                        and actor_id
-                        not in s.gameplay_spawned_monster_actor_ids
-                    )
+                    if actor_id in proactive_actor_ids
+                    and actor_id not in s.gameplay_spawned_monster_actor_ids
                 }
                 for group in nearby_groups:
                     s.gameplay_announced_monster_actor_ids.update(
                         group.actor_ids
                     )
                 s.gameplay_spawned_monster_actor_ids.update(
-                    grimmag_spawn_ids
+                    proactive_spawn_ids
                 )
-                s.gameplay_requested_actor_ids.update(grimmag_spawn_ids)
-                if grimmag_spawn_ids:
+                s.gameplay_requested_actor_ids.update(proactive_spawn_ids)
+                if proactive_spawn_ids:
                     s.gameplay_monsters_spawned = True
                 s.gameplay_vicinity_announced = bool(
                     s.gameplay_announced_monster_actor_ids
@@ -742,7 +751,7 @@ class WorldService:
                     f"[{GAMEPLAY_SERVICE_NAME}] announced fortress Grimmag "
                     f"actor(s) {grimmag_ids} to {s.addr}"
                 )
-            spawn_ids_in_group = grimmag_spawn_ids.intersection(
+            spawn_ids_in_group = proactive_spawn_ids.intersection(
                 group.actor_id_set
             )
             if spawn_ids_in_group:
@@ -753,7 +762,7 @@ class WorldService:
                 if scripted_group is not None:
                     batch = CharacterService._new_monster_batch_for_viewer(
                         s, combat, scripted_group.spawn_batch,
-                        label="fortress-grimmag-monster-spawn",
+                        label="authored-champion-monster-spawn",
                     )
                 else:
                     batch = None
@@ -764,13 +773,13 @@ class WorldService:
                             packet,
                             total_bit_length=packet_bits,
                             track=True,
-                            label_prefix="fortress-grimmag-monster-spawn",
+                            label_prefix="authored-champion-monster-spawn",
                         )
                     else:
                         s.send_reliable_ordered(
                             (packet, packet_bits),
                             track=True,
-                            label="fortress-grimmag-monster-spawn",
+                            label="authored-champion-monster-spawn",
                         )
                     delivered_positions = {
                         actor_id: current_positions[actor_id]
@@ -778,14 +787,14 @@ class WorldService:
                         if actor_id in current_positions
                     }
                     print(
-                        f"[{GAMEPLAY_SERVICE_NAME}] proactively sent fortress "
-                        f"Grimmag NewMonster actor(s) "
+                        f"[{GAMEPLAY_SERVICE_NAME}] proactively sent authored "
+                        f"champion NewMonster actor(s) "
                         f"{scripted_group.actor_ids} at "
                         f"{tuple(delivered_positions.values())!r} to {s.addr}"
                     )
-            # Grimmag must be registered before ActorsEnterVicinity creates
-            # the client's placeholder for this authored actor. Ordinary
-            # monsters retain the standard vicinity-then-ActorRequest flow.
+            # Register the selected champion before vicinity creates the
+            # client's placeholder. Other monsters keep the ordinary
+            # vicinity-then-ActorRequest flow.
             CharacterService._send_monster_vicinity(
                 s, combat, group,
                 label="monster-actors-enter-vicinity",
@@ -802,8 +811,7 @@ class WorldService:
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] announced nearby monster actors "
                     f"{group.actor_ids} inside "
-                    f"{MONSTER_VISIBILITY_ENTER_RADIUS:.1f}-unit enter radius; "
-                    "awaiting ActorRequest for each"
+                    f"{MONSTER_VISIBILITY_ENTER_RADIUS:.1f}-unit enter radius"
                 )
         if nearby_groups and s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(

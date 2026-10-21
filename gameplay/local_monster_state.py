@@ -107,6 +107,10 @@ def map_monster_actor_base(
     # all boss rooms and approach arenas use the secondary actor slot range (+ 0x1000).
     is_boss = (
         map_id.casefold() in APPROACH_BOSS_MAPS
+        # The crypt client scene owns ids in the ordinary 0x30000 range for
+        # its authored SpawnPoints. Keep server monsters in the secondary
+        # range, as on boss arenas, so NewMonster cannot collide with them.
+        or map_id.casefold() == "a0008_crypt_dun"
         or load_map_encounter_policy(static_database_path, map_id).is_boss_room
     )
     return LOCAL_MONSTER_ACTOR_BASE + (0x1000 if is_boss else 0)
