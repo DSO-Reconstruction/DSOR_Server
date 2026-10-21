@@ -361,6 +361,12 @@ class CustomizationService:
             ))
             if previous_aura is not None:
                 previous_auras = (previous_aura, *previous_auras)
+            # The legacy single field repeats the first entry of the list: one
+            # removal per aura instance, not two in the same status batch.
+            unique_auras = {}
+            for previous in previous_auras:
+                unique_auras.setdefault(int(previous.field_04), previous)
+            previous_auras = tuple(unique_auras.values())
             s.gameplay_mercenary_status_effect = status_entry
             s.gameplay_mercenary_aura_status_effect = (
                 aura_entries[0] if aura_entries else None

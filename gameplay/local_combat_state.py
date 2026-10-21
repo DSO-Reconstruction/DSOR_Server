@@ -3578,7 +3578,8 @@ class LocalCombatState:
         removed = self.player_summons.pop(actor_id, None)
         self.player_location_visuals = {
             key: visual for key, visual in self.player_location_visuals.items()
-            if visual.source_actor_id != actor_id
+            # Older location visuals (and test stand-ins) have no source.
+            if getattr(visual, "source_actor_id", None) != actor_id
         }
         existed = removed is not None
         if removed is not None and getattr(removed.definition, "map_companion", False):
@@ -8276,7 +8277,19 @@ class LocalCombatState:
         )
 
     def player_status_minion_auras(self, monster_template_id: str):
-        """Resolve permanent auras of finite status-created actors."""
+        """Resolve permanent auras of finite status-created actors.
+
+        Cached per template: the static database does not change while the
+        server runs, and this is asked at every summon spawn.
+        """
+        cache = getattr(self, "_player_status_minion_aura_cache", None)
+        if cache is None:
+            cache = self._player_status_minion_aura_cache = {}
+        if monster_template_id not in cache:
+            cache[monster_template_id] = self._load_player_status_minion_auras(monster_template_id)
+        return cache[monster_template_id]
+
+    def _load_player_status_minion_auras(self, monster_template_id: str):
         with sqlite3.connect(f"file:{self.encounter.static_database_path.as_posix()}?mode=ro", uri=True) as db:
             row = db.execute(
                 "SELECT PermanentStatusEffect, LifeTime FROM _Template_Monster WHERE Id=?",
@@ -8289,6 +8302,9 @@ class LocalCombatState:
                 if root.aura_targets.casefold() not in {"enemies", "summoner"}:
                     continue
                 aura = db.execute("SELECT AuraEffectId FROM _Template_StatusEffect WHERE Id=?", (root.resource_id,)).fetchone()
+                if aura is None:
+                    # A status effect the database lacks has no aura to apply.
+                    continue
                 children = self._load_victim_status_effects(db, str(aura[0] or ""), default_trigger="immediate")
                 if children:
                     result.append((replace(root, duration_ticks=root.duration_ticks or round(float(row[1]) * SERVER_TICKS_PER_SECOND)), children))
