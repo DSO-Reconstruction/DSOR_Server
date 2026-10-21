@@ -2825,9 +2825,14 @@ class LocalCombatState:
                         heal_interval_seconds=summon_support[2],
                         taunt_radius=summon_support[3],
                         support_status_effects=summon_support[4],
+                        # The mage's Arcane Guardian holds the spot it is cast
+                        # on (a 14 m shooter); its template still says
+                        # DefaultStrategy and RunSpeed 1, so it walked up to
+                        # every monster ("le gardien se deplace", 2026-10-21).
                         stationary=(
                             str(row[0]).casefold().startswith("turret")
                             or "turret" in monster_template_id.casefold()
+                            or monster_template_id.casefold() == "minion_arcanemanifestation"
                         ),
                     )
             self._player_summon_definitions[skill_index] = definition
@@ -3761,8 +3766,11 @@ class LocalCombatState:
             if nearest is not None and (definition.aggro_range <= 0.0 or nearest[0] <= definition.aggro_range):
                 distance, target_actor_id = nearest
                 target = self.monster_positions[target_actor_id]
+                # Within its attack's reach it stops, follower or not: a
+                # ranged summon shoots from where it stands instead of
+                # walking up to 2 m of its target.
                 stop_distance = max(0.75, min(
-                    geometry.attack_range * 0.8 if follows and geometry is not None else 2.0,
+                    geometry.attack_range * 0.8 if geometry is not None else 2.0,
                     geometry.attack_range if geometry is not None else 1.5))
             elif follows and owner is not None:
                 target = owner
