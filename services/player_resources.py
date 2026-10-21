@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
@@ -177,6 +179,13 @@ class PlayerResourceService:
                 modifier_sources=tuple(modifier_sources),
             )
         )
+        if os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {"1", "true", "yes"}:
+            # What a cast pays and which active effects priced it (Banner of
+            # War's ResourceCost -100% is effect 5530).
+            effect_ids = sorted({int(getattr(m, "effect_id", -1)) for m in modifier_sources
+                                 if getattr(m, "effect_id", None) is not None})
+            print(f"[skill-resource] skill {skill_index} cost {cost_fraction:.3f} "
+                  f"gain {gain_fraction:.3f} effects {effect_ids}")
         if cost_fraction <= 0.0 and gain_fraction <= 0.0:
             return True
         with combat.lock:
