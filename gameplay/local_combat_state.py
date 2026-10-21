@@ -603,6 +603,11 @@ class PlayerSummonDefinition:
         VictimStatusEffectDefinition, ...
     ] = ()
     stationary: bool = False
+    # A permanent effect switches its Movement feature off (the mage
+    # Guardians' ArcanemanifestationMinionIdle / guardian_idle:
+    # ``ActorFeature:off,Movement``): it never walks, though its template has a
+    # RunSpeed. Unlike ``stationary`` it keeps the ordinary summon spawn.
+    movement_locked: bool = False
     startup_duration_seconds: float = 0.0
     overheat_attack_skill_database_index: int | None = None
     overheat_attack_skill_type: str = ""
@@ -2719,18 +2724,24 @@ class LocalCombatState:
                             default=0.0,
                         ),
                     )
+                    movement_locked = False
                     for permanent_effect in str(row[11] or "").split(";"):
                         permanent_effect = permanent_effect.strip()
                         if not permanent_effect:
                             continue
                         delay_row = database.execute(
                             """
-                            SELECT COALESCE(StatusEffectDuration, 0)
+                            SELECT COALESCE(StatusEffectDuration, 0),
+                                   COALESCE(StartModifiers, '')
                             FROM _Template_StatusEffect
                             WHERE Id=? LIMIT 1
                             """,
                             (permanent_effect,),
                         ).fetchone()
+                        if delay_row is not None and "movement" in (
+                            parse_disabled_actor_features(str(delay_row[1]))
+                        ):
+                            movement_locked = True
                         if (
                             delay_row is not None
                             and "delay" in permanent_effect.casefold()
@@ -2829,6 +2840,7 @@ class LocalCombatState:
                             str(row[0]).casefold().startswith("turret")
                             or "turret" in monster_template_id.casefold()
                         ),
+                        movement_locked=movement_locked,
                     )
             self._player_summon_definitions[skill_index] = definition
 
@@ -3734,6 +3746,7 @@ class LocalCombatState:
                     self.player_summons[actor_id] = summon
             if (
                 definition.stationary
+                or getattr(definition, "movement_locked", False)
                 or current_time < summon.spawn_ready_at
                 or self.player_summon_health.get(actor_id, [0])[0] <= 0
                 or self._monster_actions_disabled(actor_id, now=current_time)

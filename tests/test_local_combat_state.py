@@ -3374,6 +3374,42 @@ class LocalCombatStateTests(unittest.TestCase):
             original_positions,
         )
 
+    def test_mage_guardians_never_walk(self):
+        """arcanemanifestation and firemanifestation: their permanent idle effect
+        switches Movement off, though the template has a RunSpeed."""
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            indices = [
+                db.execute(
+                    "SELECT rowid - 1 FROM _Template_Skill WHERE Id=?", (skill,)
+                ).fetchone()[0]
+                for skill in ("arcanemanifestation", "firemanifestation")
+            ]
+        target = self.state.monster_positions[self.encounter.actor_ids[0]]
+        for index in indices:
+            definition = self.state.player_summon_definition(index)
+            self.assertTrue(definition.movement_locked)
+            self.assertFalse(definition.stationary)
+            self.assertGreater(definition.move_speed, 0.0)
+            spawn = self.state.spawn_player_summon(
+                definition,
+                owner_actor_id=0x000103C1,
+                position=(target[0] - 8.0, target[1], target[2]),
+                yaw=0.0,
+                level=100,
+                server_tick=550,
+                player_damage_range=(100.0, 100.0),
+                now=100.0,
+            )
+            before = {s.actor_id: s.position for s in spawn.actors}
+            movements = self.state.advance_player_summons(
+                elapsed_seconds=5.0, server_tick=551, now=200.0
+            )
+            self.assertEqual(movements, ())
+            self.assertEqual(
+                {a: self.state.player_summons[a].position for a in before},
+                before,
+            )
+
     def test_tree_of_life_heals_owner_and_taunts_nearby_monsters(self):
         definition = self.state.player_summon_definition(1881)
         self.assertAlmostEqual(definition.heal_fraction, 0.05)
