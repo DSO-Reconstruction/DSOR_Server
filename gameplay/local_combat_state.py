@@ -8132,6 +8132,7 @@ class LocalCombatState:
             radius = max(0.0, float(aura.aura_definition.aura_radius))
             if radius <= 0.0:
                 continue
+            hit_enemy = False
             for actor_id in self.living_actor_ids:
                 monster = self.monsters[actor_id]
                 if self._distance(
@@ -8152,6 +8153,7 @@ class LocalCombatState:
                     monster, previous, damage
                 )
                 self.monster_health[actor_id] = current
+                hit_enemy = True
                 monster_results.append(
                     DamageResolution(
                         target_actor_id=actor_id,
@@ -8170,6 +8172,12 @@ class LocalCombatState:
                     )
                 )
 
+            # The causer half is the price of a hit: Poisonous Thorns "also
+            # deal 35% poison damage to you whenever it afflicts damage to an
+            # enemy". Charging it on every pulse drained an idle wearer with
+            # nothing in range, by a share of their own base damage.
+            if not hit_enemy:
+                continue
             self_damage = 0.0
             self_types = []
             for definition in tuple(aura.causer_definitions):

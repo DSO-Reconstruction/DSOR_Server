@@ -1513,6 +1513,45 @@ class LocalCombatStateTests(unittest.TestCase):
         # unlocks those three penetrations once; it does not add 3 * 5.
         self.assertEqual(modified.impact_count, geometry.impact_count + 3)
 
+    def test_poison_thorns_hurt_the_wearer_only_when_they_hit(self):
+        """An idle wearer with no enemy in range must not poison itself."""
+
+        with sqlite3.connect(self.state.encounter.static_database_path) as db:
+            ids = dict(db.execute(
+                "SELECT Id, rowid - 1 FROM _Template_StatusEffect WHERE Id IN "
+                "('rune_poison_damage_effect', 'rune_poison_damage_selfdamage')"
+            ))
+        values = (-1.0, -0.35, 0.0, 0.0, 0.0)
+        aura = SimpleNamespace(
+            aura_definition=SimpleNamespace(aura_radius=5.0),
+            receiver_definitions=(SimpleNamespace(
+                effect_id=ids["rune_poison_damage_effect"], values=values),),
+            causer_definitions=(SimpleNamespace(
+                effect_id=ids["rune_poison_damage_selfdamage"], values=values),),
+        )
+        owner = (0.0, 0.0, 0.0)
+        for actor_id in self.state.living_actor_ids:
+            self.state.monster_positions[actor_id] = (500.0, 0.0, 500.0)
+
+        def pulse():
+            return self.state.resolve_socket_periodic_auras(
+                1, owner, (aura,), player_damage_range=(100.0, 100.0),
+                now=0.0,
+            )
+
+        monsters, wearer = pulse()
+        self.assertEqual((monsters, wearer), ((), ()))
+        self.assertEqual(self.state.player_health[1][0], 1000)
+
+        target = next(iter(self.state.living_actor_ids))
+        self.state.monster_positions[target] = (1.0, 0.0, 0.0)
+        self.state.monster_health[target] = 10_000
+        monsters, wearer = pulse()
+        self.assertEqual([hit.target_actor_id for hit in monsters], [target])
+        self.assertEqual(len(wearer), 1)
+        self.assertEqual(wearer[0].damage, 35)
+        self.assertEqual(self.state.player_health[1][0], 965)
+
     def test_dwarf_mine_resolves_native_trap_and_talent_rank(self):
         base = self.state.player_trap_definition(1887)
         self.assertIsNotNone(base)
