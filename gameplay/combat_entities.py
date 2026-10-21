@@ -102,7 +102,11 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     length = math.hypot(direction[0], direction[2])
     aim = (direction[0] / length, direction[2] / length) if length > 1e-6 else (0.0, 0.0)
     maximum_range = max(geometry.attack_range, geometry.projectile_range) if projectile else geometry.attack_range
-    if point is not None and maximum_range > 0 and distance(origin, point) > maximum_range + range_tolerance:
+    # Flat, as the client clamps the aimed point (skills.rs) and the radius
+    # test below measures: a meteor at full range onto ground a few metres
+    # higher or lower than the caster came back with an empty plan.
+    if point is not None and maximum_range > 0 and math.hypot(
+            origin[0] - point[0], origin[2] - point[2]) > maximum_range + range_tolerance:
         return EntitySkillPlan(geometry, ())
     radius = max(0.25, geometry.hit_range, geometry.impact_radius, area_radius)
     targeting = geometry.targeting_type.casefold()
