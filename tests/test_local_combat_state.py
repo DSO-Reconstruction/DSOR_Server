@@ -3426,6 +3426,30 @@ class LocalCombatStateTests(unittest.TestCase):
         after = self._distance_2d(state.monster_positions[controlled], spot)
         self.assertLess(after, before - 1.0)
 
+    def test_an_area_impact_spares_a_monster_that_walked_out_of_it(self):
+        """A meteor's victims are chosen at the cast and hit 2.6 s later."""
+        from dso_server.gameplay.local_combat_state import PendingPlayerHit
+        state = self.state
+        actor = sorted(state.living_actor_ids)[0]
+        point = state.monster_positions[actor]
+
+        def pending(cast_id):
+            hit = PendingPlayerHit(
+                cast_id=cast_id, target_actor_id=actor, skill_index=0, due_at=10.0,
+                impact_tick=1, distance=0.0, travel_distance=0.0, emit_delay=0.0,
+                victim_status_effects=(), origin=point, motion_type="Area",
+                damage_modifier=1.0, player_minimum_damage=10.0,
+                player_maximum_damage=10.0, area_radius=3.5,
+            )
+            state.pending_runtime_player_hits[(1, cast_id, 0)] = hit
+
+        pending(1)
+        self.assertIsNotNone(state.resolve_runtime_player_hit(1, 1, 0, now=10.0))
+        state.monster_positions[actor] = (point[0] + 8.0, point[1], point[2])
+        pending(2)
+        self.assertIsNone(state.resolve_runtime_player_hit(1, 2, 0, now=10.0))
+        self.assertNotIn((1, 2, 0), state.pending_runtime_player_hits)
+
     def test_mage_guardians_never_walk(self):
         """arcanemanifestation and firemanifestation: their permanent idle effect
         switches Movement off, though the template has a RunSpeed."""

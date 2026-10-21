@@ -763,6 +763,9 @@ class PendingPlayerHit:
     critical_hit_chance: float = 0.0
     critical_damage_multiplier: float = 2.0
     damage_immune: bool = False
+    # An area impact's radius around ``origin`` (the aimed point), checked
+    # again when it lands: a meteor falls 2.6 s after the cast.
+    area_radius: float = 0.0
 
 
 @dataclass
@@ -7750,6 +7753,10 @@ class LocalCombatState:
                 emitted_at=current_time,
                 maximum_range=geometry.attack_range,
                 motion_type="Area",
+                area_radius=max(
+                    0.25, geometry.hit_range, geometry.impact_radius,
+                    float(area_radius_override or 0.0),
+                ),
                 damage_modifier=target_geometry.damage_modifier,
                 damage_type=target_geometry.damage_type,
                 player_minimum_damage=(
@@ -9596,6 +9603,21 @@ class LocalCombatState:
         monster = self.monsters[pending.target_actor_id]
         previous = self.monster_health.get(monster.actor_id, 0)
         if previous <= 0:
+            return None
+        # An area impact's victims were chosen at the cast; one that walked
+        # out of it before it fell is not hurt (a meteor lands 2.6 s later and
+        # struck monsters standing beside its crater).
+        current = self.monster_positions.get(monster.actor_id)
+        if (
+            pending.motion_type == "Area"
+            and pending.area_radius > 0.0
+            and (
+                current is None
+                or self._distance(current, pending.origin)
+                > pending.area_radius + monster.collision_radius
+                + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+            )
+        ):
             return None
         if pending.damage_immune:
             return DamageResolution(
