@@ -17,6 +17,7 @@ from dso_server.runtime.concurrency import InstrumentedRLock, MAP_COMBAT_DOMAIN
 from dso_server.gameplay.navigation_shapes import monster_target_radii
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
+    ORBITING_MOTION_TYPES,
     plan_entity_skill,
     projectile_emit_delay,
     shifted_skill_phases,
@@ -55,6 +56,10 @@ from dso_server.gameplay.player_summon_lifecycle import (
     summon_startup_seconds,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.map_static_collision import (
+    StaticLineOfSight,
+    load_static_line_of_sight,
+)
 from dso_server.gameplay.fractured_planes_layout import (
     TOWER_FIRE_BURST_COOLDOWN,
     TOWER_FIRE_BURST_SHOTS,
@@ -370,6 +375,20 @@ def effective_attack_speed(raw_attack_speed: float) -> float:
     return effective
 
 
+# Height above the feet at which a bullet flies when its StartOffset gives
+# none, and the band the authored heights are kept in (low enough that a
+# shot clears no wall, high enough that kerbs and benches never stop it).
+DEFAULT_BULLET_FLIGHT_HEIGHT = 1.2
+BULLET_FLIGHT_HEIGHT_RANGE = (0.8, 1.8)
+
+
+def _bullet_flight_height(start_offset) -> float:
+    height = float(start_offset[1]) if start_offset else 0.0
+    if height <= 0.0:
+        return DEFAULT_BULLET_FLIGHT_HEIGHT
+    return min(BULLET_FLIGHT_HEIGHT_RANGE[1], max(BULLET_FLIGHT_HEIGHT_RANGE[0], height))
+
+
 def _player_impact_tick(server_tick: int, delay_seconds: float) -> int:
     """Map an exact monotonic deadline onto the client's 25 Hz clock.
 
@@ -528,6 +547,8 @@ class PlayerSkillGeometry:
     # ``_Template_Skill.AmmoCost``: essences spent from the active ammunition
     # slot per accepted cast. Zero for utility skills such as teleport.
     ammo_cost: int = 0
+    # ``_Template_SkillBullet.StaticCollision``: the bullet stops at walls.
+    static_collision: bool = False
 
 
 @dataclass(frozen=True)
@@ -1127,6 +1148,8 @@ class LocalCombatState:
         self.pending_monster_summons: list[MonsterSummonRequest] = []
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
+        self._static_line_of_sight: StaticLineOfSight | None = None
+        self._static_line_of_sight_loaded = False
         # Released projectiles may still be flying when a boss recovers and
         # starts its next cast. Keep their impacts independently of that cast.
         self.pending_monster_projectile_attacks: dict[
@@ -2311,7 +2334,8 @@ class LocalCombatState:
                         COALESCE(s.ResourceCost, 0),
                         COALESCE(s.ResourceGain, 0),
                         COALESCE(s.ResourceCostToDamage, 0),
-                        COALESCE(s.AmmoCost, 0)
+                        COALESCE(s.AmmoCost, 0),
+                        COALESCE(b.StaticCollision, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id = s.SkillBulletId
@@ -2444,6 +2468,7 @@ class LocalCombatState:
                 resource_gain_fraction=max(0.0, float(row[40] or 0.0)),
                 resource_cost_to_damage=max(0.0, float(row[41] or 0.0)),
                 ammo_cost=max(0, int(row[42] or 0)),
+                static_collision=bool(row[43] or 0),
             )
             if row is not None
             else None
@@ -5290,7 +5315,8 @@ class LocalCombatState:
                             "BulletLocationEffect, "
                             "BulletDeathLocationEffect, "
                             "BulletLocationEffectRate, "
-                            "BulletLocationEffectStartDelay "
+                            "BulletLocationEffectStartDelay, "
+                            "COALESCE(StaticCollision, 0) "
                             "FROM _Template_SkillBullet WHERE Id=? LIMIT 1",
                             (self._clean_modifier_token(arguments[2]),),
                         ).fetchone()
@@ -5318,6 +5344,7 @@ class LocalCombatState:
                                 bullet_location_effect_start_delay=max(
                                     0.0, float(row[12] or 0.0)
                                 ),
+                                static_collision=bool(row[13] or 0),
                             )
                             bullet_location_effects = list(
                                 self._load_location_aura_effects(
@@ -7488,7 +7515,40 @@ class LocalCombatState:
             area_radius=max(0.0, area_radius_override or 0.0),
             require_explicit_target=require_explicit_target,
             range_tolerance=PLAYER_PROJECTILE_COLLISION_RADIUS,
+            static_reach=(self._bullet_static_reach(geometry.start_offset)
+                          if projectile and geometry.static_collision else None),
         )
+
+    def _map_static_line_of_sight(self) -> StaticLineOfSight | None:
+        """The map's wall collision, built on the first shot that needs it."""
+        if self._static_line_of_sight_loaded:
+            return self._static_line_of_sight
+        self._static_line_of_sight_loaded = True
+        try:
+            map_root = Path(self.encounter.static_database_path).parent.parent / "maps"
+            map_id = str(self.encounter.map_id)
+            self._static_line_of_sight = load_static_line_of_sight(
+                map_root / f"{map_id}.map", map_root / f"{map_id}.col",
+            )
+        except (AttributeError, TypeError, OSError, CollisionTerrainError,
+                UnicodeDecodeError, struct.error):
+            # Development maps without a collision bundle keep open sight.
+            self._static_line_of_sight = None
+        return self._static_line_of_sight
+
+    def _bullet_static_reach(self, start_offset):
+        """``static_reach`` for a bullet flying at its StartOffset height."""
+        line_of_sight = self._map_static_line_of_sight()
+        if line_of_sight is None:
+            return None
+        height = _bullet_flight_height(start_offset)
+
+        def reach(start, end):
+            return line_of_sight.clear_distance(
+                (start[0], start[1] + height, start[2]),
+                (end[0], end[1] + height, end[2]),
+            )
+        return reach
 
     def start_bullet_skill_hits(
         self,
@@ -10752,6 +10812,19 @@ class LocalCombatState:
                     )
                 ):
                     continue
+                if (
+                    getattr(definition, "static_collision", False)
+                    and attack.motion_type.casefold()
+                    not in ORBITING_MOTION_TYPES
+                ):
+                    # The bullet struck a wall between caster and target.
+                    reach = self._bullet_static_reach(definition.start_offset)
+                    if reach is not None and reach(
+                        attack.projectile_origin, target_world
+                    ) + PLAYER_PROJECTILE_COLLISION_RADIUS < math.dist(
+                        attack.projectile_origin[:3], target_world[:3]
+                    ):
+                        continue
             elif is_directional_shape:
                 if not self._directional_skill_intersects_player(
                     attack, target_world, definition
