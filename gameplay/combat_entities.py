@@ -162,7 +162,15 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     emit = projectile_emit_delay(geometry, attack_speed)
     velocity = geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier)
     offset = max(0.0, -geometry.start_offset[2])
-    splash_radius = max(geometry.impact_radius, max((
+    # ImpactRadius splashes only an exploding projectile (the dwarf's C14
+    # micro-rocket and grenade: BulletRadius 0, "Multiple Enemies"). A bullet
+    # with its own radius and one impact strikes one enemy: the fireball's
+    # 2.35 hit every monster around its victim, though its SkillTarget is
+    # "Single Enemy".
+    impact_splash = (geometry.impact_radius
+                     if geometry.impact_count > 1 or geometry.projectile_radius <= 0
+                     else 0.0)
+    splash_radius = max(impact_splash, max((
         effect.aura_radius for effect in (
             *geometry.location_status_effects, *geometry.location_visual_effects,
             *geometry.bullet_death_effects,

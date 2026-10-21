@@ -33,6 +33,14 @@ class EntityPlanningTests(unittest.TestCase):
             geometry or self.geometry, self.entities, origin=(0.0, 0.0, 0.0),
             direction=(0.0, 0.0, 1.0, 0.0), projectile=True, **kwargs)
 
+    def test_a_single_impact_bullet_with_its_own_radius_does_not_splash(self):
+        """The fireball (BulletRadius 0.5, ImpactCount 1, ImpactRadius 2.35)
+        strikes one enemy; the C14 micro-rocket (BulletRadius 0) explodes."""
+        fireball = replace(self.geometry, impact_radius=3.5, projectile_radius=0.5)
+        self.assertEqual([i.target.actor_id for i in self.plan(fireball).impacts], [101])
+        rocket = replace(self.geometry, impact_radius=3.5, projectile_radius=0.0)
+        self.assertEqual({i.target.actor_id for i in self.plan(rocket).impacts}, {101, 202})
+
     def test_projectile_release_uses_the_later_authored_delay_without_double_counting(self):
         for emit_seconds, expected in ((0.0, 0.2), (0.15, 0.2), (0.3, 0.3)):
             with self.subTest(emit=emit_seconds):
