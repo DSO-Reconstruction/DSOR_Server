@@ -165,6 +165,13 @@ class SignalRule:
             self.signal_type == "clientsignal"
             and self.event_type in {
                 "playerenteredmap",
+                # Quest turn-in is committed by the server and emits
+                # PlayerClosedQuest. Map scripts use it to reveal follow-up
+                # quest NPCs (for example Saving Souls' citizen in
+                # a0401_oldchapel); without evaluating this signal, the
+                # EventSet remains closed until some unrelated map-entry
+                # path happens to reveal the actor.
+                "playerclosedquest",
                 "playerlevelup",
                 # PlayerKilledMonster is also raised from the server's
                 # authoritative combat callback. Evaluate ClientSignal rules

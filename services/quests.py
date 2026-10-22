@@ -633,6 +633,30 @@ class QuestService:
                 for dialog_id, actor in task.dialogs.items():
                     if actor.casefold() != npc_key:
                         continue
+                    talk_is_active = any(
+                        event.kind == "talk"
+                        and (
+                            event.value.casefold() == dialog_id.casefold()
+                            or dialog_id.casefold().endswith(
+                                event.value.casefold()
+                            )
+                        )
+                        and all(
+                            guard.holds(progress.tokens)
+                            for guard in event.guards
+                        )
+                        for event in task.events
+                    )
+                    if talk_is_active:
+                        # TalkTask targets use the dialog interaction to open
+                        # the conversation and a separate task-target entry
+                        # for the NPC quest marker. Without both, the client
+                        # can show the objective text while leaving its map
+                        # target unmarked.
+                        interactions.append(NPCInteraction(
+                            quest.quest_id, NPC_TASK_TARGET,
+                            quest.quest_id, quest.quest_type_id,
+                        ))
                     interactions.append(NPCInteraction(
                         dialog_id, NPC_TALK_DIALOG, quest.quest_id, quest.quest_type_id,
                     ))
