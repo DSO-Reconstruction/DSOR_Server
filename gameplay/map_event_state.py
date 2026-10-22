@@ -1082,7 +1082,14 @@ def _load_map_event_content(
                 chest_id=chest_id,
                 signal_referenced=signal_referenced,
                 workbench=False,
-                quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+                # Spawn-point _ID is a placement label, while the quest
+                # Switch names the StateObjectId template (StateObjectId).
+                # Match either so quest-controlled spawn props are published
+                # and revealed when their task is active.
+                quest_switch_id=(
+                    quest_switches.get(instance_id.casefold())
+                    or quest_switches.get(template_id.casefold(), "")
+                ),
             ))
 
         volumes = []

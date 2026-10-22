@@ -478,7 +478,20 @@ class QuestService:
             return ""
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         log = _quest_log(s)
-        for binding in catalog.switches_for_prop(definition.instance_id):
+        # Spawn-point props use the map row's placement label as instance_id
+        # and the authored StateObjectId as template_id. Quest Switch.prop
+        # names that template, so check both identities when resolving the
+        # player's active switch; otherwise the prop is filtered from PropInfo.
+        prop_ids = dict.fromkeys((
+            str(getattr(definition, "instance_id", "") or "").casefold(),
+            str(getattr(definition, "template_id", "") or "").casefold(),
+        ))
+        bindings = tuple(
+            binding
+            for prop_id in prop_ids if prop_id
+            for binding in catalog.switches_for_prop(prop_id)
+        )
+        for binding in bindings:
             progress = log.get(binding.quest_id)
             if progress is None or progress.state != QUEST_STATE_ACCEPTED:
                 continue
