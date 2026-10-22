@@ -1647,30 +1647,46 @@ class QuestService:
         self._quest_check_shared_cleared_regions(s, counts)
 
     def _quest_start_active_holdgrounds(self, s: Session) -> None:
-        """Complete the Time Harp defense objective when it becomes active."""
+        """Complete designated defense stages when their quest is accepted."""
 
-        if map_key(getattr(s, "gameplay_map", "")) != "c2302_dun":
-            return
-        quest_id = "c2200-TempleOfEternity-01-n"
-        progress = _quest_log(s).get(quest_id)
-        if progress is None or progress.state != QUEST_STATE_ACCEPTED:
-            return
-        quest = self._quest_catalog().quest(quest_id)
-        if quest is None:
-            return
-        for task in active_tasks(quest, progress):
-            if task.task_type.casefold() != "holdgroundtask":
+        map_quests = {
+            "c2302_dun": ("c2200-TempleOfEternity-01-n",),
+            # J'Udora, J'Edile, and J'Oronis column defense events cannot run
+            # in this reconstruction. Complete the three sequential steps
+            # after Rewrite History is accepted so J'Ibal can be reached.
+            "c2303_dun": ("c2200-RewriteHistory-01-n",),
+        }
+        map_id = map_key(getattr(s, "gameplay_map", ""))
+        for quest_id in map_quests.get(map_id, ()):
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None:
                 continue
-            event = next((
-                event for event in task.events
-                if event.kind == "holdgroundsucceeded"
-            ), None)
-            if event is not None:
+            # Completing one holdground task may unlock the next sequential
+            # task, so refresh active tasks and progress after each signal.
+            for _ in range(len(quest.tasks)):
+                progress = _quest_log(s).get(quest_id)
+                if progress is None or progress.state != QUEST_STATE_ACCEPTED:
+                    break
+                task = next((
+                    task for task in active_tasks(quest, progress)
+                    if task.task_type.casefold() == "holdgroundtask"
+                ), None)
+                if task is None:
+                    break
+                event = next((
+                    event for event in task.events
+                    if event.kind == "holdgroundsucceeded"
+                ), None)
+                if event is None:
+                    break
+                before = progress.finished_mask
                 self._quest_feed(
                     s, "holdgroundsucceeded", event.value,
                     quest_id=quest_id,
                 )
-            return
+                updated = _quest_log(s).get(quest_id)
+                if updated is None or updated.finished_mask == before:
+                    break
 
     def _quest_send_tracked_clear_region_indication(
         self, s: Session, *, group_only: bool = False,
