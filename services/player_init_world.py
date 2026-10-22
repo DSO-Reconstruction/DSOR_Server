@@ -21,6 +21,7 @@ from dso_server.protocol.player_init_protocol import (
     QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
+    VARIATION_INFO_COMMAND,
 )
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
 from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
@@ -76,6 +77,16 @@ class PlayerInitializationWorldService:
             selected_map_difficulty=map_access.map_difficulty,
             selected_map_access_id=map_access.request_map_id,
         )
+        native_exit_commands = tuple(
+            command for command in map_commands
+            if command.command_id == VARIATION_INFO_COMMAND
+        )
+        if native_exit_commands:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] explicit native exit creation on "
+                f"{gameplay_map}: access={map_access.request_map_id!r}, "
+                f"entities={sum(len(c.value.entries) for c in native_exit_commands)}"
+            )
         monster_encounter = load_local_monster_encounter(
             self.static_database_path,
             gameplay_map,
