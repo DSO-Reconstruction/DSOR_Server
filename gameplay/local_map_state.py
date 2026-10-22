@@ -717,6 +717,9 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # Crypt of Kings has both a return gate and a boss gate.
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
+    # Duria's cult-tower route also authors one scene exit per difficulty.
+    "a0402_culttower01": ("a0403_culttower02",),
+    "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -863,9 +866,11 @@ def _exit_info_entries_for_access(
     return tuple(result)
 
 
-_NATIVE_CRYPT_EXIT_TARGETS = {
+_NATIVE_SCENE_EXIT_TARGETS = {
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
+    "a0402_culttower01": ("a0403_culttower02",),
+    "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
 }
 
 
@@ -945,7 +950,7 @@ def load_local_map_initialization(
             all_exit_definitions,
             exit_definitions,
         )
-        targets = _NATIVE_CRYPT_EXIT_TARGETS.get(str(map_id).casefold(), ())
+        targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
         native_exits = tuple(
             definition for definition in exit_definitions
             if definition.active and any(
