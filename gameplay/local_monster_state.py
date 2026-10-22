@@ -2401,6 +2401,8 @@ def _navigation_for_map(
             # separate components at the generic cutoff; a 0.75 m
             # connection restores the authored walkable route.
             "c2200_hub": 0.75,
+            # The Honor Barracks passage to B'Orlok is authored below 1 m.
+            "c2202_pve": 0.9,
             "pw023_atlantis_above_water_01_dun": 0.9,
         }.get(str(map_id).casefold(), 1.0)
         return load_navigation_mesh(
