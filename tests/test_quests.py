@@ -426,7 +426,9 @@ class QuestServiceTests(unittest.TestCase):
         self.assertEqual(updates[-1].subject, 3)  # the empty interaction marker
         server._quest_on_prop_interacted(s, "", BOOKSTAND_SWITCH)
         interactions, flags = server._quest_npc_interactions(s, "a0002_start_hub_smith_01")
-        self.assertEqual([(i.source, i.field_08) for i in interactions], [(TALK_DIALOG, NPC_TALK_DIALOG)])
+        # The talk target's quest marker, then the dialog that opens the talk.
+        self.assertEqual([(i.source, i.field_08) for i in interactions],
+                         [(GRIMMAGSTONE_02, NPC_TASK_TARGET), (TALK_DIALOG, NPC_TALK_DIALOG)])
         self.assertEqual([(f.name, f.enabled) for f in flags], [(TALK_DIALOG, False)])
         server._quest_feed(s, "talk", TALK_DIALOG)
         self.assertEqual(s.gameplay_quest_log[GRIMMAGSTONE_02].finished_mask, 0xF)
