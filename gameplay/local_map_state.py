@@ -720,6 +720,9 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # Duria's cult-tower route also authors one scene exit per difficulty.
     "a0402_culttower01": ("a0403_culttower02",),
     "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
+    # Tegan's Wall and Tegansruh share seven tiered entrance/return exits.
+    "a0600_dragonfortress": ("a0601_defiledsanctum",),
+    "a0601_defiledsanctum": ("a0600_dragonfortress",),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -871,6 +874,8 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
     "a0402_culttower01": ("a0403_culttower02",),
     "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
+    "a0600_dragonfortress": ("a0601_defiledsanctum",),
+    "a0601_defiledsanctum": ("a0600_dragonfortress",),
 }
 
 
