@@ -98,6 +98,19 @@ _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES = {
         "b1101_s_undead_mage_q_SilentScreams06",
 }
 
+# c2202_pve's extracted map database omits the four Gorgon Guard spawnpoints
+# used by WarriorsDestiny-02. Keep the four cages playable without modifying
+# the client map data by spawning those quest guards around the cage area.
+_WARRIORS_DESTINY_GORGON_FALLBACK_SPAWNS = (
+    (-12.0, 0.0, 10.0),
+    (8.0, 0.0, 10.0),
+    (-12.0, 0.0, -2.0),
+    (8.0, 0.0, -8.0),
+)
+_WARRIORS_DESTINY_GORGON_TEMPLATE = (
+    "c2202_normal_s_gorgon_q_WarriorsDestiny_02"
+)
+
 LOCAL_MONSTER_ACTOR_BASE = 0x00030000
 _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
@@ -2986,6 +2999,22 @@ def _load_dynamic_monster_encounter(
                             break
                 if placed:
                     present_templates.add(template_id.casefold())
+
+        if str(map_id).casefold() == "c2202_pve":
+            existing_guards = sum(
+                monster.template_id.casefold()
+                == _WARRIORS_DESTINY_GORGON_TEMPLATE.casefold()
+                for monster in monsters
+            )
+            for position in _WARRIORS_DESTINY_GORGON_FALLBACK_SPAWNS[
+                existing_guards:
+            ]:
+                append_monster(
+                    _WARRIORS_DESTINY_GORGON_TEMPLATE,
+                    allocate_fixed_actor_id(),
+                    position,
+                    resolve_projected_overlap=True,
+                )
 
     fixed_monster_count = len(monsters)
     authored_templates = tuple(
