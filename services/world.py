@@ -32,6 +32,8 @@ _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
 _FORTRESS_GRIMMAG_VISIBILITY_EXIT_RADIUS = 85.0
 _SMALL_CRYPT_MAP = "a0008_crypt_dun"
 _SMALL_CRYPT_CAPTAIN_TEMPLATE = "a0008_normal_champion_crypt_undead"
+_TORSROND_MAP = "b1101_pve"
+_TORSROND_CAPTAIN_TEMPLATE = "b1101_s_soulless_norseman_q_soullessflood03"
 _WILDFOREST_CRYPT_EXIT_MAP = "a0302_wildforest"
 _WILDFOREST_NEFERTARI_GUARD_TEMPLATE = (
     "a0302_normal_s_undead_mage_q_cultpath01"
@@ -727,6 +729,11 @@ class WorldService:
                                 encounter.map_id.casefold() == _SMALL_CRYPT_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _SMALL_CRYPT_CAPTAIN_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _TORSROND_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _TORSROND_CAPTAIN_TEMPLATE
                             )
                             or (
                                 encounter.map_id.casefold()

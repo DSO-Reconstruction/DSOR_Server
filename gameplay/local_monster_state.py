@@ -96,6 +96,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
     "a0302_wildforest",
     "a0303_wildcave",
+    # Torsrond's client scene registers authored SpawnPoints in the ordinary
+    # 0x30000 range. Keep server controlled quest actors such as Captain
+    # Ulkell in the secondary actor range to avoid that collision.
+    "b1101_pve",
     # Tegansruh's client scene already registers an actor at 0x30000. Keep
     # authored server monsters such as Benkay in the secondary actor range.
     "a0601_defiledsanctum",
