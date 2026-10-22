@@ -478,7 +478,20 @@ class QuestService:
             return ""
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         log = _quest_log(s)
-        for binding in catalog.switches_for_prop(definition.instance_id):
+        # Spawn-point props use the map row's placement label as instance_id
+        # and the authored StateObjectId as template_id. Quest Switch.prop
+        # names that template, so check both identities when resolving the
+        # player's active switch; otherwise the prop is filtered from PropInfo.
+        prop_ids = dict.fromkeys((
+            str(getattr(definition, "instance_id", "") or "").casefold(),
+            str(getattr(definition, "template_id", "") or "").casefold(),
+        ))
+        bindings = tuple(
+            binding
+            for prop_id in prop_ids if prop_id
+            for binding in catalog.switches_for_prop(prop_id)
+        )
+        for binding in bindings:
             progress = log.get(binding.quest_id)
             if progress is None or progress.state != QUEST_STATE_ACCEPTED:
                 continue
@@ -633,6 +646,30 @@ class QuestService:
                 for dialog_id, actor in task.dialogs.items():
                     if actor.casefold() != npc_key:
                         continue
+                    talk_is_active = any(
+                        event.kind == "talk"
+                        and (
+                            event.value.casefold() == dialog_id.casefold()
+                            or dialog_id.casefold().endswith(
+                                event.value.casefold()
+                            )
+                        )
+                        and all(
+                            guard.holds(progress.tokens)
+                            for guard in event.guards
+                        )
+                        for event in task.events
+                    )
+                    if talk_is_active:
+                        # TalkTask targets use the dialog interaction to open
+                        # the conversation and a separate task-target entry
+                        # for the NPC quest marker. Without both, the client
+                        # can show the objective text while leaving its map
+                        # target unmarked.
+                        interactions.append(NPCInteraction(
+                            quest.quest_id, NPC_TASK_TARGET,
+                            quest.quest_id, quest.quest_type_id,
+                        ))
                     interactions.append(NPCInteraction(
                         dialog_id, NPC_TALK_DIALOG, quest.quest_id, quest.quest_type_id,
                     ))
@@ -926,7 +963,27 @@ class QuestService:
             return
         _log(f"talk {request.dialog_id!r} at actor {request.npc_actor_id}")
         self._quest_on_npc_encounter(s, definition.template_id)
-        self._quest_feed(s, "talk", request.dialog_id)
+        changed = self._quest_feed(s, "talk", request.dialog_id)
+        if changed:
+            # The talk response can finish the previous task and unlock a
+            # CompleteTask at this same NPC. Its initial encounter was
+            # processed before the talk token existed, so resolve the newly
+            # unlocked hand-in task now.
+            npc_key = definition.template_id.casefold()
+            catalog = self._quest_catalog()
+            for quest_id, progress in tuple(_quest_log(s).items()):
+                quest = catalog.quest(quest_id)
+                if quest is None or progress.state != QUEST_STATE_ACCEPTED:
+                    continue
+                if any(
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal.casefold() == npc_key
+                    and task.is_done(progress.tokens)
+                    for task in active_tasks(quest, progress)
+                ):
+                    self._quest_feed(
+                        s, "encounter", definition.template_id, quest_id=quest_id,
+                    )
 
     @staticmethod
     def _quest_delivery_items(inventory, barter):
@@ -1427,6 +1484,11 @@ class QuestService:
                         f"quest monster spawn failed for {quest_id!r}: "
                         f"{type(exc).__name__}: {exc}"
                     )
+            if result.inventory_drops:
+                self._quest_grant_inventory_drops(
+                    s, quest, result.inventory_drops,
+                )
+                changed_any = True
             if result.drops:
                 self._quest_spawn_drops(s, quest, result.drops, position=position)
                 CharacterService._request_account_save(s, "quest drop event")
@@ -1439,6 +1501,30 @@ class QuestService:
             if getattr(s, "gameplay_quest_tracking", None):
                 self._quest_send_monster_indication(s)
         return changed_any
+
+    def _quest_grant_inventory_drops(self, s, quest, specifications) -> None:
+        """Grant authored inventory=true quest drops as real inventory items."""
+
+        rewards = tuple(
+            RewardDefinition(
+                f"quest:{quest.quest_id}:{spec.item_id}",
+                quest_item_template_id(spec.item_id),
+                int(spec.amount),
+            )
+            for spec in specifications
+            if spec.item_id and int(spec.amount) > 0
+        )
+        if not rewards:
+            return
+        try:
+            self._deliver_rewards(
+                s, rewards, claim_keys=None, label="quest-item",
+            )
+        except Exception as exc:
+            _log(
+                f"inventory quest drop failed for {quest.quest_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _quest_spawn_drops(self, s, quest, specifications, *, position=None):
         if not specifications:

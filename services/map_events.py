@@ -2987,7 +2987,10 @@ class MapEventService:
         if state.state == PROP_STATE_ACTIVE or flipped:
             CharacterService._quest_on_prop_interacted(
                 self, s, definition.instance_id,
-                request.operation or definition.quest_switch_id,
+                # Quest switch bindings are server-authored. The operation
+                # returned by the client can be stale or differ from the
+                # current switch, which would silently skip collect drops.
+                definition.quest_switch_id or request.operation,
             )
             self._fire_map_signal(
                 s, "PlayerInteractedProp",

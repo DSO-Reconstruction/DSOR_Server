@@ -342,6 +342,7 @@ class QuestEventResult:
     unsupported: tuple[str, ...] = ()
     drops: tuple[Drop, ...] = ()
     spawns: tuple[QuestSpawn, ...] = ()
+    inventory_drops: tuple[Drop, ...] = ()
 
 
 def _parse_guards(element: ET.Element) -> tuple[Guard, ...]:
@@ -699,11 +700,20 @@ def apply_quest_event(
     unsupported: list[str] = []
     drops: list[Drop] = []
     spawns = []
+    inventory_drops: list[Drop] = []
     rng = rng or random.Random()
     for _ in range(max(1, int(count))):
         for task in active_tasks(quest, progress):
             before = task.counter(progress.tokens)
-            matched = False
+            # CompleteTask objectives have no event row in client quest data.
+            # Encountering their goal NPC completes them once their guards
+            # (usually the previous task's completion token) are satisfied.
+            matched = (
+                kind == "encounter"
+                and task.task_type.casefold() == "completetask"
+                and quest.goal.casefold() == value_key
+                and task.is_done(progress.tokens)
+            )
             for event in task.events:
                 if event.kind in UNSUPPORTED_EVENT_TYPES:
                     unsupported.append(event.kind)
@@ -720,12 +730,14 @@ def apply_quest_event(
                         if not drop.to_inventory:
                             drops.append(drop)
                             continue
+                        inventory_drops.append(drop)
                         inner = apply_quest_event(
                             quest, progress, "collect", drop.item_id,
                             count=drop.amount, rng=rng,
                         )
                         changes.extend(inner.changes)
                         drops.extend(inner.drops)
+                        inventory_drops.extend(inner.inventory_drops)
             if not matched:
                 continue
             after = task.counter(progress.tokens)
@@ -745,7 +757,7 @@ def apply_quest_event(
         quest_finished = True
     return QuestEventResult(
         _collapse_changes(changes), quest_finished, tuple(dict.fromkeys(unsupported)),
-        tuple(drops), tuple(spawns),
+        tuple(drops), tuple(spawns), tuple(inventory_drops),
     )
 
 

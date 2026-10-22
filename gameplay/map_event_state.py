@@ -165,6 +165,13 @@ class SignalRule:
             self.signal_type == "clientsignal"
             and self.event_type in {
                 "playerenteredmap",
+                # Quest turn-in is committed by the server and emits
+                # PlayerClosedQuest. Map scripts use it to reveal follow-up
+                # quest NPCs (for example Saving Souls' citizen in
+                # a0401_oldchapel); without evaluating this signal, the
+                # EventSet remains closed until some unrelated map-entry
+                # path happens to reveal the actor.
+                "playerclosedquest",
                 "playerlevelup",
                 # PlayerKilledMonster is also raised from the server's
                 # authoritative combat callback. Evaluate ClientSignal rules
@@ -922,6 +929,7 @@ def _load_map_event_content(
         ))
 
         templates: dict[str, tuple[str, bool, str, str]] = {}
+        quest_controlled_templates: set[str] = set()
         chest_tier_chances: dict[int, tuple[int, int, int, int]] = {}
         try:
             static_path = Path(database_path)
@@ -953,8 +961,16 @@ def _load_map_event_content(
                         str(row[5]).strip(),
                         bool(int(row[6] or 0)),
                     )
+                quest_controlled_templates = {
+                    str(row[0]).casefold()
+                    for row in static_database.execute(
+                        "SELECT Id FROM _Template_StateObject "
+                        "WHERE COALESCE(QuestControlled, 0)<>0"
+                    )
+                }
         except sqlite3.Error:
             templates = {}
+            quest_controlled_templates = set()
 
         props = []
         prop_actor_base = local_prop_actor_base(database_path, map_id)
@@ -997,14 +1013,21 @@ def _load_map_event_content(
             )
             signal_referenced = instance_id.casefold() in signal_props
             level_variation = level_variations.get(int(parent_node_index or 0))
-            # The PW017 seals are QuestControlled scene nodes.  Their scene
-            # entities are absent on the client until the matching quest task
-            # is active, so PropInfo with the authored GUID is silently
-            # discarded by ClientPropManager.  An empty GUID makes the client
-            # instantiate the same authored template at its database transform.
+            # QuestControlled scene entities are absent on the client until
+            # their quest task is active. PropInfo with the authored GUID is
+            # silently discarded when that scene entity is missing; an empty
+            # GUID makes the client instantiate the template at this transform.
             quest_seal = (
                 map_key(map_id) == "pw017_dragonslair_01_dun"
                 and instance_id.casefold() in {"pw017_seal_01", "pw017_seal_02"}
+            )
+            quest_switch_id = (
+                quest_switches.get(instance_id.casefold())
+                or quest_switches.get(template_id.casefold(), "")
+            )
+            quest_controlled = (
+                bool(quest_switch_id)
+                and template_id.casefold() in quest_controlled_templates
             )
             props.append(MapPropDefinition(
                 prop_id=prop_actor_base + int(row_id) - 1,
@@ -1012,7 +1035,10 @@ def _load_map_event_content(
                 kind="scene",
                 instance_id=instance_id,
                 template_id=template_id,
-                instance_guid=ZERO_GUID if quest_seal else bytes(guid) if guid else ZERO_GUID,
+                instance_guid=(
+                    ZERO_GUID if quest_seal or quest_controlled
+                    else bytes(guid) if guid else ZERO_GUID
+                ),
                 position=position,
                 rotation=rotation,
                 event_set_row=int(event_set_row),
@@ -1023,7 +1049,7 @@ def _load_map_event_content(
                 chest_id=str(chest_id).strip(),
                 signal_referenced=signal_referenced,
                 workbench=workbench,
-                quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+                quest_switch_id=quest_switch_id,
                 parent_node_index=int(parent_node_index or 0),
                 variation_group=(level_variation[0] if level_variation else 0),
                 variation_level=(level_variation[1] if level_variation else 0),
@@ -1075,7 +1101,14 @@ def _load_map_event_content(
                 chest_id=chest_id,
                 signal_referenced=signal_referenced,
                 workbench=False,
-                quest_switch_id=quest_switches.get(instance_id.casefold(), ""),
+                # Spawn-point _ID is a placement label, while the quest
+                # Switch names the StateObjectId template (StateObjectId).
+                # Match either so quest-controlled spawn props are published
+                # and revealed when their task is active.
+                quest_switch_id=(
+                    quest_switches.get(instance_id.casefold())
+                    or quest_switches.get(template_id.casefold(), "")
+                ),
             ))
 
         volumes = []

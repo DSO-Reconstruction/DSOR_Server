@@ -21,9 +21,12 @@ from dso_server.protocol.player_init_protocol import (
     EXIT_INFO_COMMAND,
     NEW_NPC_COMMAND,
     NPC_INFO_COMMAND,
+    VARIATION_INFO_COMMAND,
     ExitInfo,
     ExitInfoEntry,
     ServerCommand,
+    VariationInfo,
+    VariationInfoEntry,
 )
 
 
@@ -709,6 +712,52 @@ def load_local_map_exits(
         database.close()
 
 
+_TIERED_MAP_EXIT_TARGET_GROUPS = {
+    # These maps author a separate scene exit for every access difficulty.
+    # Crypt of Kings has both a return gate and a boss gate.
+    "a0202_kingscrypt01": ("a0203_kingscrypt02",),
+    "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
+    # Duria's cult-tower route also authors one scene exit per difficulty.
+    "a0402_culttower01": ("a0403_culttower02",),
+    "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
+    # Tegan's Wall, Tegansruh, and the dragon lair have separate exits for
+    # each access difficulty, including the return route to Tegan's Refuge.
+    "a0505_dun": ("a0600_dragonfortress",),
+    "a0600_dragonfortress": (
+        "a0505_dun", "a0601_defiledsanctum", "a0602_dragonslair01",
+    ),
+    "a0601_defiledsanctum": ("a0600_dragonfortress",),
+    "a0602_dragonslair01": (
+        "a0600_dragonfortress", "a0603_dragonslair02",
+    ),
+    "a0603_dragonslair02": (
+        "a0602_dragonslair01", "a0604_heraldsslair",
+    ),
+    # Eternal Watch and Hjalgrimur author matching exits for every available
+    # difficulty; select the matching scene gate in both directions.
+    "b1202_dun": ("b1203_boss",),
+    "b1203_boss": ("b1202_dun",),
+    "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
+    "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
+    "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
+    "pw005_caverns_loxley_01_dun": ("pw006_arachna_01_boss",),
+    "pw007_stonekeep_01_dun": ("pw008_kingscrypt_01_dun",),
+    "pw008_kingscrypt_01_dun": ("pw009_heredur_01_boss",),
+    "pw010_wildcave_01_dun": ("pw011_eternal_grove_01_dun",),
+    "pw011_eternal_grove_01_dun": ("pw012_bearach_01_boss",),
+    "pw013_wizard_garden_01_dun": ("pw014_cult_tower_01_dun",),
+    "pw014_cult_tower_01_dun": ("pw015_khalys_boss_01",),
+    "pw016_teganswall_01_dun": ("pw017_dragonslair_01_dun",),
+    "pw017_dragonslair_01_dun": ("pw018_herold_01_boss",),
+    "pw019_hailstone_mountains_01_dun": ("pw020_eternal_watch_01_dun",),
+    "pw020_eternal_watch_01_dun": ("pw021_sigrismarr_01_boss",),
+    "pw022_mount_suvius_01_dun": ("pw023_atlantis_above_water_01_dun",),
+    "pw023_atlantis_above_water_01_dun": ("pw024_medusa_01_boss",),
+    "pw025_ship_graveyard_01_dun": ("pw026_heart_of_atlantis_01_dun",),
+    "pw026_heart_of_atlantis_01_dun": ("pw027_gorga_01_boss",),
+}
+
+
 def filter_parallel_world_exits_for_access(
     static_database_path: str | Path,
     map_id: str,
@@ -717,29 +766,12 @@ def filter_parallel_world_exits_for_access(
     selected_map_access_id: str = "",
     selected_map_difficulty: int | None = None,
 ) -> tuple[LocalMapExit, ...]:
-    """Keep only the PW exit matching the access group used to enter the map."""
+    """Keep only destination variations matching the selected map difficulty."""
 
-    target_group = {
-        "pw001_grimmagstone_01_dun": "pw002_alliance_fortress_01_dun",
-        "pw002_alliance_fortress_01_dun": "pw003_grimmag_01_boss",
-        "pw004_hagastove_grotto_01_dun": "pw005_caverns_loxley_01_dun",
-        "pw005_caverns_loxley_01_dun": "pw006_arachna_01_boss",
-        "pw007_stonekeep_01_dun": "pw008_kingscrypt_01_dun",
-        "pw008_kingscrypt_01_dun": "pw009_heredur_01_boss",
-        "pw010_wildcave_01_dun": "pw011_eternal_grove_01_dun",
-        "pw011_eternal_grove_01_dun": "pw012_bearach_01_boss",
-        "pw013_wizard_garden_01_dun": "pw014_cult_tower_01_dun",
-        "pw014_cult_tower_01_dun": "pw015_khalys_boss_01",
-        "pw016_teganswall_01_dun": "pw017_dragonslair_01_dun",
-        "pw017_dragonslair_01_dun": "pw018_herold_01_boss",
-        "pw019_hailstone_mountains_01_dun": "pw020_eternal_watch_01_dun",
-        "pw020_eternal_watch_01_dun": "pw021_sigrismarr_01_boss",
-        "pw022_mount_suvius_01_dun": "pw023_atlantis_above_water_01_dun",
-        "pw023_atlantis_above_water_01_dun": "pw024_medusa_01_boss",
-        "pw025_ship_graveyard_01_dun": "pw026_heart_of_atlantis_01_dun",
-        "pw026_heart_of_atlantis_01_dun": "pw027_gorga_01_boss",
-    }.get(str(map_id).casefold())
-    if target_group is None:
+    target_groups = _TIERED_MAP_EXIT_TARGET_GROUPS.get(
+        str(map_id).casefold()
+    )
+    if target_groups is None:
         return exits
     with closing(_open_read_only(static_database_path)) as database:
         source = database.execute(
@@ -752,11 +784,12 @@ def filter_parallel_world_exits_for_access(
             int(source[0] or 0) if source is not None
             else int(selected_map_difficulty)
         )
+        placeholders = ",".join("?" for _ in target_groups)
         destination_difficulties = {
             str(access_id): int(difficulty or 0)
             for access_id, difficulty in database.execute(
                 "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
-                "WHERE AccessGroup=?", (target_group,),
+                f"WHERE AccessGroup IN ({placeholders})", target_groups,
             )
         }
     # EntityEventController selects a variation by cached Name/GUID, even
@@ -767,6 +800,112 @@ def filter_parallel_world_exits_for_access(
         if exit.destination_map_id not in destination_difficulties
         or destination_difficulties[exit.destination_map_id] == selected_difficulty
     )
+
+
+def _exit_info_entries_for_access(
+    static_database_path: str | Path,
+    map_id: str,
+    all_exits: tuple[LocalMapExit, ...],
+    selected_exits: tuple[LocalMapExit, ...],
+) -> tuple[ExitInfoEntry, ...]:
+    """Refresh every cached gate name while selecting one scene GUID.
+
+    ExitInfo is merged by the client and omitted names are not removed from its
+    cache. Re-send each same-position tier alias using the selected tier's GUID
+    so a prior map load cannot leave stale variation GUIDs that hide the gate.
+    """
+
+    target_groups = _TIERED_MAP_EXIT_TARGET_GROUPS.get(
+        str(map_id).casefold()
+    )
+    if target_groups is None:
+        return tuple(
+            ExitInfoEntry(
+                definition.name,
+                definition.destination_map_id,
+                int(definition.active),
+                definition.instance_guid,
+            )
+            for definition in selected_exits
+        )
+
+    placeholders = ",".join("?" for _ in target_groups)
+    with closing(_open_read_only(static_database_path)) as database:
+        access_groups = {
+            str(access_id): str(access_group)
+            for access_id, access_group in database.execute(
+                "SELECT Id, AccessGroup FROM _Template_MapAccessGroup "
+                f"WHERE AccessGroup IN ({placeholders})", target_groups,
+            )
+        }
+
+    result = []
+    emitted_names = set()
+    for selected in selected_exits:
+        group = access_groups.get(selected.destination_map_id)
+        if group is None:
+            result.append(ExitInfoEntry(
+                selected.name,
+                selected.destination_map_id,
+                int(selected.active),
+                selected.instance_guid,
+            ))
+            emitted_names.add(selected.name)
+            continue
+
+        aliases = tuple(
+            candidate
+            for candidate in all_exits
+            if (
+                access_groups.get(candidate.destination_map_id) == group
+                and candidate.destination_entry_name
+                == selected.destination_entry_name
+                and all(
+                    abs(candidate.position[axis] - selected.position[axis])
+                    <= 1.0
+                    for axis in range(3)
+                )
+            )
+        )
+        if not aliases:
+            aliases = (selected,)
+        for alias in aliases:
+            if alias.name in emitted_names:
+                continue
+            is_selected = alias.instance_guid == selected.instance_guid
+            result.append(ExitInfoEntry(
+                alias.name,
+                selected.destination_map_id,
+                int(selected.active and is_selected),
+                selected.instance_guid,
+            ))
+            emitted_names.add(alias.name)
+    return tuple(result)
+
+
+_NATIVE_SCENE_EXIT_TARGETS = {
+    "a0202_kingscrypt01": ("a0203_kingscrypt02",),
+    "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
+    "a0402_culttower01": ("a0403_culttower02",),
+    "a0403_culttower02": ("a0402_culttower01", "a0404_culttower03"),
+    "a0505_dun": ("a0600_dragonfortress",),
+    "a0600_dragonfortress": (
+        "a0505_dun",
+        "a0601_defiledsanctum",
+        "a0602_dragonslair01",
+    ),
+    "a0601_defiledsanctum": ("a0600_dragonfortress",),
+    "a0602_dragonslair01": (
+        "a0600_dragonfortress",
+        "a0603_dragonslair02",
+    ),
+    "a0603_dragonslair02": (
+        "a0602_dragonslair01",
+        "a0604_heraldsslair",
+    ),
+    "b1202_dun": ("b1203_boss",),
+    "b1203_boss": ("b1202_dun",),
+}
 
 
 def load_local_map_initialization(
@@ -826,29 +965,46 @@ def load_local_map_initialization(
             commands.append(ServerCommand(NEW_NPC_COMMAND, new_npc, actor_id))
             commands.append(ServerCommand(NPC_INFO_COMMAND, npc_info, actor_id))
 
+        all_exit_definitions = load_local_map_exits(
+            static_database_path,
+            map_id,
+            active_event_flags=active_event_flags,
+            include_inactive_event_sets=include_inactive_event_sets,
+        )
         exit_definitions = filter_parallel_world_exits_for_access(
             static_database_path,
             map_id,
-            load_local_map_exits(
-                static_database_path,
-                map_id,
-                active_event_flags=active_event_flags,
-                include_inactive_event_sets=include_inactive_event_sets,
-            ),
+            all_exit_definitions,
             selected_map_access_id=selected_map_access_id or "",
             selected_map_difficulty=selected_map_difficulty,
         )
-        exits = tuple(
-            ExitInfoEntry(
-                # The client resolves the scene entity by Name, and caches
-                # its GUID before EventUpdate can create the tier variation.
-                definition.name,
-                definition.destination_map_id,
-                int(definition.active),
-                definition.instance_guid,
-            )
-            for definition in exit_definitions
+        exits = _exit_info_entries_for_access(
+            static_database_path,
+            map_id,
+            all_exit_definitions,
+            exit_definitions,
         )
+        targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
+        native_exits = tuple(
+            definition for definition in exit_definitions
+            if definition.active and any(
+                definition.destination_map_id.casefold().startswith(target)
+                for target in targets
+            )
+        )
+        if native_exits:
+            # ExitInfo only updates existing entities. The client handler for
+            # VariationInfo (release261_192 0x1401d4ce0) factory-creates missing
+            # entities by their map GUID. EventSetRow -1 is unconditional in
+            # ClientEventSystem::IsGameObjectActive (0x1401fba74).
+            commands.append(ServerCommand(
+                VARIATION_INFO_COMMAND,
+                VariationInfo(tuple(
+                    VariationInfoEntry(definition.instance_guid, -1)
+                    for definition in native_exits
+                )),
+                0,
+            ))
         return tuple(commands), ExitInfo(exits)
     finally:
         database.close()

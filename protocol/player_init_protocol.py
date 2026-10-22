@@ -97,6 +97,7 @@ TIMED_OFFERS_INFO_COMMAND = command_id("Commands::TimedOffersInfoCommand", 0x008
 UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND = command_id("Commands::UpdateProgressTierSpenderChallengesCommand", 0x013A)
 EVENT_PROGRESS_INFO_COMMAND = command_id("Commands::EventProgressInfoCommand", 0x00E0)
 EVENT_PARTICIPATION_INFO_COMMAND = command_id("Commands::EventParticipationInfoCommand", 0x00DF)
+VARIATION_INFO_COMMAND = command_id("Commands::VariationInfoCommand", 0x0043)
 EXIT_INFO_COMMAND = command_id("Commands::ExitInfoCommand", 0x0044)
 # The literals here are the current client's (dro_client64-patch5,
 # docs/command_ids.json). release261_192 registers three more commands before
@@ -760,6 +761,17 @@ class EventParticipation:
 @dataclass(frozen=True)
 class EventParticipationInfo:
     events: tuple[EventParticipation, ...]
+
+
+@dataclass(frozen=True)
+class VariationInfoEntry:
+    instance_guid: bytes
+    event_set_row: int = -1
+
+
+@dataclass(frozen=True)
+class VariationInfo:
+    entries: tuple[VariationInfoEntry, ...]
 
 
 @dataclass(frozen=True)
@@ -1771,6 +1783,36 @@ def _write_event_participation_info_body(
         writer.write_bool(event.participating)
 
 
+def _read_variation_info_body(reader: BitReader) -> VariationInfo:
+    count = reader.read_uint32_le()
+    if count > 1_000_000:
+        raise ValueError("VariationInfo entry count is unreasonable")
+    entries = []
+    for _ in range(count):
+        guid = _read_blob16(reader)
+        if len(guid) != 16:
+            raise ValueError("VariationInfo requires a 16-byte instance GUID")
+        event_set_row = reader.read_uint32_le()
+        if event_set_row >= 0x80000000:
+            event_set_row -= 0x100000000
+        entries.append(VariationInfoEntry(guid, event_set_row))
+    return VariationInfo(tuple(entries))
+
+
+def _write_variation_info_body(writer: BitWriter, value: VariationInfo) -> None:
+    # release261_192: array writer 0x14095f6d8; record writer 0x140a96a90.
+    # GUID blob followed by EventSetRow; the in-memory identity transform
+    # and ParentNodeIndex are not serialized by this command.
+    writer.write_uint32_le(len(value.entries))
+    for entry in value.entries:
+        if len(entry.instance_guid) != 16 or not any(entry.instance_guid):
+            raise ValueError("VariationInfo requires a nonempty 16-byte GUID")
+        if not -(1 << 31) <= entry.event_set_row < (1 << 31):
+            raise ValueError("VariationInfo event set row must fit int32")
+        _write_blob16(writer, entry.instance_guid)
+        writer.write_uint32_le(entry.event_set_row & 0xFFFFFFFF)
+
+
 def _read_exit_info_body(reader: BitReader) -> ExitInfo:
     return ExitInfo(
         tuple(
@@ -2018,6 +2060,7 @@ _BODY_READERS = {
         _read_update_progress_tier_spender_challenges_body,
     EVENT_PROGRESS_INFO_COMMAND: _read_event_progress_info_body,
     EVENT_PARTICIPATION_INFO_COMMAND: _read_event_participation_info_body,
+    VARIATION_INFO_COMMAND: _read_variation_info_body,
     EXIT_INFO_COMMAND: _read_exit_info_body,
     ACTIVITY_SIGNIN_CALENDAR_COMMAND: _read_activity_signin_calendar_body,
     ACTIVITY_EXTRA_RECORD_COMMAND: _read_activity_extra_record_body,
@@ -2075,6 +2118,7 @@ _BODY_WRITERS = {
         _write_update_progress_tier_spender_challenges_body,
     EVENT_PROGRESS_INFO_COMMAND: _write_event_progress_info_body,
     EVENT_PARTICIPATION_INFO_COMMAND: _write_event_participation_info_body,
+    VARIATION_INFO_COMMAND: _write_variation_info_body,
     EXIT_INFO_COMMAND: _write_exit_info_body,
     ACTIVITY_SIGNIN_CALENDAR_COMMAND: _write_activity_signin_calendar_body,
     ACTIVITY_EXTRA_RECORD_COMMAND: _write_activity_extra_record_body,
@@ -2286,11 +2330,16 @@ def build_local_player_init_commands(
     actor_id = int(actor_id)
     if new_player.actor_id != actor_id:
         raise ValueError("NewPlayer actor does not match initialization actor")
-    if len(map_entity_commands) % 2:
+    npc_commands = tuple(
+        command for command in map_entity_commands
+        if command.command_id != VARIATION_INFO_COMMAND
+    )
+    has_variation_info = len(npc_commands) != len(map_entity_commands)
+    if len(npc_commands) % 2:
         raise ValueError(
             "local initialization requires complete NewNPC/NPCInfo pairs"
         )
-    for index, command in enumerate(map_entity_commands):
+    for index, command in enumerate(npc_commands):
         expected = NEW_NPC_COMMAND if index % 2 == 0 else NPC_INFO_COMMAND
         if command.command_id != expected:
             raise ValueError(
@@ -2527,7 +2576,6 @@ def build_local_player_init_commands(
                 else ChapterProgress((), ()),
                 actor_id,
             ),
-            ServerCommand(EVENT_UPDATE_COMMAND, event_update, None),
             ServerCommand(
                 TIMED_CHALLENGES_INFO_COMMAND,
                 timed_challenges if timed_challenges is not None
@@ -2561,6 +2609,15 @@ def build_local_player_init_commands(
         )
     )
     commands.extend(map_entity_commands)
+    # The client materializes map-scene entities when it processes the map's
+    # EventUpdate. Publish ExitInfo first so variation-specific exits are in
+    # the client's Name/GUID cache, and register map NPCs before the event can
+    # activate their scene sets.
+    commands.append(ServerCommand(EVENT_UPDATE_COMMAND, event_update, None))
+    if has_variation_info:
+        # VariationInfo creates missing native entities. Refresh their exit
+        # labels/state after creation, using the cache primed above.
+        commands.append(ServerCommand(EXIT_INFO_COMMAND, exit_info, 0))
     commands.extend(
         (
             ServerCommand(PROP_INFO_COMMAND, prop_info, actor_id),
@@ -2599,6 +2656,7 @@ def build_local_player_init_commands(
     expected_command_count = (
         91 + len(map_entity_commands)
         + int(membership_update is not None)
+        + int(has_variation_info)
     )
     if len(commands) != expected_command_count:
         raise AssertionError(
