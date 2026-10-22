@@ -91,6 +91,13 @@ _LOCAL_ENCOUNTERS = {
     },
 }
 
+# Torstrond's authored Inquisitor SpawnPoint has no NpcId, although its
+# ungated guardian row is intended to create this renderable map actor.
+_AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES = {
+    ("b1101_pve", "b1101_s_undead_mage_q_silentscreams06_spawnpoint"):
+        "b1101_s_undead_mage_q_SilentScreams06",
+}
+
 LOCAL_MONSTER_ACTOR_BASE = 0x00030000
 _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
@@ -2472,6 +2479,11 @@ def _load_dynamic_monster_encounter(
         all_fixed_rows = []
         for row_id, transform, npc_id, event_set, object_id, _rank in authored_fixed_rows:
             template_id = str(npc_id or "").strip()
+            if not template_id:
+                template_id = _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES.get(
+                    (str(map_id).casefold(), str(object_id or "").casefold()),
+                    "",
+                )
             if not template_id:
                 # Some shipped PW map records put the monster template
                 # directly in _ID and leave NpcId empty. Resolve only exact
