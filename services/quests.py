@@ -1230,6 +1230,10 @@ class QuestService:
             CharacterService._chapter_unlock_commands(self, s, quest.chapter_id)
         )
         self._send_quest_commands(s, commands, label="quest-accept")
+        if quest.accept_inventory_drops:
+            self._quest_grant_inventory_drops(
+                s, quest, quest.accept_inventory_drops,
+            )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
