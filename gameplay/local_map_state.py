@@ -727,6 +727,12 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
         "a0505_dun", "a0601_defiledsanctum", "a0602_dragonslair01",
     ),
     "a0601_defiledsanctum": ("a0600_dragonfortress",),
+    "a0602_dragonslair01": (
+        "a0600_dragonfortress", "a0603_dragonslair02",
+    ),
+    "a0603_dragonslair02": (
+        "a0602_dragonslair01", "a0604_heraldsslair",
+    ),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -885,6 +891,14 @@ _NATIVE_SCENE_EXIT_TARGETS = {
         "a0602_dragonslair01",
     ),
     "a0601_defiledsanctum": ("a0600_dragonfortress",),
+    "a0602_dragonslair01": (
+        "a0600_dragonfortress",
+        "a0603_dragonslair02",
+    ),
+    "a0603_dragonslair02": (
+        "a0602_dragonslair01",
+        "a0604_heraldsslair",
+    ),
 }
 
 
