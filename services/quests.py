@@ -31,6 +31,7 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import (
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    map_key,
     prop_visible_to_player,
 )
 from dso_server.gameplay.quest_content import (
@@ -1237,6 +1238,7 @@ class QuestService:
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
+        self._quest_start_active_holdgrounds(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1643,6 +1645,32 @@ class QuestService:
                             getattr(monster, "actor_id", None), position)
                 self._quest_feed(s, "kill", template, position=position)
         self._quest_check_shared_cleared_regions(s, counts)
+
+    def _quest_start_active_holdgrounds(self, s: Session) -> None:
+        """Complete the Time Harp defense objective when it becomes active."""
+
+        if map_key(getattr(s, "gameplay_map", "")) != "c2302_dun":
+            return
+        quest_id = "c2200-TempleOfEternity-01-n"
+        progress = _quest_log(s).get(quest_id)
+        if progress is None or progress.state != QUEST_STATE_ACCEPTED:
+            return
+        quest = self._quest_catalog().quest(quest_id)
+        if quest is None:
+            return
+        for task in active_tasks(quest, progress):
+            if task.task_type.casefold() != "holdgroundtask":
+                continue
+            event = next((
+                event for event in task.events
+                if event.kind == "holdgroundsucceeded"
+            ), None)
+            if event is not None:
+                self._quest_feed(
+                    s, "holdgroundsucceeded", event.value,
+                    quest_id=quest_id,
+                )
+            return
 
     def _quest_send_tracked_clear_region_indication(
         self, s: Session, *, group_only: bool = False,
