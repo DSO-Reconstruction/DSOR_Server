@@ -963,7 +963,27 @@ class QuestService:
             return
         _log(f"talk {request.dialog_id!r} at actor {request.npc_actor_id}")
         self._quest_on_npc_encounter(s, definition.template_id)
-        self._quest_feed(s, "talk", request.dialog_id)
+        changed = self._quest_feed(s, "talk", request.dialog_id)
+        if changed:
+            # The talk response can finish the previous task and unlock a
+            # CompleteTask at this same NPC. Its initial encounter was
+            # processed before the talk token existed, so resolve the newly
+            # unlocked hand-in task now.
+            npc_key = definition.template_id.casefold()
+            catalog = self._quest_catalog()
+            for quest_id, progress in tuple(_quest_log(s).items()):
+                quest = catalog.quest(quest_id)
+                if quest is None or progress.state != QUEST_STATE_ACCEPTED:
+                    continue
+                if any(
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal.casefold() == npc_key
+                    and task.is_done(progress.tokens)
+                    for task in active_tasks(quest, progress)
+                ):
+                    self._quest_feed(
+                        s, "encounter", definition.template_id, quest_id=quest_id,
+                    )
 
     @staticmethod
     def _quest_delivery_items(inventory, barter):
@@ -1464,6 +1484,11 @@ class QuestService:
                         f"quest monster spawn failed for {quest_id!r}: "
                         f"{type(exc).__name__}: {exc}"
                     )
+            if result.inventory_drops:
+                self._quest_grant_inventory_drops(
+                    s, quest, result.inventory_drops,
+                )
+                changed_any = True
             if result.drops:
                 self._quest_spawn_drops(s, quest, result.drops, position=position)
                 CharacterService._request_account_save(s, "quest drop event")
@@ -1476,6 +1501,30 @@ class QuestService:
             if getattr(s, "gameplay_quest_tracking", None):
                 self._quest_send_monster_indication(s)
         return changed_any
+
+    def _quest_grant_inventory_drops(self, s, quest, specifications) -> None:
+        """Grant authored inventory=true quest drops as real inventory items."""
+
+        rewards = tuple(
+            RewardDefinition(
+                f"quest:{quest.quest_id}:{spec.item_id}",
+                quest_item_template_id(spec.item_id),
+                int(spec.amount),
+            )
+            for spec in specifications
+            if spec.item_id and int(spec.amount) > 0
+        )
+        if not rewards:
+            return
+        try:
+            self._deliver_rewards(
+                s, rewards, claim_keys=None, label="quest-item",
+            )
+        except Exception as exc:
+            _log(
+                f"inventory quest drop failed for {quest.quest_id!r}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _quest_spawn_drops(self, s, quest, specifications, *, position=None):
         if not specifications:
