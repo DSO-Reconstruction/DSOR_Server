@@ -96,6 +96,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
     "a0302_wildforest",
     "a0303_wildcave",
+    # Tegansruh's client scene already registers an actor at 0x30000. Keep
+    # authored server monsters such as Benkay in the secondary actor range.
+    "a0601_defiledsanctum",
 })
 
 

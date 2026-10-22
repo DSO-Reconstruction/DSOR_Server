@@ -44,6 +44,12 @@ _WILDHERZ_CAVERNS_MAP = "a0303_wildcave"
 _WILDHERZ_YACHAK_TEMPLATE = (
     "a0303_normal_g_beastman_stag_q_goddessreawakening05"
 )
+_TEGAN_GRAVE_MAP = "a0601_defiledsanctum"
+_TEGAN_GRAVE_SMITH_TEMPLATE = (
+    "a0601_normal_g_undead_mage_q_tegangravesmith"
+)
+_TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
+_TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
 
 
 @contextmanager
@@ -158,6 +164,17 @@ class WorldService:
                 _WILDFOREST_GUARD_VISIBILITY_EXIT_RADIUS
                 if exiting
                 else _WILDFOREST_GUARD_VISIBILITY_ENTER_RADIUS
+            )
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
+            and monster is not None
+            and monster.template_id.casefold() == _TEGAN_GRAVE_SMITH_TEMPLATE
+        ):
+            return (
+                _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS
+                if exiting
+                else _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS
             )
         return (
             MONSTER_VISIBILITY_EXIT_RADIUS
@@ -721,6 +738,11 @@ class WorldService:
                                 encounter.map_id.casefold() == _WILDHERZ_CAVERNS_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _WILDHERZ_YACHAK_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _TEGAN_GRAVE_SMITH_TEMPLATE
                             )
                         )
                     )
