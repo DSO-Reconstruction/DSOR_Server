@@ -13,9 +13,9 @@ Simplifications, all deliberate and logged where they apply:
 * Ground ``<Drop>`` items are returned to the service for materialization;
   only a successful pickup feeds ``collect``. Direct-inventory drops retain
   immediate collection credit (their inventory grant is not modeled here).
-* ``pay``, ``crafting`` and ``holdground`` events are not fed by the server
-  yet, so tasks that need them never complete. ``battle`` and ``victory`` are
-  fed when a battleground finishes, with the match's battleground id.
+* ``pay``, ``crafting`` and general ``holdground`` events are not fed by the
+  server yet. ``battle`` and ``victory`` are fed when a battleground finishes,
+  with the match's battleground id.
 * ``<Config>`` elements (hold-ground setups) are parsed but not executed.
 """
 
@@ -52,7 +52,7 @@ QUEST_TYPE_IDS = MappingProxyType({
 })
 
 UNSUPPORTED_EVENT_TYPES = frozenset({
-    "pay", "crafting", "holdgroundsucceeded", "holdgroundfailed",
+    "pay", "crafting", "holdgroundfailed",
 })
 
 
@@ -223,6 +223,7 @@ class QuestDefinition:
     tasks: tuple[TaskDefinition, ...]
     rewards: tuple[QuestReward, ...]
     bound_to_map: bool = False
+    accept_inventory_drops: tuple[Drop, ...] = ()
 
     @property
     def key(self) -> str:
@@ -448,6 +449,16 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
 
 
 def _parse_quest(element: ET.Element) -> QuestDefinition:
+    accept_inventory_drops = tuple(
+        Drop(
+            item_id=str(drop.get("value", "")),
+            amount=int(drop.get("amount", 1) or 1),
+            chance=float(drop.get("chance", 1) or 1),
+            to_inventory=_bool(drop.get("inventory")),
+        )
+        for drop in element.findall("Drop")
+        if drop.get("value") and _bool(drop.get("inventory"))
+    )
     rewards = tuple(
         QuestReward(
             kind=str(r.get("type", "")).casefold(),
@@ -483,6 +494,7 @@ def _parse_quest(element: ET.Element) -> QuestDefinition:
         tasks=tasks,
         rewards=rewards,
         bound_to_map=_bool(element.get("boundToMap")),
+        accept_inventory_drops=accept_inventory_drops,
     )
 
 

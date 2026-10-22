@@ -42,6 +42,8 @@ data/quests.xml
 # Added by xm1rth fork
 nohup.out
 data/logs/
+# Local launcher changes are machine-specific and must stay out of commits.
+/launcher_gui.py
 data/language/
 data/db/*
 !data/db/README.txt

@@ -168,6 +168,7 @@ class PlayerInitializationService(
             CharacterService._spawn_event_monsters(
                 self, runtime, (s,), running_event_sets
             )
+        CharacterService._quest_start_active_holdgrounds(self, s)
         CharacterService._refresh_premium_bags(s)
         CharacterService._announce_remote_presence(self, s)
         CharacterService._on_map_entered(self, s)

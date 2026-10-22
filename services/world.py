@@ -52,6 +52,22 @@ _TEGAN_GRAVE_SMITH_TEMPLATE = (
 )
 _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
 _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
+_TIME_HARP_MAP = "c2302_dun"
+_TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
+    "c2302_normal_g_gorgon_q_templeofeternity_03a",
+    "c2302_normal_g_gorgon_q_templeofeternity_03a_scale",
+    "c2302_normal_g_gorgon_q_templeofeternity_03b",
+    "c2302_normal_g_gorgon_q_templeofeternity_03b_scale",
+    "c2302_normal_g_lobster_q_templeofeternity_03",
+    "c2302_normal_g_lobster_q_templeofeternity_03_scale",
+})
+_REWRITE_HISTORY_MAP = "c2303_dun"
+_REWRITE_HISTORY_QUEST_MOB_TEMPLATES = frozenset({
+    "c2303_normal_g_gorgon_q_rewritehistory_03",
+    "c2303_normal_g_gorgon_q_rewritehistory_03_scale",
+    "c2303_normal_g_lobster_q_rewritehistory_03",
+    "c2303_normal_g_lobster_q_rewritehistory_03_scale",
+})
 
 
 @contextmanager
@@ -178,6 +194,16 @@ class WorldService:
                 if exiting
                 else _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS
             )
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _REWRITE_HISTORY_MAP
+            and monster is not None
+            and monster.template_id.casefold()
+            in _REWRITE_HISTORY_QUEST_MOB_TEMPLATES
+        ):
+            # Quest spawns are spread across disconnected map islands. Keep
+            # them announced and alive while the player travels between them.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
         return (
             MONSTER_VISIBILITY_EXIT_RADIUS
             if exiting
@@ -750,6 +776,17 @@ class WorldService:
                                 encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _TEGAN_GRAVE_SMITH_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _TIME_HARP_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                in _TIME_HARP_QUEST_MOB_TEMPLATES
+                            )
+                            or (
+                                encounter.map_id.casefold()
+                                == _REWRITE_HISTORY_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                in _REWRITE_HISTORY_QUEST_MOB_TEMPLATES
                             )
                         )
                     )

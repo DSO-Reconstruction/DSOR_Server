@@ -98,6 +98,19 @@ _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES = {
         "b1101_s_undead_mage_q_SilentScreams06",
 }
 
+# c2202_pve's extracted map database omits the four Gorgon Guard spawnpoints
+# used by WarriorsDestiny-02. Keep the four cages playable without modifying
+# the client map data by spawning those quest guards around the cage area.
+_WARRIORS_DESTINY_GORGON_FALLBACK_SPAWNS = (
+    (-12.0, 0.0, 10.0),
+    (8.0, 0.0, 10.0),
+    (-12.0, 0.0, -2.0),
+    (8.0, 0.0, -8.0),
+)
+_WARRIORS_DESTINY_GORGON_TEMPLATE = (
+    "c2202_normal_s_gorgon_q_WarriorsDestiny_02"
+)
+
 LOCAL_MONSTER_ACTOR_BASE = 0x00030000
 _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
@@ -110,6 +123,12 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Eternal Watch reserves ordinary actor ids for its six authored quest
     # SpawnPoints, including the Fate of the King frost-catchers.
     "b1202_dun",
+    # Time Rift's client scene owns the ordinary range for its authored
+    # Gorgon and Zorlob quest SpawnPoints. Keep server actors in the free range.
+    "c2302_dun",
+    # Temple of Eternity has authored quest SpawnPoints on separate walkable
+    # islands; its client scene also registers actors in the ordinary range.
+    "c2303_dun",
     # Tegansruh's client scene already registers an actor at 0x30000. Keep
     # authored server monsters such as Benkay in the secondary actor range.
     "a0601_defiledsanctum",
@@ -2388,7 +2407,11 @@ def _navigation_for_map(
             # separate components at the generic cutoff; a 0.75 m
             # connection restores the authored walkable route.
             "c2200_hub": 0.75,
-            "pw023_atlantis_above_water_01_dun": 0.9,
+            # The Honor Barracks passage to B'Orlok is authored below 1 m.
+            "c2202_pve": 0.9,
+            # Cloud bridge connections are authored as very narrow PathEngine
+            # portals. Keep every authored connection for player movement.
+            "pw023_atlantis_above_water_01_dun": 0.0,
         }.get(str(map_id).casefold(), 1.0)
         return load_navigation_mesh(
             navigation_path, minimum_portal_width=portal_width,
@@ -2730,6 +2753,7 @@ def _load_dynamic_monster_encounter(
                 and not mounted
                 and not authored_boss
                 and allowed_component is not None
+                and str(map_id).casefold() != "c2303_dun"
                 and isinstance(navigation, PathEngineNavigationMesh)
                 and navigation.component_for_position(position)
                 != allowed_component
@@ -2986,6 +3010,22 @@ def _load_dynamic_monster_encounter(
                             break
                 if placed:
                     present_templates.add(template_id.casefold())
+
+        if str(map_id).casefold() == "c2202_pve":
+            existing_guards = sum(
+                monster.template_id.casefold()
+                == _WARRIORS_DESTINY_GORGON_TEMPLATE.casefold()
+                for monster in monsters
+            )
+            for position in _WARRIORS_DESTINY_GORGON_FALLBACK_SPAWNS[
+                existing_guards:
+            ]:
+                append_monster(
+                    _WARRIORS_DESTINY_GORGON_TEMPLATE,
+                    allocate_fixed_actor_id(),
+                    position,
+                    resolve_projected_overlap=True,
+                )
 
     fixed_monster_count = len(monsters)
     authored_templates = tuple(

@@ -31,6 +31,7 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import (
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    map_key,
     prop_visible_to_player,
 )
 from dso_server.gameplay.quest_content import (
@@ -1230,9 +1231,14 @@ class QuestService:
             CharacterService._chapter_unlock_commands(self, s, quest.chapter_id)
         )
         self._send_quest_commands(s, commands, label="quest-accept")
+        if quest.accept_inventory_drops:
+            self._quest_grant_inventory_drops(
+                s, quest, quest.accept_inventory_drops,
+            )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
+        self._quest_start_active_holdgrounds(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1639,6 +1645,48 @@ class QuestService:
                             getattr(monster, "actor_id", None), position)
                 self._quest_feed(s, "kill", template, position=position)
         self._quest_check_shared_cleared_regions(s, counts)
+
+    def _quest_start_active_holdgrounds(self, s: Session) -> None:
+        """Complete designated defense stages when their quest is accepted."""
+
+        map_quests = {
+            "c2302_dun": ("c2200-TempleOfEternity-01-n",),
+            # J'Udora, J'Edile, and J'Oronis column defense events cannot run
+            # in this reconstruction. Complete the three sequential steps
+            # after Rewrite History is accepted so J'Ibal can be reached.
+            "c2303_dun": ("c2200-RewriteHistory-01-n",),
+        }
+        map_id = map_key(getattr(s, "gameplay_map", ""))
+        for quest_id in map_quests.get(map_id, ()):
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None:
+                continue
+            # Completing one holdground task may unlock the next sequential
+            # task, so refresh active tasks and progress after each signal.
+            for _ in range(len(quest.tasks)):
+                progress = _quest_log(s).get(quest_id)
+                if progress is None or progress.state != QUEST_STATE_ACCEPTED:
+                    break
+                task = next((
+                    task for task in active_tasks(quest, progress)
+                    if task.task_type.casefold() == "holdgroundtask"
+                ), None)
+                if task is None:
+                    break
+                event = next((
+                    event for event in task.events
+                    if event.kind == "holdgroundsucceeded"
+                ), None)
+                if event is None:
+                    break
+                before = progress.finished_mask
+                self._quest_feed(
+                    s, "holdgroundsucceeded", event.value,
+                    quest_id=quest_id,
+                )
+                updated = _quest_log(s).get(quest_id)
+                if updated is None or updated.finished_mask == before:
+                    break
 
     def _quest_send_tracked_clear_region_indication(
         self, s: Session, *, group_only: bool = False,

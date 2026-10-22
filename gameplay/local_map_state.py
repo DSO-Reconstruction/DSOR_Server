@@ -737,6 +737,12 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # difficulty; select the matching scene gate in both directions.
     "b1202_dun": ("b1203_boss",),
     "b1203_boss": ("b1202_dun",),
+    # Temple Region and Lost Temple author parallel exits for every tier.
+    "c2301_dun": ("c2310_boss",),
+    "c2310_boss": ("c2301_dun",),
+    # Time Rift and Atlantis Above Water also author matching exits per tier.
+    "c2302_dun": ("c2303_dun",),
+    "c2303_dun": ("c2302_dun", "c2304_boss"),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -792,6 +798,13 @@ def filter_parallel_world_exits_for_access(
                 f"WHERE AccessGroup IN ({placeholders})", target_groups,
             )
         }
+    # The authored difficulty-zero exit uses a `_00` URL, while the access
+    # group catalog names that destination without the suffix.
+    for target in target_groups:
+        if target in destination_difficulties:
+            destination_difficulties.setdefault(
+                f"{target}_00", destination_difficulties[target],
+            )
     # EntityEventController selects a variation by cached Name/GUID, even
     # when ExitInfo.field_10 is zero. Never cache the other tier GUIDs: the
     # client merges subsequent ExitInfo batches instead of replacing them.
@@ -838,6 +851,9 @@ def _exit_info_entries_for_access(
                 f"WHERE AccessGroup IN ({placeholders})", target_groups,
             )
         }
+    for target in target_groups:
+        if target in access_groups:
+            access_groups.setdefault(f"{target}_00", access_groups[target])
 
     result = []
     emitted_names = set()
@@ -905,6 +921,10 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     ),
     "b1202_dun": ("b1203_boss",),
     "b1203_boss": ("b1202_dun",),
+    "c2301_dun": ("c2310_boss",),
+    "c2310_boss": ("c2301_dun",),
+    "c2302_dun": ("c2303_dun",),
+    "c2303_dun": ("c2302_dun", "c2304_boss"),
 }
 
 
