@@ -703,16 +703,7 @@ def apply_quest_event(
     for _ in range(max(1, int(count))):
         for task in active_tasks(quest, progress):
             before = task.counter(progress.tokens)
-            # CompleteTask objectives with a satisfied completion guard are
-            # handed in by encountering the quest's goal NPC. They have no
-            # explicit Event in the client quest data, so recognize that
-            # native task behavior here.
-            matched = (
-                kind == "encounter"
-                and task.task_type.casefold() == "completetask"
-                and quest.goal.casefold() == value_key
-                and task.is_done(progress.tokens)
-            )
+            matched = False
             for event in task.events:
                 if event.kind in UNSUPPORTED_EVENT_TYPES:
                     unsupported.append(event.kind)

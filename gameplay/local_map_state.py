@@ -733,10 +733,6 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     "a0603_dragonslair02": (
         "a0602_dragonslair01", "a0604_heraldsslair",
     ),
-    # Eternal Watch and Hjalgrimur author matching exits for every available
-    # difficulty; select the matching scene gate in both directions.
-    "b1202_dun": ("b1203_boss",),
-    "b1203_boss": ("b1202_dun",),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -903,8 +899,6 @@ _NATIVE_SCENE_EXIT_TARGETS = {
         "a0602_dragonslair01",
         "a0604_heraldsslair",
     ),
-    "b1202_dun": ("b1203_boss",),
-    "b1203_boss": ("b1202_dun",),
 }
 
 

@@ -107,9 +107,6 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # 0x30000 range. Keep server controlled quest actors such as Captain
     # Ulkell in the secondary actor range to avoid that collision.
     "b1101_pve",
-    # Eternal Watch's client scene also owns authored SpawnPoint actors in
-    # the ordinary range, including the six Fate of the King frost-catchers.
-    "b1202_dun",
     # Tegansruh's client scene already registers an actor at 0x30000. Keep
     # authored server monsters such as Benkay in the secondary actor range.
     "a0601_defiledsanctum",

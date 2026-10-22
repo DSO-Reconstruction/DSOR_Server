@@ -952,46 +952,6 @@ class QuestService:
         else:
             _log(f"unknown QuestCommand operation {request.operation} for {request.quest_id!r}")
 
-    def _active_talk_dialog_for_actor(
-        self, s: Session, npc_template_id: str,
-    ) -> str:
-        """Resolve a client-selected talk option to its active quest dialog.
-
-        Some client conversations send the selected answer's dialog id while
-        the quest event names the parent dialog. Only use this fallback when
-        the actor has exactly one eligible talk event across active tasks.
-        """
-
-        npc_key = str(npc_template_id or "").casefold()
-        candidates = set()
-        catalog = self._quest_catalog()
-        for quest_id, progress in _quest_log(s).items():
-            if progress.state != QUEST_STATE_ACCEPTED:
-                continue
-            quest = catalog.quest(quest_id)
-            if quest is None:
-                continue
-            for task in active_tasks(quest, progress):
-                for event in task.events:
-                    if event.kind != "talk" or not event.value:
-                        continue
-                    if not all(
-                        guard.holds(progress.tokens) for guard in event.guards
-                    ):
-                        continue
-                    if any(
-                        str(actor or "").casefold() == npc_key
-                        and (
-                            dialog_id.casefold() == event.value.casefold()
-                            or dialog_id.casefold().endswith(
-                                event.value.casefold()
-                            )
-                        )
-                        for dialog_id, actor in task.dialogs.items()
-                    ):
-                        candidates.add(event.value)
-        return next(iter(candidates)) if len(candidates) == 1 else ""
-
     def _handle_talk_command(self, s: Session, payload: bytes) -> None:
         request = decode_talk(payload, getattr(s, "current_message_bit_length", None))
         with s.flow_lock:
@@ -1003,39 +963,7 @@ class QuestService:
             return
         _log(f"talk {request.dialog_id!r} at actor {request.npc_actor_id}")
         self._quest_on_npc_encounter(s, definition.template_id)
-        changed = self._quest_feed(s, "talk", request.dialog_id)
-        if not changed:
-            expected_dialog = self._active_talk_dialog_for_actor(
-                s, definition.template_id,
-            )
-            if (
-                expected_dialog
-                and expected_dialog.casefold() != request.dialog_id.casefold()
-            ):
-                _log(
-                    f"mapped talk answer {request.dialog_id!r} to active "
-                    f"quest dialog {expected_dialog!r} for {definition.template_id!r}"
-                )
-                changed = self._quest_feed(s, "talk", expected_dialog)
-        # A TalkTask can unlock a following CompleteTask at the same NPC.
-        # The encounter earlier in this handler ran before the talk token was
-        # set, so finish newly unlocked hand-in tasks after a successful reply.
-        if changed:
-            npc_key = definition.template_id.casefold()
-            catalog = self._quest_catalog()
-            for quest_id, progress in tuple(_quest_log(s).items()):
-                quest = catalog.quest(quest_id)
-                if quest is None or progress.state != QUEST_STATE_ACCEPTED:
-                    continue
-                if any(
-                    task.task_type.casefold() == "completetask"
-                    and quest.goal.casefold() == npc_key
-                    and task.is_done(progress.tokens)
-                    for task in active_tasks(quest, progress)
-                ):
-                    self._quest_feed(
-                        s, "encounter", definition.template_id, quest_id=quest_id,
-                    )
+        self._quest_feed(s, "talk", request.dialog_id)
 
     @staticmethod
     def _quest_delivery_items(inventory, barter):
