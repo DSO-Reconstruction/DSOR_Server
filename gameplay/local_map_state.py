@@ -737,6 +737,9 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # difficulty; select the matching scene gate in both directions.
     "b1202_dun": ("b1203_boss",),
     "b1203_boss": ("b1202_dun",),
+    # Temple Region and Lost Temple author parallel exits for every tier.
+    "c2301_dun": ("c2310_boss",),
+    "c2310_boss": ("c2301_dun",),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -905,6 +908,8 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     ),
     "b1202_dun": ("b1203_boss",),
     "b1203_boss": ("b1202_dun",),
+    "c2301_dun": ("c2310_boss",),
+    "c2310_boss": ("c2301_dun",),
 }
 
 
