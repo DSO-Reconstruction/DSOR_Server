@@ -123,6 +123,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Eternal Watch reserves ordinary actor ids for its six authored quest
     # SpawnPoints, including the Fate of the King frost-catchers.
     "b1202_dun",
+    # Time Rift's client scene owns the ordinary range for its authored
+    # Gorgon and Zorlob quest SpawnPoints. Keep server actors in the free range.
+    "c2302_dun",
     # Tegansruh's client scene already registers an actor at 0x30000. Keep
     # authored server monsters such as Benkay in the secondary actor range.
     "a0601_defiledsanctum",

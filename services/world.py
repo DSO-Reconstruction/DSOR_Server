@@ -52,6 +52,15 @@ _TEGAN_GRAVE_SMITH_TEMPLATE = (
 )
 _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
 _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
+_TIME_HARP_MAP = "c2302_dun"
+_TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
+    "c2302_normal_g_gorgon_q_templeofeternity_03a",
+    "c2302_normal_g_gorgon_q_templeofeternity_03a_scale",
+    "c2302_normal_g_gorgon_q_templeofeternity_03b",
+    "c2302_normal_g_gorgon_q_templeofeternity_03b_scale",
+    "c2302_normal_g_lobster_q_templeofeternity_03",
+    "c2302_normal_g_lobster_q_templeofeternity_03_scale",
+})
 
 
 @contextmanager
@@ -750,6 +759,11 @@ class WorldService:
                                 encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _TEGAN_GRAVE_SMITH_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _TIME_HARP_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                in _TIME_HARP_QUEST_MOB_TEMPLATES
                             )
                         )
                     )
