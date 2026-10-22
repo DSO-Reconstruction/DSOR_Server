@@ -2379,15 +2379,17 @@ def _navigation_for_map(
         / f"{map_id}.tok"
     )
     try:
-        # Atlantis Above Water has several authored bridges just under the
-        # generic 1 m portal cutoff. They are walkable in the client and join
-        # the map's main ground regions, so retain those connections for
-        # movement validation and monster pathing on this map.
-        portal_width = (
-            0.9
-            if str(map_id).casefold() == "pw023_atlantis_above_water_01_dun"
-            else 1.0
-        )
+        # These maps have authored connections narrower than the generic 1 m
+        # portal cutoff. They are walkable in the client and join the map's
+        # ground regions, so retain those connections for movement validation
+        # and monster pathing.
+        portal_width = {
+            # This hub's path to J'Ibal/c2200_quest_eldest is split into
+            # separate components at the generic cutoff; a 0.75 m
+            # connection restores the authored walkable route.
+            "c2200_hub": 0.75,
+            "pw023_atlantis_above_water_01_dun": 0.9,
+        }.get(str(map_id).casefold(), 1.0)
         return load_navigation_mesh(
             navigation_path, minimum_portal_width=portal_width,
         )
