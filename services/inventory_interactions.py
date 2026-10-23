@@ -12,6 +12,7 @@ from dso_server.gameplay.local_map_state import (
     load_local_npc_definitions,
     local_npc_actor_id,
 )
+from dso_server.gameplay.map_event_state import map_key
 from dso_server.protocol.gameplay_protocol import ENCOUNTER_COMMAND
 
 
@@ -405,7 +406,14 @@ class InventoryInteractionService:
                 ) & reveal
             )
             target = min(quest_targets, key=distance, default=None)
-            if target is not None and distance(target) <= 24.0:
+            # Dikenli Valley's Normal entry is about 50 m from Wael. The
+            # client can request the client-only scene NPC as actor zero
+            # before its network actor is registered, so allow that authored
+            # quest target to resolve from the entrance as well.
+            approach_radius = (
+                64.0 if map_key(map_id) == "h0006_valley_dun" else 24.0
+            )
+            if target is not None and distance(target) <= approach_radius:
                 if NPC_TRACE:
                     print(
                         f"[NPC-TRACE] actor zero resolved quest target "

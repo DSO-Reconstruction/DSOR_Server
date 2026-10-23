@@ -1202,7 +1202,11 @@ class QuestService:
                 for flags in event_set_flags.values():
                     for flag in flags:
                         event = runtime.catalog.event(str(flag).casefold())
-                        if event is not None and event.applies_to(runtime.map_id):
+                        if (
+                            event is not None
+                            and event.applies_to(runtime.map_id)
+                            and not event.client_only
+                        ):
                             map_local_event_flags.add(str(flag).casefold())
             except Exception as exc:
                 _log(
@@ -1217,9 +1221,10 @@ class QuestService:
                 definition for definition in definitions
                 if int(local_npc_actor_id(definition)) not in announced
                 and int(getattr(definition, "event_set_row", -1)) >= 0
-                # Map-local events own their own NewNPC emission. Do not race
-                # that path by materializing the same actor from a quest
-                # refresh after the event flag becomes active.
+                # Server-driven map-local events own their NewNPC emission.
+                # Client-only scene events (such as Wael's reveal) can show
+                # the model without registering a network interaction actor;
+                # quest refreshes must create those actors themselves.
                 and not (
                     event_set_flags.get(
                         int(definition.event_set_row), frozenset()
