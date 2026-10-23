@@ -2608,12 +2608,34 @@ def build_local_player_init_commands(
             ServerCommand(EXIT_INFO_COMMAND, exit_info, 0),
         )
     )
-    commands.extend(map_entity_commands)
+    event_bound_variations = []
+    for command in map_entity_commands:
+        if command.command_id != VARIATION_INFO_COMMAND:
+            commands.append(command)
+            continue
+        unconditional = tuple(
+            entry for entry in command.value.entries if entry.event_set_row < 0
+        )
+        event_bound = tuple(
+            entry for entry in command.value.entries if entry.event_set_row >= 0
+        )
+        if unconditional:
+            commands.append(ServerCommand(
+                VARIATION_INFO_COMMAND, VariationInfo(unconditional), command.actor_id,
+            ))
+        if event_bound:
+            event_bound_variations.append(ServerCommand(
+                VARIATION_INFO_COMMAND, VariationInfo(event_bound), command.actor_id,
+            ))
     # The client materializes map-scene entities when it processes the map's
     # EventUpdate. Publish ExitInfo first so variation-specific exits are in
     # the client's Name/GUID cache, and register map NPCs before the event can
     # activate their scene sets.
     commands.append(ServerCommand(EVENT_UPDATE_COMMAND, event_update, None))
+    # The client remembers processed variation GUIDs. Create event-bound
+    # entities only after their event is active so initialization cannot
+    # remove them and leave later creation requests permanently ignored.
+    commands.extend(event_bound_variations)
     if has_variation_info:
         # VariationInfo creates missing native entities. Refresh their exit
         # labels/state after creation, using the cache primed above.
