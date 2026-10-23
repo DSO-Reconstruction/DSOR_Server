@@ -1766,6 +1766,9 @@ class QuestService:
                 "f4100-DestroyWorldsHeart-01-n",
                 "f4100-DestroyWorldsHeart-06-n",
             ),
+            # Kavlin Lefve's defense scene is not simulated; accepting the
+            # quest should mark its authored hold-ground objective complete.
+            "g0001_beach_01_dun": ("g0001-InvestigateCorruption-01-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
