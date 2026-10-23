@@ -18,6 +18,7 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
 from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.map_difficulty_state import map_teleport_access_group_override
 from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 
@@ -534,6 +535,14 @@ class MapTransitionService:
                                 if (
                                     active_dest.physical_map_id.casefold()
                                     == clicked_dest.physical_map_id.casefold()
+                                    or (
+                                        gameplay_map.casefold() == "f4202_dun"
+                                        and clicked_dest.access_group_id.casefold()
+                                        == map_teleport_access_group_override(
+                                            self.static_database_path,
+                                            active_dest.physical_map_id,
+                                        ).casefold()
+                                    )
                                 ):
                                     candidates = (active_exit,)
                                     break
@@ -661,6 +670,12 @@ class MapTransitionService:
                     authored_exit_url,
                     player_level=player_level,
                 )
+                teleport_access_group_override = (
+                    map_teleport_access_group_override(
+                        self.static_database_path,
+                        authored_access.physical_map_id,
+                    ).casefold()
+                )
                 if request_exit_url != authored_exit_url:
                     try:
                         request_access = resolve_map_access(
@@ -670,17 +685,23 @@ class MapTransitionService:
                         )
                     except ValueError:
                         request_access = None
-                    if (
-                        request_access is None
-                        or (
-                            request_access.physical_map_id.casefold()
-                            != authored_access.physical_map_id.casefold()
+                    request_access_matches = bool(
+                        request_access is not None
+                        and (
+                            (
+                                request_access.physical_map_id.casefold()
+                                == authored_access.physical_map_id.casefold()
+                                and request_access.access_group_id.casefold()
+                                == authored_access.access_group_id.casefold()
+                            )
+                            or (
+                                teleport_access_group_override
+                                and request_access.access_group_id.casefold()
+                                == teleport_access_group_override
+                            )
                         )
-                        or (
-                            request_access.access_group_id.casefold()
-                            != authored_access.access_group_id.casefold()
-                        )
-                    ):
+                    )
+                    if not request_access_matches:
                         raise ValueError(
                             f"request ExitURL {request_exit_url!r} does not match "
                             f"authored exit destination {authored_exit_url!r}"
@@ -695,12 +716,17 @@ class MapTransitionService:
                         f"selected MapId {selected_map_id!r} is not a "
                         "concrete map access"
                     )
-                if (
+                selected_access_matches = (
                     selected_access.access_group_id.casefold()
-                    != authored_access.access_group_id.casefold()
-                    or selected_access.physical_map_id.casefold()
-                    != authored_access.physical_map_id.casefold()
-                ):
+                    == authored_access.access_group_id.casefold()
+                    and selected_access.physical_map_id.casefold()
+                    == authored_access.physical_map_id.casefold()
+                ) or bool(
+                    teleport_access_group_override
+                    and selected_access.access_group_id.casefold()
+                    == teleport_access_group_override
+                )
+                if not selected_access_matches:
                     raise ValueError(
                         f"selected MapId {selected_map_id!r} is not a "
                         f"tier of exit destination "

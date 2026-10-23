@@ -754,6 +754,7 @@ def load_local_map_exits(
 _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # These maps author a separate scene exit for every access difficulty.
     # Crypt of Kings has both a return gate and a boss gate.
+    "f4202_dun": ("f4203_boss", "f4203_boss_scale"),
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
     # Duria's cult-tower route also authors one scene exit per difficulty.
@@ -898,6 +899,42 @@ def _exit_info_entries_for_access(
     emitted_names = set()
     for selected in selected_exits:
         group = access_groups.get(selected.destination_map_id)
+        if (
+            str(map_id).casefold() == "f4202_dun"
+            and selected.destination_map_id.casefold().startswith("f4203_boss")
+        ):
+            # The teleportarium's normal and scaling access groups author
+            # separate exits at one scene position. Route all their cached
+            # names through the single normal exit; its access window exposes
+            # the difficulty choices without stacking clickable portals.
+            aliases = tuple(
+                candidate
+                for candidate in all_exits
+                if (
+                    candidate.destination_map_id.casefold().startswith("f4203_boss")
+                    and candidate.destination_entry_name
+                    == selected.destination_entry_name
+                    and all(
+                        abs(candidate.position[axis] - selected.position[axis])
+                        <= 1.0
+                        for axis in range(3)
+                    )
+                )
+            )
+            if not aliases:
+                aliases = (selected,)
+            for alias in aliases:
+                if alias.name in emitted_names:
+                    continue
+                is_selected = alias.instance_guid == selected.instance_guid
+                result.append(ExitInfoEntry(
+                    alias.name,
+                    selected.destination_map_id,
+                    int(selected.active and is_selected),
+                    selected.instance_guid,
+                ))
+                emitted_names.add(alias.name)
+            continue
         if group is None:
             result.append(ExitInfoEntry(
                 selected.name,
@@ -943,6 +980,8 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "f4102_dun": ("f4201_pve",),
     # Yildirimdbi's authored return exit leads back to Piritlidag.
     "f4201_pve": ("f4102_dun",),
+    # The boss teleportarium exits are authored but missing from the scene.
+    "f4202_dun": ("f4203_boss",),
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
     "a0402_culttower01": ("a0403_culttower02",),
