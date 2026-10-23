@@ -2441,6 +2441,11 @@ def _navigation_for_map(
             # separate components at the generic cutoff; a 0.75 m
             # connection restores the authored walkable route.
             "c2200_hub": 0.75,
+            # Fjalnir's Temple has an authored bridge whose walkable
+            # PathEngine portals are narrower than 1 m. The default cutoff
+            # isolates the player's approach triangle and movement validation
+            # repeatedly snaps the character backward at the bridge.
+            "g0005_temple_ice_02_dun": 0.8,
             # The Honor Barracks passage to B'Orlok is authored below 1 m.
             "c2202_pve": 0.9,
             # Cloud bridge connections are authored as very narrow PathEngine
