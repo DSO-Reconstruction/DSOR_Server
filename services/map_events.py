@@ -32,6 +32,7 @@ from dso_server.gameplay.fractured_planes_layout import (
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     active_local_map_event_flags,
+    _exit_info_entries_for_access,
     filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_npc_definitions,
@@ -3907,15 +3908,37 @@ class MapEventService:
                     entry_active = is_active
                 if is_active:
                     active_viewer_definitions.append(definition)
-                exit_entries.append(
+                exit_entries.append((definition, entry_active))
+            if parallel_world_boss_map:
+                # Boss rooms have a separate staged exit flow. Keep its
+                # explicit per-entry active override unchanged.
+                exit_info_entries = tuple(
                     ExitInfoEntry(
                         definition.name,
                         definition.destination_map_id,
                         int(entry_active),
                         definition.instance_guid,
                     )
+                    for definition, entry_active in exit_entries
                 )
-            exit_info = ExitInfo(tuple(exit_entries))
+            elif active_override is None:
+                exit_info_entries = _exit_info_entries_for_access(
+                    self.static_database_path,
+                    runtime.map_id,
+                    definitions,
+                    viewer_definitions,
+                )
+            else:
+                exit_info_entries = tuple(
+                    ExitInfoEntry(
+                        definition.name,
+                        definition.destination_map_id,
+                        int(entry_active),
+                        definition.instance_guid,
+                    )
+                    for definition, entry_active in exit_entries
+                )
+            exit_info = ExitInfo(exit_info_entries)
             packet, packet_bits = encode_server_command_batch(
                 (ServerCommand(
                     EXIT_INFO_COMMAND, exit_info, 0,
