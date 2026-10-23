@@ -41,7 +41,7 @@ def test_heredur_double_strike_aura_is_loaded_as_a_strike():
     strike = strikes["boss_heredur_aura_360smash"]
     assert strike.radius == pytest.approx(5.0)
     assert strike.delay_ticks == 19
-    assert strike.damage_programs == ((pytest.approx(0.5), "Physical"),)
+    assert strike.damage_programs == (("damage", pytest.approx(0.5), "Physical"),)
 
 
 def test_heredur_double_strike_hits_twice_and_the_second_blow_is_an_area():

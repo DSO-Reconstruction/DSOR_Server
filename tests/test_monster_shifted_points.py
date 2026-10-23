@@ -39,7 +39,8 @@ def _caster(map_id, skill):
 def test_herald_meteors_fall_on_each_player_in_reach():
     encounter, state, caster = _caster("a0604_heraldsslair", "Boss02HeraldSkill04")
     x, y, z = state.monster_positions[caster]
-    one, two, far = (x + 5.0, y, z), (x - 6.0, y, z), (x, y, z + 30.0)
+    # Beyond its 10.5 m Boss02Skill04Aura blow, within its 14 m reach.
+    one, two, far = (x + 12.0, y, z), (x - 13.0, y, z), (x, y, z + 30.0)
     wire = encounter.coordinate_frame.world_to_wire
     (cast,) = state.maybe_start_monster_attacks(
         wire(one), server_tick=5000, now=1000.0, target_actor_id=1,

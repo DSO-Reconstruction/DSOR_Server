@@ -875,8 +875,9 @@ class MonsterAuraStrike:
     resource_id: str
     radius: float
     delay_ticks: int
-    # (coefficient, damage type) per CurrHealthPointsDmg instruction.
-    damage_programs: tuple[tuple[float, str], ...]
+    # (kind, amount, damage type) per health-taking start instruction of its
+    # children, SEE: LocalCombatState._status_health_programs.
+    damage_programs: tuple[tuple[str, float, str], ...]
 
 
 @dataclass(frozen=True)
@@ -3580,9 +3581,10 @@ class LocalCombatState:
 
         ("damage", coefficient, type): CurrHealthPointsDmg relative, x the
         source's damage basis; ("absolute", amount, type): CurrHealthPointsDmg
-        without relative; ("health", fraction, type): a negative relative
-        CurrHealthPoints, that fraction of the victim's maximum health
-        (Boss01_b_FloodDamageEffect CurrHealthPoints:-0.1,relative,DarkMagic).
+        without relative, or a negative absolute CurrHealthPoints
+        (Boss02Skill04Damage -1000); ("health", fraction, type): a negative
+        relative CurrHealthPoints, that fraction of the victim's maximum
+        health (Boss01_b_FloodDamageEffect CurrHealthPoints:-0.1,relative).
         """
 
         programs = [
@@ -3603,17 +3605,18 @@ class LocalCombatState:
             amount = self._modifier_amount(
                 None, arguments[0], definition.values
             )
-            if (
-                amount is None
-                or amount >= 0.0
-                or not any(v.casefold() == "relative" for v in arguments[1:])
-            ):
+            if amount is None or amount >= 0.0:
                 continue
             damage_type = next(
                 (v for v in arguments[1:] if v.casefold() in DAMAGE_TYPE_IDS),
                 "Physical",
             )
-            programs.append(("health", min(1.0, -float(amount)), damage_type))
+            if any(v.casefold() == "relative" for v in arguments[1:]):
+                programs.append(
+                    ("health", min(1.0, -float(amount)), damage_type)
+                )
+            else:
+                programs.append(("absolute", -float(amount), damage_type))
         return tuple(programs)
 
     def resolve_monster_location_auras(
@@ -5017,9 +5020,12 @@ class LocalCombatState:
     ) -> dict[str, MonsterAuraStrike]:
         """Find the one-shot damaging enemy auras among user effects.
 
-        SEE: MonsterAuraStrike. Persistent auras (a duration, e.g. fire_aura
-        D:5), ally/creator/summoner auras and children without a relative
-        CurrHealthPointsDmg (heals, buffs, slows) are left out.
+        SEE: MonsterAuraStrike. Ally/creator/summoner auras, children
+        without a health-taking start instruction (heals, buffs, slows) and
+        persistent auras whose children tick (fire_aura D:5, Khalys's beam)
+        are left out; an aura with a duration whose children only strike on
+        start lands once (e_ks_boss_eye_360_aura D 1.6:
+        CurrHealthPoints:-0.8,relative, 80% of maximum health).
         """
 
         strikes: dict[str, MonsterAuraStrike] = {}
@@ -5033,17 +5039,21 @@ class LocalCombatState:
                 if (
                     aura.aura_radius <= 0.0
                     or aura.aura_targets.strip().casefold() != "enemies"
-                    or aura.duration_ticks > 0
+                ):
+                    continue
+                children = self._load_location_aura_effects(database, entry)
+                if aura.duration_ticks > 0 and any(
+                    self._status_health_programs(child, ticks=True)
+                    for child in children
                 ):
                     continue
                 programs = tuple(
-                    (coefficient, damage_type)
-                    for child in self._load_location_aura_effects(
-                        database, entry
+                    program
+                    for child in children
+                    for program in self._status_health_programs(
+                        child, ticks=False
                     )
-                    for coefficient, damage_type, relative
-                    in self._status_damage_programs(child, ticks=False)
-                    if relative and coefficient > 0.0
+                    if program[1] > 0.0
                 )
                 if programs:
                     strikes[aura.resource_id] = MonsterAuraStrike(
@@ -11726,7 +11736,7 @@ class LocalCombatState:
                 weighted = (
                     tuple(
                         (damage_type, coefficient)
-                        for coefficient, damage_type
+                        for _kind, coefficient, damage_type
                         in aura_strike.damage_programs
                     )
                     if aura_strike is not None
@@ -11780,7 +11790,7 @@ class LocalCombatState:
                 * (
                     sum(
                         coefficient
-                        for coefficient, _damage_type
+                        for _kind, coefficient, _damage_type
                         in aura_strike.damage_programs
                     )
                     if aura_strike is not None
@@ -11805,6 +11815,20 @@ class LocalCombatState:
                 if raw_damage > 0.0
                 else 0
             )
+            if aura_strike is not None and not targets_monster:
+                # Its own programs: x the damage basis, a share of the
+                # player's maximum health, or an absolute amount.
+                damage = self._monster_aura_program_damage(
+                    actor_id,
+                    aura_strike.damage_programs,
+                    self.player_health.get(
+                        player_actor_id,
+                        [self.player_maximum_health,
+                         self.player_maximum_health],
+                    )[1],
+                    incoming_damage_multiplier,
+                    current_time,
+                )
             if damage <= 0:
                 continue
             if targets_monster:
