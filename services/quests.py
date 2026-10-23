@@ -1735,6 +1735,9 @@ class QuestService:
             # Arnox's protection scene is not simulated; accepting this quest
             # should mark its authored hold-ground objective as defended.
             "f4201_pve": ("f4201-NotSafeAnymore-03-n",),
+            # The imprisoned Technikus defense scene is not simulated; accept
+            # the authored hold-ground objective when its quest starts.
+            "f4202_dun": ("f4100-DestroyWorldsHeart-01-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
