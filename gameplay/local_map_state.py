@@ -789,6 +789,14 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # Time Rift and Atlantis Above Water also author matching exits per tier.
     "c2302_dun": ("c2303_dun",),
     "c2303_dun": ("c2302_dun", "c2304_boss"),
+    # The Spiky Valley treasure-cave gate has one overlapping scene exit per
+    # difficulty. Only expose the exit matching the current Valley access.
+    "h0006_valley_dun": ("h0007_treasure_cave_dun",),
+    # The cave authors matching difficulty variations for its return gate and
+    # for its internal routes back to other treasure-cave access instances.
+    "h0007_treasure_cave_dun": (
+        "h0006_valley_dun", "h0007_treasure_cave_dun",
+    ),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
