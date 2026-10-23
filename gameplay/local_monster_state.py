@@ -153,6 +153,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Okeanos's Opal Temple has its water guardian at NPC row 1 while the
     # Toltac Shaman occupies monster slot 0. Keep them in separate slots.
     "g0006_temple_water_01_dun",
+    # The Cradle of Life's client scene registers authored guardian
+    # SpawnPoints in the ordinary actor range. Keep the Life Guardian and
+    # server-spawned monsters in the secondary range to prevent collisions.
+    "g0010_temple_life_01_dun",
     # Sunset has Ozzlan as authored SpawnPoint row 1. The client scene can
     # register that row at 0x30000, hiding the server's first monster actor.
     "g0004_corrupted_jungle_01_pve",

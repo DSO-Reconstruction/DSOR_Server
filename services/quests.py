@@ -420,6 +420,7 @@ class QuestService:
 
     def _quest_on_map_entered(self, s: Session) -> None:
         self._quest_recover_myrdosch_access_key(s)
+        self._quest_recover_artaya_sanctuary_key(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -699,6 +700,43 @@ class QuestService:
         ))
         CharacterService._request_account_save(
             s, "recovered Andrakas access key", flush=True,
+        )
+
+    def _quest_recover_artaya_sanctuary_key(self, s: Session) -> None:
+        """Restore Artaya's key when its guardian was killed before the guaranteed drop."""
+
+        quest_id = "g0003-TempleOfLife-01-n"
+        key_id = "key_from_g0010_to_g0015"
+        with s.flow_lock:
+            if map_key("g0015_temple_life_md_01") in s.gameplay_unlocked_maps:
+                return
+            inventory = s.gameplay_inventory
+            if inventory is None or any(
+                str(item.template_id).casefold() == key_id
+                for item in inventory.items
+            ):
+                return
+            progress = next(
+                (value for quest, value in _quest_log(s).items()
+                 if quest.casefold() == quest_id.casefold()),
+                None,
+            )
+            if (
+                progress is None
+                or progress.state != QUEST_STATE_ACCEPTED
+                or int(progress.tokens.get(
+                    "g0003-TempleOfLife-01-kill-01Kill", 0
+                )) < 1
+            ):
+                return
+        quest = self._quest_catalog().quest(quest_id)
+        if quest is None:
+            return
+        self._quest_grant_inventory_drops(s, quest, (
+            Drop(key_id, 1, 1.0, True),
+        ))
+        CharacterService._request_account_save(
+            s, "recovered Artaya sanctuary key", flush=True,
         )
 
     # ------------------------------------------------------------------
@@ -2046,6 +2084,26 @@ class QuestService:
             template = str(getattr(monster, "template_id", ""))
             if template:
                 counts[template] = counts.get(template, 0) + 1
+                if template.casefold() in {
+                    "g0010_leader_guardian_life_01",
+                    "g0010_leader_guardian_life_01_scale",
+                }:
+                    # The guardian's special loot list is not included in
+                    # exported server data. Guarantee its sanctuary key on
+                    # the authoritative player-kill callback.
+                    self._deliver_rewards(
+                        s,
+                        (RewardDefinition(
+                            "monster:g0010_artaya_sanctuary_key",
+                            "key_from_g0010_to_g0015",
+                            1,
+                        ),),
+                        claim_keys=None,
+                        label="monster-loot",
+                    )
+                    CharacterService._request_account_save(
+                        s, "Artaya sanctuary key drop", flush=True,
+                    )
                 combat = s.gameplay_combat_state
                 position = getattr(monster, "position", None)
                 if combat is not None:
