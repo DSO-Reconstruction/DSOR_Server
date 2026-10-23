@@ -476,6 +476,44 @@ class GatedSpawnRow:
     template_id: str
     position: tuple[float, float, float]
     rotation: float = 0.0
+    # ``MapVariation`` family and difficulty tier (variationType 1) of the
+    # spawn point's parent node; 0/0 when it belongs to no variation.
+    variation_group: int = 0
+    variation_difficulty: int = 0
+
+
+def select_variation_spawn_rows(
+    rows: Iterable[GatedSpawnRow], difficulty: int,
+) -> tuple[GatedSpawnRow, ...]:
+    """Keep, of each MapVariation family, only the instance's tier.
+
+    The Herald's lair authors its boss_start broodlings once per tier (4 on
+    tier 0, 6 on 1-3, 8 on 4-10: 78 rows under one EventSet); opening the set
+    spawned them all at once. A family without the exact tier takes its
+    highest tier below it, else its lowest (an assumption: no retail trace
+    of a family with gaps).
+    """
+
+    rows = tuple(rows)
+    tiers: dict[int, set[int]] = {}
+    for row in rows:
+        if row.variation_group:
+            tiers.setdefault(row.variation_group, set()).add(
+                row.variation_difficulty
+            )
+    difficulty = max(0, int(difficulty))
+    chosen = {
+        group: max(
+            (value for value in values if value <= difficulty),
+            default=min(values),
+        )
+        for group, values in tiers.items()
+    }
+    return tuple(
+        row for row in rows
+        if not row.variation_group
+        or chosen[row.variation_group] == row.variation_difficulty
+    )
 
 
 @dataclass(frozen=True)
@@ -906,9 +944,13 @@ def _load_map_event_content(
         )
 
         spawn_rows = []
-        for row_id, transform, template_id, event_set_row in database.execute(
+        spawn_variations = _map_variations(path)
+        for (
+            row_id, transform, template_id, event_set_row, parent_node_index,
+        ) in database.execute(
             """
-            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1)
+            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1),
+                   COALESCE(ParentNodeIndex, 0)
             FROM _Instance_SpawnPoint
             WHERE TRIM(COALESCE(NpcId, ''))<>''
               AND COALESCE(AlliedToPlayer, 0)=0
@@ -920,9 +962,14 @@ def _load_map_event_content(
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
                 continue
+            variation_group, variation_difficulty = spawn_variations.get(
+                int(parent_node_index or 0), (0, 0)
+            )
             spawn_rows.append(GatedSpawnRow(
                 int(row_id), int(event_set_row), str(template_id).strip(),
                 position, rotation,
+                variation_group=variation_group,
+                variation_difficulty=variation_difficulty,
             ))
         if map_key(map_id) == "h0004_temple_dun":
             # The Hunt for a Legend sandhill phase stores its Sandsnake
@@ -1460,10 +1507,13 @@ class MapEventRuntime:
     def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
         """Gated monster rows for these sets, minus tiers this instance lacks."""
 
-        return tuple(
-            row for row in self.content.spawn_rows_for_sets(rows)
-            if not bloodshed_only_template(row.template_id)
-            or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
+        return select_variation_spawn_rows(
+            (
+                row for row in self.content.spawn_rows_for_sets(rows)
+                if not bloodshed_only_template(row.template_id)
+                or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
+            ),
+            self.scaling_difficulty,
         )
 
     def select_props(
