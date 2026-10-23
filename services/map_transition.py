@@ -531,6 +531,40 @@ class MapTransitionService:
                                 ):
                                     candidates = (active_exit,)
                                     break
+                    # The first route from Misty Ridge to Andrakas is an
+                    # inactive scene exit (`exit_key_lock`), rather than an
+                    # exit activated by a local event. The client still sends
+                    # UnlockMap for that authored exit when the player has its
+                    # access key. Once Andrakas has been visited, the saved
+                    # map discovery is enough to use the route again.
+                    if (
+                        not candidates
+                        and gameplay_map.casefold() == "f4101_pve"
+                        and clicked_authored.exit_id.casefold() == "exit_key_lock"
+                        and clicked_dest is not None
+                        and clicked_dest.physical_map_id.casefold() == "f4100_hub"
+                    ):
+                        key_id = "key_from_f4101_to_f4100"
+                        known_maps = {
+                            map_key(value)
+                            for value in getattr(s, "gameplay_unlocked_maps", ())
+                        }
+                        already_discovered = bool(known_maps.intersection({
+                            map_key(clicked_dest.request_map_id),
+                            map_key(clicked_dest.access_group_id),
+                            map_key(clicked_dest.physical_map_id),
+                        }))
+                        with s.flow_lock:
+                            inventory = s.gameplay_inventory
+                            has_access_key = bool(
+                                inventory is not None
+                                and any(
+                                    str(item.template_id).casefold() == key_id
+                                    for item in inventory.items
+                                )
+                            )
+                        if has_access_key or already_discovered:
+                            candidates = (clicked_authored,)
             if not candidates:
                 raise ValueError(
                     f"unknown or unavailable exit {request.exit_id!r}"
