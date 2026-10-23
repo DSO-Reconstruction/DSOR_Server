@@ -64,6 +64,26 @@ def _physical_map_for_access_group(
     return str(row[0]) if row is not None else str(access_group_id)
 
 
+def map_teleport_access_group_override(
+    static_database_path: str | Path,
+    map_id: str,
+) -> str:
+    """Return the access group exposed by a map's teleport access window."""
+
+    with _open_read_only(static_database_path) as database:
+        row = database.execute(
+            """
+            SELECT COALESCE(TeleportAccessGroupOverride, '')
+            FROM _Template_MapTemplate
+            WHERE MapTemplate=? OR AccessGroup=?
+            ORDER BY CASE WHEN MapTemplate=? THEN 0 ELSE 1 END, rowid
+            LIMIT 1
+            """,
+            (str(map_id), str(map_id), str(map_id)),
+        ).fetchone()
+    return str(row[0] or "") if row is not None else ""
+
+
 def _default_heroic_access(
     database: sqlite3.Connection,
     physical_map_id: str,

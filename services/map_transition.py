@@ -18,10 +18,17 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
 from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.map_difficulty_state import map_teleport_access_group_override
 from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 
 LOGOUT_COUNTDOWN_SECONDS = 10.0
+
+# This regional route can report the client's current f4102 map as ExitURL
+# while the selected MapId or server route points at the hub.
+_LEGACY_EXIT_URL_REDIRECTS = {
+    ("f4102_dun", "f4102_exit_to_f4100"): ("f4100_hub", "f4102_dun"),
+}
 
 
 class MapTransitionService:
@@ -528,9 +535,58 @@ class MapTransitionService:
                                 if (
                                     active_dest.physical_map_id.casefold()
                                     == clicked_dest.physical_map_id.casefold()
+                                    or (
+                                        gameplay_map.casefold() == "f4202_dun"
+                                        and clicked_dest.access_group_id.casefold()
+                                        == map_teleport_access_group_override(
+                                            self.static_database_path,
+                                            active_dest.physical_map_id,
+                                        ).casefold()
+                                    )
                                 ):
                                     candidates = (active_exit,)
                                     break
+                    # These regional routes are authored as inactive locked
+                    # exits, but the client still sends UnlockMap for the
+                    # clicked scene entity. The server should accept that
+                    # request with its matching access key, then remember the
+                    # destination after entry so later trips no longer need it.
+                    keyed_routes = {
+                        ("f4101_pve", "f4100_hub"): "key_from_f4101_to_f4100",
+                        ("f4102_dun", "f4201_pve"): "key_from_f4102_to_f4201",
+                        ("f4201_pve", "f4202_dun"): "key_from_f4201_to_f4202",
+                    }
+                    required_key = keyed_routes.get((
+                        gameplay_map.casefold(),
+                        clicked_dest.physical_map_id.casefold()
+                        if clicked_dest is not None else "",
+                    ))
+                    if (
+                        not candidates
+                        and clicked_authored.exit_id.casefold() == "exit_key_lock"
+                        and clicked_dest is not None
+                        and required_key is not None
+                    ):
+                        known_maps = {
+                            map_key(value)
+                            for value in getattr(s, "gameplay_unlocked_maps", ())
+                        }
+                        already_discovered = bool(known_maps.intersection({
+                            map_key(clicked_dest.request_map_id),
+                            map_key(clicked_dest.access_group_id),
+                            map_key(clicked_dest.physical_map_id),
+                        }))
+                        with s.flow_lock:
+                            inventory = s.gameplay_inventory
+                            has_access_key = bool(
+                                inventory is not None
+                                and any(
+                                    str(item.template_id).casefold() == required_key
+                                    for item in inventory.items
+                                )
+                            )
+                        if has_access_key or already_discovered:
+                            candidates = (clicked_authored,)
             if not candidates:
                 raise ValueError(
                     f"unknown or unavailable exit {request.exit_id!r}"
@@ -563,11 +619,28 @@ class MapTransitionService:
             authored_exit_url = str(definition.destination_map_id)
             selected_map_id = str(request.map_id)
             request_exit_url = str(request.exit_url)
+            redirect = _LEGACY_EXIT_URL_REDIRECTS.get((
+                gameplay_map.casefold(), definition.name.casefold(),
+            ))
+            redirected_destination = (
+                redirect[0]
+                if (
+                    redirect is not None
+                    and authored_exit_url.casefold() == redirect[0].casefold()
+                    and request_exit_url.casefold() == redirect[1].casefold()
+                    and selected_map_id.casefold() in {
+                        redirect[0].casefold(), redirect[1].casefold(),
+                    }
+                )
+                else None
+            )
             current_map_representation = (
                 selected_map_id == gameplay_map
                 and request_exit_url == gameplay_map
             )
-            if (
+            if redirected_destination is not None:
+                destination_access_id = redirected_destination
+            elif (
                 self._is_fractured_planes_rift(definition)
                 and CharacterService._is_fractured_planes_run(self, s)
             ):
@@ -597,6 +670,12 @@ class MapTransitionService:
                     authored_exit_url,
                     player_level=player_level,
                 )
+                teleport_access_group_override = (
+                    map_teleport_access_group_override(
+                        self.static_database_path,
+                        authored_access.physical_map_id,
+                    ).casefold()
+                )
                 if request_exit_url != authored_exit_url:
                     try:
                         request_access = resolve_map_access(
@@ -606,17 +685,23 @@ class MapTransitionService:
                         )
                     except ValueError:
                         request_access = None
-                    if (
-                        request_access is None
-                        or (
-                            request_access.physical_map_id.casefold()
-                            != authored_access.physical_map_id.casefold()
+                    request_access_matches = bool(
+                        request_access is not None
+                        and (
+                            (
+                                request_access.physical_map_id.casefold()
+                                == authored_access.physical_map_id.casefold()
+                                and request_access.access_group_id.casefold()
+                                == authored_access.access_group_id.casefold()
+                            )
+                            or (
+                                teleport_access_group_override
+                                and request_access.access_group_id.casefold()
+                                == teleport_access_group_override
+                            )
                         )
-                        or (
-                            request_access.access_group_id.casefold()
-                            != authored_access.access_group_id.casefold()
-                        )
-                    ):
+                    )
+                    if not request_access_matches:
                         raise ValueError(
                             f"request ExitURL {request_exit_url!r} does not match "
                             f"authored exit destination {authored_exit_url!r}"
@@ -631,12 +716,17 @@ class MapTransitionService:
                         f"selected MapId {selected_map_id!r} is not a "
                         "concrete map access"
                     )
-                if (
+                selected_access_matches = (
                     selected_access.access_group_id.casefold()
-                    != authored_access.access_group_id.casefold()
-                    or selected_access.physical_map_id.casefold()
-                    != authored_access.physical_map_id.casefold()
-                ):
+                    == authored_access.access_group_id.casefold()
+                    and selected_access.physical_map_id.casefold()
+                    == authored_access.physical_map_id.casefold()
+                ) or bool(
+                    teleport_access_group_override
+                    and selected_access.access_group_id.casefold()
+                    == teleport_access_group_override
+                )
+                if not selected_access_matches:
                     raise ValueError(
                         f"selected MapId {selected_map_id!r} is not a "
                         f"tier of exit destination "

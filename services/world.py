@@ -52,6 +52,19 @@ _TEGAN_GRAVE_SMITH_TEMPLATE = (
 )
 _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
 _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
+_MISTY_RIDGE_MAP = "f4101_pve"
+_MISTY_RIDGE_GREAT_GNOME_SHAMAN_TEMPLATE = (
+    "f4101_normal_s_gnome_shaman_thegreatelevator_02"
+)
+_PIRILTIDAG_MAP = "f4102_dun"
+_PIRILTIDAG_SLAVKOFF_TEMPLATE = (
+    "f4102_normal_g_dark_dwarf_q_reconnaissance05"
+)
+# The authored Slavkoff spawn is about 157 units from the map entry. Send his
+# mob payload before vicinity registration so the client does not leave the
+# scene actor as an unrendered placeholder if it skips ActorRequest.
+_PIRILTIDAG_SLAVKOFF_VISIBILITY_ENTER_RADIUS = 250.0
+_PIRILTIDAG_SLAVKOFF_VISIBILITY_EXIT_RADIUS = 275.0
 _TIME_HARP_MAP = "c2302_dun"
 _TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
     "c2302_normal_g_gorgon_q_templeofeternity_03a",
@@ -170,6 +183,18 @@ class WorldService:
                 _FORTRESS_GRIMMAG_VISIBILITY_EXIT_RADIUS
                 if exiting
                 else _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS
+            )
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _PIRILTIDAG_MAP
+            and monster is not None
+            and monster.template_id.casefold()
+            == _PIRILTIDAG_SLAVKOFF_TEMPLATE
+        ):
+            return (
+                _PIRILTIDAG_SLAVKOFF_VISIBILITY_EXIT_RADIUS
+                if exiting
+                else _PIRILTIDAG_SLAVKOFF_VISIBILITY_ENTER_RADIUS
             )
         if (
             encounter is not None
@@ -776,6 +801,16 @@ class WorldService:
                                 encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _TEGAN_GRAVE_SMITH_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _MISTY_RIDGE_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _MISTY_RIDGE_GREAT_GNOME_SHAMAN_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _PIRILTIDAG_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _PIRILTIDAG_SLAVKOFF_TEMPLATE
                             )
                             or (
                                 encounter.map_id.casefold() == _TIME_HARP_MAP

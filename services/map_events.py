@@ -38,6 +38,7 @@ from dso_server.gameplay.local_map_state import (
     local_npc_actor_id,
     local_npc_info,
     map_database_path,
+    native_scene_exit_variation_entries,
 )
 from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS,
@@ -97,12 +98,17 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.protocol.player_init_protocol import (
     EXIT_INFO_COMMAND,
     KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
+    OBSTACLE_UPDATE_COMMAND,
+    VARIATION_INFO_COMMAND,
     EventUpdate,
     EventUpdateEntry,
     ExitInfo,
     ExitInfoEntry,
     KickOutToHubLimitTimeLeft,
+    ObstacleState,
+    ObstacleUpdate,
     ServerCommand,
+    VariationInfo,
     encode_event_update,
     encode_endless_tower_progress,
     encode_endless_tower_buffs,
@@ -635,6 +641,7 @@ EVENT_SPAWN_DUPLICATE_RADIUS = 1.5
 _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
+    "f4203_boss_06_ram",
     # The Lythira spawn transform is the boss's authored arena position and
     # can be outside the ordinary vicinity radius from the entry point.
     "fp_boss_01_lythira",
@@ -2254,6 +2261,11 @@ class MapEventService:
         self._fire_map_signal(
             s, "PlayerEnteredMapId", (access_group, access_id, runtime.map_id)
         )
+        # Retail requires generator interactions before its ram mechanism
+        # spawns the machine that breaks the boss arena entrance. The server
+        # does not implement those custom prop modules, so complete that step
+        # when a player enters this arena.
+        self._spawn_f4203_ram_on_entry(s, runtime)
         if (
             CharacterService._is_fractured_planes_run(self, s)
             and map_key(runtime.map_id) == "fp0001_boss_01"
@@ -3079,6 +3091,243 @@ class MapEventService:
                 f"{type(exc).__name__}: {exc}"
             )
 
+    def _spawn_f4203_ram_on_entry(self, s, runtime) -> None:
+        """Start Crypt of Kings' scripted ram run toward the arena gate."""
+
+        if map_key(runtime.map_id) != "f4203_boss":
+            return
+        try:
+            # The arena door belongs to the boss06_phase_0 EventSet. The
+            # scripted ram bypasses the retail generator interaction, so start
+            # that authored phase here as well; otherwise the obstacle is not
+            # instantiated and clients reject the ram's state update.
+            gate_event = runtime.catalog.event("boss06_phase_0")
+            if gate_event is None:
+                _log("Crypt of Kings boss gate event boss06_phase_0 is missing")
+                return
+            with runtime.lock:
+                gate_event_running = gate_event.key in runtime.running
+            if not gate_event_running:
+                self._start_map_local_event(runtime, gate_event)
+
+            map_path = map_database_path(self.static_database_path, runtime.map_id)
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True
+            )) as map_database:
+                mechanism = map_database.execute(
+                    "SELECT COALESCE(MechanismId, '') "
+                    "FROM _Instance_StateObject "
+                    "WHERE lower(COALESCE(_Level, ''))=? "
+                    "AND lower(COALESCE(Id, ''))='boss06_ram_spawn_socket' "
+                    "ORDER BY rowid LIMIT 1",
+                    (map_key(runtime.map_id),),
+                ).fetchone()
+                route = map_database.execute(
+                    "SELECT rowid, Transform FROM _Instance_Waypoint "
+                    "WHERE lower(COALESCE(_Level, ''))=? "
+                    "AND lower(COALESCE(PathName, ''))='ram' "
+                    "ORDER BY WayPointIndex, rowid",
+                    (map_key(runtime.map_id),),
+                ).fetchall()
+                door = map_database.execute(
+                    "SELECT EventSetRow, COALESCE(Name, '') "
+                    "FROM _Instance_Obstacle "
+                    "WHERE lower(COALESCE(_Level, ''))=? "
+                    "AND lower(COALESCE(Id, ''))='state_boss_door_01' "
+                    "ORDER BY rowid LIMIT 1",
+                    (map_key(runtime.map_id),),
+                ).fetchone()
+            if mechanism is None or not route or door is None:
+                _log(f"Crypt of Kings ram route or boss door is missing on {runtime.map_id}")
+                return
+            with closing(sqlite3.connect(
+                f"file:{Path(self.static_database_path).as_posix()}?mode=ro", uri=True
+            )) as static_database:
+                monster = static_database.execute(
+                    "SELECT COALESCE(MonsterId, '') "
+                    "FROM _Template_PropMechanism WHERE Id=? LIMIT 1",
+                    (str(mechanism[0] or "").strip(),),
+                ).fetchone()
+            monster_id = str(monster[0] or "").strip() if monster else ""
+            if not monster_id:
+                _log(
+                    f"Crypt of Kings ram mechanism {mechanism[0]!r} has no monster"
+                )
+                return
+            try:
+                start_matrix = struct.unpack("<16f", bytes(route[0][1]))
+                goal_matrix = struct.unpack("<16f", bytes(route[-1][1]))
+                position = tuple(float(start_matrix[i]) for i in (12, 13, 14))
+                goal_position = tuple(float(goal_matrix[i]) for i in (12, 13, 14))
+            except (TypeError, ValueError, struct.error) as exc:
+                _log(f"Crypt of Kings ram route has invalid transform: {exc}")
+                return
+            if _load_runtime_definition(self.static_database_path, monster_id, 0) is None:
+                _log(f"Crypt of Kings ram monster template {monster_id!r} is unavailable")
+                return
+            row = GatedSpawnRow(
+                -2_100_000 - int(route[0][0]), -1, monster_id, position,
+            )
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            self._spawn_event_monsters(runtime, sessions, (), extra_rows=(row,))
+
+            combat = self._map_event_combat_state(sessions)
+            if combat is None:
+                _log(f"Crypt of Kings ram has no combat state on {runtime.map_id}")
+                return
+            with combat.lock:
+                ram_actor_ids = tuple(sorted(
+                    actor_id for actor_id, actor in combat.monsters.items()
+                    if actor.template_id.casefold() == monster_id.casefold()
+                    and combat.monster_health.get(actor_id, 0) > 0
+                ))
+                if not ram_actor_ids:
+                    _log(f"Crypt of Kings ram actor {monster_id!r} was not materialized")
+                    return
+                ram_actor_id = ram_actor_ids[0]
+                combat.scripted_monster_targets[ram_actor_id] = goal_position
+
+            with runtime.lock:
+                runtime.f4203_ram_actor_id = ram_actor_id
+                runtime.f4203_ram_goal = goal_position
+                runtime.f4203_ram_door_event_set_row = int(door[0])
+                runtime.f4203_ram_door_obstacle_id = (
+                    str(door[1] or "").strip() or "door_01"
+                )
+                should_start_path_check = not (
+                    runtime.f4203_ram_path_started
+                    or runtime.f4203_ram_gate_opened
+                )
+                runtime.f4203_ram_path_started = True
+                gate_already_open = runtime.f4203_ram_gate_opened
+                impact_already_started = runtime.f4203_ram_impact_started
+            if gate_already_open:
+                self._open_f4203_ram_gate(runtime, sessions)
+                return
+            if impact_already_started:
+                self._publish_f4203_ram_obstacle_state(
+                    runtime, sessions, 1, label="f4203-ram-gate-break",
+                )
+                return
+            if should_start_path_check:
+                scheduler = getattr(runtime, "scheduler", None)
+                if scheduler is None:
+                    _log("Crypt of Kings ram route has no map scheduler")
+                    return
+                timer = scheduler.timer(
+                    0.25, self._check_f4203_ram_impact, args=(runtime,),
+                )
+                timer.start()
+            _log(
+                f"Crypt of Kings ram started its authored run: "
+                f"actor={ram_actor_id}, from={position!r}, to={goal_position!r}"
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+            _log(
+                f"Crypt of Kings ram spawn failed on {runtime.map_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+    def _check_f4203_ram_impact(self, runtime) -> None:
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        with runtime.lock:
+            if runtime.f4203_ram_gate_opened:
+                return
+            actor_id = runtime.f4203_ram_actor_id
+            goal = runtime.f4203_ram_goal
+        sessions = self._map_event_sessions(runtime)
+        combat = self._map_event_combat_state(sessions)
+        if actor_id is None or goal is None or combat is None:
+            return
+        with combat.lock:
+            position = combat.monster_positions.get(actor_id)
+            alive = combat.monster_health.get(actor_id, 0) > 0
+        if not alive or position is None:
+            return
+        # The authored final waypoint is several metres outside the door's
+        # obstacle origin. The ram can also be stopped by the gate collision
+        # before reaching that exact point, so treat the approach zone as the
+        # impact point instead of waiting for an unreachable 3 m radius.
+        if math.hypot(position[0] - goal[0], position[2] - goal[2]) <= 6.0:
+            self._start_f4203_ram_impact(runtime, sessions)
+            _log(
+                f"Crypt of Kings ram struck the boss gate at "
+                f"{tuple(round(value, 2) for value in position)!r}"
+            )
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is not None:
+            timer = scheduler.timer(
+                0.25, self._check_f4203_ram_impact, args=(runtime,),
+            )
+            timer.start()
+
+    def _start_f4203_ram_impact(self, runtime, sessions) -> None:
+        with runtime.lock:
+            if runtime.f4203_ram_impact_started or runtime.f4203_ram_gate_opened:
+                return
+            runtime.f4203_ram_impact_started = True
+        # `goinginactive` plays the authored five-second metal-gate collapse
+        # animation. Complete to `inactive` afterward so the opening cannot
+        # get stranded if a client misses the animation's final transition.
+        self._publish_f4203_ram_obstacle_state(
+            runtime, sessions, 1, label="f4203-ram-gate-impact",
+        )
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            self._open_f4203_ram_gate(runtime, sessions)
+            return
+        timer = scheduler.timer(
+            5.0, self._open_f4203_ram_gate, args=(runtime, tuple(sessions)),
+        )
+        timer.start()
+
+    def _publish_f4203_ram_obstacle_state(
+            self, runtime, sessions, state: int, *, label: str) -> None:
+        with runtime.lock:
+            obstacle_id = runtime.f4203_ram_door_obstacle_id or "door_01"
+        packet, packet_bits = encode_server_command_batch((
+            ServerCommand(
+                OBSTACLE_UPDATE_COMMAND,
+                ObstacleUpdate((ObstacleState(obstacle_id, state),)),
+                LOCAL_PLAYER_ACTOR_ID,
+            ),
+        ))
+        for viewer in sessions:
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits, label=label,
+            )
+
+    def _open_f4203_ram_gate(self, runtime, sessions) -> None:
+        with runtime.lock:
+            door_event_set_row = runtime.f4203_ram_door_event_set_row
+            runtime.f4203_ram_gate_opened = True
+            runtime.initial_flags = frozenset(
+                flag for flag in runtime.initial_flags
+                if flag != "boss06_phase_0"
+            )
+            if door_event_set_row is not None:
+                runtime.suppress_event_sets((door_event_set_row,))
+        update = EventUpdate((EventUpdateEntry(
+            event_id=0,
+            event_name="boss06_phase_0",
+            flags=(False, True, False, False),
+            starts_at=None,
+            ends_at=None,
+            tags=(),
+        ),))
+        packet, packet_bits = encode_event_update(update)
+        for viewer in sessions:
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits, label="f4203-ram-gate-break"
+            )
+        self._publish_f4203_ram_obstacle_state(
+            runtime, sessions, 2, label="f4203-ram-gate-open",
+        )
+
     # ------------------------------------------------------------------
     # Event transitions
     # ------------------------------------------------------------------
@@ -3455,7 +3704,15 @@ class MapEventService:
         target_map = map_key(runtime.map_id)
         for event_key in referenced:
             event = catalog.event(event_key)
-            if event is not None and target_map in event.maps:
+            if event is not None and (
+                target_map in event.maps
+                # Some extracted local events have no explicit map list even
+                # though this map's own EventSet references them (for example
+                # f4203_boss' boss06_phase_0 door gate). Keep those authored
+                # references in the client snapshot so their scene entities
+                # are instantiated when the server starts the event.
+                or event_key in runtime.content.referenced_events
+            ):
                 definitions[event.key] = event
         entries = tuple(
             EventUpdateEntry(
@@ -3594,6 +3851,24 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            native_exit_entries = native_scene_exit_variation_entries(
+                runtime.map_id, viewer_definitions,
+            )
+            if native_exit_entries:
+                # Some authored exits start as inactive and have no client
+                # entity yet. ExitInfo only updates the cache; VariationInfo
+                # creates the gate when a map-local event reveals it.
+                packet, packet_bits = encode_server_command_batch((
+                    ServerCommand(
+                        VARIATION_INFO_COMMAND,
+                        VariationInfo(native_exit_entries),
+                        0,
+                    ),
+                ), include_terminator=True)
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="map-event-native-exit-variation-info",
+                )
             for definition in viewer_definitions:
                 is_active = definition.active
                 if active_override is not None:
@@ -4090,6 +4365,18 @@ class MapEventService:
             if runtime_definition is None:
                 _log(f"no runtime template for {row.template_id!r}; skipped")
                 continue
+            if (
+                runtime.map_id.casefold() == "f4203_boss"
+                and row.template_id.casefold() == "f4203_boss_06_ram"
+            ):
+                # The ram follows its authored path far beyond the template's
+                # ordinary chase leash; its fixed target is the boss gate.
+                runtime_definition = replace(
+                    runtime_definition,
+                    run_speed=max(4.0, float(runtime_definition.run_speed)),
+                    escape_range=max(220.0, float(runtime_definition.escape_range)),
+                    travel_distance=max(220.0, float(runtime_definition.travel_distance)),
+                )
             try:
                 monster = _load_monster(
                     database_path,

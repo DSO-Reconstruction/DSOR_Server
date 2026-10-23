@@ -46,14 +46,13 @@ def membership_status_effect(
     server_tick=0,
     now=None,
 ):
-    """Build a membership XP buff whose UI timer matches its UTC expiry."""
+    """Build the membership UI effect and optionally grant its XP bonus."""
 
-    if not MEMBERSHIP_XP_BUFF:
-        return None
     definition = _MEMBERSHIP_EFFECTS.get(int(membership_type))
     if definition is None:
         return None
-    resource_id, bonus = definition
+    resource_id, configured_bonus = definition
+    bonus = configured_bonus if MEMBERSHIP_XP_BUFF else 0.0
     effect_id = load_status_runtime_catalog(database_path).effect_ids.get(resource_id)
     if effect_id is None:
         return None

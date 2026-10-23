@@ -41,6 +41,7 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_CLOSED,
     QUEST_STATE_CANCELLED,
     QUEST_STATE_FINISHED,
+    Drop,
     QuestCatalog,
     QuestDefinition,
     QuestProgress,
@@ -230,24 +231,53 @@ class QuestService:
                                 ):
                                     targets.add(dialog_actor.casefold())
                                     break
-        if not targets:
-            return frozenset()
-        gated = {
-            definition.template_id.casefold(): definition.event_set_row
-            for definition in load_local_npc_definitions(
-                self.static_database_path,
-                map_id,
-                include_inactive_event_sets=True,
+        flags = set()
+        if targets:
+            gated = {
+                definition.template_id.casefold(): definition.event_set_row
+                for definition in load_local_npc_definitions(
+                    self.static_database_path,
+                    map_id,
+                    include_inactive_event_sets=True,
+                )
+            }
+            declarations = load_local_event_set_flags(
+                self.static_database_path, map_id,
             )
-        }
-        declarations = load_local_event_set_flags(self.static_database_path, map_id)
-        return frozenset({
+            flags.update({
             flag
             for target in targets
             for row in (gated.get(target),)
             if row is not None and row >= 0
             for flag in declarations.get(row, frozenset())
-        })
+            })
+
+        if str(map_id).casefold() == "f4102_dun":
+            railroad_repair_complete = any(
+                quest_id.casefold() == "f4100-railroadbarrier-02-n"
+                and progress.state == QUEST_STATE_CLOSED
+                for quest_id, progress in _quest_log(s).items()
+            )
+            with s.flow_lock:
+                destination_discovered = map_key("f4201_pve") in {
+                    map_key(value)
+                    for value in getattr(s, "gameplay_unlocked_maps", ())
+                }
+                inventory = getattr(s, "gameplay_inventory", None)
+                has_gate_key = bool(
+                    inventory is not None
+                    and any(
+                        str(item.template_id).casefold()
+                        == "key_from_f4102_to_f4201"
+                        for item in inventory.items
+                    )
+                )
+            if railroad_repair_complete or destination_discovered or has_gate_key:
+                # This authored scene flag starts the repaired-train state and
+                # keeps the Yildirimdbi gate available after its quest key is
+                # consumed or the character relogs.
+                flags.add("f4102_train_repair")
+        return frozenset(flags)
 
     @staticmethod
     def _restore_quest_state(s: Session, persisted_state) -> None:
@@ -319,6 +349,7 @@ class QuestService:
             unlocked_maps=frozenset(s.gameplay_unlocked_maps))
 
     def _quest_on_map_entered(self, s: Session) -> None:
+        self._quest_recover_myrdosch_access_key(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -385,6 +416,43 @@ class QuestService:
         # Shared dungeons may already be cleared when another player joins.
         # Reconcile against the actual population, never an empty spawn table.
         self._quest_check_cleared_regions(s)
+
+    def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
+        """Restore the Andrakas key when an older delivery lost its inventory drop."""
+
+        quest_id = "f4101-TheGreatElevator-03-n"
+        key_id = "key_from_f4101_to_f4100"
+        with s.flow_lock:
+            if map_key("f4100_hub") in s.gameplay_unlocked_maps:
+                return
+            inventory = s.gameplay_inventory
+            if inventory is None or any(
+                str(item.template_id).casefold() == key_id
+                for item in inventory.items
+            ):
+                return
+            progress = next(
+                (value for quest, value in _quest_log(s).items()
+                 if quest.casefold() == quest_id.casefold()),
+                None,
+            )
+            if (
+                progress is None
+                or progress.state != QUEST_STATE_ACCEPTED
+                or int(progress.tokens.get(
+                    "TheGreatElevator-03-DeliverDeliveredLoot", 0
+                )) < 1
+            ):
+                return
+        quest = self._quest_catalog().quest(quest_id)
+        if quest is None:
+            return
+        self._quest_grant_inventory_drops(s, quest, (
+            Drop(key_id, 1, 1.0, True),
+        ))
+        CharacterService._request_account_save(
+            s, "recovered Andrakas access key", flush=True,
+        )
 
     # ------------------------------------------------------------------
     # Snapshots for the client
@@ -1061,6 +1129,10 @@ class QuestService:
             INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
         ) for record in inventory_records), label="quest-delivery-inventory")
         self._quest_publish_result(s, quest, result, "deliver", barter.barter_id)
+        if result.inventory_drops:
+            self._quest_grant_inventory_drops(
+                s, quest, result.inventory_drops,
+            )
         self._quest_spawn_drops(s, quest, result.drops)
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest item delivered", flush=True)
@@ -1291,6 +1363,8 @@ class QuestService:
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest closed")
         self._quest_fire_signal(s, "PlayerClosedQuest", (quest.quest_id,))
+        if quest.key == "f4100-railroadbarrier-02-n":
+            CharacterService._quest_start_f4102_train_repair(self, s)
         CharacterService._achievement_on_quest_closed(self, s, quest.quest_id)
         return True
 
@@ -1655,6 +1729,19 @@ class QuestService:
             # in this reconstruction. Complete the three sequential steps
             # after Rewrite History is accepted so J'Ibal can be reached.
             "c2303_dun": ("c2200-RewriteHistory-01-n",),
+            # The railroad defense scene is not simulated; taking its first
+            # quest should count Lukas as defended and unlock the follow-up.
+            "f4102_dun": ("f4100-RailroadBarrier-01-n",),
+            # Arnox's protection scene is not simulated; accepting this quest
+            # should mark its authored hold-ground objective as defended.
+            "f4201_pve": ("f4201-NotSafeAnymore-03-n",),
+            # The imprisoned Technikus and Janus Fox defense scenes are not
+            # simulated; accept their authored hold-ground objectives when
+            # the quests start.
+            "f4202_dun": (
+                "f4100-DestroyWorldsHeart-01-n",
+                "f4100-DestroyWorldsHeart-06-n",
+            ),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
@@ -1813,6 +1900,22 @@ class QuestService:
             fire(self, s, event_type, params)
         except Exception as exc:
             _log(f"signal {event_type} failed: {type(exc).__name__}: {exc}")
+
+    def _quest_start_f4102_train_repair(self, s: Session) -> None:
+        """Persist the authored train/gate scene transition after quest 02."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "f4102_dun":
+            return
+        definition = runtime.catalog.event("f4102_train_repair")
+        if definition is None or not definition.applies_to(runtime.map_id):
+            return
+        with runtime.lock:
+            transition = runtime.begin_event(definition)
+        if transition is not None:
+            CharacterService._apply_map_event_transition(
+                self, runtime, transition,
+            )
 
     def _quest_refresh_map_phases(self, s: Session) -> None:
         """Re-evaluate map-entry phasing after quest state changed mid-map.
