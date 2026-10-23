@@ -417,6 +417,7 @@ class QuestService:
                 if self._quest_entry_signal_matches(s, rule):
                     self._quest_on_signal(s, rule.signal_id)
         self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         # Clear-region objectives drive the client's remaining-monster
         # counter. Retail normally asks for this tracker from the UI, but
         # map-bound challenges can start automatically without that request.
@@ -518,6 +519,72 @@ class QuestService:
             "",
             0,
             "g0004_leader_badtribe_shaman_01_spawnpoint",
+        ),))
+
+    def _quest_ensure_ice_guardian(self, s: Session) -> None:
+        """Restore the Ice Cradle quest guardian when its target is missing."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "g0005_temple_ice_01_dun":
+            return
+        quest_id = "g0005-TempleOfIce-03-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        target = next((
+            task for task in quest.tasks
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() in {
+                    "g0005_leader_guardian_ice_01",
+                    "g0005_leader_guardian_ice_01_scale",
+                }
+                for event in task.events
+            )
+        ), None)
+        if target is None or target.index not in {
+            task.index for task in active_tasks(quest, progress)
+        }:
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            with combat.lock:
+                _present, alive = combat.monster_template_counts()
+            if any(alive.get(template_id, 0) > 0 for template_id in (
+                "g0005_leader_guardian_ice_01",
+                "g0005_leader_guardian_ice_01_scale",
+            )):
+                return
+        # Fixed spawnpoints are materialized when a map is created. If the
+        # guardian was missed then, restore the authored normal/scaled actor
+        # at its corresponding spawnpoint while the kill task is active.
+        try:
+            difficulty = int(getattr(
+                s, "gameplay_map_difficulty", runtime.scaling_difficulty,
+            ))
+        except (TypeError, ValueError):
+            difficulty = int(runtime.scaling_difficulty)
+        scaled = difficulty > 0
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            (
+                "g0005_leader_guardian_ice_01_scale"
+                if scaled else "g0005_leader_guardian_ice_01"
+            ),
+            "",
+            0,
+            (
+                "g0005_leader_guardian_ice_01_scale_spawnpoint"
+                if scaled else "g0005_leader_guardian_ice_01_spawnpoint"
+            ),
         ),))
 
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
@@ -1443,6 +1510,7 @@ class QuestService:
         self._quest_sync_props(s)
         self._quest_start_active_holdgrounds(s)
         self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1854,6 +1922,7 @@ class QuestService:
         )
         self._send_quest_commands(s, commands, label="quest-progress")
         self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         for change in result.changes:
