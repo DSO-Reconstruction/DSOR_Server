@@ -371,6 +371,12 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
             'e_doe_map_02_normal_ice_thing_purple_01',
         ),
     },
+    # Piritlidag's melt rooms need the authored DragonsForge kill target;
+    # quest-specific templates are excluded from the generic map pool.
+    'f4202_dun': {
+        'melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04',),
+        'scale_melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04_scale',),
+    },
     "b1201_pve": {
         "entrance_gnome_troll": (
             "b1201_s_gen_norsegnome",
