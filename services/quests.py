@@ -74,6 +74,7 @@ from dso_server.protocol.player_init_protocol import (
     ChapterProgress,
     QuestLogInfo,
     ServerCommand,
+    encode_event_update,
     encode_server_command_batch,
 )
 from dso_server.protocol.quest_protocol import (
@@ -191,14 +192,14 @@ class QuestService:
         return active
 
     def _quest_reveal_flags(self, s: Session, map_id: str) -> frozenset[str]:
-        """Declare the event sets a live quest's meeting target hides behind.
+        """Declare the event sets active and finished quest targets hide behind.
 
         A map-local event reveals its EventSet content only in the instance
         that ran it, so a character that relogs after the reveal but before
         the meeting finds nobody standing there and can never finish the
         task. The quest log is the durable record of how far the player got,
-        so its open encounter/talk steps re-activate the flags their target
-        NPC is authored behind.
+        so open encounter/talk steps and finished quest goal NPCs re-activate
+        the flags their target NPC is authored behind.
         """
 
         wanted = {str(map_id).casefold()}
@@ -208,6 +209,9 @@ class QuestService:
             quest = catalog.quest(quest_id)
             if quest is None:
                 continue
+            if progress.state == QUEST_STATE_FINISHED and quest.goal:
+                # Keep a finished quest's turn-in NPC visible after a relog.
+                targets.add(quest.goal.casefold())
             for task in active_tasks(quest, progress):
                 if task.maps and not task.maps & wanted:
                     continue
@@ -1658,6 +1662,21 @@ class QuestService:
             s.gameplay_next_item_id = max(s.gameplay_next_item_id, end)
         CharacterService._reconcile_world_loot_visibility(s, label="quest-drop")
 
+    def _quest_refresh_event_state(self, s: Session) -> None:
+        """Publish quest-derived map EventSet flags after task transitions."""
+
+        try:
+            update, _progress, _participation = self._event_initialization_state(s)
+            packet, packet_bits = encode_event_update(update)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="quest-map-event-state",
+            )
+        except Exception as exc:
+            _log(
+                f"map event refresh after quest progress failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     def _quest_publish_result(self, s, quest, result, kind, value):
         """Publish already-committed task progress and its map signals."""
         commands = []
@@ -1681,6 +1700,11 @@ class QuestService:
                 LOCAL_PLAYER_ACTOR_ID,
             ))
             commands.extend(self._quest_npc_info_commands(s))
+        if result.quest_finished or any(c.finished for c in result.changes):
+            # Quest targets can unlock a client-side map EventSet while the
+            # player is already on the map. Refresh its event flags before
+            # sending NPCInfo, so newly revealed quest NPCs actually appear.
+            self._quest_refresh_event_state(s)
         _log(
             f"{quest.quest_id!r} {kind} {value!r}: "
             + ", ".join(
