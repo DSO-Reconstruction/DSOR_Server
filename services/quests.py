@@ -1698,6 +1698,9 @@ class QuestService:
             # in this reconstruction. Complete the three sequential steps
             # after Rewrite History is accepted so J'Ibal can be reached.
             "c2303_dun": ("c2200-RewriteHistory-01-n",),
+            # The railroad defense scene is not simulated; taking its first
+            # quest should count Lukas as defended and unlock the follow-up.
+            "f4102_dun": ("f4100-RailroadBarrier-01-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
