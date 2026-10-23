@@ -1128,6 +1128,11 @@ class LocalCombatState:
         self._route_refresh_budget = 0
         self._route_actor_cursor = 0
         self.monster_target_actor_ids = {}
+        # Scripted map actors can follow an authoritative fixed target instead
+        # of acquiring a player (for example, the Crypt of Kings ram).
+        self.scripted_monster_targets: dict[
+            int, tuple[float, float, float]
+        ] = {}
         self.returning_home_actor_ids: set[int] = set()
         self.returning_home_started_at: dict[int, float] = {}
         self.returning_home_progress: dict[int, float] = {}
@@ -1283,7 +1288,13 @@ class LocalCombatState:
                 escape_range=float(runtime.escape_range),
                 travel_distance=(
                     float(runtime.travel_distance)
-                    if str(monster.rank or "").casefold().startswith("rank_boss")
+                    if (
+                        str(monster.rank or "").casefold().startswith("rank_boss")
+                        or (
+                            encounter.map_id.casefold() == "f4203_boss"
+                            and monster.template_id.casefold() == "f4203_boss_06_ram"
+                        )
+                    )
                     else min(
                         float(runtime.travel_distance),
                         MONSTER_NAVIGATION_RADIUS_CAP,
@@ -1294,9 +1305,15 @@ class LocalCombatState:
                 target_radius=monster_target_radii(encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
-                invulnerable=is_tower_mechanism(
-                    encounter.static_database_path, encounter.map_id,
-                    monster.template_id,
+                invulnerable=(
+                    is_tower_mechanism(
+                        encounter.static_database_path, encounter.map_id,
+                        monster.template_id,
+                    )
+                    or (
+                        encounter.map_id.casefold() == "f4203_boss"
+                        and monster.template_id.casefold() == "f4203_boss_06_ram"
+                    )
                 ),
             )
         if set(result) != set(encounter.actor_ids):
@@ -1517,19 +1534,32 @@ class LocalCombatState:
                 run_speed=float(runtime.run_speed),
                 aggro_range=float(runtime.aggro_range),
                 escape_range=float(runtime.escape_range),
-                travel_distance=min(
-                    float(runtime.travel_distance),
-                    MONSTER_NAVIGATION_RADIUS_CAP,
+                travel_distance=(
+                    float(runtime.travel_distance)
+                    if (
+                        self.encounter.map_id.casefold() == "f4203_boss"
+                        and monster.template_id.casefold() == "f4203_boss_06_ram"
+                    )
+                    else min(
+                        float(runtime.travel_distance),
+                        MONSTER_NAVIGATION_RADIUS_CAP,
+                    )
                 ),
                 attack_interval=float(runtime.attack_interval),
                 collision_radius=float(runtime.capsule_radius),
                 target_radius=monster_target_radii(self.encounter.static_database_path).get(monster.template_id),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
-                invulnerable=is_tower_mechanism(
-                    self.encounter.static_database_path,
-                    self.encounter.map_id,
-                    monster.template_id,
+                invulnerable=(
+                    is_tower_mechanism(
+                        self.encounter.static_database_path,
+                        self.encounter.map_id,
+                        monster.template_id,
+                    )
+                    or (
+                        self.encounter.map_id.casefold() == "f4203_boss"
+                        and monster.template_id.casefold() == "f4203_boss_06_ram"
+                    )
                 ),
             )
             self.monsters[actor_id] = combatant
@@ -6857,6 +6887,67 @@ class LocalCombatState:
                 self.monster_moving[actor_id] = False
                 occupied.append(start)
                 continue
+            scripted_goal = self.scripted_monster_targets.get(actor_id)
+            if (
+                scripted_goal is not None
+                and self._distance(start, scripted_goal) <= 18.0
+            ):
+                # The last section of the F4203 authored ram route ends at the
+                # arena gate, where the collision/nav mesh may not expose a
+                # connected triangle to A*. Keep the ram on its fixed approach
+                # and let the gate impact trigger finish the sequence.
+                dx = scripted_goal[0] - start[0]
+                dz = scripted_goal[2] - start[2]
+                distance = math.hypot(dx, dz)
+                step = min(float(monster.run_speed) * elapsed, distance)
+                if distance > 1e-5 and step > 1e-6:
+                    ratio = step / distance
+                    destination = (
+                        start[0] + dx * ratio,
+                        start[1] + (scripted_goal[1] - start[1]) * ratio,
+                        start[2] + dz * ratio,
+                    )
+                    self.monster_positions[actor_id] = destination
+                    yaw = math.atan2(-dx, -dz)
+                    self.monster_yaws[actor_id] = yaw
+                    self.monster_moving[actor_id] = True
+                    if self._monster_movement_publish_due(
+                        actor_id,
+                        server_tick,
+                        moving=True,
+                        was_moving=was_moving,
+                        position=destination,
+                    ):
+                        movements.append(MonsterMovement(
+                            actor_id,
+                            destination,
+                            self.encounter.coordinate_frame.world_to_wire(
+                                destination
+                            ),
+                            yaw,
+                            True,
+                            int(server_tick) & 0xFFFFFFFF,
+                        ))
+                    occupied.append(destination)
+                    continue
+                self.monster_moving[actor_id] = False
+                occupied.append(start)
+                if was_moving and self._monster_movement_publish_due(
+                    actor_id,
+                    server_tick,
+                    moving=False,
+                    was_moving=True,
+                    position=start,
+                ):
+                    movements.append(MonsterMovement(
+                        actor_id,
+                        start,
+                        self.encounter.coordinate_frame.world_to_wire(start),
+                        previous_yaw,
+                        False,
+                        int(server_tick) & 0xFFFFFFFF,
+                    ))
+                continue
             direct_distance = self._distance(start, player_position)
             home_distance = self._distance(start, home)
             player_home_distance = self._distance(player_position, home)
@@ -6912,6 +7003,12 @@ class LocalCombatState:
                 direct_distance = enemies[0][0]
                 player_home_distance = self._distance(player_position, home)
             preferred_stop_distance = self._preferred_stop_distance(monster)
+            if actor_id in self.scripted_monster_targets:
+                # Scripted actors (such as the F4203 battering ram) are moving
+                # to a fixed world target, not approaching a player to attack.
+                # Their attack range must not leave them standing short of the
+                # authored impact point.
+                preferred_stop_distance = 0.0
             # A shooter with a wall between it and its target walks on to
             # find a line of sight instead of standing off behind the wall.
             if (
@@ -7099,6 +7196,7 @@ class LocalCombatState:
             # freezing wherever the player happened to outrange it.
             if (
                 not returning_home
+                and actor_id not in self.scripted_monster_targets
                 and home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
                 and (
                     player_home_distance > MONSTER_SIMULATION_RADIUS
@@ -7142,6 +7240,7 @@ class LocalCombatState:
             )
             engaged = (
                 returning_home
+                or actor_id in self.scripted_monster_targets
                 or home_distance > MONSTER_HOME_ARRIVAL_DISTANCE
                 or direct_distance
                 <= min(
@@ -10032,6 +10131,13 @@ class LocalCombatState:
             ):
                 continue
             monster = self.monsters[actor_id]
+            if (
+                self.encounter.map_id.casefold() == "f4203_boss"
+                and monster.template_id.casefold() == "f4203_boss_06_ram"
+            ):
+                # The Crypt of Kings ram is scripted to break the arena door;
+                # its retail target is a destroyable obstacle, never a player.
+                continue
             tower_fire_burst = (
                 monster.invulnerable
                 and "fire_shooter" in monster.template_id.casefold()

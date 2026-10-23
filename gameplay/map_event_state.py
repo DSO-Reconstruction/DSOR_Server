@@ -1294,6 +1294,13 @@ class MapEventRuntime:
     tower_beam_started_at: dict[int, float] = field(default_factory=dict)
     fired_once: set[str] = field(default_factory=set)
     published_exit_events: set[tuple[int, str]] = field(default_factory=set)
+    f4203_ram_actor_id: int | None = None
+    f4203_ram_goal: tuple[float, float, float] | None = None
+    f4203_ram_door_event_set_row: int | None = None
+    f4203_ram_door_obstacle_id: str = "door_01"
+    f4203_ram_path_started: bool = False
+    f4203_ram_impact_started: bool = False
+    f4203_ram_gate_opened: bool = False
     kill_score: int = 0
     fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))

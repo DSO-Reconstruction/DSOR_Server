@@ -550,6 +550,13 @@ class MonsterCombatService(
                            spawned_by_viewer.get(id(viewer), set()))
                           for actor_id, position, viewer in aggro_targets),
                 )
+                for actor_id, scripted_target in tuple(
+                    combat.scripted_monster_targets.items()
+                ):
+                    if actor_id in ordinary_actor_ids:
+                        assignments[actor_id] = (
+                            LOCAL_PLAYER_ACTOR_ID, scripted_target,
+                        )
                 # One movement pass preserves the map's A* budget and collision
                 # separation while each pack pursues its own nearby player.
                 fallback = combat_targets[0][1]
