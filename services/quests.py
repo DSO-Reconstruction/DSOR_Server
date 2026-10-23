@@ -2022,7 +2022,17 @@ class QuestService:
                 self._quest_fire_signal(
                     s, "PlayerEndQuestTask", (f"{quest.quest_id}:{change.task.title}",),
                 )
-        if result.quest_finished and quest.bound_to_map and not quest.goal:
+        if result.quest_finished and quest.key in {
+            "g0004-enterminibossroom-01-n-row",
+            "g0004-enterminibossroom-01-n",
+            "g0004-enterminibossroom-02-n-row",
+            "g0004-enterminibossroom-03-n-row",
+        }:
+            # These miniboss-room quests finish at their NPC, and their
+            # Alliance Hall key is a quest reward. Close them immediately so
+            # the reward is delivered as soon as the final NPC task completes.
+            self._quest_turn_in(s, quest.quest_id)
+        elif result.quest_finished and quest.bound_to_map and not quest.goal:
             # Task signals reveal the earned chests before the quest closes.
             self._quest_turn_in(s, quest.quest_id)
         CharacterService._request_account_save(s, "quest progress")
