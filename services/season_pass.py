@@ -41,6 +41,17 @@ SEASON_PASS_DELIVERY_LEDGER_VERSION = 3
 
 
 class SeasonPassService:
+    def _season_pass_catalog(self):
+        active_templates = CharacterService._event_catalog(
+            self,
+        ).active_template_ids()
+        return load_season_pass_catalog(
+            self.static_database_path,
+            alternate_rewards=(
+                "event_season_ticket_2026_temp" in active_templates
+            ),
+        )
+
     @staticmethod
     def _restore_season_pass_state(s, persisted_state) -> None:
         s.gameplay_season_pass = normalize_season_pass_state(
@@ -295,7 +306,7 @@ class SeasonPassService:
                 or getattr(s, "retired", False)
                 or s.gameplay_exit_transition_started or int(count) <= 0):
             return False
-        catalog = load_season_pass_catalog(self.static_database_path)
+        catalog = self._season_pass_catalog()
         difficulty = max(
             int(getattr(s, "gameplay_map_difficulty", 0)),
             int(getattr(s, "gameplay_scaling_difficulty", 0)),
@@ -390,7 +401,7 @@ class SeasonPassService:
                 getattr(s, "gameplay_season_pass", None) or {}
             )
             if request.command_id == ADD_SEASON_PASS_EXP_COMMAND:
-                catalog = load_season_pass_catalog(self.static_database_path)
+                catalog = self._season_pass_catalog()
                 current_experience = int(state["experience"])
                 requested_experience = int(request.experience)
                 maximum_experience = int(catalog.level_thresholds[-1][1])
@@ -427,10 +438,10 @@ class SeasonPassService:
                 accepted = False
                 updated_currency = None
                 if request.command_id == GET_SEASON_PASS_AWARD_COMMAND:
-                    catalog = load_season_pass_catalog(self.static_database_path)
+                    catalog = self._season_pass_catalog()
             s.gameplay_season_pass = state
             if request.command_id == GET_SEASON_PASS_MISSIONS_INFO_COMMAND:
-                catalog = load_season_pass_catalog(self.static_database_path)
+                catalog = self._season_pass_catalog()
                 missions = tuple(
                     (mission_id, int(state["mission_progress"].get(mission_id, 0)))
                     for mission_id in catalog.missions

@@ -27,6 +27,7 @@ include-package-data = false
 [tool.setuptools.package-data]
 dso_server = [
     "docs/command_ids_rel261_192.json",
+    "docs/command_ids_rel261_203.json",
     "data/catalogs/*.json",
     "data/events.json",
     "data/quests.xml",

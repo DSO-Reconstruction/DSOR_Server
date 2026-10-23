@@ -1,29 +1,15 @@
 """Resolve network command ids against whichever client build is being served.
 
-Command ids are not stable across client builds. They are assigned in
-registration order, so removing or inserting a command shifts every id after it.
-Between the current client and the legacy one the shared classes keep their
-relative order exactly -- the rank correlation over all 268 of them is 1.0 -- but
-their numbers differ by up to 12, because the legacy build registers 17 commands
-that the current one dropped. ``Commands::SwitchMapCommand`` is 112 on the
-current client and 121 on the legacy one, which is what makes the legacy client
-log:
-
-    DrasaClientHandler::DecodeCommand(): Client command factory could not
-    create command (ID: '112')!
-
-A wrong id is not a decode error the client can recover from: it cannot even
-construct the command, and it drops the rest of the batch with it.
-
-So the protocol modules declare their ids by class name rather than by number::
+Command IDs can change between client builds. The server defaults to the
+rel261_203 table. Compared with rel261_192, only
+``DebugSpecialOfferCommand`` changed (0x84 to 0x107); the server does not emit
+that debug command, and the regular ``SpecialOfferCommand`` remains 0x84.
+Protocol modules declare IDs by class name rather than by number::
 
     SWITCH_MAP_COMMAND = command_id("Commands::SwitchMapCommand", 0x70)
 
 The literal stays as the dro_client64-patch5 value and as the fallback.
-By default the server resolves against ``docs/command_ids_rel261_192.json``,
-dumped from the release261_192 ``dro_client64.exe`` it serves: ids up to 346
-match patch5, and that build inserts commands from 347 on, which moves 22 later
-classes (``ServerToClientMsgCommand`` is 381 there, 368 on patch5).
+By default the server resolves against ``docs/command_ids_rel261_203.json``.
 ``DSO_COMMAND_IDS`` selects a table dumped from another client -- see
 ``dump_command_ids.py`` for x64 and ``dump_command_ids_x86.py`` for x86 -- and
 ``DSO_COMMAND_IDS=builtin`` keeps the patch5 literals.
@@ -47,7 +33,7 @@ __all__ = [
 
 ENVIRONMENT_VARIABLE = "DSO_COMMAND_IDS"
 DEFAULT_TABLE = (
-    Path(__file__).resolve().parents[1] / "docs" / "command_ids_rel261_192.json"
+    Path(__file__).resolve().parents[1] / "docs" / "command_ids_rel261_203.json"
 )
 BUILTIN_VALUES = frozenset({"builtin", "patch5", "none"})
 
