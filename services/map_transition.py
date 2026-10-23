@@ -585,6 +585,19 @@ class MapTransitionService:
                         if clicked_dest is not None else "",
                     ))
                     if (
+                        keyed_route is None
+                        and gameplay_map.casefold() == "g0009_templecity_01_pve"
+                        and clicked_authored.exit_id.casefold()
+                        == "g0009_exit_to_g0013"
+                    ):
+                        # The Secret Grave route's physical destination varies
+                        # with its authored access group. Match its stable exit
+                        # and use the same key/discovery gate as nearby routes.
+                        keyed_route = (
+                            "g0009_exit_to_g0013",
+                            "key_from_g0009_to_g0013",
+                        )
+                    if (
                         not candidates
                         and keyed_route is not None
                         and clicked_authored.exit_id.casefold() == keyed_route[0]

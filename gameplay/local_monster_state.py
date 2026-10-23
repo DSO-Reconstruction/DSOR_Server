@@ -192,6 +192,9 @@ def map_monster_actor_base(
         # authored SpawnPoints. Keep server monsters in the secondary range,
         # as on boss arenas, so NewMonster cannot collide with them.
         or map_id.casefold() in _CLIENT_SCENE_ACTOR_ID_MAPS
+        # Mühürlü Mezar's g0013 map family also uses client-owned scene actor
+        # ids; keep its Toltac High Shamans in the server-only range.
+        or map_id.casefold().startswith("g0013_")
         or load_map_encounter_policy(static_database_path, map_id).is_boss_room
     )
     return LOCAL_MONSTER_ACTOR_BASE + (0x1000 if is_boss else 0)
