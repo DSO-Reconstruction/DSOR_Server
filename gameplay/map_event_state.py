@@ -490,8 +490,10 @@ def select_variation_spawn_rows(
     The Herald's lair authors its boss_start broodlings once per tier (4 on
     tier 0, 6 on 1-3, 8 on 4-10: 78 rows under one EventSet); opening the set
     spawned them all at once. A family without the exact tier takes its
-    highest tier below it, else its lowest (an assumption: no retail trace
-    of a family with gaps).
+    highest tier below it, else none (``selected_variation_tier``):
+    c2304_boss pairs a tier-0 normal family with a tier 1-10 scaling one
+    under BOSS_spawn, and falling back to the lowest tier added four
+    scaling gorgons to the normal instance's four.
     """
 
     rows = tuple(rows)
@@ -501,12 +503,8 @@ def select_variation_spawn_rows(
             tiers.setdefault(row.variation_group, set()).add(
                 row.variation_difficulty
             )
-    difficulty = max(0, int(difficulty))
     chosen = {
-        group: max(
-            (value for value in values if value <= difficulty),
-            default=min(values),
-        )
+        group: selected_variation_tier(values, difficulty)
         for group, values in tiers.items()
     }
     return tuple(

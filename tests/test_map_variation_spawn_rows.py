@@ -46,3 +46,15 @@ def test_mercyless_extra_spawn_areas_stay_off_lower_tiers():
     assert _mercyless_areas(5) == []
     assert _mercyless_areas(6) == [23526]
     assert _mercyless_areas(10) == [23532]
+
+
+def test_medusa_scaling_gorgons_stay_off_the_normal_instance():
+    # c2304_boss BOSS_spawn (EventSet 159) holds only tiers 1-10; tier 0 is
+    # the always-present normal family.
+    content = load_map_event_content(DEFAULT_STATIC_DB_PATH, "c2304_boss")
+    assert select_variation_spawn_rows(content.spawn_rows_for_sets((159,)), 0) == ()
+    rows = select_variation_spawn_rows(content.spawn_rows_for_sets((159,)), 3)
+    assert Counter(r.template_id for r in rows) == {
+        "c2303_normal_g_gen_gorgon_scale": 4,
+        "c2303_miniboss_medusa_05_scale": 1,
+    }
