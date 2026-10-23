@@ -2803,6 +2803,7 @@ class LocalCombatState:
                         ),
                         default=0.0,
                     )
+                    visualizer_lifetime = visual_lifetime
                     visual_lifetime = max(
                         visual_lifetime,
                         max(
@@ -2859,10 +2860,18 @@ class LocalCombatState:
                             0.0,
                             float(row[6]) / SERVER_TICKS_PER_SECOND,
                         ),
-                        lifetime_seconds=max(
-                            0.0,
-                            float(row[8] or 0.0),
-                            visual_lifetime,
+                        # The skill's own summon visualizer (and its despawn
+                        # aura) is the construction's authored duration; the
+                        # template LifeTime only bounds summons without one.
+                        # Machine Gun authors 20 s on both but LifeTime 60:
+                        # max() kept it firing and standing 40 s after its
+                        # timer and ground marker had ended (2026-10-23).
+                        lifetime_seconds=(
+                            visual_lifetime
+                            if visualizer_lifetime > 0.0
+                            else max(
+                                0.0, float(row[8] or 0.0), visual_lifetime,
+                            )
                         ),
                         despawn_duration_seconds=max(
                             0.0, float(row[10] or 0.0)
