@@ -205,6 +205,13 @@ class MapTransitionService:
             )
             return
 
+        # The dialog's cancel (or the player walking away) during the countdown.
+        # UNVERIFIED: the first flag as "cancel" is the DSOR client's reading of
+        # the two booleans; no capture of the retail client's cancel exists.
+        if request.field_20:
+            self._cancel_pending_logout(s, "cancelled by the player")
+            return
+
         gameplay_map = str(s.gameplay_map or "")
         try:
             ruleset = (
