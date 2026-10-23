@@ -1747,6 +1747,26 @@ class MapEventService:
             unlocked_maps=unlocked_maps,
         )
         rules = runtime.catalog.evaluate(kind, context)
+        # The sixth Hunt for a Legend quest still uses the sandhills authored
+        # for quest 05. Its map-entry signal is guarded by quest 05 being
+        # accepted, so players who have already turned in that step never
+        # activate the EventSet containing the quest 06 sandhill props.
+        # Keep that authored phase available while its follow-up quest is
+        # active, without changing the quest data or its progression.
+        sandhill_signal = (
+            "h0004_hunt_for_a_legend_05_activate_sandhills_start_signal"
+        )
+        if (
+            kind == "playerenteredmap"
+            and map_key(runtime.map_id) == "h0004_temple_dun"
+            and "h0001-hunt-for-a-legend-06-n" in quests_accepted
+            and not any(rule.signal_id.casefold() == sandhill_signal for rule in rules)
+        ):
+            _log(
+                "starting the Hunt for a Legend sandhill phase for the active "
+                "quest 06 on h0004_temple_dun"
+            )
+            self._emit_map_signal(s, runtime, sandhill_signal)
         if (
             kind == "monsterseliminated"
             and _fractured_planes_floor_number_from_map(runtime.map_id)
