@@ -335,6 +335,18 @@ class QuestService:
                 # keeps the Yildirimdbi gate available after its quest key is
                 # consumed or the character relogs.
                 flags.add("f4102_train_repair")
+
+        if str(map_id).casefold() == "g0005_temple_ice_01_dun":
+            with s.flow_lock:
+                temple_discovered = map_key("g0005_temple_ice_02_dun") in {
+                    map_key(value)
+                    for value in getattr(s, "gameplay_unlocked_maps", ())
+                }
+            if temple_discovered:
+                # The Temple gate's EventSet is opened by a signal that only
+                # fires while quest 06 is accepted. Once the map is unlocked,
+                # preserve that route flag on later visits and quest stages.
+                flags.add("g0005_TempleOfIce_05_openExit")
         return frozenset(flags)
 
     @staticmethod
