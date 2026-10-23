@@ -147,6 +147,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Fjalnir's Cradle of Frost also registers authored guardian SpawnPoints
     # in the ordinary range; keep corrupted Ice Guardians out of those ids.
     "g0005_temple_ice_03_dun",
+    # Fyrgon's Fire Path starts with authored Fire Guardian SpawnPoints in
+    # the ordinary range. Keep server monsters out of the same actor ids.
+    "g0007_temple_fire_01_dun",
     # Okeanos's Opal Temple has its water guardian at NPC row 1 while the
     # Toltac Shaman occupies monster slot 0. Keep them in separate slots.
     "g0006_temple_water_01_dun",
