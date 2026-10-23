@@ -2080,6 +2080,12 @@ class QuestService:
             # Okeanos's guardian defense scene inside the Opal Shrine is also
             # not simulated; accepting its sixth chapter quest counts it done.
             "g0006_temple_water_01_dun": ("g0006-TempleOfWater-08-n",),
+            # High Priest Azlan's ritual defense in Fjalnir's Temple is not
+            # simulated; accepting the quest should count Azlan as defended.
+            "g0005_temple_ice_02_dun": ("g0005-TempleOfIce-08-n",),
+            # Shaman Tletelli's defense in Fyrgon's Fire Path is not
+            # simulated; accepting the quest should count her as defended.
+            "g0007_temple_fire_01_dun": ("g0007-TempleOfFire-04-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
