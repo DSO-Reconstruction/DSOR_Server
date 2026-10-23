@@ -131,6 +131,17 @@ from dso_server.services.map_events import (
 
 QUEST_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] quest:"
 
+# Both map instances use the same visible Opal Temple Guardian character.
+# The authored purification delivery is attached only to the later instance,
+# which leaves players unable to hand it in when speaking to the guardian at
+# the earlier position.
+_QUEST_NPC_ALIASES = {
+    "g0006-purifycorruptedwater-01-n": frozenset({
+        "g0006_quest_water_guardian",
+        "g0006_quest_water_guardian_02",
+    }),
+}
+
 
 def _log(message: str) -> None:
     print(f"{QUEST_LOG_PREFIX} {message}")
@@ -222,6 +233,14 @@ class QuestService:
             for task in active_tasks(quest, progress):
                 if task.maps and not task.maps & wanted:
                     continue
+                # A delivery task has no encounter/talk event to keep its
+                # recipient's EventSet visible. Preserve that NPC while the
+                # hand-in is active, including after a map re-entry.
+                targets.update(
+                    barter.actor.casefold()
+                    for barter in task.barters
+                    if barter.actor and barter.live(progress.tokens)
+                )
                 for event in task.events:
                     if not event.value:
                         continue
@@ -980,6 +999,12 @@ class QuestService:
                     ))
                     flags.append(NPCFlag(dialog_id, False))
         for quest, barter in self._quest_npc_barters(s, npc_template_id):
+            # The delivery action opens the item hand-in UI, while this
+            # separate target entry drives the quest marker over the NPC.
+            interactions.append(NPCInteraction(
+                quest.quest_id, NPC_TASK_TARGET,
+                quest.quest_id, quest.quest_type_id,
+            ))
             interactions.append(NPCInteraction(
                 barter.barter_id, NPC_DELIVERY_DIALOG, quest.quest_id, quest.quest_type_id,
             ))
@@ -994,7 +1019,11 @@ class QuestService:
             if (quest := catalog.quest(quest_id)) is not None
             for task in active_tasks(quest, progress)
             for barter in task.barters
-            if barter.actor.casefold() == npc_key and barter.live(progress.tokens)
+            if (
+                barter.actor.casefold() == npc_key
+                or npc_key in _QUEST_NPC_ALIASES.get(quest.key, ())
+            )
+            and barter.live(progress.tokens)
         )
 
     def _quest_decorate_npc_info(
