@@ -9071,6 +9071,51 @@ class LocalCombatState:
                         summon.position[1],
                         summon.position[2] + direction[2] * reach,
                     )
+            elif (
+                attack_skill_type == "Melee"
+                and geometry.targeting_type.casefold() == "radius"
+                and (
+                    definition.stationary
+                    or getattr(definition, "movement_locked", False)
+                )
+            ):
+                # A stationary summon's area strike (the Tesla Turret: Melee,
+                # Radius, HitRange 3, its damage auras 3 m) hits every enemy
+                # within its HitRange around itself. Its AttackRange (200)
+                # only lets it act: picked as the one nearest monster within
+                # that, it zapped a single monster up to 200 m away.
+                monsters_in_area = [
+                    (self._distance(summon.position, self.monster_positions[monster_actor_id]), monster_actor_id)
+                    for monster_actor_id in self.living_actor_ids
+                    if monster_actor_id not in self.returning_home_actor_ids
+                ]
+                players_in_area = [
+                    (self._distance(summon.position, player_positions[target_actor_id]), target_actor_id)
+                    for target_actor_id in hostile_by_owner.get(summon.owner_actor_id, ())
+                    if can_target_players and target_actor_id in player_positions
+                ]
+                area = sorted(
+                    [
+                        (distance, monster_actor_id)
+                        for distance, monster_actor_id in monsters_in_area
+                        if distance <= geometry.hit_range
+                        + max(0.0, self.monsters[monster_actor_id].collision_radius)
+                    ]
+                    + [
+                        (distance, player_actor_id)
+                        for distance, player_actor_id in players_in_area
+                        if distance <= geometry.hit_range
+                    ]
+                )
+                if not area:
+                    continue
+                target_actor_ids = tuple(actor for _distance, actor in area)
+                target_actor_id = target_actor_ids[0]
+                target_position = (
+                    self.monster_positions[target_actor_id]
+                    if target_actor_id in self.monsters
+                    else player_positions[target_actor_id]
+                )
             else:
                 candidates = tuple(
                     (
