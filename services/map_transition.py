@@ -569,6 +569,9 @@ class MapTransitionService:
                         ("g0004_corrupted_jungle_01_pve", "g0007_temple_fire_01_dun"): (
                             "g0004_exit_to_g0007", "key_from_g0004_to_g0007",
                         ),
+                        ("g0004_corrupted_jungle_01_pve", "g0009_templecity_01_pve"): (
+                            "g0004_exit_to_g0009", "key_from_g0004_to_g0009",
+                        ),
                     }
                     keyed_route = keyed_routes.get((
                         gameplay_map.casefold(),
