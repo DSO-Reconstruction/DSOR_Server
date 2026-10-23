@@ -150,6 +150,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Fyrgon's Fire Path starts with authored Fire Guardian SpawnPoints in
     # the ordinary range. Keep server monsters out of the same actor ids.
     "g0007_temple_fire_01_dun",
+    # The Death Cradle client scene registers its authored SpawnPoints in the
+    # ordinary range. Keep server monsters in the secondary range so those
+    # scene actors cannot mask mobs in the Blood Cascade and Skull Pit.
+    "g0011_temple_death_01_dun",
     # Okeanos's Opal Temple has its water guardian at NPC row 1 while the
     # Toltac Shaman occupies monster slot 0. Keep them in separate slots.
     "g0006_temple_water_01_dun",
@@ -2155,6 +2159,7 @@ def _grounded_spawn_position(
     *,
     reference_position: tuple[float, float, float] | None = None,
     max_horizontal_distance: float | None = None,
+    prefer_navigation_height: bool = False,
 ) -> tuple[float, float, float]:
     reference = reference_position or position
     if not isinstance(navigation, PathEngineNavigationMesh):
@@ -2168,7 +2173,9 @@ def _grounded_spawn_position(
         try:
             return terrain.project_position(
                 projected,
-                reference_height=reference[1],
+                reference_height=(
+                    projected[1] if prefer_navigation_height else reference[1]
+                ),
             )
         except CollisionTerrainError:
             pass
@@ -2189,6 +2196,7 @@ def _grounded_spawn_area_candidates(
     *,
     excluded_areas: tuple[_MonsterSpawnArea, ...] = (),
     allowed_component: int | None = None,
+    prefer_navigation_height: bool = False,
 ) -> tuple[tuple[float, float, float], ...]:
     """Place a density grid only on concrete walkable surface triangles."""
 
@@ -2256,7 +2264,11 @@ def _grounded_spawn_area_candidates(
             if terrain is not None:
                 projected = terrain.project_position(
                     projected,
-                    reference_height=area.center[1],
+                    reference_height=(
+                        projected[1]
+                        if prefer_navigation_height
+                        else area.center[1]
+                    ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
                 )
@@ -2289,7 +2301,11 @@ def _grounded_spawn_area_candidates(
             try:
                 position = terrain.project_position(
                     centroid,
-                    reference_height=area.center[1],
+                    reference_height=(
+                        centroid[1]
+                        if prefer_navigation_height
+                        else area.center[1]
+                    ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
                 )
@@ -2501,6 +2517,9 @@ def _load_dynamic_monster_encounter(
 ) -> LocalMonsterEncounter | None:
     """Load fixed and density-driven hostile population from a map database."""
 
+    prefer_navigation_height = (
+        str(map_id).casefold() == "g0011_temple_death_01_dun"
+    )
     encounter_policy = load_map_encounter_policy(
         static_database_path, map_id
     )
@@ -2800,6 +2819,7 @@ def _load_dynamic_monster_encounter(
                 position,
                 reference_position=position,
                 max_horizontal_distance=max_navigation_snap_distance,
+                prefer_navigation_height=prefer_navigation_height,
             )
             if (
                 not keep_story_boss_at_authored_position
@@ -2857,6 +2877,7 @@ def _load_dynamic_monster_encounter(
                         candidate,
                         reference_position=position,
                         max_horizontal_distance=1.0,
+                        prefer_navigation_height=prefer_navigation_height,
                     )
                 except NavigationError:
                     continue
@@ -3143,6 +3164,7 @@ def _load_dynamic_monster_encounter(
             raw_candidates,
             excluded_areas=excluded_areas,
             allowed_component=allowed_component,
+            prefer_navigation_height=prefer_navigation_height,
         )
         candidates = tuple(
             position
@@ -3272,6 +3294,7 @@ def _load_dynamic_monster_encounter(
                 area.candidate_positions(),
                 excluded_areas=excluded_areas,
                 allowed_component=allowed_component,
+                prefer_navigation_height=prefer_navigation_height,
             )
             candidates = tuple(
                 position for position in candidates
