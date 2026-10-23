@@ -546,27 +546,42 @@ class MapTransitionService:
                                 ):
                                     candidates = (active_exit,)
                                     break
-                    # These regional routes are authored as inactive locked
-                    # exits, but the client still sends UnlockMap for the
-                    # clicked scene entity. The server should accept that
-                    # request with its matching access key, then remember the
-                    # destination after entry so later trips no longer need it.
+                    # Some key-gated routes are authored inactive, but the
+                    # client still sends UnlockMap for the clicked scene
+                    # entity. Accept a matching key and remember the map after
+                    # entry so later trips no longer need to carry the key.
                     keyed_routes = {
-                        ("f4101_pve", "f4100_hub"): "key_from_f4101_to_f4100",
-                        ("f4102_dun", "f4201_pve"): "key_from_f4102_to_f4201",
-                        ("f4201_pve", "f4202_dun"): "key_from_f4201_to_f4202",
+                        ("f4101_pve", "f4100_hub"): (
+                            "exit_key_lock", "key_from_f4101_to_f4100",
+                        ),
+                        ("f4102_dun", "f4201_pve"): (
+                            "exit_key_lock", "key_from_f4102_to_f4201",
+                        ),
+                        ("f4201_pve", "f4202_dun"): (
+                            "exit_key_lock", "key_from_f4201_to_f4202",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0005_temple_ice_01_dun"): (
+                            "g0004_exit_to_g0005", "key_from_g0004_to_g0005",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0006_temple_water_01_dun"): (
+                            "g0004_exit_to_g0006", "key_from_g0004_to_g0006",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0007_temple_fire_01_dun"): (
+                            "g0004_exit_to_g0007", "key_from_g0004_to_g0007",
+                        ),
                     }
-                    required_key = keyed_routes.get((
+                    keyed_route = keyed_routes.get((
                         gameplay_map.casefold(),
                         clicked_dest.physical_map_id.casefold()
                         if clicked_dest is not None else "",
                     ))
                     if (
                         not candidates
-                        and clicked_authored.exit_id.casefold() == "exit_key_lock"
+                        and keyed_route is not None
+                        and clicked_authored.exit_id.casefold() == keyed_route[0]
                         and clicked_dest is not None
-                        and required_key is not None
                     ):
+                        required_key = keyed_route[1].casefold()
                         known_maps = {
                             map_key(value)
                             for value in getattr(s, "gameplay_unlocked_maps", ())
