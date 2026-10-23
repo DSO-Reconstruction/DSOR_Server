@@ -108,6 +108,10 @@ BASELINE_MAP_EVENT_FLAGS = {
         "a0200_unlock_zumpe",
         "a0200_unlock_fairground_npc",
     }),
+    # The Stillwater Bay travel stone is authored behind this permanent map
+    # event set. Enable it on every entry so the stone is present before the
+    # client renders the map's interactive objects.
+    "g0001_beach_01_dun": frozenset({"g0001_travelstone"}),
     # The classic Parallel Worlds hub authors each chapter portal behind a
     # permanent, map-local EventSet. Keep all of those entrances available
     # alongside Grimmagstone so every chapter can be played through locally.
