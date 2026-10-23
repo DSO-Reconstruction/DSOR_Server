@@ -106,6 +106,10 @@ from dso_server.protocol.quest_protocol import (
     decode_talk,
     quest_log_entry,
 )
+from dso_server.protocol.prop_protocol import (
+    PROP_STATE_ACTIVE,
+    PROP_STATE_USED,
+)
 from dso_server.protocol.reward_protocol import RewardDefinition
 from dso_server.protocol.world_loot_protocol import (
     build_quest_world_drops, quest_item_template_id,
@@ -670,6 +674,24 @@ class QuestService:
                 if state.definition.quest_switch_id
                 and prop_visible_to_player(state.definition, s)
             ]
+        # A one-shot quest prop may be authored for multiple stages in the
+        # same chain. Once a later stage makes its switch live again, restore
+        # the prop so the client can interact with it and the server can
+        # process the new stage's switch.
+        active_switch_props = {
+            int(state.definition.prop_id)
+            for state in states
+            if state.definition.one_shot
+            and self._quest_prop_operation(s, state.definition) is not None
+        }
+        reactivated_props = set()
+        if active_switch_props:
+            with runtime.lock:
+                for prop_id in active_switch_props:
+                    state = runtime.props.get(prop_id)
+                    if state is not None and state.state == PROP_STATE_USED:
+                        state.state = PROP_STATE_ACTIVE
+                        reactivated_props.add(prop_id)
         shown = getattr(s, "gameplay_quest_props_visible", None)
         if shown is None:
             shown = set()
@@ -682,7 +704,7 @@ class QuestService:
                 if prop_id in shown:
                     shown.discard(prop_id)
                     hide.append(prop_id)
-            elif prop_id not in shown:
+            elif prop_id not in shown or prop_id in reactivated_props:
                 shown.add(prop_id)
                 reveal.append((state, operation))
         if hide:
