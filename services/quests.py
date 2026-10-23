@@ -448,6 +448,7 @@ class QuestService:
                     self._quest_on_signal(s, rule.signal_id)
         self._quest_ensure_cult_shaman(s)
         self._quest_ensure_ice_guardian(s)
+        self._quest_ensure_lantern_scout(s)
         # Clear-region objectives drive the client's remaining-monster
         # counter. Retail normally asks for this tracker from the UI, but
         # map-bound challenges can start automatically without that request.
@@ -638,6 +639,65 @@ class QuestService:
             self._quest_publish_ice_guardian(
                 s, runtime, combat, spawned_actor_ids,
             )
+
+    def _quest_ensure_lantern_scout(self, s: Session) -> None:
+        """Spawn the missing Lantern 04 scout when its collect task is active."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "h0006_valley_dun":
+            return
+        quest_id = "h0001-hunt-for-the-lantern-04-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        template_id = "h0006_guardian_hunt_lantern_04_running_sandling_01"
+        target = next((
+            task for task in active_tasks(quest, progress)
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() == template_id.casefold()
+                for event in task.events
+            )
+        ), None)
+        if target is None:
+            return
+        collect_id = "h0006_hunt_for_the_lantern_04_lantern_piece_03"
+        with s.flow_lock:
+            if any(
+                str(getattr(drop, "quest_id", "")).casefold()
+                == quest_id.casefold()
+                and str(getattr(drop, "quest_collect_id", "")).casefold()
+                == collect_id.casefold()
+                for drop in getattr(s, "gameplay_world_loot", {}).values()
+            ):
+                return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            with combat.lock:
+                if any(
+                    (monster := combat.monsters.get(actor_id)) is not None
+                    and monster.template_id.casefold() == template_id.casefold()
+                    for actor_id in combat.alive_actor_ids
+                ):
+                    return
+        # The map DB has no spawn row for the guardian variant. Reuse the
+        # authored Running Sandling anchor; this is where the quest's scout
+        # phase is staged, and the quest data supplies the kill/drop rules.
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            template_id,
+            "",
+            0,
+            "h0006_normal_hunt_lantern_04_running_sandling_normal_spawnpoint",
+        ),))
 
     def _quest_publish_ice_guardian(
             self, s: Session, runtime, combat, actor_ids,
@@ -1646,6 +1706,7 @@ class QuestService:
         self._quest_start_active_holdgrounds(s)
         self._quest_ensure_cult_shaman(s)
         self._quest_ensure_ice_guardian(s)
+        self._quest_ensure_lantern_scout(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -2060,6 +2121,7 @@ class QuestService:
         self._quest_ensure_ice_guardian(s)
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
+        self._quest_ensure_lantern_scout(s)
         for change in result.changes:
             if change.finished:
                 self._quest_fire_signal(
