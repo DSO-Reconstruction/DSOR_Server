@@ -144,6 +144,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # ordinary actor range. Keep the server-spawned Ice Guardians in the
     # secondary range so the client scene cannot reserve their actor ids.
     "g0005_temple_ice_02_dun",
+    # Fjalnir's Cradle of Frost also registers authored guardian SpawnPoints
+    # in the ordinary range; keep corrupted Ice Guardians out of those ids.
+    "g0005_temple_ice_03_dun",
     # Okeanos's Opal Temple has its water guardian at NPC row 1 while the
     # Toltac Shaman occupies monster slot 0. Keep them in separate slots.
     "g0006_temple_water_01_dun",
