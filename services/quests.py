@@ -231,24 +231,53 @@ class QuestService:
                                 ):
                                     targets.add(dialog_actor.casefold())
                                     break
-        if not targets:
-            return frozenset()
-        gated = {
-            definition.template_id.casefold(): definition.event_set_row
-            for definition in load_local_npc_definitions(
-                self.static_database_path,
-                map_id,
-                include_inactive_event_sets=True,
+        flags = set()
+        if targets:
+            gated = {
+                definition.template_id.casefold(): definition.event_set_row
+                for definition in load_local_npc_definitions(
+                    self.static_database_path,
+                    map_id,
+                    include_inactive_event_sets=True,
+                )
+            }
+            declarations = load_local_event_set_flags(
+                self.static_database_path, map_id,
             )
-        }
-        declarations = load_local_event_set_flags(self.static_database_path, map_id)
-        return frozenset({
+            flags.update({
             flag
             for target in targets
             for row in (gated.get(target),)
             if row is not None and row >= 0
             for flag in declarations.get(row, frozenset())
-        })
+            })
+
+        if str(map_id).casefold() == "f4102_dun":
+            railroad_repair_complete = any(
+                quest_id.casefold() == "f4100-railroadbarrier-02-n"
+                and progress.state == QUEST_STATE_CLOSED
+                for quest_id, progress in _quest_log(s).items()
+            )
+            with s.flow_lock:
+                destination_discovered = map_key("f4201_pve") in {
+                    map_key(value)
+                    for value in getattr(s, "gameplay_unlocked_maps", ())
+                }
+                inventory = getattr(s, "gameplay_inventory", None)
+                has_gate_key = bool(
+                    inventory is not None
+                    and any(
+                        str(item.template_id).casefold()
+                        == "key_from_f4102_to_f4201"
+                        for item in inventory.items
+                    )
+                )
+            if railroad_repair_complete or destination_discovered or has_gate_key:
+                # This authored scene flag starts the repaired-train state and
+                # keeps the Yildirimdbi gate available after its quest key is
+                # consumed or the character relogs.
+                flags.add("f4102_train_repair")
+        return frozenset(flags)
 
     @staticmethod
     def _restore_quest_state(s: Session, persisted_state) -> None:
@@ -1334,6 +1363,8 @@ class QuestService:
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest closed")
         self._quest_fire_signal(s, "PlayerClosedQuest", (quest.quest_id,))
+        if quest.key == "f4100-railroadbarrier-02-n":
+            CharacterService._quest_start_f4102_train_repair(self, s)
         CharacterService._achievement_on_quest_closed(self, s, quest.quest_id)
         return True
 
@@ -1859,6 +1890,22 @@ class QuestService:
             fire(self, s, event_type, params)
         except Exception as exc:
             _log(f"signal {event_type} failed: {type(exc).__name__}: {exc}")
+
+    def _quest_start_f4102_train_repair(self, s: Session) -> None:
+        """Persist the authored train/gate scene transition after quest 02."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "f4102_dun":
+            return
+        definition = runtime.catalog.event("f4102_train_repair")
+        if definition is None or not definition.applies_to(runtime.map_id):
+            return
+        with runtime.lock:
+            transition = runtime.begin_event(definition)
+        if transition is not None:
+            CharacterService._apply_map_event_transition(
+                self, runtime, transition,
+            )
 
     def _quest_refresh_map_phases(self, s: Session) -> None:
         """Re-evaluate map-entry phasing after quest state changed mid-map.

@@ -23,6 +23,12 @@ from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 LOGOUT_COUNTDOWN_SECONDS = 10.0
 
+# This regional route can report the client's current f4102 map as ExitURL
+# while the selected MapId or server route points at the hub.
+_LEGACY_EXIT_URL_REDIRECTS = {
+    ("f4102_dun", "f4102_exit_to_f4100"): ("f4100_hub", "f4102_dun"),
+}
+
 
 class MapTransitionService:
     """Validate map exits/travel and coordinate the local server handoff."""
@@ -603,11 +609,28 @@ class MapTransitionService:
             authored_exit_url = str(definition.destination_map_id)
             selected_map_id = str(request.map_id)
             request_exit_url = str(request.exit_url)
+            redirect = _LEGACY_EXIT_URL_REDIRECTS.get((
+                gameplay_map.casefold(), definition.name.casefold(),
+            ))
+            redirected_destination = (
+                redirect[0]
+                if (
+                    redirect is not None
+                    and authored_exit_url.casefold() == redirect[0].casefold()
+                    and request_exit_url.casefold() == redirect[1].casefold()
+                    and selected_map_id.casefold() in {
+                        redirect[0].casefold(), redirect[1].casefold(),
+                    }
+                )
+                else None
+            )
             current_map_representation = (
                 selected_map_id == gameplay_map
                 and request_exit_url == gameplay_map
             )
-            if (
+            if redirected_destination is not None:
+                destination_access_id = redirected_destination
+            elif (
                 self._is_fractured_planes_rift(definition)
                 and CharacterService._is_fractured_planes_run(self, s)
             ):

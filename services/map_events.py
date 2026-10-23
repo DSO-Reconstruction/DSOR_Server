@@ -38,6 +38,7 @@ from dso_server.gameplay.local_map_state import (
     local_npc_actor_id,
     local_npc_info,
     map_database_path,
+    native_scene_exit_variation_entries,
 )
 from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS,
@@ -97,12 +98,14 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.protocol.player_init_protocol import (
     EXIT_INFO_COMMAND,
     KICK_OUT_TO_HUB_LIMIT_TIME_LEFT_COMMAND,
+    VARIATION_INFO_COMMAND,
     EventUpdate,
     EventUpdateEntry,
     ExitInfo,
     ExitInfoEntry,
     KickOutToHubLimitTimeLeft,
     ServerCommand,
+    VariationInfo,
     encode_event_update,
     encode_endless_tower_progress,
     encode_endless_tower_buffs,
@@ -3594,6 +3597,24 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            native_exit_entries = native_scene_exit_variation_entries(
+                runtime.map_id, viewer_definitions,
+            )
+            if native_exit_entries:
+                # Some authored exits start as inactive and have no client
+                # entity yet. ExitInfo only updates the cache; VariationInfo
+                # creates the gate when a map-local event reveals it.
+                packet, packet_bits = encode_server_command_batch((
+                    ServerCommand(
+                        VARIATION_INFO_COMMAND,
+                        VariationInfo(native_exit_entries),
+                        0,
+                    ),
+                ), include_terminator=True)
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="map-event-native-exit-variation-info",
+                )
             for definition in viewer_definitions:
                 is_active = definition.active
                 if active_override is not None:

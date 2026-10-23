@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from contextlib import closing
 import math
 import os
 import sqlite3
 import struct
 from pathlib import Path
+from uuid import NAMESPACE_URL, uuid5
 
 from dso_server.protocol.gameplay_protocol import (
     ActorPlacement,
@@ -28,6 +29,7 @@ from dso_server.protocol.player_init_protocol import (
     VariationInfo,
     VariationInfoEntry,
 )
+from dso_server.gameplay.map_collision_terrain import load_map_collision_terrain
 
 
 LOCAL_NPC_ACTOR_BASE = 0x10000
@@ -39,6 +41,12 @@ LOCAL_NPC_ACTOR_BASE = 0x10000
 # factor new NPC"), which is what hid the tutorial's ranger (row 2) and, in
 # Kingshill, the arena merchant.  NPC ids therefore skip that slot.
 LOCAL_PLAYER_CLIENT_ACTOR_ID = LOCAL_NPC_ACTOR_BASE + 1
+SLAVKOFF_EXTRA_MAP_ID = "f4102_dun"
+SLAVKOFF_NPC_ID = "f4100_quest_guard_captain"
+SLAVKOFF_EXTRA_ROW_ID = 3
+# The f4102_dun collision surface here is Y=-1.0. Keep the NPC root exactly
+# on that surface beside the player entry so it cannot clip below the floor.
+SLAVKOFF_EXTRA_POSITION = (-67.0, -1.0, 91.0)
 
 
 def npc_actor_id_for_row(row_id: int) -> int:
@@ -452,6 +460,30 @@ def load_local_npc_definitions(
                     )
                 continue
             position, rotation = _transform(bytes(row[10]))
+            if (
+                str(map_id).casefold() == "f4100_hub"
+                and str(row[2] or "").casefold()
+                == "f4100_quest_guard_captain"
+            ):
+                # Commander Slavkoff is authored slightly below the rendered
+                # ground in the Myrdosch hub. Keep his X/Z placement but lift
+                # the NPC root onto the closest collision surface so the
+                # client does not clip him into the platform.
+                terrain = load_map_collision_terrain(
+                    path.with_suffix(".map"), path.with_suffix(".col")
+                )
+                ground_heights = terrain.heights_at(
+                    position,
+                    minimum_height=position[1] - 0.25,
+                    maximum_height=position[1] + 0.25,
+                )
+                if ground_heights:
+                    ground_y = min(
+                        ground_heights,
+                        key=lambda height: abs(height - position[1]),
+                    )
+                    if abs(ground_y - position[1]) >= 0.05:
+                        position = (position[0], ground_y, position[2])
             definitions.append(
                 LocalNPCDefinition(
                     # Keep active actor ids stable across event rotations.
@@ -471,6 +503,35 @@ def load_local_npc_definitions(
                     event_set_row=event_set_row,
                 )
             )
+        if str(map_id).casefold() == SLAVKOFF_EXTRA_MAP_ID:
+            # This map has no authored Slavkoff row. Reuse his hub NPC
+            # definition with a map-local GUID and the first free NPC actor
+            # slot so he can be materialized on this map as well.
+            hub_captain = next(
+                (
+                    definition
+                    for definition in load_local_npc_definitions(
+                        static_database_path,
+                        "f4100_hub",
+                        include_inactive_event_sets=True,
+                        active_event_flags=active_event_flags,
+                    )
+                    if definition.instance_id.casefold() == SLAVKOFF_NPC_ID
+                ),
+                None,
+            )
+            if hub_captain is not None:
+                definitions.append(replace(
+                    hub_captain,
+                    actor_id=npc_actor_id_for_row(SLAVKOFF_EXTRA_ROW_ID),
+                    row_id=SLAVKOFF_EXTRA_ROW_ID,
+                    instance_guid=uuid5(
+                        NAMESPACE_URL,
+                        f"dso-server:{SLAVKOFF_EXTRA_MAP_ID}:{SLAVKOFF_NPC_ID}",
+                    ).bytes,
+                    position=SLAVKOFF_EXTRA_POSITION,
+                    event_set_row=-1,
+                ))
         if os.getenv("DSO_NPC_TRACE") == "1":
             print(
                 "[npc-trace]   SENT "
@@ -691,19 +752,33 @@ def load_local_map_exits(
             ):
                 continue
             position, _rotation = _transform(bytes(row[5]))
+            destination_map_id = str(row[3] or "").strip()
+            destination_entry_name = str(row[4] or "").strip()
+            if (
+                str(map_id).casefold() == "f4102_dun"
+                and str(row[1] or "").casefold() == "exit_key_lock"
+                and destination_map_id.casefold() == "f4201_pve"
+                and "f4102_train_repair" in active_local_map_event_flags(
+                    map_id, active_event_flags
+                )
+            ):
+                # Completing the railroad repair quest switches the authored
+                # locked portal to the usable Yildirimdbi route.
+                row_active = True
+            else:
+                row_active = str(row[7] or "").casefold() == "active"
             exits.append(
                 LocalMapExit(
                     instance_guid=bytes(row[0]),
                     exit_id=str(row[1] or ""),
                     name=str(row[2] or row[1] or ""),
-                    destination_map_id=str(row[3] or "").strip(),
-                    destination_entry_name=str(row[4] or "").strip(),
+                    destination_map_id=destination_map_id,
+                    destination_entry_name=destination_entry_name,
                     position=position,
                     picking_range=max(1.0, float(row[6] or 0.0)),
-                    active=(
-                        str(row[7] or "").casefold() == "active"
-                        and (event_set_row < 0 or event_set_row in enabled_event_sets)
-                    ),
+                    active=(row_active and (
+                        event_set_row < 0 or event_set_row in enabled_event_sets
+                    )),
                     event_set_row=event_set_row,
                 )
             )
@@ -900,6 +975,10 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Railroad repair reveals the authored gate from Piritlidag to Yildirimdbi.
+    "f4102_dun": ("f4201_pve",),
+    # Yildirimdbi's authored return exit leads back to Piritlidag.
+    "f4201_pve": ("f4102_dun",),
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
     "a0402_culttower01": ("a0403_culttower02",),
@@ -926,6 +1005,33 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "c2302_dun": ("c2303_dun",),
     "c2303_dun": ("c2302_dun", "c2304_boss"),
 }
+
+
+def native_scene_exit_variation_entries(
+    map_id: str,
+    exits: tuple[LocalMapExit, ...],
+) -> tuple[VariationInfoEntry, ...]:
+    """Build client entities for active exits absent from the loaded scene."""
+
+    targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
+    return tuple(
+        VariationInfoEntry(definition.instance_guid, -1)
+        for definition in exits
+        if (
+            definition.active
+            and any(
+                definition.destination_map_id.casefold().startswith(target)
+                for target in targets
+            )
+            # Piritlidag's extracted map contains repeated generic exits at
+            # this position. The key-lock row is the authored gate entity;
+            # materialize only that GUID to avoid stacking duplicate portals.
+            and (
+                str(map_id).casefold() != "f4102_dun"
+                or definition.name.casefold() == "f4102_exit_to_f4201"
+            )
+        )
+    )
 
 
 def load_local_map_initialization(
@@ -956,6 +1062,17 @@ def load_local_map_initialization(
         include_inactive_event_sets=include_inactive_event_sets,
         active_event_flags=active_event_flags,
     )
+    if str(map_id).casefold() == "f4100_hub":
+        # Slavkoff is the hub's primary quest captain and is late in the large
+        # 185-NPC scene catalog. Register him before the decorative NPC batch.
+        all_definitions = tuple(sorted(
+            all_definitions,
+            key=lambda definition: (
+                0 if definition.instance_id.casefold()
+                == "f4100_quest_guard_captain" else 1,
+                definition.row_id,
+            ),
+        ))
     required = {value.casefold() for value in required_professions}
     definitions = tuple(
         definition
@@ -1004,25 +1121,17 @@ def load_local_map_initialization(
             all_exit_definitions,
             exit_definitions,
         )
-        targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
-        native_exits = tuple(
-            definition for definition in exit_definitions
-            if definition.active and any(
-                definition.destination_map_id.casefold().startswith(target)
-                for target in targets
-            )
+        native_exit_entries = native_scene_exit_variation_entries(
+            map_id, exit_definitions,
         )
-        if native_exits:
+        if native_exit_entries:
             # ExitInfo only updates existing entities. The client handler for
             # VariationInfo (release261_192 0x1401d4ce0) factory-creates missing
             # entities by their map GUID. EventSetRow -1 is unconditional in
             # ClientEventSystem::IsGameObjectActive (0x1401fba74).
             commands.append(ServerCommand(
                 VARIATION_INFO_COMMAND,
-                VariationInfo(tuple(
-                    VariationInfoEntry(definition.instance_guid, -1)
-                    for definition in native_exits
-                )),
+                VariationInfo(native_exit_entries),
                 0,
             ))
         return tuple(commands), ExitInfo(exits)
