@@ -1901,6 +1901,8 @@ class _MonsterSpawnArea:
     spawn_list_id: str
     density: float
     priority: int
+    min_champion_spawn: int
+    max_champion_spawn: int
 
     @property
     def width(self) -> float:
@@ -2049,7 +2051,9 @@ def _load_spawn_areas(
             """
             SELECT rowid, COALESCE(ParentNodeIndex, 0),
                    COALESCE(EventSetRow, -1), Transform,
-                   COALESCE(SpawnListId, ''), SpawnPerMeter, Priority
+                   COALESCE(SpawnListId, ''), SpawnPerMeter, Priority,
+                   COALESCE(MinChampionSpawn, 0),
+                   COALESCE(MaxChampionSpawn, 0)
             FROM _Instance_SpawnArea
             WHERE COALESCE(SpawnPerMeter, 0)>0
               AND COALESCE(Priority, 0)<999
@@ -2068,6 +2072,8 @@ def _load_spawn_areas(
         spawn_list_id,
         density,
         priority,
+        min_champion_spawn,
+        max_champion_spawn,
     ) in rows:
         event_set_row = int(event_set_row)
         if (
@@ -2088,6 +2094,8 @@ def _load_spawn_areas(
             str(spawn_list_id),
             max(0.0, float(density)),
             int(priority),
+            max(0, int(min_champion_spawn or 0)),
+            max(0, int(max_champion_spawn or 0)),
         )
         if area.horizontal_area > 1e-4:
             result.append(area)
@@ -3200,6 +3208,59 @@ def _load_dynamic_monster_encounter(
                 ):
                     spawn_area_monster_count += 1
                     break
+
+    if str(map_id).casefold() == "f4201_pve":
+        # The authored tank_dwarf_dragon SpawnArea requests one or two
+        # champions, but the retail SpawnList registry is absent from the
+        # server data. The ordinary pool contains Rank_monster templates only,
+        # so its Dragon Berserker commanders were silently omitted.
+        for area in spawn_areas:
+            if (
+                area.spawn_list_id.casefold() != "tank_dwarf_dragon"
+                or area.max_champion_spawn <= 0
+            ):
+                continue
+            template_id = "f4201_s_champion_gen_dragon_berserker"
+            if _load_runtime_definition(
+                static_database_path, template_id, 0,
+            ) is None:
+                continue
+            excluded_areas = tuple(
+                other for other in spawn_areas
+                if other.priority > area.priority
+            )
+            candidates = _grounded_spawn_area_candidates(
+                navigation,
+                terrain,
+                area,
+                area.candidate_positions(),
+                excluded_areas=excluded_areas,
+                allowed_component=allowed_component,
+            )
+            candidates = tuple(
+                position for position in candidates
+                if not inside_protected_waypoint(position)
+            )
+            if not candidates:
+                continue
+            # The map authors a minimum of one and a maximum of two for this
+            # champion area; use its upper bound so the plural commander group
+            # is consistently present in the server's map population.
+            champion_count = min(area.max_champion_spawn, len(candidates))
+            for ordinal in range(champion_count):
+                index = min(
+                    len(candidates) - 1,
+                    math.floor(
+                        (ordinal + 0.5) * len(candidates) / champion_count
+                    ),
+                )
+                if append_monster(
+                    template_id,
+                    allocate_actor_id(),
+                    candidates[index],
+                    resolve_projected_overlap=True,
+                ):
+                    spawn_area_monster_count += 1
 
     # Some shipped maps place all authored spawn transforms on disconnected
     # event/scenery islands relative to the selected entry point. They remain
