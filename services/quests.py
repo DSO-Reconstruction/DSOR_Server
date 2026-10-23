@@ -1916,6 +1916,9 @@ class QuestService:
             # The Opal Shrine guardian defense scene is not simulated; taking
             # the quest in Gün Batımı should count the guardian as defended.
             "g0004_corrupted_jungle_01_pve": ("g0004-TempleOfWater-01-n",),
+            # Okeanos's guardian defense scene inside the Opal Shrine is also
+            # not simulated; accepting its sixth chapter quest counts it done.
+            "g0006_temple_water_01_dun": ("g0006-TempleOfWater-08-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
