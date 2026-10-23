@@ -71,6 +71,10 @@ from dso_server.gameplay.map_event_state import (
     map_key,
     prop_visible_to_player,
 )
+from dso_server.gameplay.quest_content import (
+    QUEST_STATE_ACCEPTED,
+    active_tasks,
+)
 from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
@@ -2344,12 +2348,38 @@ class MapEventService:
             )
         combat = getattr(s, "gameplay_combat_state", None)
         if runtime.map_id.casefold() == "h0008_boss":
-            # A direct boss-ration arrival has no preceding lamp interaction.
-            # Start the authored encounter (including its real Djinn spawn),
-            # rather than leaving this dedicated arena with only its socket.
-            djinn_event = runtime.catalog.event("h0008_start_bossfight_01")
-            if djinn_event is not None and djinn_event.applies_to(runtime.map_id):
-                self._schedule_map_local_event_start(runtime, djinn_event)
+            # The Lantern 09 quest must let the player place the lamp before
+            # the Djinn encounter starts. Its authored prop signal starts the
+            # same event after interaction; only direct arena arrivals need
+            # the entry fallback.
+            lantern_quest_id = "h0001-hunt-for-the-lantern-09-n"
+            lantern_quest = CharacterService._quest_catalog(self).quest(
+                lantern_quest_id
+            )
+            lantern_progress = next((
+                progress
+                for quest_id, progress in (getattr(s, "gameplay_quest_log", None) or {}).items()
+                if str(quest_id).casefold() == lantern_quest_id
+            ), None)
+            lamp_task_active = bool(
+                lantern_quest is not None
+                and lantern_progress is not None
+                and lantern_progress.state == QUEST_STATE_ACCEPTED
+                and any(
+                    task.title.casefold()
+                    == "h0001-hunt-for-the-lantern-09-interact-02"
+                    for task in active_tasks(lantern_quest, lantern_progress)
+                )
+            )
+            if not lamp_task_active:
+                djinn_event = runtime.catalog.event("h0008_start_bossfight_01")
+                if djinn_event is not None and djinn_event.applies_to(runtime.map_id):
+                    self._schedule_map_local_event_start(runtime, djinn_event)
+            else:
+                _log(
+                    "deferred Djinn encounter on entry for the active Lantern 09 "
+                    "lamp-placement objective"
+                )
         with runtime.lock:
             entrance_started = "boss_spawn" in runtime.running
         if entrance_started:
