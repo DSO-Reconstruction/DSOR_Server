@@ -198,14 +198,16 @@ class QuestService:
         that ran it, so a character that relogs after the reveal but before
         the meeting finds nobody standing there and can never finish the
         task. The quest log is the durable record of how far the player got,
-        so open encounter/talk steps and finished quest goal NPCs re-activate
-        the flags their target NPC is authored behind.
+        so open encounter/talk steps, finished quest goal NPCs, and givers for
+        currently available quests re-activate the flags their target NPC is
+        authored behind.
         """
 
         wanted = {str(map_id).casefold()}
         catalog = self._quest_catalog()
         targets = set()
-        for quest_id, progress in _quest_log(s).items():
+        log = _quest_log(s)
+        for quest_id, progress in log.items():
             quest = catalog.quest(quest_id)
             if quest is None:
                 continue
@@ -235,16 +237,46 @@ class QuestService:
                                 ):
                                     targets.add(dialog_actor.casefold())
                                     break
+        # Some quest givers are themselves hidden behind an EventSet. Once a
+        # prerequisite is turned in, the next quest becomes available, but
+        # there may be no active quest left whose encounter target reveals the
+        # giver. Reveal eligible givers using the same availability rules used
+        # when composing NPC quest offers.
+        class_name, level = _character_facts(s)
+        closed = [
+            quest_id for quest_id, progress in log.items()
+            if progress.state == QUEST_STATE_CLOSED
+        ]
+        active_events = self._quest_active_events(s)
+        try:
+            npc_definitions = load_local_npc_definitions(
+                self.static_database_path,
+                map_id,
+                include_inactive_event_sets=True,
+            )
+        except Exception as exc:
+            _log(
+                f"quest NPC reveal lookup failed on {map_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            npc_definitions = ()
+        gated = {
+            definition.template_id.casefold(): definition.event_set_row
+            for definition in npc_definitions
+            if definition.event_set_row >= 0
+        }
+        for npc_template_id in gated:
+            if any(catalog.available(
+                quest,
+                class_name=class_name,
+                level=level,
+                closed_quests=closed,
+                known_quests=log.keys(),
+                active_events=active_events,
+            ) for quest in catalog.offered_by(npc_template_id)):
+                targets.add(npc_template_id)
         flags = set()
         if targets:
-            gated = {
-                definition.template_id.casefold(): definition.event_set_row
-                for definition in load_local_npc_definitions(
-                    self.static_database_path,
-                    map_id,
-                    include_inactive_event_sets=True,
-                )
-            }
             declarations = load_local_event_set_flags(
                 self.static_database_path, map_id,
             )
@@ -1385,6 +1417,17 @@ class QuestService:
         self._send_quest_commands(s, self._quest_state_commands(
             s, quest.quest_id, QUEST_STATE_CLOSED, progress.completed_at,
         ), label="quest-turn-in")
+        # Closing a prerequisite can make an EventSet-gated follow-up giver
+        # available on the same map. Publish the new per-character reveal
+        # state before sending the NPC refresh.
+        try:
+            if self._quest_reveal_flags(s, s.gameplay_map or ""):
+                self._quest_refresh_event_state(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after turn-in failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
@@ -1792,6 +1835,10 @@ class QuestService:
             # Kavlin Lefve's defense scene is not simulated; accepting the
             # quest should mark its authored hold-ground objective complete.
             "g0001_beach_01_dun": ("g0001-InvestigateCorruption-01-n",),
+            # Yohuac's defense scene is not simulated; accepting the quest
+            # should complete its hold-ground objective before the collection
+            # tasks become active.
+            "g0002_jungle_01_dun": ("g0002-TheTribe-03-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
