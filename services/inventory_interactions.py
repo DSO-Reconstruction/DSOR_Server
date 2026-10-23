@@ -6,7 +6,12 @@ import time
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
-from dso_server.gameplay.local_map_state import LocalNPCDefinition, local_npc_actor_id
+from dso_server.gameplay.local_map_state import (
+    LocalNPCDefinition,
+    load_local_event_set_flags,
+    load_local_npc_definitions,
+    local_npc_actor_id,
+)
 from dso_server.protocol.gameplay_protocol import ENCOUNTER_COMMAND
 
 
@@ -292,15 +297,20 @@ class InventoryInteractionService:
             )
         except Exception:
             scheduled = frozenset()
-        # Quest reveal only covers sets no map-local event can drive (hub
-        # smith_01/spellweaver_01). Event-driven sets (tutorial spellweaver)
-        # stay gated on the running event so the instance's phasing and the
-        # relog-republish test keep their meaning.
+        # Quest reveal does not override server-driven map-local events;
+        # those sets stay gated on the running event so instance phasing is
+        # preserved. Client-only events cannot be started by the server
+        # runtime, however, so their per-player quest reveal flag must remain
+        # eligible when resolving the quest NPC behind that event set.
         try:
             catalog = runtime.catalog
             reveal = frozenset(
                 flag for flag in reveal
-                if (lambda ev: ev is None or not ev.applies_to(gameplay_map))(
+                if (lambda ev: (
+                    ev is None
+                    or not ev.applies_to(gameplay_map)
+                    or ev.client_only
+                ))(
                     catalog.event(str(flag).casefold())
                 )
             )
@@ -346,7 +356,8 @@ class InventoryInteractionService:
                     )
             return result
         # Static-scene NPCs may request their role with actor zero before
-        # their dynamic actor is attached. Keep the existing proximity limit.
+        # their dynamic actor is attached. Prefer the normal close-range
+        # lookup first.
         with s.flow_lock:
             encounter = s.gameplay_monster_encounter
             last_move = s.gameplay_last_move
@@ -367,7 +378,47 @@ class InventoryInteractionService:
             )
 
         definition = min(definitions, key=distance, default=None)
-        return definition if definition is not None and distance(definition) <= 8.0 else None
+        if definition is not None and distance(definition) <= 8.0:
+            return definition
+
+        # A quest-gated NPC can be clickable through the client's generic
+        # actor-zero lookup before the player is close enough for the usual
+        # interaction range. Resolve only a target revealed by this character's
+        # active quest, and only within a short approach radius.
+        try:
+            map_id = s.gameplay_map or DEFAULT_GAMEPLAY_MAP
+            reveal = CharacterService._quest_reveal_flags(self, s, map_id)
+            if not reveal:
+                return None
+            event_sets = load_local_event_set_flags(
+                self.static_database_path, map_id,
+            )
+            targets = load_local_npc_definitions(
+                self.static_database_path, map_id,
+                include_inactive_event_sets=True,
+            )
+            quest_targets = tuple(
+                candidate for candidate in targets
+                if int(getattr(candidate, "event_set_row", -1)) >= 0
+                and event_sets.get(
+                    int(candidate.event_set_row), frozenset(),
+                ) & reveal
+            )
+            target = min(quest_targets, key=distance, default=None)
+            if target is not None and distance(target) <= 24.0:
+                if NPC_TRACE:
+                    print(
+                        f"[NPC-TRACE] actor zero resolved quest target "
+                        f"{target.template_id!r} at {distance(target):.1f}m"
+                    )
+                return target
+        except Exception as exc:
+            if NPC_TRACE:
+                print(
+                    f"[NPC-TRACE] actor-zero quest target lookup failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        return None
 
     def _process_npc_interaction(self, s: Session, actor_id: int, *, label: str) -> None:
         definition = CharacterService._resolve_npc_interaction(self, s, actor_id)
@@ -387,9 +438,33 @@ class InventoryInteractionService:
             )
             return
 
-        # Quests: an encounter with the NPC advances CompleteTasks first, so
-        # the dialog that follows already offers the turn-in (retail order).
-        CharacterService._quest_on_npc_encounter(self, s, definition.template_id)
+        # Actor zero can be a map-load lookup rather than an actual encounter.
+        # Return the target NPCInfo while the player approaches, but only feed
+        # quest progress once the lookup is inside the normal interaction range.
+        in_interaction_range = True
+        if int(actor_id) == 0:
+            with s.flow_lock:
+                encounter = s.gameplay_monster_encounter
+                last_move = s.gameplay_last_move
+                spawn_position = s.gameplay_spawn_position
+            player_position = (
+                encounter.coordinate_frame.wire_to_world(
+                    last_move.relative_position
+                )
+                if encounter is not None and last_move is not None
+                else spawn_position
+            )
+            if player_position is not None:
+                in_interaction_range = math.hypot(
+                    definition.position[0] - player_position[0],
+                    definition.position[2] - player_position[2],
+                ) <= 8.0
+        if in_interaction_range:
+            # An encounter advances CompleteTasks first, so the dialog that
+            # follows already offers the turn-in (retail order).
+            CharacterService._quest_on_npc_encounter(
+                self, s, definition.template_id,
+            )
         npc_info = CharacterService._quest_decorate_npc_info(
             # Actor 0 is a client-side proximity lookup, not the NPC's
             # identity. Once resolved, return NPCInfo under the concrete

@@ -136,6 +136,37 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # overlaps the first server monster actor slot on clients that register
     # scene SpawnPoints in the ordinary 0x30000 range.
     "f4101_pve",
+    # Fjalnir's Cradle of Frost has its quest child at NPC row 1 while the
+    # Ice Guardian occupies the first server monster slot. Keep the monster
+    # out of slot 0 so its status effects cannot resolve to that NPC.
+    "g0005_temple_ice_01_dun",
+    # Fjalnir's Temple registers its authored guardian SpawnPoints in the
+    # ordinary actor range. Keep the server-spawned Ice Guardians in the
+    # secondary range so the client scene cannot reserve their actor ids.
+    "g0005_temple_ice_02_dun",
+    # Fjalnir's Cradle of Frost also registers authored guardian SpawnPoints
+    # in the ordinary range; keep corrupted Ice Guardians out of those ids.
+    "g0005_temple_ice_03_dun",
+    # Fyrgon's Fire Path starts with authored Fire Guardian SpawnPoints in
+    # the ordinary range. Keep server monsters out of the same actor ids.
+    "g0007_temple_fire_01_dun",
+    # The Death Cradle client scene registers its authored SpawnPoints in the
+    # ordinary range. Keep server monsters in the secondary range so those
+    # scene actors cannot mask mobs in the Blood Cascade and Skull Pit.
+    "g0011_temple_death_01_dun",
+    # Okeanos's Opal Temple has its water guardian at NPC row 1 while the
+    # Toltac Shaman occupies monster slot 0. Keep them in separate slots.
+    "g0006_temple_water_01_dun",
+    # The Cradle of Life's client scene registers authored guardian
+    # SpawnPoints in the ordinary actor range. Keep the Life Guardian and
+    # server-spawned monsters in the secondary range to prevent collisions.
+    "g0010_temple_life_01_dun",
+    # Artaya's special chamber registers its three quest guardians as client
+    # scene actors in the ordinary range. Keep their server actors separate.
+    "g0015_temple_life_md_01",
+    # Sunset has Ozzlan as authored SpawnPoint row 1. The client scene can
+    # register that row at 0x30000, hiding the server's first monster actor.
+    "g0004_corrupted_jungle_01_pve",
     # Pırıltıdağ's scene registers authored SpawnPoints in the ordinary
     # monster actor range too. The first row is Commander Slavkoff, so starting
     # server monsters at 0x30000 collides with his client scene actor and hides
@@ -161,6 +192,9 @@ def map_monster_actor_base(
         # authored SpawnPoints. Keep server monsters in the secondary range,
         # as on boss arenas, so NewMonster cannot collide with them.
         or map_id.casefold() in _CLIENT_SCENE_ACTOR_ID_MAPS
+        # Mühürlü Mezar's g0013 map family also uses client-owned scene actor
+        # ids; keep its Toltac High Shamans in the server-only range.
+        or map_id.casefold().startswith("g0013_")
         or load_map_encounter_policy(static_database_path, map_id).is_boss_room
     )
     return LOCAL_MONSTER_ACTOR_BASE + (0x1000 if is_boss else 0)
@@ -2131,6 +2165,7 @@ def _grounded_spawn_position(
     *,
     reference_position: tuple[float, float, float] | None = None,
     max_horizontal_distance: float | None = None,
+    prefer_navigation_height: bool = False,
 ) -> tuple[float, float, float]:
     reference = reference_position or position
     if not isinstance(navigation, PathEngineNavigationMesh):
@@ -2144,7 +2179,9 @@ def _grounded_spawn_position(
         try:
             return terrain.project_position(
                 projected,
-                reference_height=reference[1],
+                reference_height=(
+                    projected[1] if prefer_navigation_height else reference[1]
+                ),
             )
         except CollisionTerrainError:
             pass
@@ -2165,6 +2202,7 @@ def _grounded_spawn_area_candidates(
     *,
     excluded_areas: tuple[_MonsterSpawnArea, ...] = (),
     allowed_component: int | None = None,
+    prefer_navigation_height: bool = False,
 ) -> tuple[tuple[float, float, float], ...]:
     """Place a density grid only on concrete walkable surface triangles."""
 
@@ -2232,7 +2270,11 @@ def _grounded_spawn_area_candidates(
             if terrain is not None:
                 projected = terrain.project_position(
                     projected,
-                    reference_height=area.center[1],
+                    reference_height=(
+                        projected[1]
+                        if prefer_navigation_height
+                        else area.center[1]
+                    ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
                 )
@@ -2265,7 +2307,11 @@ def _grounded_spawn_area_candidates(
             try:
                 position = terrain.project_position(
                     centroid,
-                    reference_height=area.center[1],
+                    reference_height=(
+                        centroid[1]
+                        if prefer_navigation_height
+                        else area.center[1]
+                    ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
                 )
@@ -2431,6 +2477,11 @@ def _navigation_for_map(
             # separate components at the generic cutoff; a 0.75 m
             # connection restores the authored walkable route.
             "c2200_hub": 0.75,
+            # Fjalnir's Temple has an authored bridge whose walkable
+            # PathEngine portals are narrower than 1 m. The default cutoff
+            # isolates the player's approach triangle and movement validation
+            # repeatedly snaps the character backward at the bridge.
+            "g0005_temple_ice_02_dun": 0.8,
             # The Honor Barracks passage to B'Orlok is authored below 1 m.
             "c2202_pve": 0.9,
             # Cloud bridge connections are authored as very narrow PathEngine
@@ -2472,6 +2523,9 @@ def _load_dynamic_monster_encounter(
 ) -> LocalMonsterEncounter | None:
     """Load fixed and density-driven hostile population from a map database."""
 
+    prefer_navigation_height = (
+        str(map_id).casefold() == "g0011_temple_death_01_dun"
+    )
     encounter_policy = load_map_encounter_policy(
         static_database_path, map_id
     )
@@ -2771,6 +2825,7 @@ def _load_dynamic_monster_encounter(
                 position,
                 reference_position=position,
                 max_horizontal_distance=max_navigation_snap_distance,
+                prefer_navigation_height=prefer_navigation_height,
             )
             if (
                 not keep_story_boss_at_authored_position
@@ -2828,6 +2883,7 @@ def _load_dynamic_monster_encounter(
                         candidate,
                         reference_position=position,
                         max_horizontal_distance=1.0,
+                        prefer_navigation_height=prefer_navigation_height,
                     )
                 except NavigationError:
                     continue
@@ -3114,6 +3170,7 @@ def _load_dynamic_monster_encounter(
             raw_candidates,
             excluded_areas=excluded_areas,
             allowed_component=allowed_component,
+            prefer_navigation_height=prefer_navigation_height,
         )
         candidates = tuple(
             position
@@ -3243,6 +3300,7 @@ def _load_dynamic_monster_encounter(
                 area.candidate_positions(),
                 excluded_areas=excluded_areas,
                 allowed_component=allowed_component,
+                prefer_navigation_height=prefer_navigation_height,
             )
             candidates = tuple(
                 position for position in candidates

@@ -108,6 +108,10 @@ BASELINE_MAP_EVENT_FLAGS = {
         "a0200_unlock_zumpe",
         "a0200_unlock_fairground_npc",
     }),
+    # The Stillwater Bay travel stone is authored behind this permanent map
+    # event set. Enable it on every entry so the stone is present before the
+    # client renders the map's interactive objects.
+    "g0001_beach_01_dun": frozenset({"g0001_travelstone"}),
     # The classic Parallel Worlds hub authors each chapter portal behind a
     # permanent, map-local EventSet. Keep all of those entrances available
     # alongside Grimmagstone so every chapter can be played through locally.
@@ -754,6 +758,8 @@ def load_local_map_exits(
 _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # These maps author a separate scene exit for every access difficulty.
     # Crypt of Kings has both a return gate and a boss gate.
+    "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
+    "g0002_jungle_01_dun": ("g0001_beach_01_dun",),
     "f4202_dun": ("f4203_boss", "f4203_boss_scale"),
     "a0202_kingscrypt01": ("a0203_kingscrypt02",),
     "a0203_kingscrypt02": ("a0202_kingscrypt01", "a0204_boss"),
@@ -976,6 +982,14 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # The Frog River Delta gate is authored in the exit table but missing
+    # from the loaded Stillwater Bay scene; create the selected tier entity.
+    "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
+    # The return gate is also absent from the Frog River Delta scene.
+    "g0002_jungle_01_dun": ("g0001_beach_01_dun",),
+    # The Temple of Ice gate is authored in the exit table but missing from
+    # the loaded Cradle of Frost scene; create its exit entity by GUID.
+    "g0005_temple_ice_01_dun": ("g0005_temple_ice_02_dun",),
     # Railroad repair reveals the authored gate from Piritlidag to Yildirimdbi.
     "f4102_dun": ("f4201_pve",),
     # Yildirimdbi's authored return exit leads back to Piritlidag.

@@ -549,24 +549,62 @@ class MapTransitionService:
                     # These regional routes are authored as inactive locked
                     # exits, but the client still sends UnlockMap for the
                     # clicked scene entity. The server should accept that
-                    # request with its matching access key, then remember the
-                    # destination after entry so later trips no longer need it.
+                    # request with its matching key, then remember the map on
+                    # entry so later trips no longer need the key.
                     keyed_routes = {
-                        ("f4101_pve", "f4100_hub"): "key_from_f4101_to_f4100",
-                        ("f4102_dun", "f4201_pve"): "key_from_f4102_to_f4201",
-                        ("f4201_pve", "f4202_dun"): "key_from_f4201_to_f4202",
+                        ("f4101_pve", "f4100_hub"): (
+                            "exit_key_lock", "key_from_f4101_to_f4100",
+                        ),
+                        ("f4102_dun", "f4201_pve"): (
+                            "exit_key_lock", "key_from_f4102_to_f4201",
+                        ),
+                        ("f4201_pve", "f4202_dun"): (
+                            "exit_key_lock", "key_from_f4201_to_f4202",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0005_temple_ice_01_dun"): (
+                            "g0004_exit_to_g0005", "key_from_g0004_to_g0005",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0006_temple_water_01_dun"): (
+                            "g0004_exit_to_g0006", "key_from_g0004_to_g0006",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0007_temple_fire_01_dun"): (
+                            "g0004_exit_to_g0007", "key_from_g0004_to_g0007",
+                        ),
+                        ("g0004_corrupted_jungle_01_pve", "g0009_templecity_01_pve"): (
+                            "g0004_exit_to_g0009", "key_from_g0004_to_g0009",
+                        ),
+                        ("g0009_templecity_01_pve", "g0010_temple_life_01_dun"): (
+                            "g0009_exit_to_g0010", "key_from_g0009_to_g0010",
+                        ),
+                        ("g0009_templecity_01_pve", "g0011_temple_death_01_dun"): (
+                            "g0009_exit_to_g0011", "key_from_g0009_to_g0011",
+                        ),
                     }
-                    required_key = keyed_routes.get((
+                    keyed_route = keyed_routes.get((
                         gameplay_map.casefold(),
                         clicked_dest.physical_map_id.casefold()
                         if clicked_dest is not None else "",
                     ))
                     if (
-                        not candidates
-                        and clicked_authored.exit_id.casefold() == "exit_key_lock"
-                        and clicked_dest is not None
-                        and required_key is not None
+                        keyed_route is None
+                        and gameplay_map.casefold() == "g0009_templecity_01_pve"
+                        and clicked_authored.exit_id.casefold()
+                        == "g0009_exit_to_g0013"
                     ):
+                        # The Secret Grave route's physical destination varies
+                        # with its authored access group. Match its stable exit
+                        # and use the same key/discovery gate as nearby routes.
+                        keyed_route = (
+                            "g0009_exit_to_g0013",
+                            "key_from_g0009_to_g0013",
+                        )
+                    if (
+                        not candidates
+                        and keyed_route is not None
+                        and clicked_authored.exit_id.casefold() == keyed_route[0]
+                        and clicked_dest is not None
+                    ):
+                        required_key = keyed_route[1].casefold()
                         known_maps = {
                             map_key(value)
                             for value in getattr(s, "gameplay_unlocked_maps", ())

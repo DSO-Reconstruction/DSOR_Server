@@ -45,6 +45,7 @@ from dso_server.gameplay.quest_content import (
     QuestCatalog,
     QuestDefinition,
     QuestProgress,
+    QuestSpawn,
     active_prop_switches,
     active_tasks,
     apply_quest_event,
@@ -74,6 +75,7 @@ from dso_server.protocol.player_init_protocol import (
     ChapterProgress,
     QuestLogInfo,
     ServerCommand,
+    encode_event_update,
     encode_server_command_batch,
 )
 from dso_server.protocol.quest_protocol import (
@@ -104,6 +106,10 @@ from dso_server.protocol.quest_protocol import (
     decode_quest_indication_request,
     decode_talk,
     quest_log_entry,
+)
+from dso_server.protocol.prop_protocol import (
+    PROP_STATE_ACTIVE,
+    PROP_STATE_USED,
 )
 from dso_server.protocol.reward_protocol import RewardDefinition
 from dso_server.protocol.world_loot_protocol import (
@@ -191,26 +197,48 @@ class QuestService:
         return active
 
     def _quest_reveal_flags(self, s: Session, map_id: str) -> frozenset[str]:
-        """Declare the event sets a live quest's meeting target hides behind.
+        """Declare the event sets active and finished quest targets hide behind.
 
         A map-local event reveals its EventSet content only in the instance
         that ran it, so a character that relogs after the reveal but before
         the meeting finds nobody standing there and can never finish the
         task. The quest log is the durable record of how far the player got,
-        so its open encounter/talk steps re-activate the flags their target
-        NPC is authored behind.
+        so open encounter/talk steps, finished quest goal NPCs, and givers for
+        currently available quests re-activate the flags their target NPC is
+        authored behind.
         """
 
         wanted = {str(map_id).casefold()}
         catalog = self._quest_catalog()
         targets = set()
-        for quest_id, progress in _quest_log(s).items():
+        log = _quest_log(s)
+        for quest_id, progress in log.items():
             quest = catalog.quest(quest_id)
             if quest is None:
                 continue
+            if progress.state == QUEST_STATE_FINISHED and quest.goal:
+                # Keep a finished quest's turn-in NPC visible after a relog.
+                targets.add(quest.goal.casefold())
             for task in active_tasks(quest, progress):
                 if task.maps and not task.maps & wanted:
                     continue
+                if (
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal
+                    and task.is_done(progress.tokens)
+                ):
+                    # Eventless CompleteTask objectives are completed by
+                    # encountering the goal NPC. Keep that actor's EventSet
+                    # visible after the preceding delivery/task finishes.
+                    targets.add(quest.goal.casefold())
+                # A delivery task has no encounter/talk event to keep its
+                # recipient's EventSet visible. Preserve that NPC while the
+                # hand-in is active, including after a map re-entry.
+                targets.update(
+                    barter.actor.casefold()
+                    for barter in task.barters
+                    if barter.actor and barter.live(progress.tokens)
+                )
                 for event in task.events:
                     if not event.value:
                         continue
@@ -231,16 +259,46 @@ class QuestService:
                                 ):
                                     targets.add(dialog_actor.casefold())
                                     break
+        # Some quest givers are themselves hidden behind an EventSet. Once a
+        # prerequisite is turned in, the next quest becomes available, but
+        # there may be no active quest left whose encounter target reveals the
+        # giver. Reveal eligible givers using the same availability rules used
+        # when composing NPC quest offers.
+        class_name, level = _character_facts(s)
+        closed = [
+            quest_id for quest_id, progress in log.items()
+            if progress.state == QUEST_STATE_CLOSED
+        ]
+        active_events = self._quest_active_events(s)
+        try:
+            npc_definitions = load_local_npc_definitions(
+                self.static_database_path,
+                map_id,
+                include_inactive_event_sets=True,
+            )
+        except Exception as exc:
+            _log(
+                f"quest NPC reveal lookup failed on {map_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            npc_definitions = ()
+        gated = {
+            definition.template_id.casefold(): definition.event_set_row
+            for definition in npc_definitions
+            if definition.event_set_row >= 0
+        }
+        for npc_template_id in gated:
+            if any(catalog.available(
+                quest,
+                class_name=class_name,
+                level=level,
+                closed_quests=closed,
+                known_quests=log.keys(),
+                active_events=active_events,
+            ) for quest in catalog.offered_by(npc_template_id)):
+                targets.add(npc_template_id)
         flags = set()
         if targets:
-            gated = {
-                definition.template_id.casefold(): definition.event_set_row
-                for definition in load_local_npc_definitions(
-                    self.static_database_path,
-                    map_id,
-                    include_inactive_event_sets=True,
-                )
-            }
             declarations = load_local_event_set_flags(
                 self.static_database_path, map_id,
             )
@@ -277,6 +335,18 @@ class QuestService:
                 # keeps the Yildirimdbi gate available after its quest key is
                 # consumed or the character relogs.
                 flags.add("f4102_train_repair")
+
+        if str(map_id).casefold() == "g0005_temple_ice_01_dun":
+            with s.flow_lock:
+                temple_discovered = map_key("g0005_temple_ice_02_dun") in {
+                    map_key(value)
+                    for value in getattr(s, "gameplay_unlocked_maps", ())
+                }
+            if temple_discovered:
+                # The Temple gate's EventSet is opened by a signal that only
+                # fires while quest 06 is accepted. Once the map is unlocked,
+                # preserve that route flag on later visits and quest stages.
+                flags.add("g0005_TempleOfIce_05_openExit")
         return frozenset(flags)
 
     @staticmethod
@@ -350,9 +420,23 @@ class QuestService:
 
     def _quest_on_map_entered(self, s: Session) -> None:
         self._quest_recover_myrdosch_access_key(s)
+        self._quest_recover_artaya_sanctuary_key(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        # A map's initial EventUpdate may arrive before its local event
+        # controller is ready. Re-send quest-derived activations after map
+        # entry so gated client-only NPCs become interactable at every
+        # access difficulty.
+        try:
+            if self._quest_reveal_flags(s, runtime.map_id):
+                self._quest_refresh_event_state(s)
+                self._quest_spawn_revealed_npcs(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after map entry failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         # These entry signals are authored as client reports. The server knows
         # the same facts and can start the quest even if that report is lost.
         for quest in self._quest_catalog().quests.values():
@@ -362,6 +446,8 @@ class QuestService:
             if rule is not None and rule.event_type in {"playerenteredmap", "playerenteredmapid"}:
                 if self._quest_entry_signal_matches(s, rule):
                     self._quest_on_signal(s, rule.signal_id)
+        self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         # Clear-region objectives drive the client's remaining-monster
         # counter. Retail normally asks for this tracker from the UI, but
         # map-bound challenges can start automatically without that request.
@@ -417,6 +503,168 @@ class QuestService:
         # Reconcile against the actual population, never an empty spawn table.
         self._quest_check_cleared_regions(s)
 
+    def _quest_ensure_cult_shaman(self, s: Session) -> None:
+        """Restore Ozzlan when his unfinished quest target is missing."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "g0004_corrupted_jungle_01_pve":
+            return
+        quest_id = "g0003-TheCult-01-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        target = next((
+            task for task in quest.tasks
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() == "g0004_leader_badtribe_shaman_01"
+                for event in task.events
+            )
+        ), None)
+        if target is None or target.index not in {
+            task.index for task in active_tasks(quest, progress)
+        }:
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            with combat.lock:
+                _present, alive = combat.monster_template_counts()
+            if alive.get("g0004_leader_badtribe_shaman_01".casefold(), 0) > 0:
+                return
+        # This authored guardian has a 120-second respawn in the map DB, but
+        # ordinary fixed spawnpoints are only materialized at map creation.
+        # Re-run the authored spawn row while the quest target is active;
+        # the map-event duplicate guard keeps a living Ozzlan untouched.
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            "g0004_leader_badtribe_shaman_01",
+            "",
+            0,
+            "g0004_leader_badtribe_shaman_01_spawnpoint",
+        ),))
+
+    def _quest_ensure_ice_guardian(self, s: Session) -> None:
+        """Restore the Ice Cradle quest guardian when its target is missing."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "g0005_temple_ice_01_dun":
+            return
+        quest_id = "g0005-TempleOfIce-03-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        target = next((
+            task for task in quest.tasks
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() in {
+                    "g0005_leader_guardian_ice_01",
+                    "g0005_leader_guardian_ice_01_scale",
+                }
+                for event in task.events
+            )
+        ), None)
+        if target is None or target.index not in {
+            task.index for task in active_tasks(quest, progress)
+        }:
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        templates = {
+            "g0005_leader_guardian_ice_01",
+            "g0005_leader_guardian_ice_01_scale",
+        }
+        if combat is not None:
+            with combat.lock:
+                existing_actor_ids = tuple(
+                    actor_id for actor_id in combat.alive_actor_ids
+                    if (
+                        (monster := combat.monsters.get(actor_id)) is not None
+                        and monster.template_id.casefold() in templates
+                    )
+                )
+            if existing_actor_ids:
+                self._quest_publish_ice_guardian(
+                    s, runtime, combat, existing_actor_ids,
+                )
+                return
+        # Fixed spawnpoints are materialized when a map is created. If the
+        # guardian was missed then, restore the authored normal/scaled actor
+        # at its corresponding spawnpoint while the kill task is active.
+        try:
+            difficulty = int(getattr(
+                s, "gameplay_map_difficulty", runtime.scaling_difficulty,
+            ))
+        except (TypeError, ValueError):
+            difficulty = int(runtime.scaling_difficulty)
+        scaled = difficulty > 0
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            (
+                "g0005_leader_guardian_ice_01_scale"
+                if scaled else "g0005_leader_guardian_ice_01"
+            ),
+            "",
+            0,
+            (
+                "g0005_leader_guardian_ice_01_scale_spawnpoint"
+                if scaled else "g0005_leader_guardian_ice_01_spawnpoint"
+            ),
+        ),))
+        if combat is not None:
+            with combat.lock:
+                spawned_actor_ids = tuple(
+                    actor_id for actor_id in combat.alive_actor_ids
+                    if (
+                        (monster := combat.monsters.get(actor_id)) is not None
+                        and monster.template_id.casefold() in templates
+                    )
+                )
+            self._quest_publish_ice_guardian(
+                s, runtime, combat, spawned_actor_ids,
+            )
+
+    def _quest_publish_ice_guardian(
+            self, s: Session, runtime, combat, actor_ids,
+    ) -> None:
+        """Force the active quest guardian to the client even across the map."""
+
+        if not actor_ids:
+            return
+        grouped = {}
+        for actor_id in actor_ids:
+            group = combat.group_for_actor(actor_id)
+            if group is not None:
+                grouped.setdefault(id(group), (group, set()))[1].add(actor_id)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        for viewer in sessions:
+            with viewer.flow_lock:
+                ready = viewer.gameplay_presence_ready
+            if not ready:
+                continue
+            for group, group_actor_ids in grouped.values():
+                self._announce_runtime_group(
+                    viewer, combat, group,
+                    force_actor_ids=group_actor_ids,
+                )
+
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
         """Restore the Andrakas key when an older delivery lost its inventory drop."""
 
@@ -452,6 +700,43 @@ class QuestService:
         ))
         CharacterService._request_account_save(
             s, "recovered Andrakas access key", flush=True,
+        )
+
+    def _quest_recover_artaya_sanctuary_key(self, s: Session) -> None:
+        """Restore Artaya's key when its guardian was killed before the guaranteed drop."""
+
+        quest_id = "g0003-TempleOfLife-01-n"
+        key_id = "key_from_g0010_to_g0015"
+        with s.flow_lock:
+            if map_key("g0015_temple_life_md_01") in s.gameplay_unlocked_maps:
+                return
+            inventory = s.gameplay_inventory
+            if inventory is None or any(
+                str(item.template_id).casefold() == key_id
+                for item in inventory.items
+            ):
+                return
+            progress = next(
+                (value for quest, value in _quest_log(s).items()
+                 if quest.casefold() == quest_id.casefold()),
+                None,
+            )
+            if (
+                progress is None
+                or progress.state != QUEST_STATE_ACCEPTED
+                or int(progress.tokens.get(
+                    "g0003-TempleOfLife-01-kill-01Kill", 0
+                )) < 1
+            ):
+                return
+        quest = self._quest_catalog().quest(quest_id)
+        if quest is None:
+            return
+        self._quest_grant_inventory_drops(s, quest, (
+            Drop(key_id, 1, 1.0, True),
+        ))
+        CharacterService._request_account_save(
+            s, "recovered Artaya sanctuary key", flush=True,
         )
 
     # ------------------------------------------------------------------
@@ -621,6 +906,24 @@ class QuestService:
                 if state.definition.quest_switch_id
                 and prop_visible_to_player(state.definition, s)
             ]
+        # A one-shot quest prop may be authored for multiple stages in the
+        # same chain. Once a later stage makes its switch live again, restore
+        # the prop so the client can interact with it and the server can
+        # process the new stage's switch.
+        active_switch_props = {
+            int(state.definition.prop_id)
+            for state in states
+            if state.definition.one_shot
+            and self._quest_prop_operation(s, state.definition) is not None
+        }
+        reactivated_props = set()
+        if active_switch_props:
+            with runtime.lock:
+                for prop_id in active_switch_props:
+                    state = runtime.props.get(prop_id)
+                    if state is not None and state.state == PROP_STATE_USED:
+                        state.state = PROP_STATE_ACTIVE
+                        reactivated_props.add(prop_id)
         shown = getattr(s, "gameplay_quest_props_visible", None)
         if shown is None:
             shown = set()
@@ -633,7 +936,7 @@ class QuestService:
                 if prop_id in shown:
                     shown.discard(prop_id)
                     hide.append(prop_id)
-            elif prop_id not in shown:
+            elif prop_id not in shown or prop_id in reactivated_props:
                 shown.add(prop_id)
                 reveal.append((state, operation))
         if hide:
@@ -677,11 +980,19 @@ class QuestService:
             if quest is None or progress.state == QUEST_STATE_CLOSED:
                 continue
             targeted = any(
-                event.kind == "encounter"
-                and event.value.casefold() == npc_key
-                and all(guard.holds(progress.tokens) for guard in event.guards)
+                (
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal
+                    and quest.goal.casefold() == npc_key
+                    and task.is_done(progress.tokens)
+                )
+                or any(
+                    event.kind == "encounter"
+                    and event.value.casefold() == npc_key
+                    and all(guard.holds(progress.tokens) for guard in event.guards)
+                    for event in task.events
+                )
                 for task in active_tasks(quest, progress)
-                for event in task.events
             )
             if targeted:
                 interactions.append(NPCInteraction(
@@ -744,6 +1055,12 @@ class QuestService:
                     ))
                     flags.append(NPCFlag(dialog_id, False))
         for quest, barter in self._quest_npc_barters(s, npc_template_id):
+            # The delivery action opens the item hand-in UI, while this
+            # separate target entry drives the quest marker over the NPC.
+            interactions.append(NPCInteraction(
+                quest.quest_id, NPC_TASK_TARGET,
+                quest.quest_id, quest.quest_type_id,
+            ))
             interactions.append(NPCInteraction(
                 barter.barter_id, NPC_DELIVERY_DIALOG, quest.quest_id, quest.quest_type_id,
             ))
@@ -758,7 +1075,8 @@ class QuestService:
             if (quest := catalog.quest(quest_id)) is not None
             for task in active_tasks(quest, progress)
             for barter in task.barters
-            if barter.actor.casefold() == npc_key and barter.live(progress.tokens)
+            if barter.actor.casefold() == npc_key
+            and barter.live(progress.tokens)
         )
 
     def _quest_decorate_npc_info(
@@ -1307,10 +1625,22 @@ class QuestService:
             self._quest_grant_inventory_drops(
                 s, quest, quest.accept_inventory_drops,
             )
+        # Accepting a quest can reveal a client-side map EventSet while the
+        # player is already on that map. Publish its event state immediately.
+        try:
+            if self._quest_reveal_flags(s, s.gameplay_map or ""):
+                self._quest_refresh_event_state(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after acceptance failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
         self._quest_start_active_holdgrounds(s)
+        self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1358,6 +1688,17 @@ class QuestService:
         self._send_quest_commands(s, self._quest_state_commands(
             s, quest.quest_id, QUEST_STATE_CLOSED, progress.completed_at,
         ), label="quest-turn-in")
+        # Closing a prerequisite can make an EventSet-gated follow-up giver
+        # available on the same map. Publish the new per-character reveal
+        # state before sending the NPC refresh.
+        try:
+            if self._quest_reveal_flags(s, s.gameplay_map or ""):
+                self._quest_refresh_event_state(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after turn-in failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
@@ -1658,6 +1999,21 @@ class QuestService:
             s.gameplay_next_item_id = max(s.gameplay_next_item_id, end)
         CharacterService._reconcile_world_loot_visibility(s, label="quest-drop")
 
+    def _quest_refresh_event_state(self, s: Session) -> None:
+        """Publish quest-derived map EventSet flags after task transitions."""
+
+        try:
+            update, _progress, _participation = self._event_initialization_state(s)
+            packet, packet_bits = encode_event_update(update)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="quest-map-event-state",
+            )
+        except Exception as exc:
+            _log(
+                f"map event refresh after quest progress failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
     def _quest_publish_result(self, s, quest, result, kind, value):
         """Publish already-committed task progress and its map signals."""
         commands = []
@@ -1681,6 +2037,11 @@ class QuestService:
                 LOCAL_PLAYER_ACTOR_ID,
             ))
             commands.extend(self._quest_npc_info_commands(s))
+        if result.quest_finished or any(c.finished for c in result.changes):
+            # Quest targets can unlock a client-side map EventSet while the
+            # player is already on the map. Refresh its event flags before
+            # sending NPCInfo, so newly revealed quest NPCs actually appear.
+            self._quest_refresh_event_state(s)
         _log(
             f"{quest.quest_id!r} {kind} {value!r}: "
             + ", ".join(
@@ -1690,6 +2051,8 @@ class QuestService:
             + (" -> finished" if result.quest_finished else "")
         )
         self._send_quest_commands(s, commands, label="quest-progress")
+        self._quest_ensure_cult_shaman(s)
+        self._quest_ensure_ice_guardian(s)
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         for change in result.changes:
@@ -1697,7 +2060,17 @@ class QuestService:
                 self._quest_fire_signal(
                     s, "PlayerEndQuestTask", (f"{quest.quest_id}:{change.task.title}",),
                 )
-        if result.quest_finished and quest.bound_to_map and not quest.goal:
+        if result.quest_finished and quest.key in {
+            "g0004-enterminibossroom-01-n-row",
+            "g0004-enterminibossroom-01-n",
+            "g0004-enterminibossroom-02-n-row",
+            "g0004-enterminibossroom-03-n-row",
+        }:
+            # These miniboss-room quests finish at their NPC, and their
+            # Alliance Hall key is a quest reward. Close them immediately so
+            # the reward is delivered as soon as the final NPC task completes.
+            self._quest_turn_in(s, quest.quest_id)
+        elif result.quest_finished and quest.bound_to_map and not quest.goal:
             # Task signals reveal the earned chests before the quest closes.
             self._quest_turn_in(s, quest.quest_id)
         CharacterService._request_account_save(s, "quest progress")
@@ -1711,6 +2084,26 @@ class QuestService:
             template = str(getattr(monster, "template_id", ""))
             if template:
                 counts[template] = counts.get(template, 0) + 1
+                if template.casefold() in {
+                    "g0010_leader_guardian_life_01",
+                    "g0010_leader_guardian_life_01_scale",
+                }:
+                    # The guardian's special loot list is not included in
+                    # exported server data. Guarantee its sanctuary key on
+                    # the authoritative player-kill callback.
+                    self._deliver_rewards(
+                        s,
+                        (RewardDefinition(
+                            "monster:g0010_artaya_sanctuary_key",
+                            "key_from_g0010_to_g0015",
+                            1,
+                        ),),
+                        claim_keys=None,
+                        label="monster-loot",
+                    )
+                    CharacterService._request_account_save(
+                        s, "Artaya sanctuary key drop", flush=True,
+                    )
                 combat = s.gameplay_combat_state
                 position = getattr(monster, "position", None)
                 if combat is not None:
@@ -1742,6 +2135,25 @@ class QuestService:
                 "f4100-DestroyWorldsHeart-01-n",
                 "f4100-DestroyWorldsHeart-06-n",
             ),
+            # Kavlin Lefve's defense scene is not simulated; accepting the
+            # quest should mark its authored hold-ground objective complete.
+            "g0001_beach_01_dun": ("g0001-InvestigateCorruption-01-n",),
+            # Yohuac's defense scene is not simulated; accepting the quest
+            # should complete its hold-ground objective before the collection
+            # tasks become active.
+            "g0002_jungle_01_dun": ("g0002-TheTribe-03-n",),
+            # The Opal Shrine guardian defense scene is not simulated; taking
+            # the quest in Gün Batımı should count the guardian as defended.
+            "g0004_corrupted_jungle_01_pve": ("g0004-TempleOfWater-01-n",),
+            # Okeanos's guardian defense scene inside the Opal Shrine is also
+            # not simulated; accepting its sixth chapter quest counts it done.
+            "g0006_temple_water_01_dun": ("g0006-TempleOfWater-08-n",),
+            # High Priest Azlan's ritual defense in Fjalnir's Temple is not
+            # simulated; accepting the quest should count Azlan as defended.
+            "g0005_temple_ice_02_dun": ("g0005-TempleOfIce-08-n",),
+            # Shaman Tletelli's defense in Fyrgon's Fire Path is not
+            # simulated; accepting the quest should count her as defended.
+            "g0007_temple_fire_01_dun": ("g0007-TempleOfFire-04-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):

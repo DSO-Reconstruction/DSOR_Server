@@ -2954,7 +2954,8 @@ class MapEventService:
             return
         state, flipped = result
         definition = state.definition
-        if CharacterService._quest_prop_operation(s, definition) is None:
+        quest_operation = CharacterService._quest_prop_operation(s, definition)
+        if quest_operation is None:
             _log(
                 f"PropInteraction on quest prop {definition.instance_id!r} "
                 "that is not live for this player; ignored"
@@ -2999,10 +3000,11 @@ class MapEventService:
         if state.state == PROP_STATE_ACTIVE or flipped:
             CharacterService._quest_on_prop_interacted(
                 self, s, definition.instance_id,
-                # Quest switch bindings are server-authored. The operation
-                # returned by the client can be stale or differ from the
-                # current switch, which would silently skip collect drops.
-                definition.quest_switch_id or request.operation,
+                # A prop can be reused by several quest tasks. Its definition
+                # stores only one authored switch ID, while the live switch
+                # depends on this player's active quest state. Resolve that
+                # switch dynamically so later tasks receive their own event.
+                quest_operation or request.operation,
             )
             self._fire_map_signal(
                 s, "PlayerInteractedProp",
