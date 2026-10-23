@@ -176,6 +176,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # the Shadaigan quest enemies. Keep server monsters outside the scene's
     # ordinary actor ID range so those actors can be registered independently.
     "h0002_desert_pve",
+    # Green Oasis has over 1,500 authored SpawnPoints; keep its server monsters
+    # beyond the actor IDs occupied by the client scene.
+    "h0003_oasis_dun",
 })
 
 
