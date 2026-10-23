@@ -64,8 +64,11 @@ def walkable_path(navigation, start_world, end_world) -> bool:
 
     try:
         navigation.project_position(end_world, max_horizontal_distance=NAVMESH_SNAP)
+        # Every authored connection: the client walks the whole connected
+        # ground, not the 1 m-portal components monsters route over.
         if not navigation.is_reachable(
-            start_world, end_world, max_horizontal_snap=NAVMESH_SNAP
+            start_world, end_world, max_horizontal_snap=NAVMESH_SNAP,
+            all_connections=True,
         ):
             return False
         length = _flat_distance(start_world, end_world)
@@ -199,7 +202,8 @@ def clamp_movement_destination(session, geometry, origin_wire, target_world):
         for point in candidates:
             try:
                 if navigation.is_reachable(
-                    origin_world, point, max_horizontal_snap=NAVMESH_SNAP
+                    origin_world, point, max_horizontal_snap=NAVMESH_SNAP,
+                    all_connections=True,
                 ):
                     projected = navigation.project_position(
                         point, max_horizontal_distance=NAVMESH_SNAP
