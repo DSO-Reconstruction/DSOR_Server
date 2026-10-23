@@ -545,6 +545,7 @@ class MapTransitionService:
                     keyed_routes = {
                         ("f4101_pve", "f4100_hub"): "key_from_f4101_to_f4100",
                         ("f4102_dun", "f4201_pve"): "key_from_f4102_to_f4201",
+                        ("f4201_pve", "f4202_dun"): "key_from_f4201_to_f4202",
                     }
                     required_key = keyed_routes.get((
                         gameplay_map.casefold(),
