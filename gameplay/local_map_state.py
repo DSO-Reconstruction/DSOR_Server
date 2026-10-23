@@ -793,10 +793,12 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # difficulty. Only expose the exit matching the current Valley access.
     "h0006_valley_dun": ("h0007_treasure_cave_dun",),
     # The cave authors matching difficulty variations for its return gate and
-    # for its internal routes back to other treasure-cave access instances.
+    # for its internal routes and the quest gate to Djinn's Room.
     "h0007_treasure_cave_dun": (
-        "h0006_valley_dun", "h0007_treasure_cave_dun",
+        "h0006_valley_dun", "h0007_treasure_cave_dun", "h0008_boss",
     ),
+    # Djinn's Room also has one overlapping return-gate variation per tier.
+    "h0008_boss": ("h0007_treasure_cave_dun",),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
