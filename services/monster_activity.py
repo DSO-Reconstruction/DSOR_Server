@@ -243,13 +243,23 @@ class MonsterActivityService:
                             f"count={len(location_visuals)} "
                             f"delay={location_delay:.3f}s"
                         )
+                        # As a player's: a Shifted skill's ground effects
+                        # where it falls, any other skill's at its caster,
+                        # their OX/OZ ahead along its aim (BossSmithEarthqake's
+                        # waves 2.5..12.5 m ahead of the smith, Balor's
+                        # breath, Boss01_b_Skill03's flood around Khalys).
+                        location_origin = (
+                            attack.target_position
+                            if attack.command_id == SHIFTED_SKILL_COMMAND
+                            else attack.position
+                        )
                         CharacterService._schedule_player_location_visuals(
                             s,
                             combat,
                             location_visuals,
                             position=tuple(
                                 float(value)
-                                for value in attack.target_position[:3]
+                                for value in location_origin[:3]
                             ),
                             yaw=float(attack.aim_angle),
                             server_tick=attack.server_tick,

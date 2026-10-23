@@ -1252,6 +1252,12 @@ class LocalCombatState:
         self.player_traps: dict[int, ActivePlayerTrap] = {}
         self._next_player_trap_id = 0x00010000
         self.player_location_visuals: dict[int, PlayerLocationVisual] = {}
+        # (visual instance, player actor, child index) -> next tick time of
+        # a monster ground aura on that player (resolve_monster_location_auras).
+        self._monster_location_aura_ticks: dict[
+            tuple[int, int, int], float
+        ] = {}
+        self._monster_location_aura_program_cache: dict[tuple, tuple] = {}
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
@@ -3519,6 +3525,253 @@ class LocalCombatState:
         self.player_location_aura_members.intersection_update(inside_now)
         self.player_location_aura_members.update(inside_now)
         return tuple(resolutions), tuple(applications)
+
+    def _monster_location_aura_programs(
+        self, definition: VictimStatusEffectDefinition,
+    ) -> tuple[tuple[float, tuple, tuple], ...]:
+        """A monster ground aura's children: (interval, start, tick) each.
+
+        start/tick are SEE: _status_health_programs entries. The children are
+        the aura's AuraEffectId list, read with the aura's own $N values
+        (BossSmithEarthqake_aura_01 $2 -1.5 -> BossSmithEarthqake_dmg
+        CurrHealthPointsDmg:$2,relative,Fire).
+        """
+
+        key = (definition.resource_id, tuple(definition.values))
+        cached = self._monster_location_aura_program_cache.get(key)
+        if cached is not None:
+            return cached
+        path = self.encounter.static_database_path
+        with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as db:
+            row = db.execute(
+                "SELECT COALESCE(AuraEffectId, '') FROM _Template_StatusEffect "
+                "WHERE Id=? LIMIT 1",
+                (definition.resource_id,),
+            ).fetchone()
+        programs = []
+        for child_id in str(row[0] if row else "").split(";"):
+            effect_id = self._status_effect_ids.get(child_id.strip())
+            if effect_id is None:
+                continue
+            child = replace(
+                definition, resource_id=child_id.strip(), effect_id=effect_id,
+            )
+            interval, _tick, _start = self._status_effect_runtime_program(
+                effect_id
+            )
+            start = self._status_health_programs(child, ticks=False)
+            tick = self._status_health_programs(child, ticks=True)
+            if start or tick:
+                programs.append((
+                    max(1.0 / SERVER_TICKS_PER_SECOND, float(interval)),
+                    start,
+                    tick,
+                ))
+        self._monster_location_aura_program_cache[key] = tuple(programs)
+        return tuple(programs)
+
+    def _status_health_programs(
+        self,
+        definition: VictimStatusEffectDefinition,
+        *,
+        ticks: bool,
+    ) -> tuple[tuple[str, float, str], ...]:
+        """Health-taking instructions of a status effect's program.
+
+        ("damage", coefficient, type): CurrHealthPointsDmg relative, x the
+        source's damage basis; ("absolute", amount, type): CurrHealthPointsDmg
+        without relative; ("health", fraction, type): a negative relative
+        CurrHealthPoints, that fraction of the victim's maximum health
+        (Boss01_b_FloodDamageEffect CurrHealthPoints:-0.1,relative,DarkMagic).
+        """
+
+        programs = [
+            ("damage" if relative else "absolute", coefficient, damage_type)
+            for coefficient, damage_type, relative
+            in self._status_damage_programs(definition, ticks=ticks)
+        ]
+        _interval, tick_modifiers, start_modifiers = (
+            self._status_effect_runtime_program(definition.effect_id)
+        )
+        for encoded in str(
+            tick_modifiers if ticks else start_modifiers
+        ).split(";"):
+            kind, separator, arguments_raw = encoded.partition(":")
+            if not separator or kind.strip().casefold() != "currhealthpoints":
+                continue
+            arguments = tuple(v.strip() for v in arguments_raw.split(","))
+            amount = self._modifier_amount(
+                None, arguments[0], definition.values
+            )
+            if (
+                amount is None
+                or amount >= 0.0
+                or not any(v.casefold() == "relative" for v in arguments[1:])
+            ):
+                continue
+            damage_type = next(
+                (v for v in arguments[1:] if v.casefold() in DAMAGE_TYPE_IDS),
+                "Physical",
+            )
+            programs.append(("health", min(1.0, -float(amount)), damage_type))
+        return tuple(programs)
+
+    def resolve_monster_location_auras(
+        self,
+        player_position: tuple[float, float, float],
+        *,
+        player_actor_id: int,
+        now: float | None = None,
+        incoming_damage_multiplier: (
+            float | dict[str, float] | tuple[tuple[str, float], ...]
+        ) = 1.0,
+    ) -> tuple[DamageResolution, ...]:
+        """Damage one player standing in a monster skill's ground auras.
+
+        CONTRACT: a location effect a monster's skill left (LocationStatus
+        Effects, created as a PlayerLocationVisual owned by the monster) with
+        AuraTargets Enemies and an AuraRadius strikes a player within that
+        radius of it: its children's StartModifiers once when the player is
+        first inside, their TickModifiers every StatusEffectTickRate seconds
+        while inside, from the effect's start (after its DE) to its end.
+        Each strike is mitigated by the player's defense for its damage type
+        and sent as a Hit with the skill's index. Only while the monster
+        lives.
+        EVIDENCE (data): Boss01_b_Skill03 Boss01_b_FloodDamage (20.84 m, D 10,
+        child CurrHealthPoints -0.1 relative every 0.25 s);
+        BossSmithEarthqake's five _aura_0N, DE 1..5 s along OZ -2.5..-12.5;
+        Boss07BalorFirebreath (18 m, $0 -1.5 every 0.5 s).
+        UNVERIFIED: whether retail mitigates the percent-of-health floods.
+        """
+
+        current_time = time.perf_counter() if now is None else float(now)
+        player_actor_id = int(player_actor_id)
+        player_world = self.encounter.coordinate_frame.wire_to_world(
+            player_position
+        )
+        live = set()
+        resolutions = []
+        health = self.player_health.setdefault(
+            player_actor_id,
+            [self.player_maximum_health, self.player_maximum_health],
+        )
+        for visual in self.active_player_location_visuals(now=current_time):
+            owner = int(visual.owner_actor_id)
+            monster = self.monsters.get(owner)
+            definition = visual.definition
+            radius = float(definition.aura_radius)
+            if (
+                monster is None
+                or radius <= 0.0
+                or definition.aura_targets.strip().casefold() != "enemies"
+            ):
+                continue
+            starts_at = (
+                visual.expires_at
+                - definition.duration_ticks / SERVER_TICKS_PER_SECOND
+            )
+            if (
+                self.monster_health.get(owner, 0) <= 0
+                or current_time + 1e-9 < starts_at
+                or self._distance(visual.position, player_world) > radius
+                + PLAYER_PROJECTILE_COLLISION_RADIUS
+            ):
+                continue
+            for index, (interval, start, tick) in enumerate(
+                self._monster_location_aura_programs(definition)
+            ):
+                key = (int(visual.instance_id), player_actor_id, index)
+                live.add(key)
+                strikes = []
+                next_at = self._monster_location_aura_ticks.get(key)
+                if next_at is None:
+                    strikes.append(start)
+                    next_at = starts_at + interval
+                    while next_at + interval <= current_time + 1e-9:
+                        next_at += interval  # entered late: no back-ticks
+                while (
+                    tick
+                    and next_at <= current_time + 1e-9
+                    and next_at <= visual.expires_at + 1e-9
+                    and len(strikes) < 4
+                ):
+                    strikes.append(tick)
+                    next_at += interval
+                self._monster_location_aura_ticks[key] = next_at
+                for programs in strikes:
+                    if not programs or health[0] <= 0:
+                        continue
+                    damage = self._monster_aura_program_damage(
+                        owner, programs, health[1],
+                        incoming_damage_multiplier, current_time,
+                    )
+                    previous = health[0]
+                    current = max(0, previous - damage)
+                    if current == previous:
+                        continue
+                    self.note_player_attacked(player_actor_id, now=current_time)
+                    health[0] = current
+                    if player_actor_id == self.player_actor_id:
+                        self.player_current_health = current
+                    resolutions.append(DamageResolution(
+                        target_actor_id=player_actor_id,
+                        attacker_actor_id=owner,
+                        current_health=current,
+                        maximum_health=health[1],
+                        damage=previous - current,
+                        killed=current == 0,
+                        position=player_world,
+                        server_tick=(
+                            visual.starts_tick + round(
+                                (current_time - starts_at)
+                                * SERVER_TICKS_PER_SECOND
+                            )
+                        ) & 0xFFFFFFFF,
+                        hit_tags=(0,),
+                        skill_index=int(visual.source_skill_index),
+                        victim_status_effects=(),
+                    ))
+        for key in tuple(self._monster_location_aura_ticks):
+            if key[1] == player_actor_id and key not in live:
+                del self._monster_location_aura_ticks[key]
+        return tuple(resolutions)
+
+    def _monster_aura_program_damage(
+        self,
+        actor_id: int,
+        programs: tuple[tuple[str, float, str], ...],
+        maximum_health: int,
+        incoming_damage_multiplier,
+        now: float,
+    ) -> int:
+        """One strike of SEE: _status_health_programs from a monster."""
+
+        monster = self.monsters[actor_id]
+        basis = (
+            (monster.minimum_damage + monster.maximum_damage) / 2
+            * self._monster_skill_damage_multiplier(actor_id, now=now)
+        )
+        if isinstance(incoming_damage_multiplier, (int, float)):
+            defense = lambda _type: max(0.0, float(incoming_damage_multiplier))
+        else:
+            by_type = {
+                str(name).casefold(): max(0.0, float(value))
+                for name, value in dict(incoming_damage_multiplier).items()
+            }
+            defense = lambda damage_type: by_type.get(
+                "darkmagic" if damage_type.casefold() == "andermagic"
+                else damage_type.casefold(),
+                1.0,
+            )
+        total = 0.0
+        for kind, amount, damage_type in programs:
+            raw = (
+                basis * amount if kind == "damage"
+                else maximum_health * amount if kind == "health"
+                else amount
+            )
+            total += raw * defense(damage_type)
+        return max(1, int(round(total))) if total > 0.0 else 0
 
     def _creator_aura_children(
         self, visual

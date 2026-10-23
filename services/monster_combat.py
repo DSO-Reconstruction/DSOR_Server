@@ -806,6 +806,15 @@ class MonsterCombatService(
                             ),
                         )
                     )
+                    # Standing in a boss's flood, quake or breath.
+                    hostile_resolutions.extend(
+                        combat.resolve_monster_location_auras(
+                            position,
+                            player_actor_id=actor_id,
+                            now=now,
+                            incoming_damage_multiplier=incoming_multipliers,
+                        )
+                    )
                     if due_periodic_auras:
                         world_position = (
                             combat.encounter.coordinate_frame.wire_to_world(
