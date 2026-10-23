@@ -917,6 +917,20 @@ class MonsterAttack:
     # target_position), sent after it in its ShiftedSkill. SEE:
     # LocalCombatState._monster_shifted_points.
     extra_target_positions: tuple[tuple[float, float, float], ...] = ()
+    # A homing bullet's flight (MotionType Homing / LockOnHoming), flown by
+    # _advance_homing_bullet: when the monster cast it, when its LifeTime
+    # ends (0.0: not flown, it lands at due_at), and where it was at
+    # homing_at (None: still at projectile_origin). due_at is its release.
+    cast_at: float = 0.0
+    homing_expires_at: float = 0.0
+    homing_position: tuple[float, float, float] | None = None
+    homing_at: float = 0.0
+
+
+HOMING_MOTION_TYPES = frozenset({"homing", "lockonhoming"})
+# A homing bullet whose target no longer resolves is dropped this long after
+# its LifeTime.
+HOMING_ORPHAN_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -10931,6 +10945,7 @@ class LocalCombatState:
                     definition.loop_start_frame
                     / SERVER_TICKS_PER_SECOND,
                 )
+                release_delay = impact_delay
                 if definition.projectile_velocity > 1e-6:
                     impact_delay += travel_distance / (
                         definition.projectile_velocity
@@ -11025,6 +11040,34 @@ class LocalCombatState:
                 definition=definition,
                 bullet_count=definition.bullet_count,
             )
+            if (
+                attack.command_id in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                }
+                and definition.motion_type.casefold() in HOMING_MOTION_TYPES
+                and definition.projectile_velocity > 1e-6
+                and definition.projectile_lifetime > 1e-6
+                and not definition.support
+            ):
+                # A homing bullet is flown, not timed: it leaves at its
+                # release and lands when it reaches its target, which may
+                # outrun it until its LifeTime (trunc(LifeTime x 25) ticks,
+                # as the client flies it) runs out. Timed from the cast-time
+                # distance, Khalys's orbs struck a player running from them
+                # while they were still metres behind (2026-10-23).
+                attack = replace(
+                    attack,
+                    due_at=current_time + release_delay,
+                    cast_at=current_time,
+                    homing_expires_at=(
+                        current_time + release_delay
+                        + max(1.0, math.trunc(
+                            definition.projectile_lifetime
+                            * SERVER_TICKS_PER_SECOND
+                        )) / SERVER_TICKS_PER_SECOND
+                    ),
+                )
             if (
                 attack.command_id == SHIFTED_SKILL_COMMAND
                 and definition.bullet_count > 1
@@ -11121,6 +11164,11 @@ class LocalCombatState:
                     ).append(replace(
                         attack,
                         due_at=attack.due_at + emit_offset,
+                        homing_expires_at=(
+                            attack.homing_expires_at + emit_offset
+                            if attack.homing_expires_at
+                            else 0.0
+                        ),
                         impact_tick=(
                             attack.impact_tick
                             + round(emit_offset * SERVER_TICKS_PER_SECOND)
@@ -11540,6 +11588,88 @@ class LocalCombatState:
         if not flights:
             self.pending_monster_projectile_attacks.pop(actor_id, None)
 
+    def _replace_pending_monster_attack(
+        self, actor_id: int, attack: MonsterAttack, updated: MonsterAttack,
+    ) -> None:
+        actor_id = int(actor_id)
+        if self.pending_monster_attacks.get(actor_id) is attack:
+            self.pending_monster_attacks[actor_id] = updated
+            return
+        flights = self.pending_monster_projectile_attacks.get(actor_id, [])
+        for index, pending in enumerate(flights):
+            if pending is attack:
+                flights[index] = updated
+                return
+
+    def _advance_homing_bullet(
+        self,
+        actor_id: int,
+        attack: MonsterAttack,
+        target_world: tuple[float, float, float],
+        now: float,
+    ) -> float | None:
+        """Fly a homing bullet up to ``now``; the time it reached its target.
+
+        It chases the target's current place at its Velocity, flat, one
+        server tick at a time (the client's steer_bullet re-aims it every
+        frame the same way), and reaches it within BulletRadius + the
+        player's collision radius. ``None`` while it still flies, or once its
+        LifeTime ran out (it is then dropped: a target that outran it takes
+        nothing). Once released it flies on its own, so its caster may act
+        again.
+        UNVERIFIED: the 2018 client's homing step (turn rate, if any) was not
+        traced; a pure pursuit at constant speed matches what the client draws.
+        """
+
+        definition = attack.definition or self.monsters[actor_id].attack
+        speed = max(1e-6, float(definition.projectile_velocity))
+        reach = (
+            max(0.15, float(attack.projectile_radius))
+            + PLAYER_PROJECTILE_COLLISION_RADIUS
+        )
+        x, _y, z = (
+            attack.homing_position
+            if attack.homing_position is not None
+            else attack.projectile_origin[:3]
+        )
+        t = max(attack.due_at, attack.homing_at)
+        end = min(float(now), attack.homing_expires_at)
+        step = 1.0 / SERVER_TICKS_PER_SECOND
+        reached_at = None
+        while True:
+            dx = target_world[0] - x
+            dz = target_world[2] - z
+            distance = math.hypot(dx, dz)
+            if distance <= reach:
+                reached_at = t
+                break
+            if t >= end - 1e-9:
+                break
+            dt = min(step, end - t)
+            travel = speed * dt
+            if travel >= distance - reach:
+                reached_at = t + (distance - reach) / speed
+                break
+            x += dx / distance * travel
+            z += dz / distance * travel
+            t += dt
+        if reached_at is not None:
+            return reached_at
+        if now >= attack.homing_expires_at:
+            self._remove_pending_monster_attack(actor_id, attack)
+            return None
+        updated = replace(
+            attack, homing_position=(x, target_world[1], z), homing_at=t,
+        )
+        if self.pending_monster_attacks.get(int(actor_id)) is attack:
+            del self.pending_monster_attacks[int(actor_id)]
+            self.pending_monster_projectile_attacks.setdefault(
+                int(actor_id), []
+            ).append(updated)
+        else:
+            self._replace_pending_monster_attack(actor_id, attack, updated)
+        return None
+
     def _mark_monster_area_target_resolved(
         self, actor_id: int, attack: MonsterAttack, target_actor_id: int,
     ) -> None:
@@ -11626,17 +11756,44 @@ class LocalCombatState:
                 )
                 or aura_strike is not None
             ) and not targets_monster
+            homing = (
+                attack.homing_expires_at > 0.0 and aura_strike is None
+            )
             if (
                 not targets_monster
                 and attack.target_actor_id != player_actor_id
                 and not is_multi_target_area
             ):
+                if (
+                    homing
+                    and current_time
+                    > attack.homing_expires_at + HOMING_ORPHAN_GRACE_SECONDS
+                ):
+                    # Its target left: it ran out with nobody flying it.
+                    self._remove_pending_monster_attack(actor_id, attack)
                 continue
             if (
                 is_multi_target_area
                 and player_actor_id in attack.resolved_target_actor_ids
             ):
                 continue
+            if homing:
+                reached_at = self._advance_homing_bullet(
+                    actor_id, attack, target_world, current_time
+                )
+                if reached_at is None:
+                    continue
+                self._remove_pending_monster_attack(actor_id, attack)
+                attack = replace(
+                    attack,
+                    impact_tick=(
+                        int(attack.server_tick)
+                        + round(
+                            (reached_at - attack.cast_at)
+                            * SERVER_TICKS_PER_SECOND
+                        )
+                    ) & 0xFFFFFFFF,
+                )
             if not is_multi_target_area:
                 self._remove_pending_monster_attack(actor_id, attack)
             if (

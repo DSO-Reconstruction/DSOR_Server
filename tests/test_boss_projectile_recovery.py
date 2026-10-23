@@ -50,7 +50,9 @@ class BossProjectileRecoveryTests(unittest.TestCase):
                 )
                 self.assertIn("frostorb", orb.definition.resource_id.lower())
                 recovery = orb.skill_unblock_frame / 25.
-                self.assertGreater(orb.due_at, 1000. + recovery + 1.)
+                # A homing orb flies until it reaches its target (25 m at
+                # 2.4 m/s), well past the cast's recovery.
+                self.assertGreater(orb.homing_expires_at, 1000. + recovery + 1.)
                 self.assertFalse(combat.maybe_start_monster_attacks(
                     (2., 0., 0.), now=1000. + recovery - .01, server_tick=164,
                 ))
@@ -63,32 +65,19 @@ class BossProjectileRecoveryTests(unittest.TestCase):
                 volley = orb.definition.bullet_count
                 in_flight = combat.pending_monster_projectile_attacks[100]
                 self.assertEqual(len(in_flight), volley)
-                self.assertIn(orb, in_flight)
                 self.assertIs(combat.pending_monster_attacks[100], melee)
-                melee_hits = combat.resolve_due_monster_attacks(
-                    (2., 0., 0.), now=melee.due_at, finalize_area_attacks=True,
-                )
-                self.assertEqual(len(melee_hits), 1)
+                hits = []
+                for tick in range(25 * 20):
+                    hits += combat.resolve_due_monster_attacks(
+                        (2., 0., 0.), now=1000. + tick / 25.,
+                        finalize_area_attacks=True,
+                    )
                 self.assertEqual(
-                    len(combat.pending_monster_projectile_attacks[100]), volley
+                    sorted(h.skill_index for h in hits),
+                    sorted([melee.skill_index] + [orb.skill_index] * volley),
                 )
-                orb_hits = combat.resolve_due_monster_attacks(
-                    (2., 0., 0.), now=orb.due_at, finalize_area_attacks=True,
-                )
-                self.assertEqual(len(orb_hits), 1)
-                last = max(
-                    (a.due_at for a in combat.pending_monster_projectile_attacks.get(100, ())),
-                    default=orb.due_at,
-                )
-                self.assertEqual(len(combat.resolve_due_monster_attacks(
-                    (2., 0., 0.), now=last, finalize_area_attacks=True,
-                )), volley - 1)
-                self.assertEqual(orb_hits[0].skill_index, orb.skill_index)
                 self.assertFalse(combat.pending_monster_projectile_attacks)
-                self.assertFalse(combat.resolve_due_monster_attacks(
-                    (2., 0., 0.), now=orb.due_at + 1., finalize_area_attacks=True,
-                ))
-
+                self.assertNotIn(100, combat.pending_monster_attacks)
 
 if __name__ == "__main__":
     unittest.main()
