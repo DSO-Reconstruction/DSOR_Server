@@ -292,15 +292,20 @@ class InventoryInteractionService:
             )
         except Exception:
             scheduled = frozenset()
-        # Quest reveal only covers sets no map-local event can drive (hub
-        # smith_01/spellweaver_01). Event-driven sets (tutorial spellweaver)
-        # stay gated on the running event so the instance's phasing and the
-        # relog-republish test keep their meaning.
+        # Quest reveal does not override server-driven map-local events;
+        # those sets stay gated on the running event so instance phasing is
+        # preserved. Client-only events cannot be started by the server
+        # runtime, however, so their per-player quest reveal flag must remain
+        # eligible when resolving the quest NPC behind that event set.
         try:
             catalog = runtime.catalog
             reveal = frozenset(
                 flag for flag in reveal
-                if (lambda ev: ev is None or not ev.applies_to(gameplay_map))(
+                if (lambda ev: (
+                    ev is None
+                    or not ev.applies_to(gameplay_map)
+                    or ev.client_only
+                ))(
                     catalog.event(str(flag).casefold())
                 )
             )
