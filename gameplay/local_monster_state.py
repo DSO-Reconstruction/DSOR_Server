@@ -1907,8 +1907,9 @@ class _MonsterSpawnArea:
     spawn_list_id: str
     density: float
     priority: int
-    min_champion_spawn: int
-    max_champion_spawn: int
+    # Areas built without them (tests, older callers) spawn no champions.
+    min_champion_spawn: int = 0
+    max_champion_spawn: int = 0
 
     @property
     def width(self) -> float:
