@@ -161,6 +161,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # SpawnPoints in the ordinary actor range. Keep the Life Guardian and
     # server-spawned monsters in the secondary range to prevent collisions.
     "g0010_temple_life_01_dun",
+    # Artaya's special chamber registers its three quest guardians as client
+    # scene actors in the ordinary range. Keep their server actors separate.
+    "g0015_temple_life_md_01",
     # Sunset has Ozzlan as authored SpawnPoint row 1. The client scene can
     # register that row at 0x30000, hiding the server's first monster actor.
     "g0004_corrupted_jungle_01_pve",
