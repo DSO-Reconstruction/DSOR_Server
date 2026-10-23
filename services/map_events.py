@@ -3729,11 +3729,11 @@ class MapEventService:
             if event is not None and (
                 target_map in event.maps
                 # Some extracted local events have no explicit map list even
-                # though this map's own EventSet references them (for example
-                # f4203_boss' boss06_phase_0 door gate). Keep those authored
-                # references in the client snapshot so their scene entities
-                # are instantiated when the server starts the event.
-                or event_key in runtime.content.referenced_events
+                # though this map's EventSet references them or its runtime
+                # starts them (for example boss06_phase_0 and BOSS_death_dtu).
+                # Preserve those entries, but never include events explicitly
+                # authored for another map: the client rejects that update.
+                or not event.maps
             ):
                 definitions[event.key] = event
         entries = tuple(
@@ -3876,10 +3876,13 @@ class MapEventService:
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
-            if native_exit_entries:
+            if native_exit_entries and active_override is not False:
                 # Some authored exits start as inactive and have no client
                 # entity yet. ExitInfo only updates the cache; VariationInfo
-                # creates the gate when a map-local event reveals it.
+                # creates the gate after EventUpdate activates its scene set.
+                # The client records each processed GUID and ignores repeat
+                # creation requests even if a later event removed the entity.
+                # The pre-event closed snapshot must only prime ExitInfo.
                 packet, packet_bits = encode_server_command_batch((
                     ServerCommand(
                         VARIATION_INFO_COMMAND,
@@ -3891,6 +3894,11 @@ class MapEventService:
                     viewer, packet, packet_bits,
                     label="map-event-native-exit-variation-info",
                 )
+                if map_key(runtime.map_id) == "h0001_hub":
+                    _log(
+                        f"published native exit creation on {runtime.map_id}: "
+                        f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
+                    )
             for definition in viewer_definitions:
                 is_active = definition.active
                 if active_override is not None:
