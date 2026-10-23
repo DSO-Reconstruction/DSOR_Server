@@ -10,7 +10,7 @@ from dso_server.gameplay.map_unlocks import saved_quest_map_unlocks, unlocked_tr
 from dso_server.gameplay.quest_content import QuestProgress, QUEST_STATE_FINISHED, QUEST_STATE_CLOSED
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.persistence.account_state import _state_from_document, _state_to_document
-from dso_server.protocol.gameplay_protocol import MapTravelRequest
+from dso_server.protocol.gameplay_protocol import MapTravelRequest, NEW_NPC_COMMAND
 from dso_server.protocol.player_init_protocol import (
     decode_player_init_prefix, STICKERBOOK_INFO_COMMAND, QUICK_SLOTS_INFO_COMMAND, StickerbookEntry,
     PLAYER_READY_COMMAND, decode_server_command_batch,
@@ -32,12 +32,63 @@ class MapUnlockTests(unittest.TestCase):
         s.connected = s.gameplay_mode = True
         s.gameplay_map = map_id
         s.gameplay_character = self.server.character_selection.active_character
-        s.send_reliable_ordered_split = Mock()
+        send_order = []
+        s.send_reliable_ordered_split = Mock(
+            side_effect=lambda *args, **kwargs: send_order.append(
+                kwargs.get("label_prefix")
+            )
+        )
+        s.send_reliable_ordered = Mock(
+            side_effect=lambda *args, **kwargs: send_order.append(
+                kwargs.get("label")
+            )
+        )
+        s._test_send_order = send_order
         self.server._send_local_player_initialization(s)
         call = next(c for c in s.send_reliable_ordered_split.call_args_list
                     if c.kwargs.get("label_prefix") == "local-player-initialization-split")
         batch, _ = decode_player_init_prefix(call.args[0], call.kwargs["total_bit_length"])
         return s, batch
+
+    def test_kingshill_registers_npc_actors_before_player_init(self):
+        session, batch = self.enter("a0200_kingscity")
+        vicinity = next(
+            call for call in session.send_reliable_ordered.call_args_list
+            if call.kwargs.get("label")
+            == "local-initialization-npc-actor-vicinity"
+        )
+        send_order = session._test_send_order
+        self.assertLess(
+            send_order.index("local-initialization-npc-actor-vicinity"),
+            send_order.index("local-player-initialization-split"),
+        )
+        decoded = decode_server_command_batch(
+            vicinity.args[0], len(vicinity.args[0]) * 8,
+        )
+        self.assertEqual(len(decoded), 1)
+        self.assertEqual(decoded[0].command_id, 0x0074)
+        registered = set(decoded[0].value.actor_ids)
+        templates = {
+            "e_event_merchant_grima": 0x10076,
+            "e_event_merchant_01": 0x1002B,
+            "e_travel_change_quest_npc": 0x10071,
+            "a0200_gambler_trader": 0x10073,
+            "a0200_premium_trader": 0x10007,
+            "e_anniversary_merchant_phestos": 0x1004F,
+        }
+        new_npcs = {
+            command.value.template_id: command.value.actor_id
+            for command in batch
+            if command.command_id == NEW_NPC_COMMAND
+        }
+        for template, actor_id in templates.items():
+            with self.subTest(template=template):
+                self.assertEqual(new_npcs[template], actor_id)
+                self.assertIn(actor_id, registered)
+        self.assertEqual(
+            len(registered),
+            sum(command.command_id == NEW_NPC_COMMAND for command in batch),
+        )
 
     def test_new_character_has_no_mount_shortcut_collection_or_travel_unlocks(self):
         for _ in range(2):  # Include relog with a deliberately empty saved collection.

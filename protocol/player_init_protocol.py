@@ -2610,6 +2610,10 @@ def build_local_player_init_commands(
     )
     event_bound_variations = []
     for command in map_entity_commands:
+        if command.command_id in {NEW_NPC_COMMAND, NPC_INFO_COMMAND}:
+            # Let EventUpdate materialize the authored map actors before
+            # attaching the network NPC actors to those scene entities.
+            continue
         if command.command_id != VARIATION_INFO_COMMAND:
             commands.append(command)
             continue
@@ -2635,6 +2639,7 @@ def build_local_player_init_commands(
     # The client remembers processed variation GUIDs. Create event-bound
     # entities only after their event is active so initialization cannot
     # remove them and leave later creation requests permanently ignored.
+    commands.extend(npc_commands)
     commands.extend(event_bound_variations)
     if has_variation_info:
         # VariationInfo creates missing native entities. Refresh their exit
