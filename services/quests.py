@@ -131,17 +131,6 @@ from dso_server.services.map_events import (
 
 QUEST_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] quest:"
 
-# Both map instances use the same visible Opal Temple Guardian character.
-# The authored purification delivery is attached only to the later instance,
-# which leaves players unable to hand it in when speaking to the guardian at
-# the earlier position.
-_QUEST_NPC_ALIASES = {
-    "g0006-purifycorruptedwater-01-n": frozenset({
-        "g0006_quest_water_guardian",
-        "g0006_quest_water_guardian_02",
-    }),
-}
-
 
 def _log(message: str) -> None:
     print(f"{QUEST_LOG_PREFIX} {message}")
@@ -233,6 +222,15 @@ class QuestService:
             for task in active_tasks(quest, progress):
                 if task.maps and not task.maps & wanted:
                     continue
+                if (
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal
+                    and task.is_done(progress.tokens)
+                ):
+                    # Eventless CompleteTask objectives are completed by
+                    # encountering the goal NPC. Keep that actor's EventSet
+                    # visible after the preceding delivery/task finishes.
+                    targets.add(quest.goal.casefold())
                 # A delivery task has no encounter/talk event to keep its
                 # recipient's EventSet visible. Preserve that NPC while the
                 # hand-in is active, including after a map re-entry.
@@ -932,11 +930,19 @@ class QuestService:
             if quest is None or progress.state == QUEST_STATE_CLOSED:
                 continue
             targeted = any(
-                event.kind == "encounter"
-                and event.value.casefold() == npc_key
-                and all(guard.holds(progress.tokens) for guard in event.guards)
+                (
+                    task.task_type.casefold() == "completetask"
+                    and quest.goal
+                    and quest.goal.casefold() == npc_key
+                    and task.is_done(progress.tokens)
+                )
+                or any(
+                    event.kind == "encounter"
+                    and event.value.casefold() == npc_key
+                    and all(guard.holds(progress.tokens) for guard in event.guards)
+                    for event in task.events
+                )
                 for task in active_tasks(quest, progress)
-                for event in task.events
             )
             if targeted:
                 interactions.append(NPCInteraction(
@@ -1019,10 +1025,7 @@ class QuestService:
             if (quest := catalog.quest(quest_id)) is not None
             for task in active_tasks(quest, progress)
             for barter in task.barters
-            if (
-                barter.actor.casefold() == npc_key
-                or npc_key in _QUEST_NPC_ALIASES.get(quest.key, ())
-            )
+            if barter.actor.casefold() == npc_key
             and barter.live(progress.tokens)
         )
 
