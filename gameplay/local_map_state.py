@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from contextlib import closing
 import math
 import os
 import sqlite3
 import struct
 from pathlib import Path
-from uuid import NAMESPACE_URL, uuid5
 
 from dso_server.protocol.gameplay_protocol import (
     ActorPlacement,
@@ -41,12 +40,6 @@ LOCAL_NPC_ACTOR_BASE = 0x10000
 # factor new NPC"), which is what hid the tutorial's ranger (row 2) and, in
 # Kingshill, the arena merchant.  NPC ids therefore skip that slot.
 LOCAL_PLAYER_CLIENT_ACTOR_ID = LOCAL_NPC_ACTOR_BASE + 1
-SLAVKOFF_EXTRA_MAP_ID = "f4102_dun"
-SLAVKOFF_NPC_ID = "f4100_quest_guard_captain"
-SLAVKOFF_EXTRA_ROW_ID = 3
-# The f4102_dun collision surface here is Y=-1.0. Keep the NPC root exactly
-# on that surface beside the player entry so it cannot clip below the floor.
-SLAVKOFF_EXTRA_POSITION = (-67.0, -1.0, 91.0)
 
 
 def npc_actor_id_for_row(row_id: int) -> int:
@@ -503,35 +496,6 @@ def load_local_npc_definitions(
                     event_set_row=event_set_row,
                 )
             )
-        if str(map_id).casefold() == SLAVKOFF_EXTRA_MAP_ID:
-            # This map has no authored Slavkoff row. Reuse his hub NPC
-            # definition with a map-local GUID and the first free NPC actor
-            # slot so he can be materialized on this map as well.
-            hub_captain = next(
-                (
-                    definition
-                    for definition in load_local_npc_definitions(
-                        static_database_path,
-                        "f4100_hub",
-                        include_inactive_event_sets=True,
-                        active_event_flags=active_event_flags,
-                    )
-                    if definition.instance_id.casefold() == SLAVKOFF_NPC_ID
-                ),
-                None,
-            )
-            if hub_captain is not None:
-                definitions.append(replace(
-                    hub_captain,
-                    actor_id=npc_actor_id_for_row(SLAVKOFF_EXTRA_ROW_ID),
-                    row_id=SLAVKOFF_EXTRA_ROW_ID,
-                    instance_guid=uuid5(
-                        NAMESPACE_URL,
-                        f"dso-server:{SLAVKOFF_EXTRA_MAP_ID}:{SLAVKOFF_NPC_ID}",
-                    ).bytes,
-                    position=SLAVKOFF_EXTRA_POSITION,
-                    event_set_row=-1,
-                ))
         if os.getenv("DSO_NPC_TRACE") == "1":
             print(
                 "[npc-trace]   SENT "

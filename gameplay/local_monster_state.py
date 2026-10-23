@@ -136,6 +136,11 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # overlaps the first server monster actor slot on clients that register
     # scene SpawnPoints in the ordinary 0x30000 range.
     "f4101_pve",
+    # Pırıltıdağ's scene registers authored SpawnPoints in the ordinary
+    # monster actor range too. The first row is Commander Slavkoff, so starting
+    # server monsters at 0x30000 collides with his client scene actor and hides
+    # the mob. Keep this map's server actors in the secondary range.
+    "f4102_dun",
 })
 
 
