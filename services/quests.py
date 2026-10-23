@@ -31,6 +31,7 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import (
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    load_map_signal_catalog,
     map_key,
     prop_visible_to_player,
 )
@@ -287,7 +288,24 @@ class QuestService:
             for definition in npc_definitions
             if definition.event_set_row >= 0
         }
-        for npc_template_id in gated:
+        try:
+            giver_sets = load_local_event_set_flags(
+                self.static_database_path, map_id,
+            )
+            signal_catalog = load_map_signal_catalog(self.static_database_path)
+        except Exception:
+            giver_sets, signal_catalog = {}, None
+        for npc_template_id, event_set_row in gated.items():
+            # Seasonal givers (Halloween, New Moon, Grima's merchant set) sit
+            # behind global event flags, not client-only map events; their
+            # quests carry no EventId, so availability alone would show them
+            # all year. Only reveal sets a client-only map event gates.
+            if signal_catalog is None or not any(
+                (event := signal_catalog.event(flag)) is not None
+                and event.client_only
+                for flag in giver_sets.get(event_set_row, ())
+            ):
+                continue
             if any(catalog.available(
                 quest,
                 class_name=class_name,
