@@ -354,6 +354,55 @@ class PVPCombatService:
         return frozenset(result)
 
     @staticmethod
+    def _player_crowd_control_returns(
+            s: Session, combat, definitions, *, pvp=False) -> tuple:
+        """Refuse a crowd control inside the immunity its predecessor left.
+
+        CONTRACT: when a victim effect whose StopModifiers grant an immunity
+        (debuff_cc_stun / _freeze / _petrify -> debuff_cc_stun_immunity,
+        StatusEffectImmunityGroup G_debuff_stun and stun, PvE D:0.5) ends on
+        the player, effects of those groups are refused for that long. The
+        window is armed when the effect is accepted: it opens at its expiry.
+        PvP is excluded (DisableOnRuleSet:PvP).
+        EVIDENCE (data): _Template_StatusEffect StopModifiers of the three
+        CC effects; SEE: LocalCombatState._arm_monster_status_immunity, the
+        same rule on monsters, which players lacked.
+        """
+
+        content = getattr(combat, "_status_effect_content", None)
+        if pvp or content is None:
+            return tuple(definitions)
+        now = time.perf_counter()
+        windows = {
+            group: window
+            for group, window in getattr(
+                s, "gameplay_player_cc_immunity", {}
+            ).items()
+            if window[1] > now
+        }
+        result = []
+        for definition in definitions:
+            groups, immunity = content(str(definition.resource_id))
+            if any(
+                windows[group][0] <= now
+                for group in groups & windows.keys()
+            ):
+                continue
+            result.append(definition)
+            if immunity is None or int(definition.duration_ticks) <= 0:
+                continue
+            blocked_groups, seconds = immunity
+            start = now + int(definition.duration_ticks) / float(
+                SERVER_TICKS_PER_SECOND
+            )
+            for group in blocked_groups:
+                previous = windows.get(group)
+                if previous is None or previous[0] < start:
+                    windows[group] = (start, start + float(seconds))
+        s.gameplay_player_cc_immunity = windows
+        return tuple(result)
+
+    @staticmethod
     def _filter_player_status_effects(s: Session, definitions, *, pvp=False) -> tuple:
         """Apply socket immunity and authored status-group duration changes."""
 
@@ -371,8 +420,12 @@ class PVPCombatService:
         has_duration_rules = bool(
             getattr(evaluation, "status_group_durations", ())
         )
-        if combat is None or (not blocked and not has_duration_rules):
+        if combat is None:
             return tuple(definitions)
+        if not blocked and not has_duration_rules:
+            return CharacterService._player_crowd_control_returns(
+                s, combat, definitions, pvp=pvp
+            )
         result = []
         for definition in definitions:
             groups = combat._status_groups_for_effect(
@@ -396,7 +449,9 @@ class PVPCombatService:
                     ),
                 )
             result.append(definition)
-        return tuple(result)
+        return CharacterService._player_crowd_control_returns(
+            s, combat, result, pvp=pvp
+        )
 
     @staticmethod
     def _active_pvp_victim_modifier_sources(
