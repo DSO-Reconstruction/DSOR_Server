@@ -846,6 +846,28 @@ class MonsterReturnHomeTransition:
 
 
 @dataclass(frozen=True)
+class MonsterAuraStrike:
+    """A one-shot damaging aura a monster skill puts on its caster.
+
+    CONTRACT: a UserStatusEffects entry whose status has AuraRadius > 0,
+    AuraTargets Enemies and no duration, and whose AuraEffectId children
+    carry ``CurrHealthPointsDmg:$N,relative,<type>``: every enemy within
+    AuraRadius of the caster takes coefficient x the monster's damage, once,
+    DE seconds after the skill's hit frame.
+    EVIDENCE: heredur_base_doublestrike (HitFrame 26) carries
+    boss_heredur_aura_360smash (radius 5, DE:0.76 = 19 frames, $0 -0.5);
+    its sequence miniboss_01_heredur_skill_02 shakes the camera at frames 26
+    and 44, the two blows of the double strike.
+    """
+
+    resource_id: str
+    radius: float
+    delay_ticks: int
+    # (coefficient, damage type) per CurrHealthPointsDmg instruction.
+    damage_programs: tuple[tuple[float, str], ...]
+
+
+@dataclass(frozen=True)
 class MonsterAttack:
     attacker_actor_id: int
     target_actor_id: int
@@ -875,6 +897,9 @@ class MonsterAttack:
     execution_context_tick: int | None = None
     bullet_count: int = 1
     resolved_target_actor_ids: tuple[int, ...] = ()
+    # Set on the extra blow a skill's user aura lands after its hit frame
+    # (MonsterAuraStrike); None for the skill's own hit.
+    aura_strike: MonsterAuraStrike | None = None
 
 
 @dataclass(frozen=True)
@@ -1238,6 +1263,11 @@ class LocalCombatState:
         ] = {}
         self._monster_user_effects: dict[
             str, tuple[VictimStatusEffectDefinition, ...]
+        ] = {}
+        # Skill resource id -> {user effect resource id: MonsterAuraStrike},
+        # filled with _monster_user_effects.
+        self._monster_aura_strikes: dict[
+            str, dict[str, MonsterAuraStrike]
         ] = {}
         self._status_effect_modifier_programs: dict[
             int, tuple[tuple[str, tuple[str, ...]], ...]
@@ -4698,8 +4728,60 @@ class LocalCombatState:
                 definition.user_status_effects,
                 default_trigger="skillstart",
             )
+            strikes = self._load_monster_aura_strikes(
+                database, definition.user_status_effects
+            )
+        self._monster_aura_strikes[definition.resource_id] = strikes
         self._monster_user_effects[definition.resource_id] = effects
         return effects
+
+    def _load_monster_aura_strikes(
+        self, database: sqlite3.Connection, value: str
+    ) -> dict[str, MonsterAuraStrike]:
+        """Find the one-shot damaging enemy auras among user effects.
+
+        SEE: MonsterAuraStrike. Persistent auras (a duration, e.g. fire_aura
+        D:5), ally/creator/summoner auras and children without a relative
+        CurrHealthPointsDmg (heals, buffs, slows) are left out.
+        """
+
+        strikes: dict[str, MonsterAuraStrike] = {}
+        for entry in str(value or "").split(";"):
+            entry = entry.strip()
+            if not entry:
+                continue
+            for aura in self._load_victim_status_effects(
+                database, entry, default_trigger="skillstart"
+            ):
+                if (
+                    aura.aura_radius <= 0.0
+                    or aura.aura_targets.strip().casefold() != "enemies"
+                    or aura.duration_ticks > 0
+                ):
+                    continue
+                programs = tuple(
+                    (coefficient, damage_type)
+                    for child in self._load_location_aura_effects(
+                        database, entry
+                    )
+                    for coefficient, damage_type, relative
+                    in self._status_damage_programs(child, ticks=False)
+                    if relative and coefficient > 0.0
+                )
+                if programs:
+                    strikes[aura.resource_id] = MonsterAuraStrike(
+                        resource_id=aura.resource_id,
+                        radius=aura.aura_radius,
+                        delay_ticks=aura.delay_ticks,
+                        damage_programs=programs,
+                    )
+        return strikes
+
+    def _monster_aura_strikes_for(
+        self, definition: MonsterAttackDefinition
+    ) -> dict[str, MonsterAuraStrike]:
+        self._load_monster_user_effects(definition)
+        return self._monster_aura_strikes.get(definition.resource_id, {})
 
     @staticmethod
     def _clean_modifier_token(value: str) -> str:
@@ -10669,6 +10751,30 @@ class LocalCombatState:
                 else:
                     self.tower_fire_burst_remaining[actor_id] = remaining - 1
             self.pending_monster_attacks[actor_id] = attack
+            if (
+                attack.user_status_effects
+                and attack_target_actor_id not in self.monsters
+            ):
+                # SEE: MonsterAuraStrike. The aura's DE counts from the hit
+                # frame (Heredur's second blow: 26 + 19 = frame 45, its
+                # sequence's second shake at 44).
+                strikes = self._monster_aura_strikes_for(definition)
+                for effect in attack.user_status_effects:
+                    strike = strikes.get(effect.resource_id)
+                    if strike is None:
+                        continue
+                    delay_ticks = (
+                        max(0, int(attack.hit_frame)) + strike.delay_ticks
+                    )
+                    self.pending_monster_projectile_attacks.setdefault(
+                        actor_id, []
+                    ).append(replace(
+                        attack,
+                        due_at=current_time
+                        + delay_ticks / SERVER_TICKS_PER_SECOND,
+                        impact_tick=(start_tick + delay_ticks) & 0xFFFFFFFF,
+                        aura_strike=strike,
+                    ))
             attacks.append(attack)
             next_cursor = (
                 start_index + offset + 1
@@ -10968,6 +11074,28 @@ class LocalCombatState:
         if not flights:
             self.pending_monster_projectile_attacks.pop(actor_id, None)
 
+    def _mark_monster_area_target_resolved(
+        self, actor_id: int, attack: MonsterAttack, target_actor_id: int,
+    ) -> None:
+        """Record one struck target on an area attack, where it is held."""
+
+        actor_id = int(actor_id)
+        updated = replace(
+            attack,
+            resolved_target_actor_ids=(
+                *attack.resolved_target_actor_ids, int(target_actor_id),
+            ),
+        )
+        for index, pending in enumerate(
+            self.pending_monster_projectile_attacks.get(actor_id, ())
+        ):
+            if pending is attack:
+                self.pending_monster_projectile_attacks[actor_id][index] = (
+                    updated
+                )
+                return
+        self.pending_monster_attacks[actor_id] = updated
+
     def resolve_due_monster_attacks(
         self,
         player_position: tuple[float, float, float],
@@ -11024,11 +11152,14 @@ class LocalCombatState:
                 and definition.targeting_type.casefold()
                 in {"radius", "point", "location"}
             )
+            aura_strike = attack.aura_strike
             is_multi_target_area = (
-                (is_directional_shape or is_ground_target_area)
-                and not targets_monster
-                and not definition.self_buff
-            )
+                (
+                    (is_directional_shape or is_ground_target_area)
+                    and not definition.self_buff
+                )
+                or aura_strike is not None
+            ) and not targets_monster
             if (
                 not targets_monster
                 and attack.target_actor_id != player_actor_id
@@ -11043,7 +11174,8 @@ class LocalCombatState:
             if not is_multi_target_area:
                 self._remove_pending_monster_attack(actor_id, attack)
             if (
-                attack.definition is not None
+                aura_strike is None
+                and attack.definition is not None
                 and attack.definition.summon_template
                 and attack.target_actor_id == player_actor_id
             ):
@@ -11055,9 +11187,13 @@ class LocalCombatState:
                     position=tuple(float(v) for v in monster_position[:3]),
                     level=int(monster.level),
                 ))
-            if attack.definition is not None and attack.definition.self_buff:
+            if (
+                aura_strike is None
+                and attack.definition is not None
+                and attack.definition.self_buff
+            ):
                 continue
-            if definition.damage_modifier <= 0.0:
+            if aura_strike is None and definition.damage_modifier <= 0.0:
                 continue
             if (
                 targets_monster
@@ -11070,7 +11206,14 @@ class LocalCombatState:
                 # Several impacts can be due in one tick. Only the first
                 # lethal hit owns the death transition; discard later hits.
                 continue
-            if attack.command_id in {
+            if aura_strike is not None:
+                # Centred on the caster where it stands when the blow lands.
+                if (
+                    self._distance(target_world, monster_position)
+                    > aura_strike.radius + PLAYER_PROJECTILE_COLLISION_RADIUS
+                ):
+                    continue
+            elif attack.command_id in {
                 BULLET_SKILL_COMMAND,
                 TARGET_BULLET_SKILL_COMMAND,
             }:
@@ -11124,7 +11267,15 @@ class LocalCombatState:
                         incoming_damage_multiplier
                     ).items()
                 }
-                weighted = tuple(definition.damage_types)
+                weighted = (
+                    tuple(
+                        (damage_type, coefficient)
+                        for coefficient, damage_type
+                        in aura_strike.damage_programs
+                    )
+                    if aura_strike is not None
+                    else tuple(definition.damage_types)
+                )
                 total_weight = sum(
                     max(0.0, float(weight)) for _name, weight in weighted
                 )
@@ -11170,7 +11321,15 @@ class LocalCombatState:
                 (monster.minimum_damage + monster.maximum_damage) / 2
                 * outgoing_multiplier
                 * defense_multiplier
-                * max(0.0, float(definition.damage_modifier))
+                * (
+                    sum(
+                        coefficient
+                        for coefficient, _damage_type
+                        in aura_strike.damage_programs
+                    )
+                    if aura_strike is not None
+                    else max(0.0, float(definition.damage_modifier))
+                )
             )
             # Some authored fixed shooters omit MinDamage/MaxDamage. Their
             # visual projectile still hits, so do not silently turn that hit
@@ -11272,12 +11431,8 @@ class LocalCombatState:
             damage = previous - current
             if damage <= 0 and not blocked:
                 if is_multi_target_area:
-                    self.pending_monster_attacks[actor_id] = replace(
-                        attack,
-                        resolved_target_actor_ids=(
-                            *attack.resolved_target_actor_ids,
-                            player_actor_id,
-                        ),
+                    self._mark_monster_area_target_resolved(
+                        actor_id, attack, player_actor_id
                     )
                 continue
             self.note_player_attacked(player_actor_id, now=current_time)
@@ -11296,7 +11451,10 @@ class LocalCombatState:
                     server_tick=attack.impact_tick,
                     hit_tags=(0,),
                     skill_index=attack.skill_index,
-                    victim_status_effects=tuple(
+                    # The skill's victim effects ride its own hit; an aura
+                    # strike's child carries only its damage.
+                    victim_status_effects=() if aura_strike is not None
+                    else tuple(
                         definition
                         for definition in self._load_monster_attack_effects(
                             definition
@@ -11314,14 +11472,19 @@ class LocalCombatState:
                 )
             )
             if is_multi_target_area:
-                self.pending_monster_attacks[actor_id] = replace(
-                    attack,
-                    resolved_target_actor_ids=(
-                        *attack.resolved_target_actor_ids,
-                        player_actor_id,
-                    ),
+                self._mark_monster_area_target_resolved(
+                    actor_id, attack, player_actor_id
                 )
         if finalize_area_attacks:
+            for actor_id, flights in tuple(
+                self.pending_monster_projectile_attacks.items()
+            ):
+                for attack in tuple(flights):
+                    if (
+                        attack.aura_strike is not None
+                        and attack.due_at <= current_time
+                    ):
+                        self._remove_pending_monster_attack(actor_id, attack)
             for actor_id, attack in tuple(self.pending_monster_attacks.items()):
                 definition = attack.definition or self.monsters[actor_id].attack
                 if (
