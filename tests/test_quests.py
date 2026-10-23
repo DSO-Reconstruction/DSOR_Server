@@ -264,6 +264,51 @@ class QuestServiceTests(unittest.TestCase):
             monster_level=None, scaling_difficulty=0, fresh_instance=True,
         )
 
+    def test_wael_client_only_reveal_registers_talk_actor_once(self):
+        session = self._session("h0006_valley_dun", 50177, class_id=2)
+        session.gameplay_character.level = 55
+        quest_id = "h0001-hunt-for-the-lantern-04-n"
+        session.gameplay_quest_log[quest_id] = QuestProgress(quest_id)
+        session.gameplay_last_move = Move.from_values(
+            session.gameplay_coordinate_frame.world_to_wire(
+                (-10.0, 0.0, -149.0),
+            ),
+            0, 1.0, 1.0, 100, 0,
+        )
+        self.server._attach_map_event_runtime(
+            session, map_id=session.gameplay_map, initial_flags=frozenset(),
+            monster_level=None, scaling_difficulty=0, fresh_instance=True,
+        )
+        resolved = self.server._resolve_npc_interaction(session, 0)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.template_id, "h0006_quest_trader_wael_01")
+        self.server._quest_spawn_revealed_npcs(session)
+        commands = [
+            command
+            for data, bits, label in session.recorder.messages
+            if label.startswith("quest-revealed-npc")
+            and "actor-vicinity" not in label
+            for command in decode_npc_batch(data, bits).commands
+        ]
+        wael = next(
+            command for command in commands
+            if type(command).__name__ == "NewNPC"
+            and command.template_id == "h0006_quest_trader_wael_01"
+        )
+        info = next(
+            command for command in commands
+            if type(command).__name__ == "NPCInfo"
+            and command.actor_id == wael.actor_id
+        )
+        self.assertTrue(any(
+            interaction.field_08 == NPC_TALK_DIALOG
+            and interaction.source == quest_id + ".s_h0001-hunt-for-the-lantern-04-talk-01Dialog"
+            for interaction in info.interactions
+        ))
+        mark = len(session.recorder.messages)
+        self.server._quest_spawn_revealed_npcs(session)
+        self.assertEqual(len(session.recorder.messages), mark)
+
     def _session(self, map_id, port, *, class_id):
         session = Session(("127.0.0.1", port), _FakeSocket())
         session.connected = True

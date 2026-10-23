@@ -789,6 +789,16 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     # Time Rift and Atlantis Above Water also author matching exits per tier.
     "c2302_dun": ("c2303_dun",),
     "c2303_dun": ("c2302_dun", "c2304_boss"),
+    # The Spiky Valley treasure-cave gate has one overlapping scene exit per
+    # difficulty. Only expose the exit matching the current Valley access.
+    "h0006_valley_dun": ("h0007_treasure_cave_dun",),
+    # The cave authors matching difficulty variations for its return gate and
+    # for its internal routes and the quest gate to Djinn's Room.
+    "h0007_treasure_cave_dun": (
+        "h0006_valley_dun", "h0007_treasure_cave_dun", "h0008_boss",
+    ),
+    # Djinn's Room also has one overlapping return-gate variation per tier.
+    "h0008_boss": ("h0007_treasure_cave_dun",),
     "pw001_grimmagstone_01_dun": ("pw002_alliance_fortress_01_dun",),
     "pw002_alliance_fortress_01_dun": ("pw003_grimmag_01_boss",),
     "pw004_hagastove_grotto_01_dun": ("pw005_caverns_loxley_01_dun",),
@@ -982,6 +992,8 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Hiraja's quest gate must be materialized after its scene event starts.
+    "h0001_hub": ("h0006_valley_dun",),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
@@ -1032,7 +1044,10 @@ def native_scene_exit_variation_entries(
 
     targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
     return tuple(
-        VariationInfoEntry(definition.instance_guid, -1)
+        VariationInfoEntry(
+            definition.instance_guid,
+            definition.event_set_row if str(map_id).casefold() == "h0001_hub" else -1,
+        )
         for definition in exits
         if (
             definition.active
@@ -1145,7 +1160,9 @@ def load_local_map_initialization(
             # ExitInfo only updates existing entities. The client handler for
             # VariationInfo (release261_192 0x1401d4ce0) factory-creates missing
             # entities by their map GUID. EventSetRow -1 is unconditional in
-            # ClientEventSystem::IsGameObjectActive (0x1401fba74).
+            # ClientEventSystem::IsGameObjectActive (0x1401fba74). Event-bound
+            # exits retain their row and are sent after EventUpdate by the
+            # initialization command builder.
             commands.append(ServerCommand(
                 VARIATION_INFO_COMMAND,
                 VariationInfo(native_exit_entries),

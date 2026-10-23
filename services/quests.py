@@ -50,6 +50,7 @@ from dso_server.gameplay.quest_content import (
     active_prop_switches,
     active_tasks,
     apply_quest_event,
+    explore_trigger_for_task,
     load_quest_catalog,
     task_counters,
 )
@@ -466,6 +467,7 @@ class QuestService:
                     self._quest_on_signal(s, rule.signal_id)
         self._quest_ensure_cult_shaman(s)
         self._quest_ensure_ice_guardian(s)
+        self._quest_ensure_lantern_scout(s)
         # Clear-region objectives drive the client's remaining-monster
         # counter. Retail normally asks for this tracker from the UI, but
         # map-bound challenges can start automatically without that request.
@@ -656,6 +658,65 @@ class QuestService:
             self._quest_publish_ice_guardian(
                 s, runtime, combat, spawned_actor_ids,
             )
+
+    def _quest_ensure_lantern_scout(self, s: Session) -> None:
+        """Spawn the missing Lantern 04 scout when its collect task is active."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "h0006_valley_dun":
+            return
+        quest_id = "h0001-hunt-for-the-lantern-04-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        template_id = "h0006_guardian_hunt_lantern_04_running_sandling_01"
+        target = next((
+            task for task in active_tasks(quest, progress)
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() == template_id.casefold()
+                for event in task.events
+            )
+        ), None)
+        if target is None:
+            return
+        collect_id = "h0006_hunt_for_the_lantern_04_lantern_piece_03"
+        with s.flow_lock:
+            if any(
+                str(getattr(drop, "quest_id", "")).casefold()
+                == quest_id.casefold()
+                and str(getattr(drop, "quest_collect_id", "")).casefold()
+                == collect_id.casefold()
+                for drop in getattr(s, "gameplay_world_loot", {}).values()
+            ):
+                return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            with combat.lock:
+                if any(
+                    (monster := combat.monsters.get(actor_id)) is not None
+                    and monster.template_id.casefold() == template_id.casefold()
+                    for actor_id in combat.alive_actor_ids
+                ):
+                    return
+        # The map DB has no spawn row for the guardian variant. Reuse the
+        # authored Running Sandling anchor; this is where the quest's scout
+        # phase is staged, and the quest data supplies the kill/drop rules.
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            template_id,
+            "",
+            0,
+            "h0006_normal_hunt_lantern_04_running_sandling_normal_spawnpoint",
+        ),))
 
     def _quest_publish_ice_guardian(
             self, s: Session, runtime, combat, actor_ids,
@@ -1220,7 +1281,11 @@ class QuestService:
                 for flags in event_set_flags.values():
                     for flag in flags:
                         event = runtime.catalog.event(str(flag).casefold())
-                        if event is not None and event.applies_to(runtime.map_id):
+                        if (
+                            event is not None
+                            and event.applies_to(runtime.map_id)
+                            and not event.client_only
+                        ):
                             map_local_event_flags.add(str(flag).casefold())
             except Exception as exc:
                 _log(
@@ -1235,9 +1300,10 @@ class QuestService:
                 definition for definition in definitions
                 if int(local_npc_actor_id(definition)) not in announced
                 and int(getattr(definition, "event_set_row", -1)) >= 0
-                # Map-local events own their own NewNPC emission. Do not race
-                # that path by materializing the same actor from a quest
-                # refresh after the event flag becomes active.
+                # Server-driven map-local events own their NewNPC emission.
+                # Client-only scene events (such as Wael's reveal) can show
+                # the model without registering a network interaction actor;
+                # quest refreshes must create those actors themselves.
                 and not (
                     event_set_flags.get(
                         int(definition.event_set_row), frozenset()
@@ -1659,6 +1725,7 @@ class QuestService:
         self._quest_start_active_holdgrounds(s)
         self._quest_ensure_cult_shaman(s)
         self._quest_ensure_ice_guardian(s)
+        self._quest_ensure_lantern_scout(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1936,6 +2003,8 @@ class QuestService:
                 changed_any = True
                 self._quest_publish_result(s, quest, result, kind, value)
         if changed_any:
+            if str(kind).casefold() != "trigger":
+                self._quest_reconcile_explore_trigger_presence(s)
             self._quest_sync_props(s)
             if getattr(s, "gameplay_quest_tracking", None):
                 self._quest_send_monster_indication(s)
@@ -2073,6 +2142,7 @@ class QuestService:
         self._quest_ensure_ice_guardian(s)
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
+        self._quest_ensure_lantern_scout(s)
         for change in result.changes:
             if change.finished:
                 self._quest_fire_signal(
@@ -2305,6 +2375,41 @@ class QuestService:
     def _quest_on_triggers(self, s: Session, trigger_ids) -> None:
         for trigger_id in trigger_ids:
             self._quest_feed(s, "trigger", str(trigger_id))
+
+    def _quest_reconcile_explore_trigger_presence(self, s: Session) -> None:
+        """Credit a newly active ExploreTask if its trigger already contains the player."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None:
+            return
+        map_id = str(getattr(runtime, "map_id", None) or "").casefold()
+        if not map_id:
+            return
+        with runtime.lock:
+            volumes = runtime.active_trigger_volumes()
+        with s.flow_lock:
+            inside = set(getattr(s, "gameplay_trigger_volumes_inside", ()))
+        if not inside:
+            return
+        triggers_inside = {
+            str(volume.triggered_event_id or "").casefold()
+            for volume in volumes
+            if volume.row_id in inside and volume.triggered_event_id
+        }
+        if not triggers_inside:
+            return
+        for quest_id, progress in tuple(_quest_log(s).items()):
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None or progress.state != QUEST_STATE_ACCEPTED:
+                continue
+            for task in active_tasks(quest, progress):
+                if task.maps and map_id not in task.maps:
+                    continue
+                trigger_id = explore_trigger_for_task(quest, task).casefold()
+                if trigger_id and trigger_id in triggers_inside:
+                    self._quest_feed(
+                        s, "trigger", trigger_id, quest_id=quest.quest_id,
+                    )
 
     def _quest_on_signal(self, s: Session, signal_id: str) -> None:
         """Start the giver-less quests that a fired signal opens."""

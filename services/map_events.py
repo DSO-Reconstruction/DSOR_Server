@@ -32,6 +32,7 @@ from dso_server.gameplay.fractured_planes_layout import (
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     active_local_map_event_flags,
+    _exit_info_entries_for_access,
     filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_npc_definitions,
@@ -69,6 +70,10 @@ from dso_server.gameplay.map_event_state import (
     load_map_signal_catalog,
     map_key,
     prop_visible_to_player,
+)
+from dso_server.gameplay.quest_content import (
+    QUEST_STATE_ACCEPTED,
+    active_tasks,
 )
 from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
@@ -1747,6 +1752,26 @@ class MapEventService:
             unlocked_maps=unlocked_maps,
         )
         rules = runtime.catalog.evaluate(kind, context)
+        # The sixth Hunt for a Legend quest still uses the sandhills authored
+        # for quest 05. Its map-entry signal is guarded by quest 05 being
+        # accepted, so players who have already turned in that step never
+        # activate the EventSet containing the quest 06 sandhill props.
+        # Keep that authored phase available while its follow-up quest is
+        # active, without changing the quest data or its progression.
+        sandhill_signal = (
+            "h0004_hunt_for_a_legend_05_activate_sandhills_start_signal"
+        )
+        if (
+            kind == "playerenteredmap"
+            and map_key(runtime.map_id) == "h0004_temple_dun"
+            and "h0001-hunt-for-a-legend-06-n" in quests_accepted
+            and not any(rule.signal_id.casefold() == sandhill_signal for rule in rules)
+        ):
+            _log(
+                "starting the Hunt for a Legend sandhill phase for the active "
+                "quest 06 on h0004_temple_dun"
+            )
+            self._emit_map_signal(s, runtime, sandhill_signal)
         if (
             kind == "monsterseliminated"
             and _fractured_planes_floor_number_from_map(runtime.map_id)
@@ -2323,12 +2348,38 @@ class MapEventService:
             )
         combat = getattr(s, "gameplay_combat_state", None)
         if runtime.map_id.casefold() == "h0008_boss":
-            # A direct boss-ration arrival has no preceding lamp interaction.
-            # Start the authored encounter (including its real Djinn spawn),
-            # rather than leaving this dedicated arena with only its socket.
-            djinn_event = runtime.catalog.event("h0008_start_bossfight_01")
-            if djinn_event is not None and djinn_event.applies_to(runtime.map_id):
-                self._schedule_map_local_event_start(runtime, djinn_event)
+            # The Lantern 09 quest must let the player place the lamp before
+            # the Djinn encounter starts. Its authored prop signal starts the
+            # same event after interaction; only direct arena arrivals need
+            # the entry fallback.
+            lantern_quest_id = "h0001-hunt-for-the-lantern-09-n"
+            lantern_quest = CharacterService._quest_catalog(self).quest(
+                lantern_quest_id
+            )
+            lantern_progress = next((
+                progress
+                for quest_id, progress in (getattr(s, "gameplay_quest_log", None) or {}).items()
+                if str(quest_id).casefold() == lantern_quest_id
+            ), None)
+            lamp_task_active = bool(
+                lantern_quest is not None
+                and lantern_progress is not None
+                and lantern_progress.state == QUEST_STATE_ACCEPTED
+                and any(
+                    task.title.casefold()
+                    == "h0001-hunt-for-the-lantern-09-interact-02"
+                    for task in active_tasks(lantern_quest, lantern_progress)
+                )
+            )
+            if not lamp_task_active:
+                djinn_event = runtime.catalog.event("h0008_start_bossfight_01")
+                if djinn_event is not None and djinn_event.applies_to(runtime.map_id):
+                    self._schedule_map_local_event_start(runtime, djinn_event)
+            else:
+                _log(
+                    "deferred Djinn encounter on entry for the active Lantern 09 "
+                    "lamp-placement objective"
+                )
         with runtime.lock:
             entrance_started = "boss_spawn" in runtime.running
         if entrance_started:
@@ -3709,11 +3760,11 @@ class MapEventService:
             if event is not None and (
                 target_map in event.maps
                 # Some extracted local events have no explicit map list even
-                # though this map's own EventSet references them (for example
-                # f4203_boss' boss06_phase_0 door gate). Keep those authored
-                # references in the client snapshot so their scene entities
-                # are instantiated when the server starts the event.
-                or event_key in runtime.content.referenced_events
+                # though this map's EventSet references them or its runtime
+                # starts them (for example boss06_phase_0 and BOSS_death_dtu).
+                # Preserve those entries, but never include events explicitly
+                # authored for another map: the client rejects that update.
+                or not event.maps
             ):
                 definitions[event.key] = event
         entries = tuple(
@@ -3856,10 +3907,13 @@ class MapEventService:
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
-            if native_exit_entries:
+            if native_exit_entries and active_override is not False:
                 # Some authored exits start as inactive and have no client
                 # entity yet. ExitInfo only updates the cache; VariationInfo
-                # creates the gate when a map-local event reveals it.
+                # creates the gate after EventUpdate activates its scene set.
+                # The client records each processed GUID and ignores repeat
+                # creation requests even if a later event removed the entity.
+                # The pre-event closed snapshot must only prime ExitInfo.
                 packet, packet_bits = encode_server_command_batch((
                     ServerCommand(
                         VARIATION_INFO_COMMAND,
@@ -3871,6 +3925,11 @@ class MapEventService:
                     viewer, packet, packet_bits,
                     label="map-event-native-exit-variation-info",
                 )
+                if map_key(runtime.map_id) == "h0001_hub":
+                    _log(
+                        f"published native exit creation on {runtime.map_id}: "
+                        f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
+                    )
             for definition in viewer_definitions:
                 is_active = definition.active
                 if active_override is not None:
@@ -3879,15 +3938,37 @@ class MapEventService:
                     entry_active = is_active
                 if is_active:
                     active_viewer_definitions.append(definition)
-                exit_entries.append(
+                exit_entries.append((definition, entry_active))
+            if parallel_world_boss_map:
+                # Boss rooms have a separate staged exit flow. Keep its
+                # explicit per-entry active override unchanged.
+                exit_info_entries = tuple(
                     ExitInfoEntry(
                         definition.name,
                         definition.destination_map_id,
                         int(entry_active),
                         definition.instance_guid,
                     )
+                    for definition, entry_active in exit_entries
                 )
-            exit_info = ExitInfo(tuple(exit_entries))
+            elif active_override is None:
+                exit_info_entries = _exit_info_entries_for_access(
+                    self.static_database_path,
+                    runtime.map_id,
+                    definitions,
+                    viewer_definitions,
+                )
+            else:
+                exit_info_entries = tuple(
+                    ExitInfoEntry(
+                        definition.name,
+                        definition.destination_map_id,
+                        int(entry_active),
+                        definition.instance_guid,
+                    )
+                    for definition, entry_active in exit_entries
+                )
+            exit_info = ExitInfo(exit_info_entries)
             packet, packet_bits = encode_server_command_batch(
                 (ServerCommand(
                     EXIT_INFO_COMMAND, exit_info, 0,

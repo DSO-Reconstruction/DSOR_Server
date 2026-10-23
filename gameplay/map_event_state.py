@@ -924,6 +924,43 @@ def _load_map_event_content(
                 int(row_id), int(event_set_row), str(template_id).strip(),
                 position, rotation,
             ))
+        if map_key(map_id) == "h0004_temple_dun":
+            # The Hunt for a Legend sandhill phase stores its Sandsnake
+            # leaders as blank-NpcId SpawnPoints. The linked StateObject
+            # template names the monster and anchors, but the quest's
+            # interaction event intentionally has no drop or Spawn entry;
+            # killing these gated actors produces the tablet fragment.
+            sandhill_event_sets = tuple(
+                row for row, definition in event_sets.items()
+                if "h0004_hunt_for_a_legend_05_activate_sandhills"
+                in definition.events
+            )
+            if sandhill_event_sets:
+                placeholders = ",".join("?" for _ in sandhill_event_sets)
+                for row_id, transform, event_set_row in database.execute(
+                    f"""
+                    SELECT rowid, Transform, COALESCE(EventSetRow, -1)
+                    FROM _Instance_SpawnPoint
+                    WHERE lower(COALESCE(_ID, ''))=?
+                      AND lower(COALESCE(Rank, ''))='rank_leader'
+                      AND TRIM(COALESCE(NpcId, ''))=''
+                      AND COALESCE(EventSetRow, -1) IN ({placeholders})
+                    ORDER BY rowid
+                    """,
+                    (
+                        "h0004_leader_sandsnake_melee_01_spawnpoint",
+                        *sandhill_event_sets,
+                    ),
+                ):
+                    try:
+                        _matrix, position, rotation = _read_transform(transform)
+                    except ValueError:
+                        continue
+                    spawn_rows.append(GatedSpawnRow(
+                        int(row_id), int(event_set_row),
+                        "h0004_leader_sandsnake_melee_01",
+                        position, rotation,
+                    ))
         spawn_rows = list(deduplicate_pw002_wave_three_warriors(
             map_id, spawn_rows,
         ))

@@ -172,6 +172,17 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # server monsters at 0x30000 collides with his client scene actor and hides
     # the mob. Keep this map's server actors in the secondary range.
     "f4102_dun",
+    # The Great Desert has a large authored SpawnPoint scene population, including
+    # the Shadaigan quest enemies. Keep server monsters outside the scene's
+    # ordinary actor ID range so those actors can be registered independently.
+    "h0002_desert_pve",
+    # Green Oasis has over 1,500 authored SpawnPoints; keep its server monsters
+    # beyond the actor IDs occupied by the client scene.
+    "h0003_oasis_dun",
+    # Dikenli Valley has over 2,400 authored SpawnPoints, including the
+    # quest-gated Qarinah hunters. Keep server-published monsters in the
+    # secondary range so client scene actors cannot mask them.
+    "h0006_valley_dun",
 })
 
 
