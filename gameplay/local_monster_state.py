@@ -179,6 +179,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Green Oasis has over 1,500 authored SpawnPoints; keep its server monsters
     # beyond the actor IDs occupied by the client scene.
     "h0003_oasis_dun",
+    # Dikenli Valley has over 2,400 authored SpawnPoints, including the
+    # quest-gated Qarinah hunters. Keep server-published monsters in the
+    # secondary range so client scene actors cannot mask them.
+    "h0006_valley_dun",
 })
 
 
