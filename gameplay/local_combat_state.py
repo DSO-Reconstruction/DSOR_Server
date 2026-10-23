@@ -10794,6 +10794,35 @@ class LocalCombatState:
                     self.tower_fire_burst_remaining[actor_id] = remaining - 1
             self.pending_monster_attacks[actor_id] = attack
             if (
+                attack.command_id in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                }
+                and definition.bullet_count > 1
+                and definition.bullet_emit_delay > 0.0
+                and not definition.support
+            ):
+                # Every bullet of a volley lands on its own: bullet k leaves
+                # k x BulletEmitDelay after the first, from the same place
+                # and on the same aim, and flies as long (Boss01Skill02's
+                # three homing orbs 0.25 s apart, Medusa's two snakes 1 s
+                # apart). The client draws them so (skills.rs spawn loop,
+                # BulletEmitDelay apart: 0x8F0ADA). ImpactCount and
+                # ReproductionCount are about several actors per bullet, not
+                # repeats, and are left alone.
+                for bullet in range(1, definition.bullet_count):
+                    emit_offset = bullet * definition.bullet_emit_delay
+                    self.pending_monster_projectile_attacks.setdefault(
+                        actor_id, []
+                    ).append(replace(
+                        attack,
+                        due_at=attack.due_at + emit_offset,
+                        impact_tick=(
+                            attack.impact_tick
+                            + round(emit_offset * SERVER_TICKS_PER_SECOND)
+                        ) & 0xFFFFFFFF,
+                    ))
+            if (
                 attack.user_status_effects
                 and attack_target_actor_id not in self.monsters
             ):

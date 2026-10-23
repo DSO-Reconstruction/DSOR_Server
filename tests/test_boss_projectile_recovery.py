@@ -58,17 +58,31 @@ class BossProjectileRecoveryTests(unittest.TestCase):
                     (2., 0., 0.), now=1000. + recovery + .01, server_tick=166,
                 )
                 self.assertIn("melee", melee.definition.resource_id.lower())
-                self.assertEqual(combat.pending_monster_projectile_attacks[100], [orb])
+                # boss_sigrismarr's orb is a volley of three, 0.4 s apart;
+                # the later orbs fly on their own.
+                volley = orb.definition.bullet_count
+                in_flight = combat.pending_monster_projectile_attacks[100]
+                self.assertEqual(len(in_flight), volley)
+                self.assertIn(orb, in_flight)
                 self.assertIs(combat.pending_monster_attacks[100], melee)
                 melee_hits = combat.resolve_due_monster_attacks(
                     (2., 0., 0.), now=melee.due_at, finalize_area_attacks=True,
                 )
                 self.assertEqual(len(melee_hits), 1)
-                self.assertEqual(combat.pending_monster_projectile_attacks[100], [orb])
+                self.assertEqual(
+                    len(combat.pending_monster_projectile_attacks[100]), volley
+                )
                 orb_hits = combat.resolve_due_monster_attacks(
                     (2., 0., 0.), now=orb.due_at, finalize_area_attacks=True,
                 )
                 self.assertEqual(len(orb_hits), 1)
+                last = max(
+                    (a.due_at for a in combat.pending_monster_projectile_attacks.get(100, ())),
+                    default=orb.due_at,
+                )
+                self.assertEqual(len(combat.resolve_due_monster_attacks(
+                    (2., 0., 0.), now=last, finalize_area_attacks=True,
+                )), volley - 1)
                 self.assertEqual(orb_hits[0].skill_index, orb.skill_index)
                 self.assertFalse(combat.pending_monster_projectile_attacks)
                 self.assertFalse(combat.resolve_due_monster_attacks(
