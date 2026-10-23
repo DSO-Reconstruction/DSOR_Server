@@ -1861,6 +1861,9 @@ class QuestService:
             # should complete its hold-ground objective before the collection
             # tasks become active.
             "g0002_jungle_01_dun": ("g0002-TheTribe-03-n",),
+            # The Opal Shrine guardian defense scene is not simulated; taking
+            # the quest in Gün Batımı should count the guardian as defended.
+            "g0004_corrupted_jungle_01_pve": ("g0004-TempleOfWater-01-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
