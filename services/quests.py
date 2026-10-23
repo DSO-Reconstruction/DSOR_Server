@@ -1732,6 +1732,9 @@ class QuestService:
             # The railroad defense scene is not simulated; taking its first
             # quest should count Lukas as defended and unlock the follow-up.
             "f4102_dun": ("f4100-RailroadBarrier-01-n",),
+            # Arnox's protection scene is not simulated; accepting this quest
+            # should mark its authored hold-ground objective as defended.
+            "f4201_pve": ("f4201-NotSafeAnymore-03-n",),
         }
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id in map_quests.get(map_id, ()):
