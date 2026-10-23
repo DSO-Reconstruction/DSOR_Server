@@ -556,13 +556,23 @@ class QuestService:
         }:
             return
         combat = getattr(s, "gameplay_combat_state", None)
+        templates = {
+            "g0005_leader_guardian_ice_01",
+            "g0005_leader_guardian_ice_01_scale",
+        }
         if combat is not None:
             with combat.lock:
-                _present, alive = combat.monster_template_counts()
-            if any(alive.get(template_id, 0) > 0 for template_id in (
-                "g0005_leader_guardian_ice_01",
-                "g0005_leader_guardian_ice_01_scale",
-            )):
+                existing_actor_ids = tuple(
+                    actor_id for actor_id in combat.alive_actor_ids
+                    if (
+                        (monster := combat.monsters.get(actor_id)) is not None
+                        and monster.template_id.casefold() in templates
+                    )
+                )
+            if existing_actor_ids:
+                self._quest_publish_ice_guardian(
+                    s, runtime, combat, existing_actor_ids,
+                )
                 return
         # Fixed spawnpoints are materialized when a map is created. If the
         # guardian was missed then, restore the authored normal/scaled actor
@@ -586,6 +596,44 @@ class QuestService:
                 if scaled else "g0005_leader_guardian_ice_01_spawnpoint"
             ),
         ),))
+        if combat is not None:
+            with combat.lock:
+                spawned_actor_ids = tuple(
+                    actor_id for actor_id in combat.alive_actor_ids
+                    if (
+                        (monster := combat.monsters.get(actor_id)) is not None
+                        and monster.template_id.casefold() in templates
+                    )
+                )
+            self._quest_publish_ice_guardian(
+                s, runtime, combat, spawned_actor_ids,
+            )
+
+    def _quest_publish_ice_guardian(
+            self, s: Session, runtime, combat, actor_ids,
+    ) -> None:
+        """Force the active quest guardian to the client even across the map."""
+
+        if not actor_ids:
+            return
+        grouped = {}
+        for actor_id in actor_ids:
+            group = combat.group_for_actor(actor_id)
+            if group is not None:
+                grouped.setdefault(id(group), (group, set()))[1].add(actor_id)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        for viewer in sessions:
+            with viewer.flow_lock:
+                ready = viewer.gameplay_presence_ready
+            if not ready:
+                continue
+            for group, group_actor_ids in grouped.values():
+                self._announce_runtime_group(
+                    viewer, combat, group,
+                    force_actor_ids=group_actor_ids,
+                )
 
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
         """Restore the Andrakas key when an older delivery lost its inventory drop."""

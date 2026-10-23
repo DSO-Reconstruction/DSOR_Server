@@ -136,6 +136,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # overlaps the first server monster actor slot on clients that register
     # scene SpawnPoints in the ordinary 0x30000 range.
     "f4101_pve",
+    # Fjalnir's Cradle of Frost has its quest child at NPC row 1 while the
+    # Ice Guardian occupies the first server monster slot. Keep the monster
+    # out of slot 0 so its status effects cannot resolve to that NPC.
+    "g0005_temple_ice_01_dun",
     # Sunset has Ozzlan as authored SpawnPoint row 1. The client scene can
     # register that row at 0x30000, hiding the server's first monster actor.
     "g0004_corrupted_jungle_01_pve",
