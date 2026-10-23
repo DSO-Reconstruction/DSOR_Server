@@ -1221,6 +1221,11 @@ class LocalCombatState:
         self.pending_player_summon_attacks: dict[
             int, _PendingPlayerSummonAttack
         ] = {}
+        # Bullets already fired by a construction that has since expired:
+        # (the expired summon, its pending attack), resolved like any other.
+        self.orphaned_player_summon_attacks: dict[
+            int, tuple[PlayerSummonActor, _PendingPlayerSummonAttack]
+        ] = {}
         self.last_player_summon_attack_at: dict[int, float] = {}
         self.last_player_summon_playback_at: dict[int, float] = {}
         self.last_player_summon_support_at: dict[int, float] = {}
@@ -3721,7 +3726,9 @@ class LocalCombatState:
             created.append(summon)
         return PlayerSummonSpawn(tuple(created), discarded)
 
-    def expire_player_summon(self, actor_id: int) -> bool:
+    def expire_player_summon(
+        self, actor_id: int, *, land_fired_bullets: bool = False,
+    ) -> bool:
         actor_id = int(actor_id)
         removed = self.player_summons.pop(actor_id, None)
         self.player_location_visuals = {
@@ -3744,7 +3751,21 @@ class LocalCombatState:
         for monster_actor_id, attack in self.pending_monster_attack_items():
             if int(attack.target_actor_id) == actor_id:
                 self._remove_pending_monster_attack(monster_actor_id, attack)
-        self.pending_player_summon_attacks.pop(actor_id, None)
+        pending = self.pending_player_summon_attacks.pop(actor_id, None)
+        # A bullet the turret already fired flies on and lands after the
+        # turret's lifetime ends. Dropping it with the turret left the last
+        # shot of every Combat Turret visibly striking without damage
+        # ("touche parfois l'ennemi mais l'attaque n'est pas detectee").
+        # Only the lifetime end keeps it: a round reset, a kill or a
+        # replacement still discards everything the summon owned.
+        if (
+            land_fired_bullets
+            and removed is not None
+            and pending is not None
+            and pending.attack.command_id
+            in {BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND}
+        ):
+            self.orphaned_player_summon_attacks[actor_id] = (removed, pending)
         self.last_player_summon_attack_at.pop(actor_id, None)
         self.last_player_summon_playback_at.pop(actor_id, None)
         self.last_player_summon_support_at.pop(actor_id, None)
@@ -9440,26 +9461,43 @@ class LocalCombatState:
         lethal_by_owner = lethal_player_actor_ids_by_owner or {}
         damage_resolutions = []
         support_applications = []
-        for actor_id, pending in tuple(
-            self.pending_player_summon_attacks.items()
-        ):
+        due_items = [
+            (actor_id, pending, None)
+            for actor_id, pending in tuple(
+                self.pending_player_summon_attacks.items()
+            )
+        ] + [
+            (actor_id, pending, expired)
+            for actor_id, (expired, pending) in tuple(
+                self.orphaned_player_summon_attacks.items()
+            )
+        ]
+        for actor_id, pending, expired in due_items:
             attack = pending.attack
             if current_time < attack.due_at:
                 continue
-            del self.pending_player_summon_attacks[actor_id]
+            if expired is None:
+                del self.pending_player_summon_attacks[actor_id]
+            else:
+                del self.orphaned_player_summon_attacks[actor_id]
             if pending.target_due_times:
                 due = tuple(item for item in pending.target_due_times if item[1] <= current_time)
                 remaining = tuple(item for item in pending.target_due_times if item[1] > current_time)
                 if remaining:
-                    self.pending_player_summon_attacks[actor_id] = replace(
+                    rest = replace(
                         pending, attack=replace(attack, due_at=remaining[0][1],
                                                 impact_tick=remaining[0][2]),
                         target_actor_ids=tuple(item[0] for item in remaining),
                         target_due_times=remaining,
                     )
+                    if expired is None:
+                        self.pending_player_summon_attacks[actor_id] = rest
+                    else:
+                        self.orphaned_player_summon_attacks[actor_id] = (expired, rest)
                 pending = replace(pending, target_actor_ids=tuple(item[0] for item in due))
-            summon = self.player_summons.get(actor_id)
-            if (summon is None or self.player_summon_health.get(actor_id, [0])[0] <= 0
+            summon = expired or self.player_summons.get(actor_id)
+            if expired is None and (
+                    summon is None or self.player_summon_health.get(actor_id, [0])[0] <= 0
                     or self._monster_actions_disabled(actor_id, now=current_time)):
                 continue
             if attack.target_actor_id == summon.owner_actor_id:
@@ -9542,10 +9580,11 @@ class LocalCombatState:
                     if damage <= 0:
                         continue
                     health[0] = current
-                    support_applications.extend(self._apply_summon_causer_effects(
-                        summon, pending.geometry, now=current_time,
-                        server_tick=attack.impact_tick, pvp=True,
-                    ))
+                    if expired is None:
+                        support_applications.extend(self._apply_summon_causer_effects(
+                            summon, pending.geometry, now=current_time,
+                            server_tick=attack.impact_tick, pvp=True,
+                        ))
                     effects = tuple(
                         effect
                         for effect in pending.geometry.victim_status_effects
@@ -9650,10 +9689,11 @@ class LocalCombatState:
                 )
                 if damage <= 0:
                     continue
-                support_applications.extend(self._apply_summon_causer_effects(
-                    summon, pending.geometry, now=current_time,
-                    server_tick=attack.impact_tick,
-                ))
+                if expired is None:
+                    support_applications.extend(self._apply_summon_causer_effects(
+                        summon, pending.geometry, now=current_time,
+                        server_tick=attack.impact_tick,
+                    ))
                 self.monster_health[target.actor_id] = current
                 effects = tuple(
                     effect
