@@ -306,6 +306,13 @@ _COMBAT_ROLL_MASK = 0xFFFFFFFF
 _COMBAT_ROLL_SCALE = float(0x1_0000_0000)
 
 
+# A monster's Shifted skill falls on ground points with these TargetingTypes
+# (RandomPosition: points around the caster, _monster_shifted_points).
+MONSTER_GROUND_TARGETING_TYPES = frozenset({
+    "radius", "point", "location", "randomposition",
+})
+
+
 def deterministic_combat_roll(*components: int) -> float:
     """Mix one combat event into an unbiased unit-interval roll.
 
@@ -905,6 +912,10 @@ class MonsterAttack:
     # Set on the extra blow a skill's user aura lands after its hit frame
     # (MonsterAuraStrike); None for the skill's own hit.
     aura_strike: MonsterAuraStrike | None = None
+    # A multi-bullet Shifted cast's other ground points (world frame, like
+    # target_position), sent after it in its ShiftedSkill. SEE:
+    # LocalCombatState._monster_shifted_points.
+    extra_target_positions: tuple[tuple[float, float, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -10303,8 +10314,16 @@ class LocalCombatState:
         eligible_actor_ids: (
             set[int] | frozenset[int] | None
         ) = None,
+        enemy_positions: (
+            dict[int, tuple[float, float, float]] | None
+        ) = None,
     ) -> tuple[MonsterAttack, ...]:
-        """Start database-selected casts when their cooldown permits."""
+        """Start database-selected casts when their cooldown permits.
+
+        ``enemy_positions`` (player actor id -> world position) are the
+        players a multi-bullet Shifted cast can also fall on
+        (_monster_shifted_points); without it only the target is.
+        """
 
         current_time = time.perf_counter() if now is None else float(now)
         target_actor_id = (
@@ -10743,6 +10762,28 @@ class LocalCombatState:
                 definition=definition,
                 bullet_count=definition.bullet_count,
             )
+            if (
+                attack.command_id == SHIFTED_SKILL_COMMAND
+                and definition.bullet_count > 1
+                and not definition.support
+                and definition.targeting_type.casefold()
+                in MONSTER_GROUND_TARGETING_TYPES
+                and attack_target_actor_id not in self.monsters
+            ):
+                points = self._monster_shifted_points(
+                    actor_id,
+                    definition,
+                    monster_position,
+                    attack_target_actor_id,
+                    attack_target_world,
+                    attack.cast_id,
+                    enemy_positions,
+                )
+                attack = replace(
+                    attack,
+                    target_position=points[0],
+                    extra_target_positions=points[1:],
+                )
             self.last_monster_attack_at[actor_id] = current_time
             self.monster_skill_unblock_at[actor_id] = (
                 current_time + attack.skill_unblock_frame / SERVER_TICKS_PER_SECOND
@@ -10822,6 +10863,14 @@ class LocalCombatState:
                             + round(emit_offset * SERVER_TICKS_PER_SECOND)
                         ) & 0xFFFFFFFF,
                     ))
+            for point in attack.extra_target_positions:
+                # Each point of a multi-bullet Shifted cast is its own ground
+                # hit, due with the first (one HitFrame for every bullet).
+                self.pending_monster_projectile_attacks.setdefault(
+                    actor_id, []
+                ).append(replace(
+                    attack, target_position=point, extra_target_positions=(),
+                ))
             if (
                 attack.user_status_effects
                 and attack_target_actor_id not in self.monsters
@@ -10854,6 +10903,89 @@ class LocalCombatState:
                 break
         self._monster_attack_cursor = next_cursor
         return tuple(attacks)
+
+    def _monster_shifted_points(
+        self,
+        actor_id: int,
+        definition: MonsterAttackDefinition,
+        monster_position: tuple[float, float, float],
+        target_actor_id: int,
+        target_world: tuple[float, float, float],
+        cast_id: int,
+        enemy_positions: dict[int, tuple[float, float, float]] | None,
+    ) -> tuple[tuple[float, float, float], ...]:
+        """Where a multi-bullet Shifted monster cast falls: one point each.
+
+        CONTRACT: TargetingType RandomPosition: BulletCount points drawn
+        uniformly within AttackRange of the caster, set on walkable ground,
+        the same for the same cast. Radius/Point/Location: one point on the
+        target, then one on each other living player within AttackRange of
+        the caster, nearest first, at most BulletCount; never two on one
+        player, so a lone player takes one meteor as before.
+        EVIDENCE (data, static.db4 _Template_Skill): the skills come in
+        pairs, a Radius one aimed at players and a RandomPosition one
+        (e_dra_mystra_invisible_meteor_target / _random,
+        e_ks_boss_eye_multi_meteor / _random_meteor_hidden,
+        e_ks_01_cager_stunshot / _random, ShadowfatherPortalShockWave /
+        Random); Radius ones mostly author BulletCount 5, a group's size, down
+        to random monster enchantments (RME_cast_lightning_strike); their
+        bullet sequences draw a single meteor at the point
+        (boss_02_herald_skill_04_bullet, e_zahir_horseman_multimeteor_single_
+        bullet), so N equal points stacked N meteors on one spot.
+        UNVERIFIED: the retail server's own choice of points.
+        """
+
+        count = max(1, int(definition.bullet_count))
+        if definition.targeting_type.casefold() == "randomposition":
+            reach = max(0.0, float(definition.attack_range))
+            points = []
+            for index in range(count):
+                angle = 2.0 * math.pi * deterministic_combat_roll(
+                    0x52414E44, int(cast_id), int(actor_id), index, 0,
+                )
+                radius = reach * math.sqrt(deterministic_combat_roll(
+                    0x52414E44, int(cast_id), int(actor_id), index, 1,
+                ))
+                point = (
+                    monster_position[0] + radius * math.sin(angle),
+                    monster_position[1],
+                    monster_position[2] + radius * math.cos(angle),
+                )
+                try:
+                    point = tuple(
+                        float(value)
+                        for value in (
+                            self.encounter.navigation
+                            .project_position_relative(
+                                point, monster_position,
+                            )
+                        )
+                    )
+                except (
+                    AttributeError,
+                    NavigationError,
+                    CollisionTerrainError,
+                    ValueError,
+                ):
+                    pass
+                points.append(point)
+            return tuple(points)
+        others = sorted(
+            (distance, int(other_id), tuple(float(v) for v in position[:3]))
+            for other_id, position in (enemy_positions or {}).items()
+            if (
+                int(other_id) != int(target_actor_id)
+                and int(other_id) not in self.monsters
+                and self.player_health.get(int(other_id), [1])[0] > 0
+                and (
+                    distance := self._distance(position, monster_position)
+                ) <= definition.attack_range
+            )
+        )
+        return (
+            tuple(float(value) for value in target_world[:3]),
+            *(position for _distance, _id, position in others[:count - 1]),
+        )
 
     def _monster_skill_choice(
         self,
@@ -11221,7 +11353,7 @@ class LocalCombatState:
             is_ground_target_area = (
                 attack.command_id == SHIFTED_SKILL_COMMAND
                 and definition.targeting_type.casefold()
-                in {"radius", "point", "location"}
+                in MONSTER_GROUND_TARGETING_TYPES
             )
             aura_strike = attack.aura_strike
             is_multi_target_area = (
@@ -11551,9 +11683,16 @@ class LocalCombatState:
                 self.pending_monster_projectile_attacks.items()
             ):
                 for attack in tuple(flights):
-                    if (
+                    definition = (
+                        attack.definition or self.monsters[actor_id].attack
+                    )
+                    if attack.due_at <= current_time and (
                         attack.aura_strike is not None
-                        and attack.due_at <= current_time
+                        or (
+                            attack.command_id == SHIFTED_SKILL_COMMAND
+                            and definition.targeting_type.casefold()
+                            in MONSTER_GROUND_TARGETING_TYPES
+                        )
                     ):
                         self._remove_pending_monster_attack(actor_id, attack)
             for actor_id, attack in tuple(self.pending_monster_attacks.items()):
@@ -11561,7 +11700,7 @@ class LocalCombatState:
                 if (
                     attack.due_at <= current_time
                     and definition.targeting_type.casefold()
-                    in {"angle", "cone", "radius", "point", "location"}
+                    in {"angle", "cone", *MONSTER_GROUND_TARGETING_TYPES}
                     and attack.command_id not in {
                         BULLET_SKILL_COMMAND,
                         TARGET_BULLET_SKILL_COMMAND,

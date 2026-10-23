@@ -315,6 +315,15 @@ class MonsterActivityService:
                             if definition is not None else 1
                         ),
                     )
+                    points = (
+                        target_position,
+                        *(
+                            tuple(float(value) for value in point[:3])
+                            for point in getattr(
+                                attack, "extra_target_positions", ()
+                            )
+                        ),
+                    )
                     skill_commands.append(
                         ShiftedSkillServerCommand(
                             ShiftedSkill(
@@ -328,9 +337,13 @@ class MonsterActivityService:
                                 # Native multi-projectile ground skills read
                                 # one point per authored bullet. Keep the point
                                 # array aligned with BulletCount so the client
-                                # never indexes past the supplied positions.
-                                additional_target_positions=(
-                                    (target_position,) * (bullet_count - 1)
+                                # never indexes past the supplied positions:
+                                # the cast's own points
+                                # (_monster_shifted_points), repeated when
+                                # fewer players than bullets are in reach.
+                                additional_target_positions=tuple(
+                                    points[index % len(points)]
+                                    for index in range(1, bullet_count)
                                 ),
                             ),
                             attack.attacker_actor_id,

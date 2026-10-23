@@ -1538,8 +1538,9 @@ def _load_runtime_template(
                 summon = bool(summon_template) and summon_amount > 0 and skill_type in ("Shifted", "Melee")
             # Charge and Jump use movement-specific command payloads we do not
             # model. Shifted ground-target skills are supported below, but
-            # only for radius/point targeting, whose native command receives a
-            # target point for every authored bullet. This avoids routing
+            # only for radius/point targeting (and RandomPosition: points the
+            # server scatters around the caster), whose native command receives
+            # a target point for every authored bullet. This avoids routing
             # movement skills through BulletSkillCommand with an empty point
             # array (the source of the client Math::point assertion). A summon
             # is cast on the caster's own place, whatever its targeting.
@@ -1550,7 +1551,7 @@ def _load_runtime_template(
                 and has_bullet
                 and not summon
                 and targeting_type.casefold() not in {
-                    "radius", "point", "location",
+                    "radius", "point", "location", "randomposition",
                 }
             ):
                 continue
