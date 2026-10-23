@@ -357,6 +357,19 @@ class QuestService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        # A map's initial EventUpdate may arrive before its local event
+        # controller is ready. Re-send quest-derived activations after map
+        # entry so gated client-only NPCs become interactable at every
+        # access difficulty.
+        try:
+            if self._quest_reveal_flags(s, runtime.map_id):
+                self._quest_refresh_event_state(s)
+                self._quest_spawn_revealed_npcs(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after map entry failed: "
+                f"{type(exc).__name__}: {exc}"
+            )
         # These entry signals are authored as client reports. The server knows
         # the same facts and can start the quest even if that report is lost.
         for quest in self._quest_catalog().quests.values():
@@ -1310,6 +1323,16 @@ class QuestService:
         if quest.accept_inventory_drops:
             self._quest_grant_inventory_drops(
                 s, quest, quest.accept_inventory_drops,
+            )
+        # Accepting a quest can reveal a client-side map EventSet while the
+        # player is already on that map. Publish its event state immediately.
+        try:
+            if self._quest_reveal_flags(s, s.gameplay_map or ""):
+                self._quest_refresh_event_state(s)
+        except Exception as exc:
+            _log(
+                f"quest event refresh after acceptance failed: "
+                f"{type(exc).__name__}: {exc}"
             )
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)

@@ -182,9 +182,14 @@ def _baseline_map_local_event_entries(
     '''
 
     resource_ids = tuple(sorted({
-        *BASELINE_MAP_EVENT_FLAGS.get(str(map_id), frozenset()),
         *(
-            str(value)
+            str(value).casefold()
+            for value in BASELINE_MAP_EVENT_FLAGS.get(
+                str(map_id), frozenset(),
+            )
+        ),
+        *(
+            str(value).casefold()
             for value in additional_resource_ids
             if str(value).strip()
         ),
@@ -199,7 +204,7 @@ def _baseline_map_local_event_entries(
         rows = connection.execute(
             'SELECT rowid - 1, Id, ClientOnly, MapLocal '
             'FROM _Template_Events '
-            f'WHERE Id IN ({placeholders})',
+            f'WHERE LOWER(Id) IN ({placeholders})',
             resource_ids,
         ).fetchall()
     return tuple(
