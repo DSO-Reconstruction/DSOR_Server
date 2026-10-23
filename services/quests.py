@@ -49,6 +49,7 @@ from dso_server.gameplay.quest_content import (
     active_prop_switches,
     active_tasks,
     apply_quest_event,
+    explore_trigger_for_task,
     load_quest_catalog,
     task_counters,
 )
@@ -1984,6 +1985,8 @@ class QuestService:
                 changed_any = True
                 self._quest_publish_result(s, quest, result, kind, value)
         if changed_any:
+            if str(kind).casefold() != "trigger":
+                self._quest_reconcile_explore_trigger_presence(s)
             self._quest_sync_props(s)
             if getattr(s, "gameplay_quest_tracking", None):
                 self._quest_send_monster_indication(s)
@@ -2354,6 +2357,41 @@ class QuestService:
     def _quest_on_triggers(self, s: Session, trigger_ids) -> None:
         for trigger_id in trigger_ids:
             self._quest_feed(s, "trigger", str(trigger_id))
+
+    def _quest_reconcile_explore_trigger_presence(self, s: Session) -> None:
+        """Credit a newly active ExploreTask if its trigger already contains the player."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None:
+            return
+        map_id = str(getattr(runtime, "map_id", None) or "").casefold()
+        if not map_id:
+            return
+        with runtime.lock:
+            volumes = runtime.active_trigger_volumes()
+        with s.flow_lock:
+            inside = set(getattr(s, "gameplay_trigger_volumes_inside", ()))
+        if not inside:
+            return
+        triggers_inside = {
+            str(volume.triggered_event_id or "").casefold()
+            for volume in volumes
+            if volume.row_id in inside and volume.triggered_event_id
+        }
+        if not triggers_inside:
+            return
+        for quest_id, progress in tuple(_quest_log(s).items()):
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None or progress.state != QUEST_STATE_ACCEPTED:
+                continue
+            for task in active_tasks(quest, progress):
+                if task.maps and map_id not in task.maps:
+                    continue
+                trigger_id = explore_trigger_for_task(quest, task).casefold()
+                if trigger_id and trigger_id in triggers_inside:
+                    self._quest_feed(
+                        s, "trigger", trigger_id, quest_id=quest.quest_id,
+                    )
 
     def _quest_on_signal(self, s: Session, signal_id: str) -> None:
         """Start the giver-less quests that a fired signal opens."""

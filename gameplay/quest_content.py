@@ -55,6 +55,28 @@ UNSUPPORTED_EVENT_TYPES = frozenset({
     "pay", "crafting", "holdgroundfailed",
 })
 
+# A few decoded client quest tasks omit their ExploreTask trigger Event. Keep
+# these runtime compatibility bindings here instead of patching quest data.
+_EXPLORE_TASK_TRIGGER_OVERRIDES = MappingProxyType({
+    (
+        "h0001-hunt-for-the-lantern-09-n",
+        "h0001-hunt-for-the-lantern-09-explore-01",
+    ): "h0007explore01",
+})
+
+
+def explore_trigger_for_task(
+    quest: "QuestDefinition", task: "TaskDefinition",
+) -> str:
+    """Return a runtime trigger for authored ExploreTasks missing an Event."""
+
+    if str(task.task_type or "").casefold() != "exploretask":
+        return ""
+    return _EXPLORE_TASK_TRIGGER_OVERRIDES.get((
+        str(quest.quest_id or "").casefold(),
+        str(task.title or "").casefold(),
+    ), "")
+
 
 def _tokens(value: str | None) -> tuple[str, ...]:
     return tuple(
@@ -717,14 +739,21 @@ def apply_quest_event(
     for _ in range(max(1, int(count))):
         for task in active_tasks(quest, progress):
             before = task.counter(progress.tokens)
+            implicit_explore_match = (
+                kind == "trigger"
+                and explore_trigger_for_task(quest, task).casefold() == value_key
+            )
             # CompleteTask objectives have no event row in client quest data.
             # Encountering their goal NPC completes them once their guards
             # (usually the previous task's completion token) are satisfied.
             matched = (
-                kind == "encounter"
-                and task.task_type.casefold() == "completetask"
-                and quest.goal.casefold() == value_key
-                and task.is_done(progress.tokens)
+                implicit_explore_match
+                or (
+                    kind == "encounter"
+                    and task.task_type.casefold() == "completetask"
+                    and quest.goal.casefold() == value_key
+                    and task.is_done(progress.tokens)
+                )
             )
             for event in task.events:
                 if event.kind in UNSUPPORTED_EVENT_TYPES:
@@ -753,7 +782,7 @@ def apply_quest_event(
             if not matched:
                 continue
             after = task.counter(progress.tokens)
-            finished = task.is_done(progress.tokens)
+            finished = task.is_done(progress.tokens) or implicit_explore_match
             if finished and not progress.task_finished(task.index):
                 progress.finished_mask |= 1 << task.index
                 for token in task.returns:
@@ -824,6 +853,7 @@ __all__ = [
     "active_tasks",
     "announced_chapter",
     "apply_quest_event",
+    "explore_trigger_for_task",
     "load_quest_catalog",
     "task_counters",
 ]
