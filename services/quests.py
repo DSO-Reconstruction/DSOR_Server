@@ -41,6 +41,7 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_CLOSED,
     QUEST_STATE_CANCELLED,
     QUEST_STATE_FINISHED,
+    Drop,
     QuestCatalog,
     QuestDefinition,
     QuestProgress,
@@ -319,6 +320,7 @@ class QuestService:
             unlocked_maps=frozenset(s.gameplay_unlocked_maps))
 
     def _quest_on_map_entered(self, s: Session) -> None:
+        self._quest_recover_myrdosch_access_key(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -385,6 +387,43 @@ class QuestService:
         # Shared dungeons may already be cleared when another player joins.
         # Reconcile against the actual population, never an empty spawn table.
         self._quest_check_cleared_regions(s)
+
+    def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
+        """Restore the Andrakas key when an older delivery lost its inventory drop."""
+
+        quest_id = "f4101-TheGreatElevator-03-n"
+        key_id = "key_from_f4101_to_f4100"
+        with s.flow_lock:
+            if map_key("f4100_hub") in s.gameplay_unlocked_maps:
+                return
+            inventory = s.gameplay_inventory
+            if inventory is None or any(
+                str(item.template_id).casefold() == key_id
+                for item in inventory.items
+            ):
+                return
+            progress = next(
+                (value for quest, value in _quest_log(s).items()
+                 if quest.casefold() == quest_id.casefold()),
+                None,
+            )
+            if (
+                progress is None
+                or progress.state != QUEST_STATE_ACCEPTED
+                or int(progress.tokens.get(
+                    "TheGreatElevator-03-DeliverDeliveredLoot", 0
+                )) < 1
+            ):
+                return
+        quest = self._quest_catalog().quest(quest_id)
+        if quest is None:
+            return
+        self._quest_grant_inventory_drops(s, quest, (
+            Drop(key_id, 1, 1.0, True),
+        ))
+        CharacterService._request_account_save(
+            s, "recovered Andrakas access key", flush=True,
+        )
 
     # ------------------------------------------------------------------
     # Snapshots for the client
@@ -1061,6 +1100,10 @@ class QuestService:
             INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
         ) for record in inventory_records), label="quest-delivery-inventory")
         self._quest_publish_result(s, quest, result, "deliver", barter.barter_id)
+        if result.inventory_drops:
+            self._quest_grant_inventory_drops(
+                s, quest, result.inventory_drops,
+            )
         self._quest_spawn_drops(s, quest, result.drops)
         self._quest_sync_props(s)
         CharacterService._request_account_save(s, "quest item delivered", flush=True)
