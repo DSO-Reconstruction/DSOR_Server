@@ -717,6 +717,7 @@ class QuestService:
             0,
             "h0006_normal_hunt_lantern_04_running_sandling_normal_spawnpoint",
         ),))
+
     def _quest_publish_ice_guardian(
             self, s: Session, runtime, combat, actor_ids,
     ) -> None:
