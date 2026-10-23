@@ -23,3 +23,26 @@ def test_herald_broodlings_one_tier_per_difficulty():
     assert _broodlings(0) == {"a0604_normal_add_dragon_broodling": 4}
     assert _broodlings(2) == {"a0604_normal_add_dragon_broodling_scale": 6}
     assert _broodlings(10) == {"a0604_normal_add_dragon_broodling_scale": 8}
+
+
+def _mercyless_areas(difficulty):
+    import sqlite3
+    from dso_server.gameplay.local_map_state import map_database_path
+    from dso_server.gameplay.local_monster_state import _load_spawn_areas
+
+    path = map_database_path(DEFAULT_STATIC_DB_PATH, "c2303_dun")
+    with sqlite3.connect(path) as db:
+        areas = _load_spawn_areas(
+            db, enabled_event_sets=frozenset({43}),
+            scaling_difficulty=difficulty,
+        )
+    return [a.parent_node_index for a in areas if a.event_set_row == 43]
+
+
+def test_mercyless_extra_spawn_areas_stay_off_lower_tiers():
+    # difficulty_extra_spawn (EventSet 43) opens on every map entry; its
+    # areas sit under c2303_dun.mvr tiers 6-9 (nodes 23526..23532).
+    assert _mercyless_areas(0) == []
+    assert _mercyless_areas(5) == []
+    assert _mercyless_areas(6) == [23526]
+    assert _mercyless_areas(10) == [23532]

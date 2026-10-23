@@ -667,6 +667,65 @@ def _map_variations(path: Path) -> dict[int, tuple[int, int]]:
     return variations
 
 
+@lru_cache(maxsize=256)
+def map_difficulty_variations(path: Path) -> Mapping[int, tuple[int, int]]:
+    """Every level node -> (family, tier) of its nearest difficulty variation.
+
+    Unlike ``_map_variations`` this also covers nodes nested below a
+    ``variationType="1"`` node (c2303_dun's miniboss adds hang three levels
+    under their tier node). Structural nodes carry no ``nodeIndex``; their
+    index is the ``parentNodeIndex`` their own children name.
+    """
+
+    try:
+        root = ET.parse(Path(path).with_suffix(".mvr")).getroot()
+    except (OSError, ET.ParseError):
+        return MappingProxyType({})
+    result: dict[int, tuple[int, int]] = {}
+
+    def walk(node, inherited) -> None:
+        if str(node.get("variationType", "")).strip() == "1":
+            try:
+                inherited = (
+                    int(node.get("parentNodeIndex", "")),
+                    int(node.get("variationValue", "")),
+                )
+            except (TypeError, ValueError):
+                pass
+        if inherited is not None:
+            try:
+                result[int(node.get("nodeIndex", ""))] = inherited
+            except (TypeError, ValueError):
+                pass
+        for child in node.findall("LevelNode"):
+            if inherited is not None:
+                try:
+                    result.setdefault(
+                        int(child.get("parentNodeIndex", "")), inherited
+                    )
+                except (TypeError, ValueError):
+                    pass
+            walk(child, inherited)
+
+    for node in root.findall("LevelNode"):
+        walk(node, None)
+    return MappingProxyType(result)
+
+
+def selected_variation_tier(tiers: Iterable[int], difficulty: int) -> int | None:
+    """The tier of one variation family an instance of ``difficulty`` shows.
+
+    The exact tier, else the highest tier below it (c2303_dun's density
+    family has 0,1,2,3,4,6,8: a tier-5 instance keeps tier 4). A family with
+    no tier at or below the difficulty is absent: the mercyless-only
+    ``difficulty_extra_spawn`` areas sit on tiers 6-9 on all 126 maps that
+    carry them and must not appear on a normal instance.
+    """
+
+    difficulty = max(0, int(difficulty))
+    return max((t for t in tiers if t <= difficulty), default=None)
+
+
 def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
     """Level-based MapVariation node index -> (family node, level)."""
 
