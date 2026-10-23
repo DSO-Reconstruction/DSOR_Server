@@ -87,6 +87,17 @@ Yachak. Keep these as map-specific registrations; a successful fix on one map
 does not establish another map's physical ID, template, spawn position, or
 client-owned actor ranges.
 
+## Misty Ridge Great Gnome Shaman
+
+Misty Ridge (`f4101_pve`) has one active authored guardian at row 1:
+`f4101_normal_s_gnome_shaman_TheGreatElevator_02`, with no event gate. Its
+authored transform is `(74, 28, 58)` and collision grounding places it at
+`(74, 27, 58)`, on the terrain. The map entry is about 206 units away, so the
+ordinary 18.5-unit vicinity threshold controls when it is published. Its
+default actor ID was `0x30000`, the first slot potentially owned by the map
+scene. The map now allocates server monsters from `0x31000` and proactively
+sends this guardian before vicinity registration when it comes within range.
+
 ## Verification notes
 
 For the Wild Forest correction, loading `a0302_wildforest` produces one

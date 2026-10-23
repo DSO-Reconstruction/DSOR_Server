@@ -52,6 +52,10 @@ _TEGAN_GRAVE_SMITH_TEMPLATE = (
 )
 _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
 _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
+_MISTY_RIDGE_MAP = "f4101_pve"
+_MISTY_RIDGE_GREAT_GNOME_SHAMAN_TEMPLATE = (
+    "f4101_normal_s_gnome_shaman_thegreatelevator_02"
+)
 _TIME_HARP_MAP = "c2302_dun"
 _TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
     "c2302_normal_g_gorgon_q_templeofeternity_03a",
@@ -776,6 +780,11 @@ class WorldService:
                                 encounter.map_id.casefold() == _TEGAN_GRAVE_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 == _TEGAN_GRAVE_SMITH_TEMPLATE
+                            )
+                            or (
+                                encounter.map_id.casefold() == _MISTY_RIDGE_MAP
+                                and combat.monsters[actor_id].template_id.casefold()
+                                == _MISTY_RIDGE_GREAT_GNOME_SHAMAN_TEMPLATE
                             )
                             or (
                                 encounter.map_id.casefold() == _TIME_HARP_MAP

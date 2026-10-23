@@ -132,6 +132,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Tegansruh's client scene already registers an actor at 0x30000. Keep
     # authored server monsters such as Benkay in the secondary actor range.
     "a0601_defiledsanctum",
+    # Misty Ridge has one authored guardian SpawnPoint at row 1, which
+    # overlaps the first server monster actor slot on clients that register
+    # scene SpawnPoints in the ordinary 0x30000 range.
+    "f4101_pve",
 })
 
 
