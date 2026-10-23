@@ -45,6 +45,7 @@ from dso_server.gameplay.quest_content import (
     QuestCatalog,
     QuestDefinition,
     QuestProgress,
+    QuestSpawn,
     active_prop_switches,
     active_tasks,
     apply_quest_event,
@@ -415,6 +416,7 @@ class QuestService:
             if rule is not None and rule.event_type in {"playerenteredmap", "playerenteredmapid"}:
                 if self._quest_entry_signal_matches(s, rule):
                     self._quest_on_signal(s, rule.signal_id)
+        self._quest_ensure_cult_shaman(s)
         # Clear-region objectives drive the client's remaining-monster
         # counter. Retail normally asks for this tracker from the UI, but
         # map-bound challenges can start automatically without that request.
@@ -469,6 +471,54 @@ class QuestService:
         # Shared dungeons may already be cleared when another player joins.
         # Reconcile against the actual population, never an empty spawn table.
         self._quest_check_cleared_regions(s)
+
+    def _quest_ensure_cult_shaman(self, s: Session) -> None:
+        """Restore Ozzlan when his unfinished quest target is missing."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "g0004_corrupted_jungle_01_pve":
+            return
+        quest_id = "g0003-TheCult-01-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = next(
+            (value for key, value in _quest_log(s).items()
+             if key.casefold() == quest_id.casefold()),
+            None,
+        )
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+        ):
+            return
+        target = next((
+            task for task in quest.tasks
+            if any(
+                event.kind == "kill"
+                and event.value.casefold() == "g0004_leader_badtribe_shaman_01"
+                for event in task.events
+            )
+        ), None)
+        if target is None or target.index not in {
+            task.index for task in active_tasks(quest, progress)
+        }:
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            with combat.lock:
+                _present, alive = combat.monster_template_counts()
+            if alive.get("g0004_leader_badtribe_shaman_01".casefold(), 0) > 0:
+                return
+        # This authored guardian has a 120-second respawn in the map DB, but
+        # ordinary fixed spawnpoints are only materialized at map creation.
+        # Re-run the authored spawn row while the quest target is active;
+        # the map-event duplicate guard keeps a living Ozzlan untouched.
+        self._quest_spawn_monsters(s, (QuestSpawn(
+            "g0004_leader_badtribe_shaman_01",
+            "",
+            0,
+            "g0004_leader_badtribe_shaman_01_spawnpoint",
+        ),))
 
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
         """Restore the Andrakas key when an older delivery lost its inventory drop."""
@@ -1392,6 +1442,7 @@ class QuestService:
         self._quest_refresh_map_phases(s)
         self._quest_sync_props(s)
         self._quest_start_active_holdgrounds(s)
+        self._quest_ensure_cult_shaman(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
         return True
@@ -1802,6 +1853,7 @@ class QuestService:
             + (" -> finished" if result.quest_finished else "")
         )
         self._send_quest_commands(s, commands, label="quest-progress")
+        self._quest_ensure_cult_shaman(s)
         self._quest_spawn_revealed_npcs(s)
         self._quest_refresh_map_phases(s)
         for change in result.changes:

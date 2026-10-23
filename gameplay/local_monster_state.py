@@ -136,6 +136,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # overlaps the first server monster actor slot on clients that register
     # scene SpawnPoints in the ordinary 0x30000 range.
     "f4101_pve",
+    # Sunset has Ozzlan as authored SpawnPoint row 1. The client scene can
+    # register that row at 0x30000, hiding the server's first monster actor.
+    "g0004_corrupted_jungle_01_pve",
     # Pırıltıdağ's scene registers authored SpawnPoints in the ordinary
     # monster actor range too. The first row is Commander Slavkoff, so starting
     # server monsters at 0x30000 collides with his client scene actor and hides
