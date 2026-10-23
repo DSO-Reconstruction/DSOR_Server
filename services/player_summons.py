@@ -569,7 +569,9 @@ class PlayerSummonService:
                     cast_id=summon.cast_id,
                 )
             )
-            if not combat.expire_player_summon(actor_id):
+            if not combat.expire_player_summon(
+                actor_id, land_fired_bullets=timer_key == lifetime_key,
+            ):
                 return
 
         committed = False

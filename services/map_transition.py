@@ -546,10 +546,11 @@ class MapTransitionService:
                                 ):
                                     candidates = (active_exit,)
                                     break
-                    # Some key-gated routes are authored inactive, but the
-                    # client still sends UnlockMap for the clicked scene
-                    # entity. Accept a matching key and remember the map after
-                    # entry so later trips no longer need to carry the key.
+                    # These regional routes are authored as inactive locked
+                    # exits, but the client still sends UnlockMap for the
+                    # clicked scene entity. The server should accept that
+                    # request with its matching key, then remember the map on
+                    # entry so later trips no longer need the key.
                     keyed_routes = {
                         ("f4101_pve", "f4100_hub"): (
                             "exit_key_lock", "key_from_f4101_to_f4100",
