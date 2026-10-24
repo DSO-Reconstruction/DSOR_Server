@@ -1150,6 +1150,7 @@ def repair_bootstrap_class_equipment(
     *,
     class_name: str,
     item_level: int,
+    overflowed: list[int] | None = None,
 ) -> InventoryInfo:
     """Replace only old server-generated core gear with the current loadout.
 
@@ -1160,7 +1161,22 @@ def repair_bootstrap_class_equipment(
     from ``Items``-compatible templates while preserving every acquired item
     and its storage/equipment allocation. Bootstrap items are recognized by
     template after the destination server has assigned fresh item IDs.
+
+    A starter item displaced from its equipment slot moves to the first free
+    ordinary inventory slot. With the inventory full it waits in
+    ``premium_inventory_overflow`` instead, which returns it to the first slot
+    that frees up (gameplay/premium_bags.py); its ID is appended to
+    ``overflowed`` when a list is passed.
     """
+
+    def _overflow(target: InventoryInfo, item_id: int) -> None:
+        for item in target.items:
+            if int(item.item_id) == item_id:
+                target.items.remove(item)
+                target.premium_inventory_overflow.append(item)
+                break
+        if overflowed is not None:
+            overflowed.append(item_id)
 
     generated_packet, generated_bits = encode_bootstrap_inventory_info(
         actor_id=inventory.actor_id,
@@ -1175,7 +1191,6 @@ def repair_bootstrap_class_equipment(
         <= int(item.item_id)
         < _BOOTSTRAP_CORE_ITEM_ID_END
     ]
-    generated_ids = {int(item.item_id) for item in generated_core}
 
     # Migrate the old development-only auxiliary allocations before the core
     # early-return path.  Match the known bootstrap IDs so player-acquired
@@ -1196,10 +1211,16 @@ def repair_bootstrap_class_equipment(
             continue
         inventory.equipment_slots.pop(item_id, None)
         slot = next(
-            candidate
-            for candidate in range(inventory.storage_size)
-            if candidate not in used_storage_slots
+            (
+                candidate
+                for candidate in range(inventory.storage_size)
+                if candidate not in used_storage_slots
+            ),
+            None,
         )
+        if slot is None:
+            _overflow(inventory, item_id)
+            continue
         inventory.storage_58[item_id] = slot
         used_storage_slots.add(slot)
 
@@ -1267,13 +1288,36 @@ def repair_bootstrap_class_equipment(
 
     result = copy.deepcopy(inventory)
     if not templates_are_current:
+        # Starter items whose template is still in the loadout stay as they
+        # are: level, sockets, gems and wherever the player put them. Only
+        # stale templates are replaced, and loadout pieces the save lacks
+        # (e.g. the amulet, belt and weapon mod a newer loadout adds) added.
+        kept_templates = {
+            item.template_id
+            for item in result.items
+            if int(item.item_id) in selected_core_ids
+        }
+        added_core = [
+            item for item in generated_core
+            if item.template_id not in kept_templates
+        ]
+        removed_ids = existing_core_ids - selected_core_ids
+        held_ids = {
+            int(item.item_id)
+            for item in (*result.items, *result.premium_inventory_overflow)
+        } - removed_ids
+        if any(int(item.item_id) in held_ids for item in added_core):
+            # A kept item already holds a generated ID: rebuild the set.
+            added_core = list(generated_core)
+            removed_ids = set(existing_core_ids)
+        added_ids = {int(item.item_id) for item in added_core}
         result.items = [
             item
             for item in result.items
-            if int(item.item_id) not in existing_core_ids
+            if int(item.item_id) not in removed_ids
         ]
-        result.items.extend(generated_core)
-        for item_id in existing_core_ids | generated_ids:
+        result.items.extend(added_core)
+        for item_id in removed_ids | added_ids:
             result.equipment_slots.pop(item_id, None)
             for storage_name in (
                 "storage_58",
@@ -1282,15 +1326,20 @@ def repair_bootstrap_class_equipment(
                 "storage_d0",
             ):
                 getattr(result, storage_name).pop(item_id, None)
+        # A kept starter that shares a slot with an acquired item yields it
+        # and moves to storage below; removed ones need no storage.
+        conflicting_core_ids -= removed_ids
+        for item_id in conflicting_core_ids:
+            result.equipment_slots.pop(item_id, None)
 
         acquired_slots = {
             int(slot)
             for item_id, slots in result.equipment_slots.items()
-            if int(item_id) not in generated_ids
+            if int(item_id) not in added_ids
             for slot in slots
         }
         for item_id, slots in generated.equipment_slots.items():
-            if item_id not in generated_ids:
+            if item_id not in added_ids:
                 continue
             slots = tuple(int(slot) for slot in slots)
             if not acquired_slots.intersection(slots):
@@ -1321,13 +1370,10 @@ def repair_bootstrap_class_equipment(
     for item_id in sorted(conflicting_core_ids):
         if item_id in allocated_ids:
             continue
-        try:
-            storage_slot = next(free_slots)
-        except StopIteration as exc:
-            raise ValueError(
-                "cannot store displaced bootstrap equipment: "
-                "ordinary inventory is full"
-            ) from exc
+        storage_slot = next(free_slots, None)
+        if storage_slot is None:
+            _overflow(result, item_id)
+            continue
         result.storage_58[item_id] = storage_slot
         allocated_ids.add(item_id)
 
