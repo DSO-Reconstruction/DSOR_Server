@@ -934,6 +934,7 @@ class MonsterCombatService(
             return_home_transitions = (
                 combat.drain_return_home_transitions()
             )
+            combat.release_due_monster_summons(now=now)
             monster_summons = tuple(combat.pending_monster_summons)
             combat.pending_monster_summons.clear()
             health_regeneration = combat.regenerate_players(now=now)

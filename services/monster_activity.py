@@ -271,6 +271,37 @@ class MonsterActivityService:
                                 float(attack.due_at) - location_delay
                             ),
                         )
+                    # A helper its ally aura wakes casts its own ground
+                    # effect at once (Khalys's andermight flood, from the
+                    # wave spawner: combat.monster_activated_location_visuals).
+                    cast_ticks = (
+                        int(attack.impact_tick) - int(attack.server_tick)
+                    ) & 0xFFFFFFFF
+                    cast_started_at = float(attack.due_at) - (
+                        0 if cast_ticks > 0x7FFFFFFF else cast_ticks
+                    ) / SERVER_TICKS_PER_SECOND
+                    for (
+                        helper_visuals, helper_position, helper_yaw,
+                        helper_skill, helper_delay,
+                    ) in combat.monster_activated_location_visuals(attack):
+                        if not combat.claim_monster_location_visual_cast(
+                            attack.attacker_actor_id, helper_skill,
+                            attack.server_tick,
+                        ):
+                            continue
+                        CharacterService._schedule_player_location_visuals(
+                            s,
+                            combat,
+                            helper_visuals,
+                            position=helper_position,
+                            yaw=helper_yaw,
+                            server_tick=attack.server_tick,
+                            owner_actor_id=int(attack.attacker_actor_id),
+                            cast_id=int(attack.server_tick),
+                            delay_seconds=helper_delay,
+                            source_skill_index=int(helper_skill),
+                            cast_started_at=cast_started_at,
+                        )
                 CharacterService._send_entity_status_effects(
                     s,
                     attack.user_status_effects,
