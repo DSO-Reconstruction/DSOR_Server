@@ -569,7 +569,10 @@ HP/resource changes retain the equipped-stat generation. Equipment, gems,
 runes, jewels, talents, stat-bearing effects, effect stack/value changes, and
 database revisions invalidate or naturally change the structural key. The
 database file revision is checked at most once per second per active character
-instead of issuing `Path.stat()` for every projectile impact.
+instead of issuing `Path.stat()` for every projectile impact. Since 2026-10-25
+that check runs on a background thread and casts and monster ticks use the
+revision already loaded: one `stat()` on a volume spanning two hard disks took
+three seconds and froze the cast and the map's simulation, both waiting on it.
 
 ### 10.6 Five-second combat-freeze forensic result (2026-09-09)
 
