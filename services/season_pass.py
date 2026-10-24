@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from dso_server.gameplay.season_pass import (
     load_season_pass_catalog,
     normalize_season_pass_state,
+    parse_season_pass_reward,
+    season_pass_event_id,
+    season_pass_state_for_season,
 )
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
@@ -50,6 +53,58 @@ class SeasonPassService:
             alternate_rewards=(
                 "event_season_ticket_2026_temp" in active_templates
             ),
+        )
+
+    def _season_pass_season(self) -> int | None:
+        """Event instance of the running season, or None between seasons."""
+        template = season_pass_event_id(self.static_database_path).casefold()
+        return next((
+            int(event.event_id)
+            for event in CharacterService._event_catalog(self).active_events()
+            if event.template.resource_id.casefold() == template
+        ), None)
+
+    def _season_pass_bind(self, s):
+        """Move the session's progress into the running season, if any."""
+        season = self._season_pass_season()
+        with s.flow_lock:
+            previous = normalize_season_pass_state(
+                getattr(s, "gameplay_season_pass", None) or {}
+            )
+            state = season_pass_state_for_season(previous, season)
+            s.gameplay_season_pass = state
+        if state != previous:
+            print(
+                f"[DrasaOnlineMapServer] Season Pass progress bound to season "
+                f"{season} for {s.addr} (was {previous['season_id'] or 'unbound'}, "
+                f"level {previous['level']} -> {state['level']})"
+            )
+            CharacterService._request_account_save(s, "Season Pass season changed")
+        return state, season
+
+    def _season_pass_publish(self, s) -> None:
+        """Resend Season Pass state after a season starts or ends online."""
+        state, _season = self._season_pass_bind(s)
+        catalog = self._season_pass_catalog()
+        packet, packet_bits = encode_server_command_batch((
+            ServerCommand(
+                SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND,
+                SeasonPassMissionsInfoResult(tuple(
+                    (mission_id, int(state["mission_progress"].get(mission_id, 0)))
+                    for mission_id in catalog.missions
+                )), 0,
+            ),
+            ServerCommand(
+                SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
+                SeasonPassRewardsInfoResult(
+                    int(state["level"]), int(state["experience"]),
+                    tuple(state["pass_types"]), tuple(state["claimed_awards"]),
+                ), 0,
+            ),
+        ), include_terminator=True)
+        s.send_reliable_ordered_split(
+            packet, total_bit_length=packet_bits, track=True,
+            label_prefix="season-pass-season",
         )
 
     @staticmethod
@@ -143,12 +198,7 @@ class SeasonPassService:
                 row = catalog.reward_levels.get(level)
                 if track_key not in granted_tracks:
                     reward = row[reward_lane] if row is not None else ""
-                    if not reward.startswith("Loot:"):
-                        raise ValueError(f"reward {award_id} has no static loot entry")
-                    item_id, raw_amount = reward[5:].rsplit(",", 1)
-                    amount = int(raw_amount)
-                    if not item_id or amount <= 0:
-                        raise ValueError(f"reward {award_id} has invalid static loot")
+                    item_id, amount = parse_season_pass_reward(reward)
                     # Pass types 3 and 4 are the double gold/red tickets.
                     # They share a visible reward track with types 1 and 2,
                     # so the extra award IDs must double the amount instead
@@ -288,6 +338,8 @@ class SeasonPassService:
     def _season_pass_daily_login(self, s) -> None:
         if not s.connected or s.gameplay_character is None:
             return
+        if self._season_pass_bind(s)[1] is None:
+            return
         today = datetime.now(timezone.utc).date().isoformat()
         with s.flow_lock:
             state = normalize_season_pass_state(
@@ -306,6 +358,10 @@ class SeasonPassService:
                 or getattr(s, "retired", False)
                 or s.gameplay_exit_transition_started or int(count) <= 0):
             return False
+        # Missions only count while a season runs.
+        season = self._season_pass_season()
+        if season is None:
+            return False
         catalog = self._season_pass_catalog()
         difficulty = max(
             int(getattr(s, "gameplay_map_difficulty", 0)),
@@ -314,8 +370,8 @@ class SeasonPassService:
         changed = False
         completed = False
         with s.flow_lock:
-            state = normalize_season_pass_state(
-                getattr(s, "gameplay_season_pass", None) or {}
+            state = season_pass_state_for_season(
+                getattr(s, "gameplay_season_pass", None) or {}, season,
             )
             progress = dict(state["mission_progress"])
             experience = int(state["experience"])
@@ -392,13 +448,14 @@ class SeasonPassService:
             print(f"[DrasaOnlineMapServer] rejected Season Pass query: {exc}")
             return
 
+        season = self._season_pass_season()
         with s.flow_lock:
             if (s.gameplay_character is None or not s.connected
                     or getattr(s, "retired", False)
                     or s.gameplay_exit_transition_started):
                 return
-            state = normalize_season_pass_state(
-                getattr(s, "gameplay_season_pass", None) or {}
+            state = season_pass_state_for_season(
+                getattr(s, "gameplay_season_pass", None) or {}, season,
             )
             if request.command_id == ADD_SEASON_PASS_EXP_COMMAND:
                 catalog = self._season_pass_catalog()
@@ -410,7 +467,8 @@ class SeasonPassService:
                 # The retail UI prices a level purchase at 10 Andermant per
                 # missing Season Pass XP. Bound the request by the catalog so
                 # a forged packet cannot buy past the final reward level.
-                if (requested_experience <= 0
+                if (season is None
+                        or requested_experience <= 0
                         or requested_experience > maximum_experience - current_experience
                         or cost > 0xFFFFFFFF
                         or currency is None

@@ -265,6 +265,50 @@ class PVPPlayerEffectTests(unittest.TestCase):
         self.assertEqual(result.duration_ticks, 175)
         self.assertEqual(result.pvp_duration_ticks, 75)
 
+    @staticmethod
+    def skill_index(resource_id):
+        with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as database:
+            return database.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id=?", (resource_id,),
+            ).fetchone()[0]
+
+    def test_cleansing_skill_breaks_stun_on_both_clients(self):
+        effect = self.effect()
+        self.impact(effects=(effect,))
+        teleport = self.skill_index("teleport")
+        self.assertEqual(self.combat.player_skill_cleanse_groups(teleport),
+                         frozenset({"debuff", "disabled"}))
+        self.assertTrue(CharacterService._player_skill_cast_locked(
+            self.target, self.skill_index("enragingleap")))
+        self.assertFalse(CharacterService._player_skill_cast_locked(self.target, teleport))
+        with patch.object(CharacterService, "_refresh_player_combat_vitals") as refresh:
+            CharacterService._cleanse_player_skill_debuffs(
+                self.target, self.combat, skill_index=teleport, modifier_sources=())
+        refresh.assert_called_once()
+        self.assertFalse(self.target.gameplay_victim_status_effect_instances)
+        self.assertFalse(self.source.gameplay_victim_status_effect_instances)
+        self.assertNotIn("regularskills",
+                         CharacterService._player_disabled_actor_features(self.target))
+        for session in (self.source, self.target):
+            self.assertIn("player-skill-cleanse",
+                          [label for _data, _bits, label in session.recorder.messages])
+
+    def test_skills_lock_is_never_cleansed_away(self):
+        with patch.object(CharacterService, "_player_disabled_actor_features",
+                          return_value=frozenset({"movement", "skills", "regularskills"})):
+            self.assertTrue(CharacterService._player_skill_cast_locked(
+                self.target, self.skill_index("teleport")))
+
+    def test_talent_cleanse_extends_skill_cleanse_groups(self):
+        frenzyshout = self.skill_index("frenzyshout")
+        self.assertFalse(self.combat.player_skill_cleanse_groups(frenzyshout))
+        talent = SimpleNamespace(
+            effect_id=self.combat._status_effect_ids["pvp_warrior_talent2_activator"],
+            field_18=0, values=(),
+        )
+        self.assertIn("disabled", self.combat.player_skill_cleanse_groups(
+            frenzyshout, modifier_sources=(talent,)))
+
 
 if __name__ == "__main__":
     unittest.main()

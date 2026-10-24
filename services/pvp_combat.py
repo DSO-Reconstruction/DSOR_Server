@@ -198,6 +198,117 @@ class PVPCombatService:
         return not wanted.isdisjoint(disabled)
 
     @staticmethod
+    def _player_skill_cast_locked(s: Session, skill_index: int) -> bool:
+        """Report whether the player's active locks forbid this one cast.
+
+        Stuns and freezes switch off ``RegularSkills``; silence, death and
+        scripted sequences switch off ``Skills``. A skill that cleanses the
+        groups of every effect behind a ``RegularSkills`` lock is not a
+        regular skill to that lock -- that is how Teleport, Dive, Rocket Pack
+        and Furious Battle Cry break a stun. ``Skills`` is never bypassed.
+        """
+
+        disabled = CharacterService._player_disabled_actor_features(s)
+        if "skills" in disabled:
+            return True
+        if "regularskills" not in disabled:
+            return False
+        combat = s.gameplay_combat_state
+        if getattr(combat, "player_skill_cleanse_groups", None) is None:
+            return True
+        cleansed = combat.player_skill_cleanse_groups(
+            skill_index,
+            modifier_sources=(
+                CharacterService._active_skill_modifier_sources(s)
+            ),
+        )
+        if not cleansed:
+            return True
+        # Only debuffs other actors installed are cleansed (see
+        # ``_cleanse_player_skill_debuffs``); the player's own sources keep
+        # whatever lock they author.
+        remaining = CharacterService._active_status_effect_ids(s) + tuple(
+            int(source.effect_id)
+            for source in CharacterService._active_pvp_victim_modifier_sources(s)
+            if hasattr(source, "effect_id")
+            and not cleansed & combat._status_groups_for_effect(
+                int(source.effect_id)
+            )
+        )
+        return any(
+            "regularskills" in combat.status_effect_disabled_features(effect_id)
+            for effect_id in remaining
+        )
+
+    @staticmethod
+    def _cleanse_player_skill_debuffs(
+            s: Session, combat, *, skill_index: int,
+            modifier_sources) -> None:
+        """Remove the debuffs an accepted cast frees its caster from.
+
+        Effects other actors put on this player are held by every viewer's
+        victim-effect cache, keyed by that viewer's id for the player: the
+        caster's own copy drives the server-side locks and DoT ticks, a
+        peer's copy its ADD-versus-replacement bookkeeping. Instance ids are
+        per viewer, so each one gets its own no-details removals.
+        """
+
+        cleansed = combat.player_skill_cleanse_groups(
+            skill_index, modifier_sources=tuple(modifier_sources)
+        )
+        character = s.gameplay_character
+        if not cleansed or character is None:
+            return
+        remote_actor_id = int(
+            s.gameplay_remote_actor_id
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        viewers = [(LOCAL_PLAYER_ACTOR_ID, s)]
+        callback = s.gameplay_presence_callback
+        if callback is not None:
+            viewers.extend(
+                (remote_actor_id, viewer)
+                for _actor_id, _position, viewer
+                in (callback(s, ("combat_targets",)) or ())
+                if viewer is not s and viewer.gameplay_combat_state is combat
+            )
+        now = time.perf_counter()
+        cleansed_own = False
+        for actor_id, viewer in viewers:
+            removed = []
+            with viewer.flow_lock:
+                cache = viewer.gameplay_victim_status_effect_instances
+                for key, (entry, expires_at) in tuple(cache.items()):
+                    if (
+                        int(key[0]) == actor_id
+                        and float(expires_at) > now
+                        and cleansed & combat._status_groups_for_effect(
+                            int(entry.effect_id)
+                        )
+                    ):
+                        cache.pop(key)
+                        removed.append(entry)
+            if not removed:
+                continue
+            cleansed_own = cleansed_own or viewer is s
+            viewer.send_reliable_ordered(
+                encode_status_effect_batch(
+                    StatusEffect(False, tuple(replace(
+                        entry, has_details=False, values=(), field_25=False,
+                        field_39=False, field_38=False, field_3c=0xFF,
+                        shape_values=(),
+                    ) for entry in removed)),
+                    actor_id=actor_id,
+                ),
+                track=True,
+                label="player-skill-cleanse",
+            )
+        if cleansed_own:
+            CharacterService._refresh_player_combat_vitals(
+                s, inventory_changed=False,
+            )
+
+    @staticmethod
     def _player_is_untargetable(s: Session) -> bool:
         """Report whether monsters should stop treating this player as prey.
 

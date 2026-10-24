@@ -1,9 +1,10 @@
-import { $, esc, api, setSession, hasSession, routeInfo, link, notice } from "./admin_ui.js";
+import { $, esc, api, setSession, hasSession, routeInfo, link, notice, bindConfirmation } from "./admin_ui.js";
 import { listPage, accountPage, itemPage, bookingPage, auditPage } from "./admin_pages.js";
 import { characterPage } from "./admin_character.js";
 import { newBookingPage, batchBookingPage } from "./admin_booking.js";
 import { eventsPage, eventPage, newEventPage } from "./admin_events.js";
 import { npcShopsPage, npcShopPage } from "./admin_shops.js";
+import { seasonPassPage } from "./admin_season_pass.js";
 
 let generation = 0;
 const THEME_STORAGE_KEY = "dso-admin-theme";
@@ -55,6 +56,7 @@ async function render() {
     const [name, id] = route.parts;
     if (name === "npc-shops") result = id ? await npcShopPage(route) : await npcShopsPage(route);
     else if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
+    else if (name === "season-pass") result = await seasonPassPage(route);
     else if (name === "bookings" && id === "new") result = await newBookingPage(route);
     else if (name === "bookings" && id === "batch") result = await batchBookingPage(route);
     else if (name === "accounts" && id) result = await accountPage(route);
@@ -91,8 +93,7 @@ async function render() {
     }
   }
 }
-$("#confirmation-cancel").addEventListener("click", () => $("#confirmation").close());
-$("#confirmation-accept").addEventListener("click", () => $("#confirmation").close("confirmed"));
+bindConfirmation();
 $("#login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target, button = form.querySelector("button");

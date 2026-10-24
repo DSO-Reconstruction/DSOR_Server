@@ -16,6 +16,9 @@ Endpoints (JSON in, JSON out):
     POST /api/logout      {session_id} -> revoked
     POST /api/password    {username, password, new_password}
     POST /api/validate    {session_id} -> session, for the game server itself
+    GET  /api/content     the static database the dsor client must hold
+    POST /api/content/static-db  {session_id} -> that database, packed
+                          (see :mod:`~dso_server.services.content`)
 
 Run it beside the game services (``python -m dso_server``) or on its own host:
 
@@ -37,6 +40,13 @@ import time
 from urllib.parse import urlparse
 
 from dso_server.paths import DEFAULT_ACCOUNT_DATABASE_PATH as DEFAULT_REGISTRY_PATH
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
+from dso_server.services.content import (
+    CONTENT_VERSION,
+    DOWNLOAD_WINDOW_SECONDS,
+    DOWNLOADS_PER_WINDOW,
+    StaticDatabasePublisher,
+)
 
 from dso_server.persistence.account_registry import (
     AccountDisabledError,
@@ -185,6 +195,14 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             self._respond(HTTPStatus.OK, self.service.status_document())
         elif path == "/api/characters":
             self._respond(HTTPStatus.OK, self.service.characters_document())
+        elif path == "/api/content":
+            try:
+                document = self.service.content_document()
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"[AccountService] static database unavailable: {exc}")
+                self._fail(HTTPStatus.SERVICE_UNAVAILABLE, "the static database cannot be read")
+                return
+            self._respond(HTTPStatus.OK, document)
         else:
             self._fail(HTTPStatus.NOT_FOUND, f"no endpoint {path}")
 
@@ -197,6 +215,7 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             "/api/logout": self._logout,
             "/api/password": self._password,
             "/api/validate": self._validate,
+            "/api/content/static-db": self._static_database,
         }
         handler = handlers.get(path)
         if handler is None:
@@ -339,6 +358,45 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             HTTPStatus.OK, {"valid": True, "session": session.to_document()}
         )
 
+    def _static_database(self, payload: dict) -> None:
+        # The dsor client's copy of the database this server plays with
+        # (services/content.py). Signed-in players only, a few per address.
+        publisher = self.service.static_db
+        if publisher is None:
+            self._fail(HTTPStatus.NOT_FOUND, "this server publishes no static database")
+            return
+        if self.service.registry.validate(str(payload.get("session_id", ""))) is None:
+            self._fail(HTTPStatus.UNAUTHORIZED, "sign in to download the static database")
+            return
+        address = self._client_ip()
+        wait = self.service.static_db_throttle.blocked(address)
+        if wait > 0:
+            self._fail(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                f"too many downloads; retry in {wait:.0f}s",
+                retry_after=wait,
+            )
+            return
+        try:
+            packed = publisher.packed()
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"[AccountService] static database unavailable: {exc}")
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, "the static database cannot be read")
+            return
+        if packed is None:
+            self._fail(HTTPStatus.NOT_FOUND, "this server publishes no static database")
+            return
+        self.service.static_db_throttle.record_failure(address)
+        sha256, body = packed
+        print(f"[AccountService] static database {sha256[:12]} ({len(body)} bytes) to {address}")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", sha256)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
 
 # Internet scanners and abandoned launchers reset or drop the socket before
 # or during a request. socketserver's default handle_error prints a banner
@@ -386,6 +444,8 @@ class AccountService:
         trust_forwarded_for: bool | None = None,
         server_name: str | None = None,
         verbose: bool = False,
+        static_database_path: str | os.PathLike[str] | None = None,
+        publish_static_database: bool | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -420,6 +480,20 @@ class AccountService:
         )
         self.verbose = bool(verbose)
         self.throttle = FailureThrottle()
+        # The database the game services load, for dsor clients to copy
+        # (GET /api/content); DSO_PUBLISH_STATIC_DB=0 stops publishing it.
+        publish = (
+            bool(publish_static_database)
+            if publish_static_database is not None
+            else os.getenv("DSO_PUBLISH_STATIC_DB", "1") != "0"
+        )
+        self.static_db = (
+            StaticDatabasePublisher(static_database_path or DEFAULT_STATIC_DB_PATH)
+            if publish else None
+        )
+        self.static_db_throttle = FailureThrottle(
+            limit=DOWNLOADS_PER_WINDOW, window_seconds=DOWNLOAD_WINDOW_SECONDS
+        )
         self.service_name = "AccountService"
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
@@ -479,6 +553,13 @@ class AccountService:
             "active_sessions": self.registry.count_active_sessions(),
             "session_ttl_seconds": self.registry.session_ttl_seconds,
             "launch": self.launch_document(),
+        }
+
+    def content_document(self) -> dict:
+        """What a dsor client must hold to play here (services/content.py)."""
+        return {
+            "version": CONTENT_VERSION,
+            "static_db": self.static_db.describe() if self.static_db else None,
         }
 
     def characters_document(self) -> dict:
@@ -588,6 +669,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="reject new registrations",
     )
+    parser.add_argument(
+        "--static-db",
+        default=str(DEFAULT_STATIC_DB_PATH),
+        help="static database published to dsor clients (GET /api/content)",
+    )
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(argv)
 
@@ -602,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
         registration_open=not args.closed,
         server_name=args.name,
         verbose=args.verbose,
+        static_database_path=args.static_db,
     )
     service.start()
     print(f"Account service listening on http://{args.host}:{service.port}")

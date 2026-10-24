@@ -716,6 +716,12 @@ RELIABLE_SESSION_IDLE_TIMEOUT_SECONDS = max(
     2.0,
     float(os.getenv('DSO_RELIABLE_SESSION_IDLE_TIMEOUT_SECONDS', '10')),
 )
+# A client that keeps sending is never timed out, even while it never
+# acknowledges one reliable datagram. Report such a frame after this long.
+RELIABLE_STUCK_WARNING_SECONDS = max(
+    1.0,
+    float(os.getenv('DSO_RELIABLE_STUCK_WARNING_SECONDS', '5')),
+)
 # Reliable-ordered traffic is head-of-line blocked when even one UDP datagram
 # is lost. Stop producing optional simulation/loot traffic before a burst of
 # AOE kills can overflow the client's receive window and trigger a NAK storm.

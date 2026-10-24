@@ -16,3 +16,7 @@ DEFAULT_CHAT_AUDIT_PATH = DATA_ROOT / "logs" / "chat-service.log"
 DEFAULT_CHEST_CONTENTS_MAP = DATA_ROOT / "catalogs" / "chest_contents.json"
 # Quest definitions decoded from the client's quests.pbxml (see docs/QUESTS.md).
 DEFAULT_QUESTS_PATH = Path(os.getenv("DSO_QUESTS_FILE") or DATA_ROOT / "quests.xml")
+# CMS edits to the Season Pass reward table (see docs/SEASON_PASS.md).
+DEFAULT_SEASON_PASS_CONFIG_PATH = Path(
+    os.getenv("DSO_SEASON_PASS_CONFIG") or DATA_ROOT / "season_pass.json"
+)
