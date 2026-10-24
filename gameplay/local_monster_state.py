@@ -213,6 +213,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # Kinza's 83 scene SpawnPoints can occupy the same ordinary range used by
     # server actors. Keep quest-specific Enforcer waves clear of those IDs.
     "pw209_kinza_dun",
+    # Panoltiaco's scene registers authored SpawnPoints in the ordinary actor
+    # range. Senbu's gated boss spawn can otherwise reuse a client-owned ID and
+    # remain invisible even though the server considers it materialized.
+    "g0017_templecity_md_04",
 })
 
 

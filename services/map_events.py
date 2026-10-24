@@ -1863,6 +1863,7 @@ class MapEventService:
                 self._ensure_pw207_sunlairs_notes_mob(s, runtime)
                 self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
                 self._ensure_pw209_slade_throne_room(s, runtime)
+                self._ensure_pw000_senbu_boss(s, runtime)
             return
         for rule in rules:
             if rule.event_type in (
@@ -1883,6 +1884,7 @@ class MapEventService:
             self._ensure_pw207_sunlairs_notes_mob(s, runtime)
             self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
             self._ensure_pw209_slade_throne_room(s, runtime)
+            self._ensure_pw000_senbu_boss(s, runtime)
 
     def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
         """Keep the Kinza route leader visible for its active kill objective."""
@@ -2144,6 +2146,67 @@ class MapEventService:
                 }))
                 if event_sets:
                     self._spawn_event_monsters(runtime, sessions, event_sets)
+
+    def _ensure_pw000_senbu_boss(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Restore Senbu's event spawn while its quest kill task is active."""
+
+        if map_key(runtime.map_id) != "g0017_templecity_md_04":
+            return
+        quest_id = "pw000-introduction-01-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        senbu_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold() == "pw000-introduction-01-kill-02"
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not senbu_task_active:
+            return
+
+        event_id = "g0017_spawn_boss"
+        definition = runtime.catalog.event(event_id)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        if definition is not None and definition.applies_to(runtime.map_id):
+            with runtime.lock:
+                active = definition.key in runtime.running
+                pending = definition.key in runtime.pending_start_tokens
+            if not active and not pending:
+                _log(
+                    "reconciling g0017_spawn_boss for the active Senbu kill task"
+                )
+                self._start_map_local_event(runtime, definition)
+        else:
+            _log(f"Panoltiaco Senbu event {event_id!r} is unavailable")
+
+        # The authored spawn can be missed if the event flags were not restored
+        # for this instance. Use its map-authored spawn rows directly while the
+        # quest target is active; _spawn_event_monsters is idempotent and still
+        # associates the live boss with the correct event set.
+        event_sets = tuple(
+            int(value.row)
+            for value in runtime.content.event_sets_for(event_id)
+        )
+        spawn_rows = runtime.content.spawn_rows_for_sets(event_sets)
+        if spawn_rows:
+            self._spawn_event_monsters(
+                runtime, sessions, (), extra_rows=spawn_rows,
+            )
+        else:
+            _log("Panoltiaco Senbu spawn point is missing from map content")
 
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
                          signal_id: str) -> None:
@@ -2723,6 +2786,7 @@ class MapEventService:
         self._ensure_artaya_clearing_demons(s, runtime)
         self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
         self._ensure_pw209_slade_throne_room(s, runtime)
+        self._ensure_pw000_senbu_boss(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )

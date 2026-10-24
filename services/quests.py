@@ -1554,8 +1554,13 @@ class QuestService:
         interactions, flags = self._quest_npc_interactions(s, npc_template_id)
         active_barters = self._quest_npc_barters(s, npc_template_id)
         barters = tuple(
-            NPCStringSet(barter.barter_id, barter.items, barter.amount, barter.reply)
-            for _quest, barter in active_barters
+            NPCStringSet(
+                barter.barter_id,
+                self._quest_delivery_item_templates(quest, barter),
+                barter.amount,
+                barter.reply,
+            )
+            for quest, barter in active_barters
             if barter.event_kind != "pay"
         )
         payments = tuple(
@@ -1860,13 +1865,43 @@ class QuestService:
                     )
 
     @staticmethod
-    def _quest_delivery_items(inventory, barter):
+    def _quest_delivery_item_templates(quest, barter):
+        """Return item alternatives the NPC should accept for this barter."""
+
+        items = tuple(barter.items)
+        if (
+            str(getattr(quest, "quest_id", "")).casefold()
+            == "pw210-defeat-sargon-01-n"
+            and any(
+                item.casefold() == "ammunition_ammotype_light_common"
+                for item in items
+            )
+        ):
+            # This quest asks for generic Light Essences, but characters may
+            # carry an equivalent ammunition tier or the Sargon event's
+            # unmodified/boosted light ammunition item instead.
+            items += (
+                "ammunition_ammotype_light_uncommon",
+                "ammunition_ammotype_light_magic",
+                "ammunition_ammotype_light_rare",
+                "ammunition_ammotype_light_epic",
+                "e_light_ammunition_vc",
+                "e_light_ammunition_rc_300",
+            )
+        return tuple(dict.fromkeys(items))
+
+    @staticmethod
+    def _quest_delivery_items(inventory, barter, quest=None):
         """Native hand-ins count carried storage, never bank/equipped/socketed items."""
         if inventory is None:
             return ()
         carried = set(inventory.storage_58) | set(inventory.storage_80) | set(inventory.field_180)
         excluded = set(inventory.equipment_slots) | set(inventory.storage_a8) | set(inventory.storage_d0)
-        order = {template.casefold(): index for index, template in enumerate(barter.items)}
+        templates = (
+            CharacterService._quest_delivery_item_templates(quest, barter)
+            if quest is not None else barter.items
+        )
+        order = {template.casefold(): index for index, template in enumerate(templates)}
         return tuple(sorted(
             (item for item in inventory.items
              if item.item_id in carried and item.item_id not in excluded
@@ -1930,7 +1965,7 @@ class QuestService:
                             error = "required game currency is not available"
                     else:
                         items = CharacterService._quest_delivery_items(
-                            s.gameplay_inventory, barter,
+                            s.gameplay_inventory, barter, quest,
                         )
                         error = "required items are not in carried inventory"
                     enough = (
