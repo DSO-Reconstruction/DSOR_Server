@@ -103,3 +103,16 @@ def test_monster_ground_aura_ignores_its_late_entry_backlog():
     )
     assert len(hits) == 1
     assert hits[0].damage == pytest.approx(1000)
+
+
+def test_flood_spares_players_in_its_four_safe_circles():
+    state = _state()
+    _cast(state, "Boss01_b_Skill03", 0.0)
+    for spot in ((6.0, 0.0, 6.0), (-6.0, 0.0, -6.0), (7.5, 0.0, -6.0)):
+        assert state.resolve_monster_location_auras(
+            spot, player_actor_id=1, now=0.26,
+        ) == ()
+    hits = state.resolve_monster_location_auras(
+        (6.0, 0.0, 0.0), player_actor_id=2, now=0.26,
+    )
+    assert len(hits) == 1
