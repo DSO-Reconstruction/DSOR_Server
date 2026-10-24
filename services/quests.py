@@ -753,6 +753,16 @@ class QuestService:
         # Entering the destination map is sufficient to credit these route
         # objectives and keep the main quest chain moving.
         map_entry_explore_tasks = {
+            # Artaya's Clearing is the Flute map. The extracted quest points
+            # its exploration task at the generic Clearing map and the trigger
+            # volume is missing from Flute, so credit the authored trigger
+            # when the direct quest route lands the player there.
+            "pw208_lost_woods_flute_dun": (
+                (
+                    "pw208-lost-woods-02-n",
+                    "pw208-lost-woods-02-explore-01",
+                ),
+            ),
             "pw203_norseland_01_dun": (
                 ("pw201-the-norseman-05-n", "pw201-the-norseman-05-explore-01"),
             ),
@@ -2194,6 +2204,35 @@ class QuestService:
         self._quest_ensure_lantern_scout(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
+        if quest.quest_id.casefold() == "pw208-lost-woods-03-n":
+            # This follow-up quest is offered by Nerina, but its first task
+            # asks the player to search for her in Twisted Woods again. The
+            # acceptance conversation already supplies that contact, so
+            # credit the authored ExploreTask trigger and advance to its next
+            # objective immediately.
+            progress = _quest_log(s).get(quest.quest_id)
+            initial_task = next((
+                task
+                for task in active_tasks(quest, progress)
+                if task.title.casefold() == "pw208-lost-woods-03-explore-01"
+                and task.task_type.casefold() == "exploretask"
+            ), None) if progress is not None else None
+            trigger_id = (
+                explore_trigger_for_task(quest, initial_task)
+                if initial_task is not None else ""
+            )
+            if trigger_id:
+                advanced = self._quest_feed(
+                    s,
+                    "trigger",
+                    trigger_id,
+                    quest_id=quest.quest_id,
+                )
+                _log(
+                    "credited Nerina's Twisted Woods search on quest "
+                    f"acceptance: quest={quest.quest_id!r}, "
+                    f"trigger={trigger_id!r}, advanced={advanced}"
+                )
         return True
 
     def _quest_turn_in(self, s: Session, quest_id: str) -> bool:
@@ -2653,6 +2692,11 @@ class QuestService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if callable(ensure_fyeborough_collector) and runtime is not None:
             ensure_fyeborough_collector(s, runtime)
+        ensure_artaya_demons = getattr(
+            self, "_ensure_artaya_clearing_demons", None,
+        )
+        if callable(ensure_artaya_demons) and runtime is not None:
+            ensure_artaya_demons(s, runtime)
         if result.quest_finished and quest.key in {
             "g0004-enterminibossroom-01-n-row",
             "g0004-enterminibossroom-01-n",

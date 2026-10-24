@@ -1690,8 +1690,15 @@ class MapEventService:
             content = load_map_event_content(static_database_path, map_id)
         except Exception:
             return None
-        if not content.spawn_rows:
+        if (
+            not content.spawn_rows
+            and map_key(map_id) != "pw208_lost_woods_flute_dun"
+        ):
             return None
+        # Artaya's Clearing has a quest demon wave controlled by map events,
+        # but the extracted map database contains no gated monster rows. It
+        # still needs an empty combat world so quest-controlled fallback
+        # spawns can be materialized after PlayerReady.
         return replace(
             load_local_player_only_encounter(static_database_path, map_id),
             scaling_difficulty=max(0, int(scaling_difficulty)),
@@ -2442,6 +2449,7 @@ class MapEventService:
             self._publish_entrance_bosses(runtime, (s,))
         CharacterService._quest_on_map_entered(self, s)
         self._ensure_fyeborough_soul_collector(s, runtime)
+        self._ensure_artaya_clearing_demons(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )
@@ -2526,6 +2534,103 @@ class MapEventService:
         _log(
             "ensured Fyeborough Soul Collector for active "
             "pw207-way-to-village-02 kill objective"
+        )
+
+    def _ensure_artaya_clearing_demons(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Materialize Lost in the Woods' missing Artaya demon wave.
+
+        The extracted quest refers to four demon templates, and the map has a
+        quest event set named ``pw208_lost_woods_03_spawn_demons``. However,
+        that event set has no monster or spawn-point rows in the map database,
+        so entering Artaya's Clearing can leave the ClearRegion objective with
+        no enemies to kill. Use the objective's own four templates and place
+        one of each near its authored explore trigger while the task is active.
+        """
+
+        if map_key(runtime.map_id) != "pw208_lost_woods_flute_dun":
+            return
+        quest_id = "pw208-lost-woods-03-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        templates = (
+            "pw208_normal_demon_fat_01",
+            "pw208_normal_demon_skinny_01",
+            "pw208_normal_demon_damage_dealer_01",
+            "pw208_normal_demon_tank_01",
+        )
+        clear_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold() == "pw208-lost-woods-03-clear-01"
+                and any(
+                    event.kind.casefold() == "regioncleared"
+                    and event.value.casefold()
+                    == "pw208-lost-woods-03-n.s_pw208-lost-woods-03-clear-01clearregion"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not clear_task_active:
+            return
+
+        marker = "pw208_lost_woods_03_quest_demons_materialized"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            _log("cannot ensure Artaya demons: no combat state on the instance")
+            with runtime.lock:
+                runtime.fired_once.discard(marker)
+            return
+
+        with combat.lock:
+            alive_templates = {
+                monster.template_id.casefold()
+                for actor_id, monster in combat.monsters.items()
+                if combat.monster_health.get(actor_id, 0) > 0
+            }
+        # The quest's explore trigger sits at (117, 0, 20). Spread the wave
+        # around it and away from the four allied beastman anchors at x=127-133.
+        positions = (
+            (111.0, 0.0, 16.0),
+            (117.0, 0.0, 16.0),
+            (111.0, 0.0, 24.0),
+            (117.0, 0.0, 24.0),
+        )
+        spawn_rows = []
+        for index, (template, position) in enumerate(
+            zip(templates, positions, strict=True),
+        ):
+            if template.casefold() in alive_templates:
+                continue
+            if _load_runtime_definition(self.static_database_path, template, 0) is None:
+                _log(f"Artaya demon template {template!r} has no runtime definition")
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                -2_200_000 - index, -1, template, position,
+            ))
+        if spawn_rows:
+            self._spawn_event_monsters(runtime, sessions, (), extra_rows=tuple(spawn_rows))
+        _log(
+            f"ensured {len(spawn_rows)} missing demon(s) for active "
+            "pw208-lost-woods-03-clear-01 objective in Artaya's Clearing"
         )
 
     # ------------------------------------------------------------------
@@ -4045,6 +4150,9 @@ class MapEventService:
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
+            native_exit_guids = {
+                entry.instance_guid for entry in native_exit_entries
+            }
             if native_exit_entries and active_override is not False:
                 # Some authored exits start as inactive and have no client
                 # entity yet. ExitInfo only updates the cache; VariationInfo
@@ -4069,6 +4177,16 @@ class MapEventService:
                         f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
                     )
             for definition in viewer_definitions:
+                if (
+                    active_override is False
+                    and definition.instance_guid in native_exit_guids
+                ):
+                    # This is the pre-EventUpdate snapshot. The client has
+                    # not created these native scene exits yet, so asking it
+                    # to update them now only produces an UpdateExitState
+                    # "entity not found" warning. The post-event refresh
+                    # publishes them after VariationInfo creates the entity.
+                    continue
                 is_active = definition.active
                 if active_override is not None:
                     entry_active = active_override
