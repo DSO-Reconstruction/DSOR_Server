@@ -205,6 +205,11 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # server releases its EventSet; publishing it at the same ID makes
     # NewMonster fail with ActorManager::RegisterActor duplicate-id.
     "pw207_village_dun",
+    # Sunlair's Chamber has authored scene SpawnPoints in the ordinary local
+    # actor range. The fixed Sunlair's Notes demon otherwise receives 0x30000,
+    # which the client scene can already own, leaving the quest marker visible
+    # while NewMonster has no renderable model.
+    "pw207_chamber_dun",
 })
 
 

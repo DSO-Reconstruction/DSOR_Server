@@ -1858,6 +1858,9 @@ class MapEventService:
             regional_signals = {signal for signal, _volumes in regions}
             rules = tuple(rule for rule in rules if rule.signal_id not in regional_signals)
         if not rules:
+            if kind in {"playerenteredmap", "playerendquesttask"}:
+                self._ensure_pw209_kinza_leader(s, runtime)
+                self._ensure_pw207_sunlairs_notes_mob(s, runtime)
             return
         for rule in rules:
             if rule.event_type in (
@@ -1873,6 +1876,122 @@ class MapEventService:
                 f"{runtime.map_id} fired signal {rule.signal_id!r}"
             )
             self._emit_map_signal(s, runtime, rule.signal_id)
+        if kind in {"playerenteredmap", "playerendquesttask"}:
+            self._ensure_pw209_kinza_leader(s, runtime)
+            self._ensure_pw207_sunlairs_notes_mob(s, runtime)
+
+    def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
+        """Keep the Kinza route leader visible for its active kill objective."""
+
+        if map_key(runtime.map_id) != "pw207_chamber_dun":
+            return
+        accepted, _solved, tasks_done = CharacterService._quest_signal_facts(
+            self, s,
+        )
+        quest_id = "pw209-way-to-kinza-01-n"
+        clear_task = f"{quest_id}:pw209-way-to-kinza-01-clear-01"
+        kill_task = f"{quest_id}:pw209-way-to-kinza-01-kill-01"
+        if (
+            quest_id not in accepted
+            or clear_task not in tasks_done
+            or kill_task in tasks_done
+        ):
+            return
+        definition = runtime.catalog.event(
+            "pw209_way_to_kinza_01_spawn_leader",
+        )
+        if definition is None:
+            _log(
+                "Kinza route leader event is missing on pw207_chamber_dun"
+            )
+            return
+        with runtime.lock:
+            active = definition.key in runtime.running
+            pending = definition.key in runtime.pending_start_tokens
+        if not active and pending:
+            return
+        if not active:
+            _log(
+                "reconciling the active Kinza route kill task by starting its "
+                "leader event on pw207_chamber_dun"
+            )
+            self._start_map_local_event(runtime, definition)
+            return
+        event_sets = tuple(sorted({
+            int(value.row)
+            for value in runtime.content.event_sets_for(definition.key)
+        }))
+        if not event_sets:
+            _log(
+                "Kinza route leader event has no spawn EventSet on "
+                "pw207_chamber_dun"
+            )
+            return
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(runtime, sessions, event_sets)
+
+    def _ensure_pw207_sunlairs_notes_mob(self, s: Session, runtime) -> None:
+        """Replay or restore the one-off demon for Sunlair's Notes page 01."""
+
+        if map_key(runtime.map_id) != "pw207_chamber_dun":
+            return
+        accepted, _solved, tasks_done = CharacterService._quest_signal_facts(
+            self, s,
+        )
+        quest_id = "pw207-sunlairs-notes-01-n"
+        task = f"{quest_id}:pw207-sunlairs-notes-01-collect-01"
+        if quest_id not in accepted or task in tasks_done:
+            return
+        template_id = "pw207_normal_demon_damage_dealer_quest_01"
+        map_path = map_database_path(self.static_database_path, runtime.map_id)
+        try:
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True,
+            )) as database:
+                row = database.execute(
+                    """
+                    SELECT rowid, Transform
+                    FROM _Instance_SpawnPoint
+                    WHERE lower(COALESCE(Id, ''))=?
+                       OR lower(COALESCE(_ID, ''))=?
+                    ORDER BY CASE WHEN COALESCE(EventSetRow, -1)=-1 THEN 0 ELSE 1 END,
+                             rowid
+                    LIMIT 1
+                    """,
+                    (template_id, template_id),
+                ).fetchone()
+        except (OSError, sqlite3.Error) as exc:
+            _log(
+                f"cannot read Sunlair's Notes spawn point: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        if row is None:
+            _log(
+                f"Sunlair's Notes spawn point for {template_id!r} is missing"
+            )
+            return
+        try:
+            matrix = struct.unpack("<16f", bytes(row[1]))
+            position = tuple(float(matrix[index]) for index in (12, 13, 14))
+        except (TypeError, ValueError, struct.error) as exc:
+            _log(
+                f"Sunlair's Notes spawn point has invalid transform: {exc}"
+            )
+            return
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(
+            runtime,
+            sessions,
+            (),
+            extra_rows=(GatedSpawnRow(
+                -1_700_000 - int(row[0]), -1, template_id, position,
+            ),),
+        )
 
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
                          signal_id: str) -> None:
@@ -2650,6 +2769,11 @@ class MapEventService:
             specifications = [(
                 "ingredient_elemental_essence_crafting_light", 5,
             )]
+        elif loot_list_id == "chest_pw199_demon_herb":
+            # Canol Alley's eight one-shot herb props feed a recipe that needs
+            # ten demon herbs. The client export has the loot-list reference
+            # but omits its server-side contents, so award two per prop.
+            specifications = [("demon_herb", 2)]
         elif loot_list_id == _BLOOD_CHEST_LOOT_LIST:
             specifications = [
                 ("money_rc", 10),

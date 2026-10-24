@@ -744,6 +744,7 @@ class QuestService:
     def _quest_on_map_entered(self, s: Session) -> None:
         self._quest_recover_myrdosch_access_key(s)
         self._quest_recover_artaya_sanctuary_key(s)
+        self._quest_ensure_parallel_world_introduction(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -1095,6 +1096,27 @@ class QuestService:
                     viewer, combat, group,
                     force_actor_ids=group_actor_ids,
                 )
+
+    def _quest_ensure_parallel_world_introduction(self, s: Session) -> None:
+        """Start Ammon's Parallel Worlds introduction for level-50 characters.
+
+        The extracted quest is giver-less and normally starts when a special
+        Enchanted Scroll is received. The local server does not currently
+        deliver that trigger item, so characters who reach level 50 otherwise
+        never see the first Parallel Worlds quest. Reconcile the level gate on
+        login/map entry and level-up instead.
+        """
+
+        _class_name, level = _character_facts(s)
+        if level < 50:
+            return
+        quest = self._quest_catalog().quest("pw000-introduction-01-n")
+        if quest is None or not quest.auto_start:
+            return
+        progress = _quest_log(s).get(quest.quest_id)
+        if progress is not None and progress.state != QUEST_STATE_CANCELLED:
+            return
+        self._quest_accept(s, quest.quest_id, offered=False)
 
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
         """Restore the Andrakas key when an older delivery lost its inventory drop."""

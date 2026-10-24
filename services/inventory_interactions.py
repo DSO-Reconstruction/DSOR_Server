@@ -839,6 +839,9 @@ class InventoryInteractionService:
         CharacterService._request_account_save(
             s, "workbench recipe crafted", flush=True
         )
+        CharacterService._quest_feed(
+            self, s, "crafting", recipe.resource_id, count=craft_count,
+        )
         self._daily_challenge_feed(s, 'ItemsCrafted', count=craft_count * recipe.result_amount)
         from dso_server.protocol.consumable_protocol import load_consumable_catalog
         if load_consumable_catalog(self.static_database_path).definition(recipe.result_template_id) is not None:
