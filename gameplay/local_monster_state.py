@@ -193,6 +193,10 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # range. Keep server-published monsters in the secondary range so those
     # scene actors cannot mask the wave bosses.
     "pw203_norseland_01_dun",
+    # Telepolos has 104 authored SpawnPoints. The client may register these
+    # scene actors in the ordinary monster range, so keep its server density
+    # population in the secondary range to prevent actor-id collisions.
+    "pw205_helios_dun",
 })
 
 
@@ -431,6 +435,17 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
     'f4202_dun': {
         'melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04',),
         'scale_melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04_scale',),
+    },
+    # Telepolos' first A War Conspiracy objective clears this authored
+    # density list. Its three quest-specific templates are intentionally
+    # excluded from the generic map pool by the `_q_` filter; without an
+    # explicit list mapping, the ClearRegionTask's targets never spawn.
+    'pw205_helios_dun': {
+        'list_imperial_soldier_q_helios_war_01': (
+            'pw205_normal_imperial_soldier_offensive_q_helios_war_01',
+            'pw205_normal_imperial_soldier_defensive_q_helios_war_01',
+            'pw205_normal_cerberus_q_helios_war_01',
+        ),
     },
     "b1201_pve": {
         "entrance_gnome_troll": (
@@ -2303,6 +2318,17 @@ def _grounded_spawn_area_candidates(
 
     minimum_height = area.center[1] - abs(area.matrix[5]) * 0.5
     maximum_height = area.center[1] + abs(area.matrix[5]) * 0.5
+    ground_reference_height = area.center[1]
+    if area.spawn_list_id.casefold() == (
+        "list_imperial_soldier_q_helios_war_01"
+    ):
+        # These two Telepolos volumes span multiple vertically-overlapping
+        # city layers. Their raw grid points project to the playable street at
+        # Y=0, but a fallback triangle can select the lower Y=-3 floor. Keep
+        # this quest population on the same street level as its authored grid.
+        ground_reference_height = 0.0
+        minimum_height = -0.75
+        maximum_height = 0.75
     target_count = len(candidates)
     positions = []
     occupied: dict[
@@ -2344,7 +2370,7 @@ def _grounded_spawn_area_candidates(
                     reference_height=(
                         projected[1]
                         if prefer_navigation_height
-                        else area.center[1]
+                        else ground_reference_height
                     ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
@@ -2381,7 +2407,7 @@ def _grounded_spawn_area_candidates(
                     reference_height=(
                         centroid[1]
                         if prefer_navigation_height
-                        else area.center[1]
+                        else ground_reference_height
                     ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,

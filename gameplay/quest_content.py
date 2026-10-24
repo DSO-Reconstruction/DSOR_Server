@@ -64,6 +64,17 @@ _EXPLORE_TASK_TRIGGER_OVERRIDES = MappingProxyType({
     ): "h0007explore01",
 })
 
+# Telepolos' main story asks the player to collect four Catapult Stones from
+# Wandering Stone Golems, but the extracted quest XML sets this story drop to
+# only 10%. Keep this required progression item deterministic in the server
+# runtime so the catapult objective cannot stall on repeated failed rolls.
+_QUEST_DROP_CHANCE_OVERRIDES = MappingProxyType({
+    (
+        "pw205-a-helios-war-07-n",
+        "pw205_a_helios_war_07_stone",
+    ): 1.0,
+})
+
 
 def explore_trigger_for_task(
     quest: "QuestDefinition", task: "TaskDefinition",
@@ -381,7 +392,9 @@ def _parse_guards(element: ET.Element) -> tuple[Guard, ...]:
     )
 
 
-def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
+def _parse_task(
+    index: int, element: ET.Element, *, quest_id: str = "",
+) -> TaskDefinition:
     events = []
     for child in element.findall("Event"):
         events.append(TaskEvent(
@@ -400,7 +413,15 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
                 Drop(
                     item_id=str(d.get("value", "")),
                     amount=int(d.get("amount", 1) or 1),
-                    chance=float(d.get("chance", 1) or 1),
+                    chance=max(
+                        float(d.get("chance", 1) or 1),
+                        _QUEST_DROP_CHANCE_OVERRIDES.get((
+                            str(quest_id).casefold(),
+                            str(d.get("value", "")).casefold(),
+                        ),
+                        0.0,
+                    ),
+                    ),
                     to_inventory=_bool(d.get("inventory")),
                 )
                 for d in child.findall("Drop")
@@ -496,12 +517,13 @@ def _parse_quest(element: ET.Element) -> QuestDefinition:
         )
         for r in element.findall("Reward")
     )
+    quest_id = str(element.get("id", ""))
     tasks = tuple(
-        _parse_task(index, task)
+        _parse_task(index, task, quest_id=quest_id)
         for index, task in enumerate(element.findall("Task"))
     )
     return QuestDefinition(
-        quest_id=str(element.get("id", "")),
+        quest_id=quest_id,
         giver=str(element.get("giver", "")),
         goal=str(element.get("goal", "")),
         start_signal=str(element.get("startSignal", "")),
