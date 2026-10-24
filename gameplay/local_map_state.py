@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import closing
+import hashlib
 import math
 import os
 import sqlite3
@@ -458,6 +459,18 @@ def load_local_npc_definitions(
                 continue
             position, rotation = _transform(bytes(row[10]))
             if (
+                str(map_id).casefold() == "pw206_temple_dun"
+                and int(row[0]) == 2
+                and str(row[2] or "").casefold()
+                == "pw206_quest_lortac_shaman_01"
+                and event_set_row == 3910
+            ):
+                # The Call for Freedom's Melahuac is authored just beyond a
+                # blocked Materi barrier. Its Explore trigger is four metres
+                # earlier at (94, 3, 64), so place the NPC at that reachable
+                # point for the talk objective instead of behind the wall.
+                position = (94.0, 3.0, 64.0)
+            if (
                 str(map_id).casefold() == "f4100_hub"
                 and str(row[2] or "").casefold()
                 == "f4100_quest_guard_captain"
@@ -844,6 +857,68 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
 }
 
 
+def _filter_materi_swirl_exits(
+    static_database_path, map_id, exits, selected_map_access_id,
+    selected_map_difficulty,
+):
+    """Choose one Lingering Memory and difficulty per authored swirl spot.
+
+    Every spot contains all dungeon/tier variations. Caching all their GUIDs
+    in ExitInfo makes the client instantiate overlapping portals when the
+    swirl event starts. Keep the selection stable across event refreshes.
+    """
+    candidates = tuple(
+        exit for exit in exits
+        if exit.destination_map_id.casefold().startswith("pw202_mini_dun_")
+        and "_spot_" in exit.name.casefold()
+    )
+    if not candidates:
+        return exits
+    destinations = sorted({exit.destination_map_id for exit in candidates})
+    with closing(_open_read_only(Path(static_database_path))) as database:
+        source = database.execute(
+            "SELECT Difficulty FROM _Template_MapAccessGroup WHERE Id=?",
+            (str(selected_map_access_id),),
+        ).fetchone()
+        difficulty = int(source[0] or 0) if source else int(selected_map_difficulty or 0)
+        placeholders = ",".join("?" for _ in destinations)
+        metadata = {
+            str(access_id): (str(group), int(tier or 0))
+            for access_id, group, tier in database.execute(
+                "SELECT Id, AccessGroup, Difficulty FROM _Template_MapAccessGroup "
+                f"WHERE Id IN ({placeholders})", destinations,
+            )
+        }
+    spots = {}
+    for exit in candidates:
+        spot = exit.name.casefold().rsplit("_spot_", 1)[1]
+        spots.setdefault(spot, []).append(exit)
+    selected = set()
+    for spot, variations in spots.items():
+        eligible = [
+            exit for exit in variations
+            if metadata.get(exit.destination_map_id, (None, None))[1] == difficulty
+        ]
+        if not eligible:
+            # Preserve a usable portal when an extracted dungeon lacks this
+            # tier, without advertising all its other variations.
+            eligible = variations
+        chosen = min(eligible, key=lambda exit: (
+            abs(metadata.get(exit.destination_map_id, (None, 0))[1] - difficulty),
+            hashlib.sha256(
+                f"{map_id}:{spot}:{exit.destination_map_id}".encode()
+            ).digest(),
+            exit.name,
+        ))
+        selected.add(chosen.instance_guid)
+    candidate_guids = {exit.instance_guid for exit in candidates}
+    return tuple(
+        exit for exit in exits
+        if exit.instance_guid not in candidate_guids
+        or exit.instance_guid in selected
+    )
+
+
 def filter_parallel_world_exits_for_access(
     static_database_path: str | Path,
     map_id: str,
@@ -854,6 +929,10 @@ def filter_parallel_world_exits_for_access(
 ) -> tuple[LocalMapExit, ...]:
     """Keep only destination variations matching the selected map difficulty."""
 
+    exits = _filter_materi_swirl_exits(
+        static_database_path, map_id, exits, selected_map_access_id,
+        selected_map_difficulty,
+    )
     target_groups = _TIERED_MAP_EXIT_TARGET_GROUPS.get(
         str(map_id).casefold()
     )

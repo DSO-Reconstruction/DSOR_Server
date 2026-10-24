@@ -66,6 +66,7 @@ from dso_server.gameplay.map_event_state import (
     PropRuntimeState,
     SignalContext,
     TriggerVolumeDefinition,
+    ZERO_GUID,
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
@@ -646,6 +647,11 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
     "f4203_boss_06_ram",
+    # Fyeborough's story sentinel is gated by a quest event and can already
+    # exist in the encounter before that event releases it. Force its native
+    # NewMonster registration when the EventSet opens so the client does not
+    # show only the authored spawn effect while omitting the actor model.
+    "pw207_sentinel_shadow_father_01_q_way_to_village_02",
     # The Lythira spawn transform is the boss's authored arena position and
     # can be outside the ordinary vicinity radius from the entry point.
     "fp_boss_01_lythira",
@@ -1602,7 +1608,44 @@ class MapEventService:
         if runtime is None:
             return None
         with runtime.lock:
-            states = runtime.published_props()
+            states_by_id = {
+                state.definition.prop_id: state
+                for state in runtime.published_props()
+            }
+            if map_key(runtime.map_id) == "pw205_helios_dun":
+                # Retail gates these reusable stones behind a quest-phase
+                # EventSet. They are ordinary map resources and must remain
+                # present regardless of quest progress or which event fired.
+                # Register all authored stone props into the runtime as well
+                # as publishing them, so their actor ids remain interactable.
+                for definition in runtime.content.props:
+                    if not (
+                        str(definition.instance_id).casefold().startswith(
+                            "pw200_umbra_stone_"
+                        )
+                        and str(definition.loot_list_id).casefold()
+                        in {"chest_umbra_stone_01", "chest_umbra_stone_02"}
+                    ):
+                        continue
+                    state = runtime.props.get(definition.prop_id)
+                    always_visible_definition = replace(
+                        definition,
+                        event_set_row=-1,
+                        instance_guid=ZERO_GUID,
+                    )
+                    if state is None:
+                        state = PropRuntimeState(always_visible_definition)
+                    else:
+                        state = PropRuntimeState(
+                            always_visible_definition, state.state,
+                        )
+                    # Remove the EventSet link in the runtime copy so later
+                    # map-event transitions cannot unpublish these persistent
+                    # resources. A zero GUID asks the client to instantiate
+                    # each prop at its authored map transform.
+                    runtime.props[definition.prop_id] = state
+                    states_by_id[definition.prop_id] = state
+            states = tuple(states_by_id.values())
         states = tuple(
             state for state in states
             if prop_visible_to_player(state.definition, s)
@@ -1733,6 +1776,20 @@ class MapEventService:
                     already_active = flag in runtime.active_flags()
                 if not already_active:
                     self._start_map_local_event(runtime, definition)
+            # The reusable Telepolos Umbra Stones share an EventSet with the
+            # Hero of Light quest phase that hides them. That client-only
+            # activation has no authored end signal, so a shared map instance
+            # can retain it after the quest is turned in. Clear the stale
+            # phase before evaluating the solved-quest deactivation signal.
+            if (
+                map_key(runtime.map_id) == "pw205_helios_dun"
+                and "pw205-the-hero-of-light-02-n" in quests_solved
+            ):
+                definition = runtime.catalog.event(
+                    "pw205_the_hero_of_light_02_activate_umbra_stones"
+                )
+                if definition is not None:
+                    self._stop_map_local_event(runtime, definition)
         with runtime.lock:
             running = runtime.active_flags()
         context = SignalContext(
@@ -2384,6 +2441,7 @@ class MapEventService:
         if entrance_started:
             self._publish_entrance_bosses(runtime, (s,))
         CharacterService._quest_on_map_entered(self, s)
+        self._ensure_fyeborough_soul_collector(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )
@@ -2396,12 +2454,86 @@ class MapEventService:
         self._ensure_parallel_world_boss_reward_chest_visible(runtime)
         self._publish_parallel_world_boss_reward_chest_props(s, runtime)
 
+    def _ensure_fyeborough_soul_collector(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Start or replay the Soul Collector for its active story objective.
+
+        The authored spawn is released by two map signals. If the player
+        completes the lantern step while already in Fyeborough, or the entry
+        signal arrives before the quest state is synchronized, those signals
+        can be missed and the quest is left waiting for a monster that was
+        never materialized. The accepted kill task is the durable condition
+        for restoring this one-shot encounter on map entry or task progress.
+        """
+
+        if map_key(runtime.map_id) != "pw207_village_dun":
+            return
+        quest_id = "pw207-way-to-village-02-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        kill_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw207-way-to-village-02-kill-01"
+                and any(
+                    event.kind.casefold() == "kill"
+                    and event.value.casefold()
+                    == "pw207_sentinel_shadow_father_01_q_way_to_village_02"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not kill_task_active:
+            return
+
+        event = runtime.catalog.event(
+            "pw207_way_to_village_02_spawn_shadow_father"
+        )
+        if event is None or not event.applies_to(runtime.map_id):
+            _log(
+                "cannot ensure Fyeborough Soul Collector: authored map event "
+                "is missing or does not apply to pw207_village_dun"
+            )
+            return
+        with runtime.lock:
+            running = event.key in runtime.running
+            pending = event.key in runtime.pending
+        if not running and not pending:
+            self._start_map_local_event(runtime, event)
+        if running or not pending:
+            # A shared map instance can have the encounter active while its
+            # actor was created before this player's session became ready.
+            # _spawn_event_monsters replays existing matching actors and
+            # creates any missing ones without duplicating active spawns.
+            with runtime.lock:
+                enabled_sets = tuple(sorted(
+                    definition.row
+                    for definition in runtime.content.event_sets_for(event.key)
+                    if definition.row in runtime.enabled_event_sets
+                ))
+            self._spawn_event_monsters(runtime, (s,), enabled_sets)
+        _log(
+            "ensured Fyeborough Soul Collector for active "
+            "pw207-way-to-village-02 kill objective"
+        )
+
     # ------------------------------------------------------------------
     # Client-reported signals
     # ------------------------------------------------------------------
 
     def _spawn_map_chest_loot(self, s: Session, definition) -> int:
-        """Materialize the supported Bloodshed chest rewards as world loot.
+        """Materialize supported map chest rewards as world loot.
 
         The client export names CHEST_lootlist_BLOODSHED but does not include
         the server-side loot-list rows. Keep this fallback deliberately small
@@ -2409,19 +2541,26 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
-        if loot_list_id != _BLOOD_CHEST_LOOT_LIST:
+        if loot_list_id in {"chest_umbra_stone_01", "chest_umbra_stone_02"}:
+            specifications = [(
+                "ingredient_elemental_essence_crafting_light", 5,
+            )]
+        elif loot_list_id == _BLOOD_CHEST_LOOT_LIST:
+            specifications = [
+                ("money_rc", 10),
+            ]
+            gem_count = random.SystemRandom().randint(4, 5)
+            specifications.extend(
+                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
+                for _ in range(gem_count)
+            )
+        else:
             _log(
                 f"no local loot table for chest {definition.instance_id!r} "
                 f"({loot_list_id!r}); no rewards spawned"
             )
             return 0
         try:
-            specifications = [("money_rc", 10)]
-            gem_count = random.SystemRandom().randint(4, 5)
-            specifications.extend(
-                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
-                for _ in range(gem_count)
-            )
             drops = []
             for template_id, amount in specifications:
                 item_definition = load_purchase_item_definition(

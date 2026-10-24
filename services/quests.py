@@ -85,7 +85,10 @@ from dso_server.protocol.loot_protocol import _credit_currency
 from dso_server.protocol.prop_protocol import encode_discard_prop_batch
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
+    OBSTACLE_UPDATE_COMMAND,
     ChapterProgress,
+    ObstacleState,
+    ObstacleUpdate,
     QuestLogInfo,
     ServerCommand,
     encode_event_update,
@@ -498,11 +501,77 @@ class QuestService:
                 class_name=class_name,
                 level=level,
                 closed_quests=closed,
-                known_quests=log.keys(),
+                known_quests=(
+                    quest_id for quest_id, progress in log.items()
+                    if progress.state != QUEST_STATE_CANCELLED
+                ),
                 active_events=active_events,
             ) for quest in catalog.offered_by(npc_template_id)):
                 targets.add(npc_template_id)
         flags = set()
+        if str(map_id).casefold() == "pw205_helios_dun":
+            hero_of_light_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw205-the-hero-of-light-02-n"
+            ), None)
+            if (
+                hero_of_light_progress is not None
+                and hero_of_light_progress.state == QUEST_STATE_CLOSED
+            ):
+                # Telepolos' reusable Umbra Stone loot props are hidden by the
+                # in-progress quest event. Retail starts this deactivation
+                # phase on map entry after the quest is solved; restore it
+                # from the durable quest log so the stones remain usable after
+                # relogging or loading a fresh map instance.
+                flags.add(
+                    "pw205_the_hero_of_light_02_deact_umbra_stones_01"
+                )
+        if str(map_id).casefold() == "pw206_temple_dun":
+            union_quest = catalog.quest("pw206-enter-the-temple-02-n")
+            union_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw206-enter-the-temple-02-n"
+            ), None)
+            required_offerings = {
+                "pw206-enter-the-temple-02-interact-01",
+                "pw206-enter-the-temple-02-interact-02",
+            }
+            offering_tasks = (
+                tuple(
+                    task for task in union_quest.tasks
+                    if task.title.casefold() in required_offerings
+                )
+                if union_quest is not None else ()
+            )
+            corruption_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw206-remove-the-corruption-01-n"
+            ), None)
+            offerings_complete = (
+                union_quest is not None
+                and union_progress is not None
+                and len(offering_tasks) == len(required_offerings)
+                and all(
+                    union_progress.task_finished(task.index)
+                    for task in offering_tasks
+                )
+            )
+            corruption_quest_reached = (
+                corruption_progress is not None
+                and corruption_progress.state != QUEST_STATE_CANCELLED
+            )
+            if offerings_complete or corruption_quest_reached:
+                # The temple's authored barrier normally waits until quest
+                # turn-in. The story removes it after both offerings, however,
+                # and it blocks the Creator path and guardian the quest still
+                # requires. The follow-up corruption quest is durable evidence
+                # that the player has passed that story gate, so keep the
+                # barrier removed when its map instance is rebuilt after a
+                # relog, even if the prior quest's task tokens are unavailable.
+                flags.add("pw206_enter_the_temple_02_remove_barrier")
         if targets:
             declarations = load_local_event_set_flags(
                 self.static_database_path, map_id,
@@ -1371,7 +1440,11 @@ class QuestService:
         for quest in catalog.offered_by(npc_template_id):
             if catalog.available(
                 quest, class_name=class_name, level=level,
-                closed_quests=closed, known_quests=log.keys(),
+                closed_quests=closed,
+                known_quests=(
+                    quest_id for quest_id, progress in log.items()
+                    if progress.state != QUEST_STATE_CANCELLED
+                ),
                 active_events=active_events,
             ):
                 interactions.append(NPCInteraction(
@@ -2048,7 +2121,11 @@ class QuestService:
         closed = [q for q, p in log.items() if p.state == QUEST_STATE_CLOSED]
         if not catalog.available(
             quest, class_name=class_name, level=level,
-            closed_quests=closed, known_quests=log.keys(),
+            closed_quests=closed,
+            known_quests=(
+                known_id for known_id, progress in log.items()
+                if progress.state != QUEST_STATE_CANCELLED
+            ),
             active_events=self._quest_active_events(s),
         ):
             _log(f"quest {quest.quest_id!r} is not available to this character")
@@ -2067,6 +2144,15 @@ class QuestService:
             if s.gameplay_exit_transition_started:
                 return False
             existing = log.get(quest.quest_id)
+            if (
+                existing is not None
+                and existing.state == QUEST_STATE_CANCELLED
+            ):
+                # Older saved quest logs can retain the cancelled marker
+                # instead of the normal cancellation path's removal. Treat
+                # that marker as eligible for a fresh acceptance.
+                del log[quest.quest_id]
+                existing = None
             if existing is not None and existing.state != QUEST_STATE_CLOSED:
                 return False
             progress = QuestProgress(quest.quest_id)
@@ -2254,6 +2340,7 @@ class QuestService:
                 s, quest_id, QUEST_STATE_CANCELLED, NO_TIMESTAMP,
             ), label="quest-cancel")
             self._quest_sync_props(s)
+            self._quest_refresh_npc_infos(s)
         CharacterService._request_account_save(s, "quest cancelled")
         return True
 
@@ -2474,6 +2561,20 @@ class QuestService:
             s.gameplay_next_item_id = max(s.gameplay_next_item_id, end)
         CharacterService._reconcile_world_loot_visibility(s, label="quest-drop")
 
+    def _quest_obstacle_update(self, s: Session, map_id: str) -> ObstacleUpdate:
+        """Restore physical quest gates as well as their scene EventSets."""
+
+        if (
+            str(map_id).casefold() == "pw206_temple_dun"
+            and "pw206_enter_the_temple_02_remove_barrier"
+            in self._quest_reveal_flags(s, map_id)
+        ):
+            # EventUpdate removes the barrier's scene set, but the client's
+            # obstacle controller retains its collision state independently.
+            # State 2 opens the obstacle, as for the F4203 ram gate.
+            return ObstacleUpdate((ObstacleState("pw206_temple_obstacle", 2),))
+        return ObstacleUpdate(())
+
     def _quest_refresh_event_state(self, s: Session) -> None:
         """Publish quest-derived map EventSet flags after task transitions."""
 
@@ -2483,6 +2584,11 @@ class QuestService:
             CharacterService._send_world_loot_state_batch(
                 s, packet, packet_bits, label="quest-map-event-state",
             )
+            obstacles = self._quest_obstacle_update(s, s.gameplay_map or "")
+            if obstacles.obstacles:
+                self._send_quest_commands(s, (ServerCommand(
+                    OBSTACLE_UPDATE_COMMAND, obstacles, LOCAL_PLAYER_ACTOR_ID,
+                ),), label="quest-map-obstacles")
         except Exception as exc:
             _log(
                 f"map event refresh after quest progress failed: "
@@ -2536,6 +2642,17 @@ class QuestService:
                 self._quest_fire_signal(
                     s, "PlayerEndQuestTask", (f"{quest.quest_id}:{change.task.title}",),
                 )
+        # The Fyeborough Soul Collector is released by a map-local event
+        # whose authored signal can fire before the newly active kill task is
+        # visible to the event handler. Reconcile it after task signals so the
+        # durable quest state, rather than signal timing, decides whether its
+        # actor should be spawned or replayed in the current instance.
+        ensure_fyeborough_collector = getattr(
+            self, "_ensure_fyeborough_soul_collector", None,
+        )
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if callable(ensure_fyeborough_collector) and runtime is not None:
+            ensure_fyeborough_collector(s, runtime)
         if result.quest_finished and quest.key in {
             "g0004-enterminibossroom-01-n-row",
             "g0004-enterminibossroom-01-n",

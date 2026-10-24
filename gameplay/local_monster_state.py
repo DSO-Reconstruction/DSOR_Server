@@ -197,6 +197,14 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # scene actors in the ordinary monster range, so keep its server density
     # population in the secondary range to prevent actor-id collisions.
     "pw205_helios_dun",
+    # The Toltac temple has hundreds of authored scene SpawnPoints; keep the
+    # server's quest and density mobs outside their ordinary ActorID range.
+    "pw206_temple_dun",
+    # Fyeborough's quest-gated Soul Collector is also an authored SpawnPoint.
+    # The client may already register that scene actor at 0x30000 before the
+    # server releases its EventSet; publishing it at the same ID makes
+    # NewMonster fail with ActorManager::RegisterActor duplicate-id.
+    "pw207_village_dun",
 })
 
 
@@ -445,6 +453,22 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
             'pw205_normal_imperial_soldier_offensive_q_helios_war_01',
             'pw205_normal_imperial_soldier_defensive_q_helios_war_01',
             'pw205_normal_cerberus_q_helios_war_01',
+        ),
+    },
+    # A New Clue (2/2) clears this spawn list. The Toltac guards are quest-only
+    # templates excluded from the generic monster pool.
+    'pw206_temple_dun': {
+        'list_tribe_q_way_to_lortac_02': (
+            'pw206_normal_evil_tribe_melee_02_q_way_to_lortac_02',
+            'pw206_normal_evil_tribe_ranged_02_q_way_to_lortac_02',
+        ),
+        # The Call for Freedom (2/2) starts a separate event-set wave. Its
+        # ClearRegionTask tracks these four shadow variants specifically.
+        'list_shadow_q_free_lortac_02': (
+            'pw206_normal_evil_tribe_melee_shadow_q_free_lortac_02',
+            'pw206_normal_evil_tribe_ranged_shadow_q_free_lortac_02',
+            'pw206_normal_clawstrider_shadow_q_free_lortac_02',
+            'pw206_normal_shadow_corpser_q_free_lortac_02',
         ),
     },
     "b1201_pve": {

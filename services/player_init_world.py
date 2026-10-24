@@ -20,6 +20,7 @@ from dso_server.protocol.reward_protocol import daily_login_offers
 from dso_server.protocol.player_init_protocol import (
     ACTORS_ENTER_VICINITY_COMMAND,
     NEW_NPC_COMMAND,
+    OBSTACLE_UPDATE_COMMAND,
     QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
@@ -665,6 +666,17 @@ class PlayerInitializationWorldService:
                 tuple(season_pass_state["claimed_awards"]),
             ),
         ))
+        # Restore obstacle collision before PlayerReady, alongside the quest
+        # EventUpdate. Scene visibility alone does not open physical gates.
+        obstacles = CharacterService._quest_obstacle_update(
+            self, s, state.gameplay_map,
+        )
+        if obstacles.obstacles:
+            commands = [
+                ServerCommand(OBSTACLE_UPDATE_COMMAND, obstacles, LOCAL_PLAYER_ACTOR_ID)
+                if command.command_id == OBSTACLE_UPDATE_COMMAND else command
+                for command in commands
+            ]
         with s.flow_lock:
             spender_state = s.gameplay_daily_challenges
             spender_progress = int(
