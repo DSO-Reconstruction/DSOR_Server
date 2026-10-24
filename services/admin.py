@@ -18,7 +18,8 @@ from dso_server.paths import DEFAULT_ACCOUNT_DATABASE_PATH, DEFAULT_QUESTS_PATH
 from dso_server.persistence.account_registry import AccountRegistry, AccountRegistryError
 from dso_server.persistence.account_state import _state_to_document
 from dso_server.gameplay.quest_content import (
-    QUEST_STATE_CLOSED, QuestProgress, load_quest_catalog,
+    QUEST_STATE_ACCEPTED, QUEST_STATE_CLOSED, QUEST_STATE_FINISHED,
+    QuestProgress, load_quest_catalog,
 )
 from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
@@ -893,6 +894,59 @@ class AdminService:
                 "gate_quest_count": len(gate_quest_ids),
                 "online": target is not None}
 
+    def complete_character_active_quests(self, cid, actor, reason):
+        """Hand in every open quest through the regular turn-in path.
+
+        _quest_turn_in grants the quest rewards and removes quest items, so
+        this needs the live session; an offline save has no reward pipeline.
+        """
+        if self.store.get_profile(cid) is None or self.registry.character_owner(cid) is None:
+            raise ValueError("character must exist and belong to an account")
+        target = self.live.find(cid)
+        if target is None:
+            raise ValueError("character must be online and fully loaded into a map")
+        server, session = target
+        from dso_server.services.quests import _quest_log
+        active, completed, failed = [], [], []
+
+        def commit():
+            if not server.is_session_current(session):
+                raise ValueError("character session changed; refresh and retry")
+            catalog = server._quest_catalog()
+            with session.flow_lock:
+                if not ready(session, cid):
+                    raise ValueError("character must remain fully loaded in a map")
+                for quest_id, progress in _quest_log(session).items():
+                    if progress.state not in (QUEST_STATE_ACCEPTED, QUEST_STATE_FINISHED):
+                        continue
+                    quest = catalog.quest(quest_id)
+                    if quest is None:
+                        failed.append(quest_id)
+                        continue
+                    # Finish every task so the turn-in accepts the quest.
+                    progress.finished_mask = sum(1 << task.index for task in quest.tasks)
+                    active.append(quest.quest_id)
+            if not active and not failed:
+                raise ValueError("character has no active quests")
+            # Snapshot only: follow-up quests opened by these turn-ins stay open.
+            for quest_id in active:
+                try:
+                    closed = server._quest_turn_in(session, quest_id)
+                except Exception:
+                    closed = False
+                (completed if closed else failed).append(quest_id)
+            PlayerPersistenceService._persist_gameplay_session(
+                server, session, reason="CMS active quests completed", flush=True
+            )
+            return True
+
+        if not server.admin_commands.call(commit):
+            raise ValueError("character session changed; refresh and retry")
+        self.repository.audit(actor.username, "character.quests.complete_active", cid, {
+            "completed": completed, "failed": failed, "reason": reason,
+        })
+        return {"ok": True, "completed": len(completed), "failed": failed}
+
     def delete_character_item(self, cid, item_id, actor, reason):
         if type(item_id) is not int or item_id <= 0:
             raise ValueError("item ID must be a positive integer")
@@ -1239,6 +1293,8 @@ class AdminService:
                 return self.complete_character_main_quests(cid, account, reason)
             if parts[3] == "complete-ammon-pw-quests":
                 return self.complete_character_ammon_parallel_world_quests(cid, account, reason)
+            if parts[3] == "complete-active-quests":
+                return self.complete_character_active_quests(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

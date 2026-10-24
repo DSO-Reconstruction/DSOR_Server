@@ -267,6 +267,38 @@ function bindAmmonPWQuests(id) {
   });
 }
 
+function activeQuestSection(open) {
+  return section("Active quests", `<form id="active-quests-form" class="form-page">
+    <fieldset class="form-section"><legend>Quest progress</legend>
+      <p class="help">Finishes every open quest in the quest log and hands it in as if the player had returned to the quest giver: quest items are removed and the usual XP, gold, Andermant and item rewards are granted. Follow-up quests unlocked by these hand-ins stay open. The character must be online and fully loaded into a map.</p>
+      <p class="muted">${open} open quests in the last save.</p>
+    </fieldset>
+    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
+    <p id="active-quests-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Complete all active quests</button></div></form>`);
+}
+
+function bindActiveQuests(id) {
+  $("#active-quests-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
+    button.disabled = true;
+    try {
+      if (!(await confirmAction("Complete all active quests?",
+        "Every open quest in this character’s quest log is handed in and its rewards are granted. This cannot be undone.",
+        "Complete quests"))) return;
+      const result = await api(`/api/characters/${id}/complete-active-quests`, {reason: values.get("reason")});
+      notice(`Completed ${result.completed} active quests.` +
+        (result.failed.length ? ` Not completed: ${result.failed.join(", ")}.` : ""), result.failed.length > 0);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#active-quests-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function bindInventoryItemDelete(id, item) {
   $("#inventory-item-delete-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -393,6 +425,9 @@ export async function characterPage(route) {
       section("Active status effects", tree(s.active_status_effects)) + '<div class="columns">' +
       section("Collections and crafting", tree({stickerbook: s.stickerbook_entries, recipes: s.recipe_book_resources})) +
       section("Quickbars and offers", tree({quickbar: s.quickbar, slots: s.quick_slots, offer_purchases: s.timed_offer_purchases})) + '</div>';
+    const open = Object.values(s.quest_log || {}).filter(q => q.state === 0 || q.state === 1).length;
+    result.html += activeQuestSection(open);
+    result.mount = () => bindActiveQuests(id);
   } else if (tab === "raw") {
     result.html += '<p class="muted">Complete saved documents for diagnostics. Read only.</p>' +
       section("Character profile", `<pre>${esc(JSON.stringify(p, null, 2))}</pre>`) +
