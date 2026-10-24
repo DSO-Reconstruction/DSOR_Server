@@ -85,6 +85,7 @@ and drains the player-database writer.
 | `DSO_PUBLIC_HOST` | unset | address clients are redirected to between services and told to dial by the launcher; required with a `0.0.0.0` bind behind NAT, otherwise the bind address (or the host's primary address for a wildcard bind) is advertised |
 | `DSO_REQUIRE_LOGIN` | on for a non-loopback bind, off for loopback | login enforcement: clients must log in through the account service first, and a hello that presents no live session GUID is dropped. The address gate alone would admit everyone behind a shared NAT or VPN exit |
 | `DSO_STATIC_DB` | `dso_server\data\db\static.db4` | static game database |
+| `DSO_PUBLISH_STATIC_DB` | `1` | the account service publishes that database to dsor clients (`GET /api/content`, see below); `0` stops it |
 | `DSO_PLAYER_DATABASE` | `dso_server\data\db\players.sqlite3` | durable character profiles and gameplay state |
 | `DSO_SOCIAL_STATE_FILE` | `data/state/social-states.json` | guild/group state |
 | `DSO_CHAT_AUDIT_LOG` | `data/logs/chat-service.log` | chat audit output |
@@ -124,6 +125,32 @@ and drains the player-database writer.
 | `DSO_VERBOSE_PACKET_LOGGING` | `0` | per-command diagnostic logging |
 
 Set testing overrides to `0` for production-like balance.
+
+## The dsor client's static database
+
+Status effects travel by row (`_Template_StatusEffect` wire id = rowid - 1), so a
+client must hold this server's exact `static.db4`. After
+`tools/install_admin_effects.py` (or any other edit, or another build's database)
+the official client's copy has to be updated by hand. The dsor client (the Rust
+client) fetches it itself when it signs in, from two account-service
+endpoints that nothing else calls:
+
+| Endpoint | What |
+| --- | --- |
+| `GET /api/content` | `{"version": 1, "static_db": {"sha256", "size", "packed_size"}}`, or `null` when nothing is published |
+| `POST /api/content/static-db` | `{session_id}`: the database packed as the CDN packs files (`__ZN`, u32 size, zlib), header `X-Content-SHA256` |
+
+- It is the file the game services load (`DSO_STATIC_DB`), read whole between
+  two identical `stat` calls (a download never mixes two revisions while a
+  tool rewrites it). It is hashed and packed once per revision: about 0.6 s and
+  7.5 MB for the release261 database. Edits are picked up on the next request,
+  with no restart.
+- Only a signed-in player can download it (a live session, 401 otherwise), and
+  each address at most 6 times per 15 minutes (429 with `retry_after`).
+- `/api/status` and every endpoint the launcher uses are unchanged.
+- The client compares the sha256 with its copy, downloads only on a
+  difference, checks size, sha256 and the SQLite header, and replaces its
+  `game-data/export_win32/db/static.db4` in one step.
 
 ## Monster leash
 

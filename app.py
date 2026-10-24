@@ -325,6 +325,9 @@ class ServerApplication:
                 gateway_port=80,
                 chat_port=2191,
                 chat_instance_id=self.chat.instance_id,
+                # The database the game services loaded, for dsor clients to
+                # copy (services/content.py).
+                static_database_path=self.characters.static_database_path,
             )
         # Every service resolves the hello's session GUID, so the
         # character list and creation can be scoped to one account.
