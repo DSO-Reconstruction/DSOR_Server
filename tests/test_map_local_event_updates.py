@@ -146,12 +146,16 @@ class MapLocalEventUpdateTests(unittest.TestCase):
         ))
         creation, = commands[2].value.entries
         self.assertEqual(creation.event_set_row, 2094)
-        closed, = commands[0].value.exits
+        # The gate does not exist before VariationInfo creates it, so the
+        # first ExitInfo leaves it out instead of reporting it closed.
+        self.assertNotIn(
+            'h0001_exit_to_h0006',
+            {exit.exit_id for exit in commands[0].value.exits},
+        )
         opened = next(
             exit for exit in commands[3].value.exits
             if exit.exit_id == 'h0001_exit_to_h0006'
         )
-        self.assertEqual(closed.field_10, 0)
         self.assertEqual(opened.field_10, 1)
         self.assertEqual(creation.instance_guid, opened.instance_guid)
 

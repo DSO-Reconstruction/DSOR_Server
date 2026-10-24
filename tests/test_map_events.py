@@ -399,7 +399,21 @@ class MapEventServiceTests(unittest.TestCase):
             {"e_bos_02_golden_chest_01", "e_bos_02_reward_chest_01"},
         )
         self.assertEqual({prop.field_48 for prop in revealed}, {""})
-        self.assertEqual(len(self.session.gameplay_map_exits), 12)
+        # The map repeats Balor's entry once per access tier at the same
+        # spot; only the instance's tier is kept at each spot (difficulty 0
+        # here), beside the general exit.
+        self.assertEqual(
+            sorted(
+                exit.exit_id.removeprefix(
+                    "i0002_andermagic_big_dun_event_balor_"
+                )
+                for exit in self.session.gameplay_map_exits
+            ),
+            [
+                "diff_00_entry", "diff_05_entry", "diff_07_entry",
+                "diff_09_entry", "diff_10_entry", "exit_general_01",
+            ],
+        )
         # PropInfo for a late joiner carries the same props.
         info = CharacterServer._map_event_prop_info(self.session)
         self.assertEqual(len(info.entries), 88)

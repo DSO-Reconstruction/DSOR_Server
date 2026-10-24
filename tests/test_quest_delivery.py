@@ -121,8 +121,12 @@ def test_every_authored_type_and_delivery_is_parsed():
     catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
     assert {q.quest_type for q in catalog.quests.values()} == set(QUEST_TYPE_IDS)
     assert all(q.quest_type_id in range(14) for q in catalog.quests.values())
-    assert sum(len(t.barters) for q in catalog.quests.values() for t in q.tasks) == 379
-    assert sum(b.only_show for q in catalog.quests.values() for t in q.tasks for b in t.barters) == 28
+    barters = [b for q in catalog.quests.values() for t in q.tasks for b in t.barters]
+    # Pay tasks (currency hand-ins, e.g. Cardhun's) are parsed beside the
+    # item deliveries.
+    assert sum(b.event_kind == "deliver" for b in barters) == 379
+    assert sum(b.event_kind == "pay" for b in barters) == 19
+    assert sum(b.only_show for b in barters) == 29
 
 
 def test_side_quest_prop_uses_local_indication():
