@@ -543,11 +543,6 @@ class PlayerSkillGeometry:
     # ``_Template_Skill.AmmoCost``: essences spent from the active ammunition
     # slot per accepted cast. Zero for utility skills such as teleport.
     ammo_cost: int = 0
-    # Casefolded status groups the cast removes from its caster: authored
-    # ``StatusEffectGroupCleanse`` ("Frees you from any debuff" on Teleport,
-    # Dive, Rocket Pack and Furious Battle Cry) plus any active
-    # ``SkillStatusEffectCleanse`` talent program.
-    cleanse_groups: frozenset[str] = frozenset()
     # ``_Template_SkillBullet.StaticCollision``: the bullet stops at walls.
     static_collision: bool = False
 
@@ -2402,7 +2397,6 @@ class LocalCombatState:
                         COALESCE(s.ResourceGain, 0),
                         COALESCE(s.ResourceCostToDamage, 0),
                         COALESCE(s.AmmoCost, 0),
-                        COALESCE(s.StatusEffectGroupCleanse, ''),
                         COALESCE(b.StaticCollision, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
@@ -2532,14 +2526,7 @@ class LocalCombatState:
                 resource_gain_fraction=max(0.0, float(row[40] or 0.0)),
                 resource_cost_to_damage=max(0.0, float(row[41] or 0.0)),
                 ammo_cost=max(0, int(row[42] or 0)),
-                cleanse_groups=frozenset(
-                    part.strip().casefold()
-                    for part in str(row[43] or "")
-                    .replace(";", ",")
-                    .split(",")
-                    if part.strip()
-                ),
-                static_collision=bool(row[44] or 0),
+                static_collision=bool(row[43] or 0),
             )
             if row is not None
             else None
@@ -5119,7 +5106,6 @@ class LocalCombatState:
         resource_gain_fraction = geometry.resource_gain_fraction
         timing_multiplier = geometry.skill_timing_multiplier
         trap_on_hit = geometry.trap_on_hit
-        cleanse_groups = set(geometry.cleanse_groups)
         damage_weights: dict[str, float] = {}
         for raw in str(geometry.damage_type or "Physical").split(";"):
             token, separator, encoded_weight = raw.strip().partition(":")
@@ -5264,18 +5250,6 @@ class LocalCombatState:
                         trap_on_hit = self._clean_modifier_token(arguments[2])
                     else:
                         trap_on_hit = base_resource
-                    continue
-                if normalized_kind == "skillstatuseffectcleanse":
-                    # SkillStatusEffectCleanse:<skill scope>,<group>,...
-                    # (the PvP class talents add it to Frenzy Shout & co.).
-                    if len(arguments) >= 2 and self._skill_scope_matches(
-                        geometry, (arguments[0],)
-                    ):
-                        cleanse_groups.update(
-                            self._clean_modifier_token(value).casefold()
-                            for value in arguments[1:]
-                            if self._clean_modifier_token(value)
-                        )
                     continue
                 if (
                     normalized_kind == "actorstatuseffect"
@@ -5711,7 +5685,6 @@ class LocalCombatState:
             trap_on_hit=trap_on_hit,
             resource_cost_fraction=max(0.0, resource_cost_fraction),
             resource_gain_fraction=max(0.0, resource_gain_fraction),
-            cleanse_groups=frozenset(cleanse_groups),
         )
         # Bound memory even when development sessions repeatedly alter socket
         # and talent loadouts.  Dicts preserve insertion order, so this is a
@@ -5745,21 +5718,6 @@ class LocalCombatState:
 
         geometry = self._load_player_skill_geometry(skill_index)
         return 0 if geometry is None else max(0, int(geometry.ammo_cost))
-
-    def player_skill_cleanse_groups(
-        self,
-        skill_index: int,
-        *,
-        modifier_sources: tuple[object, ...] = (),
-    ) -> frozenset[str]:
-        """Status groups one cast of this skill removes from its caster."""
-
-        geometry = self._load_player_skill_geometry(skill_index)
-        if geometry is None:
-            return frozenset()
-        return self._modified_player_skill_geometry(
-            geometry, tuple(modifier_sources)
-        ).cleanse_groups
 
     def player_status_resource_delta(
         self,

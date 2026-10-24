@@ -38,14 +38,6 @@ _INBOUND_DATAGRAM_HISTORY = 8192
 _INBOUND_ORDER_WINDOW = 4096
 _INBOUND_SPLIT_LIMIT = 64
 _INBOUND_SPLIT_FRAGMENT_LIMIT = 4096
-# Frameset header (4 bytes) plus one reliable-ordered frame header (10 bytes).
-_UNSPLIT_RELIABLE_FRAMING_BYTES = 14
-# The installed client drops an oversized datagram without acknowledging it
-# (docs/GAME_EVENTS.md: a 2,703-byte visibility batch stalled every later
-# ordered reply). Split fragments are 1,232 bytes on the wire -- FRAG_SIZE of
-# data plus 24 bytes of headers -- and unsplit reliable datagrams are held to
-# the same size.
-RELIABLE_DATAGRAM_LIMIT = FRAG_SIZE + 24
 
 
 class SessionRegistry(MutableMapping[tuple, _SessionValue]):
@@ -618,8 +610,6 @@ class Session:
         self.last_reliable_ack_latency_seconds = 0.0
         self.maximum_reliable_ack_latency_seconds = 0.0
         self.last_slow_socket_send_log_at = 0.0
-        self.last_stuck_reliable_log_at = 0.0
-        self.oversized_reliable_logged_at = {}
         now = time.perf_counter()
         self.last_received_at = now
         self.last_send_at = now
@@ -999,14 +989,6 @@ class Session:
         """
 
         assert_no_state_locks_held("Session.send_reliable_ordered")
-        # Decide before allocating: an order index taken for an unsplit frame
-        # and then abandoned would itself stall the ordered stream.
-        body, bit_length = FrameBuilder._payload_spec(payload)
-        if len(body) + _UNSPLIT_RELIABLE_FRAMING_BYTES > RELIABLE_DATAGRAM_LIMIT:
-            return self._send_oversized_reliable_ordered(
-                body, bit_length, track=track, label=label,
-                skip_if_busy=skip_if_busy,
-            )
         if not self.outbound_lock.acquire(blocking=not skip_if_busy):
             return None
         try:
@@ -1022,64 +1004,6 @@ class Session:
             socket_seconds=socket_seconds,
         )
         return data
-
-    def _send_oversized_reliable_ordered(
-            self, body: bytes, bit_length: int, *, track: bool, label: str,
-            skip_if_busy: bool) -> bytes | None:
-        """Fragment a reliable-ordered message too large for one datagram.
-
-        The client drops an oversized datagram without acknowledging it, so
-        the retransmit loop re-sends it forever and every later ordered packet
-        waits behind it -- monsters, loot and replies all freeze for that
-        client while the server keeps running. Callers that build
-        variable-size batches (a pack starting its attacks in one tick) cannot
-        all know the budget, so the transport enforces it.
-        """
-
-        send_health = []
-
-        def send_fragment(data: bytes, fragment_label: str) -> None:
-            send_health.append(
-                (
-                    data,
-                    fragment_label,
-                    *self._send_locked(
-                        data, track=track, label=fragment_label
-                    ),
-                )
-            )
-
-        if not self.outbound_lock.acquire(blocking=not skip_if_busy):
-            return None
-        try:
-            self.fb.send_split(
-                body,
-                self.sock,
-                self.addr,
-                send_callback=send_fragment,
-                label_prefix=label,
-                total_bit_length=bit_length,
-            )
-        finally:
-            self.outbound_lock.release()
-        for _data, fragment_label, backpressure_began, socket_seconds in (
-            send_health
-        ):
-            self._report_send_health(
-                label=fragment_label,
-                backpressure_began=backpressure_began,
-                socket_seconds=socket_seconds,
-            )
-        now = time.perf_counter()
-        if now - self.oversized_reliable_logged_at.get(label, -60.0) >= 30.0:
-            self.oversized_reliable_logged_at[label] = now
-            print(
-                f"[RakNet] split oversized reliable {label!r} for "
-                f"{self.addr}: {len(body)}-byte message exceeds the "
-                f"{RELIABLE_DATAGRAM_LIMIT}-byte datagram budget; "
-                f"sent as {len(send_health)} fragments"
-            )
-        return send_health[-1][0] if send_health else None
 
     def send_multi_reliable_ordered(
             self, *payloads, track: bool = True,
@@ -1255,28 +1179,6 @@ class Session:
     def reliable_backlog_size(self) -> int:
         with self.pending_lock:
             return len(self.pending_reliable)
-
-    def oldest_unacknowledged_reliable(self, now: float):
-        """Return ``(label, age, datagram bytes, attempts)`` or ``None``.
-
-        The oldest pending frame is the one the receiver's ordered stream is
-        waiting for; everything sent after it is held behind it.
-        """
-
-        with self.pending_lock:
-            oldest = min(
-                self.pending_reliable.values(),
-                key=lambda item: item.get('queued_at', now),
-                default=None,
-            )
-            if oldest is None:
-                return None
-            return (
-                oldest.get('label'),
-                max(0.0, now - oldest.get('queued_at', now)),
-                len(oldest.get('data') or b''),
-                int(oldest.get('attempts', 1)),
-            )
 
     def pending_reliable_count_for_label(self, label: str) -> int:
         """Count unacknowledged reliable datagrams for one response type."""
@@ -1767,36 +1669,6 @@ class RakNetServer:
                 f"{RELIABLE_MAX_ATTEMPTS} attempts; labels="
                 f"{tuple(label for _sequence, label in dropped[:5])}"
             )
-        self._report_stuck_reliable(session, now)
-
-    def _report_stuck_reliable(self, session: Session, now: float) -> None:
-        """Name a reliable frame a still-talking client never acknowledges.
-
-        Only a silent client is retired; one that keeps sending while refusing
-        a single datagram is retried forever, and its ordered stream holds
-        every later monster update, hit and reply behind that frame. The
-        server looks healthy throughout, so say which frame it is.
-        """
-
-        if now - session.last_stuck_reliable_log_at < 10.0:
-            return
-        oldest = session.oldest_unacknowledged_reliable(now)
-        if oldest is None:
-            return
-        label, age, size, attempts = oldest
-        if (
-            age < RELIABLE_STUCK_WARNING_SECONDS
-            or now - float(session.last_received_at)
-            >= RELIABLE_STUCK_WARNING_SECONDS
-        ):
-            return
-        session.last_stuck_reliable_log_at = now
-        print(
-            f"[{self.service_name}] reliable {label!r} ({size} bytes, "
-            f"{attempts} attempts) unacknowledged for {age:.1f}s although "
-            f"{session.addr} is still sending; that client holds every "
-            f"later ordered packet behind it"
-        )
 
     @staticmethod
     def _session_reliably_stale(

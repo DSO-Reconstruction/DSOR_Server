@@ -447,19 +447,46 @@ class PresenceService:
             if (
                 not session.connected
                 or session.gameplay_presence_departed
-                or session.gameplay_combat_state is None
             ):
                 return False
-            owner = CharacterService._monster_world_owner(
-                session.gameplay_combat_state, (session, *peers)
+            candidates = tuple(
+                value
+                for value in (session, *peers)
+                if (
+                    value.gameplay_combat_state
+                    is session.gameplay_combat_state
+                    and (
+                        value.gameplay_monsters_spawned
+                        or bool(
+                            getattr(
+                                value.gameplay_combat_state,
+                                "player_summons",
+                                (),
+                            )
+                        )
+                        or bool(
+                            getattr(
+                                value.gameplay_combat_state,
+                                "has_regenerating_players",
+                                False,
+                            )
+                        )
+                    )
+                )
             )
-            if owner is None:
+            if not candidates:
                 # Distinct from "a peer owns this instance". Nobody can own it
                 # right now because no viewer has a spawned monster, which is
                 # an idle map rather than a retired one. The caller needs the
                 # difference: retiring the simulation worker here is what left
                 # a cleared pack with no owner at all.
                 return None
+            owner = min(
+                candidates,
+                key=lambda value: int(
+                    value.gameplay_character.character_id
+                ),
+            )
             return owner is session
         if self._handle_socket_ally_auras(
             session, event, peers, character
@@ -880,12 +907,25 @@ class PresenceService:
             CharacterService._reconcile_active_monster_union(
                 combat, (session, *peers)
             )
-            # The claim's own rule: a re-election that picks someone the claim
-            # rejects starts nothing, and the worker asking for it retires.
-            owner = CharacterService._monster_world_owner(
-                combat, (session, *peers)
+            candidates = tuple(
+                value
+                for value in (session, *peers)
+                if (
+                    (
+                        value.gameplay_monsters_spawned
+                        or bool(combat.has_regenerating_players)
+                    )
+                    and value.gameplay_combat_state
+                    is session.gameplay_combat_state
+                )
             )
-            if owner is not None:
+            if candidates:
+                owner = min(
+                    candidates,
+                    key=lambda value: int(
+                        value.gameplay_character.character_id
+                    ),
+                )
                 CharacterService._start_monster_chase(owner)
             return None
         if isinstance(event, tuple) and event[0] == "player_revived":
@@ -1099,8 +1139,27 @@ class PresenceService:
                 CharacterService._reconcile_active_monster_union(
                     combat, peers
                 )
-            next_owner = CharacterService._monster_world_owner(combat, peers)
-            if next_owner is not None:
+            candidates = tuple(
+                peer
+                for peer in peers
+                if (
+                    (
+                        peer.gameplay_monsters_spawned
+                        or bool(
+                            combat is not None
+                            and combat.has_regenerating_players
+                        )
+                    )
+                    and peer.gameplay_combat_state is combat
+                )
+            )
+            if candidates:
+                next_owner = min(
+                    candidates,
+                    key=lambda value: int(
+                        value.gameplay_character.character_id
+                    ),
+                )
                 CharacterService._start_monster_chase(next_owner)
             CharacterService._broadcast_presence_social_status(
                 self, character.character_id

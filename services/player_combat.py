@@ -623,9 +623,9 @@ class PlayerCombatService(PlayerCastTimingService):
 
     @staticmethod
     def _handle_spatial_skill(s: Session, payload: bytes) -> None:
-        # A RegularSkills lock (stun, freeze) depends on the skill: the
-        # debuff-cleansing escapes still cast. Judge it once decoded.
-        if CharacterService._player_victim_feature_locked(s, "skills"):
+        if CharacterService._player_victim_feature_locked(
+            s, "skills", "regularskills"
+        ):
             return
         command_id = int.from_bytes(payload[1:3], "little")
         if command_id == SKILL_COMMAND:
@@ -669,8 +669,8 @@ class PlayerCombatService(PlayerCastTimingService):
             with s.flow_lock:
                 s.gameplay_client_command_state[command_id] = client_skill
             return
-        if CharacterService._player_skill_cast_locked(
-            s, client_skill.skill_index
+        if CharacterService._player_victim_feature_locked(
+            s, "skills", "regularskills"
         ):
             return
         CharacterService._cancel_mount_cast(s, "combat skill started")
@@ -872,15 +872,6 @@ class PlayerCombatService(PlayerCastTimingService):
             )
         ):
             return
-        if rejection is None and combat is not None:
-            # Cleanse at cast start, before the destination allowance and
-            # any MoveCommand that follows the escape.
-            CharacterService._cleanse_player_skill_debuffs(
-                s,
-                combat,
-                skill_index=client_skill.skill_index,
-                modifier_sources=modifier_effect_ids,
-            )
         if rejection is None and movement_skill_destination is not None:
             with s.flow_lock:
                 if s.gameplay_combat_state is combat:

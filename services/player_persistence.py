@@ -8,7 +8,6 @@ import threading
 import time
 from dso_server.protocol.currency_protocol import normalize_game_currency_balances
 from dso_server.protocol.inventory_codec import owned_inventory_items
-from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -433,19 +432,6 @@ class PlayerPersistenceService:
             (item.item_id for item in owned_inventory_items(inventory)),
             default=RUNTIME_ITEM_ID_BASE - 1,
         )
-        # Record each effect's template name: login re-resolves it in case a
-        # client-data update renumbered _Template_StatusEffect.
-        try:
-            effect_names = load_status_runtime_catalog(
-                self.static_database_path
-            ).effect_names
-        except (OSError, sqlite3.Error):
-            effect_names = {}
-        status_effect_names = {
-            instance_id: effect_names[int(effect.effect_id)]
-            for instance_id, effect in status_effects.items()
-            if int(effect.effect_id) in effect_names
-        }
         return AccountState(
             character_id=int(character.character_id),
             admin_booking_ids=admin_booking_ids,
@@ -485,7 +471,6 @@ class PlayerPersistenceService:
             status_effects=tuple(
                 status_effects[key] for key in sorted(status_effects)
             ),
-            status_effect_names=status_effect_names,
             mount_ride=mount_ride,
             talent_categories=talent_categories,
             skill_talent_presets=skill_talent_presets,
