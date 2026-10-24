@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
-from tests.test_monster_location_auras import _state
+from dso_server.tests.test_monster_location_auras import _state
 
 
 def _strikes(state, skill_id):
