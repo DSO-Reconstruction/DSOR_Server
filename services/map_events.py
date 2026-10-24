@@ -1861,6 +1861,7 @@ class MapEventService:
             if kind in {"playerenteredmap", "playerendquesttask"}:
                 self._ensure_pw209_kinza_leader(s, runtime)
                 self._ensure_pw207_sunlairs_notes_mob(s, runtime)
+                self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
             return
         for rule in rules:
             if rule.event_type in (
@@ -1879,6 +1880,7 @@ class MapEventService:
         if kind in {"playerenteredmap", "playerendquesttask"}:
             self._ensure_pw209_kinza_leader(s, runtime)
             self._ensure_pw207_sunlairs_notes_mob(s, runtime)
+            self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
 
     def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
         """Keep the Kinza route leader visible for its active kill objective."""
@@ -1991,6 +1993,95 @@ class MapEventService:
             extra_rows=(GatedSpawnRow(
                 -1_700_000 - int(row[0]), -1, template_id, position,
             ),),
+        )
+
+    def _ensure_pw209_sultans_enforcer02_mobs(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Spawn the four missing demons for the active Anbir clear objective."""
+
+        if map_key(runtime.map_id) != "pw209_kinza_dun":
+            return
+        quest_id = "pw209-the-sultans-enforcers-02-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        clear_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw209-the-sultans-enforcers-02-clear-01"
+                and any(
+                    event.kind.casefold() == "regioncleared"
+                    and event.value.casefold()
+                    == "pw209-the-sultans-enforcers-02-n.s_"
+                    "pw209-the-sultans-enforcers-02-clear-01clearregion"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not clear_task_active:
+            return
+
+        marker = "pw209_sultans_enforcer_02_mobs_materialized"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+
+        templates = (
+            "pw209_normal_demon_fat_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_skinny_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_damage_dealer_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_tank_01_q_sultans_enforcer_02",
+        )
+        # Anbir is authored at (45, 0, -3). These grounded locations surround
+        # him and remain clear of his collision capsule.
+        positions = (
+            (35.0, 0.0, -3.0),
+            (45.0, 0.0, -12.0),
+            (53.0, 0.0, -3.0),
+            (45.0, 0.0, 5.0),
+        )
+        spawn_rows = []
+        for index, (template, position) in enumerate(
+            zip(templates, positions, strict=True),
+        ):
+            if _load_runtime_definition(
+                self.static_database_path, template, 0,
+            ) is None:
+                _log(
+                    f"Kinza Enforcer 02 template {template!r} has no "
+                    "runtime definition"
+                )
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                -2_400_000 - index, -1, template, position,
+            ))
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            _log("cannot ensure Kinza Enforcer 02 demons: no combat state")
+            with runtime.lock:
+                runtime.fired_once.discard(marker)
+            return
+        if spawn_rows:
+            self._spawn_event_monsters(
+                runtime, sessions, (), extra_rows=tuple(spawn_rows),
+            )
+        _log(
+            f"ensured {len(spawn_rows)} quest demon(s) around Anbir for "
+            "pw209-the-sultans-enforcers-02-clear-01"
         )
 
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
@@ -2569,6 +2660,7 @@ class MapEventService:
         CharacterService._quest_on_map_entered(self, s)
         self._ensure_fyeborough_soul_collector(s, runtime)
         self._ensure_artaya_clearing_demons(s, runtime)
+        self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )

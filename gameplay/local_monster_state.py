@@ -210,6 +210,9 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # which the client scene can already own, leaving the quest marker visible
     # while NewMonster has no renderable model.
     "pw207_chamber_dun",
+    # Kinza's 83 scene SpawnPoints can occupy the same ordinary range used by
+    # server actors. Keep quest-specific Enforcer waves clear of those IDs.
+    "pw209_kinza_dun",
 })
 
 
