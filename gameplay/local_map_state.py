@@ -994,6 +994,12 @@ def _exit_info_entries_for_access(
 _NATIVE_SCENE_EXIT_TARGETS = {
     # Hiraja's quest gate must be materialized after its scene event starts.
     "h0001_hub": ("h0006_valley_dun",),
+    # Cardhun's authored hub gates are absent from the loaded scene. The
+    # PW199 gate shares its quest EventSet with Annagreth Everly; create it
+    # only after that EventSet is activated.
+    "pw000_hub": ("pw199_cardhun_dun", "pw200_cardhun_dun"),
+    # The Cardhun city return gate is also absent from the loaded scene.
+    "pw200_cardhun_dun": ("pw000_hub",),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
@@ -1046,7 +1052,9 @@ def native_scene_exit_variation_entries(
     return tuple(
         VariationInfoEntry(
             definition.instance_guid,
-            definition.event_set_row if str(map_id).casefold() == "h0001_hub" else -1,
+            definition.event_set_row
+            if str(map_id).casefold() in {"h0001_hub", "pw000_hub"}
+            else -1,
         )
         for definition in exits
         if (

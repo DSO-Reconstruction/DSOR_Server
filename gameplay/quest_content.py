@@ -13,8 +13,8 @@ Simplifications, all deliberate and logged where they apply:
 * Ground ``<Drop>`` items are returned to the service for materialization;
   only a successful pickup feeds ``collect``. Direct-inventory drops retain
   immediate collection credit (their inventory grant is not modeled here).
-* ``pay``, ``crafting`` and general ``holdground`` events are not fed by the
-  server yet. ``battle`` and ``victory`` are fed when a battleground finishes,
+* ``crafting`` and general ``holdground`` events are not fed by the server
+  yet. ``battle`` and ``victory`` are fed when a battleground finishes,
   with the match's battleground id.
 * ``<Config>`` elements (hold-ground setups) are parsed but not executed.
 """
@@ -52,7 +52,7 @@ QUEST_TYPE_IDS = MappingProxyType({
 })
 
 UNSUPPORTED_EVENT_TYPES = frozenset({
-    "pay", "crafting", "holdgroundfailed",
+    "crafting", "holdgroundfailed",
 })
 
 # A few decoded client quest tasks omit their ExploreTask trigger Event. Keep
@@ -157,6 +157,7 @@ class BarterDefinition:
     reply: bool
     only_show: bool
     guards: tuple[Guard, ...]
+    event_kind: str = "deliver"
 
     def live(self, tokens: Mapping[str, int]) -> bool:
         return all(guard.holds(tokens) for guard in self.guards)
@@ -460,11 +461,16 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
         barters=tuple(
             BarterDefinition(
                 barter_id=str(b.get("id")), actor=str(b.get("actor", "")),
-                items=_tokens(b.get("item")), amount=int(b.get("amount", 1)),
+                items=_tokens(
+                    b.get("item") if b.tag == "Barter" else b.get("currency")
+                ),
+                amount=int(b.get("amount", 1)),
                 reply=_bool(b.get("reply", "true")), only_show=_bool(b.get("onlyShow")),
                 guards=_parse_guards(b),
+                event_kind="pay" if b.tag == "Pay" else "deliver",
             )
-            for b in element.findall("Barter") if b.get("id")
+            for b in element
+            if b.tag in {"Barter", "Pay"} and b.get("id")
         ),
         pre_tasks=tuple(_tokens(element.get("preTasks"))),
     )

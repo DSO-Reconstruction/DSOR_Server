@@ -46,6 +46,7 @@ CHAPTER_UNLOCKED_COMMAND = command_id("Commands::ChapterUnlockedCommand", 0x0092
 CHAPTER_PROGRESS_COMMAND = command_id("Commands::ChapterProgressCommand", 0x0093)
 TALK_COMMAND = command_id("Commands::TalkCommand", 0x0067)
 DELIVER_COMMAND = command_id("Commands::DeliverCommand", 0x0068)
+PAY_COMMAND = command_id("Commands::PayCommand", 0x0069)
 ENCOUNTER_COMMAND = command_id("Commands::EncounterCommand", 0x0066)
 
 # QuestCommand.operation (three client senders, docs §2)
@@ -76,6 +77,7 @@ NPC_QUEST_DIALOG = 0
 NPC_TASK_TARGET = 1
 NPC_TALK_DIALOG = 2
 NPC_DELIVERY_DIALOG = 3
+NPC_PAY_DIALOG = 4
 # World/main-story indication; other quest types use QuestDefinition.quest_type_id.
 # Kept as a compatibility constant for captured tutorial records.
 QUEST_INDICATION = 6
@@ -100,6 +102,12 @@ class Talk:
 class Deliver:
     npc_actor_id: int
     barter_id: str
+
+
+@dataclass(frozen=True)
+class Pay:
+    npc_actor_id: int
+    pay_id: str
 
 
 @dataclass(frozen=True)
@@ -241,6 +249,22 @@ def encode_deliver(value: Deliver) -> tuple[bytes, int]:
     writer.write_bytes(DELIVER_COMMAND.to_bytes(2, "little"))
     writer.write_uint32_le(value.npc_actor_id)
     writer.write_string(value.barter_id)
+    return writer.finish()
+
+
+def decode_pay(payload: bytes, bit_length: int | None = None) -> Pay:
+    reader = _client_reader(payload, PAY_COMMAND, bit_length)
+    value = Pay(reader.read_uint32_le(), reader.read_string())
+    _finish(reader, "PayCommand")
+    return value
+
+
+def encode_pay(value: Pay) -> tuple[bytes, int]:
+    writer = BitWriter()
+    writer.write_uint8(CLIENT_MESSAGE_ID)
+    writer.write_bytes(PAY_COMMAND.to_bytes(2, "little"))
+    writer.write_uint32_le(value.npc_actor_id)
+    writer.write_string(value.pay_id)
     return writer.finish()
 
 
@@ -458,7 +482,12 @@ __all__ = [
     "TALK_COMMAND",
     "DELIVER_COMMAND",
     "NPC_DELIVERY_DIALOG",
+    "NPC_PAY_DIALOG",
+    "PAY_COMMAND",
     "Deliver",
+    "Pay",
+    "decode_pay",
+    "encode_pay",
     "decode_deliver",
     "encode_deliver",
     "ChapterUnlocked",

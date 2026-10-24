@@ -59,6 +59,11 @@ from dso_server.gameplay.quest_content import (
 )
 from dso_server.paths import DEFAULT_QUESTS_PATH
 from dso_server.protocol.character_selection import CLASS_NAMES
+from dso_server.protocol.currency_protocol import (
+    GAME_CURRENCY_CHANGED_COMMAND,
+    GameCurrencyChanged,
+    resolve_game_currency_wire_id,
+)
 from dso_server.protocol.gameplay_protocol import (
     ActorsEnterVicinity,
     ActorsEnterVicinityBatch,
@@ -68,6 +73,7 @@ from dso_server.protocol.gameplay_protocol import (
     NPCFlag,
     NPCInfo,
     NPCInteraction,
+    NPCLink,
     NPCStringSet,
     NewNPC,
     encode_actors_enter_vicinity_batch,
@@ -91,7 +97,10 @@ from dso_server.protocol.quest_protocol import (
     QUEST_COMMAND,
     DELIVER_COMMAND,
     NPC_DELIVERY_DIALOG,
+    NPC_PAY_DIALOG,
+    PAY_COMMAND,
     decode_deliver,
+    decode_pay,
     QUEST_MONSTER_INDICATION_INFO_COMMAND,
     QUEST_MONSTER_INDICATION_REQUEST_COMMAND,
     QUEST_OPERATION_ACCEPT,
@@ -1251,7 +1260,12 @@ class QuestService:
                 quest.quest_id, quest.quest_type_id,
             ))
             interactions.append(NPCInteraction(
-                barter.barter_id, NPC_DELIVERY_DIALOG, quest.quest_id, quest.quest_type_id,
+                barter.barter_id,
+                NPC_PAY_DIALOG
+                if barter.event_kind == "pay"
+                else NPC_DELIVERY_DIALOG,
+                quest.quest_id,
+                quest.quest_type_id,
             ))
         return tuple(interactions), tuple(flags)
 
@@ -1272,17 +1286,30 @@ class QuestService:
         self, s: Session, npc_info: NPCInfo, npc_template_id: str,
     ) -> NPCInfo:
         interactions, flags = self._quest_npc_interactions(s, npc_template_id)
+        active_barters = self._quest_npc_barters(s, npc_template_id)
         barters = tuple(
             NPCStringSet(barter.barter_id, barter.items, barter.amount, barter.reply)
-            for _quest, barter in self._quest_npc_barters(s, npc_template_id)
+            for _quest, barter in active_barters
+            if barter.event_kind != "pay"
         )
-        if not interactions and not flags and not barters:
+        payments = tuple(
+            NPCLink(
+                barter.barter_id,
+                barter.items[0] if barter.items else "",
+                barter.amount,
+                barter.reply,
+            )
+            for _quest, barter in active_barters
+            if barter.event_kind == "pay"
+        )
+        if not interactions and not flags and not barters and not payments:
             return npc_info
         return replace(
             npc_info,
             interactions=npc_info.interactions + interactions,
             flags=npc_info.flags + flags,
             string_sets=npc_info.string_sets + barters,
+            links=npc_info.links + payments,
         )
 
     def _quest_decorate_map_commands(self, s: Session, commands) -> tuple:
@@ -1583,52 +1610,121 @@ class QuestService:
 
     def _handle_deliver_command(self, s: Session, payload: bytes) -> None:
         request = decode_deliver(payload, getattr(s, "current_message_bit_length", None))
-        CharacterService._accept_gameplay_state_command(s, DELIVER_COMMAND)
+        self._handle_quest_payment_request(
+            s, request, command_id=DELIVER_COMMAND,
+            request_id=request.barter_id, event_kind="deliver",
+        )
+
+    def _handle_pay_command(self, s: Session, payload: bytes) -> None:
+        request = decode_pay(payload, getattr(s, "current_message_bit_length", None))
+        self._handle_quest_payment_request(
+            s, request, command_id=PAY_COMMAND,
+            request_id=request.pay_id, event_kind="pay",
+        )
+
+    def _handle_quest_payment_request(
+        self, s: Session, request, *, command_id: int,
+        request_id: str, event_kind: str,
+    ) -> None:
+        CharacterService._accept_gameplay_state_command(s, command_id)
         definition = CharacterService._resolve_npc_interaction(self, s, request.npc_actor_id)
         error = "unknown local NPC"
         committed = None
+        game_currency_update = None
         with s.flow_lock:
-            s.gameplay_client_command_state[DELIVER_COMMAND] = request
+            s.gameplay_client_command_state[command_id] = request
             if (not s.connected or not s.gameplay_presence_ready
                     or s.gameplay_presence_departed or s.gameplay_exit_transition_started):
                 return
             if definition is not None:
                 choice = next(((quest, barter) for quest, barter
                                in self._quest_npc_barters(s, definition.template_id)
-                               if barter.barter_id == request.barter_id), None)
+                               if barter.barter_id == request_id
+                               and (
+                                   event_kind == "deliver"
+                                   or barter.event_kind == event_kind
+                               )), None)
                 error = "barter is not an active task at this NPC"
                 if choice is not None:
                     quest, barter = choice
-                    items = self._quest_delivery_items(s.gameplay_inventory, barter)
-                    error = "required items are not in carried inventory"
-                    if barter.amount > 0 and sum(int(item.amount) for item in items) >= barter.amount:
+                    items = ()
+                    currency_id = ""
+                    available = 0
+                    if barter.event_kind == "pay":
+                        try:
+                            currency_id = resolve_game_currency_wire_id(
+                                barter.items[0]
+                            )
+                        except (IndexError, KeyError):
+                            error = "quest payment names an unknown currency"
+                        else:
+                            available = int(
+                                s.gameplay_game_currencies.get(currency_id, 0)
+                            )
+                            error = "required game currency is not available"
+                    else:
+                        items = CharacterService._quest_delivery_items(
+                            s.gameplay_inventory, barter,
+                        )
+                        error = "required items are not in carried inventory"
+                    enough = (
+                        barter.amount > 0
+                        and (
+                            available >= barter.amount
+                            if barter.event_kind == "pay"
+                            else sum(int(item.amount) for item in items)
+                            >= barter.amount
+                        )
+                    )
+                    if enough:
                         progress = copy.deepcopy(_quest_log(s)[quest.quest_id])
-                        result = apply_quest_event(quest, progress, "deliver", barter.barter_id)
+                        result = apply_quest_event(
+                            quest, progress, barter.event_kind, barter.barter_id,
+                        )
                         error = "delivery event guards do not allow progress"
                         if result.changes or result.quest_finished:
-                            builder = InventoryMutationBuilder(
-                                s.gameplay_inventory, s.gameplay_next_item_id,
-                            )
-                            remaining = barter.amount
-                            if not barter.only_show:
-                                for item in items:
-                                    amount = min(remaining, int(item.amount))
-                                    builder.consume(item.item_id, amount, preserve_item_id=True)
-                                    remaining -= amount
-                                    if not remaining:
-                                        break
-                            mutation = builder.finish()
-                            # One commit: an account snapshot cannot save the
-                            # consumed items without their completed objective.
-                            s.gameplay_inventory = mutation.inventory
-                            s.gameplay_next_item_id = mutation.next_item_id
+                            mutation = None
+                            if barter.event_kind == "pay":
+                                updated_balance = available - barter.amount
+                                s.gameplay_game_currencies = dict(
+                                    s.gameplay_game_currencies
+                                )
+                                s.gameplay_game_currencies[currency_id] = (
+                                    updated_balance
+                                )
+                                game_currency_update = GameCurrencyChanged(
+                                    currency_id, updated_balance,
+                                )
+                            else:
+                                builder = InventoryMutationBuilder(
+                                    s.gameplay_inventory,
+                                    s.gameplay_next_item_id,
+                                )
+                                remaining = barter.amount
+                                if not barter.only_show:
+                                    for item in items:
+                                        amount = min(
+                                            remaining, int(item.amount),
+                                        )
+                                        builder.consume(
+                                            item.item_id, amount,
+                                            preserve_item_id=True,
+                                        )
+                                        remaining -= amount
+                                        if not remaining:
+                                            break
+                                mutation = builder.finish()
+                                s.gameplay_inventory = mutation.inventory
+                                s.gameplay_next_item_id = mutation.next_item_id
+                            # Commit the wallet/inventory with the task token
+                            # so an account save cannot record only one side.
                             _quest_log(s)[quest.quest_id] = progress
                             committed = (quest, barter, result, mutation)
             # The client predicts item consumption even for show-only tasks.
             # A rejected/show-only hand-in must restore its authoritative bag.
             inventory_snapshot = copy.deepcopy(s.gameplay_inventory)
         if committed is None:
-            _log(f"delivery {request.barter_id!r} rejected: {error}")
+            _log(f"quest {event_kind} {request_id!r} rejected: {error}")
             if inventory_snapshot is not None:
                 self._send_quest_commands(s, (ServerCommand(
                     INVENTORY_INFO_COMMAND, inventory_snapshot, LOCAL_PLAYER_ACTOR_ID,
@@ -1636,11 +1732,24 @@ class QuestService:
             self._quest_refresh_npc_infos(s)
             return
         quest, barter, result, mutation = committed
-        inventory_records = (inventory_snapshot,) if barter.only_show else (mutation.delta, mutation.final)
-        self._send_quest_commands(s, tuple(ServerCommand(
-            INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
-        ) for record in inventory_records), label="quest-delivery-inventory")
-        self._quest_publish_result(s, quest, result, "deliver", barter.barter_id)
+        if game_currency_update is not None:
+            self._send_quest_commands(s, (ServerCommand(
+                GAME_CURRENCY_CHANGED_COMMAND,
+                game_currency_update,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),), label="quest-payment-currency")
+        inventory_records = (
+            (inventory_snapshot,) if barter.only_show
+            else (mutation.delta, mutation.final) if mutation is not None
+            else ()
+        )
+        if inventory_records:
+            self._send_quest_commands(s, tuple(ServerCommand(
+                INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
+            ) for record in inventory_records), label="quest-delivery-inventory")
+        self._quest_publish_result(
+            s, quest, result, barter.event_kind, barter.barter_id,
+        )
         if result.inventory_drops:
             self._quest_grant_inventory_drops(
                 s, quest, result.inventory_drops,
