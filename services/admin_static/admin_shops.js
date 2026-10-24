@@ -1,5 +1,5 @@
 import { $, esc, api, link, navigate, table, section, facts, stats, toolbar,
-  bindSearch, pager, reasonInput, formError, confirmAction, notice } from "./admin_ui.js";
+  bindSearch, pager, formError, confirmAction, notice } from "./admin_ui.js";
 
 const query = params => new URLSearchParams({limit: 50, ...params});
 const priceFields = [
@@ -38,12 +38,12 @@ export async function npcShopPage(route) {
   const editOffer = route.params.edit ? data.offers.find(row => row.offer_id === route.params.edit) : null;
   const editForm = editOffer ? `<form id="shop-price-form" class="form-page">
     <h2>Edit offer price</h2><p><code>${esc(editOffer.offer_id)}</code> · ${esc(editOffer.item_name)} (${esc(editOffer.item_id)})</p>
-    ${priceInputs(editOffer.prices)}${reasonInput}<p id="form-error" class="error-text" role="alert"></p>
+    ${priceInputs(editOffer.prices)}<p id="form-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Save price</button>${link("Cancel", `npc-shops/${encodeURIComponent(shopId)}`, Object.fromEntries(Object.entries(route.params).filter(([key]) => key !== "edit")), "button secondary")}</div></form>` : "";
   const categoryForm = data.available_categories.length ? `<form id="shop-category-form" class="form-page">
     <h2>Create category tab</h2><p class="muted">The game client has a fixed set of category tabs. Choose an unused supported tab for this NPC.</p>
     <label>Client category<select name="category_name" required>${data.available_categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)} (${c.category_id})</option>`).join("")}</select></label>
-    ${reasonInput}<p id="category-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Create category</button></div></form>` :
+    <p id="category-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Create category</button></div></form>` :
     `<p class="muted">All client-supported category tabs are already in use by this shop.</p>`;
   const categoryOptions = data.categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)}</option>`).join("");
   const addForm = data.categories.length ? `<form id="shop-offer-form" class="form-page">
@@ -52,7 +52,7 @@ export async function npcShopPage(route) {
       <label>Item template ID<input id="npc-item-id" name="item_id" required maxlength="200" autocomplete="off"></label>
       <label>Quantity per purchase<input name="amount" type="number" min="1" max="1000" step="1" value="1" required></label></div>
     <div class="toolbar"><input id="npc-item-search" aria-label="Find item" placeholder="Find item by name or template ID" maxlength="100"><button id="npc-item-find" class="secondary" type="button">Find item</button><a class="button secondary" href="#items">Open item catalog</a></div>
-    <div id="npc-item-results"></div><h3>Price</h3>${priceInputs({})}${reasonInput}
+    <div id="npc-item-results"></div><h3>Price</h3>${priceInputs({})}
     <p id="offer-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Add offer</button></div></form>` : "";
   const offerRows = data.offers.map(row => [
     `<span>${esc(row.item_name)}${row.custom ? " <small>CMS</small>" : row.price_overridden ? " <small>Custom price</small>" : ""}</span>`,
@@ -80,8 +80,9 @@ export async function npcShopPage(route) {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
       try {
         const values = new FormData(form);
-        if (!(await confirmAction("Create this shop category?", `${values.get("category_name")} will appear as a tab in ${shopId}.`, "Create category"))) return;
-        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/categories`, {category_name: values.get("category_name"), reason: values.get("reason")});
+        const reason = await confirmAction("Create this shop category?", `${values.get("category_name")} will appear as a tab in ${shopId}.`, "Create category");
+        if (reason === null) return;
+        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/categories`, {category_name: values.get("category_name"), reason});
         notice(!Object.hasOwn(result, "live_refreshed")
           ? "Category saved, but the game server needs a restart to load live shop updates."
           : result.live_refreshed
@@ -107,9 +108,10 @@ export async function npcShopPage(route) {
     $("#shop-offer-form")?.addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
       try {
-        const values = new FormData(form), payload = {category_name: values.get("category_name"), item_id: values.get("item_id").trim(), amount: Number(values.get("amount")), prices: readPrices(form), reason: values.get("reason")};
-        if (!(await confirmAction("Add this NPC shop offer?", `${payload.item_id} will be added to ${payload.category_name} in ${shopId}.`, "Add offer"))) return;
-        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/offers`, payload);
+        const values = new FormData(form), payload = {category_name: values.get("category_name"), item_id: values.get("item_id").trim(), amount: Number(values.get("amount")), prices: readPrices(form)};
+        const reason = await confirmAction("Add this NPC shop offer?", `${payload.item_id} will be added to ${payload.category_name} in ${shopId}.`, "Add offer");
+        if (reason === null) return;
+        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/offers`, {...payload, reason});
         notice(!Object.hasOwn(result, "live_refreshed")
           ? "Item saved, but the game server needs a restart to load live shop updates."
           : result.live_refreshed
@@ -122,9 +124,10 @@ export async function npcShopPage(route) {
     $("#shop-price-form")?.addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
       try {
-        const payload = {prices: readPrices(form), reason: new FormData(form).get("reason")};
-        if (!(await confirmAction("Update this offer price?", `${editOffer.offer_id} will use the new price immediately for players with the shop open.`, "Save price"))) return;
-        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/offers/${encodeURIComponent(editOffer.offer_id)}/price`, payload);
+        const prices = readPrices(form);
+        const reason = await confirmAction("Update this offer price?", `${editOffer.offer_id} will use the new price immediately for players with the shop open.`, "Save price");
+        if (reason === null) return;
+        const result = await api(`/api/npc-shops/${encodeURIComponent(shopId)}/offers/${encodeURIComponent(editOffer.offer_id)}/price`, {prices, reason});
         notice(!Object.hasOwn(result, "live_refreshed")
           ? "Price saved, but the game server needs a restart to load live shop updates."
           : result.live_refreshed
@@ -137,12 +140,11 @@ export async function npcShopPage(route) {
       button.addEventListener("click", async () => {
         const offerId = button.dataset.deleteOffer;
         const itemName = button.dataset.itemName;
-        if (!(await confirmAction(
+        const reason = await confirmAction(
           "Delete this CMS offer?",
           `${itemName} will be removed from ${shopId}. This cannot be undone.`,
           "Delete offer"
-        ))) return;
-        const reason = window.prompt("Enter a reason for deleting this offer (3–500 characters):");
+        );
         if (reason === null) return;
         button.disabled = true;
         try {

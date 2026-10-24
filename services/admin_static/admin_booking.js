@@ -1,4 +1,4 @@
-import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, reasonInput, formError, notice } from "./admin_ui.js";
+import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, formError, notice, confirmAction } from "./admin_ui.js";
 
 const requestId = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), v => v.toString(16).padStart(2, "0")).join("");
 
@@ -31,7 +31,7 @@ export async function newBookingPage(route) {
         <div id="item-picker" hidden><div id="selected-item"></div><div id="item-search-area"><label>Find an item by its in-game name</label><div class="toolbar"><input id="item-search" aria-label="Find item" placeholder="In-game name, category, or template ID" maxlength="100"><button id="find-item" type="button" class="secondary">Find item</button></div><div id="item-results" class="picker-results"></div></div></div>
         <div id="grant-options"></div>
       </fieldset>
-      <fieldset class="form-section"><legend>3. Reason</legend>${reasonInput}<p class="help">Online characters receive the grant immediately with an in-game booking notification. Offline characters receive it on their next game entry. Every booking is audited.</p></fieldset>
+      <p class="help">Online characters receive the grant immediately with an in-game booking notification. Offline characters receive it on their next game entry. Every booking is audited; you enter the reason when you create it.</p>
       <p id="form-error" class="error-text" role="alert"></p>
       <div class="form-actions">${link("Cancel", account ? `accounts/${account.account.account_id}` : "bookings", {}, "left")}<button type="submit">Review booking</button></div>
     </form><section id="booking-review" hidden></section></div>`
@@ -151,12 +151,11 @@ export async function newBookingPage(route) {
           roll_quality: values.get("quality_mode") === "fixed" ? Number(values.get("roll_quality")) : null} : {};
         prepared = {account_id: account.account.account_id, character_id: character.character_id, kind,
           resource: kind === "item" ? item.template_id : values.get("currency"), amount: equipment ? 1 : Number(values.get("amount")),
-          options, reason: values.get("reason"), request_id: requestId()};
+          options, request_id: requestId()};
         const rows = [["Account", esc(account.account.username)], ["Character", `${esc(character.name)} · ${character.character_id}`],
           ["Grant", esc(kind === "item" ? item.template_id : human(prepared.resource))], [equipment ? "Quantity" : kind === "item" ? "Stack size" : "Amount", prepared.amount]];
         if (equipment) rows.push(["Item level", options.item_level], ["Rarity", esc(rarities[options.rarity])], ["Sockets", options.socket_count],
           ["Enchantment tier", options.enchantment_tier], ["Roll quality", options.roll_quality == null ? "Random" : options.roll_quality + "%"]);
-        rows.push(["Reason", esc(prepared.reason)]);
         $("#booking-review").innerHTML = section("Review booking", facts(rows)) +
           '<p class="muted">This grant is delivered immediately when the character is ready online, or queued for their next game entry.</p><p id="review-error" class="error-text" role="alert"></p><div class="form-actions"><button id="edit-booking" class="secondary">Back to editing</button><button id="queue-booking">Create booking</button></div>';
         form.hidden = true; $("#booking-review").hidden = false;
@@ -164,7 +163,9 @@ export async function newBookingPage(route) {
         $("#queue-booking").addEventListener("click", async event => {
           const button = event.target; button.disabled = true; $("#edit-booking").disabled = true;
           try {
-            const result = await api("/api/bookings", prepared);
+            const reason = await confirmAction("Create this booking?", `Grant ${prepared.kind === "item" ? item.template_id : human(prepared.resource)} × ${prepared.amount} to ${character.name}.`, "Create booking");
+            if (reason === null) return;
+            const result = await api("/api/bookings", {...prepared, reason});
             notice(result.status === "delivered" ? "Booking delivered to the online character." : result.error ? "Booking saved. Review the delivery issue below." : "Booking queued for the character's next game entry."); navigate(`bookings/${result.id}`);
           } catch (error) { if (alive()) $("#review-error").textContent = error.message; }
           finally { button.disabled = false; if (alive()) $("#edit-booking").disabled = false; }
@@ -220,7 +221,7 @@ export async function batchBookingPage(route) {
           <div class="form-actions"><button type="button" id="cancel-batch-currency" class="secondary">Cancel</button><button type="button" id="confirm-batch-currency">Add currency</button></div>
         </div>
       </fieldset>
-      <fieldset class="form-section"><legend>3. Reason</legend>${reasonInput}<p class="help">All items are delivered together when the character is ready online, or queued for their next game entry.</p></fieldset>
+      <p class="help">All items are delivered together when the character is ready online, or queued for their next game entry. You enter the audit reason when you create the booking.</p>
       <p id="form-error" class="error-text" role="alert"></p>
       <div class="form-actions">${link("Cancel", account ? `accounts/${account.account.account_id}` : "bookings", {}, "left")}<button type="submit">Review batch booking</button></div>
     </form><section id="batch-review" hidden></section></div>`
@@ -447,19 +448,16 @@ export async function batchBookingPage(route) {
         character = account.characters.find(c => c.character_id === Number(field("character_id").value));
         if (!character) throw new Error("Select a character.");
         if (!batchItems.length) throw new Error("Add at least one item or currency.");
-        const reason = field("reason").value;
-        if (!reason || reason.trim().length < 3) throw new Error("Enter a reason (at least 3 characters).");
         prepared = {
           account_id: account.account.account_id,
           character_id: character.character_id,
           items: batchItems.map(i => ({kind: i.kind, resource: i.resource, amount: i.amount, options: i.options})),
-          reason, request_id: requestId()
+          request_id: requestId()
         };
         const rows = [
           ["Account", esc(account.account.username)],
           ["Character", `${esc(character.name)} · ${character.character_id}`],
-          ["Items", batchItems.length],
-          ["Reason", esc(reason)]
+          ["Items", batchItems.length]
         ];
         const itemList = batchItems.map(i => {
           const name = i.kind === "currency" ? human(i.resource) : (i.template_name || i.resource);
@@ -473,7 +471,9 @@ export async function batchBookingPage(route) {
         $("#queue-batch").addEventListener("click", async event => {
           const button = event.target; button.disabled = true; $("#edit-batch").disabled = true;
           try {
-            const result = await api("/api/bookings/batch", prepared);
+            const reason = await confirmAction("Create this batch booking?", `Deliver ${prepared.items.length} ${prepared.items.length === 1 ? "grant" : "grants"} together to ${character.name}.`, "Create batch booking");
+            if (reason === null) return;
+            const result = await api("/api/bookings/batch", {...prepared, reason});
             notice(result.status === "delivered" ? "Batch booking delivered to the online character." : result.error ? "Batch booking saved. Review the delivery issue below." : "Batch booking queued for the character's next game entry.");
             navigate(`bookings/${result.id}`);
           } catch (error) { if (alive()) $("#review-error").textContent = error.message; }

@@ -1,5 +1,5 @@
 import { $, esc, human, date, api, href, link, navigate, status, table, facts, stats, section,
-  tabs, toolbar, bindSearch, pager, reasonInput, formError, confirmAction, notice, tree,
+  tabs, toolbar, bindSearch, pager, formError, confirmAction, notice, tree,
   characterTable, bookingTable } from "./admin_ui.js";
 
 const names = {status: "Status", accounts: "Accounts", characters: "Characters", bookings: "Bookings", items: "Item catalog", sessions: "Sessions", audit: "Audit log"};
@@ -95,7 +95,6 @@ export async function accountPage(route) {
         <label class="check"><input name="disabled" type="checkbox" ${a.disabled ? "checked" : ""}>Disable account login</label>
         <p class="help">Changes revoke issued login sessions. An already connected game client remains connected until it leaves.</p>
       </div></fieldset>
-      <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
       <p id="form-error" class="error-text" role="alert"></p>
       <div class="form-actions"><button type="submit">Save changes</button></div></form>`;
     result.mount = () => $("#account-form").addEventListener("submit", async event => {
@@ -108,20 +107,22 @@ export async function accountPage(route) {
       button.disabled = true;
       try {
         if (!Object.keys(changes).length) throw new Error("No changes to save.");
-        if (!(await confirmAction("Save account changes?", `Update ${a.username} and revoke its issued login sessions.`, "Save changes"))) return;
-        await api(`/api/accounts/${id}`, {changes, reason: values.get("reason")});
+        const reason = await confirmAction("Save account changes?", `Update ${a.username} and revoke its issued login sessions.`, "Save changes");
+        if (reason === null) return;
+        await api(`/api/accounts/${id}`, {changes, reason});
         notice("Account updated. Issued login sessions have been revoked."); navigate(`accounts/${id}`);
       } catch (error) { formError(error); } finally { button.disabled = false; }
     });
   } else if (tab === "sessions") {
     const sessions = await api(`/api/sessions?${query({...route.params, account_id: id})}`);
     result.html += section("Game login sessions", sessionTable(sessions.rows)) + pager(sessions, route) +
-      `<form id="revoke-form" class="form-page"><h2>Revoke all sessions</h2><p class="muted">Signs this account out of the CMS and prevents reuse of issued game login tokens. Current game connections are not disconnected.</p>${reasonInput}<p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="secondary">Revoke sessions</button></div></form>`;
+      `<form id="revoke-form" class="form-page"><h2>Revoke all sessions</h2><p class="muted">Signs this account out of the CMS and prevents reuse of issued game login tokens. Current game connections are not disconnected.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="secondary">Revoke sessions</button></div></form>`;
     result.mount = () => $("#revoke-form").addEventListener("submit", async event => {
       event.preventDefault(); const button = event.target.querySelector("button"); button.disabled = true;
       try {
-        if (!(await confirmAction("Revoke all sessions?", `Revoke all issued login sessions for ${a.username}.`, "Revoke sessions"))) return;
-        await api(`/api/accounts/${id}/revoke`, {reason: new FormData(event.target).get("reason")});
+        const reason = await confirmAction("Revoke all sessions?", `Revoke all issued login sessions for ${a.username}.`, "Revoke sessions");
+        if (reason === null) return;
+        await api(`/api/accounts/${id}/revoke`, {reason});
         notice("Sessions revoked."); window.dispatchEvent(new Event("reload-page"));
       } catch (error) { formError(error); } finally { button.disabled = false; }
     });
@@ -181,14 +182,15 @@ export async function bookingPage(route) {
     ]))}</div>` + (Object.keys(b.options).length ? section("Equipment configuration", tree(b.options)) : "")
   };
   if (b.status === "pending") {
-    result.html += `<form id="cancel-form" class="form-page"><h2>Pending booking actions</h2><p class="muted">Retry delivery if the character is ready online. Otherwise, this booking remains queued for their next game entry. You can cancel it before it is applied.</p>${reasonInput}<p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button id="retry-booking" type="button">Retry live delivery</button><button class="secondary" type="submit">Cancel booking</button></div></form>`;
+    result.html += `<form id="cancel-form" class="form-page"><h2>Pending booking actions</h2><p class="muted">Retry delivery if the character is ready online. Otherwise, this booking remains queued for their next game entry. You can cancel it before it is applied.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button id="retry-booking" type="button">Retry live delivery</button><button class="secondary" type="submit">Cancel booking</button></div></form>`;
     result.mount = () => {
       $("#retry-booking").addEventListener("click", async event => {
-        const form = $("#cancel-form"), button = event.target;
-        if (!form.reportValidity()) return;
+        const button = event.target;
         button.disabled = true;
         try {
-          const result = await api(`/api/bookings/${b.id}/deliver`, {reason: new FormData(form).get("reason")});
+          const reason = await confirmAction("Retry live delivery?", `Deliver booking #${b.id} now if the character is ready online.`, "Retry delivery");
+          if (reason === null) return;
+          const result = await api(`/api/bookings/${b.id}/deliver`, {reason});
           notice(result.status === "delivered" ? "Booking delivered." : result.error || "Character is offline or changing maps. Booking remains queued.", result.status !== "delivered");
           window.dispatchEvent(new Event("reload-page"));
         } catch (error) { formError(error); } finally { button.disabled = false; }
@@ -196,8 +198,9 @@ export async function bookingPage(route) {
       $("#cancel-form").addEventListener("submit", async event => {
         event.preventDefault(); const button = event.target.querySelector('button[type="submit"]'); button.disabled = true;
         try {
-          if (!(await confirmAction("Cancel this booking?", `Booking #${b.id} will no longer be delivered.`, "Cancel booking"))) return;
-          await api(`/api/bookings/${b.id}/cancel`, {reason: new FormData(event.target).get("reason")});
+          const reason = await confirmAction("Cancel this booking?", `Booking #${b.id} will no longer be delivered.`, "Cancel booking");
+          if (reason === null) return;
+          await api(`/api/bookings/${b.id}/cancel`, {reason});
           notice("Booking cancelled."); window.dispatchEvent(new Event("reload-page"));
         } catch (error) { formError(error); } finally { button.disabled = false; }
       });

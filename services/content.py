@@ -16,17 +16,29 @@ these. Only a signed-in player may download, a few times per address in a
 quarter of an hour. The file is read whole between two identical ``stat``
 calls, so a download never mixes two revisions while a tool rewrites it, and
 it is hashed and packed once per revision.
+
+Season Pass rewards edited in the CMS live beside the database
+(``DSO_SEASON_PASS_CONFIG``); the published copy carries them in its reward
+table, updated in place, so the client shows what the server grants.
 """
 
 from __future__ import annotations
 
+from contextlib import closing
 import hashlib
 import os
 from pathlib import Path
+import sqlite3
 import struct
+import tempfile
 import threading
 import time
 import zlib
+
+from dso_server.gameplay.season_pass import (
+    effective_season_pass_rewards, load_season_pass_overrides, write_season_pass_rewards,
+)
+from dso_server.paths import DEFAULT_SEASON_PASS_CONFIG_PATH
 
 
 CONTENT_VERSION = 1
@@ -39,10 +51,12 @@ DOWNLOAD_WINDOW_SECONDS = 900.0
 class StaticDatabasePublisher:
     """Hash and packed copy of one static database, rebuilt when it changes."""
 
-    def __init__(self, path: str | os.PathLike[str]) -> None:
+    def __init__(self, path: str | os.PathLike[str],
+                 season_pass_config: str | os.PathLike[str] | None = None) -> None:
         self.path = Path(path)
+        self.season_pass_config = Path(season_pass_config or DEFAULT_SEASON_PASS_CONFIG_PATH)
         self._lock = threading.Lock()
-        self._revision: tuple[int, int] | None = None
+        self._revision: tuple | None = None
         self._sha256 = ""
         self._size = 0
         self._packed = b""
@@ -60,6 +74,30 @@ class StaticDatabasePublisher:
             time.sleep(0.2)
         raise RuntimeError(f"{self.path} keeps changing; try again")
 
+    def _config_revision(self) -> tuple[int, int] | None:
+        try:
+            stat = os.stat(self.season_pass_config)
+        except FileNotFoundError:
+            return None
+        return stat.st_size, stat.st_mtime_ns
+
+    def _with_season_pass(self, data: bytes) -> bytes:
+        overrides = load_season_pass_overrides(self.season_pass_config)
+        if not any(overrides.values()):
+            return data
+        with tempfile.TemporaryDirectory(prefix="dso-static-db-") as directory:
+            copy = Path(directory) / "static.db4"
+            copy.write_bytes(data)
+            try:
+                with closing(sqlite3.connect(copy)) as database:
+                    with database:
+                        for reward_set, rows in effective_season_pass_rewards(database, overrides).items():
+                            write_season_pass_rewards(database, reward_set, rows)
+            except (sqlite3.Error, ValueError) as exc:
+                print(f"[Content] publishing static.db4 without Season Pass edits: {exc}")
+                return data
+            return copy.read_bytes()
+
     def _current(self) -> bool:
         """Bring the cache to the file on disk; False when there is no file."""
         try:
@@ -67,12 +105,14 @@ class StaticDatabasePublisher:
         except FileNotFoundError:
             self._revision = None
             return False
-        if self._revision != (stat.st_size, stat.st_mtime_ns):
+        if self._revision != ((stat.st_size, stat.st_mtime_ns), self._config_revision()):
+            config = self._config_revision()
             revision, data = self._snapshot()
+            data = self._with_season_pass(data)
             self._sha256 = hashlib.sha256(data).hexdigest()
             self._size = len(data)
             self._packed = b"__ZN" + struct.pack("<I", len(data)) + zlib.compress(data, 6)
-            self._revision = revision
+            self._revision = (revision, config)
         return True
 
     def describe(self) -> dict | None:
