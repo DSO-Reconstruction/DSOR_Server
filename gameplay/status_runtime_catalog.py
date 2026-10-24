@@ -9,7 +9,7 @@ per database revision and shares it between map instances.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
 from types import MappingProxyType
@@ -24,6 +24,8 @@ class StatusRuntimeCatalog:
     actor_variables: Mapping[str, float]
     effect_ids: Mapping[str, int]
     zero_duration_effect_ids: frozenset[int]
+    # Wire id -> template Id: the stable name saves record next to each id.
+    effect_names: Mapping[int, str] = MappingProxyType({})
 
 
 def _tokens(*values: object) -> frozenset[str]:
@@ -74,6 +76,9 @@ def _load_status_runtime_catalog(path_text: str) -> StatusRuntimeCatalog:
         effect_ids=MappingProxyType({
             str(row[1]): int(row[0]) for row in status_rows
         }),
+        effect_names=MappingProxyType({
+            int(row[0]): str(row[1]) for row in status_rows
+        }),
     )
 
 
@@ -85,4 +90,35 @@ def load_status_runtime_catalog(
     )
 
 
-__all__ = ["StatusRuntimeCatalog", "load_status_runtime_catalog"]
+def rebind_saved_status_effects(entries, names, catalog: StatusRuntimeCatalog):
+    """Resolve saved effects by their recorded name in the active database.
+
+    A status effect's wire id is its ``_Template_StatusEffect`` row number, so
+    a client-data update that inserts rows renumbers every later effect: a
+    saved sticker-book bonus came back as Sewers2026_Vstate_mage ("Venomous
+    Form") after the October 2026 database. Entries whose instance has a
+    recorded name take that name's current id and are dropped if the name no
+    longer exists; entries from saves without names keep their number.
+    """
+
+    rebound = []
+    for entry in entries:
+        name = names.get(int(entry.field_04))
+        if name is None:
+            rebound.append(entry)
+            continue
+        effect_id = catalog.effect_ids.get(name)
+        if effect_id is None:
+            continue
+        rebound.append(
+            entry if int(entry.effect_id) == effect_id
+            else replace(entry, effect_id=effect_id)
+        )
+    return tuple(rebound)
+
+
+__all__ = [
+    "StatusRuntimeCatalog",
+    "load_status_runtime_catalog",
+    "rebind_saved_status_effects",
+]

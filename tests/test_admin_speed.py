@@ -197,6 +197,9 @@ class AdminSpeedPersistenceTests(unittest.TestCase):
                     values=(ADMIN_EFFECTS["speed"]["legacy_values"] if legacy else e.values))
             if e.effect_id == effect_id else e for e in saved.status_effects
         ))
+        if legacy:
+            # A legacy save predates recorded status-effect names.
+            saved = replace(saved, status_effect_names={})
         self.server.account_store.put(saved, flush=True)
 
         restored = Session(("127.0.0.1", 52305), self.sock)

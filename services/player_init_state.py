@@ -32,7 +32,10 @@ from dso_server.gameplay.map_unlocks import (
     restored_map_unlocks, saved_quest_map_unlocks, unlocked_travel_map_ids,
 )
 from dso_server.runtime.transport import Session
-from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.status_runtime_catalog import (
+    load_status_runtime_catalog,
+    rebind_saved_status_effects,
+)
 from dso_server.gameplay.endless_tower_effects import (
     endless_tower_player_buffs,
 )
@@ -884,10 +887,16 @@ class PlayerInitializationStateService:
                     # on the new map's clock instead of replaying a stale tick.
                     start_tick=0,
                 )
+        # Saved wire ids are _Template_StatusEffect row numbers; re-resolve
+        # them by the recorded name in case the client data was updated.
         persistent_status_effects = {
             effect.field_04: effect
             for effect in (
-                persisted_state.status_effects
+                rebind_saved_status_effects(
+                    persisted_state.status_effects,
+                    getattr(persisted_state, "status_effect_names", {}),
+                    load_status_runtime_catalog(self.static_database_path),
+                )
                 if persisted_state is not None
                 else ()
             )
