@@ -47,6 +47,10 @@ DEFAULT_SAMPLE_INTERVAL_SECONDS = max(
 DEFAULT_TRACEBACK_THRESHOLD_SECONDS = _positive_seconds(
     "DSO_STALL_WATCHDOG_TRACEBACK_SECONDS", "1.0"
 )
+# How often the map supervisor looks for instances left without a worker.
+DEFAULT_SUPERVISOR_INTERVAL_SECONDS = max(
+    0.1, _positive_seconds("DSO_MONSTER_SUPERVISOR_INTERVAL_SECONDS", "1.0")
+)
 
 
 def _read_host_steal_seconds() -> float | None:
@@ -117,6 +121,8 @@ class StallWatchdog:
         monitor_monsters=False,
         worker_provider=worker_snapshot,
         diagnostic_path=None,
+        supervisor=None,
+        supervisor_interval_seconds=DEFAULT_SUPERVISOR_INTERVAL_SECONDS,
     ) -> None:
         self.threshold_seconds = max(0.0, float(threshold_seconds))
         self.interval_seconds = max(0.01, float(interval_seconds))
@@ -130,6 +136,16 @@ class StallWatchdog:
         self._worker_provider = worker_provider
         self._worker_reported_at = weakref.WeakKeyDictionary()
         self._worker_sampled_at = weakref.WeakKeyDictionary()
+        # Sampling can only describe a worker that exists. The supervisor
+        # finds map instances that lost theirs and returns one event per
+        # recovery; it is recovery rather than diagnostics, so it keeps
+        # running when stall reporting is disabled.
+        self._supervisor = supervisor
+        self.supervisor_interval_seconds = max(
+            0.1, float(supervisor_interval_seconds)
+        )
+        self._supervised_at = -float("inf")
+        self._supervisor_failed_at = -float("inf")
         # Injectable so the detection logic can be exercised without racing a
         # real stall.
         self._clock = clock
@@ -153,7 +169,7 @@ class StallWatchdog:
         return self.threshold_seconds > 0.0
 
     def start(self) -> None:
-        if not self.enabled:
+        if not self.enabled and self._supervisor is None:
             self._emit(
                 "[StallWatchdog] disabled "
                 "(DSO_STALL_WATCHDOG_SECONDS=0)"
@@ -169,6 +185,12 @@ class StallWatchdog:
             target=self._run, daemon=True, name=self.name
         )
         self._thread.start()
+        if not self.enabled:
+            self._emit(
+                "[StallWatchdog] stall reporting disabled "
+                "(DSO_STALL_WATCHDOG_SECONDS=0); map supervision stays on"
+            )
+            return
         self._emit(
             f"[StallWatchdog] armed: reporting stalls over "
             f"{self.threshold_seconds:.2f}s "
@@ -280,6 +302,27 @@ class StallWatchdog:
             self._worker_sampled_at[worker] = now
             self._emit("[MonsterWatchdog] sample: " + snapshot)
 
+    def _supervise(self, now):
+        if (
+            self._supervisor is None
+            or now - self._supervised_at < self.supervisor_interval_seconds
+        ):
+            return
+        self._supervised_at = now
+        try:
+            events = tuple(self._supervisor() or ())
+        except Exception as exc:
+            # Recovery is best effort; a failing pass must not stop sampling.
+            if now - self._supervisor_failed_at >= 10.0:
+                self._supervisor_failed_at = now
+                self._emit(
+                    "[MonsterWatchdog] map supervisor failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            return
+        for event in events:
+            self._emit("[MonsterWatchdog] " + json.dumps(event, sort_keys=True))
+
     def _run(self) -> None:
         previous = self._clock()
         cpu_previous = time.process_time()
@@ -302,14 +345,16 @@ class StallWatchdog:
             previous = now
             cpu_previous = cpu_now
             steal_previous = steal_now
-            if self.monitor_monsters:
-                self._sample_monsters(now)
-                # File I/O and stack formatting are our own work, not evidence
-                # that the process missed a scheduling deadline.
+            if self.monitor_monsters or self._supervisor is not None:
+                if self.enabled:
+                    self._sample_monsters(now)
+                self._supervise(now)
+                # File I/O, stack formatting and recovery are our own work,
+                # not evidence that the process missed a scheduling deadline.
                 previous = self._clock()
                 cpu_previous = time.process_time()
                 steal_previous = _read_host_steal_seconds()
-            if overshoot < self.threshold_seconds:
+            if not self.enabled or overshoot < self.threshold_seconds:
                 continue
             with self._lock:
                 self.stall_count += 1
@@ -347,6 +392,7 @@ class StallWatchdog:
 __all__ = [
     "DEFAULT_SAMPLE_INTERVAL_SECONDS",
     "DEFAULT_STALL_THRESHOLD_SECONDS",
+    "DEFAULT_SUPERVISOR_INTERVAL_SECONDS",
     "DEFAULT_TRACEBACK_THRESHOLD_SECONDS",
     "StallWatchdog",
     "attribute_stall",

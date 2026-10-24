@@ -359,6 +359,9 @@ class ServerApplication:
                 Path(__file__).resolve().parent
                 / "data" / "diagnostics" / "monster-stalls.log"
             ),
+            # Sampling sees only workers that exist; this restarts the
+            # simulation of a map instance that lost its worker altogether.
+            supervisor=self._supervise_monster_worlds,
         )
         # A full cyclic collection freezes the whole interpreter for as long
         # as it takes to walk the heap (70-100 ms with dense maps cached).
@@ -487,6 +490,16 @@ class ServerApplication:
             pass
         finally:
             self.stop()
+
+    def _supervise_monster_worlds(self) -> list[dict]:
+        """Restart orphaned map simulations on every gameplay service."""
+
+        events = []
+        for service in (self.login, self.characters):
+            events.extend(
+                CharacterServer._supervise_monster_worlds(service)
+            )
+        return events
 
     def _print_banner(self) -> None:
         chat_region = (

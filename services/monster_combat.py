@@ -5,7 +5,11 @@ from __future__ import annotations
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.runtime.monster_runtime_diagnostics import mark_phase
-from dso_server.services.monster_chase_loop import _FixedRateChaseLoop, MONSTER_TICK_IDLE
+from dso_server.services.monster_chase_loop import (
+    _FixedRateChaseLoop,
+    MONSTER_TICK_IDLE,
+    MONSTER_WORLD_ORPHAN_GRACE_SECONDS,
+)
 from dso_server.services.monster_tick_context import MonsterTickContextService
 from dso_server.services.player_owned_resolution_dispatch import (
     PlayerOwnedResolutionDispatchService,
@@ -141,12 +145,85 @@ class MonsterCombatService(
             )
 
     @staticmethod
-    def _start_monster_chase(s: Session) -> bool:
-        installed = s.gameplay_chase_timer
-        if installed is not None and not (
-            isinstance(installed, _FixedRateChaseLoop) and installed.has_exited()
-        ):
+    def _monster_world_has_background_work(combat) -> bool:
+        """Whether ``combat`` needs simulating even with no monster in view.
+
+        Player summons and wounded, regenerating players are advanced by the
+        map's simulation thread whether or not any viewer has a monster
+        spawned, so either makes every session on the instance a possible
+        owner of that thread.
+        """
+
+        if combat is None:
             return False
+        lock = getattr(combat, "lock", None)
+        if lock is None:
+            return bool(getattr(combat, "player_summons", ())) or bool(
+                getattr(combat, "has_regenerating_players", False)
+            )
+        # ``has_regenerating_players`` iterates the map's health table, which
+        # joining and departing players resize under this lock.
+        with lock:
+            return bool(getattr(combat, "player_summons", ())) or bool(
+                getattr(combat, "has_regenerating_players", False)
+            )
+
+    @staticmethod
+    def _monster_world_owner(combat, sessions):
+        """Elect the session that runs ``combat``'s simulation thread.
+
+        Claiming the world and both re-elections (on a visibility change and
+        on departure) must apply this one rule. They used to disagree about
+        player summons: the claim counted every session on the instance once a
+        summon existed, the re-elections only sessions with spawned monsters.
+        The worker that lost its claim to an idle lower-id player then
+        re-elected its own session, was refused, and retired -- leaving the
+        map with no simulation at all until that idle player acted.
+        """
+
+        if combat is None:
+            return None
+        background = CharacterService._monster_world_has_background_work(
+            combat
+        )
+        candidates = tuple(
+            value
+            for value in sessions
+            if (
+                value.connected
+                and not value.gameplay_presence_departed
+                and value.gameplay_character is not None
+                and value.gameplay_combat_state is combat
+                and (background or value.gameplay_monsters_spawned)
+            )
+        )
+        if not candidates:
+            return None
+        return min(
+            candidates,
+            key=lambda value: int(value.gameplay_character.character_id),
+        )
+
+    @staticmethod
+    def _live_monster_worker(s: Session) -> bool:
+        installed = s.gameplay_chase_timer
+        return installed is not None and not (
+            isinstance(installed, _FixedRateChaseLoop)
+            and installed.has_exited()
+        )
+
+    @staticmethod
+    def _start_monster_chase(s: Session) -> bool:
+        if CharacterService._live_monster_worker(s):
+            with s.flow_lock:
+                installed = s.gameplay_chase_timer
+                if CharacterService._live_monster_worker(s):
+                    # That worker may be deciding to retire at this moment;
+                    # let it see the request instead of dropping it.
+                    if isinstance(installed, _FixedRateChaseLoop):
+                        installed.request_restart()
+                    return False
+            # It released the slot between the two reads; replace it below.
         if (
             s.gameplay_presence_callback is not None
             and not s.gameplay_presence_callback(
@@ -154,24 +231,23 @@ class MonsterCombatService(
             )
         ):
             return False
+        claimed_combat = s.gameplay_combat_state
+        # Taken before flow_lock: the map lock may not nest inside it.
+        background = CharacterService._monster_world_has_background_work(
+            claimed_combat
+        )
         with s.flow_lock:
             combat = s.gameplay_combat_state
             installed = s.gameplay_chase_timer
+            if CharacterService._live_monster_worker(s):
+                if isinstance(installed, _FixedRateChaseLoop):
+                    installed.request_restart()
+                return False
             if (
                 not s.connected
                 or combat is None
-                or (
-                    not s.gameplay_monsters_spawned
-                    and not combat.player_summons
-                    and not combat.has_regenerating_players
-                )
-                or (
-                    installed is not None
-                    and not (
-                        isinstance(installed, _FixedRateChaseLoop)
-                        and installed.has_exited()
-                    )
-                )
+                or combat is not claimed_combat
+                or (not s.gameplay_monsters_spawned and not background)
             ):
                 return False
             # Generation identifies a map incarnation. Worker restarts must
@@ -201,6 +277,102 @@ class MonsterCombatService(
             f"at {1.0 / MONSTER_CHASE_INTERVAL_SECONDS:.0f} Hz"
         )
         return True
+
+    @staticmethod
+    def _supervise_monster_worlds(server, *, now: float | None = None):
+        """Restart the simulation of any map instance left without a worker.
+
+        A map whose only simulation thread is gone freezes silently: the
+        monster watchdog can only sample workers that exist, and nothing on
+        the casting or movement path re-elects an owner by itself. This runs
+        about once a second from the watchdog thread, holds no lock across
+        sessions, and acts only on an instance that has stayed orphaned for a
+        grace period, so it never races an ordinary hand-off. Returns one
+        diagnostic event per recovery or failed recovery.
+        """
+
+        now = time.perf_counter() if now is None else float(now)
+        registry = getattr(server, "sessions", None)
+        if registry is None:
+            return ()
+        instances = {}
+        for session in tuple(registry.values()):
+            combat = getattr(session, "gameplay_combat_state", None)
+            if combat is None:
+                continue
+            _combat, members, viewers = instances.setdefault(
+                id(combat), (combat, [], [])
+            )
+            # Any worker counts, even on a session that cannot be elected
+            # right now; starting a second one would double the simulation.
+            members.append(session)
+            if (
+                session.connected
+                and session.gameplay_mode
+                and session.gameplay_initialization_sent
+                and session.gameplay_presence_ready
+                and not session.gameplay_presence_departed
+                and session.gameplay_character is not None
+            ):
+                viewers.append(session)
+        orphans = getattr(server, "_monster_world_orphans", None)
+        if orphans is None:
+            orphans = server._monster_world_orphans = {}
+        for key in tuple(orphans):
+            if key not in instances:
+                orphans.pop(key, None)
+        events = []
+        for key, (combat, members, viewers) in instances.items():
+            if any(
+                CharacterService._live_monster_worker(member)
+                for member in members
+            ):
+                orphans.pop(key, None)
+                continue
+            owner = CharacterService._monster_world_owner(combat, viewers)
+            if owner is None:
+                orphans.pop(key, None)
+                continue
+            # [orphaned since, last failed recovery reported at]
+            state = orphans.setdefault(key, [now, None])
+            orphaned_for = now - state[0]
+            if orphaned_for < MONSTER_WORLD_ORPHAN_GRACE_SECONDS:
+                continue
+            started = CharacterService._start_monster_chase(owner)
+            event = {
+                "event": (
+                    "orphaned-map-restarted"
+                    if started
+                    else "orphaned-map-unrecovered"
+                ),
+                "map": owner.gameplay_map,
+                "owner_endpoint": owner.addr,
+                "owner_character_id": int(
+                    owner.gameplay_character.character_id
+                ),
+                "players": len(viewers),
+                "orphaned_seconds": round(orphaned_for, 3),
+            }
+            if started:
+                orphans.pop(key, None)
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] restarted the orphaned "
+                    f"monster simulation of {owner.gameplay_map}: no worker "
+                    f"for {orphaned_for:.1f}s; owner character "
+                    f"{event['owner_character_id']}, "
+                    f"{len(viewers)} player(s) on the instance"
+                )
+                events.append(event)
+            elif state[1] is None or now - state[1] >= 30.0:
+                state[1] = now
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] monster simulation of "
+                    f"{owner.gameplay_map} has had no worker for "
+                    f"{orphaned_for:.1f}s and its elected owner (character "
+                    f"{event['owner_character_id']}) refused to start one"
+                )
+                events.append(event)
+        return tuple(events)
 
     @staticmethod
     def _send_monster_return_home_transition(

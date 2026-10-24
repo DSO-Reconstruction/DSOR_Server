@@ -101,6 +101,8 @@ and drains the player-database writer.
 | `DSO_MONSTER_RESET_GRACE_DISTANCE` | `25` | extra distance past the pursuit radius before an actor resets to spawn |
 | `DSO_MONSTER_CHASE_IDLE_INTERVAL_SECONDS` | `0.5` | map simulation tick period while nothing needs advancing |
 | `DSO_MONSTER_CHASE_IDLE_RETIRE_SECONDS` | `30` | continuous idle time before the map worker retires (`0` never retires) |
+| `DSO_MONSTER_ORPHAN_GRACE_SECONDS` | `1.0` | how long a map instance with spawned monsters, player summons or a wounded player may go without a simulation thread before the watchdog's supervisor starts one |
+| `DSO_MONSTER_SUPERVISOR_INTERVAL_SECONDS` | `1.0` | how often that supervisor runs; it keeps running with `DSO_STALL_WATCHDOG_SECONDS=0` |
 | `DSO_LOG_TIMESTAMPS` | `1` | prefix every log line with wall-clock time; also makes lines atomic |
 | `DSO_LOG_ASYNC` | `1` | write console output from one writer thread so a stalled `screen`/SSH console never blocks a gameplay thread; dropped lines are counted and reported |
 | `DSO_LOG_QUEUE_LINES` | `20000` | bound on queued console lines while the console is not draining |
@@ -117,6 +119,7 @@ and drains the player-database writer.
 | `DSO_DISABLE_VICTIM_STATUS_EFFECTS` | `0` | diagnostic: monsters receive no debuffs or crowd control |
 | `DSO_DISABLE_STATUS_EFFECTS` | `0` | diagnostic: no status effects at all, in either direction |
 | `DSO_RELIABLE_RETRANSMIT_BURST_LIMIT` | `16` | overdue reliable datagrams re-sent per session per 20 Hz pass |
+| `DSO_RELIABLE_STUCK_WARNING_SECONDS` | `5` | report a reliable datagram that a still-talking client has not acknowledged for this long |
 | `DSO_UDP_RECEIVE_BUFFER_BYTES` | `1048576` | UDP `SO_RCVBUF`; `0` keeps the OS default |
 | `DSO_UDP_SEND_BUFFER_BYTES` | `1048576` | UDP `SO_SNDBUF`; `0` keeps the OS default |
 | `DSO_STALL_WATCHDOG_SECONDS` | `0.5` | report whole-process stalls over this length; `0` disables |
@@ -300,6 +303,20 @@ contention instead of freezing the map.
 `[DrasaOnlineMapServer] actor N locked out of Movement/RegularSkills by ...`
 covers the other possibility: that the server deliberately disabled those
 actors. Lines there mean crowd control, not a stall.
+
+Two more lines separate the remaining causes:
+
+- `restarted the orphaned monster simulation of <map>`: the instance had
+  spawned monsters, summons or a wounded player but no simulation thread
+  for `DSO_MONSTER_ORPHAN_GRACE_SECONDS`. Everyone on it saw the monsters
+  stop while travel, chat and casting kept working. The event is also
+  written to `monster-stalls.log`; the worker samples there cannot show it,
+  because there is no worker to sample.
+- `reliable '<label>' (N bytes, A attempts) unacknowledged for Ns although
+  <client> is still sending`: that one client's ordered stream is held
+  behind a datagram it never accepts, so everything the server sends it
+  stops, not only monsters. `split oversized reliable '<label>'` names a
+  batch that used to produce such a datagram and is now fragmented.
 
 A reproduction on 2026-09-09 took the second branch: the watchdog stayed
 silent through a client-visible freeze, so the server never stopped. The log
