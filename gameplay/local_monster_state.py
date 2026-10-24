@@ -183,6 +183,40 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # quest-gated Qarinah hunters. Keep server-published monsters in the
     # secondary range so client scene actors cannot mask them.
     "h0006_valley_dun",
+    # Cardhun's entrance and suburb scenes also register authored SpawnPoints
+    # in the ordinary range. In particular, the suburb has 442 rows across
+    # its difficulty variants, overlapping the server's sequential spawn IDs.
+    "pw199_cardhun_dun",
+    "pw200_cardhun_dun",
+    # Brigavik's event-driven Materi storm waves, including Mardoll, are
+    # authored SpawnPoints that the client registers in its ordinary actor
+    # range. Keep server-published monsters in the secondary range so those
+    # scene actors cannot mask the wave bosses.
+    "pw203_norseland_01_dun",
+    # Telepolos has 104 authored SpawnPoints. The client may register these
+    # scene actors in the ordinary monster range, so keep its server density
+    # population in the secondary range to prevent actor-id collisions.
+    "pw205_helios_dun",
+    # The Toltac temple has hundreds of authored scene SpawnPoints; keep the
+    # server's quest and density mobs outside their ordinary ActorID range.
+    "pw206_temple_dun",
+    # Fyeborough's quest-gated Soul Collector is also an authored SpawnPoint.
+    # The client may already register that scene actor at 0x30000 before the
+    # server releases its EventSet; publishing it at the same ID makes
+    # NewMonster fail with ActorManager::RegisterActor duplicate-id.
+    "pw207_village_dun",
+    # Sunlair's Chamber has authored scene SpawnPoints in the ordinary local
+    # actor range. The fixed Sunlair's Notes demon otherwise receives 0x30000,
+    # which the client scene can already own, leaving the quest marker visible
+    # while NewMonster has no renderable model.
+    "pw207_chamber_dun",
+    # Kinza's 83 scene SpawnPoints can occupy the same ordinary range used by
+    # server actors. Keep quest-specific Enforcer waves clear of those IDs.
+    "pw209_kinza_dun",
+    # Panoltiaco's scene registers authored SpawnPoints in the ordinary actor
+    # range. Senbu's gated boss spawn can otherwise reuse a client-owned ID and
+    # remain invisible even though the server considers it materialized.
+    "g0017_templecity_md_04",
 })
 
 
@@ -421,6 +455,33 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
     'f4202_dun': {
         'melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04',),
         'scale_melt': ('f4202_normal_g_dark_dwarf_q_DragonsForge_04_scale',),
+    },
+    # Telepolos' first A War Conspiracy objective clears this authored
+    # density list. Its three quest-specific templates are intentionally
+    # excluded from the generic map pool by the `_q_` filter; without an
+    # explicit list mapping, the ClearRegionTask's targets never spawn.
+    'pw205_helios_dun': {
+        'list_imperial_soldier_q_helios_war_01': (
+            'pw205_normal_imperial_soldier_offensive_q_helios_war_01',
+            'pw205_normal_imperial_soldier_defensive_q_helios_war_01',
+            'pw205_normal_cerberus_q_helios_war_01',
+        ),
+    },
+    # A New Clue (2/2) clears this spawn list. The Toltac guards are quest-only
+    # templates excluded from the generic monster pool.
+    'pw206_temple_dun': {
+        'list_tribe_q_way_to_lortac_02': (
+            'pw206_normal_evil_tribe_melee_02_q_way_to_lortac_02',
+            'pw206_normal_evil_tribe_ranged_02_q_way_to_lortac_02',
+        ),
+        # The Call for Freedom (2/2) starts a separate event-set wave. Its
+        # ClearRegionTask tracks these four shadow variants specifically.
+        'list_shadow_q_free_lortac_02': (
+            'pw206_normal_evil_tribe_melee_shadow_q_free_lortac_02',
+            'pw206_normal_evil_tribe_ranged_shadow_q_free_lortac_02',
+            'pw206_normal_clawstrider_shadow_q_free_lortac_02',
+            'pw206_normal_shadow_corpser_q_free_lortac_02',
+        ),
     },
     "b1201_pve": {
         "entrance_gnome_troll": (
@@ -2293,6 +2354,17 @@ def _grounded_spawn_area_candidates(
 
     minimum_height = area.center[1] - abs(area.matrix[5]) * 0.5
     maximum_height = area.center[1] + abs(area.matrix[5]) * 0.5
+    ground_reference_height = area.center[1]
+    if area.spawn_list_id.casefold() == (
+        "list_imperial_soldier_q_helios_war_01"
+    ):
+        # These two Telepolos volumes span multiple vertically-overlapping
+        # city layers. Their raw grid points project to the playable street at
+        # Y=0, but a fallback triangle can select the lower Y=-3 floor. Keep
+        # this quest population on the same street level as its authored grid.
+        ground_reference_height = 0.0
+        minimum_height = -0.75
+        maximum_height = 0.75
     target_count = len(candidates)
     positions = []
     occupied: dict[
@@ -2334,7 +2406,7 @@ def _grounded_spawn_area_candidates(
                     reference_height=(
                         projected[1]
                         if prefer_navigation_height
-                        else area.center[1]
+                        else ground_reference_height
                     ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
@@ -2371,7 +2443,7 @@ def _grounded_spawn_area_candidates(
                     reference_height=(
                         centroid[1]
                         if prefer_navigation_height
-                        else area.center[1]
+                        else ground_reference_height
                     ),
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,

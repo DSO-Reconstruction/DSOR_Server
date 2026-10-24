@@ -2335,6 +2335,16 @@ def build_local_player_init_commands(
         if command.command_id != VARIATION_INFO_COMMAND
     )
     has_variation_info = len(npc_commands) != len(map_entity_commands)
+    native_exit_guids = {
+        bytes(entry.instance_guid)
+        for command in map_entity_commands
+        if command.command_id == VARIATION_INFO_COMMAND
+        for entry in command.value.entries
+    }
+    initial_exit_info = ExitInfo(tuple(
+        entry for entry in exit_info.exits
+        if bytes(entry.instance_guid) not in native_exit_guids
+    ))
     if len(npc_commands) % 2:
         raise ValueError(
             "local initialization requires complete NewNPC/NPCInfo pairs"
@@ -2605,7 +2615,11 @@ def build_local_player_init_commands(
             # must remain empty locally; repeating the login entry in each
             # one produces duplicate login-reward icons.
             login_notification,
-            ServerCommand(EXIT_INFO_COMMAND, exit_info, 0),
+            # Native exits in ``native_exit_guids`` do not exist in the scene
+            # yet. Sending them before EventUpdate makes UpdateExitState log a
+            # missing-entity warning. They are refreshed below after
+            # VariationInfo has created them.
+            ServerCommand(EXIT_INFO_COMMAND, initial_exit_info, 0),
         )
     )
     event_bound_variations = []

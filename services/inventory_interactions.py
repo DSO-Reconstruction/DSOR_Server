@@ -496,6 +496,13 @@ class InventoryInteractionService:
             f"{definition.template_id!r} actor {npc_info.actor_id}: "
             f"sent typed NPCInfo category {npc_info.category}"
         )
+        if NPC_TRACE:
+            print(
+                f"[NPC-TRACE] NPCInfo {definition.template_id!r}: "
+                f"interactions={[(item.source, item.field_08, item.target, item.field_18) for item in npc_info.interactions]!r}; "
+                f"barters={[(item.name, item.values, item.field_28, item.enabled) for item in npc_info.string_sets]!r}; "
+                f"links={[(item.source, item.target, item.field_10, item.enabled) for item in npc_info.links]!r}"
+            )
 
     def _handle_npc_encounter(self, s: Session, payload: bytes) -> None:
         request = decode_simple_gameplay_command(payload)
@@ -831,6 +838,9 @@ class InventoryInteractionService:
         )
         CharacterService._request_account_save(
             s, "workbench recipe crafted", flush=True
+        )
+        CharacterService._quest_feed(
+            self, s, "crafting", recipe.resource_id, count=craft_count,
         )
         self._daily_challenge_feed(s, 'ItemsCrafted', count=craft_count * recipe.result_amount)
         from dso_server.protocol.consumable_protocol import load_consumable_catalog

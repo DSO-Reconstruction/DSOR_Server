@@ -1608,6 +1608,7 @@ class WorldService:
                         max_stack_size=item_definition.max_stack_size,
                         next_item_id=int(s.gameplay_next_item_id),
                         reserved_item_ids=tuple(s.gameplay_world_loot),
+                        ingredient_bag=item_definition.ingredient_bag,
                     )
                     response_packet, response_bits = (
                         encode_world_pickup_response(

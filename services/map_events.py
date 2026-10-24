@@ -66,6 +66,7 @@ from dso_server.gameplay.map_event_state import (
     PropRuntimeState,
     SignalContext,
     TriggerVolumeDefinition,
+    ZERO_GUID,
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
@@ -75,7 +76,6 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_ACCEPTED,
     active_tasks,
 )
-from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.combat_protocol import (
@@ -647,6 +647,11 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
     "f4203_boss_06_ram",
+    # Fyeborough's story sentinel is gated by a quest event and can already
+    # exist in the encounter before that event releases it. Force its native
+    # NewMonster registration when the EventSet opens so the client does not
+    # show only the authored spawn effect while omitting the actor model.
+    "pw207_sentinel_shadow_father_01_q_way_to_village_02",
     # The Lythira spawn transform is the boss's authored arena position and
     # can be outside the ordinary vicinity radius from the entry point.
     "fp_boss_01_lythira",
@@ -1603,7 +1608,44 @@ class MapEventService:
         if runtime is None:
             return None
         with runtime.lock:
-            states = runtime.published_props()
+            states_by_id = {
+                state.definition.prop_id: state
+                for state in runtime.published_props()
+            }
+            if map_key(runtime.map_id) == "pw205_helios_dun":
+                # Retail gates these reusable stones behind a quest-phase
+                # EventSet. They are ordinary map resources and must remain
+                # present regardless of quest progress or which event fired.
+                # Register all authored stone props into the runtime as well
+                # as publishing them, so their actor ids remain interactable.
+                for definition in runtime.content.props:
+                    if not (
+                        str(definition.instance_id).casefold().startswith(
+                            "pw200_umbra_stone_"
+                        )
+                        and str(definition.loot_list_id).casefold()
+                        in {"chest_umbra_stone_01", "chest_umbra_stone_02"}
+                    ):
+                        continue
+                    state = runtime.props.get(definition.prop_id)
+                    always_visible_definition = replace(
+                        definition,
+                        event_set_row=-1,
+                        instance_guid=ZERO_GUID,
+                    )
+                    if state is None:
+                        state = PropRuntimeState(always_visible_definition)
+                    else:
+                        state = PropRuntimeState(
+                            always_visible_definition, state.state,
+                        )
+                    # Remove the EventSet link in the runtime copy so later
+                    # map-event transitions cannot unpublish these persistent
+                    # resources. A zero GUID asks the client to instantiate
+                    # each prop at its authored map transform.
+                    runtime.props[definition.prop_id] = state
+                    states_by_id[definition.prop_id] = state
+            states = tuple(states_by_id.values())
         states = tuple(
             state for state in states
             if prop_visible_to_player(state.definition, s)
@@ -1648,8 +1690,15 @@ class MapEventService:
             content = load_map_event_content(static_database_path, map_id)
         except Exception:
             return None
-        if not content.spawn_rows:
+        if (
+            not content.spawn_rows
+            and map_key(map_id) != "pw208_lost_woods_flute_dun"
+        ):
             return None
+        # Artaya's Clearing has a quest demon wave controlled by map events,
+        # but the extracted map database contains no gated monster rows. It
+        # still needs an empty combat world so quest-controlled fallback
+        # spawns can be materialized after PlayerReady.
         return replace(
             load_local_player_only_encounter(static_database_path, map_id),
             scaling_difficulty=max(0, int(scaling_difficulty)),
@@ -1709,8 +1758,6 @@ class MapEventService:
                     total = sum(present.values())
                     if total:
                         dead_fraction = 1.0 - sum(alive.values()) / total
-        with runtime.lock:
-            running = runtime.active_flags()
         quests_accepted, quests_solved, tasks_done = (
             CharacterService._quest_signal_facts(self, s)
         )
@@ -1718,24 +1765,40 @@ class MapEventService:
             CharacterService._quest_on_triggers(self, s, params)
         with s.flow_lock:
             unlocked_maps = frozenset(s.gameplay_unlocked_maps)
-        if kind == "playerenteredmap" and map_key(runtime.map_id) == "pw000_hub":
-            # PW hub gate events were authored to start while their unlock
-            # quest is accepted. After turn-in, the quest is closed, but its
-            # access grant is permanent. Treat that grant as satisfying the
-            # hub's entry signal so the door EventSets are restored on re-entry.
-            _travel_maps, accesses = map_unlock_catalog(
-                str(self.static_database_path)
-            )
-            unlocked_gate_quests = frozenset(
-                quest_id.casefold()
-                for access_id, access_group, quest_id in accesses
-                if quest_id
-                and (access_id.casefold().startswith("pw")
-                     or access_group.casefold().startswith("pw"))
-                and (map_key(access_id) in unlocked_maps
-                     or map_key(access_group) in unlocked_maps)
-            )
-            quests_accepted = quests_accepted | unlocked_gate_quests
+        if kind == "playerenteredmap":
+            # A map instance can outlive the session that first entered it.
+            # Restore any quest-gated exits for this character from the same
+            # authored signal conditions used by map initialization.
+            try:
+                durable_exit_flags = CharacterService._quest_exit_reveal_flags(
+                    self, s, runtime.map_id,
+                )
+            except Exception:
+                durable_exit_flags = frozenset()
+            for flag in durable_exit_flags:
+                definition = runtime.catalog.event(flag)
+                if definition is None:
+                    continue
+                with runtime.lock:
+                    already_active = flag in runtime.active_flags()
+                if not already_active:
+                    self._start_map_local_event(runtime, definition)
+            # The reusable Telepolos Umbra Stones share an EventSet with the
+            # Hero of Light quest phase that hides them. That client-only
+            # activation has no authored end signal, so a shared map instance
+            # can retain it after the quest is turned in. Clear the stale
+            # phase before evaluating the solved-quest deactivation signal.
+            if (
+                map_key(runtime.map_id) == "pw205_helios_dun"
+                and "pw205-the-hero-of-light-02-n" in quests_solved
+            ):
+                definition = runtime.catalog.event(
+                    "pw205_the_hero_of_light_02_activate_umbra_stones"
+                )
+                if definition is not None:
+                    self._stop_map_local_event(runtime, definition)
+        with runtime.lock:
+            running = runtime.active_flags()
         context = SignalContext(
             map_id=runtime.map_id,
             params=frozenset(str(value).casefold() for value in params),
@@ -1795,6 +1858,12 @@ class MapEventService:
             regional_signals = {signal for signal, _volumes in regions}
             rules = tuple(rule for rule in rules if rule.signal_id not in regional_signals)
         if not rules:
+            if kind in {"playerenteredmap", "playerendquesttask"}:
+                self._ensure_pw209_kinza_leader(s, runtime)
+                self._ensure_pw207_sunlairs_notes_mob(s, runtime)
+                self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+                self._ensure_pw209_slade_throne_room(s, runtime)
+                self._ensure_pw000_senbu_boss(s, runtime)
             return
         for rule in rules:
             if rule.event_type in (
@@ -1810,6 +1879,334 @@ class MapEventService:
                 f"{runtime.map_id} fired signal {rule.signal_id!r}"
             )
             self._emit_map_signal(s, runtime, rule.signal_id)
+        if kind in {"playerenteredmap", "playerendquesttask"}:
+            self._ensure_pw209_kinza_leader(s, runtime)
+            self._ensure_pw207_sunlairs_notes_mob(s, runtime)
+            self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+            self._ensure_pw209_slade_throne_room(s, runtime)
+            self._ensure_pw000_senbu_boss(s, runtime)
+
+    def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
+        """Keep the Kinza route leader visible for its active kill objective."""
+
+        if map_key(runtime.map_id) != "pw207_chamber_dun":
+            return
+        accepted, _solved, tasks_done = CharacterService._quest_signal_facts(
+            self, s,
+        )
+        quest_id = "pw209-way-to-kinza-01-n"
+        clear_task = f"{quest_id}:pw209-way-to-kinza-01-clear-01"
+        kill_task = f"{quest_id}:pw209-way-to-kinza-01-kill-01"
+        if (
+            quest_id not in accepted
+            or clear_task not in tasks_done
+            or kill_task in tasks_done
+        ):
+            return
+        definition = runtime.catalog.event(
+            "pw209_way_to_kinza_01_spawn_leader",
+        )
+        if definition is None:
+            _log(
+                "Kinza route leader event is missing on pw207_chamber_dun"
+            )
+            return
+        with runtime.lock:
+            active = definition.key in runtime.running
+            pending = definition.key in runtime.pending_start_tokens
+        if not active and pending:
+            return
+        if not active:
+            _log(
+                "reconciling the active Kinza route kill task by starting its "
+                "leader event on pw207_chamber_dun"
+            )
+            self._start_map_local_event(runtime, definition)
+            return
+        event_sets = tuple(sorted({
+            int(value.row)
+            for value in runtime.content.event_sets_for(definition.key)
+        }))
+        if not event_sets:
+            _log(
+                "Kinza route leader event has no spawn EventSet on "
+                "pw207_chamber_dun"
+            )
+            return
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(runtime, sessions, event_sets)
+
+    def _ensure_pw207_sunlairs_notes_mob(self, s: Session, runtime) -> None:
+        """Replay or restore the one-off demon for Sunlair's Notes page 01."""
+
+        if map_key(runtime.map_id) != "pw207_chamber_dun":
+            return
+        accepted, _solved, tasks_done = CharacterService._quest_signal_facts(
+            self, s,
+        )
+        quest_id = "pw207-sunlairs-notes-01-n"
+        task = f"{quest_id}:pw207-sunlairs-notes-01-collect-01"
+        if quest_id not in accepted or task in tasks_done:
+            return
+        template_id = "pw207_normal_demon_damage_dealer_quest_01"
+        map_path = map_database_path(self.static_database_path, runtime.map_id)
+        try:
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True,
+            )) as database:
+                row = database.execute(
+                    """
+                    SELECT rowid, Transform
+                    FROM _Instance_SpawnPoint
+                    WHERE lower(COALESCE(Id, ''))=?
+                       OR lower(COALESCE(_ID, ''))=?
+                    ORDER BY CASE WHEN COALESCE(EventSetRow, -1)=-1 THEN 0 ELSE 1 END,
+                             rowid
+                    LIMIT 1
+                    """,
+                    (template_id, template_id),
+                ).fetchone()
+        except (OSError, sqlite3.Error) as exc:
+            _log(
+                f"cannot read Sunlair's Notes spawn point: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        if row is None:
+            _log(
+                f"Sunlair's Notes spawn point for {template_id!r} is missing"
+            )
+            return
+        try:
+            matrix = struct.unpack("<16f", bytes(row[1]))
+            position = tuple(float(matrix[index]) for index in (12, 13, 14))
+        except (TypeError, ValueError, struct.error) as exc:
+            _log(
+                f"Sunlair's Notes spawn point has invalid transform: {exc}"
+            )
+            return
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(
+            runtime,
+            sessions,
+            (),
+            extra_rows=(GatedSpawnRow(
+                -1_700_000 - int(row[0]), -1, template_id, position,
+            ),),
+        )
+
+    def _ensure_pw209_sultans_enforcer02_mobs(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Spawn the four missing demons for the active Anbir clear objective."""
+
+        if map_key(runtime.map_id) != "pw209_kinza_dun":
+            return
+        quest_id = "pw209-the-sultans-enforcers-02-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        clear_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw209-the-sultans-enforcers-02-clear-01"
+                and any(
+                    event.kind.casefold() == "regioncleared"
+                    and event.value.casefold()
+                    == "pw209-the-sultans-enforcers-02-n.s_"
+                    "pw209-the-sultans-enforcers-02-clear-01clearregion"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not clear_task_active:
+            return
+
+        marker = "pw209_sultans_enforcer_02_mobs_materialized"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+
+        templates = (
+            "pw209_normal_demon_fat_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_skinny_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_damage_dealer_01_q_sultans_enforcer_02",
+            "pw209_normal_demon_tank_01_q_sultans_enforcer_02",
+        )
+        # Anbir is authored at (45, 0, -3). These grounded locations surround
+        # him and remain clear of his collision capsule.
+        positions = (
+            (35.0, 0.0, -3.0),
+            (45.0, 0.0, -12.0),
+            (53.0, 0.0, -3.0),
+            (45.0, 0.0, 5.0),
+        )
+        spawn_rows = []
+        for index, (template, position) in enumerate(
+            zip(templates, positions, strict=True),
+        ):
+            if _load_runtime_definition(
+                self.static_database_path, template, 0,
+            ) is None:
+                _log(
+                    f"Kinza Enforcer 02 template {template!r} has no "
+                    "runtime definition"
+                )
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                -2_400_000 - index, -1, template, position,
+            ))
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            _log("cannot ensure Kinza Enforcer 02 demons: no combat state")
+            with runtime.lock:
+                runtime.fired_once.discard(marker)
+            return
+        if spawn_rows:
+            self._spawn_event_monsters(
+                runtime, sessions, (), extra_rows=tuple(spawn_rows),
+            )
+        _log(
+            f"ensured {len(spawn_rows)} quest demon(s) around Anbir for "
+            "pw209-the-sultans-enforcers-02-clear-01"
+        )
+
+    def _ensure_pw209_slade_throne_room(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Reconcile the open-door and Slade spawns for the final Kinza quest."""
+
+        if map_key(runtime.map_id) != "pw209_kinza_dun":
+            return
+        quest_id = "pw209-slades-final-chapter-01-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        slade_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw209-slades-final-chapter-01-kill-02"
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not slade_task_active:
+            return
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        for event_id in (
+            "pw209_slades_final_chapter_01_open_throne_room",
+            "pw209_slades_final_chapter_01_spawn_slade",
+        ):
+            definition = runtime.catalog.event(event_id)
+            if definition is None or not definition.applies_to(runtime.map_id):
+                _log(f"Kinza throne-room event {event_id!r} is unavailable")
+                continue
+            with runtime.lock:
+                active = definition.key in runtime.running
+                pending = definition.key in runtime.pending_start_tokens
+            if not active and not pending:
+                _log(
+                    f"reconciling {event_id} for the active Slade kill task"
+                )
+                self._start_map_local_event(runtime, definition)
+                with runtime.lock:
+                    active = definition.key in runtime.running
+            if event_id.endswith("spawn_slade") and active:
+                event_sets = tuple(sorted({
+                    int(value.row)
+                    for value in runtime.content.event_sets_for(definition.key)
+                    if int(value.row) in runtime.enabled_event_sets
+                }))
+                if event_sets:
+                    self._spawn_event_monsters(runtime, sessions, event_sets)
+
+    def _ensure_pw000_senbu_boss(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Restore Senbu's event spawn while its quest kill task is active."""
+
+        if map_key(runtime.map_id) != "g0017_templecity_md_04":
+            return
+        quest_id = "pw000-introduction-01-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        senbu_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold() == "pw000-introduction-01-kill-02"
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not senbu_task_active:
+            return
+
+        event_id = "g0017_spawn_boss"
+        definition = runtime.catalog.event(event_id)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        if definition is not None and definition.applies_to(runtime.map_id):
+            with runtime.lock:
+                active = definition.key in runtime.running
+                pending = definition.key in runtime.pending_start_tokens
+            if not active and not pending:
+                _log(
+                    "reconciling g0017_spawn_boss for the active Senbu kill task"
+                )
+                self._start_map_local_event(runtime, definition)
+        else:
+            _log(f"Panoltiaco Senbu event {event_id!r} is unavailable")
+
+        # The authored spawn can be missed if the event flags were not restored
+        # for this instance. Use its map-authored spawn rows directly while the
+        # quest target is active; _spawn_event_monsters is idempotent and still
+        # associates the live boss with the correct event set.
+        event_sets = tuple(
+            int(value.row)
+            for value in runtime.content.event_sets_for(event_id)
+        )
+        spawn_rows = runtime.content.spawn_rows_for_sets(event_sets)
+        if spawn_rows:
+            self._spawn_event_monsters(
+                runtime, sessions, (), extra_rows=spawn_rows,
+            )
+        else:
+            _log("Panoltiaco Senbu spawn point is missing from map content")
 
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
                          signal_id: str) -> None:
@@ -2385,6 +2782,11 @@ class MapEventService:
         if entrance_started:
             self._publish_entrance_bosses(runtime, (s,))
         CharacterService._quest_on_map_entered(self, s)
+        self._ensure_fyeborough_soul_collector(s, runtime)
+        self._ensure_artaya_clearing_demons(s, runtime)
+        self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+        self._ensure_pw209_slade_throne_room(s, runtime)
+        self._ensure_pw000_senbu_boss(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )
@@ -2397,12 +2799,183 @@ class MapEventService:
         self._ensure_parallel_world_boss_reward_chest_visible(runtime)
         self._publish_parallel_world_boss_reward_chest_props(s, runtime)
 
+    def _ensure_fyeborough_soul_collector(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Start or replay the Soul Collector for its active story objective.
+
+        The authored spawn is released by two map signals. If the player
+        completes the lantern step while already in Fyeborough, or the entry
+        signal arrives before the quest state is synchronized, those signals
+        can be missed and the quest is left waiting for a monster that was
+        never materialized. The accepted kill task is the durable condition
+        for restoring this one-shot encounter on map entry or task progress.
+        """
+
+        if map_key(runtime.map_id) != "pw207_village_dun":
+            return
+        quest_id = "pw207-way-to-village-02-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        kill_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw207-way-to-village-02-kill-01"
+                and any(
+                    event.kind.casefold() == "kill"
+                    and event.value.casefold()
+                    == "pw207_sentinel_shadow_father_01_q_way_to_village_02"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not kill_task_active:
+            return
+
+        event = runtime.catalog.event(
+            "pw207_way_to_village_02_spawn_shadow_father"
+        )
+        if event is None or not event.applies_to(runtime.map_id):
+            _log(
+                "cannot ensure Fyeborough Soul Collector: authored map event "
+                "is missing or does not apply to pw207_village_dun"
+            )
+            return
+        with runtime.lock:
+            running = event.key in runtime.running
+            pending = event.key in runtime.pending
+        if not running and not pending:
+            self._start_map_local_event(runtime, event)
+        if running or not pending:
+            # A shared map instance can have the encounter active while its
+            # actor was created before this player's session became ready.
+            # _spawn_event_monsters replays existing matching actors and
+            # creates any missing ones without duplicating active spawns.
+            with runtime.lock:
+                enabled_sets = tuple(sorted(
+                    definition.row
+                    for definition in runtime.content.event_sets_for(event.key)
+                    if definition.row in runtime.enabled_event_sets
+                ))
+            self._spawn_event_monsters(runtime, (s,), enabled_sets)
+        _log(
+            "ensured Fyeborough Soul Collector for active "
+            "pw207-way-to-village-02 kill objective"
+        )
+
+    def _ensure_artaya_clearing_demons(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Materialize Lost in the Woods' missing Artaya demon wave.
+
+        The extracted quest refers to four demon templates, and the map has a
+        quest event set named ``pw208_lost_woods_03_spawn_demons``. However,
+        that event set has no monster or spawn-point rows in the map database,
+        so entering Artaya's Clearing can leave the ClearRegion objective with
+        no enemies to kill. Use the objective's own four templates and place
+        one of each near its authored explore trigger while the task is active.
+        """
+
+        if map_key(runtime.map_id) != "pw208_lost_woods_flute_dun":
+            return
+        quest_id = "pw208-lost-woods-03-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        templates = (
+            "pw208_normal_demon_fat_01",
+            "pw208_normal_demon_skinny_01",
+            "pw208_normal_demon_damage_dealer_01",
+            "pw208_normal_demon_tank_01",
+        )
+        clear_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold() == "pw208-lost-woods-03-clear-01"
+                and any(
+                    event.kind.casefold() == "regioncleared"
+                    and event.value.casefold()
+                    == "pw208-lost-woods-03-n.s_pw208-lost-woods-03-clear-01clearregion"
+                    for event in task.events
+                )
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not clear_task_active:
+            return
+
+        marker = "pw208_lost_woods_03_quest_demons_materialized"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            _log("cannot ensure Artaya demons: no combat state on the instance")
+            with runtime.lock:
+                runtime.fired_once.discard(marker)
+            return
+
+        with combat.lock:
+            alive_templates = {
+                monster.template_id.casefold()
+                for actor_id, monster in combat.monsters.items()
+                if combat.monster_health.get(actor_id, 0) > 0
+            }
+        # The quest's explore trigger sits at (117, 0, 20). Spread the wave
+        # around it and away from the four allied beastman anchors at x=127-133.
+        positions = (
+            (111.0, 0.0, 16.0),
+            (117.0, 0.0, 16.0),
+            (111.0, 0.0, 24.0),
+            (117.0, 0.0, 24.0),
+        )
+        spawn_rows = []
+        for index, (template, position) in enumerate(
+            zip(templates, positions, strict=True),
+        ):
+            if template.casefold() in alive_templates:
+                continue
+            if _load_runtime_definition(self.static_database_path, template, 0) is None:
+                _log(f"Artaya demon template {template!r} has no runtime definition")
+                continue
+            spawn_rows.append(GatedSpawnRow(
+                -2_200_000 - index, -1, template, position,
+            ))
+        if spawn_rows:
+            self._spawn_event_monsters(runtime, sessions, (), extra_rows=tuple(spawn_rows))
+        _log(
+            f"ensured {len(spawn_rows)} missing demon(s) for active "
+            "pw208-lost-woods-03-clear-01 objective in Artaya's Clearing"
+        )
+
     # ------------------------------------------------------------------
     # Client-reported signals
     # ------------------------------------------------------------------
 
     def _spawn_map_chest_loot(self, s: Session, definition) -> int:
-        """Materialize the supported Bloodshed chest rewards as world loot.
+        """Materialize supported map chest rewards as world loot.
 
         The client export names CHEST_lootlist_BLOODSHED but does not include
         the server-side loot-list rows. Keep this fallback deliberately small
@@ -2410,19 +2983,31 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
-        if loot_list_id != _BLOOD_CHEST_LOOT_LIST:
+        if loot_list_id in {"chest_umbra_stone_01", "chest_umbra_stone_02"}:
+            specifications = [(
+                "ingredient_elemental_essence_crafting_light", 5,
+            )]
+        elif loot_list_id == "chest_pw199_demon_herb":
+            # Canol Alley's eight one-shot herb props feed a recipe that needs
+            # ten demon herbs. The client export has the loot-list reference
+            # but omits its server-side contents, so award two per prop.
+            specifications = [("demon_herb", 2)]
+        elif loot_list_id == _BLOOD_CHEST_LOOT_LIST:
+            specifications = [
+                ("money_rc", 10),
+            ]
+            gem_count = random.SystemRandom().randint(4, 5)
+            specifications.extend(
+                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
+                for _ in range(gem_count)
+            )
+        else:
             _log(
                 f"no local loot table for chest {definition.instance_id!r} "
                 f"({loot_list_id!r}); no rewards spawned"
             )
             return 0
         try:
-            specifications = [("money_rc", 10)]
-            gem_count = random.SystemRandom().randint(4, 5)
-            specifications.extend(
-                (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
-                for _ in range(gem_count)
-            )
             drops = []
             for template_id, amount in specifications:
                 item_definition = load_purchase_item_definition(
@@ -3907,6 +4492,9 @@ class MapEventService:
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
+            native_exit_guids = {
+                entry.instance_guid for entry in native_exit_entries
+            }
             if native_exit_entries and active_override is not False:
                 # Some authored exits start as inactive and have no client
                 # entity yet. ExitInfo only updates the cache; VariationInfo
@@ -3931,6 +4519,16 @@ class MapEventService:
                         f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
                     )
             for definition in viewer_definitions:
+                if (
+                    active_override is False
+                    and definition.instance_guid in native_exit_guids
+                ):
+                    # This is the pre-EventUpdate snapshot. The client has
+                    # not created these native scene exits yet, so asking it
+                    # to update them now only produces an UpdateExitState
+                    # "entity not found" warning. The post-event refresh
+                    # publishes them after VariationInfo creates the entity.
+                    continue
                 is_active = definition.active
                 if active_override is not None:
                     entry_active = active_override

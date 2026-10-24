@@ -20,6 +20,7 @@ from dso_server.protocol.reward_protocol import daily_login_offers
 from dso_server.protocol.player_init_protocol import (
     ACTORS_ENTER_VICINITY_COMMAND,
     NEW_NPC_COMMAND,
+    OBSTACLE_UPDATE_COMMAND,
     QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
@@ -93,6 +94,23 @@ class PlayerInitializationWorldService:
             selected_map_difficulty=map_access.map_difficulty,
             selected_map_access_id=map_access.request_map_id,
         )
+        # Quest state is restored by this phase. Rebuild the authoritative
+        # exits from the same reveal flags as the scene snapshot, rather than
+        # retaining the earlier snapshot built before quest restoration.
+        revealed_exits = tuple(
+            definition
+            for definition in load_local_map_exits(
+                self.static_database_path, gameplay_map,
+                active_event_flags=active_event_flags,
+            )
+            if definition.active and definition.destination_map_id
+        )
+        with s.flow_lock:
+            s.gameplay_map_exits = tuple(filter_parallel_world_exits_for_access(
+                self.static_database_path, gameplay_map, revealed_exits,
+                selected_map_access_id=map_access.request_map_id,
+                selected_map_difficulty=map_access.map_difficulty,
+            ))
         native_exit_commands = tuple(
             command for command in map_commands
             if command.command_id == VARIATION_INFO_COMMAND
@@ -648,6 +666,17 @@ class PlayerInitializationWorldService:
                 tuple(season_pass_state["claimed_awards"]),
             ),
         ))
+        # Restore obstacle collision before PlayerReady, alongside the quest
+        # EventUpdate. Scene visibility alone does not open physical gates.
+        obstacles = CharacterService._quest_obstacle_update(
+            self, s, state.gameplay_map,
+        )
+        if obstacles.obstacles:
+            commands = [
+                ServerCommand(OBSTACLE_UPDATE_COMMAND, obstacles, LOCAL_PLAYER_ACTOR_ID)
+                if command.command_id == OBSTACLE_UPDATE_COMMAND else command
+                for command in commands
+            ]
         with s.flow_lock:
             spender_state = s.gameplay_daily_challenges
             spender_progress = int(

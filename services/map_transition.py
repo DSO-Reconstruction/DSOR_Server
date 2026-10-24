@@ -13,12 +13,19 @@ decoder (one u32).
 from __future__ import annotations
 
 import time
+from dataclasses import replace
+from pathlib import Path
+import sqlite3
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
 from dso_server.gameplay.map_event_state import map_key
-from dso_server.gameplay.map_difficulty_state import map_teleport_access_group_override
+from dso_server.gameplay.map_difficulty_state import (
+    is_concrete_map_access,
+    map_teleport_access_group_override,
+)
+from dso_server.gameplay.quest_content import QUEST_STATE_ACCEPTED, active_tasks
 from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 
@@ -33,6 +40,128 @@ _LEGACY_EXIT_URL_REDIRECTS = {
 
 class MapTransitionService:
     """Validate map exits/travel and coordinate the local server handoff."""
+
+    def _artaya_clearing_shortcut(self, s: Session, gameplay_map: str):
+        """Return the matching Artaya access while its discovery task is active.
+
+        The authored route to Artaya winds through a difficulty-tiered branch
+        maze. During the specific "Find Artaya's Clearing" objective, any
+        Twisted Woods exit can serve as a temporary direct route to the quest
+        map. Normal routing resumes as soon as that objective is complete.
+        """
+        raw_source = str(gameplay_map or "").strip().casefold()
+        source = map_key(raw_source)
+        if not (
+            source == "pw208_rangervillage_dun"
+            or raw_source.startswith("pw208_rangervillage_dun_")
+            or raw_source.startswith("pw208_lost_woods_dun_")
+        ):
+            return None
+
+        quest_log = getattr(s, "gameplay_quest_log", None) or {}
+        catalog = CharacterService._quest_catalog(self)
+        route_objectives = {
+            # Find Artaya's Clearing (the task's map target is Flute).
+            "pw208-lost-woods-02-n": {
+                "pw208-lost-woods-02-explore-01",
+            },
+            # Nerina's follow-up asks for a clear on the same Flute map.
+            "pw208-lost-woods-03-n": {
+                "pw208-lost-woods-03-clear-01",
+            },
+        }
+        route_is_active = False
+        for quest_id, task_titles in route_objectives.items():
+            quest = catalog.quest(quest_id)
+            progress = next((
+                state
+                for key, state in quest_log.items()
+                if str(key).casefold() == quest_id
+            ), None)
+            if (
+                quest is None
+                or progress is None
+                or progress.state != QUEST_STATE_ACCEPTED
+            ):
+                continue
+            if any(
+                task.title.casefold() in task_titles
+                and any(
+                    map_key(map_id) == "pw208_lost_woods_flute_dun"
+                    for map_id in task.maps
+                )
+                for task in active_tasks(quest, progress)
+            ):
+                route_is_active = True
+                break
+        if not route_is_active:
+            return None
+
+        difficulty = max(
+            0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+        )
+        with sqlite3.connect(
+            f"file:{Path(self.static_database_path).resolve().as_posix()}?mode=ro",
+            uri=True,
+        ) as database:
+            rows = database.execute(
+                "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
+                "WHERE AccessGroup='pw208_lost_woods_flute_dun'",
+            ).fetchall()
+        if not rows:
+            return None
+        return min(
+            rows,
+            key=lambda row: (
+                abs(int(row[1] or 0) - difficulty), int(row[1] or 0),
+            ),
+        )[0]
+
+    def _nerina_talk_destination(self, s: Session, gameplay_map: str):
+        """Return Nerina's map access while her Twisted Woods talk is active."""
+        if map_key(gameplay_map) != "pw208_lost_woods_flute_dun":
+            return None
+
+        quest_id = "pw208-lost-woods-02-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        if (
+            quest is None
+            or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+            or not any(
+                task.title.casefold() == "pw208-lost-woods-02-talk-01"
+                and task.task_type.casefold() == "talktask"
+                for task in active_tasks(quest, progress)
+            )
+        ):
+            return None
+
+        difficulty = max(
+            0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+        )
+        with sqlite3.connect(
+            f"file:{Path(self.static_database_path).resolve().as_posix()}?mode=ro",
+            uri=True,
+        ) as database:
+            rows = database.execute(
+                "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
+                "WHERE AccessGroup='pw208_lost_woods_clearing_dun'",
+            ).fetchall()
+        if not rows:
+            return None
+        return min(
+            rows,
+            key=lambda row: (
+                abs(int(row[1] or 0) - difficulty), int(row[1] or 0),
+            ),
+        )[0]
 
     @staticmethod
     def _is_fractured_planes_floor_id(map_id: str) -> bool:
@@ -498,6 +627,65 @@ class MapTransitionService:
                         or d.name == request.exit_id
                     )
                 )
+                # A client that cached a different difficulty alias can
+                # request an authored exit GUID that is no longer in the
+                # selected-tier session list. Preserve the quest shortcut in
+                # that case too, before the ordinary stale-exit rejection.
+                artaya_access_id = (
+                    self._artaya_clearing_shortcut(s, gameplay_map)
+                    if matching_authored else None
+                )
+                if artaya_access_id:
+                    shortcut = replace(
+                        matching_authored[0],
+                        destination_map_id=artaya_access_id,
+                        destination_entry_name=(
+                            "entry_pw208_lost_woods_flute_dun"
+                        ),
+                    )
+                    if CharacterService._activate_map_exit(
+                        self,
+                        s,
+                        shortcut,
+                        trigger="Artaya quest shortcut (cached exit alias)",
+                        destination_access_id=artaya_access_id,
+                    ):
+                        CharacterService._accept_gameplay_state_command(
+                            s, 0x0060,
+                        )
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] routed cached "
+                            f"Twisted Woods exit directly to Artaya's "
+                            f"Clearing ({artaya_access_id})"
+                        )
+                        return
+                nerina_access_id = (
+                    self._nerina_talk_destination(s, gameplay_map)
+                    if matching_authored else None
+                )
+                if nerina_access_id:
+                    shortcut = replace(
+                        matching_authored[0],
+                        destination_map_id=nerina_access_id,
+                        destination_entry_name=(
+                            "entry_pw208_lost_woods_clearing_dun"
+                        ),
+                    )
+                    if CharacterService._activate_map_exit(
+                        self,
+                        s,
+                        shortcut,
+                        trigger="Nerina talk quest shortcut",
+                        destination_access_id=nerina_access_id,
+                    ):
+                        CharacterService._accept_gameplay_state_command(
+                            s, 0x0060,
+                        )
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] routed Flute exit "
+                            f"to Nerina's map ({nerina_access_id})"
+                        )
+                        return
                 if matching_authored:
                     clicked_authored = matching_authored[0]
                     player_level = max(
@@ -648,6 +836,63 @@ class MapTransitionService:
                     f"exit id {request.exit_id!r} is ambiguous without a "
                     "player position"
                 )
+            artaya_access_id = self._artaya_clearing_shortcut(
+                s, gameplay_map,
+            )
+            if artaya_access_id:
+                # Reuse the portal the player already reached. The destination
+                # entry puts them at the clearing's quest exploration area;
+                # after the task advances, all original Twisted Woods exits
+                # work normally again.
+                shortcut = replace(
+                    definition,
+                    destination_map_id=artaya_access_id,
+                    destination_entry_name=(
+                        "entry_pw208_lost_woods_flute_dun"
+                    ),
+                )
+                if CharacterService._activate_map_exit(
+                    self,
+                    s,
+                    shortcut,
+                    trigger="Artaya quest shortcut",
+                    destination_access_id=artaya_access_id,
+                ):
+                    CharacterService._accept_gameplay_state_command(
+                        s, 0x0060,
+                    )
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] routed active Artaya "
+                        f"discovery quest directly to {artaya_access_id!r} "
+                        f"from {gameplay_map!r}"
+                    )
+                    return
+            nerina_access_id = self._nerina_talk_destination(
+                s, gameplay_map,
+            )
+            if nerina_access_id:
+                shortcut = replace(
+                    definition,
+                    destination_map_id=nerina_access_id,
+                    destination_entry_name=(
+                        "entry_pw208_lost_woods_clearing_dun"
+                    ),
+                )
+                if CharacterService._activate_map_exit(
+                    self,
+                    s,
+                    shortcut,
+                    trigger="Nerina talk quest shortcut",
+                    destination_access_id=nerina_access_id,
+                ):
+                    CharacterService._accept_gameplay_state_command(
+                        s, 0x0060,
+                    )
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] routed Flute exit "
+                        f"to Nerina's map ({nerina_access_id})"
+                    )
+                    return
             # UnlockMap serializes the selected MapAccess config first and the
             # clicked ExitProperty's authored URL second.  For a higher PW
             # tier those values intentionally differ (for example _02/_01).
@@ -749,7 +994,9 @@ class MapTransitionService:
                     selected_map_id,
                     player_level=player_level,
                 )
-                if selected_access.request_map_id != selected_map_id:
+                if not is_concrete_map_access(
+                    self.static_database_path, selected_map_id,
+                ):
                     raise ValueError(
                         f"selected MapId {selected_map_id!r} is not a "
                         "concrete map access"

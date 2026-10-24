@@ -28,6 +28,7 @@ from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     load_local_event_set_flags,
+    load_local_map_exits,
     load_local_npc_definitions,
     local_npc_actor_id,
     local_npc_info,
@@ -38,6 +39,7 @@ from dso_server.gameplay.map_event_state import (
     map_key,
     prop_visible_to_player,
 )
+from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.quest_content import (
     MAX_TASKS,
     NO_TIMESTAMP,
@@ -59,6 +61,11 @@ from dso_server.gameplay.quest_content import (
 )
 from dso_server.paths import DEFAULT_QUESTS_PATH
 from dso_server.protocol.character_selection import CLASS_NAMES
+from dso_server.protocol.currency_protocol import (
+    GAME_CURRENCY_CHANGED_COMMAND,
+    GameCurrencyChanged,
+    resolve_game_currency_wire_id,
+)
 from dso_server.protocol.gameplay_protocol import (
     ActorsEnterVicinity,
     ActorsEnterVicinityBatch,
@@ -68,6 +75,7 @@ from dso_server.protocol.gameplay_protocol import (
     NPCFlag,
     NPCInfo,
     NPCInteraction,
+    NPCLink,
     NPCStringSet,
     NewNPC,
     encode_actors_enter_vicinity_batch,
@@ -77,7 +85,10 @@ from dso_server.protocol.loot_protocol import _credit_currency
 from dso_server.protocol.prop_protocol import encode_discard_prop_batch
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
+    OBSTACLE_UPDATE_COMMAND,
     ChapterProgress,
+    ObstacleState,
+    ObstacleUpdate,
     QuestLogInfo,
     ServerCommand,
     encode_event_update,
@@ -91,7 +102,10 @@ from dso_server.protocol.quest_protocol import (
     QUEST_COMMAND,
     DELIVER_COMMAND,
     NPC_DELIVERY_DIALOG,
+    NPC_PAY_DIALOG,
+    PAY_COMMAND,
     decode_deliver,
+    decode_pay,
     QUEST_MONSTER_INDICATION_INFO_COMMAND,
     QUEST_MONSTER_INDICATION_REQUEST_COMMAND,
     QUEST_OPERATION_ACCEPT,
@@ -242,6 +256,125 @@ class QuestService:
         path = getattr(self, "quests_path", None) or DEFAULT_QUESTS_PATH
         return load_quest_catalog(path)
 
+    def _quest_exit_reveal_flags(
+        self, s: Session, map_id: str,
+    ) -> frozenset[str]:
+        """Restore exit events whose authored quest condition was completed.
+
+        Only events referenced by this map's exits are considered. This keeps
+        durable quest progress from reactivating unrelated map events, while
+        applying the same recovery rule to every quest-gated route.
+        """
+
+        try:
+            exits = load_local_map_exits(
+                self.static_database_path,
+                map_id,
+                include_inactive_event_sets=True,
+            )
+            event_sets = load_local_event_set_flags(
+                self.static_database_path, map_id,
+            )
+            signals = load_map_signal_catalog(self.static_database_path)
+        except (OSError, sqlite3.Error, ValueError):
+            return frozenset()
+
+        _travel_maps, map_accesses = map_unlock_catalog(
+            str(self.static_database_path)
+        )
+        access_groups = {
+            map_key(access_id): map_key(access_group)
+            for access_id, access_group, _quest_id in map_accesses
+        }
+        exit_destinations: dict[str, set[str]] = {}
+        for exit_definition in exits:
+            if not exit_definition.destination_map_id or exit_definition.event_set_row < 0:
+                continue
+            destination_key = map_key(exit_definition.destination_map_id)
+            destination = access_groups.get(destination_key, destination_key)
+            for flag in event_sets.get(exit_definition.event_set_row, ()):
+                exit_destinations.setdefault(flag.casefold(), set()).add(
+                    destination
+                )
+        if not exit_destinations:
+            return frozenset()
+
+        accepted, solved, tasks_done = self._quest_signal_facts(s)
+        with s.flow_lock:
+            unlocked_maps = frozenset(s.gameplay_unlocked_maps)
+        discovered_maps = {map_key(value) for value in unlocked_maps}
+        discovered_maps.update(
+            group for access, group in access_groups.items()
+            if access in discovered_maps or group in discovered_maps
+        )
+        class_name, level = _character_facts(s)
+        running = self._quest_active_events(s)
+        restored = set()
+
+        def rule_accepts(rule) -> bool:
+            facts = dict(
+                map_id=map_id,
+                running_events=running,
+                player_level=level,
+                class_name=class_name,
+                player_count=1,
+                quests_accepted=accepted,
+                quests_solved=solved,
+                tasks_done=tasks_done,
+                unlocked_maps=unlocked_maps,
+            )
+            if rule.accepts(**facts):
+                return True
+
+            # A closed quest is no longer "accepted", but a completed task
+            # token is permanent. Relax that condition only when the same
+            # signal also names a completed task from that closed quest.
+            closed_requirements = set(rule.quest_accepted) & set(solved)
+            if not closed_requirements:
+                return False
+            for quest_id in closed_requirements:
+                if not any(
+                    task in tasks_done
+                    and task.partition(":")[0] == quest_id
+                    for task in rule.quest_task_done
+                ):
+                    return False
+            durable_rule = replace(
+                rule,
+                quest_accepted=tuple(
+                    quest for quest in rule.quest_accepted
+                    if quest not in closed_requirements
+                ),
+            )
+            return durable_rule.accepts(**facts)
+
+        normalized_map = map_key(map_id)
+        for flag, destinations in exit_destinations.items():
+            # The discovered destination is the strongest durable proof that
+            # this character has passed the route gate. This also covers
+            # authored signals that require only QuestAccepted and carry no
+            # completed task condition to recover after turn-in.
+            if destinations & discovered_maps:
+                restored.add(flag)
+                continue
+            event = signals.event(flag)
+            if event is None or not event.applies_to(normalized_map):
+                continue
+            for signal_id in event.start_signals:
+                rule = signals.rule(signal_id)
+                if rule is None or rule.event_type != "playerenteredmap":
+                    continue
+                # PlayerEnteredMap signals use EventParam to name the map;
+                # preserve that check as well as the signal's Map filter.
+                if rule.params and normalized_map not in {
+                    map_key(value) for value in rule.params
+                }:
+                    continue
+                if rule_accepts(rule):
+                    restored.add(event.key)
+                    break
+        return frozenset(restored)
+
     def _quest_active_events(self, s: Session) -> frozenset[str]:
         # Read the schedule now, not the map-entry snapshot: event dates or
         # operator overrides may have changed while the character was online.
@@ -368,11 +501,77 @@ class QuestService:
                 class_name=class_name,
                 level=level,
                 closed_quests=closed,
-                known_quests=log.keys(),
+                known_quests=(
+                    quest_id for quest_id, progress in log.items()
+                    if progress.state != QUEST_STATE_CANCELLED
+                ),
                 active_events=active_events,
             ) for quest in catalog.offered_by(npc_template_id)):
                 targets.add(npc_template_id)
         flags = set()
+        if str(map_id).casefold() == "pw205_helios_dun":
+            hero_of_light_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw205-the-hero-of-light-02-n"
+            ), None)
+            if (
+                hero_of_light_progress is not None
+                and hero_of_light_progress.state == QUEST_STATE_CLOSED
+            ):
+                # Telepolos' reusable Umbra Stone loot props are hidden by the
+                # in-progress quest event. Retail starts this deactivation
+                # phase on map entry after the quest is solved; restore it
+                # from the durable quest log so the stones remain usable after
+                # relogging or loading a fresh map instance.
+                flags.add(
+                    "pw205_the_hero_of_light_02_deact_umbra_stones_01"
+                )
+        if str(map_id).casefold() == "pw206_temple_dun":
+            union_quest = catalog.quest("pw206-enter-the-temple-02-n")
+            union_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw206-enter-the-temple-02-n"
+            ), None)
+            required_offerings = {
+                "pw206-enter-the-temple-02-interact-01",
+                "pw206-enter-the-temple-02-interact-02",
+            }
+            offering_tasks = (
+                tuple(
+                    task for task in union_quest.tasks
+                    if task.title.casefold() in required_offerings
+                )
+                if union_quest is not None else ()
+            )
+            corruption_progress = next((
+                progress
+                for quest_id, progress in log.items()
+                if quest_id.casefold() == "pw206-remove-the-corruption-01-n"
+            ), None)
+            offerings_complete = (
+                union_quest is not None
+                and union_progress is not None
+                and len(offering_tasks) == len(required_offerings)
+                and all(
+                    union_progress.task_finished(task.index)
+                    for task in offering_tasks
+                )
+            )
+            corruption_quest_reached = (
+                corruption_progress is not None
+                and corruption_progress.state != QUEST_STATE_CANCELLED
+            )
+            if offerings_complete or corruption_quest_reached:
+                # The temple's authored barrier normally waits until quest
+                # turn-in. The story removes it after both offerings, however,
+                # and it blocks the Creator path and guardian the quest still
+                # requires. The follow-up corruption quest is durable evidence
+                # that the player has passed that story gate, so keep the
+                # barrier removed when its map instance is rebuilt after a
+                # relog, even if the prior quest's task tokens are unavailable.
+                flags.add("pw206_enter_the_temple_02_remove_barrier")
         if targets:
             declarations = load_local_event_set_flags(
                 self.static_database_path, map_id,
@@ -384,6 +583,8 @@ class QuestService:
             if row is not None and row >= 0
             for flag in declarations.get(row, frozenset())
             })
+
+        flags.update(self._quest_exit_reveal_flags(s, map_id))
 
         if str(map_id).casefold() == "f4102_dun":
             railroad_repair_complete = any(
@@ -543,9 +744,58 @@ class QuestService:
     def _quest_on_map_entered(self, s: Session) -> None:
         self._quest_recover_myrdosch_access_key(s)
         self._quest_recover_artaya_sanctuary_key(s)
+        self._quest_ensure_parallel_world_introduction(s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        # These Brigavik objectives are authored as ExploreTask trigger
+        # volumes, but their targets can be missed at the map spawn or lie in
+        # a part of the scene that this reconstruction currently blocks off.
+        # Entering the destination map is sufficient to credit these route
+        # objectives and keep the main quest chain moving.
+        map_entry_explore_tasks = {
+            # Artaya's Clearing is the Flute map. The extracted quest points
+            # its exploration task at the generic Clearing map and the trigger
+            # volume is missing from Flute, so credit the authored trigger
+            # when the direct quest route lands the player there.
+            "pw208_lost_woods_flute_dun": (
+                (
+                    "pw208-lost-woods-02-n",
+                    "pw208-lost-woods-02-explore-01",
+                ),
+            ),
+            "pw203_norseland_01_dun": (
+                ("pw201-the-norseman-05-n", "pw201-the-norseman-05-explore-01"),
+            ),
+            "pw203_norseland_02_dun": (
+                (
+                    "pw203-rescue-ancestor-stone-01-n",
+                    "pw203-rescue-ancestor-stone-01-explore-01",
+                ),
+            ),
+        }
+        for quest_id, task_title in map_entry_explore_tasks.get(
+            map_key(runtime.map_id), (),
+        ):
+            progress = _quest_log(s).get(quest_id)
+            quest = self._quest_catalog().quest(quest_id)
+            if (
+                progress is not None
+                and quest is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+            ):
+                for task in active_tasks(quest, progress):
+                    if task.title.casefold() != task_title:
+                        continue
+                    trigger_id = next((
+                        event.value for event in task.events
+                        if event.kind.casefold() == "trigger" and event.value
+                    ), "")
+                    if trigger_id:
+                        self._quest_feed(
+                            s, "trigger", trigger_id, quest_id=quest.quest_id,
+                        )
+                    break
         # A map's initial EventUpdate may arrive before its local event
         # controller is ready. Re-send quest-derived activations after map
         # entry so gated client-only NPCs become interactable at every
@@ -846,6 +1096,27 @@ class QuestService:
                     viewer, combat, group,
                     force_actor_ids=group_actor_ids,
                 )
+
+    def _quest_ensure_parallel_world_introduction(self, s: Session) -> None:
+        """Start Ammon's Parallel Worlds introduction for level-50 characters.
+
+        The extracted quest is giver-less and normally starts when a special
+        Enchanted Scroll is received. The local server does not currently
+        deliver that trigger item, so characters who reach level 50 otherwise
+        never see the first Parallel Worlds quest. Reconcile the level gate on
+        login/map entry and level-up instead.
+        """
+
+        _class_name, level = _character_facts(s)
+        if level < 50:
+            return
+        quest = self._quest_catalog().quest("pw000-introduction-01-n")
+        if quest is None or not quest.auto_start:
+            return
+        progress = _quest_log(s).get(quest.quest_id)
+        if progress is not None and progress.state != QUEST_STATE_CANCELLED:
+            return
+        self._quest_accept(s, quest.quest_id, offered=False)
 
     def _quest_recover_myrdosch_access_key(self, s: Session) -> None:
         """Restore the Andrakas key when an older delivery lost its inventory drop."""
@@ -1201,7 +1472,11 @@ class QuestService:
         for quest in catalog.offered_by(npc_template_id):
             if catalog.available(
                 quest, class_name=class_name, level=level,
-                closed_quests=closed, known_quests=log.keys(),
+                closed_quests=closed,
+                known_quests=(
+                    quest_id for quest_id, progress in log.items()
+                    if progress.state != QUEST_STATE_CANCELLED
+                ),
                 active_events=active_events,
             ):
                 interactions.append(NPCInteraction(
@@ -1251,7 +1526,12 @@ class QuestService:
                 quest.quest_id, quest.quest_type_id,
             ))
             interactions.append(NPCInteraction(
-                barter.barter_id, NPC_DELIVERY_DIALOG, quest.quest_id, quest.quest_type_id,
+                barter.barter_id,
+                NPC_PAY_DIALOG
+                if barter.event_kind == "pay"
+                else NPC_DELIVERY_DIALOG,
+                quest.quest_id,
+                quest.quest_type_id,
             ))
         return tuple(interactions), tuple(flags)
 
@@ -1272,17 +1552,35 @@ class QuestService:
         self, s: Session, npc_info: NPCInfo, npc_template_id: str,
     ) -> NPCInfo:
         interactions, flags = self._quest_npc_interactions(s, npc_template_id)
+        active_barters = self._quest_npc_barters(s, npc_template_id)
         barters = tuple(
-            NPCStringSet(barter.barter_id, barter.items, barter.amount, barter.reply)
-            for _quest, barter in self._quest_npc_barters(s, npc_template_id)
+            NPCStringSet(
+                barter.barter_id,
+                self._quest_delivery_item_templates(quest, barter),
+                barter.amount,
+                barter.reply,
+            )
+            for quest, barter in active_barters
+            if barter.event_kind != "pay"
         )
-        if not interactions and not flags and not barters:
+        payments = tuple(
+            NPCLink(
+                barter.barter_id,
+                barter.items[0] if barter.items else "",
+                barter.amount,
+                barter.reply,
+            )
+            for _quest, barter in active_barters
+            if barter.event_kind == "pay"
+        )
+        if not interactions and not flags and not barters and not payments:
             return npc_info
         return replace(
             npc_info,
             interactions=npc_info.interactions + interactions,
             flags=npc_info.flags + flags,
             string_sets=npc_info.string_sets + barters,
+            links=npc_info.links + payments,
         )
 
     def _quest_decorate_map_commands(self, s: Session, commands) -> tuple:
@@ -1567,13 +1865,43 @@ class QuestService:
                     )
 
     @staticmethod
-    def _quest_delivery_items(inventory, barter):
+    def _quest_delivery_item_templates(quest, barter):
+        """Return item alternatives the NPC should accept for this barter."""
+
+        items = tuple(barter.items)
+        if (
+            str(getattr(quest, "quest_id", "")).casefold()
+            == "pw210-defeat-sargon-01-n"
+            and any(
+                item.casefold() == "ammunition_ammotype_light_common"
+                for item in items
+            )
+        ):
+            # This quest asks for generic Light Essences, but characters may
+            # carry an equivalent ammunition tier or the Sargon event's
+            # unmodified/boosted light ammunition item instead.
+            items += (
+                "ammunition_ammotype_light_uncommon",
+                "ammunition_ammotype_light_magic",
+                "ammunition_ammotype_light_rare",
+                "ammunition_ammotype_light_epic",
+                "e_light_ammunition_vc",
+                "e_light_ammunition_rc_300",
+            )
+        return tuple(dict.fromkeys(items))
+
+    @staticmethod
+    def _quest_delivery_items(inventory, barter, quest=None):
         """Native hand-ins count carried storage, never bank/equipped/socketed items."""
         if inventory is None:
             return ()
         carried = set(inventory.storage_58) | set(inventory.storage_80) | set(inventory.field_180)
         excluded = set(inventory.equipment_slots) | set(inventory.storage_a8) | set(inventory.storage_d0)
-        order = {template.casefold(): index for index, template in enumerate(barter.items)}
+        templates = (
+            CharacterService._quest_delivery_item_templates(quest, barter)
+            if quest is not None else barter.items
+        )
+        order = {template.casefold(): index for index, template in enumerate(templates)}
         return tuple(sorted(
             (item for item in inventory.items
              if item.item_id in carried and item.item_id not in excluded
@@ -1583,52 +1911,121 @@ class QuestService:
 
     def _handle_deliver_command(self, s: Session, payload: bytes) -> None:
         request = decode_deliver(payload, getattr(s, "current_message_bit_length", None))
-        CharacterService._accept_gameplay_state_command(s, DELIVER_COMMAND)
+        self._handle_quest_payment_request(
+            s, request, command_id=DELIVER_COMMAND,
+            request_id=request.barter_id, event_kind="deliver",
+        )
+
+    def _handle_pay_command(self, s: Session, payload: bytes) -> None:
+        request = decode_pay(payload, getattr(s, "current_message_bit_length", None))
+        self._handle_quest_payment_request(
+            s, request, command_id=PAY_COMMAND,
+            request_id=request.pay_id, event_kind="pay",
+        )
+
+    def _handle_quest_payment_request(
+        self, s: Session, request, *, command_id: int,
+        request_id: str, event_kind: str,
+    ) -> None:
+        CharacterService._accept_gameplay_state_command(s, command_id)
         definition = CharacterService._resolve_npc_interaction(self, s, request.npc_actor_id)
         error = "unknown local NPC"
         committed = None
+        game_currency_update = None
         with s.flow_lock:
-            s.gameplay_client_command_state[DELIVER_COMMAND] = request
+            s.gameplay_client_command_state[command_id] = request
             if (not s.connected or not s.gameplay_presence_ready
                     or s.gameplay_presence_departed or s.gameplay_exit_transition_started):
                 return
             if definition is not None:
                 choice = next(((quest, barter) for quest, barter
                                in self._quest_npc_barters(s, definition.template_id)
-                               if barter.barter_id == request.barter_id), None)
+                               if barter.barter_id == request_id
+                               and (
+                                   event_kind == "deliver"
+                                   or barter.event_kind == event_kind
+                               )), None)
                 error = "barter is not an active task at this NPC"
                 if choice is not None:
                     quest, barter = choice
-                    items = self._quest_delivery_items(s.gameplay_inventory, barter)
-                    error = "required items are not in carried inventory"
-                    if barter.amount > 0 and sum(int(item.amount) for item in items) >= barter.amount:
+                    items = ()
+                    currency_id = ""
+                    available = 0
+                    if barter.event_kind == "pay":
+                        try:
+                            currency_id = resolve_game_currency_wire_id(
+                                barter.items[0]
+                            )
+                        except (IndexError, KeyError):
+                            error = "quest payment names an unknown currency"
+                        else:
+                            available = int(
+                                s.gameplay_game_currencies.get(currency_id, 0)
+                            )
+                            error = "required game currency is not available"
+                    else:
+                        items = CharacterService._quest_delivery_items(
+                            s.gameplay_inventory, barter, quest,
+                        )
+                        error = "required items are not in carried inventory"
+                    enough = (
+                        barter.amount > 0
+                        and (
+                            available >= barter.amount
+                            if barter.event_kind == "pay"
+                            else sum(int(item.amount) for item in items)
+                            >= barter.amount
+                        )
+                    )
+                    if enough:
                         progress = copy.deepcopy(_quest_log(s)[quest.quest_id])
-                        result = apply_quest_event(quest, progress, "deliver", barter.barter_id)
+                        result = apply_quest_event(
+                            quest, progress, barter.event_kind, barter.barter_id,
+                        )
                         error = "delivery event guards do not allow progress"
                         if result.changes or result.quest_finished:
-                            builder = InventoryMutationBuilder(
-                                s.gameplay_inventory, s.gameplay_next_item_id,
-                            )
-                            remaining = barter.amount
-                            if not barter.only_show:
-                                for item in items:
-                                    amount = min(remaining, int(item.amount))
-                                    builder.consume(item.item_id, amount, preserve_item_id=True)
-                                    remaining -= amount
-                                    if not remaining:
-                                        break
-                            mutation = builder.finish()
-                            # One commit: an account snapshot cannot save the
-                            # consumed items without their completed objective.
-                            s.gameplay_inventory = mutation.inventory
-                            s.gameplay_next_item_id = mutation.next_item_id
+                            mutation = None
+                            if barter.event_kind == "pay":
+                                updated_balance = available - barter.amount
+                                s.gameplay_game_currencies = dict(
+                                    s.gameplay_game_currencies
+                                )
+                                s.gameplay_game_currencies[currency_id] = (
+                                    updated_balance
+                                )
+                                game_currency_update = GameCurrencyChanged(
+                                    currency_id, updated_balance,
+                                )
+                            else:
+                                builder = InventoryMutationBuilder(
+                                    s.gameplay_inventory,
+                                    s.gameplay_next_item_id,
+                                )
+                                remaining = barter.amount
+                                if not barter.only_show:
+                                    for item in items:
+                                        amount = min(
+                                            remaining, int(item.amount),
+                                        )
+                                        builder.consume(
+                                            item.item_id, amount,
+                                            preserve_item_id=True,
+                                        )
+                                        remaining -= amount
+                                        if not remaining:
+                                            break
+                                mutation = builder.finish()
+                                s.gameplay_inventory = mutation.inventory
+                                s.gameplay_next_item_id = mutation.next_item_id
+                            # Commit the wallet/inventory with the task token
+                            # so an account save cannot record only one side.
                             _quest_log(s)[quest.quest_id] = progress
                             committed = (quest, barter, result, mutation)
             # The client predicts item consumption even for show-only tasks.
             # A rejected/show-only hand-in must restore its authoritative bag.
             inventory_snapshot = copy.deepcopy(s.gameplay_inventory)
         if committed is None:
-            _log(f"delivery {request.barter_id!r} rejected: {error}")
+            _log(f"quest {event_kind} {request_id!r} rejected: {error}")
             if inventory_snapshot is not None:
                 self._send_quest_commands(s, (ServerCommand(
                     INVENTORY_INFO_COMMAND, inventory_snapshot, LOCAL_PLAYER_ACTOR_ID,
@@ -1636,11 +2033,24 @@ class QuestService:
             self._quest_refresh_npc_infos(s)
             return
         quest, barter, result, mutation = committed
-        inventory_records = (inventory_snapshot,) if barter.only_show else (mutation.delta, mutation.final)
-        self._send_quest_commands(s, tuple(ServerCommand(
-            INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
-        ) for record in inventory_records), label="quest-delivery-inventory")
-        self._quest_publish_result(s, quest, result, "deliver", barter.barter_id)
+        if game_currency_update is not None:
+            self._send_quest_commands(s, (ServerCommand(
+                GAME_CURRENCY_CHANGED_COMMAND,
+                game_currency_update,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),), label="quest-payment-currency")
+        inventory_records = (
+            (inventory_snapshot,) if barter.only_show
+            else (mutation.delta, mutation.final) if mutation is not None
+            else ()
+        )
+        if inventory_records:
+            self._send_quest_commands(s, tuple(ServerCommand(
+                INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
+            ) for record in inventory_records), label="quest-delivery-inventory")
+        self._quest_publish_result(
+            s, quest, result, barter.event_kind, barter.barter_id,
+        )
         if result.inventory_drops:
             self._quest_grant_inventory_drops(
                 s, quest, result.inventory_drops,
@@ -1778,7 +2188,11 @@ class QuestService:
         closed = [q for q, p in log.items() if p.state == QUEST_STATE_CLOSED]
         if not catalog.available(
             quest, class_name=class_name, level=level,
-            closed_quests=closed, known_quests=log.keys(),
+            closed_quests=closed,
+            known_quests=(
+                known_id for known_id, progress in log.items()
+                if progress.state != QUEST_STATE_CANCELLED
+            ),
             active_events=self._quest_active_events(s),
         ):
             _log(f"quest {quest.quest_id!r} is not available to this character")
@@ -1797,6 +2211,15 @@ class QuestService:
             if s.gameplay_exit_transition_started:
                 return False
             existing = log.get(quest.quest_id)
+            if (
+                existing is not None
+                and existing.state == QUEST_STATE_CANCELLED
+            ):
+                # Older saved quest logs can retain the cancelled marker
+                # instead of the normal cancellation path's removal. Treat
+                # that marker as eligible for a fresh acceptance.
+                del log[quest.quest_id]
+                existing = None
             if existing is not None and existing.state != QUEST_STATE_CLOSED:
                 return False
             progress = QuestProgress(quest.quest_id)
@@ -1838,6 +2261,35 @@ class QuestService:
         self._quest_ensure_lantern_scout(s)
         CharacterService._request_account_save(s, "quest accepted")
         self._quest_fire_signal(s, "PlayerOpenedQuest", (quest.quest_id,))
+        if quest.quest_id.casefold() == "pw208-lost-woods-03-n":
+            # This follow-up quest is offered by Nerina, but its first task
+            # asks the player to search for her in Twisted Woods again. The
+            # acceptance conversation already supplies that contact, so
+            # credit the authored ExploreTask trigger and advance to its next
+            # objective immediately.
+            progress = _quest_log(s).get(quest.quest_id)
+            initial_task = next((
+                task
+                for task in active_tasks(quest, progress)
+                if task.title.casefold() == "pw208-lost-woods-03-explore-01"
+                and task.task_type.casefold() == "exploretask"
+            ), None) if progress is not None else None
+            trigger_id = (
+                explore_trigger_for_task(quest, initial_task)
+                if initial_task is not None else ""
+            )
+            if trigger_id:
+                advanced = self._quest_feed(
+                    s,
+                    "trigger",
+                    trigger_id,
+                    quest_id=quest.quest_id,
+                )
+                _log(
+                    "credited Nerina's Twisted Woods search on quest "
+                    f"acceptance: quest={quest.quest_id!r}, "
+                    f"trigger={trigger_id!r}, advanced={advanced}"
+                )
         return True
 
     def _quest_turn_in(self, s: Session, quest_id: str) -> bool:
@@ -1984,6 +2436,7 @@ class QuestService:
                 s, quest_id, QUEST_STATE_CANCELLED, NO_TIMESTAMP,
             ), label="quest-cancel")
             self._quest_sync_props(s)
+            self._quest_refresh_npc_infos(s)
         CharacterService._request_account_save(s, "quest cancelled")
         return True
 
@@ -2113,6 +2566,14 @@ class QuestService:
                 changed_any = True
                 self._quest_publish_result(s, quest, result, kind, value)
         if changed_any:
+            if str(kind).casefold() not in {
+                "holdgroundsucceeded", "holdgroundfailed",
+            }:
+                # A mapped defense objective may only become active after an
+                # earlier clear/explore step finishes. Re-check it whenever
+                # quest progress changes, not only when the quest is accepted
+                # or the map is entered.
+                self._quest_start_active_holdgrounds(s)
             if str(kind).casefold() != "trigger":
                 self._quest_reconcile_explore_trigger_presence(s)
             self._quest_sync_props(s)
@@ -2196,6 +2657,45 @@ class QuestService:
             s.gameplay_next_item_id = max(s.gameplay_next_item_id, end)
         CharacterService._reconcile_world_loot_visibility(s, label="quest-drop")
 
+    def _quest_obstacle_update(self, s: Session, map_id: str) -> ObstacleUpdate:
+        """Restore physical quest gates as well as their scene EventSets."""
+
+        if str(map_id).casefold() == "pw209_kinza_dun":
+            quest_id = "pw209-slades-final-chapter-01-n"
+            quest = self._quest_catalog().quest(quest_id)
+            progress = next((
+                value for key, value in _quest_log(s).items()
+                if str(key).casefold() == quest_id
+            ), None)
+            lever_task = next((
+                task for task in (quest.tasks if quest is not None else ())
+                if task.title.casefold()
+                == "pw209-slades-final-chapter-01-interact-01"
+            ), None)
+            if (
+                progress is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+                and lever_task is not None
+                and progress.task_finished(lever_task.index)
+            ):
+                # The map EventSet removes the visible barrier, but the
+                # client's obstacle controller keeps its collision state
+                # independently. Reapply the open state after the lever task
+                # completes and when the character re-enters Kinza.
+                return ObstacleUpdate((
+                    ObstacleState("pw209_kinza_obstacle", 2),
+                ))
+        if (
+            str(map_id).casefold() == "pw206_temple_dun"
+            and "pw206_enter_the_temple_02_remove_barrier"
+            in self._quest_reveal_flags(s, map_id)
+        ):
+            # EventUpdate removes the barrier's scene set, but the client's
+            # obstacle controller retains its collision state independently.
+            # State 2 opens the obstacle, as for the F4203 ram gate.
+            return ObstacleUpdate((ObstacleState("pw206_temple_obstacle", 2),))
+        return ObstacleUpdate(())
+
     def _quest_refresh_event_state(self, s: Session) -> None:
         """Publish quest-derived map EventSet flags after task transitions."""
 
@@ -2205,6 +2705,11 @@ class QuestService:
             CharacterService._send_world_loot_state_batch(
                 s, packet, packet_bits, label="quest-map-event-state",
             )
+            obstacles = self._quest_obstacle_update(s, s.gameplay_map or "")
+            if obstacles.obstacles:
+                self._send_quest_commands(s, (ServerCommand(
+                    OBSTACLE_UPDATE_COMMAND, obstacles, LOCAL_PLAYER_ACTOR_ID,
+                ),), label="quest-map-obstacles")
         except Exception as exc:
             _log(
                 f"map event refresh after quest progress failed: "
@@ -2258,6 +2763,22 @@ class QuestService:
                 self._quest_fire_signal(
                     s, "PlayerEndQuestTask", (f"{quest.quest_id}:{change.task.title}",),
                 )
+        # The Fyeborough Soul Collector is released by a map-local event
+        # whose authored signal can fire before the newly active kill task is
+        # visible to the event handler. Reconcile it after task signals so the
+        # durable quest state, rather than signal timing, decides whether its
+        # actor should be spawned or replayed in the current instance.
+        ensure_fyeborough_collector = getattr(
+            self, "_ensure_fyeborough_soul_collector", None,
+        )
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if callable(ensure_fyeborough_collector) and runtime is not None:
+            ensure_fyeborough_collector(s, runtime)
+        ensure_artaya_demons = getattr(
+            self, "_ensure_artaya_clearing_demons", None,
+        )
+        if callable(ensure_artaya_demons) and runtime is not None:
+            ensure_artaya_demons(s, runtime)
         if result.quest_finished and quest.key in {
             "g0004-enterminibossroom-01-n-row",
             "g0004-enterminibossroom-01-n",
@@ -2312,61 +2833,35 @@ class QuestService:
         self._quest_check_shared_cleared_regions(s, counts)
 
     def _quest_start_active_holdgrounds(self, s: Session) -> None:
-        """Complete designated defense stages when their quest is accepted."""
+        """Resolve active main-quest defense stages the server cannot run.
 
-        map_quests = {
-            "c2302_dun": ("c2200-TempleOfEternity-01-n",),
-            # J'Udora, J'Edile, and J'Oronis column defense events cannot run
-            # in this reconstruction. Complete the three sequential steps
-            # after Rewrite History is accepted so J'Ibal can be reached.
-            "c2303_dun": ("c2200-RewriteHistory-01-n",),
-            # The railroad defense scene is not simulated; taking its first
-            # quest should count Lukas as defended and unlock the follow-up.
-            "f4102_dun": ("f4100-RailroadBarrier-01-n",),
-            # Arnox's protection scene is not simulated; accepting this quest
-            # should mark its authored hold-ground objective as defended.
-            "f4201_pve": ("f4201-NotSafeAnymore-03-n",),
-            # The imprisoned Technikus and Janus Fox defense scenes are not
-            # simulated; accept their authored hold-ground objectives when
-            # the quests start.
-            "f4202_dun": (
-                "f4100-DestroyWorldsHeart-01-n",
-                "f4100-DestroyWorldsHeart-06-n",
-            ),
-            # Kavlin Lefve's defense scene is not simulated; accepting the
-            # quest should mark its authored hold-ground objective complete.
-            "g0001_beach_01_dun": ("g0001-InvestigateCorruption-01-n",),
-            # Yohuac's defense scene is not simulated; accepting the quest
-            # should complete its hold-ground objective before the collection
-            # tasks become active.
-            "g0002_jungle_01_dun": ("g0002-TheTribe-03-n",),
-            # The Opal Shrine guardian defense scene is not simulated; taking
-            # the quest in Gün Batımı should count the guardian as defended.
-            "g0004_corrupted_jungle_01_pve": ("g0004-TempleOfWater-01-n",),
-            # Okeanos's guardian defense scene inside the Opal Shrine is also
-            # not simulated; accepting its sixth chapter quest counts it done.
-            "g0006_temple_water_01_dun": ("g0006-TempleOfWater-08-n",),
-            # High Priest Azlan's ritual defense in Fjalnir's Temple is not
-            # simulated; accepting the quest should count Azlan as defended.
-            "g0005_temple_ice_02_dun": ("g0005-TempleOfIce-08-n",),
-            # Shaman Tletelli's defense in Fyrgon's Fire Path is not
-            # simulated; accepting the quest should count her as defended.
-            "g0007_temple_fire_01_dun": ("g0007-TempleOfFire-04-n",),
-        }
+        The game content has no general server-side HoldGround encounter
+        simulator. Find authored HoldGroundTasks from the accepted world
+        quests on this map instead of maintaining a brittle quest-ID list.
+        Their own prerequisite guards still decide when each defense is live.
+        """
         map_id = map_key(getattr(s, "gameplay_map", ""))
-        for quest_id in map_quests.get(map_id, ()):
-            quest = self._quest_catalog().quest(quest_id)
-            if quest is None:
+        for quest_id, progress in tuple(_quest_log(s).items()):
+            if progress.state != QUEST_STATE_ACCEPTED:
                 continue
-            # Completing one holdground task may unlock the next sequential
-            # task, so refresh active tasks and progress after each signal.
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None or quest.quest_type.casefold() != "world":
+                continue
+            # One defense may unlock another sequential defense. Re-evaluate
+            # active tasks after each completion, including parallel tasks.
             for _ in range(len(quest.tasks)):
                 progress = _quest_log(s).get(quest_id)
                 if progress is None or progress.state != QUEST_STATE_ACCEPTED:
                     break
                 task = next((
                     task for task in active_tasks(quest, progress)
-                    if task.task_type.casefold() == "holdgroundtask"
+                    if (
+                        task.task_type.casefold() == "holdgroundtask"
+                        and (
+                            not task.maps
+                            or map_id in {map_key(task_map) for task_map in task.maps}
+                        )
+                    )
                 ), None)
                 if task is None:
                     break
