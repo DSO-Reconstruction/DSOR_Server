@@ -28,6 +28,7 @@ from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     load_local_event_set_flags,
+    load_local_map_exits,
     load_local_npc_definitions,
     local_npc_actor_id,
     local_npc_info,
@@ -38,6 +39,7 @@ from dso_server.gameplay.map_event_state import (
     map_key,
     prop_visible_to_player,
 )
+from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.quest_content import (
     MAX_TASKS,
     NO_TIMESTAMP,
@@ -251,6 +253,125 @@ class QuestService:
         path = getattr(self, "quests_path", None) or DEFAULT_QUESTS_PATH
         return load_quest_catalog(path)
 
+    def _quest_exit_reveal_flags(
+        self, s: Session, map_id: str,
+    ) -> frozenset[str]:
+        """Restore exit events whose authored quest condition was completed.
+
+        Only events referenced by this map's exits are considered. This keeps
+        durable quest progress from reactivating unrelated map events, while
+        applying the same recovery rule to every quest-gated route.
+        """
+
+        try:
+            exits = load_local_map_exits(
+                self.static_database_path,
+                map_id,
+                include_inactive_event_sets=True,
+            )
+            event_sets = load_local_event_set_flags(
+                self.static_database_path, map_id,
+            )
+            signals = load_map_signal_catalog(self.static_database_path)
+        except (OSError, sqlite3.Error, ValueError):
+            return frozenset()
+
+        _travel_maps, map_accesses = map_unlock_catalog(
+            str(self.static_database_path)
+        )
+        access_groups = {
+            map_key(access_id): map_key(access_group)
+            for access_id, access_group, _quest_id in map_accesses
+        }
+        exit_destinations: dict[str, set[str]] = {}
+        for exit_definition in exits:
+            if not exit_definition.destination_map_id or exit_definition.event_set_row < 0:
+                continue
+            destination_key = map_key(exit_definition.destination_map_id)
+            destination = access_groups.get(destination_key, destination_key)
+            for flag in event_sets.get(exit_definition.event_set_row, ()):
+                exit_destinations.setdefault(flag.casefold(), set()).add(
+                    destination
+                )
+        if not exit_destinations:
+            return frozenset()
+
+        accepted, solved, tasks_done = self._quest_signal_facts(s)
+        with s.flow_lock:
+            unlocked_maps = frozenset(s.gameplay_unlocked_maps)
+        discovered_maps = {map_key(value) for value in unlocked_maps}
+        discovered_maps.update(
+            group for access, group in access_groups.items()
+            if access in discovered_maps or group in discovered_maps
+        )
+        class_name, level = _character_facts(s)
+        running = self._quest_active_events(s)
+        restored = set()
+
+        def rule_accepts(rule) -> bool:
+            facts = dict(
+                map_id=map_id,
+                running_events=running,
+                player_level=level,
+                class_name=class_name,
+                player_count=1,
+                quests_accepted=accepted,
+                quests_solved=solved,
+                tasks_done=tasks_done,
+                unlocked_maps=unlocked_maps,
+            )
+            if rule.accepts(**facts):
+                return True
+
+            # A closed quest is no longer "accepted", but a completed task
+            # token is permanent. Relax that condition only when the same
+            # signal also names a completed task from that closed quest.
+            closed_requirements = set(rule.quest_accepted) & set(solved)
+            if not closed_requirements:
+                return False
+            for quest_id in closed_requirements:
+                if not any(
+                    task in tasks_done
+                    and task.partition(":")[0] == quest_id
+                    for task in rule.quest_task_done
+                ):
+                    return False
+            durable_rule = replace(
+                rule,
+                quest_accepted=tuple(
+                    quest for quest in rule.quest_accepted
+                    if quest not in closed_requirements
+                ),
+            )
+            return durable_rule.accepts(**facts)
+
+        normalized_map = map_key(map_id)
+        for flag, destinations in exit_destinations.items():
+            # The discovered destination is the strongest durable proof that
+            # this character has passed the route gate. This also covers
+            # authored signals that require only QuestAccepted and carry no
+            # completed task condition to recover after turn-in.
+            if destinations & discovered_maps:
+                restored.add(flag)
+                continue
+            event = signals.event(flag)
+            if event is None or not event.applies_to(normalized_map):
+                continue
+            for signal_id in event.start_signals:
+                rule = signals.rule(signal_id)
+                if rule is None or rule.event_type != "playerenteredmap":
+                    continue
+                # PlayerEnteredMap signals use EventParam to name the map;
+                # preserve that check as well as the signal's Map filter.
+                if rule.params and normalized_map not in {
+                    map_key(value) for value in rule.params
+                }:
+                    continue
+                if rule_accepts(rule):
+                    restored.add(event.key)
+                    break
+        return frozenset(restored)
+
     def _quest_active_events(self, s: Session) -> frozenset[str]:
         # Read the schedule now, not the map-entry snapshot: event dates or
         # operator overrides may have changed while the character was online.
@@ -393,6 +514,8 @@ class QuestService:
             if row is not None and row >= 0
             for flag in declarations.get(row, frozenset())
             })
+
+        flags.update(self._quest_exit_reveal_flags(s, map_id))
 
         if str(map_id).casefold() == "f4102_dun":
             railroad_repair_complete = any(
@@ -555,6 +678,44 @@ class QuestService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        # These Brigavik objectives are authored as ExploreTask trigger
+        # volumes, but their targets can be missed at the map spawn or lie in
+        # a part of the scene that this reconstruction currently blocks off.
+        # Entering the destination map is sufficient to credit these route
+        # objectives and keep the main quest chain moving.
+        map_entry_explore_tasks = {
+            "pw203_norseland_01_dun": (
+                ("pw201-the-norseman-05-n", "pw201-the-norseman-05-explore-01"),
+            ),
+            "pw203_norseland_02_dun": (
+                (
+                    "pw203-rescue-ancestor-stone-01-n",
+                    "pw203-rescue-ancestor-stone-01-explore-01",
+                ),
+            ),
+        }
+        for quest_id, task_title in map_entry_explore_tasks.get(
+            map_key(runtime.map_id), (),
+        ):
+            progress = _quest_log(s).get(quest_id)
+            quest = self._quest_catalog().quest(quest_id)
+            if (
+                progress is not None
+                and quest is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+            ):
+                for task in active_tasks(quest, progress):
+                    if task.title.casefold() != task_title:
+                        continue
+                    trigger_id = next((
+                        event.value for event in task.events
+                        if event.kind.casefold() == "trigger" and event.value
+                    ), "")
+                    if trigger_id:
+                        self._quest_feed(
+                            s, "trigger", trigger_id, quest_id=quest.quest_id,
+                        )
+                    break
         # A map's initial EventUpdate may arrive before its local event
         # controller is ready. Re-send quest-derived activations after map
         # entry so gated client-only NPCs become interactable at every
@@ -2222,6 +2383,14 @@ class QuestService:
                 changed_any = True
                 self._quest_publish_result(s, quest, result, kind, value)
         if changed_any:
+            if str(kind).casefold() not in {
+                "holdgroundsucceeded", "holdgroundfailed",
+            }:
+                # A mapped defense objective may only become active after an
+                # earlier clear/explore step finishes. Re-check it whenever
+                # quest progress changes, not only when the quest is accepted
+                # or the map is entered.
+                self._quest_start_active_holdgrounds(s)
             if str(kind).casefold() != "trigger":
                 self._quest_reconcile_explore_trigger_presence(s)
             self._quest_sync_props(s)
@@ -2421,61 +2590,35 @@ class QuestService:
         self._quest_check_shared_cleared_regions(s, counts)
 
     def _quest_start_active_holdgrounds(self, s: Session) -> None:
-        """Complete designated defense stages when their quest is accepted."""
+        """Resolve active main-quest defense stages the server cannot run.
 
-        map_quests = {
-            "c2302_dun": ("c2200-TempleOfEternity-01-n",),
-            # J'Udora, J'Edile, and J'Oronis column defense events cannot run
-            # in this reconstruction. Complete the three sequential steps
-            # after Rewrite History is accepted so J'Ibal can be reached.
-            "c2303_dun": ("c2200-RewriteHistory-01-n",),
-            # The railroad defense scene is not simulated; taking its first
-            # quest should count Lukas as defended and unlock the follow-up.
-            "f4102_dun": ("f4100-RailroadBarrier-01-n",),
-            # Arnox's protection scene is not simulated; accepting this quest
-            # should mark its authored hold-ground objective as defended.
-            "f4201_pve": ("f4201-NotSafeAnymore-03-n",),
-            # The imprisoned Technikus and Janus Fox defense scenes are not
-            # simulated; accept their authored hold-ground objectives when
-            # the quests start.
-            "f4202_dun": (
-                "f4100-DestroyWorldsHeart-01-n",
-                "f4100-DestroyWorldsHeart-06-n",
-            ),
-            # Kavlin Lefve's defense scene is not simulated; accepting the
-            # quest should mark its authored hold-ground objective complete.
-            "g0001_beach_01_dun": ("g0001-InvestigateCorruption-01-n",),
-            # Yohuac's defense scene is not simulated; accepting the quest
-            # should complete its hold-ground objective before the collection
-            # tasks become active.
-            "g0002_jungle_01_dun": ("g0002-TheTribe-03-n",),
-            # The Opal Shrine guardian defense scene is not simulated; taking
-            # the quest in Gün Batımı should count the guardian as defended.
-            "g0004_corrupted_jungle_01_pve": ("g0004-TempleOfWater-01-n",),
-            # Okeanos's guardian defense scene inside the Opal Shrine is also
-            # not simulated; accepting its sixth chapter quest counts it done.
-            "g0006_temple_water_01_dun": ("g0006-TempleOfWater-08-n",),
-            # High Priest Azlan's ritual defense in Fjalnir's Temple is not
-            # simulated; accepting the quest should count Azlan as defended.
-            "g0005_temple_ice_02_dun": ("g0005-TempleOfIce-08-n",),
-            # Shaman Tletelli's defense in Fyrgon's Fire Path is not
-            # simulated; accepting the quest should count her as defended.
-            "g0007_temple_fire_01_dun": ("g0007-TempleOfFire-04-n",),
-        }
+        The game content has no general server-side HoldGround encounter
+        simulator. Find authored HoldGroundTasks from the accepted world
+        quests on this map instead of maintaining a brittle quest-ID list.
+        Their own prerequisite guards still decide when each defense is live.
+        """
         map_id = map_key(getattr(s, "gameplay_map", ""))
-        for quest_id in map_quests.get(map_id, ()):
-            quest = self._quest_catalog().quest(quest_id)
-            if quest is None:
+        for quest_id, progress in tuple(_quest_log(s).items()):
+            if progress.state != QUEST_STATE_ACCEPTED:
                 continue
-            # Completing one holdground task may unlock the next sequential
-            # task, so refresh active tasks and progress after each signal.
+            quest = self._quest_catalog().quest(quest_id)
+            if quest is None or quest.quest_type.casefold() != "world":
+                continue
+            # One defense may unlock another sequential defense. Re-evaluate
+            # active tasks after each completion, including parallel tasks.
             for _ in range(len(quest.tasks)):
                 progress = _quest_log(s).get(quest_id)
                 if progress is None or progress.state != QUEST_STATE_ACCEPTED:
                     break
                 task = next((
                     task for task in active_tasks(quest, progress)
-                    if task.task_type.casefold() == "holdgroundtask"
+                    if (
+                        task.task_type.casefold() == "holdgroundtask"
+                        and (
+                            not task.maps
+                            or map_id in {map_key(task_map) for task_map in task.maps}
+                        )
+                    )
                 ), None)
                 if task is None:
                     break

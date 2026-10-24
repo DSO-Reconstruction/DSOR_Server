@@ -183,6 +183,16 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     # quest-gated Qarinah hunters. Keep server-published monsters in the
     # secondary range so client scene actors cannot mask them.
     "h0006_valley_dun",
+    # Cardhun's entrance and suburb scenes also register authored SpawnPoints
+    # in the ordinary range. In particular, the suburb has 442 rows across
+    # its difficulty variants, overlapping the server's sequential spawn IDs.
+    "pw199_cardhun_dun",
+    "pw200_cardhun_dun",
+    # Brigavik's event-driven Materi storm waves, including Mardoll, are
+    # authored SpawnPoints that the client registers in its ordinary actor
+    # range. Keep server-published monsters in the secondary range so those
+    # scene actors cannot mask the wave bosses.
+    "pw203_norseland_01_dun",
 })
 
 

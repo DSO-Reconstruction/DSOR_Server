@@ -93,6 +93,23 @@ class PlayerInitializationWorldService:
             selected_map_difficulty=map_access.map_difficulty,
             selected_map_access_id=map_access.request_map_id,
         )
+        # Quest state is restored by this phase. Rebuild the authoritative
+        # exits from the same reveal flags as the scene snapshot, rather than
+        # retaining the earlier snapshot built before quest restoration.
+        revealed_exits = tuple(
+            definition
+            for definition in load_local_map_exits(
+                self.static_database_path, gameplay_map,
+                active_event_flags=active_event_flags,
+            )
+            if definition.active and definition.destination_map_id
+        )
+        with s.flow_lock:
+            s.gameplay_map_exits = tuple(filter_parallel_world_exits_for_access(
+                self.static_database_path, gameplay_map, revealed_exits,
+                selected_map_access_id=map_access.request_map_id,
+                selected_map_difficulty=map_access.map_difficulty,
+            ))
         native_exit_commands = tuple(
             command for command in map_commands
             if command.command_id == VARIATION_INFO_COMMAND

@@ -75,7 +75,6 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_ACCEPTED,
     active_tasks,
 )
-from dso_server.gameplay.map_unlocks import map_unlock_catalog
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.combat_protocol import (
@@ -1709,8 +1708,6 @@ class MapEventService:
                     total = sum(present.values())
                     if total:
                         dead_fraction = 1.0 - sum(alive.values()) / total
-        with runtime.lock:
-            running = runtime.active_flags()
         quests_accepted, quests_solved, tasks_done = (
             CharacterService._quest_signal_facts(self, s)
         )
@@ -1718,24 +1715,26 @@ class MapEventService:
             CharacterService._quest_on_triggers(self, s, params)
         with s.flow_lock:
             unlocked_maps = frozenset(s.gameplay_unlocked_maps)
-        if kind == "playerenteredmap" and map_key(runtime.map_id) == "pw000_hub":
-            # PW hub gate events were authored to start while their unlock
-            # quest is accepted. After turn-in, the quest is closed, but its
-            # access grant is permanent. Treat that grant as satisfying the
-            # hub's entry signal so the door EventSets are restored on re-entry.
-            _travel_maps, accesses = map_unlock_catalog(
-                str(self.static_database_path)
-            )
-            unlocked_gate_quests = frozenset(
-                quest_id.casefold()
-                for access_id, access_group, quest_id in accesses
-                if quest_id
-                and (access_id.casefold().startswith("pw")
-                     or access_group.casefold().startswith("pw"))
-                and (map_key(access_id) in unlocked_maps
-                     or map_key(access_group) in unlocked_maps)
-            )
-            quests_accepted = quests_accepted | unlocked_gate_quests
+        if kind == "playerenteredmap":
+            # A map instance can outlive the session that first entered it.
+            # Restore any quest-gated exits for this character from the same
+            # authored signal conditions used by map initialization.
+            try:
+                durable_exit_flags = CharacterService._quest_exit_reveal_flags(
+                    self, s, runtime.map_id,
+                )
+            except Exception:
+                durable_exit_flags = frozenset()
+            for flag in durable_exit_flags:
+                definition = runtime.catalog.event(flag)
+                if definition is None:
+                    continue
+                with runtime.lock:
+                    already_active = flag in runtime.active_flags()
+                if not already_active:
+                    self._start_map_local_event(runtime, definition)
+        with runtime.lock:
+            running = runtime.active_flags()
         context = SignalContext(
             map_id=runtime.map_id,
             params=frozenset(str(value).casefold() for value in params),

@@ -817,6 +817,30 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     "pw023_atlantis_above_water_01_dun": ("pw024_medusa_01_boss",),
     "pw025_ship_graveyard_01_dun": ("pw026_heart_of_atlantis_01_dun",),
     "pw026_heart_of_atlantis_01_dun": ("pw027_gorga_01_boss",),
+    # Cardhun's Suburb authors a separate exit at the same scene gate for
+    # every Parallel World destination difficulty. Keep only the tier that
+    # matches the Suburb access selected by this player.
+    "pw200_cardhun_dun": (
+        "pw201_library_dun",
+        "pw203_norseland_01_dun",
+        "pw203_norseland_02_dun",
+        "pw205_helios_dun",
+        "pw206_temple_02_dun",
+        "pw206_temple_dun",
+        "pw207_village_02_dun",
+        "pw207_village_dun",
+    ),
+    # Parallel World maps reached from Cardhun author one overlapping return
+    # exit per Cardhun access difficulty. Select the matching Suburb gate on
+    # entry so the native client can instantiate a single return portal.
+    "pw201_library_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_01_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_02_dun": ("pw200_cardhun_dun",),
+    "pw205_helios_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_02_dun": ("pw200_cardhun_dun",),
+    "pw207_village_dun": ("pw200_cardhun_dun",),
+    "pw207_village_02_dun": ("pw200_cardhun_dun",),
 }
 
 
@@ -1000,6 +1024,17 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "pw000_hub": ("pw199_cardhun_dun", "pw200_cardhun_dun"),
     # The Cardhun city return gate is also absent from the loaded scene.
     "pw200_cardhun_dun": ("pw000_hub",),
+    # Parallel World destinations reached from Cardhun have their return
+    # exits in the map database but omit the corresponding gate entity from
+    # the loaded scene. Materialize the selected Suburb return gate by GUID.
+    "pw201_library_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_01_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_02_dun": ("pw200_cardhun_dun",),
+    "pw205_helios_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_02_dun": ("pw200_cardhun_dun",),
+    "pw207_village_dun": ("pw200_cardhun_dun",),
+    "pw207_village_02_dun": ("pw200_cardhun_dun",),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
