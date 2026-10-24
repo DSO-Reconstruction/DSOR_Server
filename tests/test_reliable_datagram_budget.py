@@ -14,6 +14,18 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from dso_server.protocol.gameplay_protocol import (
+    Move,
+    MoveBatch,
+    MoveServerCommand,
+    encode_move_batch,
+)
+from dso_server.runtime.context import (
+    CMD_001B,
+    CMD_001B_BITS,
+    MONSTER_MOVEMENT_PACKET_BUDGET,
+    TAIL_FRAG_SIZE,
+)
 from dso_server.runtime.transport import (
     RELIABLE_DATAGRAM_LIMIT,
     RakNetServer,
@@ -27,6 +39,14 @@ class FakeSocket:
 
     def sendto(self, data: bytes, address: tuple[str, int]) -> None:
         self.sent.append((data, address))
+
+
+def sent_frames(sock: FakeSocket) -> list[dict]:
+    return [
+        frame
+        for data, _address in sock.sent
+        for frame in RakNetServer._parse_frames(data)
+    ]
 
 
 class OversizedReliableTests(unittest.TestCase):
@@ -77,6 +97,164 @@ class OversizedReliableTests(unittest.TestCase):
         self.assertEqual(len(sock.sent), 1)
         self.assertEqual(len(sock.sent[0][0]), RELIABLE_DATAGRAM_LIMIT)
         self.assertIsNone(RakNetServer._parse_frames(sock.sent[0][0])[0]["split"])
+
+
+class OversizedBatchTests(unittest.TestCase):
+    """Several frames in one call obey the same budget as a single one."""
+
+    def test_batch_too_large_for_one_datagram_is_spread_in_order(self):
+        # The character list that just fits one datagram on its own, with
+        # cmd 0x001b behind it: together they used to make 1,236 bytes.
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41963), sock)
+        selection = bytes(range(200)) * 6
+        with patch("builtins.print"):
+            session.send_multi_reliable_ordered(
+                selection, (CMD_001B, CMD_001B_BITS),
+                label="character-selection",
+            )
+
+        self.assertGreater(len(sock.sent), 1)
+        self.assertTrue(
+            all(len(data) <= RELIABLE_DATAGRAM_LIMIT for data, _ in sock.sent)
+        )
+        frames = sent_frames(sock)
+        self.assertEqual([frame["order_idx"] for frame in frames], [0, 1])
+        self.assertEqual(frames[0]["payload"], selection)
+        self.assertEqual(
+            (frames[1]["payload"], frames[1]["bit_length"]),
+            (CMD_001B, CMD_001B_BITS),
+        )
+        self.assertEqual(session.reliable_backlog_size(), len(sock.sent))
+
+    def test_batch_that_fits_stays_one_datagram(self):
+        # The captured gameplay bootstrap: map announcement plus bare 0x88.
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41964), sock)
+        session.send_multi_reliable_ordered(b"\x86" * 15, b"\x88")
+
+        self.assertEqual(len(sock.sent), 1)
+        self.assertEqual(len(sock.sent[0][0]), 4 + 10 + 15 + 10 + 1)
+        self.assertEqual(
+            [frame["order_idx"] for frame in sent_frames(sock)], [0, 1]
+        )
+
+    def test_message_no_datagram_holds_is_fragmented_within_the_batch(self):
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41965), sock)
+        large = bytes(range(256)) * 12
+        with patch("builtins.print"):
+            session.send_multi_reliable_ordered(b"\x01", large, b"\x02")
+
+        self.assertTrue(
+            all(len(data) <= RELIABLE_DATAGRAM_LIMIT for data, _ in sock.sent)
+        )
+        frames = sent_frames(sock)
+        fragments = [frame for frame in frames if frame["split"] is not None]
+        self.assertEqual(
+            b"".join(
+                frame["payload"]
+                for frame in sorted(
+                    fragments, key=lambda frame: frame["split"]["idx"]
+                )
+            ),
+            large,
+        )
+        self.assertEqual(
+            [frame["order_idx"] for frame in frames],
+            [0, *[1] * len(fragments), 2],
+        )
+
+    def test_invalid_payload_takes_no_ordering_index(self):
+        # A batch whose second frame fails to frame used to keep the index
+        # its first frame had already taken -- a gap nothing ever fills.
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41966), sock)
+        with self.assertRaises(ValueError):
+            session.send_multi_reliable_ordered(b"\x01\x02", (b"\x03\x04", 99))
+        session.send_reliable_ordered(b"\x05", label="after")
+
+        self.assertEqual(
+            [frame["order_idx"] for frame in sent_frames(sock)], [0]
+        )
+
+
+class SplitTrailerTests(unittest.TestCase):
+    """Payloads sent behind a split message never overfill a datagram."""
+
+    def _send_selection(self, size: int):
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41967), sock)
+        packet = bytes(index % 251 for index in range(size))
+        session.send_reliable_ordered_split(
+            tuple(
+                packet[offset:offset + TAIL_FRAG_SIZE]
+                for offset in range(0, size, TAIL_FRAG_SIZE)
+            ),
+            trailing_payloads=((CMD_001B, CMD_001B_BITS),),
+            label_prefix="character-selection",
+            total_bit_length=size * 8,
+        )
+        return session, sock
+
+    def test_trailer_rides_the_last_fragment_when_it_fits(self):
+        # A live roster's 2,209-byte list, bundled as in the captured trace.
+        _session, sock = self._send_selection(2209)
+
+        self.assertEqual(len(sock.sent), 2)
+        last = RakNetServer._parse_frames(sock.sent[-1][0])
+        self.assertEqual([frame["payload"] for frame in last][1:], [CMD_001B])
+
+    def test_trailer_after_a_full_last_fragment_gets_its_own_datagram(self):
+        session, sock = self._send_selection(2 * TAIL_FRAG_SIZE)
+
+        self.assertEqual(
+            [len(data) for data, _ in sock.sent],
+            [TAIL_FRAG_SIZE + 24, TAIL_FRAG_SIZE + 24, 4 + 10 + len(CMD_001B)],
+        )
+        self.assertEqual(
+            [frame["order_idx"] for frame in sent_frames(sock)], [0, 0, 1]
+        )
+        self.assertEqual(session.reliable_backlog_size(), 3)
+
+    def test_invalid_trailer_is_refused_before_any_fragment_is_sent(self):
+        sock = FakeSocket()
+        session = Session(("127.0.0.1", 41968), sock)
+        with self.assertRaises(ValueError):
+            session.send_reliable_ordered_split(
+                bytes(3000), trailing_payloads=((b"\x01\x02", 99),)
+            )
+        self.assertEqual(sock.sent, [])
+        session.send_reliable_ordered(b"\x05", label="after")
+
+        self.assertEqual(
+            [frame["order_idx"] for frame in sent_frames(sock)], [0]
+        )
+
+
+class MovementBatchBudgetTests(unittest.TestCase):
+    """Unreliable walking samples cannot be fragmented, so they must fit."""
+
+    @staticmethod
+    def _datagram_size(moves: int) -> int:
+        move = Move.from_values((1.0, 2.0, 3.0), 1.0, 0.0, 0.0, 100, 4)
+        sock = FakeSocket()
+        Session(("127.0.0.1", 41969), sock).send_unreliable_sequenced(
+            encode_move_batch(
+                MoveBatch(
+                    tuple(
+                        MoveServerCommand(move, 1000 + index)
+                        for index in range(moves)
+                    )
+                )
+            )
+        )
+        return len(sock.sent[0][0])
+
+    def test_largest_configurable_batch_fits_one_datagram(self):
+        self.assertLessEqual(MONSTER_MOVEMENT_PACKET_BUDGET, 55)
+        self.assertLessEqual(self._datagram_size(55), RELIABLE_DATAGRAM_LIMIT)
+        self.assertGreater(self._datagram_size(56), RELIABLE_DATAGRAM_LIMIT)
 
 
 class StuckReliableReportTests(unittest.TestCase):

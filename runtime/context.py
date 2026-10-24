@@ -753,9 +753,16 @@ RELIABLE_RETRANSMIT_BURST_LIMIT = max(
     1,
     int(os.getenv('DSO_RELIABLE_RETRANSMIT_BURST_LIMIT', '16')),
 )
-MONSTER_MOVEMENT_PACKET_BUDGET = max(
-    8,
-    int(os.getenv('DSO_MONSTER_MOVES_PER_PACKET', '40')),
+# Walking samples travel unreliable, so they are never fragmented. Each
+# MoveCommand adds 22 bytes; 55 fill a 1,225-byte datagram, the most the
+# transport's datagram budget allows. The client drops a larger datagram
+# unseen.
+MONSTER_MOVEMENT_PACKET_BUDGET = min(
+    55,
+    max(
+        8,
+        int(os.getenv('DSO_MONSTER_MOVES_PER_PACKET', '40')),
+    ),
 )
 # Spend the active essence's AmmoCost on every accepted cast. Off leaves
 # essences as permanent damage buffs, the behaviour before consumption landed.

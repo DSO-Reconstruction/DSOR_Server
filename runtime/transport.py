@@ -38,8 +38,13 @@ _INBOUND_DATAGRAM_HISTORY = 8192
 _INBOUND_ORDER_WINDOW = 4096
 _INBOUND_SPLIT_LIMIT = 64
 _INBOUND_SPLIT_FRAGMENT_LIMIT = 4096
-# Frameset header (4 bytes) plus one reliable-ordered frame header (10 bytes).
-_UNSPLIT_RELIABLE_FRAMING_BYTES = 14
+# A frameset header (4 bytes) carries reliable-ordered frames, each behind a
+# 10-byte header.
+_FRAMESET_HEADER_BYTES = 4
+_RELIABLE_ORDERED_HEADER_BYTES = 10
+_UNSPLIT_RELIABLE_FRAMING_BYTES = (
+    _FRAMESET_HEADER_BYTES + _RELIABLE_ORDERED_HEADER_BYTES
+)
 # The installed client drops an oversized datagram without acknowledging it
 # (docs/GAME_EVENTS.md: a 2,703-byte visibility batch stalled every later
 # ordered reply). Split fragments are 1,232 bytes on the wire -- FRAG_SIZE of
@@ -174,7 +179,17 @@ class FrameBuilder:
         r = self.reliable_idx; self.reliable_idx += 1; return r
 
     def _ord(self):
-        o = self.order_idx; self.order_idx += 1; return o
+        o = self.order_idx; self.order_idx += 1
+        # RakNet restarts the sequencing index whenever it assigns an ordering
+        # index, and the official server's captures follow it: (order 8, seq
+        # 1..8), (9, 0), (10, 0..11). The client sorts frames buffered behind
+        # a missing ordered frame by ``hole * 2**20 + sequencing index``. A
+        # counter that never restarts passes 2**20 after several hours on one
+        # map; the next lost ordered frame then leaves a stale sequenced frame
+        # at the head of that heap, and ordered delivery stops for good while
+        # every datagram is still acknowledged.
+        self.sequence_idx = 0
+        return o
 
     @staticmethod
     def _payload_spec(payload):
@@ -321,7 +336,21 @@ class FrameBuilder:
             self, chunks, sock, addr, trailing_payloads=(), pace_seconds=0,
             send_callback=None, label_prefix='split', total_bit_length=None):
         chunks = list(chunks)
-        trailing_payloads = tuple(trailing_payloads)
+        # Validate before allocating: once the fragments are on the wire, a
+        # trailer that fails to frame leaves the message incomplete, and its
+        # ordering index then holds the client's stream forever.
+        trailing_specs = tuple(
+            self._payload_spec(payload) for payload in trailing_payloads
+        )
+        for trailing_payload, _trailing_bits in trailing_specs:
+            if (
+                len(trailing_payload) + _UNSPLIT_RELIABLE_FRAMING_BYTES
+                > RELIABLE_DATAGRAM_LIMIT
+            ):
+                raise ValueError(
+                    f'{len(trailing_payload)}-byte trailing payload exceeds '
+                    f'the {RELIABLE_DATAGRAM_LIMIT}-byte datagram budget'
+                )
         if not chunks:
             return
         payload_bytes = sum(len(chunk) for chunk in chunks)
@@ -358,26 +387,40 @@ class FrameBuilder:
                      + struct.pack('>I', idx)           # fragment index
                      + chunk)
 
+            datagrams = [b'\x84' + struct.pack('<I', seq)[:3] + frame]
+            labels = [f'{label_prefix}-{idx + 1}/{total}']
             # The official 2192 trace bundles cmd 0x001b after the final
             # character-selection fragment in the same FrameSet/datagram.
+            # Only while it fits: a full final fragment plus a trailer is a
+            # datagram the client drops without acknowledging. RakNet starts
+            # a new datagram there, and so does this.
             if idx == total - 1:
-                for trailing_payload in trailing_payloads:
-                    trailing_payload, trailing_bits = self._payload_spec(
-                        trailing_payload)
+                for trailing_payload, trailing_bits in trailing_specs:
                     with self.lock:
                         trailing_rel = self._rel()
                         trailing_order = self._ord()
-                    frame += self._frame_reliable_ordered_with_indices(
+                    trailing_frame = self._frame_reliable_ordered_with_indices(
                         trailing_payload, trailing_rel, trailing_order,
                         trailing_bits)
-            pkt = b'\x84' + struct.pack('<I', seq)[:3] + frame
-            if send_callback:
-                send_callback(pkt, f'{label_prefix}-{idx + 1}/{total}')
-            else:
-                try:
-                    sock.sendto(pkt, addr)
-                except OSError:
-                    return
+                    if (
+                        len(datagrams[-1]) + len(trailing_frame)
+                        > RELIABLE_DATAGRAM_LIMIT
+                    ):
+                        with self.lock:
+                            trailing_seq = self._seq()
+                        datagrams.append(
+                            b'\x84' + struct.pack('<I', trailing_seq)[:3]
+                        )
+                        labels.append(f'{label_prefix}-trailing')
+                    datagrams[-1] += trailing_frame
+            for pkt, label in zip(datagrams, labels):
+                if send_callback:
+                    send_callback(pkt, label)
+                else:
+                    try:
+                        sock.sendto(pkt, addr)
+                    except OSError:
+                        return
             if pace_seconds and idx != total - 1:
                 time.sleep(pace_seconds)
 
@@ -1004,7 +1047,7 @@ class Session:
         body, bit_length = FrameBuilder._payload_spec(payload)
         if len(body) + _UNSPLIT_RELIABLE_FRAMING_BYTES > RELIABLE_DATAGRAM_LIMIT:
             return self._send_oversized_reliable_ordered(
-                body, bit_length, track=track, label=label,
+                ((body, bit_length),), track=track, label=label,
                 skip_if_busy=skip_if_busy,
             )
         if not self.outbound_lock.acquire(blocking=not skip_if_busy):
@@ -1024,16 +1067,19 @@ class Session:
         return data
 
     def _send_oversized_reliable_ordered(
-            self, body: bytes, bit_length: int, *, track: bool, label: str,
-            skip_if_busy: bool) -> bytes | None:
-        """Fragment a reliable-ordered message too large for one datagram.
+            self, specs, *, track: bool, label: str,
+            skip_if_busy: bool = False) -> bytes | None:
+        """Send reliable-ordered messages too large for one datagram.
 
         The client drops an oversized datagram without acknowledging it, so
         the retransmit loop re-sends it forever and every later ordered packet
         waits behind it -- monsters, loot and replies all freeze for that
         client while the server keeps running. Callers that build
         variable-size batches (a pack starting its attacks in one tick) cannot
-        all know the budget, so the transport enforces it.
+        all know the budget, so the transport enforces it: ``specs`` -- the
+        ``(body, bit_length)`` of each message, in order -- are packed into as
+        few datagrams as fit, and a message no datagram can hold is
+        fragmented.
         """
 
         send_health = []
@@ -1052,14 +1098,30 @@ class Session:
         if not self.outbound_lock.acquire(blocking=not skip_if_busy):
             return None
         try:
-            self.fb.send_split(
-                body,
-                self.sock,
-                self.addr,
-                send_callback=send_fragment,
-                label_prefix=label,
-                total_bit_length=bit_length,
-            )
+            batch = []
+            batch_bytes = _FRAMESET_HEADER_BYTES
+            for body, bit_length in specs:
+                frame_bytes = _RELIABLE_ORDERED_HEADER_BYTES + len(body)
+                if batch and batch_bytes + frame_bytes > RELIABLE_DATAGRAM_LIMIT:
+                    send_fragment(self.fb.multi_reliable_ordered(*batch), label)
+                    batch, batch_bytes = [], _FRAMESET_HEADER_BYTES
+                if (
+                    _FRAMESET_HEADER_BYTES + frame_bytes
+                    > RELIABLE_DATAGRAM_LIMIT
+                ):
+                    self.fb.send_split(
+                        body,
+                        self.sock,
+                        self.addr,
+                        send_callback=send_fragment,
+                        label_prefix=label,
+                        total_bit_length=bit_length,
+                    )
+                    continue
+                batch.append((body, bit_length))
+                batch_bytes += frame_bytes
+            if batch:
+                send_fragment(self.fb.multi_reliable_ordered(*batch), label)
         finally:
             self.outbound_lock.release()
         for _data, fragment_label, backpressure_began, socket_seconds in (
@@ -1075,20 +1137,35 @@ class Session:
             self.oversized_reliable_logged_at[label] = now
             print(
                 f"[RakNet] split oversized reliable {label!r} for "
-                f"{self.addr}: {len(body)}-byte message exceeds the "
+                f"{self.addr}: {len(specs)} message(s) of "
+                f"{sum(len(body) for body, _bits in specs)} bytes exceed the "
                 f"{RELIABLE_DATAGRAM_LIMIT}-byte datagram budget; "
-                f"sent as {len(send_health)} fragments"
+                f"sent as {len(send_health)} datagrams"
             )
         return send_health[-1][0] if send_health else None
 
     def send_multi_reliable_ordered(
             self, *payloads, track: bool = True,
             label: str = 'reliable') -> bytes:
-        """Allocate and send one multi-frame ordered datagram atomically."""
+        """Allocate and send one multi-frame ordered datagram atomically.
+
+        Every payload is validated before an ordering index is taken: an
+        index allocated for the first frame of a batch that then fails to
+        frame is never sent, and the client holds every later ordered packet
+        waiting for it. Frames that do not fit one datagram together go out
+        through the oversized path instead, in the same order.
+        """
 
         assert_no_state_locks_held("Session.send_multi_reliable_ordered")
+        specs = tuple(FrameBuilder._payload_spec(payload) for payload in payloads)
+        if _FRAMESET_HEADER_BYTES + sum(
+            _RELIABLE_ORDERED_HEADER_BYTES + len(body) for body, _bits in specs
+        ) > RELIABLE_DATAGRAM_LIMIT:
+            return self._send_oversized_reliable_ordered(
+                specs, track=track, label=label,
+            )
         with self.outbound_lock:
-            data = self.fb.multi_reliable_ordered(*payloads)
+            data = self.fb.multi_reliable_ordered(*specs)
             backpressure_began, socket_seconds = self._send_locked(
                 data, track=track, label=label
             )
@@ -1858,8 +1935,11 @@ class RakNetServer:
         )
         try:
             # RakNet ID_DISCONNECTION_NOTIFICATION, so the client leaves
-            # cleanly instead of waiting out its timeout.
-            session.send(b'\x15')
+            # cleanly instead of waiting out its timeout. A connected peer
+            # ignores a bare 0x15, so it travels in a frameset, unreliable so
+            # that an ordered stream stalled behind a missing frame -- often
+            # the very reason for the drop -- cannot hold it back.
+            session.send(session.fb.unreliable(b'\x15'))
         except OSError as exc:
             print(
                 f"[{self.service_name}] could not notify {session.addr} of "
@@ -1917,7 +1997,19 @@ class RakNetServer:
     def _dispatch(self, data: bytes, addr):
         if not data: return
         pid = data[0]
-        s   = self._session(addr)
+        if pid in (0x01, 0x02, 0x05, 0x07):
+            s = self._session(addr)
+        else:
+            # Only offline messages open a session. A frameset, ACK or NAK
+            # from an endpoint without one belongs to a connection this server
+            # already retired: dropped, timed out, or from before a restart.
+            # Re-creating a session for it acknowledged the client's datagrams
+            # and answered its pings indefinitely, so its RakNet connection
+            # never timed out and the player was left in a world nothing
+            # updated. Ignored, the client's own timeout reports the loss.
+            s = self.sessions.get(addr)
+            if s is None:
+                return
         s.last_received_at = time.perf_counter()
 
         # A post-selection map connection may reuse the character connection's
