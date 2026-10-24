@@ -2625,6 +2625,31 @@ class QuestService:
     def _quest_obstacle_update(self, s: Session, map_id: str) -> ObstacleUpdate:
         """Restore physical quest gates as well as their scene EventSets."""
 
+        if str(map_id).casefold() == "pw209_kinza_dun":
+            quest_id = "pw209-slades-final-chapter-01-n"
+            quest = self._quest_catalog().quest(quest_id)
+            progress = next((
+                value for key, value in _quest_log(s).items()
+                if str(key).casefold() == quest_id
+            ), None)
+            lever_task = next((
+                task for task in (quest.tasks if quest is not None else ())
+                if task.title.casefold()
+                == "pw209-slades-final-chapter-01-interact-01"
+            ), None)
+            if (
+                progress is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+                and lever_task is not None
+                and progress.task_finished(lever_task.index)
+            ):
+                # The map EventSet removes the visible barrier, but the
+                # client's obstacle controller keeps its collision state
+                # independently. Reapply the open state after the lever task
+                # completes and when the character re-enters Kinza.
+                return ObstacleUpdate((
+                    ObstacleState("pw209_kinza_obstacle", 2),
+                ))
         if (
             str(map_id).casefold() == "pw206_temple_dun"
             and "pw206_enter_the_temple_02_remove_barrier"

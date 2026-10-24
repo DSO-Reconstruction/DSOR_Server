@@ -1862,6 +1862,7 @@ class MapEventService:
                 self._ensure_pw209_kinza_leader(s, runtime)
                 self._ensure_pw207_sunlairs_notes_mob(s, runtime)
                 self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+                self._ensure_pw209_slade_throne_room(s, runtime)
             return
         for rule in rules:
             if rule.event_type in (
@@ -1881,6 +1882,7 @@ class MapEventService:
             self._ensure_pw209_kinza_leader(s, runtime)
             self._ensure_pw207_sunlairs_notes_mob(s, runtime)
             self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+            self._ensure_pw209_slade_throne_room(s, runtime)
 
     def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
         """Keep the Kinza route leader visible for its active kill objective."""
@@ -2083,6 +2085,65 @@ class MapEventService:
             f"ensured {len(spawn_rows)} quest demon(s) around Anbir for "
             "pw209-the-sultans-enforcers-02-clear-01"
         )
+
+    def _ensure_pw209_slade_throne_room(
+            self, s: Session, runtime: MapEventRuntime,
+    ) -> None:
+        """Reconcile the open-door and Slade spawns for the final Kinza quest."""
+
+        if map_key(runtime.map_id) != "pw209_kinza_dun":
+            return
+        quest_id = "pw209-slades-final-chapter-01-n"
+        quest = CharacterService._quest_catalog(self).quest(quest_id)
+        progress = next((
+            state
+            for key, state in (
+                getattr(s, "gameplay_quest_log", None) or {}
+            ).items()
+            if str(key).casefold() == quest_id
+        ), None)
+        slade_task_active = bool(
+            quest is not None
+            and progress is not None
+            and progress.state == QUEST_STATE_ACCEPTED
+            and any(
+                task.title.casefold()
+                == "pw209-slades-final-chapter-01-kill-02"
+                for task in active_tasks(quest, progress)
+            )
+        )
+        if not slade_task_active:
+            return
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        for event_id in (
+            "pw209_slades_final_chapter_01_open_throne_room",
+            "pw209_slades_final_chapter_01_spawn_slade",
+        ):
+            definition = runtime.catalog.event(event_id)
+            if definition is None or not definition.applies_to(runtime.map_id):
+                _log(f"Kinza throne-room event {event_id!r} is unavailable")
+                continue
+            with runtime.lock:
+                active = definition.key in runtime.running
+                pending = definition.key in runtime.pending_start_tokens
+            if not active and not pending:
+                _log(
+                    f"reconciling {event_id} for the active Slade kill task"
+                )
+                self._start_map_local_event(runtime, definition)
+                with runtime.lock:
+                    active = definition.key in runtime.running
+            if event_id.endswith("spawn_slade") and active:
+                event_sets = tuple(sorted({
+                    int(value.row)
+                    for value in runtime.content.event_sets_for(definition.key)
+                    if int(value.row) in runtime.enabled_event_sets
+                }))
+                if event_sets:
+                    self._spawn_event_monsters(runtime, sessions, event_sets)
 
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
                          signal_id: str) -> None:
@@ -2661,6 +2722,7 @@ class MapEventService:
         self._ensure_fyeborough_soul_collector(s, runtime)
         self._ensure_artaya_clearing_demons(s, runtime)
         self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
+        self._ensure_pw209_slade_throne_room(s, runtime)
         CharacterService._achievement_on_map_entered(
             self, s, (runtime.map_id, access_group, access_id),
         )
