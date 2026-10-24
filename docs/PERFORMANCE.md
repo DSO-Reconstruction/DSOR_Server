@@ -1286,3 +1286,67 @@ Still open: reliable sends from the map worker still wait on a viewer's
 `outbound_lock` without a timeout, and an exception in a tick's publishing
 phase still drops that tick's one-shot packets (attack starts, kills,
 return-home transitions) for every viewer.
+
+## 15. Datagrams the client never accepts or delivers (2026-10-24)
+
+Reported: a player's world stops -- monsters, hits and replies -- while the
+server keeps running and the client never acknowledges what it is sent.
+
+A capture against the official servers (2026-07-20, outside the repo) pins
+the client's side of the budget. The client offers MTU 1292 (a 1,264-byte
+OpenConnectionRequest1) and the official server never sent a datagram over
+1,256 bytes; the client acknowledged all 1,474 datagrams of 1,255-1,256
+bytes. A 1,304-byte datagram was never acknowledged (ADMIN_CMS.md).
+`RELIABLE_DATAGRAM_LIMIT` (1,232) stays the budget, and the character
+service's 1,256-byte fragments match the capture. Paths that bypassed the
+budget, or broke the ordered stream another way:
+
+- **Multi-frame datagrams had no size check.** `send_multi_reliable_ordered`
+  put every frame in one datagram: a character list of up to 1,232 bytes
+  plus cmd 0x001b made up to 1,268 bytes. A batch that does not fit now goes
+  through the oversized path, packed in order into as few datagrams as fit.
+- **Trailing frames rode on a full final fragment.** Cmd 0x001b behind a
+  character list whose last fragment is nearly full made up to 1,278 bytes.
+  A trailer that does not fit now follows in its own datagram; the live
+  rosters' ~2.2 KB lists still carry it in the last fragment, as captured.
+- **Failed framing burned ordering indexes.** A batch whose second payload
+  failed validation, or exceeded the frame's 16-bit bit length, kept the
+  index its first frame had taken; a split whose trailer failed left its
+  fragments without the last one. Either is a gap the client waits on
+  forever. Payloads are now validated before any index is allocated.
+- **Sequencing indexes never restarted.** RakNet resets them with every
+  ordering index, and the official server does: (order 8, seq 1..8),
+  (9, 0), (10, 0..11). Ours counted for the whole connection. The client
+  sorts frames held behind a missing ordered frame by
+  `hole * 2**20 + sequencing index`, so after 2**20 sequenced sends (the
+  official server sent 23 per second: 6-12 hours on one map) a lost ordered
+  frame left a stale sequenced frame at the head of that heap and stopped
+  ordered delivery for good. Every datagram was still acknowledged, so
+  nothing on the server noticed. `FrameBuilder._ord` restarts the index.
+- **Retired clients were never told, and were kept alive.** `drop_session`
+  sent a bare 0x15, which a connected RakNet peer ignores; it now sends a
+  framed, unreliable ID_DISCONNECTION_NOTIFICATION. Any later datagram from
+  that endpoint -- or from a client returning after the receive timeout, or
+  from before a restart -- created a fresh session that acknowledged it and
+  answered its pings, so the client's connection never timed out and the
+  player sat in a world nothing updated. Only offline messages open a
+  session now; other datagrams from an unknown endpoint are ignored, and the
+  client's own timeout reports the loss.
+- **Walking batches had no cap.** `DSO_MONSTER_MOVES_PER_PACKET` above 55
+  made unreliable datagrams the client drops unseen (60 moves: 1,335 bytes).
+  It is capped at 55.
+
+Regressions: `test_reliable_datagram_budget.py`, `test_sequenced_frames.py`,
+`test_retired_endpoints.py`.
+
+The 2026-09-28 `prop-info-response` stall in section 14 was not a size
+problem: that reply went out unsplit only up to 1,246 bytes. Its cause is
+not established. That build still bound its UDP ports with `SO_REUSEADDR`,
+under which a second server process on the same port can receive the
+client's acknowledgements; `SO_EXCLUSIVEADDRUSE` prevents that now.
+
+Still open: a NAK re-sends every listed datagram past its 100 ms grace at
+once, unlike the timer path's `DSO_RELIABLE_RETRANSMIT_BURST_LIMIT`, so with
+a round trip over 100 ms a burst loss is re-sent whole into the receive
+window that dropped it. The retry interval is a fixed 250 ms, so a client
+with a longer round trip receives every reliable datagram at least twice.
