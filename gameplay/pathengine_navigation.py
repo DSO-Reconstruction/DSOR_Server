@@ -200,6 +200,28 @@ class PathEngineNavigationMesh:
             components.append(tuple(members))
         self._component_by_triangle = tuple(component_by_triangle)
         self._components = tuple(components)
+        # The ground as the player walks it: every authored connection,
+        # whatever its edge length. The client groups its walkable ground the
+        # same way (DSOR_Client client/src/world/nav.rs components: triangles
+        # sharing an edge) and lets the player walk across all of it. An edge
+        # length is not a corridor width: a finely triangulated room has short
+        # shared edges everywhere, and the 1 m cutoff above splits c2303_dun's
+        # 10217 triangles into 2342 components (one connected piece here).
+        # Union-find: a connection may be recorded on one side only.
+        parent = list(range(len(triangles)))
+
+        def root(index: int) -> int:
+            while parent[index] != index:
+                parent[index] = parent[parent[index]]
+                index = parent[index]
+            return index
+
+        for triangle_id, triangle in enumerate(triangles):
+            for other in triangle.connections:
+                if other is not None:
+                    parent[root(triangle_id)] = root(other)
+        ground_by_triangle = [root(index) for index in range(len(triangles))]
+        self._ground_component_by_triangle = tuple(ground_by_triangle)
 
     @classmethod
     def from_tokenised_mesh(
@@ -513,6 +535,7 @@ class PathEngineNavigationMesh:
         point: tuple[float, float, float],
         *,
         max_horizontal_distance: float | None = None,
+        all_connections: bool = False,
     ) -> int:
         """Return the connected walkable component containing *point*.
 
@@ -526,6 +549,8 @@ class PathEngineNavigationMesh:
             point,
             max_horizontal_distance=max_horizontal_distance,
         )
+        if all_connections:
+            return self._ground_component_by_triangle[triangle_id]
         return self._component_by_triangle[triangle_id]
 
     def is_reachable(
@@ -534,16 +559,23 @@ class PathEngineNavigationMesh:
         goal: tuple[float, float, float],
         *,
         max_horizontal_snap: float | None = None,
+        all_connections: bool = False,
     ) -> bool:
-        """Return whether both points belong to the same walkable component."""
+        """Return whether both points belong to the same walkable component.
+
+        ``all_connections`` joins components across every authored
+        connection, ignoring ``minimum_portal_width``: the player's ground.
+        """
 
         try:
             return self.component_for_position(
                 start,
                 max_horizontal_distance=max_horizontal_snap,
+                all_connections=all_connections,
             ) == self.component_for_position(
                 goal,
                 max_horizontal_distance=max_horizontal_snap,
+                all_connections=all_connections,
             )
         except NavigationError:
             return False

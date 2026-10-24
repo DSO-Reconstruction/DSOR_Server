@@ -476,6 +476,42 @@ class GatedSpawnRow:
     template_id: str
     position: tuple[float, float, float]
     rotation: float = 0.0
+    # ``MapVariation`` family and difficulty tier (variationType 1) of the
+    # spawn point's parent node; 0/0 when it belongs to no variation.
+    variation_group: int = 0
+    variation_difficulty: int = 0
+
+
+def select_variation_spawn_rows(
+    rows: Iterable[GatedSpawnRow], difficulty: int,
+) -> tuple[GatedSpawnRow, ...]:
+    """Keep, of each MapVariation family, only the instance's tier.
+
+    The Herald's lair authors its boss_start broodlings once per tier (4 on
+    tier 0, 6 on 1-3, 8 on 4-10: 78 rows under one EventSet); opening the set
+    spawned them all at once. A family without the exact tier takes its
+    highest tier below it, else none (``selected_variation_tier``):
+    c2304_boss pairs a tier-0 normal family with a tier 1-10 scaling one
+    under BOSS_spawn, and falling back to the lowest tier added four
+    scaling gorgons to the normal instance's four.
+    """
+
+    rows = tuple(rows)
+    tiers: dict[int, set[int]] = {}
+    for row in rows:
+        if row.variation_group:
+            tiers.setdefault(row.variation_group, set()).add(
+                row.variation_difficulty
+            )
+    chosen = {
+        group: selected_variation_tier(values, difficulty)
+        for group, values in tiers.items()
+    }
+    return tuple(
+        row for row in rows
+        if not row.variation_group
+        or chosen[row.variation_group] == row.variation_difficulty
+    )
 
 
 @dataclass(frozen=True)
@@ -627,6 +663,65 @@ def _map_variations(path: Path) -> dict[int, tuple[int, int]]:
             continue
         variations[index] = (group, value)
     return variations
+
+
+@lru_cache(maxsize=256)
+def map_difficulty_variations(path: Path) -> Mapping[int, tuple[int, int]]:
+    """Every level node -> (family, tier) of its nearest difficulty variation.
+
+    Unlike ``_map_variations`` this also covers nodes nested below a
+    ``variationType="1"`` node (c2303_dun's miniboss adds hang three levels
+    under their tier node). Structural nodes carry no ``nodeIndex``; their
+    index is the ``parentNodeIndex`` their own children name.
+    """
+
+    try:
+        root = ET.parse(Path(path).with_suffix(".mvr")).getroot()
+    except (OSError, ET.ParseError):
+        return MappingProxyType({})
+    result: dict[int, tuple[int, int]] = {}
+
+    def walk(node, inherited) -> None:
+        if str(node.get("variationType", "")).strip() == "1":
+            try:
+                inherited = (
+                    int(node.get("parentNodeIndex", "")),
+                    int(node.get("variationValue", "")),
+                )
+            except (TypeError, ValueError):
+                pass
+        if inherited is not None:
+            try:
+                result[int(node.get("nodeIndex", ""))] = inherited
+            except (TypeError, ValueError):
+                pass
+        for child in node.findall("LevelNode"):
+            if inherited is not None:
+                try:
+                    result.setdefault(
+                        int(child.get("parentNodeIndex", "")), inherited
+                    )
+                except (TypeError, ValueError):
+                    pass
+            walk(child, inherited)
+
+    for node in root.findall("LevelNode"):
+        walk(node, None)
+    return MappingProxyType(result)
+
+
+def selected_variation_tier(tiers: Iterable[int], difficulty: int) -> int | None:
+    """The tier of one variation family an instance of ``difficulty`` shows.
+
+    The exact tier, else the highest tier below it (c2303_dun's density
+    family has 0,1,2,3,4,6,8: a tier-5 instance keeps tier 4). A family with
+    no tier at or below the difficulty is absent: the mercyless-only
+    ``difficulty_extra_spawn`` areas sit on tiers 6-9 on all 126 maps that
+    carry them and must not appear on a normal instance.
+    """
+
+    difficulty = max(0, int(difficulty))
+    return max((t for t in tiers if t <= difficulty), default=None)
 
 
 def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
@@ -906,9 +1001,13 @@ def _load_map_event_content(
         )
 
         spawn_rows = []
-        for row_id, transform, template_id, event_set_row in database.execute(
+        spawn_variations = _map_variations(path)
+        for (
+            row_id, transform, template_id, event_set_row, parent_node_index,
+        ) in database.execute(
             """
-            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1)
+            SELECT rowid, Transform, NpcId, COALESCE(EventSetRow, -1),
+                   COALESCE(ParentNodeIndex, 0)
             FROM _Instance_SpawnPoint
             WHERE TRIM(COALESCE(NpcId, ''))<>''
               AND COALESCE(AlliedToPlayer, 0)=0
@@ -920,9 +1019,14 @@ def _load_map_event_content(
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
                 continue
+            variation_group, variation_difficulty = spawn_variations.get(
+                int(parent_node_index or 0), (0, 0)
+            )
             spawn_rows.append(GatedSpawnRow(
                 int(row_id), int(event_set_row), str(template_id).strip(),
                 position, rotation,
+                variation_group=variation_group,
+                variation_difficulty=variation_difficulty,
             ))
         if map_key(map_id) == "h0004_temple_dun":
             # The Hunt for a Legend sandhill phase stores its Sandsnake
@@ -1460,10 +1564,13 @@ class MapEventRuntime:
     def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
         """Gated monster rows for these sets, minus tiers this instance lacks."""
 
-        return tuple(
-            row for row in self.content.spawn_rows_for_sets(rows)
-            if not bloodshed_only_template(row.template_id)
-            or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
+        return select_variation_spawn_rows(
+            (
+                row for row in self.content.spawn_rows_for_sets(rows)
+                if not bloodshed_only_template(row.template_id)
+                or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
+            ),
+            self.scaling_difficulty,
         )
 
     def select_props(

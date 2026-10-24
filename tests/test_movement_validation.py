@@ -167,3 +167,19 @@ def test_non_finite_values_are_detected():
     assert mv.non_finite(Cast(float("nan"), (0.0, 0.0, 0.0)))
     assert mv.non_finite(Cast(0.0, (0.0, float("inf"), 0.0)))
     assert not mv.non_finite(Cast(1.0, (2.0, 3.0, 4.0)))
+
+
+SEWERS = MESH.parents[1] / "c2303_dun" / "c2303_dun.tok"
+
+
+@pytest.mark.skipif(not SEWERS.exists(), reason="client navigation content not installed")
+def test_a_step_across_a_short_authored_edge_is_walkable():
+    """c2303_dun: the log's corrected position (wire -46.8, -1.59, -92.69)
+    and a point 1.5 m away lie in different 1 m-portal components, split by
+    a 0.94 m shared edge, yet on one connected ground the client walks."""
+    sewers = load_navigation_mesh(SEWERS)
+    a = (-101.029, -7.02, -119.1875)
+    b = (-101.2, -7.0, -120.8)
+    assert not sewers.is_reachable(a, b)
+    assert sewers.is_reachable(a, b, all_connections=True)
+    assert mv.walkable_path(sewers, a, b)

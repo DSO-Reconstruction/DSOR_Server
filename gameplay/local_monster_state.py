@@ -1538,8 +1538,9 @@ def _load_runtime_template(
                 summon = bool(summon_template) and summon_amount > 0 and skill_type in ("Shifted", "Melee")
             # Charge and Jump use movement-specific command payloads we do not
             # model. Shifted ground-target skills are supported below, but
-            # only for radius/point targeting, whose native command receives a
-            # target point for every authored bullet. This avoids routing
+            # only for radius/point targeting (and RandomPosition: points the
+            # server scatters around the caster), whose native command receives
+            # a target point for every authored bullet. This avoids routing
             # movement skills through BulletSkillCommand with an empty point
             # array (the source of the client Math::point assertion). A summon
             # is cast on the caster's own place, whatever its targeting.
@@ -1550,7 +1551,7 @@ def _load_runtime_template(
                 and has_bullet
                 and not summon
                 and targeting_type.casefold() not in {
-                    "radius", "point", "location",
+                    "radius", "point", "location", "randomposition",
                 }
             ):
                 continue
@@ -2048,13 +2049,46 @@ def _spawn_area_variant_signature(
 def _select_spawn_area_variants(
     areas: tuple[_MonsterSpawnArea, ...],
     scaling_difficulty: int,
+    difficulty_variations: Mapping[int, tuple[int, int]] | None = None,
 ) -> tuple[_MonsterSpawnArea, ...]:
+    """Keep the unconditional areas and the instance's difficulty variant.
+
+    An area whose parent node sits under a MapVariation difficulty node
+    (``map_difficulty_variations``) belongs to the tier that node names; of
+    each family only ``selected_variation_tier`` survives. Picking the
+    n-th parent by sorted node index instead put c2303_dun's tier-6
+    ``DIFFICULTY_list_mercyless`` area (``difficulty_extra_spawn``, opened by
+    every map entry) on a normal instance: 286 extra monsters on top of the
+    162 of the base population. The signature heuristic below remains for
+    areas the .mvr does not place.
+    """
+
+    from dso_server.gameplay.map_event_state import selected_variation_tier
+
+    variations = difficulty_variations or {}
     unconditional = tuple(
         area for area in areas if area.parent_node_index == 0
     )
+    tiers: dict[int, set[int]] = {}
+    for area in areas:
+        variation = variations.get(area.parent_node_index)
+        if area.parent_node_index and variation is not None:
+            tiers.setdefault(variation[0], set()).add(variation[1])
+    chosen_tiers = {
+        family: selected_variation_tier(values, scaling_difficulty)
+        for family, values in tiers.items()
+    }
+    selected_parents: set[int] = {
+        area.parent_node_index
+        for area in areas
+        if area.parent_node_index
+        and area.parent_node_index in variations
+        and chosen_tiers[variations[area.parent_node_index][0]]
+        == variations[area.parent_node_index][1]
+    }
     by_parent: dict[int, list[_MonsterSpawnArea]] = {}
     for area in areas:
-        if area.parent_node_index:
+        if area.parent_node_index and area.parent_node_index not in variations:
             by_parent.setdefault(area.parent_node_index, []).append(area)
 
     families: dict[tuple[float, ...], list[int]] = {}
@@ -2071,7 +2105,6 @@ def _select_spawn_area_variants(
             _spawn_area_variant_signature(anchor), []
         ).append(parent_node_index)
 
-    selected_parents: set[int] = set()
     difficulty = max(0, int(scaling_difficulty))
     for parent_indices in families.values():
         ordered = sorted(parent_indices)
@@ -2166,7 +2199,24 @@ def _load_spawn_areas(
                 not in active_signatures
             )
         ]
-    return _select_spawn_area_variants(tuple(result), scaling_difficulty)
+    difficulty_variations: Mapping[int, tuple[int, int]] = {}
+    try:
+        for _seq, name, file_name in database.execute(
+            "PRAGMA database_list"
+        ):
+            if name == "main" and file_name:
+                from dso_server.gameplay.map_event_state import (
+                    map_difficulty_variations,
+                )
+
+                difficulty_variations = map_difficulty_variations(
+                    Path(file_name)
+                )
+    except sqlite3.Error:
+        pass
+    return _select_spawn_area_variants(
+        tuple(result), scaling_difficulty, difficulty_variations,
+    )
 
 
 def _grounded_spawn_position(

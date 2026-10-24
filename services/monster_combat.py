@@ -741,6 +741,15 @@ class MonsterCombatService(
                     fallback, server_tick=server_tick, now=now,
                     eligible_actor_ids=ordinary_actor_ids,
                     targets_by_actor=assignments,
+                    # A multi-meteor falls on every player in its reach.
+                    enemy_positions={
+                        int(actor_id): (
+                            combat.encounter.coordinate_frame.wire_to_world(
+                                position
+                            )
+                        )
+                        for actor_id, position, _viewer in aggro_targets
+                    },
                 ))
                 movements.extend(combat.advance_player_summons(
                     elapsed_seconds=elapsed,
@@ -795,6 +804,15 @@ class MonsterCombatService(
                             finalize_area_attacks=(
                                 target_index == len(combat_targets) - 1
                             ),
+                        )
+                    )
+                    # Standing in a boss's flood, quake or breath.
+                    hostile_resolutions.extend(
+                        combat.resolve_monster_location_auras(
+                            position,
+                            player_actor_id=actor_id,
+                            now=now,
+                            incoming_damage_multiplier=incoming_multipliers,
                         )
                     )
                     if due_periodic_auras:

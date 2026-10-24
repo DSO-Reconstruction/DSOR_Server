@@ -2475,13 +2475,11 @@ class LocalCombatStateTests(unittest.TestCase):
             monster_position,
             encounter.coordinate_frame.wire_to_world(player_position),
         )
+        # A homing bullet is released then flown (_advance_homing_bullet);
+        # impact_tick stays the cast-time estimate until it lands.
         self.assertAlmostEqual(
             attacks[0].due_at - 100.0,
-            (
-                state.monsters[shaman_actor_id].attack.loop_start_frame
-                / 25.0
-                + distance / 3.0
-            ),
+            state.monsters[shaman_actor_id].attack.loop_start_frame / 25.0,
             places=6,
         )
         self.assertEqual(

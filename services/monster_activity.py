@@ -243,13 +243,23 @@ class MonsterActivityService:
                             f"count={len(location_visuals)} "
                             f"delay={location_delay:.3f}s"
                         )
+                        # As a player's: a Shifted skill's ground effects
+                        # where it falls, any other skill's at its caster,
+                        # their OX/OZ ahead along its aim (BossSmithEarthqake's
+                        # waves 2.5..12.5 m ahead of the smith, Balor's
+                        # breath, Boss01_b_Skill03's flood around Khalys).
+                        location_origin = (
+                            attack.target_position
+                            if attack.command_id == SHIFTED_SKILL_COMMAND
+                            else attack.position
+                        )
                         CharacterService._schedule_player_location_visuals(
                             s,
                             combat,
                             location_visuals,
                             position=tuple(
                                 float(value)
-                                for value in attack.target_position[:3]
+                                for value in location_origin[:3]
                             ),
                             yaw=float(attack.aim_angle),
                             server_tick=attack.server_tick,
@@ -315,6 +325,15 @@ class MonsterActivityService:
                             if definition is not None else 1
                         ),
                     )
+                    points = (
+                        target_position,
+                        *(
+                            tuple(float(value) for value in point[:3])
+                            for point in getattr(
+                                attack, "extra_target_positions", ()
+                            )
+                        ),
+                    )
                     skill_commands.append(
                         ShiftedSkillServerCommand(
                             ShiftedSkill(
@@ -328,9 +347,13 @@ class MonsterActivityService:
                                 # Native multi-projectile ground skills read
                                 # one point per authored bullet. Keep the point
                                 # array aligned with BulletCount so the client
-                                # never indexes past the supplied positions.
-                                additional_target_positions=(
-                                    (target_position,) * (bullet_count - 1)
+                                # never indexes past the supplied positions:
+                                # the cast's own points
+                                # (_monster_shifted_points), repeated when
+                                # fewer players than bullets are in reach.
+                                additional_target_positions=tuple(
+                                    points[index % len(points)]
+                                    for index in range(1, bullet_count)
                                 ),
                             ),
                             attack.attacker_actor_id,

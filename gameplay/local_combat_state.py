@@ -306,6 +306,13 @@ _COMBAT_ROLL_MASK = 0xFFFFFFFF
 _COMBAT_ROLL_SCALE = float(0x1_0000_0000)
 
 
+# A monster's Shifted skill falls on ground points with these TargetingTypes
+# (RandomPosition: points around the caster, _monster_shifted_points).
+MONSTER_GROUND_TARGETING_TYPES = frozenset({
+    "radius", "point", "location", "randomposition",
+})
+
+
 def deterministic_combat_roll(*components: int) -> float:
     """Mix one combat event into an unbiased unit-interval roll.
 
@@ -868,8 +875,9 @@ class MonsterAuraStrike:
     resource_id: str
     radius: float
     delay_ticks: int
-    # (coefficient, damage type) per CurrHealthPointsDmg instruction.
-    damage_programs: tuple[tuple[float, str], ...]
+    # (kind, amount, damage type) per health-taking start instruction of its
+    # children, SEE: LocalCombatState._status_health_programs.
+    damage_programs: tuple[tuple[str, float, str], ...]
 
 
 @dataclass(frozen=True)
@@ -905,6 +913,24 @@ class MonsterAttack:
     # Set on the extra blow a skill's user aura lands after its hit frame
     # (MonsterAuraStrike); None for the skill's own hit.
     aura_strike: MonsterAuraStrike | None = None
+    # A multi-bullet Shifted cast's other ground points (world frame, like
+    # target_position), sent after it in its ShiftedSkill. SEE:
+    # LocalCombatState._monster_shifted_points.
+    extra_target_positions: tuple[tuple[float, float, float], ...] = ()
+    # A homing bullet's flight (MotionType Homing / LockOnHoming), flown by
+    # _advance_homing_bullet: when the monster cast it, when its LifeTime
+    # ends (0.0: not flown, it lands at due_at), and where it was at
+    # homing_at (None: still at projectile_origin). due_at is its release.
+    cast_at: float = 0.0
+    homing_expires_at: float = 0.0
+    homing_position: tuple[float, float, float] | None = None
+    homing_at: float = 0.0
+
+
+HOMING_MOTION_TYPES = frozenset({"homing", "lockonhoming"})
+# A homing bullet whose target no longer resolves is dropped this long after
+# its LifeTime.
+HOMING_ORPHAN_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -1241,6 +1267,12 @@ class LocalCombatState:
         self.player_traps: dict[int, ActivePlayerTrap] = {}
         self._next_player_trap_id = 0x00010000
         self.player_location_visuals: dict[int, PlayerLocationVisual] = {}
+        # (visual instance, player actor, child index) -> next tick time of
+        # a monster ground aura on that player (resolve_monster_location_auras).
+        self._monster_location_aura_ticks: dict[
+            tuple[int, int, int], float
+        ] = {}
+        self._monster_location_aura_program_cache: dict[tuple, tuple] = {}
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
@@ -3509,6 +3541,255 @@ class LocalCombatState:
         self.player_location_aura_members.update(inside_now)
         return tuple(resolutions), tuple(applications)
 
+    def _monster_location_aura_programs(
+        self, definition: VictimStatusEffectDefinition,
+    ) -> tuple[tuple[float, tuple, tuple], ...]:
+        """A monster ground aura's children: (interval, start, tick) each.
+
+        start/tick are SEE: _status_health_programs entries. The children are
+        the aura's AuraEffectId list, read with the aura's own $N values
+        (BossSmithEarthqake_aura_01 $2 -1.5 -> BossSmithEarthqake_dmg
+        CurrHealthPointsDmg:$2,relative,Fire).
+        """
+
+        key = (definition.resource_id, tuple(definition.values))
+        cached = self._monster_location_aura_program_cache.get(key)
+        if cached is not None:
+            return cached
+        path = self.encounter.static_database_path
+        with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as db:
+            row = db.execute(
+                "SELECT COALESCE(AuraEffectId, '') FROM _Template_StatusEffect "
+                "WHERE Id=? LIMIT 1",
+                (definition.resource_id,),
+            ).fetchone()
+        programs = []
+        for child_id in str(row[0] if row else "").split(";"):
+            effect_id = self._status_effect_ids.get(child_id.strip())
+            if effect_id is None:
+                continue
+            child = replace(
+                definition, resource_id=child_id.strip(), effect_id=effect_id,
+            )
+            interval, _tick, _start = self._status_effect_runtime_program(
+                effect_id
+            )
+            start = self._status_health_programs(child, ticks=False)
+            tick = self._status_health_programs(child, ticks=True)
+            if start or tick:
+                programs.append((
+                    max(1.0 / SERVER_TICKS_PER_SECOND, float(interval)),
+                    start,
+                    tick,
+                ))
+        self._monster_location_aura_program_cache[key] = tuple(programs)
+        return tuple(programs)
+
+    def _status_health_programs(
+        self,
+        definition: VictimStatusEffectDefinition,
+        *,
+        ticks: bool,
+    ) -> tuple[tuple[str, float, str], ...]:
+        """Health-taking instructions of a status effect's program.
+
+        ("damage", coefficient, type): CurrHealthPointsDmg relative, x the
+        source's damage basis; ("absolute", amount, type): CurrHealthPointsDmg
+        without relative, or a negative absolute CurrHealthPoints
+        (Boss02Skill04Damage -1000); ("health", fraction, type): a negative
+        relative CurrHealthPoints, that fraction of the victim's maximum
+        health (Boss01_b_FloodDamageEffect CurrHealthPoints:-0.1,relative).
+        """
+
+        programs = [
+            ("damage" if relative else "absolute", coefficient, damage_type)
+            for coefficient, damage_type, relative
+            in self._status_damage_programs(definition, ticks=ticks)
+        ]
+        _interval, tick_modifiers, start_modifiers = (
+            self._status_effect_runtime_program(definition.effect_id)
+        )
+        for encoded in str(
+            tick_modifiers if ticks else start_modifiers
+        ).split(";"):
+            kind, separator, arguments_raw = encoded.partition(":")
+            if not separator or kind.strip().casefold() != "currhealthpoints":
+                continue
+            arguments = tuple(v.strip() for v in arguments_raw.split(","))
+            amount = self._modifier_amount(
+                None, arguments[0], definition.values
+            )
+            if amount is None or amount >= 0.0:
+                continue
+            damage_type = next(
+                (v for v in arguments[1:] if v.casefold() in DAMAGE_TYPE_IDS),
+                "Physical",
+            )
+            if any(v.casefold() == "relative" for v in arguments[1:]):
+                programs.append(
+                    ("health", min(1.0, -float(amount)), damage_type)
+                )
+            else:
+                programs.append(("absolute", -float(amount), damage_type))
+        return tuple(programs)
+
+    def resolve_monster_location_auras(
+        self,
+        player_position: tuple[float, float, float],
+        *,
+        player_actor_id: int,
+        now: float | None = None,
+        incoming_damage_multiplier: (
+            float | dict[str, float] | tuple[tuple[str, float], ...]
+        ) = 1.0,
+    ) -> tuple[DamageResolution, ...]:
+        """Damage one player standing in a monster skill's ground auras.
+
+        CONTRACT: a location effect a monster's skill left (LocationStatus
+        Effects, created as a PlayerLocationVisual owned by the monster) with
+        AuraTargets Enemies and an AuraRadius strikes a player within that
+        radius of it: its children's StartModifiers once when the player is
+        first inside, their TickModifiers every StatusEffectTickRate seconds
+        while inside, from the effect's start (after its DE) to its end.
+        Each strike is mitigated by the player's defense for its damage type
+        and sent as a Hit with the skill's index. Only while the monster
+        lives.
+        EVIDENCE (data): Boss01_b_Skill03 Boss01_b_FloodDamage (20.84 m, D 10,
+        child CurrHealthPoints -0.1 relative every 0.25 s);
+        BossSmithEarthqake's five _aura_0N, DE 1..5 s along OZ -2.5..-12.5;
+        Boss07BalorFirebreath (18 m, $0 -1.5 every 0.5 s).
+        UNVERIFIED: whether retail mitigates the percent-of-health floods.
+        """
+
+        current_time = time.perf_counter() if now is None else float(now)
+        player_actor_id = int(player_actor_id)
+        player_world = self.encounter.coordinate_frame.wire_to_world(
+            player_position
+        )
+        live = set()
+        resolutions = []
+        health = self.player_health.setdefault(
+            player_actor_id,
+            [self.player_maximum_health, self.player_maximum_health],
+        )
+        for visual in self.active_player_location_visuals(now=current_time):
+            owner = int(visual.owner_actor_id)
+            monster = self.monsters.get(owner)
+            definition = visual.definition
+            radius = float(definition.aura_radius)
+            if (
+                monster is None
+                or radius <= 0.0
+                or definition.aura_targets.strip().casefold() != "enemies"
+            ):
+                continue
+            starts_at = (
+                visual.expires_at
+                - definition.duration_ticks / SERVER_TICKS_PER_SECOND
+            )
+            if (
+                self.monster_health.get(owner, 0) <= 0
+                or current_time + 1e-9 < starts_at
+                or self._distance(visual.position, player_world) > radius
+                + PLAYER_PROJECTILE_COLLISION_RADIUS
+            ):
+                continue
+            for index, (interval, start, tick) in enumerate(
+                self._monster_location_aura_programs(definition)
+            ):
+                key = (int(visual.instance_id), player_actor_id, index)
+                live.add(key)
+                strikes = []
+                next_at = self._monster_location_aura_ticks.get(key)
+                if next_at is None:
+                    strikes.append(start)
+                    next_at = starts_at + interval
+                    while next_at + interval <= current_time + 1e-9:
+                        next_at += interval  # entered late: no back-ticks
+                while (
+                    tick
+                    and next_at <= current_time + 1e-9
+                    and next_at <= visual.expires_at + 1e-9
+                    and len(strikes) < 4
+                ):
+                    strikes.append(tick)
+                    next_at += interval
+                self._monster_location_aura_ticks[key] = next_at
+                for programs in strikes:
+                    if not programs or health[0] <= 0:
+                        continue
+                    damage = self._monster_aura_program_damage(
+                        owner, programs, health[1],
+                        incoming_damage_multiplier, current_time,
+                    )
+                    previous = health[0]
+                    current = max(0, previous - damage)
+                    if current == previous:
+                        continue
+                    self.note_player_attacked(player_actor_id, now=current_time)
+                    health[0] = current
+                    if player_actor_id == self.player_actor_id:
+                        self.player_current_health = current
+                    resolutions.append(DamageResolution(
+                        target_actor_id=player_actor_id,
+                        attacker_actor_id=owner,
+                        current_health=current,
+                        maximum_health=health[1],
+                        damage=previous - current,
+                        killed=current == 0,
+                        position=player_world,
+                        server_tick=(
+                            visual.starts_tick + round(
+                                (current_time - starts_at)
+                                * SERVER_TICKS_PER_SECOND
+                            )
+                        ) & 0xFFFFFFFF,
+                        hit_tags=(0,),
+                        skill_index=int(visual.source_skill_index),
+                        victim_status_effects=(),
+                    ))
+        for key in tuple(self._monster_location_aura_ticks):
+            if key[1] == player_actor_id and key not in live:
+                del self._monster_location_aura_ticks[key]
+        return tuple(resolutions)
+
+    def _monster_aura_program_damage(
+        self,
+        actor_id: int,
+        programs: tuple[tuple[str, float, str], ...],
+        maximum_health: int,
+        incoming_damage_multiplier,
+        now: float,
+    ) -> int:
+        """One strike of SEE: _status_health_programs from a monster."""
+
+        monster = self.monsters[actor_id]
+        basis = (
+            (monster.minimum_damage + monster.maximum_damage) / 2
+            * self._monster_skill_damage_multiplier(actor_id, now=now)
+        )
+        if isinstance(incoming_damage_multiplier, (int, float)):
+            defense = lambda _type: max(0.0, float(incoming_damage_multiplier))
+        else:
+            by_type = {
+                str(name).casefold(): max(0.0, float(value))
+                for name, value in dict(incoming_damage_multiplier).items()
+            }
+            defense = lambda damage_type: by_type.get(
+                "darkmagic" if damage_type.casefold() == "andermagic"
+                else damage_type.casefold(),
+                1.0,
+            )
+        total = 0.0
+        for kind, amount, damage_type in programs:
+            raw = (
+                basis * amount if kind == "damage"
+                else maximum_health * amount if kind == "health"
+                else amount
+            )
+            total += raw * defense(damage_type)
+        return max(1, int(round(total))) if total > 0.0 else 0
+
     def _creator_aura_children(
         self, visual
     ) -> tuple[VictimStatusEffectDefinition, ...]:
@@ -4753,9 +5034,12 @@ class LocalCombatState:
     ) -> dict[str, MonsterAuraStrike]:
         """Find the one-shot damaging enemy auras among user effects.
 
-        SEE: MonsterAuraStrike. Persistent auras (a duration, e.g. fire_aura
-        D:5), ally/creator/summoner auras and children without a relative
-        CurrHealthPointsDmg (heals, buffs, slows) are left out.
+        SEE: MonsterAuraStrike. Ally/creator/summoner auras, children
+        without a health-taking start instruction (heals, buffs, slows) and
+        persistent auras whose children tick (fire_aura D:5, Khalys's beam)
+        are left out; an aura with a duration whose children only strike on
+        start lands once (e_ks_boss_eye_360_aura D 1.6:
+        CurrHealthPoints:-0.8,relative, 80% of maximum health).
         """
 
         strikes: dict[str, MonsterAuraStrike] = {}
@@ -4769,17 +5053,21 @@ class LocalCombatState:
                 if (
                     aura.aura_radius <= 0.0
                     or aura.aura_targets.strip().casefold() != "enemies"
-                    or aura.duration_ticks > 0
+                ):
+                    continue
+                children = self._load_location_aura_effects(database, entry)
+                if aura.duration_ticks > 0 and any(
+                    self._status_health_programs(child, ticks=True)
+                    for child in children
                 ):
                     continue
                 programs = tuple(
-                    (coefficient, damage_type)
-                    for child in self._load_location_aura_effects(
-                        database, entry
+                    program
+                    for child in children
+                    for program in self._status_health_programs(
+                        child, ticks=False
                     )
-                    for coefficient, damage_type, relative
-                    in self._status_damage_programs(child, ticks=False)
-                    if relative and coefficient > 0.0
+                    if program[1] > 0.0
                 )
                 if programs:
                     strikes[aura.resource_id] = MonsterAuraStrike(
@@ -10303,8 +10591,16 @@ class LocalCombatState:
         eligible_actor_ids: (
             set[int] | frozenset[int] | None
         ) = None,
+        enemy_positions: (
+            dict[int, tuple[float, float, float]] | None
+        ) = None,
     ) -> tuple[MonsterAttack, ...]:
-        """Start database-selected casts when their cooldown permits."""
+        """Start database-selected casts when their cooldown permits.
+
+        ``enemy_positions`` (player actor id -> world position) are the
+        players a multi-bullet Shifted cast can also fall on
+        (_monster_shifted_points); without it only the target is.
+        """
 
         current_time = time.perf_counter() if now is None else float(now)
         target_actor_id = (
@@ -10649,6 +10945,7 @@ class LocalCombatState:
                     definition.loop_start_frame
                     / SERVER_TICKS_PER_SECOND,
                 )
+                release_delay = impact_delay
                 if definition.projectile_velocity > 1e-6:
                     impact_delay += travel_distance / (
                         definition.projectile_velocity
@@ -10743,6 +11040,56 @@ class LocalCombatState:
                 definition=definition,
                 bullet_count=definition.bullet_count,
             )
+            if (
+                attack.command_id in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                }
+                and definition.motion_type.casefold() in HOMING_MOTION_TYPES
+                and definition.projectile_velocity > 1e-6
+                and definition.projectile_lifetime > 1e-6
+                and not definition.support
+            ):
+                # A homing bullet is flown, not timed: it leaves at its
+                # release and lands when it reaches its target, which may
+                # outrun it until its LifeTime (trunc(LifeTime x 25) ticks,
+                # as the client flies it) runs out. Timed from the cast-time
+                # distance, Khalys's orbs struck a player running from them
+                # while they were still metres behind (2026-10-23).
+                attack = replace(
+                    attack,
+                    due_at=current_time + release_delay,
+                    cast_at=current_time,
+                    homing_expires_at=(
+                        current_time + release_delay
+                        + max(1.0, math.trunc(
+                            definition.projectile_lifetime
+                            * SERVER_TICKS_PER_SECOND
+                        )) / SERVER_TICKS_PER_SECOND
+                    ),
+                )
+            if (
+                attack.command_id == SHIFTED_SKILL_COMMAND
+                and definition.bullet_count > 1
+                and not definition.support
+                and definition.targeting_type.casefold()
+                in MONSTER_GROUND_TARGETING_TYPES
+                and attack_target_actor_id not in self.monsters
+            ):
+                points = self._monster_shifted_points(
+                    actor_id,
+                    definition,
+                    monster_position,
+                    attack_target_actor_id,
+                    attack_target_world,
+                    attack.cast_id,
+                    enemy_positions,
+                )
+                attack = replace(
+                    attack,
+                    target_position=points[0],
+                    extra_target_positions=points[1:],
+                )
             self.last_monster_attack_at[actor_id] = current_time
             self.monster_skill_unblock_at[actor_id] = (
                 current_time + attack.skill_unblock_frame / SERVER_TICKS_PER_SECOND
@@ -10794,6 +11141,48 @@ class LocalCombatState:
                     self.tower_fire_burst_remaining[actor_id] = remaining - 1
             self.pending_monster_attacks[actor_id] = attack
             if (
+                attack.command_id in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                }
+                and definition.bullet_count > 1
+                and definition.bullet_emit_delay > 0.0
+                and not definition.support
+            ):
+                # Every bullet of a volley lands on its own: bullet k leaves
+                # k x BulletEmitDelay after the first, from the same place
+                # and on the same aim, and flies as long (Boss01Skill02's
+                # three homing orbs 0.25 s apart, Medusa's two snakes 1 s
+                # apart). The client draws them so (skills.rs spawn loop,
+                # BulletEmitDelay apart: 0x8F0ADA). ImpactCount and
+                # ReproductionCount are about several actors per bullet, not
+                # repeats, and are left alone.
+                for bullet in range(1, definition.bullet_count):
+                    emit_offset = bullet * definition.bullet_emit_delay
+                    self.pending_monster_projectile_attacks.setdefault(
+                        actor_id, []
+                    ).append(replace(
+                        attack,
+                        due_at=attack.due_at + emit_offset,
+                        homing_expires_at=(
+                            attack.homing_expires_at + emit_offset
+                            if attack.homing_expires_at
+                            else 0.0
+                        ),
+                        impact_tick=(
+                            attack.impact_tick
+                            + round(emit_offset * SERVER_TICKS_PER_SECOND)
+                        ) & 0xFFFFFFFF,
+                    ))
+            for point in attack.extra_target_positions:
+                # Each point of a multi-bullet Shifted cast is its own ground
+                # hit, due with the first (one HitFrame for every bullet).
+                self.pending_monster_projectile_attacks.setdefault(
+                    actor_id, []
+                ).append(replace(
+                    attack, target_position=point, extra_target_positions=(),
+                ))
+            if (
                 attack.user_status_effects
                 and attack_target_actor_id not in self.monsters
             ):
@@ -10825,6 +11214,89 @@ class LocalCombatState:
                 break
         self._monster_attack_cursor = next_cursor
         return tuple(attacks)
+
+    def _monster_shifted_points(
+        self,
+        actor_id: int,
+        definition: MonsterAttackDefinition,
+        monster_position: tuple[float, float, float],
+        target_actor_id: int,
+        target_world: tuple[float, float, float],
+        cast_id: int,
+        enemy_positions: dict[int, tuple[float, float, float]] | None,
+    ) -> tuple[tuple[float, float, float], ...]:
+        """Where a multi-bullet Shifted monster cast falls: one point each.
+
+        CONTRACT: TargetingType RandomPosition: BulletCount points drawn
+        uniformly within AttackRange of the caster, set on walkable ground,
+        the same for the same cast. Radius/Point/Location: one point on the
+        target, then one on each other living player within AttackRange of
+        the caster, nearest first, at most BulletCount; never two on one
+        player, so a lone player takes one meteor as before.
+        EVIDENCE (data, static.db4 _Template_Skill): the skills come in
+        pairs, a Radius one aimed at players and a RandomPosition one
+        (e_dra_mystra_invisible_meteor_target / _random,
+        e_ks_boss_eye_multi_meteor / _random_meteor_hidden,
+        e_ks_01_cager_stunshot / _random, ShadowfatherPortalShockWave /
+        Random); Radius ones mostly author BulletCount 5, a group's size, down
+        to random monster enchantments (RME_cast_lightning_strike); their
+        bullet sequences draw a single meteor at the point
+        (boss_02_herald_skill_04_bullet, e_zahir_horseman_multimeteor_single_
+        bullet), so N equal points stacked N meteors on one spot.
+        UNVERIFIED: the retail server's own choice of points.
+        """
+
+        count = max(1, int(definition.bullet_count))
+        if definition.targeting_type.casefold() == "randomposition":
+            reach = max(0.0, float(definition.attack_range))
+            points = []
+            for index in range(count):
+                angle = 2.0 * math.pi * deterministic_combat_roll(
+                    0x52414E44, int(cast_id), int(actor_id), index, 0,
+                )
+                radius = reach * math.sqrt(deterministic_combat_roll(
+                    0x52414E44, int(cast_id), int(actor_id), index, 1,
+                ))
+                point = (
+                    monster_position[0] + radius * math.sin(angle),
+                    monster_position[1],
+                    monster_position[2] + radius * math.cos(angle),
+                )
+                try:
+                    point = tuple(
+                        float(value)
+                        for value in (
+                            self.encounter.navigation
+                            .project_position_relative(
+                                point, monster_position,
+                            )
+                        )
+                    )
+                except (
+                    AttributeError,
+                    NavigationError,
+                    CollisionTerrainError,
+                    ValueError,
+                ):
+                    pass
+                points.append(point)
+            return tuple(points)
+        others = sorted(
+            (distance, int(other_id), tuple(float(v) for v in position[:3]))
+            for other_id, position in (enemy_positions or {}).items()
+            if (
+                int(other_id) != int(target_actor_id)
+                and int(other_id) not in self.monsters
+                and self.player_health.get(int(other_id), [1])[0] > 0
+                and (
+                    distance := self._distance(position, monster_position)
+                ) <= definition.attack_range
+            )
+        )
+        return (
+            tuple(float(value) for value in target_world[:3]),
+            *(position for _distance, _id, position in others[:count - 1]),
+        )
 
     def _monster_skill_choice(
         self,
@@ -11116,6 +11588,88 @@ class LocalCombatState:
         if not flights:
             self.pending_monster_projectile_attacks.pop(actor_id, None)
 
+    def _replace_pending_monster_attack(
+        self, actor_id: int, attack: MonsterAttack, updated: MonsterAttack,
+    ) -> None:
+        actor_id = int(actor_id)
+        if self.pending_monster_attacks.get(actor_id) is attack:
+            self.pending_monster_attacks[actor_id] = updated
+            return
+        flights = self.pending_monster_projectile_attacks.get(actor_id, [])
+        for index, pending in enumerate(flights):
+            if pending is attack:
+                flights[index] = updated
+                return
+
+    def _advance_homing_bullet(
+        self,
+        actor_id: int,
+        attack: MonsterAttack,
+        target_world: tuple[float, float, float],
+        now: float,
+    ) -> float | None:
+        """Fly a homing bullet up to ``now``; the time it reached its target.
+
+        It chases the target's current place at its Velocity, flat, one
+        server tick at a time (the client's steer_bullet re-aims it every
+        frame the same way), and reaches it within BulletRadius + the
+        player's collision radius. ``None`` while it still flies, or once its
+        LifeTime ran out (it is then dropped: a target that outran it takes
+        nothing). Once released it flies on its own, so its caster may act
+        again.
+        UNVERIFIED: the 2018 client's homing step (turn rate, if any) was not
+        traced; a pure pursuit at constant speed matches what the client draws.
+        """
+
+        definition = attack.definition or self.monsters[actor_id].attack
+        speed = max(1e-6, float(definition.projectile_velocity))
+        reach = (
+            max(0.15, float(attack.projectile_radius))
+            + PLAYER_PROJECTILE_COLLISION_RADIUS
+        )
+        x, _y, z = (
+            attack.homing_position
+            if attack.homing_position is not None
+            else attack.projectile_origin[:3]
+        )
+        t = max(attack.due_at, attack.homing_at)
+        end = min(float(now), attack.homing_expires_at)
+        step = 1.0 / SERVER_TICKS_PER_SECOND
+        reached_at = None
+        while True:
+            dx = target_world[0] - x
+            dz = target_world[2] - z
+            distance = math.hypot(dx, dz)
+            if distance <= reach:
+                reached_at = t
+                break
+            if t >= end - 1e-9:
+                break
+            dt = min(step, end - t)
+            travel = speed * dt
+            if travel >= distance - reach:
+                reached_at = t + (distance - reach) / speed
+                break
+            x += dx / distance * travel
+            z += dz / distance * travel
+            t += dt
+        if reached_at is not None:
+            return reached_at
+        if now >= attack.homing_expires_at:
+            self._remove_pending_monster_attack(actor_id, attack)
+            return None
+        updated = replace(
+            attack, homing_position=(x, target_world[1], z), homing_at=t,
+        )
+        if self.pending_monster_attacks.get(int(actor_id)) is attack:
+            del self.pending_monster_attacks[int(actor_id)]
+            self.pending_monster_projectile_attacks.setdefault(
+                int(actor_id), []
+            ).append(updated)
+        else:
+            self._replace_pending_monster_attack(actor_id, attack, updated)
+        return None
+
     def _mark_monster_area_target_resolved(
         self, actor_id: int, attack: MonsterAttack, target_actor_id: int,
     ) -> None:
@@ -11192,7 +11746,7 @@ class LocalCombatState:
             is_ground_target_area = (
                 attack.command_id == SHIFTED_SKILL_COMMAND
                 and definition.targeting_type.casefold()
-                in {"radius", "point", "location"}
+                in MONSTER_GROUND_TARGETING_TYPES
             )
             aura_strike = attack.aura_strike
             is_multi_target_area = (
@@ -11202,17 +11756,44 @@ class LocalCombatState:
                 )
                 or aura_strike is not None
             ) and not targets_monster
+            homing = (
+                attack.homing_expires_at > 0.0 and aura_strike is None
+            )
             if (
                 not targets_monster
                 and attack.target_actor_id != player_actor_id
                 and not is_multi_target_area
             ):
+                if (
+                    homing
+                    and current_time
+                    > attack.homing_expires_at + HOMING_ORPHAN_GRACE_SECONDS
+                ):
+                    # Its target left: it ran out with nobody flying it.
+                    self._remove_pending_monster_attack(actor_id, attack)
                 continue
             if (
                 is_multi_target_area
                 and player_actor_id in attack.resolved_target_actor_ids
             ):
                 continue
+            if homing:
+                reached_at = self._advance_homing_bullet(
+                    actor_id, attack, target_world, current_time
+                )
+                if reached_at is None:
+                    continue
+                self._remove_pending_monster_attack(actor_id, attack)
+                attack = replace(
+                    attack,
+                    impact_tick=(
+                        int(attack.server_tick)
+                        + round(
+                            (reached_at - attack.cast_at)
+                            * SERVER_TICKS_PER_SECOND
+                        )
+                    ) & 0xFFFFFFFF,
+                )
             if not is_multi_target_area:
                 self._remove_pending_monster_attack(actor_id, attack)
             if (
@@ -11312,7 +11893,7 @@ class LocalCombatState:
                 weighted = (
                     tuple(
                         (damage_type, coefficient)
-                        for coefficient, damage_type
+                        for _kind, coefficient, damage_type
                         in aura_strike.damage_programs
                     )
                     if aura_strike is not None
@@ -11366,7 +11947,7 @@ class LocalCombatState:
                 * (
                     sum(
                         coefficient
-                        for coefficient, _damage_type
+                        for _kind, coefficient, _damage_type
                         in aura_strike.damage_programs
                     )
                     if aura_strike is not None
@@ -11391,6 +11972,20 @@ class LocalCombatState:
                 if raw_damage > 0.0
                 else 0
             )
+            if aura_strike is not None and not targets_monster:
+                # Its own programs: x the damage basis, a share of the
+                # player's maximum health, or an absolute amount.
+                damage = self._monster_aura_program_damage(
+                    actor_id,
+                    aura_strike.damage_programs,
+                    self.player_health.get(
+                        player_actor_id,
+                        [self.player_maximum_health,
+                         self.player_maximum_health],
+                    )[1],
+                    incoming_damage_multiplier,
+                    current_time,
+                )
             if damage <= 0:
                 continue
             if targets_monster:
@@ -11522,9 +12117,16 @@ class LocalCombatState:
                 self.pending_monster_projectile_attacks.items()
             ):
                 for attack in tuple(flights):
-                    if (
+                    definition = (
+                        attack.definition or self.monsters[actor_id].attack
+                    )
+                    if attack.due_at <= current_time and (
                         attack.aura_strike is not None
-                        and attack.due_at <= current_time
+                        or (
+                            attack.command_id == SHIFTED_SKILL_COMMAND
+                            and definition.targeting_type.casefold()
+                            in MONSTER_GROUND_TARGETING_TYPES
+                        )
                     ):
                         self._remove_pending_monster_attack(actor_id, attack)
             for actor_id, attack in tuple(self.pending_monster_attacks.items()):
@@ -11532,7 +12134,7 @@ class LocalCombatState:
                 if (
                     attack.due_at <= current_time
                     and definition.targeting_type.casefold()
-                    in {"angle", "cone", "radius", "point", "location"}
+                    in {"angle", "cone", *MONSTER_GROUND_TARGETING_TYPES}
                     and attack.command_id not in {
                         BULLET_SKILL_COMMAND,
                         TARGET_BULLET_SKILL_COMMAND,

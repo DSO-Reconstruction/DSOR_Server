@@ -25,12 +25,16 @@ export async function livePage(result, id) {
     async function findMaps() {
       const current = ++generation, button = $("#find-map"); button.disabled = true;
       try {
-        const maps = await api(`/api/maps?limit=30&q=${encodeURIComponent($("#map-query").value)}`);
-        if (!form.isConnected || generation !== current) return;
+        const q = encodeURIComponent($("#map-query").value), maps = {rows: [], total: 1};
+        while (maps.rows.length < maps.total) {
+          const part = await api(`/api/maps?limit=100&offset=${maps.rows.length}&q=${q}`);
+          if (!form.isConnected || generation !== current) return;
+          maps.rows.push(...part.rows); maps.total = part.rows.length ? part.total : maps.rows.length;
+        }
         $("#map-results").innerHTML = table(["Destination", "Type", "Map difficulty", ""], maps.rows.map(map => [
           `<code>${esc(map.map_id)}</code><span class="sub">${esc(map.physical_map)}</span>`, esc(map.type), map.difficulty,
           `<button type="button" class="secondary" data-map="${esc(map.map_id)}">Select</button>`
-        ]), "No installed maps match this search.") + (maps.total > maps.rows.length ? '<p class="help">Refine your search to see more destinations.</p>' : "");
+        ]), "No installed maps match this search.");
         for (const button of $("#map-results").querySelectorAll("[data-map]")) button.addEventListener("click", () => {
           destination = maps.rows.find(map => map.map_id === button.dataset.map);
           $("#map-selection").hidden = false;
@@ -41,6 +45,7 @@ export async function livePage(result, id) {
       finally { if (form.isConnected) button.disabled = false; }
     }
     $("#find-map").addEventListener("click", findMaps);
+    if (live.ready) findMaps();
     $("#map-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findMaps(); } });
     async function act(action, payload, title, message, success) {
       if (busy || !form.reportValidity()) return;
