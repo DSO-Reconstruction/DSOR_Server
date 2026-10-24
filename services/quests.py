@@ -18,7 +18,10 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
 import random
+import sqlite3
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -140,6 +143,26 @@ def _log(message: str) -> None:
 
 def _now_stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+@lru_cache(maxsize=4)
+def _scheduled_event_ids_cached(path: str, mtime_ns: int, size: int) -> frozenset[str]:
+    del mtime_ns, size
+    with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as connection:
+        return frozenset(
+            str(row[0]).casefold()
+            for row in connection.execute(
+                "SELECT Id FROM _Template_Events WHERE COALESCE(MapLocal, 0)=0"
+            )
+        )
+
+
+def _scheduled_event_ids(static_database_path) -> frozenset[str]:
+    """Ids of the global events only the event schedule may switch on."""
+
+    path = Path(static_database_path).resolve()
+    stat = path.stat()
+    return _scheduled_event_ids_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 
 def _quest_log(s: Session) -> dict[str, QuestProgress]:
@@ -366,7 +389,17 @@ class QuestService:
                 # fires while quest 06 is accepted. Once the map is unlocked,
                 # preserve that route flag on later visits and quest stages.
                 flags.add("g0005_TempleOfIce_05_openExit")
-        return frozenset(flags)
+        # Scheduled events (anniversary_event, halloween_event_01, ...) belong
+        # to the event schedule. A quest whose NPC stands in a seasonal set
+        # must not switch the whole season on for one player (its piñatas,
+        # merchants and decorations); while it runs, the schedule shows it.
+        try:
+            scheduled = _scheduled_event_ids(self.static_database_path)
+        except (OSError, sqlite3.Error):
+            scheduled = frozenset()
+        return frozenset(
+            flag for flag in flags if str(flag).casefold() not in scheduled
+        )
 
     @staticmethod
     def _restore_quest_state(s: Session, persisted_state) -> None:

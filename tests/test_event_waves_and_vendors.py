@@ -6,6 +6,7 @@ import pytest
 from dso_server.gameplay.local_monster_state import load_local_player_only_encounter
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_map_state import load_local_npc_definitions, load_map_coordinate_frame
+from dso_server.gameplay.quest_content import QUEST_STATE_FINISHED, QuestProgress
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.gameplay_protocol import (
     PROP_INFO_COMMAND, decode_prop_info_batch, encode_screen_message,
@@ -121,3 +122,13 @@ def test_kingscity_vendor_and_station_registration(world,level,matrona):
 def test_grima_remains_event_gated(world):
     case=world; s,r=enter(case,"a0200_kingscity")
     assert not any(d.template_id=="e_event_merchant_grima" for d in case.server._active_npc_definitions(s))
+
+
+def test_an_anniversary_quest_does_not_start_the_season(world):
+    # Phestos, the quest's turn-in NPC, stands in the anniversary_event set
+    # with the piñatas; the quest must not reveal that set out of season.
+    case=world; s,r=enter(case,"a0200_kingscity")
+    quest="e-anniversary-introduction-02-n"
+    s.gameplay_quest_log={quest: QuestProgress(quest, state=QUEST_STATE_FINISHED)}
+    assert "anniversary_event" not in case.server._quest_reveal_flags(s,"a0200_kingscity")
+    assert not any(d.template_id=="e_anniversary_merchant_phestos" for d in case.server._active_npc_definitions(s))
