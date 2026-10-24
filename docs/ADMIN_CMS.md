@@ -35,6 +35,7 @@ CMS roles do not change in-game character powers or name colors.
 | Characters | Full pages for overview, searchable inventory containers, item details, progression, structured state, live effects/map transfers, bookings and raw diagnostics |
 | Bookings | Full-page recipient selection, template search, equipment configuration and review; inspect delivery history/errors and cancel pending grants |
 | Events | Search global event templates, start new runs, deactivate or reactivate retained runs, inspect settings and audit history |
+| Season Pass | Start, reschedule, end or resume seasons; edit each level's experience and free/gold/red rewards; write rewards into client databases; list missions |
 | Item catalog | Search actual static database templates and start item bookings |
 | Sessions | Inspect issued game sessions and revoke all login sessions for an account |
 | Audit log | Search durable actor, action, target, reason and change history |
@@ -43,9 +44,10 @@ Navigation follows **Account ? Character ? Inventory ? Item**. Breadcrumbs and
 character tabs keep account context; inventory search/container filters survive
 opening an item and returning to the inventory. Account settings, booking
 creation/review, character inspection, item templates and audit details are full
-pages with browser back/forward navigation. Dialogs are used only to confirm
-account changes, session revocation, live actions and booking cancellation; reasons are entered
-on the page before confirmation. There are no data-heavy popup editors.
+pages with browser back/forward navigation. Every audited action opens a
+confirmation dialog after you press its button; the dialog asks for the audit
+reason (3 to 500 characters; Enter confirms, Shift+Enter adds a line). Going back
+leaves the page as it was. There are no data-heavy popup editors.
 
 Character inspection shows the most recent saved snapshot, with online presence
 reported separately. Refresh pages to fetch current data. Lists are paginated.
@@ -57,8 +59,8 @@ Administrators cannot disable or demote themselves through the CMS.
 
 Choose an account, then one of its characters; starting from an account or
 character page carries that recipient into the booking. Choose a currency or
-search the item catalog, configure the grant, enter a reason, and review the
-complete booking before submitting it. The server verifies the selected account and
+search the item catalog, configure the grant, and review the complete booking;
+**Create booking** asks for the reason. The server verifies the selected account and
 character still match.
 Characters must have entered the game at least once so a saved state exists.
 Supported currencies are Andermant, gold (the game's base unit), Badge of Honor,
@@ -131,8 +133,8 @@ copies. Effects use the game's native status packets, persist across logins, and
 can be removed from this same page. Other status effects are preserved.
 
 **Change map** searches installed maps and authored map-access variants. Choose
-a destination, optionally set a valid scaling difficulty, enter a reason, and
-confirm. The normal SwitchMap/handoff flow handles the transfer and destination
+a destination, optionally set a valid scaling difficulty, and confirm with a
+reason. The normal SwitchMap/handoff flow handles the transfer and destination
 spawn. Like `!map`, this administrative action bypasses event restrictions and
 travel costs. Unknown/uninstalled destinations and stale sessions are rejected.
 Every live action records its administrator, reason, requested parameters and
@@ -203,6 +205,24 @@ on their next map entry. Event NPCs and scenery load on map entry; existing shar
 map instances may need to be recreated for their authored world content to change.
 The CMS does not forcibly teleport players or discard a populated map instance.
 
+## Season Pass
+
+The client shows its Season Pass while the event named by
+`_Globals.SeasonPassEventId` (`event_season_ticket`) runs; each run is a season.
+**Season Pass > Season** starts a new run (31 days preselected), changes its end,
+ends it, or resumes the most recent ended run. These use the event schedule, so
+they appear on the Events page too. A new season starts every character over at
+level 0 (activated tickets carry over); resuming keeps the run's progress.
+Missions and experience purchases count only while a season runs.
+
+**Rewards** lists all levels with the experience they need and the free, Gold
+ticket and Red ticket rewards. Editing a level stores only what differs from
+static.db4 in `data/season_pass.json`; claims use it immediately. Because the
+client draws the reward tiles from its own static.db4, each edit is also written
+into the databases listed in `DSO_CLIENT_STATIC_DB` (restart the client to see
+it), and dsor clients download the edited table from the account service.
+See [SEASON_PASS.md](SEASON_PASS.md) for the packets and progress rules.
+
 ## Configuration
 
 | Variable | Default | Meaning |
@@ -213,6 +233,8 @@ The CMS does not forcibly teleport players or discard a populated map instance.
 | `DSO_ADMIN_SECURE_COOKIE` | `0` | Set `1` when serving the CMS through HTTPS |
 | `DSO_ACCOUNT_REGISTRY` | `data/db/accounts.sqlite3` | Shared game accounts, CMS roles, bookings and audit |
 | `DSO_PLAYER_DATABASE` | `data/db/players.sqlite3` | Shared saved character state |
+| `DSO_SEASON_PASS_CONFIG` | `data/season_pass.json` | Season Pass reward edits |
+| `DSO_CLIENT_STATIC_DB` | Not set | Client `static.db4` files that receive Season Pass reward edits (`;`-separated on Windows) |
 
 For remote use, put the CMS behind an HTTPS reverse proxy and set
 `DSO_ADMIN_SECURE_COOKIE=1`; forward the original Host header. The backend

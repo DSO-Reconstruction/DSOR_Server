@@ -21,7 +21,11 @@ from dso_server.services.character_server import CharacterServer
 from dso_server.tests.fixtures.characters import character_server
 from dso_server.runtime.context import RELIABLE_BACKLOG_SOFT_LIMIT
 from dso_server.runtime.gameplay_scheduler import GameplayDeadlineScheduler
-from dso_server.runtime.transport import Session
+from dso_server.runtime.transport import (
+    RELIABLE_DATAGRAM_LIMIT,
+    RakNetServer,
+    Session,
+)
 from dso_server.protocol.gameplay_protocol import Move
 from dso_server.gameplay.local_combat_state import (
     DamageResolution,
@@ -780,13 +784,32 @@ class PopulatedMapSimulationTests(unittest.TestCase):
         self.assertEqual(presence_scans.call_count, 1)
         self.assertEqual(healing.call_count, 1)
         self.assertEqual(healing.call_args.args[1], resolutions)
+        # Fifteen hits overflow one datagram, so the transport fragments the
+        # batch: count ordered messages, not datagrams.
+        messages = {
+            (address, frame["order_idx"])
+            for data, address in self.sock.sent
+            for frame in RakNetServer._parse_frames(data)
+        }
         self.assertEqual(
-            len(self.sock.sent),
+            len(messages),
             2,
             "one combat batch should be sent to each of two viewers",
         )
-        self.assertEqual(self.owner.reliable_backlog_size(), 1)
-        self.assertEqual(self.peer.reliable_backlog_size(), 1)
+        self.assertTrue(
+            all(
+                len(data) <= RELIABLE_DATAGRAM_LIMIT
+                for data, _address in self.sock.sent
+            )
+        )
+        for viewer in (self.owner, self.peer):
+            self.assertEqual(
+                viewer.reliable_backlog_size(),
+                sum(
+                    1 for _data, address in self.sock.sent
+                    if address == viewer.addr
+                ),
+            )
 
     def test_player_owned_tick_batches_without_presence(self):
         """The standalone path also emits one combat transaction per tick."""

@@ -1,11 +1,11 @@
 import { $, esc, date, api, link, navigate, status, table, facts, stats, section, toolbar,
-  bindSearch, pager, reasonInput, formError, notice, confirmAction, tree } from "./admin_ui.js";
+  bindSearch, pager, formError, notice, confirmAction, tree } from "./admin_ui.js";
 
 const stateLabel = state => ({active: "Active", upcoming: "Upcoming", expired: "Inactive"}[state] || state);
-const refreshMessage = (action, result) => `${action} ${result.refresh.updated} online ${result.refresh.updated === 1 ? "character" : "characters"} updated.${result.refresh.deferred ? ` ${result.refresh.deferred} could not refresh now; their next map entry will load the change.` : ""}`;
+export const refreshMessage = (action, result) => `${action} ${result.refresh.updated} online ${result.refresh.updated === 1 ? "character" : "characters"} updated.${result.refresh.deferred ? ` ${result.refresh.deferred} could not refresh now; their next map entry will load the change.` : ""}`;
 const refreshHelp = '<p class="help">Online event state, drops and buffs refresh immediately. Event NPCs and scenery load on map entry; existing shared map instances may need to be recreated.</p>';
 
-function endingControls(event = null) {
+export function endingControls(event = null) {
   const selected = event ? (event.ends_at && event.mode !== "active" ? "custom" : "none") : "7";
   const end = event?.ends_at ? new Date(event.ends_at) : null;
   const localEnd = end ? new Date(end.getTime() - end.getTimezoneOffset() * 60000).toISOString().slice(0, 19) : "";
@@ -18,7 +18,7 @@ function endingControls(event = null) {
   </fieldset>`;
 }
 
-function bindEnding(form) {
+export function bindEnding(form) {
   const update = () => {
     const choice = form.elements.event_duration.value, input = form.elements.event_end;
     form.querySelector("[data-custom-end]").hidden = choice !== "custom";
@@ -32,7 +32,7 @@ function bindEnding(form) {
   update();
 }
 
-function readEnding(form) {
+export function readEnding(form) {
   const choice = form.elements.event_duration.value;
   if (choice === "none") return {ends_at: null};
   if (choice !== "custom") return {duration_days: Number(choice)};
@@ -41,7 +41,7 @@ function readEnding(form) {
   return {ends_at: end.toISOString()};
 }
 
-function endingDescription(ending) {
+export function endingDescription(ending) {
   return ending.duration_days ? `Runs for ${ending.duration_days} days.` : ending.ends_at ? `Ends ${date(ending.ends_at)}.` : "Stays active until deactivated.";
 }
 
@@ -91,7 +91,7 @@ export async function eventPage(route) {
     result.html += `<form id="event-action" class="form-page"><h2>${enable ? "Activate event" : "Manage event"}</h2>
       <p class="muted">${enable ? "Reactivating keeps this instance's player progress, participation and claimed rewards. Use Add event to start a fresh run." : "Changing the end date or deactivating keeps this instance's player progress, participation and claimed rewards."}</p>
       ${hasEnding ? endingControls(enable ? null : event) : ""}
-      ${reasonInput}${refreshHelp}<p id="form-error" class="error-text" role="alert"></p>
+      ${refreshHelp}<p id="form-error" class="error-text" role="alert"></p>
       <div class="form-actions">${event.state === "active" ? '<button type="submit" value="schedule">Save end date</button>' : ""}
       <button type="submit" value="${enable ? "activate" : "deactivate"}" ${enable ? "" : 'class="secondary" formnovalidate'}>${verb} event</button></div></form>`;
     result.mount = () => {
@@ -104,9 +104,10 @@ export async function eventPage(route) {
         try {
           const ending = operation === "deactivate" ? {} : readEnding(form);
           const label = operation === "schedule" ? "Save end date" : verb;
-          if (!(await confirmAction(`${label}?`, `${event.name} / Instance ${event.event_id}. ${operation === "deactivate" ? "Removes this run from active events." : endingDescription(ending)}`, label))) return;
+          const reason = await confirmAction(`${label}?`, `${event.name} / Instance ${event.event_id}. ${operation === "deactivate" ? "Removes this run from active events." : endingDescription(ending)}`, label);
+          if (reason === null) return;
           const response = await api(`/api/events/${event.event_id}/${operation}`, {
-            revision: event.revision, reason: new FormData(form).get("reason"), ...ending
+            revision: event.revision, reason, ...ending
           });
           notice(refreshMessage(operation === "schedule" ? "End date updated." : `Event ${enable ? "activated" : "deactivated"}.`, response));
           window.dispatchEvent(new Event("reload-page"));
@@ -135,7 +136,7 @@ export async function newEventPage() {
           <label>Collectibles per drop<input name="amount" type="number" min="1" max="1000000" step="1" value="1" required></label></div>
         <label class="check"><input name="participation" type="checkbox" checked>Players participate by default</label>
       </fieldset>
-      <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}${refreshHelp}</fieldset>
+      ${refreshHelp}
       <p id="form-error" class="error-text" role="alert"></p><div class="form-actions">${link("Cancel", "events", {}, "left")}<button id="add-event" type="submit" disabled>Activate event</button></div>
     </form>`,
     mount() {
@@ -167,10 +168,11 @@ export async function newEventPage() {
         const values = new FormData(form), template = selected, button = $("#add-event"); button.disabled = true;
         try {
           const ending = readEnding(form);
-          if (!(await confirmAction("Activate a new event run?", `${template.name || template.template_id} will start immediately. ${endingDescription(ending)}`, "Activate event"))) return;
+          const reason = await confirmAction("Activate a new event run?", `${template.name || template.template_id} will start immediately. ${endingDescription(ending)}`, "Activate event");
+          if (reason === null) return;
           const response = await api("/api/events", {revision, template_id: template.template_id, ...ending,
             collectible_drop_chance: Number(values.get("chance")) / 100, collectible_amount: Number(values.get("amount")),
-            participation_default: values.has("participation"), reason: values.get("reason")});
+            participation_default: values.has("participation"), reason});
           notice(refreshMessage("Event activated.", response)); navigate(`events/${response.event_id}`);
         } catch (error) { if (form.isConnected) formError(error); } finally { button.disabled = false; }
       });

@@ -25,6 +25,13 @@ MONSTER_CHASE_IDLE_RETIRE_SECONDS = max(
     0.0,
     float(os.environ.get("DSO_MONSTER_CHASE_IDLE_RETIRE_SECONDS", "30.0")),
 )
+# How long a map instance with simulation work may have no worker before the
+# watchdog's supervisor starts one. An ordinary hand-off completes within a
+# tick, so this only ever catches a map that genuinely lost its owner.
+MONSTER_WORLD_ORPHAN_GRACE_SECONDS = max(
+    0.0,
+    float(os.environ.get("DSO_MONSTER_ORPHAN_GRACE_SECONDS", "1.0")),
+)
 
 
 class _FixedRateChaseLoop:
@@ -39,6 +46,9 @@ class _FixedRateChaseLoop:
         self.diagnostic_progress_at = self.diagnostic_phase_at
         self.diagnostic_ticks_completed = 0
         self.diagnostic_last_result = None
+        # Set under the session's flow_lock by a start request that found this
+        # worker still installed; see ``_release_unless_restarted``.
+        self._restart_requested = False
         self._thread = threading.Thread(
             target=self._run,
             name=f"dso-monsters-{session.addr[1]}-{generation}",
@@ -60,6 +70,40 @@ class _FixedRateChaseLoop:
 
     def cancel(self) -> None:
         self._stopped.set()
+
+    def request_restart(self) -> None:
+        """Record a start request that found this worker installed.
+
+        The caller holds ``session.flow_lock``. ``_start_monster_chase`` cannot
+        replace a live worker, so a request that arrives while this worker is
+        deciding to retire -- idle timeout, or an ownership hand-off -- used to
+        be dropped, and the map was left with no simulation thread at all.
+        """
+
+        self._restart_requested = True
+
+    def _release_unless_restarted(self) -> bool:
+        """Release the session's worker slot unless a start arrived meanwhile.
+
+        Returns whether this worker should exit. Deciding under flow_lock is
+        what makes the hand-off safe: a start request is recorded under the
+        same lock, so it either lands before this decision and is honoured, or
+        after the slot is released and starts a replacement worker.
+        """
+
+        try:
+            with self.session.flow_lock:
+                if self.session.gameplay_chase_timer is not self:
+                    return True
+                if self._restart_requested and not self._stopped.is_set():
+                    self._restart_requested = False
+                    return False
+                self.session.gameplay_chase_timer = None
+                return True
+        except TimeoutError:
+            # The exit path retries the release; failing that, the installed
+            # handle of an exited thread is replaceable (``has_exited``).
+            return True
 
     def _is_installed_worker(self) -> bool:
         """Report whether this thread still owns the session's simulation.
@@ -86,6 +130,10 @@ class _FixedRateChaseLoop:
                     self._set_phase("ownership")
                     if not self._is_installed_worker():
                         break
+                    # A request made before this tick is answered by the tick
+                    # itself; only one that lands while it runs can contradict
+                    # the retirement decision it returns.
+                    self._restart_requested = False
                     self._set_phase("tick")
                     keep_running = CharacterService._monster_chase_tick(
                         self.session, self.generation
@@ -130,10 +178,14 @@ class _FixedRateChaseLoop:
                         and now - idle_since
                         >= MONSTER_CHASE_IDLE_RETIRE_SECONDS
                     ):
-                        break
+                        if self._release_unless_restarted():
+                            break
+                        idle_since = None
                     interval = MONSTER_CHASE_IDLE_INTERVAL_SECONDS
                 elif not keep_running:
-                    break
+                    if self._release_unless_restarted():
+                        break
+                    interval = MONSTER_CHASE_INTERVAL_SECONDS
                 else:
                     idle_since = None
                     interval = MONSTER_CHASE_INTERVAL_SECONDS

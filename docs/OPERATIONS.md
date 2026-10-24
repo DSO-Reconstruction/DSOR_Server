@@ -85,6 +85,7 @@ and drains the player-database writer.
 | `DSO_PUBLIC_HOST` | unset | address clients are redirected to between services and told to dial by the launcher; required with a `0.0.0.0` bind behind NAT, otherwise the bind address (or the host's primary address for a wildcard bind) is advertised |
 | `DSO_REQUIRE_LOGIN` | on for a non-loopback bind, off for loopback | login enforcement: clients must log in through the account service first, and a hello that presents no live session GUID is dropped. The address gate alone would admit everyone behind a shared NAT or VPN exit |
 | `DSO_STATIC_DB` | `dso_server\data\db\static.db4` | static game database |
+| `DSO_PUBLISH_STATIC_DB` | `1` | the account service publishes that database to dsor clients (`GET /api/content`, see below); `0` stops it |
 | `DSO_PLAYER_DATABASE` | `dso_server\data\db\players.sqlite3` | durable character profiles and gameplay state |
 | `DSO_SOCIAL_STATE_FILE` | `data/state/social-states.json` | guild/group state |
 | `DSO_CHAT_AUDIT_LOG` | `data/logs/chat-service.log` | chat audit output |
@@ -100,6 +101,8 @@ and drains the player-database writer.
 | `DSO_MONSTER_RESET_GRACE_DISTANCE` | `25` | extra distance past the pursuit radius before an actor resets to spawn |
 | `DSO_MONSTER_CHASE_IDLE_INTERVAL_SECONDS` | `0.5` | map simulation tick period while nothing needs advancing |
 | `DSO_MONSTER_CHASE_IDLE_RETIRE_SECONDS` | `30` | continuous idle time before the map worker retires (`0` never retires) |
+| `DSO_MONSTER_ORPHAN_GRACE_SECONDS` | `1.0` | how long a map instance with spawned monsters, player summons or a wounded player may go without a simulation thread before the watchdog's supervisor starts one |
+| `DSO_MONSTER_SUPERVISOR_INTERVAL_SECONDS` | `1.0` | how often that supervisor runs; it keeps running with `DSO_STALL_WATCHDOG_SECONDS=0` |
 | `DSO_LOG_TIMESTAMPS` | `1` | prefix every log line with wall-clock time; also makes lines atomic |
 | `DSO_LOG_ASYNC` | `1` | write console output from one writer thread so a stalled `screen`/SSH console never blocks a gameplay thread; dropped lines are counted and reported |
 | `DSO_LOG_QUEUE_LINES` | `20000` | bound on queued console lines while the console is not draining |
@@ -116,6 +119,7 @@ and drains the player-database writer.
 | `DSO_DISABLE_VICTIM_STATUS_EFFECTS` | `0` | diagnostic: monsters receive no debuffs or crowd control |
 | `DSO_DISABLE_STATUS_EFFECTS` | `0` | diagnostic: no status effects at all, in either direction |
 | `DSO_RELIABLE_RETRANSMIT_BURST_LIMIT` | `16` | overdue reliable datagrams re-sent per session per 20 Hz pass |
+| `DSO_RELIABLE_STUCK_WARNING_SECONDS` | `5` | report a reliable datagram that a still-talking client has not acknowledged for this long |
 | `DSO_UDP_RECEIVE_BUFFER_BYTES` | `1048576` | UDP `SO_RCVBUF`; `0` keeps the OS default |
 | `DSO_UDP_SEND_BUFFER_BYTES` | `1048576` | UDP `SO_SNDBUF`; `0` keeps the OS default |
 | `DSO_STALL_WATCHDOG_SECONDS` | `0.5` | report whole-process stalls over this length; `0` disables |
@@ -124,6 +128,32 @@ and drains the player-database writer.
 | `DSO_VERBOSE_PACKET_LOGGING` | `0` | per-command diagnostic logging |
 
 Set testing overrides to `0` for production-like balance.
+
+## The dsor client's static database
+
+Status effects travel by row (`_Template_StatusEffect` wire id = rowid - 1), so a
+client must hold this server's exact `static.db4`. After
+`tools/install_admin_effects.py` (or any other edit, or another build's database)
+the official client's copy has to be updated by hand. The dsor client (the Rust
+client) fetches it itself when it signs in, from two account-service
+endpoints that nothing else calls:
+
+| Endpoint | What |
+| --- | --- |
+| `GET /api/content` | `{"version": 1, "static_db": {"sha256", "size", "packed_size"}}`, or `null` when nothing is published |
+| `POST /api/content/static-db` | `{session_id}`: the database packed as the CDN packs files (`__ZN`, u32 size, zlib), header `X-Content-SHA256` |
+
+- It is the file the game services load (`DSO_STATIC_DB`), read whole between
+  two identical `stat` calls (a download never mixes two revisions while a
+  tool rewrites it). It is hashed and packed once per revision: about 0.6 s and
+  7.5 MB for the release261 database. Edits are picked up on the next request,
+  with no restart.
+- Only a signed-in player can download it (a live session, 401 otherwise), and
+  each address at most 6 times per 15 minutes (429 with `retry_after`).
+- `/api/status` and every endpoint the launcher uses are unchanged.
+- The client compares the sha256 with its copy, downloads only on a
+  difference, checks size, sha256 and the SQLite header, and replaces its
+  `game-data/export_win32/db/static.db4` in one step.
 
 ## Monster leash
 
@@ -273,6 +303,20 @@ contention instead of freezing the map.
 `[DrasaOnlineMapServer] actor N locked out of Movement/RegularSkills by ...`
 covers the other possibility: that the server deliberately disabled those
 actors. Lines there mean crowd control, not a stall.
+
+Two more lines separate the remaining causes:
+
+- `restarted the orphaned monster simulation of <map>`: the instance had
+  spawned monsters, summons or a wounded player but no simulation thread
+  for `DSO_MONSTER_ORPHAN_GRACE_SECONDS`. Everyone on it saw the monsters
+  stop while travel, chat and casting kept working. The event is also
+  written to `monster-stalls.log`; the worker samples there cannot show it,
+  because there is no worker to sample.
+- `reliable '<label>' (N bytes, A attempts) unacknowledged for Ns although
+  <client> is still sending`: that one client's ordered stream is held
+  behind a datagram it never accepts, so everything the server sends it
+  stops, not only monsters. `split oversized reliable '<label>'` names a
+  batch that used to produce such a datagram and is now fragmented.
 
 A reproduction on 2026-09-09 took the second branch: the watchdog stayed
 silent through a client-visible freeze, so the server never stopped. The log

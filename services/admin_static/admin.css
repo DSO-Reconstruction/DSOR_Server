@@ -133,6 +133,12 @@ details > .facts, details > .tree { margin: 10px 0 0 18px; }
 dialog { color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 25px; width: min(440px, 94vw); }
 dialog::backdrop { background: #10141b55; }
 dialog p { color: var(--muted); margin: 10px 0; }
+dialog label { margin-top: 16px; }
+dialog p.error-text { color: var(--danger); margin: 8px 0 0; }
+.season-tracks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.season-tracks h3 { margin-top: 0; }
+.edited-mark { font-size: 11px; color: var(--muted); margin-left: 4px; }
+@media (max-width: 850px) { .season-tracks { grid-template-columns: 1fr; } }
 @media (max-width: 850px) {
   .sidebar { position: static; width: 100%; padding: 14px 18px; display: block; }
   .sidebar .product-name span { display: inline; margin-left: 7px; }
@@ -157,4 +163,4 @@ dialog p { color: var(--muted); margin: 10px 0; }
 .event-ending [data-custom-end] { max-width: 340px; }
 .event-ending { margin-bottom: 20px; }
 
-#event-action button[value="deactivate"] { order: -1; margin-right: auto; }
+#event-action button[value="deactivate"], #season-form button[value="deactivate"] { order: -1; margin-right: auto; }
