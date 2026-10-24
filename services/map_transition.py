@@ -18,7 +18,10 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
 from dso_server.gameplay.map_event_state import map_key
-from dso_server.gameplay.map_difficulty_state import map_teleport_access_group_override
+from dso_server.gameplay.map_difficulty_state import (
+    is_concrete_map_access,
+    map_teleport_access_group_override,
+)
 from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
 
 
@@ -749,7 +752,9 @@ class MapTransitionService:
                     selected_map_id,
                     player_level=player_level,
                 )
-                if selected_access.request_map_id != selected_map_id:
+                if not is_concrete_map_access(
+                    self.static_database_path, selected_map_id,
+                ):
                     raise ValueError(
                         f"selected MapId {selected_map_id!r} is not a "
                         "concrete map access"

@@ -31,6 +31,56 @@ from dso_server.protocol.player_init_protocol import (
 class CryptExitVisibilityTests(unittest.TestCase):
     path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
 
+    def test_heroic_difficulty_zero_access_routes_to_supported_tier(self):
+        service = MapTransitionService()
+        service.static_database_path = self.path
+        definition = SimpleNamespace(
+            exit_id="kingshill_to_cardhun", name="kingshill_to_cardhun",
+            destination_map_id="pw199_cardhun_dun", position=(0.0, 0.0, 0.0),
+        )
+        viewer = SimpleNamespace(
+            flow_lock=Lock(), gameplay_map="a0200_kingscity",
+            gameplay_client_command_state={}, gameplay_map_exits=(definition,),
+            gameplay_last_move=None, gameplay_coordinate_frame=None,
+            gameplay_spawn_position=definition.position,
+            gameplay_character=SimpleNamespace(level=55),
+        )
+        packet, _ = encode_unlock_map_request(UnlockMapRequest(
+            "pw199_cardhun_dun_00", "pw199_cardhun_dun",
+            definition.exit_id, False,
+        ))
+        with patch.object(CharacterServer, "_accept_gameplay_state_command"), patch.object(
+            CharacterServer, "_activate_map_exit", return_value=True,
+        ) as activate:
+            service._handle_map_exit(viewer, packet)
+        activate.assert_called_once_with(
+            service, viewer, definition, trigger="client cmd 0x0060",
+            destination_access_id="pw199_cardhun_dun_01",
+        )
+
+    def test_map_template_name_is_not_accepted_as_concrete_access(self):
+        service = MapTransitionService()
+        service.static_database_path = self.path
+        definition = SimpleNamespace(
+            exit_id="kingshill_to_cardhun", name="kingshill_to_cardhun",
+            destination_map_id="pw199_cardhun_dun", position=(0.0, 0.0, 0.0),
+        )
+        viewer = SimpleNamespace(
+            flow_lock=Lock(), gameplay_map="a0200_kingscity",
+            gameplay_client_command_state={}, gameplay_map_exits=(definition,),
+            gameplay_last_move=None, gameplay_coordinate_frame=None,
+            gameplay_spawn_position=definition.position,
+            gameplay_character=SimpleNamespace(level=55),
+        )
+        packet, _ = encode_unlock_map_request(UnlockMapRequest(
+            "pw199_cardhun_dun", "pw199_cardhun_dun", definition.exit_id, False,
+        ))
+        with patch.object(CharacterServer, "_accept_gameplay_state_command"), patch.object(
+            CharacterServer, "_activate_map_exit", return_value=True,
+        ) as activate:
+            service._handle_map_exit(viewer, packet)
+        activate.assert_not_called()
+
     def test_variation_wire_matches_native_guid_and_event_set_reader(self):
         guid = bytes.fromhex("7f86d707c21141ce8b9600310d8c88ca")
         command = ServerCommand(
