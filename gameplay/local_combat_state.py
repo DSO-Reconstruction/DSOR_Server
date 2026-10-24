@@ -269,6 +269,22 @@ MONSTER_TELEPORT_TOLERANCE = max(
 )
 SERVER_TICKS_PER_SECOND = 25.0
 
+# Khalys's flood leaves four safe circles inside its aura, (+-6, +-6) m from
+# its centre in the effect's own frame, 2.16 m across their flames' ring.
+# CONTRACT: a player inside one is spared the flood's strikes; the circles
+# turn with the effect's yaw, as the client draws them.
+# EVIDENCE (data): Boss01_b_FloodDamage and Boss01FloodDamage StartSequence
+# boss_01_andermacht plays effects/boss_01_skill_03_state, whose nodes
+# emitter_fire_safe1..4 sit at (-6,6) (-6,-6) (6,-6) (6,6), each an arc of
+# radius 2.16 (pe2_0_g1..g4 x -2.161..2.151); the flood's lines reach 20.91
+# (AuraRadius 20.84). a0404_culttower03.map: s07_deco_platform_01 (4.26 m
+# square) at (86|98, 0, 2|-10) around Khalys's spawn (92.04, 0, -4.01).
+# UNVERIFIED: retail's own test (no LocationEffectClearing row exists for it).
+LOCATION_AURA_SAFE_CIRCLES = {
+    effect: (((-6.0, 6.0), (-6.0, -6.0), (6.0, -6.0), (6.0, 6.0)), 2.16)
+    for effect in ("boss01_b_flooddamage", "boss01flooddamage")
+}
+
 # ``Messaging::Hit::SetDamageTypes`` consumes this enum in the exact order
 # recovered from the client: Physical, Fire, Ice, Lightning, DarkMagic,
 # Poison.  The client selects elemental combat text (including
@@ -3653,7 +3669,8 @@ class LocalCombatState:
         while inside, from the effect's start (after its DE) to its end.
         Each strike is mitigated by the player's defense for its damage type
         and sent as a Hit with the skill's index. Only while the monster
-        lives.
+        lives. A player in one of its safe circles is spared
+        (LOCATION_AURA_SAFE_CIRCLES: Khalys's flood).
         EVIDENCE (data): Boss01_b_Skill03 Boss01_b_FloodDamage (20.84 m, D 10,
         child CurrHealthPoints -0.1 relative every 0.25 s);
         BossSmithEarthqake's five _aura_0N, DE 1..5 s along OZ -2.5..-12.5;
@@ -3692,6 +3709,7 @@ class LocalCombatState:
                 or current_time + 1e-9 < starts_at
                 or self._distance(visual.position, player_world) > radius
                 + PLAYER_PROJECTILE_COLLISION_RADIUS
+                or self._in_location_aura_safe_circle(visual, player_world)
             ):
                 continue
             for index, (interval, start, tick) in enumerate(
@@ -3752,6 +3770,34 @@ class LocalCombatState:
             if key[1] == player_actor_id and key not in live:
                 del self._monster_location_aura_ticks[key]
         return tuple(resolutions)
+
+    @staticmethod
+    def _in_location_aura_safe_circle(
+        visual: PlayerLocationVisual,
+        world: tuple[float, float, float],
+    ) -> bool:
+        """Whether a point stands in one of a ground aura's safe circles.
+
+        SEE: LOCATION_AURA_SAFE_CIRCLES. The circles' local (x, z) turn with
+        the visual's yaw as start_player_location_visuals turns OX/OZ.
+        """
+
+        circles = LOCATION_AURA_SAFE_CIRCLES.get(
+            visual.definition.resource_id.strip().casefold()
+        )
+        if circles is None:
+            return False
+        centres, radius = circles
+        cos_yaw, sin_yaw = math.cos(visual.yaw), math.sin(visual.yaw)
+        dx = float(world[0]) - float(visual.position[0])
+        dz = float(world[2]) - float(visual.position[2])
+        return any(
+            math.hypot(
+                dx - (x * cos_yaw + z * sin_yaw),
+                dz - (-x * sin_yaw + z * cos_yaw),
+            ) <= radius
+            for x, z in centres
+        )
 
     def _monster_aura_program_damage(
         self,
