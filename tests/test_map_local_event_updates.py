@@ -11,9 +11,10 @@ from dso_server.gameplay.map_event_state import (
     MapEventRuntime, load_map_event_content, load_map_signal_catalog,
 )
 from dso_server.protocol.player_init_protocol import (
-    EVENT_UPDATE_COMMAND, EXIT_INFO_COMMAND, VARIATION_INFO_COMMAND,
+    ACTORS_ENTER_VICINITY_COMMAND, EVENT_UPDATE_COMMAND, EXIT_INFO_COMMAND,
+    NEW_NPC_COMMAND, NPC_INFO_COMMAND, VARIATION_INFO_COMMAND,
     EventUpdate, EventUpdateEntry, build_local_player_init_commands,
-    decode_event_update, decode_server_command_batch,
+    decode_event_update, decode_server_command_batch, encode_server_command_batch,
 )
 from dso_server.services.character_server import CharacterServer
 from dso_server.services.events import _baseline_map_local_event_entries
@@ -26,6 +27,58 @@ STATIC_DATABASE = (
 
 
 class MapLocalEventUpdateTests(unittest.TestCase):
+    def test_kingshill_creates_npc_actors_after_event_snapshot(self):
+        map_commands, exits = load_local_map_initialization(
+            STATIC_DATABASE, 'a0200_kingscity',
+            include_inactive_event_sets=True,
+        )
+        new_player = SimpleNamespace(
+            actor_id=1, fields_110=(0,) * 8, player_state_scalars=(0,) * 18,
+            fields_170=(0,) * 7, field_190=0, fields_198=(), field_1a8=0,
+        )
+        commands = build_local_player_init_commands(
+            new_player, None, map_commands, exit_info=exits, actor_id=1,
+        )
+        ids = [command.command_id for command in commands]
+        event_update = ids.index(EVENT_UPDATE_COMMAND)
+        first_npc = ids.index(NEW_NPC_COMMAND)
+        self.assertLess(event_update, first_npc)
+        self.assertNotIn(ACTORS_ENTER_VICINITY_COMMAND, ids)
+        self.assertEqual(
+            commands[first_npc].command_id, NEW_NPC_COMMAND,
+        )
+        expected_actors = tuple(
+            command.value.actor_id for command in map_commands
+            if command.command_id == NEW_NPC_COMMAND
+        )
+        self.assertEqual(len(set(expected_actors)), len(expected_actors))
+
+        # NPC creation stays in the same ordered init stream, after the
+        # EventUpdate that materializes its authored scene entity.
+        packet, bits = encode_server_command_batch(
+            commands[event_update:],
+        )
+        decoded = decode_server_command_batch(packet, bits)
+        self.assertEqual(decoded[0], commands[event_update])
+        vendors = {
+            command.value.template_id: command.value.actor_id
+            for command in decoded if command.command_id == NEW_NPC_COMMAND
+        }
+        infos = {
+            command.value.actor_id: command.value
+            for command in decoded if command.command_id == NPC_INFO_COMMAND
+        }
+        for template in (
+            'e_event_merchant_grima', 'e_event_merchant_01',
+            'e_travel_change_quest_npc', 'e_anniversary_merchant_phestos',
+            'a0200_gambler_trader', 'a0200_premium_trader',
+        ):
+            with self.subTest(template=template):
+                actor_id = vendors[template]
+                self.assertTrue(infos[actor_id].enabled)
+                self.assertTrue(infos[actor_id].template_id)
+                self.assertNotEqual(infos[actor_id].category, 0xFF)
+
     def test_initial_hiraja_gate_creation_follows_event_snapshot(self):
         gate = 'h0001_hunt_for_a_legend_7_spawn_exit_to_h0006_01'
         map_commands, exits = load_local_map_initialization(

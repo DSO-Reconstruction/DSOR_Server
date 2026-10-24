@@ -121,8 +121,15 @@ def test_kingscity_vendor_and_station_registration(world,level,matrona):
 
 
 def test_grima_remains_event_gated(world):
-    case=world; s,r=enter(case,"a0200_kingscity")
-    assert not any(d.template_id=="e_event_merchant_grima" for d in case.server._active_npc_definitions(s))
+    case = world
+    # The local schedule can have a Grima event active on the day this runs.
+    # This case specifically exercises a realm with no scheduled events.
+    with patch.object(type(case.server._event_catalog()), "active_events", return_value=()):
+        s, _ = enter(case, "a0200_kingscity")
+        assert not any(
+            d.template_id == "e_event_merchant_grima"
+            for d in case.server._active_npc_definitions(s)
+        )
 
 
 def test_an_anniversary_quest_does_not_start_the_season(world):

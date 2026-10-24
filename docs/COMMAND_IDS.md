@@ -1,44 +1,104 @@
 # Recovering the client's command id table
 
-## Server default: `release261_192`
+## Server default: `release261_203`
 
-The server uses [`command_ids_rel261_192.json`](command_ids_rel261_192.json) by
-default, matching the `rel261_192` client revision documented in the README.
+The server uses [`command_ids_rel261_203.json`](command_ids_rel261_203.json) by
+
+default, matching the new `rel261_203` client. The earlier `rel261_192` table
+remains available for explicit use through `DSO_COMMAND_IDS`.
+
 This table and the corresponding marker-bit defaults were adapted from
+
 [upstream commit a2cfa7d](https://github.com/shockblaze/DSOR_Server_Kitty261/commit/a2cfa7d308ade059c788f1ef0903b27a640375de).
+
 For `dro_client64-patch5` or the DSOR client, set
+
 `DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
 
+## rel261_203 update analysis
+
+The October 2026 client update was analyzed from
+
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe` (the embedded
+
+revision marker is `261_203`; SHA-256
+
+`e0fe05f0f3746bc8ae55927958d1dd93641eb1948ccdd9d4f474da93dac49f81`). The
+
+recovered table is in
+
+[`command_ids_rel261_203.json`](command_ids_rel261_203.json). It contains the
+
+same 371 command class names as rel261_192, so no new registered commands were
+
+found. The class-to-id change is:
+
+| command class              |   rel261_192 |    rel261_203 | note                 |
+| -------------------------- | -----------: | ------------: | -------------------- |
+| `DebugSpecialOfferCommand` | `0x84` (132) | `0x107` (263) | moved to a unique id |
+
+`SpecialOfferCommand` remains at `0x84` (132). The rel261_192 source table had
+
+both classes assigned to 132; rel261_203 assigns distinct ids. The new table
+
+has 371 classes, 371 unique ids spanning 1–381, and no duplicate ids. Its
+
+actor-scope flags were recovered from vtable slots 13 and 14 and match the
+
+rel261_192 flags for all 371 classes (299 actor-scoped, 72 unscoped).
+
+Recovery followed each command's RTTI class-name registration to its creator,
+
+followed the creator to the constructor, read the constructor's vtable, then
+
+read `GetCommandId()` from vtable slot 3. This is the same chain described in
+
+§2 below, applied to the rel261_203 x64 executable. The table is selected by
+
+default; `DSO_COMMAND_IDS` can select another supported client table.
+
 The detailed command recovery notes below document the patch5 table in
+
 [`command_ids.json`](command_ids.json).
 
 The complete network command id → class map for
+
 `dro_client64-patch5.exe`: **341 classes, ids 1–368, no duplicates.**
 
 > **Namespaces.** The first version of this scan matched only
+>
 > `Commands::…Command` and recovered 273 classes, leaving a conspicuous hole at
+>
 > ids 0xC0–0xDA. Command classes live in six namespaces, and the hole was the
+>
 > whole `PVP::` block. Widening `COMMAND_NAME` to `<NS>::…Command` recovers all
+>
 > of them:
 >
-> | namespace | classes | notable range |
-> | --- | ---: | --- |
-> | `Commands` | 273 | everywhere |
-> | `PVP` | 28 | **0xC0–0xDA**, plus `ResetMatchQueues` at 0x13C |
-> | `Ranking` | 21 | 0xEB–0xFF |
-> | `StatusEffects` | 9 | includes `StatusEffectCommand` = 0x4F |
-> | `Talents` | 8 | |
-> | `Achievements` | 2 | |
+> | namespace       | classes | notable range                                   |
+> | --------------- | ------: | ----------------------------------------------- |
+> | `Commands`      |     273 | everywhere                                      |
+> | `PVP`           |      28 | **0xC0–0xDA**, plus `ResetMatchQueues` at 0x13C |
+> | `Ranking`       |      21 | 0xEB–0xFF                                       |
+> | `StatusEffects` |       9 | includes `StatusEffectCommand` = 0x4F           |
+> | `Talents`       |       8 |                                                 |
+> | `Achievements`  |       2 |                                                 |
 >
 > This also resolved two of the six ids that previously had "no class at this
+>
 > id": `0x4F` is `StatusEffects::StatusEffectCommand` and `0x3E` is
+>
 > `StatusEffects::LocationEffectInfoCommand`, both of which the repo had
+>
 > already labelled correctly from the wire. See
-> [PVP_MATCHMAKING.md](PVP_MATCHMAKING.md) for what the `PVP::` block turned
+>
+> [PVP\_MATCHMAKING.md](PVP_MATCHMAKING.md) for what the `PVP::` block turned
+>
 > out to contain.
 
-Produced by [dump_command_ids.py](../../dump_command_ids.py); the full table is
-in [command_ids.json](command_ids.json), beside this file.
+Produced by [dump\_command\_ids.py](../../dump_command_ids.py); the full table is
+
+in [command\_ids.json](command_ids.json), beside this file.
 
 Run from the repository root:
 
@@ -59,33 +119,48 @@ Network::CommandFactory<unsigned short, 369>::RegisterCommand(
 ```
 
 so the plan was to dump every `RegisterCommand` call site and read its two
+
 literal arguments. That does not work on this build, for two reasons found the
+
 hard way:
 
 - **`RegisterCommand` is inlined.** Its `__FUNCSIG__` string is present in
+
   `.rdata` but has **zero references** of any kind — no `lea`, no 64-bit
+
   immediate, no stored pointer. The assert that used it was compiled out and the
+
   string is orphaned. The same is true of
+
   `DrasaClientHandler::DecodeCommand(): Received command with invalid command
   id (ID: '%hu')!`, so the decode path cannot be anchored on either.
 - **The factory is not a static array.** Scanning for the inlined store form
+
   (`lea rax,[rip+fn]; mov [rip+slot],rax`) finds 11 pairs image-wide, none
+
   clustered. The table is heap-allocated and filled at runtime.
 
 Two further dead ends, recorded so nobody repeats them:
 
 - Pattern-scanning for `lea rcx,[rip+fn]; mov edx,imm; call` yields 81 sites,
+
   none with a plausible id distribution. Widening it to an order-agnostic
+
   look-back window produces thousands of false positives — small integer
+
   constants near calls are extremely common, and the top hit (`0x140c9d318`,
+
   1254 sites) is just the logging helper.
 - **MSVC RTTI is stripped** (`/GR-`): only 140 `.?AV…@@` type descriptors exist
+
   in the whole image and none is a command class, so vtables cannot be named
+
   that way. The client uses Nebula3's own RTTI instead.
 
 ## 2. The chain that works
 
 Every command class carries its id in a virtual accessor, and Nebula3's
+
 `__ImplementClass` registration provides a path to it:
 
 ```
@@ -112,95 +187,127 @@ vtable    0x141125050   slot 3 → 0x140946ff8: b8 1c 000000 c3      mov eax,28;
 ```
 
 `28` = `0x1C`, which is exactly the `ACTOR_REQUEST_COMMAND` the server already
+
 had. Slot 3 is `GetCommandId()` in every command vtable.
 
 Function boundaries come from the PE's `.pdata` exception directory (75 193
+
 `RUNTIME_FUNCTION` entries), which makes attribution exact rather than
+
 heuristic. No disassembler is needed — only `lea r64,[rip+disp32]`,
+
 `call rel32`, `jmp rel32` and `mov eax,imm32; ret` have to be decoded.
 
 ### Second pass: classes without a creator
 
 Six classes register with no creator argument, so they are not
+
 factory-instantiable and the chain above stops at step 1:
+
 `GuildInvite`, `InventoryInfo`, `RedeemVoucherResponse`, `RevenueRecognition`,
+
 `Travel`, `UnlockMap`.
 
 For these, the fallback searches for any code referencing the class's Rtti
+
 object and follows its calls looking for a vtable whose slot 3 is a constant
+
 stub. All six resolve — and two of them, `TravelCommand` = `0x61` and
+
 `UnlockMapCommand` = `0x60`, match ids the server already had, which is a useful
+
 independent check on the fallback specifically.
 
 ## 3. Validation
 
 Cross-checked against every command id hard-coded in `gameplay_protocol.py`
+
 (`--check`):
 
 **35 exact name matches, 5 same-id-different-label, 0 contradictions.**
 
 The label-only differences are the repo's naming, not disagreements:
 
-| repo constant | client class |
-| --- | --- |
-| `GUILD_MOTD_REQUEST_COMMAND` | `GuildMessageOfTheDayRequestCommand` |
+| repo constant                       | client class                            |
+| ----------------------------------- | --------------------------------------- |
+| `GUILD_MOTD_REQUEST_COMMAND`        | `GuildMessageOfTheDayRequestCommand`    |
 | `CLIENT_AVERAGE_FRAME_INFO_COMMAND` | `ClientAverageFrameInfoTrackingCommand` |
-| `SET_STICKER_BOOK_FAVORITE_COMMAND` | `UpdateStickerbookFavoriteCommand` |
-| `INVENTORY_ITEM_ACTION_COMMAND` | `InventoryCommand` |
+| `SET_STICKER_BOOK_FAVORITE_COMMAND` | `UpdateStickerbookFavoriteCommand`      |
+| `INVENTORY_ITEM_ACTION_COMMAND`     | `InventoryCommand`                      |
 
 Six repo constants have no class at that id — including
-`MOVE_COMMAND 0x5F` and `STATUS_EFFECT_COMMAND 0x4F`. Note there is **no
-`Commands::MoveCommand` string in the binary at all**, so those names are the
+
+`MOVE_COMMAND 0x5F` and `STATUS_EFFECT_COMMAND 0x4F`. Note there is \*\*no
+
+`Commands::MoveCommand` string in the binary at all\*\*, so those names are the
+
 repo's own labels for ids observed on the wire; the real classes are either
+
 named differently or are server→client-only types that the client never
+
 registers. This is a naming gap, not a contradiction.
 
 Structural checks that also hold:
 
 - ids span **1..368**, fitting `CommandFactory<unsigned short, 369>` exactly
+
   (slots 0–368);
 - **no duplicate ids** across 341 classes;
 - the nine quest commands occupy a contiguous `0x8A–0x91` block plus one
+
   outlier, matching the subsystem clustering visible elsewhere
+
   (`0x26/0x28/0x29` NPC, `0x2A/0x2B/0x2C` monster, `0x36/0x38` props).
 
 **369 is the table capacity, not the command count.** 341 classes are
+
 registered; the remaining 28 slots are unused or belong to server-only
+
 commands the client never constructs.
 
 ## 4. What this unblocks
 
 - **Quests** — the nine opcodes were the last open item in
-  [QUEST_FEASIBILITY.md](QUEST_FEASIBILITY.md).
+
+  [QUEST\_FEASIBILITY.md](QUEST_FEASIBILITY.md).
 - **Every other unmapped command.** The server currently hard-codes ~46 ids;
+
   this yields 341 with names, including whole subsystems not yet touched
+
   (season pass, gauntlet, daily challenges, stickerbook, wanted missions).
 - **PvP matchmaking**, which the `PVP::` namespace made addressable and which
-  is now implemented — see [PVP_MATCHMAKING.md](PVP_MATCHMAKING.md).
+
+  is now implemented — see [PVP\_MATCHMAKING.md](PVP_MATCHMAKING.md).
 - **Naming.** `gameplay_protocol.py` constants can be reconciled against the
+
   client's own class names, and the four label mismatches above corrected or
+
   annotated.
 
 ## 5. Recovering a command's field layout from its vtable
 
 The id table gives each class's vtable, and that is enough to read the
+
 generated serializers rather than guess a layout from captures. In the same
+
 vtable:
 
-| slot | meaning |
-| ---: | --- |
-| 3 | `GetCommandId()` — `mov eax, imm32 ; ret` |
-| 4 | `Encode` |
-| 5 | `Decode` |
-| 13, 14 | outer server-command actor accessors |
 
-`Decode` is a flat sequence of `call <reader>` with `lea rdx, [this + offset]`,
-so the field order and each field's width read straight off the disassembly.
-The readers are shared and identifiable by size: 45 bytes is a `uint32`, 188 a
-string, 53 a *validated* enum, and 230 the `uint32 count` + element array used
-by `PlayerQueryResultCommand`, `GroupStatusCommand`, and
-`GroupMemberQueryResultCommand` alike — which is how those three were confirmed
+|   slot | meaning                                   |
+| -----: | ----------------------------------------- |
+|      3 | `GetCommandId()` — `mov eax, imm32 ; ret` |
+|      4 | `Encode`                                  |
+|      5 | `Decode`                                  |
+| 13, 14 | outer server-command actor accessors      |
+
+`Decode` is a flat sequence of `call <reader>` with `lea rdx, [this + offset]`,  
+so the field order and each field's width read straight off the disassembly.  
+The readers are shared and identifiable by size: 45 bytes is a `uint32`, 188 a  
+string, 53 a *validated* enum, and 230 the `uint32 count` + element array used  
+by `PlayerQueryResultCommand`, `GroupStatusCommand`, and  
+`GroupMemberQueryResultCommand` alike — which is how those three were confirmed  
 to share one `PlayerSummary` record.
+
 
 A validated enum reader ends in `add cl, 1 ; cmp cl, N ; ja fail`, giving the
 accepted range as `-1 .. N-2`. Anything outside it aborts the *whole* command,

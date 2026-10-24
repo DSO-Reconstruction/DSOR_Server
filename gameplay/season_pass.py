@@ -32,14 +32,20 @@ class SeasonPassCatalog:
                    if int(experience) >= threshold)
 
 
-def load_season_pass_catalog(database_path: str | Path) -> SeasonPassCatalog:
+def load_season_pass_catalog(
+    database_path: str | Path, *, alternate_rewards: bool = False,
+) -> SeasonPassCatalog:
     path = Path(database_path)
     stat = path.stat()
-    return _load_catalog(str(path), stat.st_mtime_ns, stat.st_size)
+    return _load_catalog(
+        str(path), stat.st_mtime_ns, stat.st_size, bool(alternate_rewards),
+    )
 
 
 @lru_cache(maxsize=4)
-def _load_catalog(path: str, mtime_ns: int, size: int) -> SeasonPassCatalog:
+def _load_catalog(
+    path: str, mtime_ns: int, size: int, alternate_rewards: bool,
+) -> SeasonPassCatalog:
     del mtime_ns, size
     database = connect(path)
     missions = {}
@@ -68,11 +74,21 @@ def _load_catalog(path: str, mtime_ns: int, size: int) -> SeasonPassCatalog:
     )
     if not thresholds:
         raise ValueError("static database has no Season Pass reward levels")
+    columns = {str(row[1]) for row in database.execute(
+        "PRAGMA table_info(_Template_SeasonPassRewards)"
+    )}
+    award_columns = (
+        ("SeasonPassAward4", "SeasonPassAward5", "SeasonPassAward6")
+        if alternate_rewards and all(
+            f"SeasonPassAward{index}" in columns for index in (4, 5, 6)
+        )
+        else ("SeasonPassAward1", "SeasonPassAward2", "SeasonPassAward3")
+    )
     reward_levels = {
         int(level): tuple(str(value or "") for value in awards)
         for level, *awards in database.execute(
-            "SELECT SeasonPassLevel, SeasonPassAward1, SeasonPassAward2, "
-            "SeasonPassAward3 FROM _Template_SeasonPassRewards "
+            "SELECT SeasonPassLevel, " + ", ".join(award_columns)
+            + " FROM _Template_SeasonPassRewards "
             "ORDER BY SeasonPassLevel"
         )
     }

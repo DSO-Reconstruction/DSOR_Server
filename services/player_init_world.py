@@ -18,10 +18,17 @@ from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
 from dso_server.protocol.reward_protocol import daily_login_offers
 from dso_server.protocol.player_init_protocol import (
+    ACTORS_ENTER_VICINITY_COMMAND,
+    NEW_NPC_COMMAND,
     QuickSlotsInfo,
     SeasonPassRewardsInfoResult,
     TIMED_CHALLENGES_INFO_COMMAND,
     VARIATION_INFO_COMMAND,
+)
+from dso_server.protocol.gameplay_protocol import (
+    ActorsEnterVicinity,
+    ActorsEnterVicinityBatch,
+    encode_actors_enter_vicinity_batch,
 )
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
 from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
@@ -682,6 +689,32 @@ class PlayerInitializationWorldService:
             self, s: Session, commands: tuple) -> bytes:
         """Encode and split the typed 0x85 initialization batch."""
 
+        # Register map NPC actors in their own reliable-ordered frame before
+        # the 0x85 batch creates them. Runtime and quest NPC spawns use this
+        # same 0x84 -> NewNPC ordering; embedding ActorsEnterVicinity inside
+        # player initialization can leave scene NPCs visible but unselectable.
+        npc_actor_ids = tuple(
+            int(command.value.actor_id)
+            for command in commands
+            if command.command_id == NEW_NPC_COMMAND
+        )
+        if npc_actor_ids:
+            packet, _packet_bits = encode_actors_enter_vicinity_batch(
+                ActorsEnterVicinityBatch(
+                    ActorsEnterVicinity(npc_actor_ids),
+                    actor_id=0,
+                    commands=(),
+                )
+            )
+            s.send_reliable_ordered(
+                packet,
+                track=True,
+                label="local-initialization-npc-actor-vicinity",
+            )
+            commands = tuple(
+                command for command in commands
+                if command.command_id != ACTORS_ENTER_VICINITY_COMMAND
+            )
         initialization, initialization_bits = encode_player_init_prefix(
             commands, include_terminator=True
         )
