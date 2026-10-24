@@ -53,6 +53,15 @@ class PlayerInitializationWorldService:
         # PropInfo is keyed to the concrete player actor for this map session,
         # even on hub maps that do not create a combat encounter.
         CharacterService._session_remote_actor_id(self, s)
+        # Before anything reads the quest log (reveal flags, spawns, the
+        # client's QuestLogInfo): event quests out of season are set aside.
+        try:
+            CharacterService._quest_park_out_of_season(self, s)
+        except Exception as exc:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] parking out-of-season quests "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
         active_event_flags = frozenset({
             *CharacterService._event_catalog(
                 self

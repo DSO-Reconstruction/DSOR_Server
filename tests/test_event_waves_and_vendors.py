@@ -1,4 +1,5 @@
 """Full scripted arena waves and clickable event vendors/crafting stations."""
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -6,7 +7,7 @@ import pytest
 from dso_server.gameplay.local_monster_state import load_local_player_only_encounter
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_map_state import load_local_npc_definitions, load_map_coordinate_frame
-from dso_server.gameplay.quest_content import QUEST_STATE_FINISHED, QuestProgress
+from dso_server.gameplay.quest_content import QUEST_STATE_CLOSED, QUEST_STATE_FINISHED, QuestProgress
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.gameplay_protocol import (
     PROP_INFO_COMMAND, decode_prop_info_batch, encode_screen_message,
@@ -132,3 +133,26 @@ def test_an_anniversary_quest_does_not_start_the_season(world):
     s.gameplay_quest_log={quest: QuestProgress(quest, state=QUEST_STATE_FINISHED)}
     assert "anniversary_event" not in case.server._quest_reveal_flags(s,"a0200_kingscity")
     assert not any(d.template_id=="e_anniversary_merchant_phestos" for d in case.server._active_npc_definitions(s))
+
+
+def test_event_quests_sleep_out_of_season(world):
+    case=world; s,r=enter(case,"a0200_kingscity"); srv=case.server
+    open_quest,closed_quest,plain="e-anniversary-introduction-02-n","anni-2024-quest-01","pvp-a0200-participation-01-n"
+    # A Bloody Reward: given by its map's signal, tied to no scheduled event.
+    map_quest="bloodshed-challenge-01-n"
+    s.gameplay_quest_log={open_quest: QuestProgress(open_quest),
+        closed_quest: QuestProgress(closed_quest, state=QUEST_STATE_CLOSED), plain: QuestProgress(plain),
+        map_quest: QuestProgress(map_quest)}
+    s.gameplay_quest_tracking=(open_quest,0)
+    srv._quest_park_out_of_season(s)
+    # Not tracked: gone from the live log; a closed one stays for prerequisites.
+    assert set(s.gameplay_quest_log)=={closed_quest,plain,map_quest} and s.gameplay_quest_tracking is None
+    # Not shown, yet saved.
+    assert {e.quest_id for e in srv._quest_log_info(s).quests}=={plain,map_quest}
+    assert set(srv._quest_log_document(s))=={open_quest,closed_quest,plain,map_quest}
+    # The anniversary starts again: back on the next map entry.
+    season=SimpleNamespace(active_event_flags=lambda now=None: frozenset({"anniversary_event"}))
+    with patch.object(type(srv),"_event_catalog",lambda self: season):
+        srv._quest_park_out_of_season(s)
+        assert set(s.gameplay_quest_log)=={open_quest,closed_quest,plain,map_quest}
+        assert {e.quest_id for e in srv._quest_log_info(s).quests}=={open_quest,closed_quest,plain,map_quest}

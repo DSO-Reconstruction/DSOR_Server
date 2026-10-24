@@ -173,6 +173,39 @@ def _quest_log(s: Session) -> dict[str, QuestProgress]:
     return log
 
 
+def _dormant_quests(s: Session) -> dict[str, QuestProgress]:
+    """Open event quests parked while their event is out of season."""
+    parked = getattr(s, "gameplay_dormant_quests", None)
+    if parked is None:
+        parked = {}
+        s.gameplay_dormant_quests = parked
+    return parked
+
+
+def _out_of_season(
+    quest: QuestDefinition | None,
+    scheduled: frozenset[str],
+    active: frozenset[str],
+) -> bool:
+    """An event quest (quests.xml ``event=``) whose scheduled events all sleep.
+
+    Only scheduled global events count; a quest bound to a map-local event
+    (e_bonus_event_01) is never out of season.
+    """
+    if quest is None or not quest.event_id:
+        return False
+    events = {
+        value.strip().casefold()
+        for value in str(quest.event_id).split(";")
+        if value.strip()
+    }
+    return (
+        bool(events)
+        and events <= scheduled
+        and not quest.event_requirement_met(active)
+    )
+
+
 def _quest_item_templates(quest: QuestDefinition) -> set[str]:
     """All authored task items, including completed and future objectives."""
     items = set()
@@ -409,14 +442,51 @@ class QuestService:
             for quest_id, document in documents.items()
             if isinstance(document, dict)
         }
+        s.gameplay_dormant_quests = {}
         s.gameplay_quest_tracking = None
 
     @staticmethod
     def _quest_log_document(s: Session) -> dict[str, dict]:
+        # Parked event quests are saved too; they wait for their event.
         return {
             quest_id: progress.to_document()
-            for quest_id, progress in _quest_log(s).items()
+            for log in (_dormant_quests(s), _quest_log(s))
+            for quest_id, progress in log.items()
         }
+
+    def _quest_season(self) -> tuple[frozenset[str], frozenset[str]]:
+        """(scheduled event ids, events running now) for _out_of_season."""
+        try:
+            scheduled = _scheduled_event_ids(self.static_database_path)
+        except (OSError, sqlite3.Error):
+            scheduled = frozenset()
+        return scheduled, self._event_catalog().active_event_flags()
+
+    def _quest_park_out_of_season(self, s: Session) -> None:
+        """Park open event quests while their event is not running.
+
+        Out of season an event quest is neither shown nor tracked: it leaves
+        the live log, so no task, NPC marker, reveal flag or spawn sees it,
+        while saves keep it. It comes back on the first map entry once one of
+        its events runs again. Closed ones stay, since prerequisites of other
+        quests (summer festival, Zahir dailies) read them; _quest_log_info
+        leaves those out of the client's log instead.
+        """
+        catalog = self._quest_catalog()
+        live, parked = _quest_log(s), _dormant_quests(s)
+        scheduled, active = self._quest_season()
+        for quest_id in tuple(parked):
+            if not _out_of_season(catalog.quest(quest_id), scheduled, active):
+                live.setdefault(quest_id, parked.pop(quest_id))
+        for quest_id, progress in tuple(live.items()):
+            if (
+                progress.state in (QUEST_STATE_ACCEPTED, QUEST_STATE_FINISHED)
+                and _out_of_season(catalog.quest(quest_id), scheduled, active)
+            ):
+                parked[quest_id] = live.pop(quest_id)
+        tracking = getattr(s, "gameplay_quest_tracking", None)
+        if tracking and str(tracking[0]) in parked:
+            s.gameplay_quest_tracking = None
 
     def _quest_prepare_map(self, s: Session) -> None:
         """Discard stale dungeon runs before sending the new map's quest log."""
@@ -856,9 +926,16 @@ class QuestService:
     # ------------------------------------------------------------------
     def _quest_log_info(self, s: Session) -> QuestLogInfo:
         catalog = self._quest_catalog()
+        scheduled, active = self._quest_season()
         entries = []
         for quest_id, progress in _quest_log(s).items():
             quest = catalog.quest(quest_id)
+            if (
+                progress.state == QUEST_STATE_CLOSED
+                and _out_of_season(quest, scheduled, active)
+            ):
+                # Kept for prerequisites, but not shown out of season.
+                continue
             counters = task_counters(quest, progress) if quest else (0,) * MAX_TASKS
             entries.append(quest_log_entry(
                 quest_id, progress.state, progress.finished_mask, counters,
