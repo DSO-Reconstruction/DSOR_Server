@@ -35,6 +35,7 @@
         <a href="#bookings">Bookings</a>
         <a href="#bookings/batch">Batch booking</a>
         <a href="#events">Events</a>
+        <a href="#season-pass">Season Pass</a>
         <a href="#items">Item catalog</a>
         <a href="#npc-shops">NPC shops</a>
         <a href="#sessions">Sessions</a>
@@ -50,8 +51,13 @@
     </main>
   </div>
   <dialog id="confirmation" aria-labelledby="confirmation-title">
-    <h2 id="confirmation-title"></h2><p id="confirmation-message"></p>
-    <div class="form-actions"><button id="confirmation-cancel" class="secondary">Go back</button><button id="confirmation-accept">Confirm</button></div>
+    <form id="confirmation-form" method="dialog" novalidate>
+      <h2 id="confirmation-title"></h2><p id="confirmation-message"></p>
+      <label>Reason<textarea id="confirmation-reason" name="reason" required minlength="3" maxlength="500" rows="3" placeholder="Support ticket or reason for this action"></textarea>
+        <small>Recorded with your account in the audit log. Enter confirms; Shift+Enter starts a new line.</small></label>
+      <p id="confirmation-error" class="error-text" role="alert"></p>
+      <div class="form-actions"><button id="confirmation-cancel" type="button" class="secondary">Go back</button><button id="confirmation-accept" type="submit">Confirm</button></div>
+    </form>
   </dialog>
 </body>
 </html>

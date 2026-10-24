@@ -1,6 +1,6 @@
 import { livePage } from "./admin_live.js";
 import { $, esc, human, date, classes, rarities, api, link, navigate, status, table, facts,
-  section, tabs, toolbar, bindSearch, pager, tree, bookingTable, reasonInput, formError, notice, confirmAction } from "./admin_ui.js";
+  section, tabs, toolbar, bindSearch, pager, tree, bookingTable, formError, notice, confirmAction } from "./admin_ui.js";
 
 const containers = {equipment_slots: "Equipment", storage_58: "Inventory", storage_80: "Extra inventory", storage_a8: "Bank", storage_d0: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
@@ -13,7 +13,6 @@ function privilegeSection(p) {
       <label class="check"><input name="admin_name_color" type="checkbox" ${p.admin_name_color ? "checked" : ""}>Administrator name colour</label>
       <p class="help">The administrator flag carries the <code>!</code> chat commands and administrator-only client input; the colour only changes how the name looks to other players. Both are saved on the character and survive restarts, and can be set while offline. Chat rights update an online character immediately, but the game client reads the flag when it enters a map, so change map or relog for administrator input.</p>
     </div></fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="form-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Save privileges</button></div></form>`);
 }
@@ -32,8 +31,9 @@ function bindPrivileges(p, id) {
       if (!Object.keys(changes).length) throw new Error("No changes to save.");
       const summary = privileges.filter(([key]) => key in changes)
         .map(([key, label]) => `${label} ${changes[key] ? "granted" : "revoked"}`).join(", ");
-      if (!(await confirmAction("Save game administrator privileges?", `${p.name}: ${summary}.`, "Save privileges"))) return;
-      await api(`/api/characters/${id}/privileges`, {changes, reason: values.get("reason")});
+      const reason = await confirmAction("Save game administrator privileges?", `${p.name}: ${summary}.`, "Save privileges");
+      if (reason === null) return;
+      await api(`/api/characters/${id}/privileges`, {changes, reason});
       notice(`Privileges saved: ${summary}.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) { formError(error); } finally { button.disabled = false; }
@@ -50,7 +50,6 @@ function identitySection(p, range) {
     </div>
       <p class="help">Works while the character is offline. Change only what you want to edit; the other field is left alone. Renaming updates the roster, the saved profile and chat, but other players see the new name when that character next enters a map. Moving to a different level resets its experience to that level's authored starting value and does not grant talents or recompute gear.</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="identity-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Save name and level</button></div></form>`);
 }
@@ -73,8 +72,9 @@ function bindIdentity(p, id, range) {
       if (!Object.keys(changes).length) throw new Error("No changes to save.");
       const summary = ["name" in changes ? `renamed to ${changes.name}` : "",
         "level" in changes ? `now level ${changes.level}` : ""].filter(Boolean).join(", ");
-      if (!(await confirmAction("Save name and level?", `${p.name}: ${summary}.`, "Save name and level"))) return;
-      await api(`/api/characters/${id}/identity`, {changes, reason: values.get("reason")});
+      const reason = await confirmAction("Save name and level?", `${p.name}: ${summary}.`, "Save name and level");
+      if (reason === null) return;
+      await api(`/api/characters/${id}/identity`, {changes, reason});
       notice(`Saved: ${summary}.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
@@ -93,7 +93,6 @@ function wisdomSection(wisdom) {
       <label>Set Wisdom Level<input name="level" type="number" min="${minimum}" max="${maximum}" step="1" value="${wisdom.level}" required>
         <small>Choose a level from ${minimum} to ${maximum}. The required Wisdom XP will be assigned.</small></label>
     </div></fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="wisdom-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Set Wisdom Level</button></div></form>`);
 }
@@ -108,8 +107,9 @@ function bindWisdom(wisdom, id) {
       if (!Number.isInteger(level) || level < wisdom.range[0] || level > wisdom.range[1])
         throw new Error(`Wisdom Level must be a whole number between ${wisdom.range[0]} and ${wisdom.range[1]}.`);
       if (level === wisdom.level) throw new Error("Choose a different Wisdom Level.");
-      if (!(await confirmAction("Set Wisdom Level?", `${wisdom.level} → ${level}.`, "Set level"))) return;
-      await api(`/api/characters/${id}/wisdom`, {level, reason: values.get("reason")});
+      const reason = await confirmAction("Set Wisdom Level?", `${wisdom.level} → ${level}.`, "Set level");
+      if (reason === null) return;
+      await api(`/api/characters/${id}/wisdom`, {level, reason});
       notice(`Wisdom Level set to ${level}.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
@@ -128,7 +128,6 @@ function honorSection(points) {
       <label id="honor-amount-label">New total<input name="amount" type="number" min="0" max="4294967295" step="1" value="${Number(points)}" required></label>
       <p class="help">Career PvP honor is separate from the spendable Badge of Honor currency. Changes are saved immediately and update the game client while the character is online.</p>
     </div></fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="honor-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Save honor points</button></div></form>`);
 }
@@ -156,9 +155,10 @@ function bindHonor(points, id) {
       if (resulting === Number(points)) throw new Error("Honor points already have that value.");
       const description = selectedMode === "set" ? `${Number(points).toLocaleString()} → ${resulting.toLocaleString()}`
         : `add ${value.toLocaleString()} (${Number(points).toLocaleString()} → ${resulting.toLocaleString()})`;
-      if (!(await confirmAction("Change honor points?", `${description}.`, "Save honor points"))) return;
+      const reason = await confirmAction("Change honor points?", `${description}.`, "Save honor points");
+      if (reason === null) return;
       await api(`/api/characters/${id}/honor-points`, {
-        mode: selectedMode, amount: value, reason: values.get("reason")
+        mode: selectedMode, amount: value, reason
       });
       notice(`Honor points updated to ${resulting.toLocaleString()}.`);
       window.dispatchEvent(new Event("reload-page"));
@@ -177,7 +177,6 @@ function inventoryCopySection(id, itemCount) {
         <small>Copies all ${itemCount} owned item records, including equipped and overflow items. Existing target items are kept.</small></label>
       <p class="help">The target must be online and fully loaded into a map. If the source is online, it must also be fully loaded; offline sources need saved gameplay state. Copies receive new item IDs. Equipped source items are added to available storage; no character progress or currencies are copied.</p>
     </div></fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="inventory-copy-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Copy all items</button></div></form>`);
 }
@@ -191,11 +190,12 @@ function bindInventoryCopy(id) {
     try {
       if (!Number.isSafeInteger(targetId) || targetId <= 0)
         throw new Error("Enter a valid target character ID.");
-      if (!(await confirmAction("Copy all items?",
+      const reason = await confirmAction("Copy all items?",
         `Copy this character's full item inventory to online character ${targetId}? Existing target items will be kept.`,
-        "Copy all items"))) return;
+        "Copy all items");
+      if (reason === null) return;
       const result = await api(`/api/characters/${id}/copy-inventory`, {
-        target_character_id: targetId, reason: values.get("reason")
+        target_character_id: targetId, reason
       });
       notice(`Copied ${result.items_copied} items from ${result.source_name} to ${result.target_name}.`);
       window.dispatchEvent(new Event("reload-page"));
@@ -212,7 +212,6 @@ function mainQuestSection() {
     <fieldset class="form-section"><legend>Quest progress</legend>
       <p class="help">Marks every World type main story quest and the Parallel Worlds introduction prerequisite as completed. No quest rewards are granted.</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="main-quests-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Complete all main quests</button></div></form>`);
 }
@@ -223,10 +222,11 @@ function bindMainQuests(id) {
     const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
     button.disabled = true;
     try {
-      if (!(await confirmAction("Complete all main quests?",
+      const reason = await confirmAction("Complete all main quests?",
         "This will mark all main story quests and the Parallel Worlds introduction prerequisite as completed. Quest rewards will not be granted.",
-        "Complete quests"))) return;
-      const result = await api(`/api/characters/${id}/complete-main-quests`, {reason: values.get("reason")});
+        "Complete quests");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/complete-main-quests`, {reason});
       notice(`Marked ${result.newly_completed} main quests as completed.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
@@ -242,7 +242,6 @@ function ammonPWQuestSection() {
     <fieldset class="form-section"><legend>Quest progress</legend>
       <p class="help">Completes and closes Ammon’s one-time Parallel Worlds quests and the map-gated unlock quests, including every task stage. Records permanent map access so the authored PW doors restore when the character enters the hub. Repeatable quests are skipped; quest rewards are not granted.</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="ammon-pw-quests-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Complete Ammon’s Aradünya quests</button></div></form>`);
 }
@@ -253,10 +252,11 @@ function bindAmmonPWQuests(id) {
     const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
     button.disabled = true;
     try {
-      if (!(await confirmAction("Complete Ammon’s Parallel Worlds quests?",
+      const reason = await confirmAction("Complete Ammon’s Parallel Worlds quests?",
         "This completes and closes Ammon’s one-time Aradünya quests and the follow-up quests required by Parallel Worlds map gates. Permanent map access is recorded so the hub doors can restore on entry. Repeatable quests are skipped and rewards are not granted.",
-        "Complete Ammon quests"))) return;
-      const result = await api(`/api/characters/${id}/complete-ammon-pw-quests`, {reason: values.get("reason")});
+        "Complete Ammon quests");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/complete-ammon-pw-quests`, {reason});
       notice(`Completed ${result.quest_count} Ammon Aradünya quests and recorded ${result.gate_quest_count} map-gate unlocks.`);
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) {
@@ -273,7 +273,6 @@ function activeQuestSection(open) {
       <p class="help">Finishes every open quest in the quest log and hands it in as if the player had returned to the quest giver: quest items are removed and the usual XP, gold, Andermant and item rewards are granted. Follow-up quests unlocked by these hand-ins stay open. The character must be online and fully loaded into a map.</p>
       <p class="muted">${open} open quests in the last save.</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="active-quests-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit">Complete all active quests</button></div></form>`);
 }
@@ -284,10 +283,11 @@ function bindActiveQuests(id) {
     const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
     button.disabled = true;
     try {
-      if (!(await confirmAction("Complete all active quests?",
+      const reason = await confirmAction("Complete all active quests?",
         "Every open quest in this character’s quest log is handed in and its rewards are granted. This cannot be undone.",
-        "Complete quests"))) return;
-      const result = await api(`/api/characters/${id}/complete-active-quests`, {reason: values.get("reason")});
+        "Complete quests");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/complete-active-quests`, {reason});
       notice(`Completed ${result.completed} active quests.` +
         (result.failed.length ? ` Not completed: ${result.failed.join(", ")}.` : ""), result.failed.length > 0);
       window.dispatchEvent(new Event("reload-page"));
@@ -305,10 +305,11 @@ function bindInventoryItemDelete(id, item) {
     const form = event.target, button = form.querySelector("button[type=submit]"), values = new FormData(form);
     button.disabled = true;
     try {
-      if (!(await confirmAction("Delete this item?",
+      const reason = await confirmAction("Delete this item?",
         `Delete ${item.template_id} (item ${item.item_id}, stack ${item.amount}) from this character?`,
-        "Delete item"))) return;
-      const result = await api(`/api/characters/${id}/inventory/${item.item_id}/delete`, {reason: values.get("reason")});
+        "Delete item");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/inventory/${item.item_id}/delete`, {reason});
       notice(`Deleted ${result.template_id} (item ${result.item_id}).`);
       navigate(`characters/${id}/inventory`);
     } catch (error) {
@@ -470,7 +471,6 @@ function inventoryItemPage(result, route, data) {
     <fieldset class="form-section"><legend>Remove from character</legend>
       <p class="help">This permanently removes this item record and its equipment or storage allocation.</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Record this change</legend>${reasonInput}</fieldset>
     <p id="inventory-item-delete-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit" class="danger">Delete item ${item.item_id}</button></div></form>`);
   result.mount = () => bindInventoryItemDelete(data.profile.character_id, item);

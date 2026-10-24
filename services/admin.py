@@ -39,6 +39,7 @@ from dso_server.services.admin_live import (
     LiveAdministration, map_catalog, ready, state_token,
 )
 from dso_server.services.admin_events import EventAdministration, EventScheduleConflict
+from dso_server.services.admin_season_pass import SeasonPassAdministration, SeasonPassConflict
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
@@ -103,6 +104,7 @@ class AdminService:
         self.application = application
         self.live = LiveAdministration(self)
         self.events = EventAdministration(self)
+        self.season_pass = SeasonPassAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
         self.started_at = time.time()
@@ -1139,6 +1141,12 @@ class AdminService:
             return {**page(rows, query), "revision": listing["revision"], "counts": listing["counts"]}
         if path.startswith("/api/events/"):
             return self.events.detail(int(path.rsplit("/", 1)[1]))
+        if path == "/api/season-pass":
+            return self.season_pass.overview()
+        if path == "/api/season-pass/rewards":
+            return self.season_pass.rewards()
+        if path == "/api/season-pass/missions":
+            return self.season_pass.missions()
         if path == "/api/currencies":
             return {"currencies": list(CURRENCIES)}
         if path.startswith("/api/items/"):
@@ -1245,6 +1253,16 @@ class AdminService:
                     event_id=int(parts[2]), enabled=parts[3] != "deactivate", reschedule=parts[3] == "schedule")
             except EventScheduleConflict as exc:
                 raise AdminError(409, str(exc)) from exc
+        if path.startswith("/api/season-pass/"):
+            parts = path.strip("/").split("/")
+            try:
+                if parts == ["api", "season-pass", "sync"]:
+                    return self.season_pass.sync_clients(account.username, reason)
+                if len(parts) == 4 and parts[2] == "rewards":
+                    return self.season_pass.update_reward(account.username, reason, int(parts[3]), payload)
+            except SeasonPassConflict as exc:
+                raise AdminError(409, str(exc)) from exc
+            raise AdminError(404, "Season Pass action not found")
         if path.startswith("/api/accounts/"):
             parts = path.strip("/").split("/")
             if len(parts) not in {3, 4}:

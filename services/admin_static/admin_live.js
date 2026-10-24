@@ -1,4 +1,4 @@
-import { $, esc, api, table, facts, section, reasonInput, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, api, table, facts, section, formError, notice, confirmAction } from "./admin_ui.js";
 
 export async function livePage(result, id) {
   const live = await api(`/api/characters/${id}/live`);
@@ -15,7 +15,7 @@ export async function livePage(result, id) {
       <label for="map-query">Find destination</label><div class="toolbar"><input id="map-query" placeholder="Map ID or type" maxlength="100" ${!live.ready ? "disabled" : ""}><button id="find-map" type="button" class="secondary" ${!live.ready ? "disabled" : ""}>Search maps</button></div>
       <div id="map-results"></div><div id="map-selection" class="selection" hidden></div>
       <div class="form-grid"><label>Scaling difficulty<input name="scaling_difficulty" type="number" min="0" max="100" step="1" value="0" ${!live.ready ? "disabled" : ""}><small>0 uses normal scaling. Map access variants also carry their own difficulty.</small></label></div>`)}
-    ${reasonInput}<p class="help">Required for every action. Recorded with the administrator and character in the audit log.</p>
+    <p class="help">Every action asks for a reason, recorded with the administrator and character in the audit log.</p>
     <p id="form-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button id="refresh-live" type="button" class="secondary">Refresh status</button><button id="teleport" type="submit" disabled>Change map</button></div>
   </form>`;
@@ -48,8 +48,9 @@ export async function livePage(result, id) {
       const buttons = [...form.querySelectorAll("button")], disabled = buttons.map(button => button.disabled);
       buttons.forEach(button => { button.disabled = true; });
       try {
-        if (!(await confirmAction(title, message, "Apply"))) return;
-        await api(`/api/characters/${id}/${action}`, {...payload, reason: new FormData(form).get("reason")});
+        const reason = await confirmAction(title, message, "Apply");
+        if (reason === null) return;
+        await api(`/api/characters/${id}/${action}`, {...payload, reason});
         notice(success); window.dispatchEvent(new Event("reload-page"));
       } catch (error) { if (form.isConnected) formError(error); }
       finally { busy = false; buttons.forEach((button, index) => { button.disabled = disabled[index]; }); }

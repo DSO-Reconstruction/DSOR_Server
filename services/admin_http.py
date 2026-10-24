@@ -101,7 +101,7 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             path = parsed.path
             self._origin()
             assets = {"/": ("index.html", "text/html"), "/admin.css": ("admin.css", "text/css")}
-            for name in ("admin.js", "admin_ui.js", "admin_pages.js", "admin_character.js", "admin_booking.js", "admin_live.js", "admin_events.js", "admin_shops.js"):
+            for name in ("admin.js", "admin_ui.js", "admin_pages.js", "admin_character.js", "admin_booking.js", "admin_live.js", "admin_events.js", "admin_shops.js", "admin_season_pass.js"):
                 assets["/" + name] = (name, "text/javascript")
             if not write and path in assets:
                 name, kind = assets[path]

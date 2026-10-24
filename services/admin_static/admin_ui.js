@@ -77,22 +77,44 @@ export function pager(data, route) {
     ${data.offset > 0 ? link("Previous", route.path, {...route.params, offset: Math.max(0, data.offset - data.limit)}) : ""}
     ${data.offset + data.limit < data.total ? link("Next", route.path, {...route.params, offset: data.offset + data.limit}) : ""}</div>`;
 }
-export const reasonInput = `<label>Reason<textarea name="reason" required minlength="3" maxlength="500" rows="3" placeholder="Support ticket or reason for this action"></textarea></label>`;
 export function formError(error) {
   const target = $("#form-error");
   if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
   else notice(error.message, true);
 }
+// Every audited action is confirmed in this dialog, which also asks for the
+// audit reason. Resolves to the trimmed reason, or null when cancelled.
 export function confirmAction(title, message, label = "Confirm") {
-  const dialog = $("#confirmation");
+  const dialog = $("#confirmation"), reason = $("#confirmation-reason");
   $("#confirmation-title").textContent = title;
   $("#confirmation-message").textContent = message;
   $("#confirmation-accept").textContent = label;
+  $("#confirmation-error").textContent = "";
+  reason.value = "";
   dialog.returnValue = "";
   dialog.showModal();
+  reason.focus();
   return new Promise(resolve => {
-    dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirmed"), {once: true});
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "confirmed" ? reason.value.trim() : null), {once: true});
   });
+}
+export function bindConfirmation() {
+  const dialog = $("#confirmation"), form = $("#confirmation-form"), reason = $("#confirmation-reason");
+  $("#confirmation-cancel").addEventListener("click", () => dialog.close());
+  form.addEventListener("submit", event => {
+    event.preventDefault();
+    const length = reason.value.trim().length;
+    if (length < 3 || length > 500) {
+      $("#confirmation-error").textContent = "Enter a reason of 3 to 500 characters.";
+      reason.focus();
+      return;
+    }
+    dialog.close("confirmed");
+  });
+  reason.addEventListener("keydown", event => {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing) { event.preventDefault(); form.requestSubmit(); }
+  });
+  reason.addEventListener("input", () => { $("#confirmation-error").textContent = ""; });
 }
 export function valueView(value) {
   if (value == null || value === "") return '<span class="muted">—</span>';
