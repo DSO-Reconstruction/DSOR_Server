@@ -19,6 +19,7 @@ from dso_server.protocol.quest_protocol import (
     QUEST_TRIGGER_INDICATION_REQUEST_COMMAND,
     TALK_COMMAND,
     DELIVER_COMMAND,
+    PAY_COMMAND,
 )
 from dso_server.runtime.transport import Session
 from dso_server.protocol.daily_challenge_protocol import DAILY_CHALLENGE_SELECTION_COMMAND
@@ -421,7 +422,10 @@ class DispatchService:
                 f"length={len(payload)} command="
                 f"{f'0x{command_id:04x}' if command_id is not None else 'short'}"
             )
-        if NPC_TRACE and command_id in (0x0029, 0x0066, TALK_COMMAND, DELIVER_COMMAND, QUEST_COMMAND):
+        if NPC_TRACE and command_id in (
+            0x0029, 0x0066, TALK_COMMAND, DELIVER_COMMAND, PAY_COMMAND,
+            QUEST_COMMAND,
+        ):
             print(
                 f"[NPC-TRACE] received cmd=0x{command_id:04x} "
                 f"map={s.gameplay_map!r} gameplay_mode={s.gameplay_mode} "
@@ -604,6 +608,8 @@ class DispatchService:
                 self._handle_quest_command(s, payload)
             elif command_id == DELIVER_COMMAND:
                 self._handle_deliver_command(s, payload)
+            elif command_id == PAY_COMMAND:
+                self._handle_pay_command(s, payload)
             elif command_id == TALK_COMMAND:
                 self._handle_talk_command(s, payload)
             elif command_id == QUEST_MONSTER_INDICATION_REQUEST_COMMAND:

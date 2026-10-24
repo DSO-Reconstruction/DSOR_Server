@@ -45,6 +45,24 @@ def _open_read_only(path: str | Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
 
+def is_concrete_map_access(
+    static_database_path: str | Path,
+    request_map_id: str,
+) -> bool:
+    """Return whether the client-supplied ID names an access row directly.
+
+    ``resolve_map_access`` can normalize a concrete heroic difficulty-zero
+    row to the first positive difficulty. Callers validating the wire ID must
+    distinguish that normalization from a template ID that is not an access.
+    """
+
+    with _open_read_only(static_database_path) as database:
+        return database.execute(
+            "SELECT 1 FROM _Template_MapAccessGroup WHERE Id=? LIMIT 1",
+            (str(request_map_id),),
+        ).fetchone() is not None
+
+
 def _physical_map_for_access_group(
     database: sqlite3.Connection,
     access_group_id: str,

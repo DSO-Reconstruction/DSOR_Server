@@ -372,6 +372,9 @@ class PresenceService:
             )
         if isinstance(event, tuple) and event[0] == "level_up":
             self._fire_map_signal(session, "PlayerLevelUp", ())
+            CharacterService._quest_ensure_parallel_world_introduction(
+                self, session,
+            )
             return CharacterService._achievement_on_class_level(
                 self, session, event[1], event[2]
             )

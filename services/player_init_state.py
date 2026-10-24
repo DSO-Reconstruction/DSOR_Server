@@ -377,6 +377,19 @@ class PlayerInitializationStateService:
             ).active_event_flags(),
             *map_access.event_set_flags,
         })
+        # Keep the server's exit-authorization snapshot aligned with the
+        # quest-aware EventUpdate and scene entities built in
+        # PlayerInitializationWorldService. Some permanent routes (including
+        # Cardhun's Suburb gate) are authored behind a map-local event whose
+        # original quest is already closed when the follow-up quest is active.
+        try:
+            active_event_flags |= frozenset(
+                CharacterService._quest_reveal_flags(
+                    self, s, gameplay_map,
+                )
+            )
+        except Exception:
+            pass
         map_exit_definitions = tuple(
             definition
             for definition in load_local_map_exits(

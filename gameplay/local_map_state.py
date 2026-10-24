@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import closing
+import hashlib
 import math
 import os
 import sqlite3
@@ -458,6 +459,18 @@ def load_local_npc_definitions(
                 continue
             position, rotation = _transform(bytes(row[10]))
             if (
+                str(map_id).casefold() == "pw206_temple_dun"
+                and int(row[0]) == 2
+                and str(row[2] or "").casefold()
+                == "pw206_quest_lortac_shaman_01"
+                and event_set_row == 3910
+            ):
+                # The Call for Freedom's Melahuac is authored just beyond a
+                # blocked Materi barrier. Its Explore trigger is four metres
+                # earlier at (94, 3, 64), so place the NPC at that reachable
+                # point for the talk objective instead of behind the wall.
+                position = (94.0, 3.0, 64.0)
+            if (
                 str(map_id).casefold() == "f4100_hub"
                 and str(row[2] or "").casefold()
                 == "f4100_quest_guard_captain"
@@ -817,7 +830,187 @@ _TIERED_MAP_EXIT_TARGET_GROUPS = {
     "pw023_atlantis_above_water_01_dun": ("pw024_medusa_01_boss",),
     "pw025_ship_graveyard_01_dun": ("pw026_heart_of_atlantis_01_dun",),
     "pw026_heart_of_atlantis_01_dun": ("pw027_gorga_01_boss",),
+    # Cardhun's Suburb authors a separate exit at the same scene gate for
+    # every Parallel World destination difficulty. Keep only the tier that
+    # matches the Suburb access selected by this player.
+    "pw200_cardhun_dun": (
+        "pw201_library_dun",
+        "pw203_norseland_01_dun",
+        "pw203_norseland_02_dun",
+        "pw205_helios_dun",
+        "pw206_temple_02_dun",
+        "pw206_temple_dun",
+        "pw207_village_02_dun",
+        "pw207_village_dun",
+    ),
+    # Parallel World maps reached from Cardhun author one overlapping return
+    # exit per Cardhun access difficulty. Select the matching Suburb gate on
+    # entry so the native client can instantiate a single return portal.
+    "pw201_library_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_01_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_02_dun": ("pw200_cardhun_dun",),
+    "pw205_helios_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_02_dun": ("pw200_cardhun_dun",),
+    # Fyeborough authors both a tiered Cardhun return gate and a Tywyll Dail
+    # gate for each difficulty at shared scene positions. Select both routes
+    # using the current Fyeborough access tier.
+    "pw207_village_dun": (
+        "pw200_cardhun_dun", "pw208_rangervillage_dun",
+    ),
+    "pw207_village_02_dun": (
+        "pw200_cardhun_dun", "pw208_rangervillage_dun",
+    ),
 }
+
+
+def _filter_materi_swirl_exits(
+    static_database_path, map_id, exits, selected_map_access_id,
+    selected_map_difficulty,
+):
+    """Choose one Lingering Memory and difficulty per authored swirl spot.
+
+    Every spot contains all dungeon/tier variations. Caching all their GUIDs
+    in ExitInfo makes the client instantiate overlapping portals when the
+    swirl event starts. Keep the selection stable across event refreshes.
+    """
+    candidates = tuple(
+        exit for exit in exits
+        if exit.destination_map_id.casefold().startswith("pw202_mini_dun_")
+        and "_spot_" in exit.name.casefold()
+    )
+    if not candidates:
+        return exits
+    destinations = sorted({exit.destination_map_id for exit in candidates})
+    with closing(_open_read_only(Path(static_database_path))) as database:
+        source = database.execute(
+            "SELECT Difficulty FROM _Template_MapAccessGroup WHERE Id=?",
+            (str(selected_map_access_id),),
+        ).fetchone()
+        difficulty = int(source[0] or 0) if source else int(selected_map_difficulty or 0)
+        placeholders = ",".join("?" for _ in destinations)
+        metadata = {
+            str(access_id): (str(group), int(tier or 0))
+            for access_id, group, tier in database.execute(
+                "SELECT Id, AccessGroup, Difficulty FROM _Template_MapAccessGroup "
+                f"WHERE Id IN ({placeholders})", destinations,
+            )
+        }
+    spots = {}
+    for exit in candidates:
+        spot = exit.name.casefold().rsplit("_spot_", 1)[1]
+        spots.setdefault(spot, []).append(exit)
+    selected = set()
+    for spot, variations in spots.items():
+        eligible = [
+            exit for exit in variations
+            if metadata.get(exit.destination_map_id, (None, None))[1] == difficulty
+        ]
+        if not eligible:
+            # Preserve a usable portal when an extracted dungeon lacks this
+            # tier, without advertising all its other variations.
+            eligible = variations
+        chosen = min(eligible, key=lambda exit: (
+            abs(metadata.get(exit.destination_map_id, (None, 0))[1] - difficulty),
+            hashlib.sha256(
+                f"{map_id}:{spot}:{exit.destination_map_id}".encode()
+            ).digest(),
+            exit.name,
+        ))
+        selected.add(chosen.instance_guid)
+    candidate_guids = {exit.instance_guid for exit in candidates}
+    return tuple(
+        exit for exit in exits
+        if exit.instance_guid not in candidate_guids
+        or exit.instance_guid in selected
+    )
+
+
+def _tiered_exit_clusters(static_database_path, exits):
+    """Find same-position exits that only differ by destination difficulty.
+
+    Map databases repeat an exit for each access tier. Rather than maintaining
+    a map-by-map allowlist, identify those variants from the access-group
+    catalog and their shared entry/scene position. Distinct gates to the same
+    dungeon remain separate because they do not share that scene location.
+    """
+    destinations = {exit.destination_map_id for exit in exits}
+    if not destinations:
+        return ()
+    placeholders = ",".join("?" for _ in destinations)
+    with closing(_open_read_only(static_database_path)) as database:
+        rows = database.execute(
+            "SELECT Id, AccessGroup, Difficulty FROM _Template_MapAccessGroup "
+            f"WHERE Id IN ({placeholders})",
+            tuple(destinations),
+        )
+        metadata = {
+            str(access_id): (str(access_group), int(difficulty or 0))
+            for access_id, access_group, difficulty in rows
+        }
+
+    # Include the canonical difficulty-zero access when a scene exit uses the
+    # shortened base map URL instead of its explicit `_00` access ID.
+    for destination, (group, difficulty) in tuple(metadata.items()):
+        if destination.endswith("_00"):
+            metadata.setdefault(destination[:-3], (group, difficulty))
+
+    by_group_and_entry = {}
+    for definition in exits:
+        group, difficulty = metadata.get(
+            definition.destination_map_id, (None, None),
+        )
+        if group is None:
+            continue
+        key = (group, definition.destination_entry_name)
+        by_group_and_entry.setdefault(key, []).append((definition, difficulty))
+
+    clusters = []
+    for variants in by_group_and_entry.values():
+        pending = list(variants)
+        while pending:
+            seed, _ = pending.pop(0)
+            cluster = [(seed, metadata[seed.destination_map_id][1])]
+            remaining = []
+            for candidate, difficulty in pending:
+                if all(
+                    abs(candidate.position[axis] - seed.position[axis]) <= 1.0
+                    for axis in range(3)
+                ):
+                    cluster.append((candidate, difficulty))
+                else:
+                    remaining.append((candidate, difficulty))
+            pending = remaining
+            if len({difficulty for _, difficulty in cluster}) > 1:
+                clusters.append(tuple(cluster))
+    return tuple(clusters)
+
+
+def _filter_tiered_exit_clusters(
+    static_database_path, exits, selected_difficulty,
+):
+    """Keep only the selected access tier at each shared authored gate."""
+    clusters = _tiered_exit_clusters(static_database_path, exits)
+    if not clusters:
+        return exits
+    selected_guids = set()
+    clustered_guids = set()
+    for cluster in clusters:
+        difficulties = {difficulty for _, difficulty in cluster}
+        chosen_difficulty = (
+            selected_difficulty
+            if selected_difficulty in difficulties
+            else min(difficulties, key=lambda value: abs(value - selected_difficulty))
+        )
+        for definition, difficulty in cluster:
+            clustered_guids.add(definition.instance_guid)
+            if difficulty == chosen_difficulty:
+                selected_guids.add(definition.instance_guid)
+    return tuple(
+        definition for definition in exits
+        if definition.instance_guid not in clustered_guids
+        or definition.instance_guid in selected_guids
+    )
 
 
 def filter_parallel_world_exits_for_access(
@@ -830,6 +1023,25 @@ def filter_parallel_world_exits_for_access(
 ) -> tuple[LocalMapExit, ...]:
     """Keep only destination variations matching the selected map difficulty."""
 
+    exits = _filter_materi_swirl_exits(
+        static_database_path, map_id, exits, selected_map_access_id,
+        selected_map_difficulty,
+    )
+    source_difficulty = None
+    if selected_map_access_id:
+        with closing(_open_read_only(static_database_path)) as database:
+            source = database.execute(
+                "SELECT Difficulty FROM _Template_MapAccessGroup WHERE Id=?",
+                (str(selected_map_access_id),),
+            ).fetchone()
+        if source is not None:
+            source_difficulty = int(source[0] or 0)
+    if source_difficulty is None and selected_map_difficulty is not None:
+        source_difficulty = int(selected_map_difficulty)
+    if source_difficulty is not None:
+        exits = _filter_tiered_exit_clusters(
+            static_database_path, exits, source_difficulty,
+        )
     target_groups = _TIERED_MAP_EXIT_TARGET_GROUPS.get(
         str(map_id).casefold()
     )
@@ -877,123 +1089,49 @@ def _exit_info_entries_for_access(
     all_exits: tuple[LocalMapExit, ...],
     selected_exits: tuple[LocalMapExit, ...],
 ) -> tuple[ExitInfoEntry, ...]:
-    """Refresh every cached gate name while selecting one scene GUID.
+    """Publish only exits with an entity in the currently loaded scene.
 
-    ExitInfo is merged by the client and omitted names are not removed from its
-    cache. Re-send each same-position tier alias using the selected tier's GUID
-    so a prior map load cannot leave stale variation GUIDs that hide the gate.
+    ExitInfo asks the client to update a named scene entity. Sending every
+    difficulty alias makes it look up names for portals that are not in this
+    map variation, generating an UpdateExitState warning for each absent
+    entity. The selected variation is materialized separately through
+    VariationInfo where needed, so only its authored name belongs here.
     """
-
-    target_groups = _TIERED_MAP_EXIT_TARGET_GROUPS.get(
-        str(map_id).casefold()
+    del static_database_path, map_id, all_exits
+    return tuple(
+        ExitInfoEntry(
+            definition.name,
+            definition.destination_map_id,
+            int(definition.active),
+            definition.instance_guid,
+        )
+        for definition in selected_exits
     )
-    if target_groups is None:
-        return tuple(
-            ExitInfoEntry(
-                definition.name,
-                definition.destination_map_id,
-                int(definition.active),
-                definition.instance_guid,
-            )
-            for definition in selected_exits
-        )
-
-    placeholders = ",".join("?" for _ in target_groups)
-    with closing(_open_read_only(static_database_path)) as database:
-        access_groups = {
-            str(access_id): str(access_group)
-            for access_id, access_group in database.execute(
-                "SELECT Id, AccessGroup FROM _Template_MapAccessGroup "
-                f"WHERE AccessGroup IN ({placeholders})", target_groups,
-            )
-        }
-    for target in target_groups:
-        if target in access_groups:
-            access_groups.setdefault(f"{target}_00", access_groups[target])
-
-    result = []
-    emitted_names = set()
-    for selected in selected_exits:
-        group = access_groups.get(selected.destination_map_id)
-        if (
-            str(map_id).casefold() == "f4202_dun"
-            and selected.destination_map_id.casefold().startswith("f4203_boss")
-        ):
-            # The teleportarium's normal and scaling access groups author
-            # separate exits at one scene position. Route all their cached
-            # names through the single normal exit; its access window exposes
-            # the difficulty choices without stacking clickable portals.
-            aliases = tuple(
-                candidate
-                for candidate in all_exits
-                if (
-                    candidate.destination_map_id.casefold().startswith("f4203_boss")
-                    and candidate.destination_entry_name
-                    == selected.destination_entry_name
-                    and all(
-                        abs(candidate.position[axis] - selected.position[axis])
-                        <= 1.0
-                        for axis in range(3)
-                    )
-                )
-            )
-            if not aliases:
-                aliases = (selected,)
-            for alias in aliases:
-                if alias.name in emitted_names:
-                    continue
-                is_selected = alias.instance_guid == selected.instance_guid
-                result.append(ExitInfoEntry(
-                    alias.name,
-                    selected.destination_map_id,
-                    int(selected.active and is_selected),
-                    selected.instance_guid,
-                ))
-                emitted_names.add(alias.name)
-            continue
-        if group is None:
-            result.append(ExitInfoEntry(
-                selected.name,
-                selected.destination_map_id,
-                int(selected.active),
-                selected.instance_guid,
-            ))
-            emitted_names.add(selected.name)
-            continue
-
-        aliases = tuple(
-            candidate
-            for candidate in all_exits
-            if (
-                access_groups.get(candidate.destination_map_id) == group
-                and candidate.destination_entry_name
-                == selected.destination_entry_name
-                and all(
-                    abs(candidate.position[axis] - selected.position[axis])
-                    <= 1.0
-                    for axis in range(3)
-                )
-            )
-        )
-        if not aliases:
-            aliases = (selected,)
-        for alias in aliases:
-            if alias.name in emitted_names:
-                continue
-            is_selected = alias.instance_guid == selected.instance_guid
-            result.append(ExitInfoEntry(
-                alias.name,
-                selected.destination_map_id,
-                int(selected.active and is_selected),
-                selected.instance_guid,
-            ))
-            emitted_names.add(alias.name)
-    return tuple(result)
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
     # Hiraja's quest gate must be materialized after its scene event starts.
     "h0001_hub": ("h0006_valley_dun",),
+    # Cardhun's authored hub gates are absent from the loaded scene. The
+    # PW199 gate shares its quest EventSet with Annagreth Everly; create it
+    # only after that EventSet is activated.
+    "pw000_hub": ("pw199_cardhun_dun", "pw200_cardhun_dun"),
+    # The Cardhun city return gate is also absent from the loaded scene.
+    "pw200_cardhun_dun": ("pw000_hub",),
+    # Parallel World destinations reached from Cardhun have their return
+    # exits in the map database but omit the corresponding gate entity from
+    # the loaded scene. Materialize the selected Suburb return gate by GUID.
+    "pw201_library_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_01_dun": ("pw200_cardhun_dun",),
+    "pw203_norseland_02_dun": ("pw200_cardhun_dun",),
+    "pw205_helios_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_dun": ("pw200_cardhun_dun",),
+    "pw206_temple_02_dun": ("pw200_cardhun_dun",),
+    "pw207_village_dun": ("pw200_cardhun_dun",),
+    "pw207_village_02_dun": ("pw200_cardhun_dun",),
+    # Tywyll Dail's Twisted Woods entrance is present in the exit table but
+    # missing from the loaded scene. Create only the selected difficulty gate.
+    "pw208_rangervillage_dun": ("pw208_lost_woods_dun_01",),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
@@ -1046,7 +1184,9 @@ def native_scene_exit_variation_entries(
     return tuple(
         VariationInfoEntry(
             definition.instance_guid,
-            definition.event_set_row if str(map_id).casefold() == "h0001_hub" else -1,
+            definition.event_set_row
+            if str(map_id).casefold() in {"h0001_hub", "pw000_hub"}
+            else -1,
         )
         for definition in exits
         if (

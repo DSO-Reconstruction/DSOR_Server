@@ -13,9 +13,9 @@ Simplifications, all deliberate and logged where they apply:
 * Ground ``<Drop>`` items are returned to the service for materialization;
   only a successful pickup feeds ``collect``. Direct-inventory drops retain
   immediate collection credit (their inventory grant is not modeled here).
-* ``pay``, ``crafting`` and general ``holdground`` events are not fed by the
-  server yet. ``battle`` and ``victory`` are fed when a battleground finishes,
-  with the match's battleground id.
+* General ``holdground`` events are not fed by the server yet. ``battle``
+  and ``victory`` are fed when a battleground finishes, with the match's
+  battleground id.
 * ``<Config>`` elements (hold-ground setups) are parsed but not executed.
 """
 
@@ -52,7 +52,7 @@ QUEST_TYPE_IDS = MappingProxyType({
 })
 
 UNSUPPORTED_EVENT_TYPES = frozenset({
-    "pay", "crafting", "holdgroundfailed",
+    "holdgroundfailed",
 })
 
 # A few decoded client quest tasks omit their ExploreTask trigger Event. Keep
@@ -62,6 +62,17 @@ _EXPLORE_TASK_TRIGGER_OVERRIDES = MappingProxyType({
         "h0001-hunt-for-the-lantern-09-n",
         "h0001-hunt-for-the-lantern-09-explore-01",
     ): "h0007explore01",
+})
+
+# Telepolos' main story asks the player to collect four Catapult Stones from
+# Wandering Stone Golems, but the extracted quest XML sets this story drop to
+# only 10%. Keep this required progression item deterministic in the server
+# runtime so the catapult objective cannot stall on repeated failed rolls.
+_QUEST_DROP_CHANCE_OVERRIDES = MappingProxyType({
+    (
+        "pw205-a-helios-war-07-n",
+        "pw205_a_helios_war_07_stone",
+    ): 1.0,
 })
 
 
@@ -157,6 +168,7 @@ class BarterDefinition:
     reply: bool
     only_show: bool
     guards: tuple[Guard, ...]
+    event_kind: str = "deliver"
 
     def live(self, tokens: Mapping[str, int]) -> bool:
         return all(guard.holds(tokens) for guard in self.guards)
@@ -380,7 +392,9 @@ def _parse_guards(element: ET.Element) -> tuple[Guard, ...]:
     )
 
 
-def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
+def _parse_task(
+    index: int, element: ET.Element, *, quest_id: str = "",
+) -> TaskDefinition:
     events = []
     for child in element.findall("Event"):
         events.append(TaskEvent(
@@ -399,7 +413,15 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
                 Drop(
                     item_id=str(d.get("value", "")),
                     amount=int(d.get("amount", 1) or 1),
-                    chance=float(d.get("chance", 1) or 1),
+                    chance=max(
+                        float(d.get("chance", 1) or 1),
+                        _QUEST_DROP_CHANCE_OVERRIDES.get((
+                            str(quest_id).casefold(),
+                            str(d.get("value", "")).casefold(),
+                        ),
+                        0.0,
+                    ),
+                    ),
                     to_inventory=_bool(d.get("inventory")),
                 )
                 for d in child.findall("Drop")
@@ -460,11 +482,16 @@ def _parse_task(index: int, element: ET.Element) -> TaskDefinition:
         barters=tuple(
             BarterDefinition(
                 barter_id=str(b.get("id")), actor=str(b.get("actor", "")),
-                items=_tokens(b.get("item")), amount=int(b.get("amount", 1)),
+                items=_tokens(
+                    b.get("item") if b.tag == "Barter" else b.get("currency")
+                ),
+                amount=int(b.get("amount", 1)),
                 reply=_bool(b.get("reply", "true")), only_show=_bool(b.get("onlyShow")),
                 guards=_parse_guards(b),
+                event_kind="pay" if b.tag == "Pay" else "deliver",
             )
-            for b in element.findall("Barter") if b.get("id")
+            for b in element
+            if b.tag in {"Barter", "Pay"} and b.get("id")
         ),
         pre_tasks=tuple(_tokens(element.get("preTasks"))),
     )
@@ -490,12 +517,13 @@ def _parse_quest(element: ET.Element) -> QuestDefinition:
         )
         for r in element.findall("Reward")
     )
+    quest_id = str(element.get("id", ""))
     tasks = tuple(
-        _parse_task(index, task)
+        _parse_task(index, task, quest_id=quest_id)
         for index, task in enumerate(element.findall("Task"))
     )
     return QuestDefinition(
-        quest_id=str(element.get("id", "")),
+        quest_id=quest_id,
         giver=str(element.get("giver", "")),
         goal=str(element.get("goal", "")),
         start_signal=str(element.get("startSignal", "")),

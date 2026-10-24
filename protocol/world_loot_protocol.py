@@ -2401,13 +2401,16 @@ def credit_currency_drop(
 def add_world_drop_to_inventory(
     info: InventoryInfo, drop: WorldLootDrop, *, max_stack_size: int = 1,
     next_item_id: int = 0, reserved_item_ids=(),
+    ingredient_bag: bool = False,
 ) -> InventoryLootMutation:
-    """Move one non-currency world item into an ordinary or premium bag slot.
+    """Move one non-currency world item to its configured inventory bag.
 
     A stack it lands on is reissued under a fresh id, past ``next_item_id``
     and every ``reserved_item_ids`` (the items still on the ground: one loot's
     drops have consecutive ids, so the inventory's highest id + 1 can be the
-    next drop's, which then could no longer be picked up).
+    next drop's, which then could no longer be picked up). Ingredient-bag
+    items use the inventory's dedicated ``field_180`` allocation and do not
+    consume an ordinary storage slot.
     """
 
     if drop.item_category in {"Currency", "InstantConsumable"}:
@@ -2423,12 +2426,19 @@ def add_world_drop_to_inventory(
     remaining = max(1, int(stored.amount))
     maximum = max(1, int(max_stack_size))
     for old_item in tuple(inventory.items):
+        in_destination = (
+            int(old_item.item_id) in inventory.field_180
+            if ingredient_bag
+            else (
+                int(old_item.item_id) in inventory.storage_58
+                or int(old_item.item_id) in inventory.storage_80
+            )
+        )
         if (
             remaining <= 0 or old_item.template_id != stored.template_id
             or old_item.quest_id != stored.quest_id
             or int(old_item.amount) >= maximum
-            or not (old_item.item_id in inventory.storage_58
-                    or old_item.item_id in inventory.storage_80)
+            or not in_destination
             or old_item.field_1c != stored.field_1c
             or old_item.field_04 != stored.field_04
             or old_item.item_level != stored.item_level
@@ -2471,12 +2481,17 @@ def add_world_drop_to_inventory(
             break
     if remaining > 0:
         stored.amount = remaining
-        location = free_inventory_location(inventory)
-        if location is None:
-            raise ValueError("ordinary inventory storage is full")
-        storage_name, slot = location
         inventory.items.append(stored)
-        getattr(inventory, storage_name)[stored.item_id] = slot
+        if ingredient_bag:
+            inventory.field_180.append(int(stored.item_id))
+            if stored.template_id not in inventory.field_1a0:
+                inventory.field_1a0.append(stored.template_id)
+        else:
+            location = free_inventory_location(inventory)
+            if location is None:
+                raise ValueError("ordinary inventory storage is full")
+            storage_name, slot = location
+            getattr(inventory, storage_name)[stored.item_id] = slot
     # Return changed stacks as authoritative item records; the pickup delta
     # also carries their retail ID replacement map.
     inventory.changed_item_ids = []
@@ -2505,8 +2520,12 @@ def add_world_drop_to_inventory(
     delta.field_118 = []
     delta.changed_item_ids = changed_item_ids
     delta.field_158 = replacements
-    delta.field_180 = []
-    delta.field_1a0 = []
+    delta.field_180 = (
+        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    )
+    delta.field_1a0 = (
+        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    )
     delta.field_1e0 = True
 
     # The second retail InventoryInfo closes the transaction. It also needs
@@ -2523,6 +2542,10 @@ def add_world_drop_to_inventory(
     final.field_118 = []
     final.changed_item_ids = []
     final.field_158 = {}
-    final.field_180 = []
-    final.field_1a0 = []
+    final.field_180 = (
+        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    )
+    final.field_1a0 = (
+        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    )
     return InventoryLootMutation(inventory, delta, final)
