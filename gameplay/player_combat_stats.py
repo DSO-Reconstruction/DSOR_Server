@@ -678,18 +678,81 @@ def _load_static_database(
     )
 
 
+_COMBAT_DATABASE_RECHECK_SECONDS = 1.0
+# Last observed ``(st_mtime_ns, st_size)`` per resolved database path.
+_combat_database_revisions: dict[str, tuple[int, int]] = {}
+_combat_database_checked_at: dict[str, float] = {}
+_combat_database_rechecks: set[str] = set()
+_combat_database_revision_lock = threading.Lock()
+
+
 def prime_player_combat_database(
     database_path: str | Path,
 ) -> StaticPlayerCombatDatabase:
-    """Load immutable combat rows once for the current database revision."""
+    """Load immutable combat rows once for the current database revision.
+
+    Only the first call for a path touches the filesystem on the caller's
+    thread. Later calls return the last observed revision at once, and at
+    most once per second a background thread re-checks the file and parses a
+    replaced database before callers switch to it. Casts and monster ticks
+    used to ``stat()`` the file themselves: on 2026-10-24 one such call took
+    three seconds on a volume spanning two hard disks, and the cast and the
+    map's simulation, both waiting on it, froze combat for that long.
+    """
 
     path = _resolved_combat_database_path(str(database_path))
+    key = str(path)
+    now = time.perf_counter()
+    with _combat_database_revision_lock:
+        revision = _combat_database_revisions.get(key)
+        recheck = (
+            revision is not None
+            and key not in _combat_database_rechecks
+            and now - _combat_database_checked_at.get(key, now)
+            >= _COMBAT_DATABASE_RECHECK_SECONDS
+        )
+        if recheck:
+            _combat_database_rechecks.add(key)
+    if revision is None:
+        revision = _combat_database_revision(path)
+        with _combat_database_revision_lock:
+            _combat_database_revisions[key] = revision
+            _combat_database_checked_at[key] = now
+    elif recheck:
+        threading.Thread(
+            target=_recheck_combat_database,
+            args=(path, key),
+            name="combat-database-recheck",
+            daemon=True,
+        ).start()
+    return _load_static_database(key, *revision)
+
+
+def _combat_database_revision(path: Path) -> tuple[int, int]:
     stat = path.stat()
-    return _load_static_database(
-        str(path),
-        int(stat.st_mtime_ns),
-        int(stat.st_size),
-    )
+    return int(stat.st_mtime_ns), int(stat.st_size)
+
+
+def _recheck_combat_database(path: Path, key: str) -> None:
+    """Observe the database revision away from the combat hot path."""
+
+    revision = None
+    try:
+        revision = _combat_database_revision(path)
+        _load_static_database(key, *revision)
+    except Exception as exc:
+        # Keep serving the revision already loaded; the next check retries.
+        revision = None
+        print(
+            f"[PlayerCombat] could not re-check {key}: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    finally:
+        with _combat_database_revision_lock:
+            if revision is not None:
+                _combat_database_revisions[key] = revision
+            _combat_database_checked_at[key] = time.perf_counter()
+            _combat_database_rechecks.discard(key)
 
 
 @lru_cache(maxsize=8)
