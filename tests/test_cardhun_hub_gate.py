@@ -1,4 +1,10 @@
-"""Keep the Suburb portal beside Annagreth available after quest progress."""
+"""Open the Suburb portal beside Annagreth when quest progress calls for it.
+
+The portal (``pw000_exit_to_pw200``) is authored as a temporary gateway: its
+start signals fire when the player opens pw200-cardhun-village-02-n and when
+they enter the hub with that quest accepted. Once the Suburb has been
+visited, the saved unlock keeps the portal.
+"""
 
 from pathlib import Path
 from threading import Lock
@@ -64,28 +70,45 @@ class CardhunHubGateTests(unittest.TestCase):
             self.service._quest_reveal_flags(self.session, "pw000_hub"),
         )
 
-    def test_completed_payment_quest_keeps_suburb_open(self):
+    def assert_no_suburb_portal(self):
+        self.assertNotIn(
+            "pw000_exit_to_pw200",
+            self.service._quest_reveal_flags(self.session, "pw000_hub"),
+        )
+
+    def test_completed_payment_quest_opens_the_next_gate_not_the_portal(self):
         quest_id = "pw200-cardhun-village-01-n"
         self.session.gameplay_quest_log[quest_id] = QuestProgress(
             quest_id, state=QUEST_STATE_CLOSED,
         )
-        self.assert_suburb_portal()
+        self.assertIn(
+            "pw200_way_to_cardhun_02_activate_exit_pw000",
+            self.service._quest_reveal_flags(self.session, "pw000_hub"),
+        )
+        self.assert_no_suburb_portal()
 
-    def test_suburb_quest_keeps_portal_open_before_and_after_turn_in(self):
+    def test_suburb_quest_opens_the_portal_while_accepted(self):
         quest_id = "pw200-cardhun-village-02-n"
-        for state in (QUEST_STATE_ACCEPTED, QUEST_STATE_CLOSED):
-            with self.subTest(state=state):
-                self.session.gameplay_quest_log[quest_id] = QuestProgress(
-                    quest_id, state=state,
-                )
-                self.assert_suburb_portal()
-
-    def test_later_village_quest_preserves_portal(self):
-        quest_id = "pw200-cardhun-village-05-n"
         self.session.gameplay_quest_log[quest_id] = QuestProgress(
             quest_id, state=QUEST_STATE_ACCEPTED,
         )
         self.assert_suburb_portal()
+
+    def test_portal_closes_after_its_quest_unless_the_suburb_was_visited(self):
+        quest_id = "pw200-cardhun-village-02-n"
+        self.session.gameplay_quest_log[quest_id] = QuestProgress(
+            quest_id, state=QUEST_STATE_CLOSED,
+        )
+        self.assert_no_suburb_portal()
+        self.session.gameplay_unlocked_maps.add("pw200_cardhun_dun")
+        self.assert_suburb_portal()
+
+    def test_later_village_quest_alone_does_not_open_the_portal(self):
+        quest_id = "pw200-cardhun-village-05-n"
+        self.session.gameplay_quest_log[quest_id] = QuestProgress(
+            quest_id, state=QUEST_STATE_ACCEPTED,
+        )
+        self.assert_no_suburb_portal()
 
     def test_saved_suburb_visit_restores_portal_without_quest_log(self):
         self.session.gameplay_unlocked_maps.add("pw200_cardhun_dun")
