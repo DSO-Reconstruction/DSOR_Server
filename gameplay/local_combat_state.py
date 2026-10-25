@@ -9855,6 +9855,7 @@ class LocalCombatState:
             is_covering_fire = (
                 geometry.resource_id == "minionskill_coveringfireturret"
             )
+            idle_start = False
             is_stationary_sustained = (
                 attack_skill_type == "Sustained"
                 and geometry.targeting_type.casefold()
@@ -9979,10 +9980,35 @@ class LocalCombatState:
                         if distance <= geometry.hit_range
                     ]
                 )
-                if not area:
-                    continue
                 target_actor_ids = tuple(actor for _distance, actor in area)
-                target_actor_id = target_actor_ids[0]
+                if not area:
+                    # An enemy within its AggroRange (15) but none in its 3 m
+                    # still wakes it: its cast starts its UserStatusEffects
+                    # (dwarf_tesla_graphics: StartSequence
+                    # tesla_tower_skill_01, the field's lightning, AuraRadius
+                    # 3) and its strike finds nobody. Only that first start is
+                    # sent; later empty pulses send nothing.
+                    # FAILURE: waiting for a victim inside 3 m, a Tesla set
+                    # down near a pack never drew its field ("no FX").
+                    # UNVERIFIED: the retail minion's target pick (AggroRange,
+                    # then AttackRange 200) was not traced in the client.
+                    started_ids = self.started_player_summon_effect_ids.get(
+                        actor_id, set()
+                    )
+                    waking = [
+                        item
+                        for item in sorted(monsters_in_area + players_in_area)
+                        if item[0] <= definition.aggro_range
+                    ]
+                    if not waking or not any(
+                        effect.effect_id not in started_ids
+                        and effect.trigger in {"", "skillstart"}
+                        for effect in geometry.user_status_effects
+                    ):
+                        continue
+                    idle_start = True
+                    area = waking[:1]
+                target_actor_id = area[0][1]
                 target_position = (
                     self.monster_positions[target_actor_id]
                     if target_actor_id in self.monsters
@@ -10092,6 +10118,8 @@ class LocalCombatState:
                     )
                 )
             )
+            if idle_start:
+                emit_playback = False
             if not emit_playback:
                 command_id = 0
             start_tick = int(server_tick) & 0xFFFFFFFF
