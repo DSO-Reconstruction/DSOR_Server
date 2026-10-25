@@ -16,8 +16,9 @@ Endpoints (JSON in, JSON out):
     POST /api/logout      {session_id} -> revoked
     POST /api/password    {username, password, new_password}
     POST /api/validate    {session_id} -> session, for the game server itself
-    GET  /api/content     the static database the dsor client must hold
+    GET  /api/content     the static and map databases the dsor client must hold
     POST /api/content/static-db  {session_id} -> that database, packed
+    POST /api/content/maps       {session_id} -> the map databases, bundled
                           (see :mod:`~dso_server.services.content`)
 
 Run it beside the game services (``python -m dso_server``) or on its own host:
@@ -45,6 +46,8 @@ from dso_server.services.content import (
     CONTENT_VERSION,
     DOWNLOAD_WINDOW_SECONDS,
     DOWNLOADS_PER_WINDOW,
+    MAP_DOWNLOADS_PER_WINDOW,
+    MapDatabasesPublisher,
     StaticDatabasePublisher,
 )
 
@@ -199,8 +202,8 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             try:
                 document = self.service.content_document()
             except (OSError, ValueError, RuntimeError) as exc:
-                print(f"[AccountService] static database unavailable: {exc}")
-                self._fail(HTTPStatus.SERVICE_UNAVAILABLE, "the static database cannot be read")
+                print(f"[AccountService] content unavailable: {exc}")
+                self._fail(HTTPStatus.SERVICE_UNAVAILABLE, "the static or map databases cannot be read")
                 return
             self._respond(HTTPStatus.OK, document)
         else:
@@ -216,6 +219,7 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
             "/api/password": self._password,
             "/api/validate": self._validate,
             "/api/content/static-db": self._static_database,
+            "/api/content/maps": self._map_databases,
         }
         handler = handlers.get(path)
         if handler is None:
@@ -397,6 +401,45 @@ class AccountRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _map_databases(self, payload: dict) -> None:
+        # The dsor client converts its maps from these: the instance Guids of
+        # NewNPC, PropInfo and ExitInfo are this server's (services/content.py).
+        publisher = self.service.maps
+        if publisher is None:
+            self._fail(HTTPStatus.NOT_FOUND, "this server publishes no map databases")
+            return
+        if self.service.registry.validate(str(payload.get("session_id", ""))) is None:
+            self._fail(HTTPStatus.UNAUTHORIZED, "sign in to download the map databases")
+            return
+        address = self._client_ip()
+        wait = self.service.maps_throttle.blocked(address)
+        if wait > 0:
+            self._fail(
+                HTTPStatus.TOO_MANY_REQUESTS,
+                f"too many downloads; retry in {wait:.0f}s",
+                retry_after=wait,
+            )
+            return
+        try:
+            packed = publisher.packed()
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"[AccountService] map databases unavailable: {exc}")
+            self._fail(HTTPStatus.SERVICE_UNAVAILABLE, "the map databases cannot be read")
+            return
+        if packed is None:
+            self._fail(HTTPStatus.NOT_FOUND, "this server publishes no map databases")
+            return
+        self.service.maps_throttle.record_failure(address)
+        sha256, body = packed
+        print(f"[AccountService] map databases {sha256[:12]} ({len(body)} bytes) to {address}")
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Content-SHA256", sha256)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
 
 # Internet scanners and abandoned launchers reset or drop the socket before
 # or during a request. socketserver's default handle_error prints a banner
@@ -446,6 +489,7 @@ class AccountService:
         verbose: bool = False,
         static_database_path: str | os.PathLike[str] | None = None,
         publish_static_database: bool | None = None,
+        publish_maps: bool | None = None,
     ) -> None:
         self.host = host
         self.port = int(port)
@@ -493,6 +537,22 @@ class AccountService:
         )
         self.static_db_throttle = FailureThrottle(
             limit=DOWNLOADS_PER_WINDOW, window_seconds=DOWNLOAD_WINDOW_SECONDS
+        )
+        # The map databases beside it (<db>/../maps, as the game services find
+        # them: local_map_state.map_database_path); DSO_PUBLISH_MAPS=0 stops it.
+        publish_maps = (
+            bool(publish_maps)
+            if publish_maps is not None
+            else publish and os.getenv("DSO_PUBLISH_MAPS", "1") != "0"
+        )
+        self.maps = (
+            MapDatabasesPublisher(
+                Path(static_database_path or DEFAULT_STATIC_DB_PATH).parent.parent / "maps"
+            )
+            if publish_maps else None
+        )
+        self.maps_throttle = FailureThrottle(
+            limit=MAP_DOWNLOADS_PER_WINDOW, window_seconds=DOWNLOAD_WINDOW_SECONDS
         )
         self.service_name = "AccountService"
         self._httpd: ThreadingHTTPServer | None = None
@@ -560,6 +620,7 @@ class AccountService:
         return {
             "version": CONTENT_VERSION,
             "static_db": self.static_db.describe() if self.static_db else None,
+            "maps": self.maps.describe() if self.maps else None,
         }
 
     def characters_document(self) -> dict:
@@ -598,6 +659,16 @@ class AccountService:
             name="account-service",
         )
         self._thread.start()
+        if self.maps is not None:
+            # Hashing and packing 391 maps takes seconds: done before the
+            # first sign-in asks, not while it waits.
+            threading.Thread(target=self._warm_maps, daemon=True, name="account-maps").start()
+
+    def _warm_maps(self) -> None:
+        try:
+            self.maps.describe()
+        except (OSError, ValueError, RuntimeError) as exc:
+            print(f"[AccountService] map databases unavailable: {exc}")
 
     def stop(self) -> None:
         httpd, self._httpd = self._httpd, None
