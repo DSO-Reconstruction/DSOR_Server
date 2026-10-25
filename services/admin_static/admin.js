@@ -9,7 +9,7 @@ import { seasonPassPage } from "./admin_season_pass.js";
 let generation = 0;
 const THEME_STORAGE_KEY = "dso-admin-theme";
 function applyTheme(theme) {
-  const selected = theme === "dark" ? "dark" : "light";
+  const selected = theme === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = selected;
   const toggle = $("#theme-toggle");
   if (toggle) {

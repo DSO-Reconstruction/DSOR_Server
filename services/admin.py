@@ -1161,14 +1161,32 @@ class AdminService:
             }
             if sort not in orders:
                 raise ValueError("invalid item catalog sort order")
-            rows = [row for row in item_catalog(self.static_database_path)
-                    if (not search or search in row["template_id"].casefold()
-                        or search in row["category"].casefold() or search in row["name"].casefold()
-                        or search in row["template_name"].casefold())]
+            rows = []
+            for row in item_catalog(self.static_database_path):
+                localized_matches = [
+                    (locale, name) for locale, name in row["localized_names"]
+                    if search and search in name.casefold()
+                ]
+                if (search and search not in row["template_id"].casefold()
+                        and search not in row["category"].casefold()
+                        and search not in row["name"].casefold()
+                        and not any(search in name.casefold() for name in row["search_names"])):
+                    continue
+                if localized_matches:
+                    _, matched_name = min(localized_matches, key=lambda item: (
+                        item[1].casefold() != search,
+                        item[0].casefold() != "en",
+                        not item[1].casefold().startswith(search),
+                        item[0].casefold(),
+                    ))
+                    row = {**row, "name": matched_name}
+                rows.append(row)
             rows.sort(key=lambda row: row["template_id"])
             key, reverse = orders[sort]
             rows.sort(key=key, reverse=reverse)
-            return page(rows, query)
+            return page([{key: value for key, value in row.items()
+                          if key not in {"search_names", "localized_names"}}
+                         for row in rows], query)
         if path == "/api/sessions":
             # Do not expose game bearer tokens in the CMS.
             return page([{"account_id": s.account_id, "username": s.username,
