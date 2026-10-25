@@ -31,6 +31,7 @@ from dso_server.protocol.combat_protocol import (
     SKILL_COMMAND,
     SUSTAINED_SKILL_COMMAND,
     TARGET_BULLET_SKILL_COMMAND,
+    TARGET_POINT_BULLET_SKILL_COMMAND,
     TARGET_SKILL_COMMAND,
     BulletSkill,
 )
@@ -1380,9 +1381,18 @@ class LocalCombatState:
         self._return_home_transitions: list[
             MonsterReturnHomeTransition
         ] = []
+        self.mortis_released_actor_ids: set[int] = set()
+        self.scripted_dormant_actor_ids: set[int] = set()
+        if encounter.map_id.casefold() == "pw214_mortis_boss":
+            from dso_server.gameplay.mortis_arena import FREEZES
+            self.scripted_dormant_actor_ids.update(
+                a for a, m in self.monsters.items() if m.template_id.casefold() in FREEZES
+            )
+            for actor in self.scripted_dormant_actor_ids:
+                self.monsters[actor] = replace(self.monsters[actor], invulnerable=True)
         self.active_monster_actor_ids = (
             set(self.monsters) if initially_active else set()
-        )
+        ) - self.scripted_dormant_actor_ids
         self.last_monster_attack_at = {
             actor_id: initialized_at for actor_id in self.monsters
         }
@@ -1875,6 +1885,11 @@ class LocalCombatState:
             retired.append(actor_id)
         if retired:
             self.deactivate_monsters(tuple(retired), reset=True)
+            # Deactivation resets a discarded *living* vicinity actor to its
+            # spawn health. Event retirement is final: restore zero afterward
+            # so later discovery/area scans cannot resurrect removed waves.
+            for actor_id in retired:
+                self.monster_health[actor_id] = 0
         return tuple(retired)
 
     @property
@@ -1920,7 +1935,8 @@ class LocalCombatState:
                 + ", ".join(str(actor_id) for actor_id in sorted(unknown))
             )
         normalized = tuple(int(value) for value in actor_ids
-                           if int(value) not in self.active_monster_actor_ids)
+                           if int(value) not in self.active_monster_actor_ids
+                           and int(value) not in self.scripted_dormant_actor_ids)
         self.active_monster_actor_ids.update(normalized)
         for actor_id in normalized:
             # The vicinity spawn packet already carries the current transform.
@@ -2571,6 +2587,7 @@ class LocalCombatState:
         if not has_melee and monster.attack.command_id in {
             BULLET_SKILL_COMMAND,
             TARGET_BULLET_SKILL_COMMAND,
+            TARGET_POINT_BULLET_SKILL_COMMAND,
         }:
             return max(
                 MONSTER_STOP_DISTANCE,
@@ -4479,7 +4496,11 @@ class LocalCombatState:
             and removed is not None
             and pending is not None
             and pending.attack.command_id
-            in {BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND}
+            in {
+                BULLET_SKILL_COMMAND,
+                TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
+            }
         ):
             self.orphaned_player_summon_attacks[actor_id] = (removed, pending)
         self.last_player_summon_attack_at.pop(actor_id, None)
@@ -8484,7 +8505,9 @@ class LocalCombatState:
         if (
             definition is None
             or definition.command_id not in {
-                BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND,
+                BULLET_SKILL_COMMAND,
+                TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
             }
             or not getattr(definition, "static_collision", False)
             or str(definition.motion_type).casefold() in ORBITING_MOTION_TYPES
@@ -10032,6 +10055,7 @@ class LocalCombatState:
             command_id = {
                 "Ranged": BULLET_SKILL_COMMAND,
                 "RangedTarget": TARGET_BULLET_SKILL_COMMAND,
+                "RangedTargetPoint": TARGET_POINT_BULLET_SKILL_COMMAND,
                 "Melee": SKILL_COMMAND,
                 "Sustained": SUSTAINED_SKILL_COMMAND,
             }.get(attack_skill_type, 0)
@@ -10078,7 +10102,11 @@ class LocalCombatState:
                     else 0.0
                 )
                 if command_id
-                in {BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND}
+                in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
+                }
                 else geometry.hit_frame / SERVER_TICKS_PER_SECOND / summon_skill_speed
             )
             impact_tick = (
@@ -11058,7 +11086,9 @@ class LocalCombatState:
                 pending_attack is not None
                 and str(monster.rank_id or "").casefold().startswith("rank_boss")
                 and pending_attack.command_id in {
-                    BULLET_SKILL_COMMAND, TARGET_BULLET_SKILL_COMMAND,
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
                 }
             )
             if (
@@ -11227,6 +11257,7 @@ class LocalCombatState:
                     definition.command_id not in {
                         BULLET_SKILL_COMMAND,
                         TARGET_BULLET_SKILL_COMMAND,
+                        TARGET_POINT_BULLET_SKILL_COMMAND,
                     }
                     and vertical_gap > MONSTER_MELEE_VERTICAL_REACH
                 ):
@@ -11294,6 +11325,15 @@ class LocalCombatState:
                 < minimum_attack_interval
             ):
                 continue
+            if definition.movement_skill:
+                try:
+                    attack_target_world = tuple(self.encounter.navigation.project_position_relative(
+                        attack_target_world, monster_position,
+                    ))
+                    if not self.encounter.navigation.is_reachable(monster_position, attack_target_world):
+                        continue
+                except (AttributeError, NavigationError, CollisionTerrainError, ValueError):
+                    continue
             dx = attack_target_world[0] - monster_position[0]
             dy = attack_target_world[1] - monster_position[1]
             dz = attack_target_world[2] - monster_position[2]
@@ -11318,6 +11358,7 @@ class LocalCombatState:
             if definition.command_id in {
                 BULLET_SKILL_COMMAND,
                 TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
             }:
                 # Projectile impact is emit phase plus world-space flight.
                 # HitFrame describes the animation's melee/contact frame and
@@ -11334,7 +11375,8 @@ class LocalCombatState:
                 # those casts into instant projectiles.
                 impact_delay = max(
                     definition.bullet_emit_delay,
-                    definition.loop_start_frame
+                    (definition.hit_frame if definition.movement_skill
+                     else definition.loop_start_frame)
                     / SERVER_TICKS_PER_SECOND,
                 )
                 release_delay = impact_delay
@@ -11436,6 +11478,7 @@ class LocalCombatState:
                 attack.command_id in {
                     BULLET_SKILL_COMMAND,
                     TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
                 }
                 and definition.motion_type.casefold() in HOMING_MOTION_TYPES
                 and definition.projectile_velocity > 1e-6
@@ -11542,6 +11585,7 @@ class LocalCombatState:
                 attack.command_id in {
                     BULLET_SKILL_COMMAND,
                     TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
                 }
                 and definition.bullet_count > 1
                 and definition.bullet_emit_delay > 0.0
@@ -12128,6 +12172,12 @@ class LocalCombatState:
             monster_position = self.monster_positions[actor_id]
             monster = self.monsters[actor_id]
             definition = attack.definition or monster.attack
+            if definition.movement_skill and current_time >= attack.due_at:
+                # The native ChargeThrough animation moves to the supplied
+                # point. Commit the same endpoint in authoritative combat so
+                # the next chase snapshot cannot snap Mortis back to his origin.
+                self.monster_positions[actor_id] = tuple(attack.target_position)
+                self.monster_routes.pop(actor_id, None)
             targets_monster = attack.target_actor_id in self.monsters
             target_world = (
                 self.monster_positions[attack.target_actor_id]
@@ -12138,6 +12188,7 @@ class LocalCombatState:
                 attack.command_id not in {
                     BULLET_SKILL_COMMAND,
                     TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
                 }
                 and definition.targeting_type.casefold() in {"angle", "cone"}
             )
@@ -12149,7 +12200,7 @@ class LocalCombatState:
             aura_strike = attack.aura_strike
             is_multi_target_area = (
                 (
-                    (is_directional_shape or is_ground_target_area)
+                    (is_directional_shape or is_ground_target_area or definition.movement_skill)
                     and not definition.self_buff
                 )
                 or aura_strike is not None
@@ -12237,6 +12288,7 @@ class LocalCombatState:
             elif attack.command_id in {
                 BULLET_SKILL_COMMAND,
                 TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
             }:
                 if (
                     attack.motion_type == "Straight"
@@ -12520,6 +12572,7 @@ class LocalCombatState:
                     )
                     if attack.due_at <= current_time and (
                         attack.aura_strike is not None
+                        or definition.movement_skill
                         or (
                             attack.command_id == SHIFTED_SKILL_COMMAND
                             and definition.targeting_type.casefold()
@@ -12533,10 +12586,11 @@ class LocalCombatState:
                     attack.due_at <= current_time
                     and definition.targeting_type.casefold()
                     in {"angle", "cone", *MONSTER_GROUND_TARGETING_TYPES}
-                    and attack.command_id not in {
+                    and (definition.movement_skill or attack.command_id not in {
                         BULLET_SKILL_COMMAND,
                         TARGET_BULLET_SKILL_COMMAND,
-                    }
+                        TARGET_POINT_BULLET_SKILL_COMMAND,
+                    })
                 ):
                     self._remove_pending_monster_attack(actor_id, attack)
         return tuple(resolutions)

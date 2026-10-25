@@ -141,6 +141,50 @@ from dso_server.protocol.commerce_protocol import (
 from dso_server.protocol.world_loot_protocol import WorldLootDrop
 from dso_server.gameplay.quest_content import load_quest_catalog
 from dso_server.paths import DEFAULT_QUESTS_PATH
+from dso_server.gameplay.mortis_arena import select_spawn_rows as select_mortis_spawn_rows
+from dso_server.services.mortis_arena import arena as mortis_arena
+
+
+_MORTIS_MIRROR_ATTACK_TEMPLATES = {
+    "warrior": "uniskel_pw212_elysium_hero_03_1_template",
+    # The Elysium mage and ranger quest templates have no useful primary
+    # attack (the mage's only loaded skill is a zero-damage vortex; the
+    # ranger is stationary and inherits a companion-only shot). Use the
+    # player-class animations and attack set from active hostile templates.
+    "mage": "uniskel_e_anniversary_helios_guardian_mage_01_1_template",
+    "ranger": "uniskel_e_anniversary_helios_guardian_ranger_01_1_template",
+    "dwarf": "uniskel_dwarf_e_ks_infested_leader_dwarf_1_template",
+}
+
+
+@lru_cache(maxsize=64)
+def _mortis_mirror_client_template(
+    static_database_path: str, attack_template: str,
+) -> str:
+    """Use the class template id the client can resolve to a localized name."""
+
+    try:
+        database_uri = Path(static_database_path).resolve().as_uri()
+        with sqlite3.connect(
+            f"{database_uri}?mode=ro", uri=True,
+        ) as database:
+            row = database.execute(
+                "SELECT CharacterSet FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
+                (attack_template,),
+            ).fetchone()
+            character_template = str(row[0] or "") if row else ""
+            if character_template and database.execute(
+                "SELECT 1 FROM _Template_Monster WHERE Id=? LIMIT 1",
+                (character_template,),
+            ).fetchone():
+                return character_template
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        _log(
+            f"Mortis mirror client template lookup failed for "
+            f"{attack_template!r}: {type(exc).__name__}: {exc}"
+        )
+    return attack_template
 
 
 @lru_cache(maxsize=8192)
@@ -1716,6 +1760,10 @@ class MapEventService:
             return
         self._flush_due_map_event_starts(runtime)
         kind = str(event_type).casefold()
+        if kind == "playerenteredmap":
+            mortis = mortis_arena(self, runtime)
+            if mortis is not None:
+                mortis.resume()
         character = s.gameplay_character
         class_name = (
             CLASS_NAMES.get(int(getattr(character, "class_id", -1)), "")
@@ -1815,6 +1863,11 @@ class MapEventService:
             unlocked_maps=unlocked_maps,
         )
         rules = runtime.catalog.evaluate(kind, context)
+        if map_key(runtime.map_id) == "pw214_mortis_boss":
+            # The legacy selector names obsolete starter variants and can
+            # clear after only the archers die. Count the actual wave actors.
+            rules = tuple(rule for rule in rules if rule.signal_id.casefold()
+                          != "boss_mortis_mounted_spawn_start_signal")
         # The sixth Hunt for a Legend quest still uses the sandhills authored
         # for quest 05. Its map-entry signal is guarded by quest 05 being
         # accepted, so players who have already turned in that step never
@@ -2384,6 +2437,9 @@ class MapEventService:
         CharacterService._on_map_companion_boss_defeated(self, s, monsters)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         score_rules = ()
+        mortis = mortis_arena(self, runtime)
+        if mortis is not None:
+            mortis.killed(monsters)
         if runtime is not None:
             if CharacterService._is_fractured_planes_run(self, s):
                 with runtime.lock:
@@ -4300,6 +4356,9 @@ class MapEventService:
                     f"published boss reward chests after boss spawn on "
                     f"{runtime.map_id} to {len(sessions)} player(s)"
                 )
+        mortis = mortis_arena(self, runtime)
+        if mortis is not None:
+            mortis.transition(transition)
 
     def _publish_entrance_bosses(self, runtime, sessions) -> None:
         """Release baseline encounter actors only after their entrance signal."""
@@ -4798,6 +4857,7 @@ class MapEventService:
             self, runtime, sessions, event_sets, *, extra_rows=(),
     ) -> None:
         rows = (*runtime.gated_spawn_rows(event_sets), *tuple(extra_rows))
+        rows = select_mortis_spawn_rows(self.static_database_path, runtime, rows)
         # Scene controllers are event-graph objects, not renderable combatants.
         # In particular, publishing one as a NewMonster can leave the client
         # with a registered actor that has no effect module and abort the rest
@@ -5012,6 +5072,10 @@ class MapEventService:
             scripted_cultist = (
                 row.template_id.casefold() == _TUTORIAL_CULTIST_TEMPLATE
             )
+            scripted_mortis_mirror = row.template_id.casefold() in {
+                "pw212_sentinel_uniskel_mirror_self",
+                "pw212_sentinel_uniskel_dwarf_mirror_self",
+            }
             mounted = is_tower_mechanism(
                 database_path, runtime.map_id, row.template_id,
             )
@@ -5040,9 +5104,36 @@ class MapEventService:
                     )
                 except (NavigationError, CollisionTerrainError, ValueError):
                     position = tuple(float(value) for value in row.position)
-            runtime_definition = _load_runtime_definition(
-                database_path, row.template_id, actor_id, stationary=mounted,
+            mirror_owner = (
+                next((
+                    viewer for viewer in sessions
+                    if getattr(viewer, "gameplay_character", None) is not None
+                ), None)
+                if scripted_mortis_mirror else None
             )
+            mirror_visual_template = None
+            runtime_definition = _load_runtime_definition(
+                database_path,
+                row.template_id,
+                actor_id,
+                stationary=mounted or scripted_mortis_mirror,
+            )
+            if scripted_mortis_mirror and mirror_owner is not None:
+                class_name = CLASS_NAMES.get(
+                    int(mirror_owner.gameplay_character.class_id), "warrior",
+                ).casefold()
+                attack_template = _MORTIS_MIRROR_ATTACK_TEMPLATES.get(
+                    class_name,
+                    _MORTIS_MIRROR_ATTACK_TEMPLATES["warrior"],
+                )
+                mirror_combat = _load_runtime_definition(
+                    database_path, attack_template, actor_id,
+                )
+                if mirror_combat is not None:
+                    runtime_definition = mirror_combat
+                    mirror_visual_template = _mortis_mirror_client_template(
+                        str(database_path), attack_template,
+                    )
             if runtime_definition is None:
                 _log(f"no runtime template for {row.template_id!r}; skipped")
                 continue
@@ -5074,6 +5165,21 @@ class MapEventService:
             except ValueError as exc:
                 _log(f"cannot load {row.template_id!r}: {exc}")
                 continue
+            if scripted_mortis_mirror and mirror_owner is not None:
+                # NewMonster carries an optional name override after its rank
+                # string. Use the player's name, while the base class template
+                # lets the client resolve a localized title instead of showing
+                # an untranslated *_1_template key in the boss bar.
+                mirror_name = str(mirror_owner.gameplay_character.name or "")
+                if mirror_name:
+                    monster = replace(monster, field_f0=mirror_name)
+                if mirror_visual_template:
+                    # Preserve the authored Mortis id in server combat and
+                    # quest state while the client renders the class model and
+                    # resolves its localized title.
+                    monster = replace(
+                        monster, template_id=mirror_visual_template,
+                    )
             if mounted:
                 monster = replace(monster, field_a0=float(row.rotation))
             if scripted_cultist:
@@ -5082,6 +5188,11 @@ class MapEventService:
                     f"tutorial cultist authored placement: "
                     f"position={monster.position!r}, yaw={row.rotation:.6f}"
                 )
+            if map_key(runtime.map_id) == "pw214_mortis_boss":
+                monster = replace(monster, field_c4=max(
+                    (int(getattr(s, "gameplay_chase_server_tick", 0) or 0) for s in sessions),
+                    default=0,
+                ) & 0xFFFFFFFF)
             monsters.append(monster)
             definitions.append(runtime_definition)
             spawned_rows.append(row)
@@ -5095,6 +5206,22 @@ class MapEventService:
             added = combat.add_runtime_monsters(
                 group, definitions, ammo_vulnerabilities=ammo
             )
+            # The class-matched template above is client-facing only. Keep
+            # kill and quest bookkeeping attached to the authored mirror id.
+            for row, monster in zip(spawned_rows, monsters, strict=True):
+                if row.template_id.casefold() not in {
+                    "pw212_sentinel_uniskel_mirror_self",
+                    "pw212_sentinel_uniskel_dwarf_mirror_self",
+                }:
+                    continue
+                registered = combat.monsters.get(int(monster.actor_id))
+                if registered is not None:
+                    combat.monsters[int(monster.actor_id)] = replace(
+                        registered, template_id=str(row.template_id),
+                    )
+        mortis = mortis_arena(self, runtime)
+        if mortis is not None:
+            mortis.spawned(combat, monsters)
         with runtime.lock:
             for row, monster in zip(spawned_rows, monsters, strict=True):
                 runtime.event_set_actor_ids.setdefault(

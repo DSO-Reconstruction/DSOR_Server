@@ -476,6 +476,11 @@ def select_boss_spawn_rows(
     at map load and a second scaling boss when BOSS_spawn opened later.
     """
 
+    if str(map_id).casefold() == "pw214_mortis_boss":
+        # These invisible suicide actors drive the retail staging graph.
+        # Mortis' server controller owns their freeze/gate transitions instead.
+        from dso_server.gameplay.mortis_arena import CONTROLLERS
+        rows = tuple(row for row in rows if str(row[2]).casefold() not in CONTROLLERS)
     if load_map_encounter_policy(static_database_path, map_id).is_boss_room:
         preferred, alternatives = _preferred_boss_templates(
             static_database_path, map_id, int(scaling_difficulty)

@@ -4,11 +4,15 @@ from __future__ import annotations
 import random
 import sqlite3
 
-from dso_server.gameplay.local_map_state import map_database_path
+from dso_server.gameplay.local_map_state import (
+    load_local_npc_definitions,
+    map_database_path,
+)
 from dso_server.gameplay.boss_encounter_policy import density_spawn_templates
 from dso_server.gameplay.fractured_planes_layout import is_tower_layout
 from dso_server.gameplay.local_monster_state import (
-    _load_spawn_areas, _grounded_spawn_area_candidates, _area_template_pool,
+    _load_spawn_areas, _grounded_spawn_area_candidates,
+    _grounded_spawn_position, _area_template_pool,
     _load_runtime_definition,
 )
 from dso_server.gameplay.map_event_state import GatedSpawnRow, map_key
@@ -18,6 +22,14 @@ from dso_server.gameplay.map_event_state import GatedSpawnRow, map_key
 # The final champion area is the authored Demonic Miller encounter, but its
 # SpawnListId is only ``special_spawn`` (the spawn-list contents are not
 # present in static.db4), so the generic fallback would select a normal mob.
+_ORSHA_MACHINE_BABY_TEMPLATES = (
+    "pw212_normal_mechgunner_01_q_orsha",
+    "pw212_normal_tank_01_q_orsha",
+    "pw212_normal_junk_minion_01_q_orsha",
+    "pw212_normal_irondwarf_01_q_orsha",
+    "pw212_normal_buzzsaw_01_q_orsha",
+)
+
 _EVENT_AREA_TEMPLATE_OVERRIDES = {
     ("pw007_stonekeep_01_dun", 3460): (
         "pw007_01_leader_undead_mage_heroic",
@@ -39,7 +51,53 @@ _EVENT_AREA_TEMPLATE_OVERRIDES = {
         "pw017_01_normal_dragon_broodling_02",
         "pw017_01_normal_minion_fire_02",
     ),
+    # Orsha's event has five broad, map-wide list_orsha_01 areas, but the
+    # retail list membership is absent from the client export. The active
+    # quest's ClearRegion names these five Machine Babies; the ordinary map
+    # pool can otherwise select unrelated actors such as Target Crystals.
+    ("pw212_elysium_dun", 4182): _ORSHA_MACHINE_BABY_TEMPLATES,
 }
+
+_ORSHA_MACHINE_BABY_OFFSETS = (
+    (-4.0, -2.0),
+    (-2.0, 2.0),
+    (2.0, -2.0),
+    (4.0, 2.0),
+    (0.0, 4.0),
+)
+
+
+def _orsha_machine_baby_position(runtime, encounter, area):
+    """Use a grounded point around Orsha instead of the map-wide areas."""
+
+    definitions = load_local_npc_definitions(
+        encounter.static_database_path, runtime.map_id,
+        include_inactive_event_sets=True,
+    )
+    orsha = next((
+        definition
+        for definition in definitions
+        if str(definition.template_id).casefold()
+        == "pw212_quest_elysium_hero_02"
+    ), None)
+    if orsha is None:
+        return ()
+
+    offset_index = (int(area.row_id) - 1) % len(_ORSHA_MACHINE_BABY_OFFSETS)
+    dx, dz = _ORSHA_MACHINE_BABY_OFFSETS[offset_index]
+    center = tuple(float(value) for value in orsha.position)
+    candidate = (center[0] + dx, center[1], center[2] + dz)
+    try:
+        position = _grounded_spawn_position(
+            encounter.navigation,
+            encounter.terrain,
+            candidate,
+            reference_position=center,
+            max_horizontal_distance=6.0,
+        )
+    except (ValueError, RuntimeError):
+        return ()
+    return (position,)
 
 
 def event_area_spawn_rows(runtime, encounter, event_sets):
@@ -98,8 +156,19 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
             continue
         override = overrides.get(area.row_id)
         if override:
+            if (
+                map_key(runtime.map_id) == "pw212_elysium_dun"
+                and int(area.event_set_row) == 4182
+            ):
+                template = _ORSHA_MACHINE_BABY_TEMPLATES[
+                    (int(area.row_id) - 1)
+                    % len(_ORSHA_MACHINE_BABY_TEMPLATES)
+                ]
+                candidates = (template,)
+            else:
+                candidates = override
             pool = tuple(
-                template for template in override
+                template for template in candidates
                 if _load_runtime_definition(
                     encounter.static_database_path, template, 0,
                 ) is not None
@@ -127,8 +196,18 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
             pool = matched or pool
         if not pool:
             continue
-        positions = _grounded_spawn_area_candidates(
-            encounter.navigation, encounter.terrain, area, area.candidate_positions())
+        if (
+            map_key(runtime.map_id) == "pw212_elysium_dun"
+            and int(area.event_set_row) == 4182
+        ):
+            positions = _orsha_machine_baby_position(
+                runtime, encounter, area,
+            )
+        else:
+            positions = _grounded_spawn_area_candidates(
+                encounter.navigation, encounter.terrain, area,
+                area.candidate_positions(),
+            )
         if override:
             positions = positions[:1]
         for position in positions:

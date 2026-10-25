@@ -34,6 +34,7 @@ from dso_server.gameplay.local_map_state import (
     local_npc_info,
 )
 from dso_server.gameplay.map_event_state import (
+    GatedSpawnRow,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
     load_map_signal_catalog,
     map_key,
@@ -741,6 +742,56 @@ class QuestService:
             quests_accepted=accepted, quests_solved=solved, tasks_done=tasks,
             unlocked_maps=frozenset(s.gameplay_unlocked_maps))
 
+    def _quest_ensure_mortis_trial_mirror(self, s: Session) -> None:
+        """Spawn the missing mirror enemy for the active final-trial stage."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None or map_key(runtime.map_id) != "pw212_elysium_dun":
+            return
+        quest_id = "pw212-mortis-01-n"
+        quest = self._quest_catalog().quest(quest_id)
+        progress = _quest_log(s).get(quest_id)
+        if (
+            quest is None or progress is None
+            or progress.state != QUEST_STATE_ACCEPTED
+            or not any(
+                task.title.casefold() == "pw212-mortis-01-kill-01"
+                for task in active_tasks(quest, progress)
+            )
+        ):
+            return
+
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is not None:
+            mirror_templates = {
+                "pw212_sentinel_uniskel_mirror_self",
+                "pw212_sentinel_uniskel_dwarf_mirror_self",
+            }
+            with combat.lock:
+                if any(
+                    (monster := combat.monsters.get(actor_id)) is not None
+                    and monster.template_id.casefold() in mirror_templates
+                    for actor_id in combat.alive_actor_ids
+                ):
+                    return
+
+        class_name, _level = _character_facts(s)
+        mirror_template = (
+            "pw212_sentinel_uniskel_dwarf_mirror_self"
+            if class_name.casefold() == "dwarf"
+            else "pw212_sentinel_uniskel_mirror_self"
+        )
+        # The authored encounter toggles an aura but has no monster spawn
+        # points. Place the class-matched mirror beside the Mortis gate's
+        # explore trigger (71, 0, 12 in pw212_elysium_dun).
+        spawn = GatedSpawnRow(
+            -2_120_001, -1, mirror_template, (71.0, 0.0, 12.0),
+        )
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(runtime, sessions, (), extra_rows=(spawn,))
+
     def _quest_on_map_entered(self, s: Session) -> None:
         self._quest_recover_myrdosch_access_key(s)
         self._quest_recover_artaya_sanctuary_key(s)
@@ -773,6 +824,26 @@ class QuestService:
                     "pw203-rescue-ancestor-stone-01-explore-01",
                 ),
             ),
+            # A Sealed Memory (2/2) is a travel objective to the Ruins of the
+            # First Circle from Grimford. The destination has an authored
+            # Explore trigger, but entering its map is the objective itself;
+            # credit it at map entry so a missed client trigger cannot strand
+            # the quest.
+            "a0011_garden_dun": (
+                (
+                    "pw212-zeal-02-n",
+                    "pw212-zeal-02-explore-01",
+                ),
+            ),
+            # The live guide routes this objective to the Alliance Fortress
+            # (a0009) from Grimford even though the extracted task lists the
+            # Garden map. Accept the destination the client actually uses.
+            "a0009_fortress_01_dun": (
+                (
+                    "pw212-zeal-02-n",
+                    "pw212-zeal-02-explore-01",
+                ),
+            ),
         }
         for quest_id, task_title in map_entry_explore_tasks.get(
             map_key(runtime.map_id), (),
@@ -796,6 +867,28 @@ class QuestService:
                             s, "trigger", trigger_id, quest_id=quest.quest_id,
                         )
                     break
+        self._quest_ensure_mortis_trial_mirror(s)
+        # The live route for Zeal's artifact leads to the Alliance Fortress,
+        # but this map has no authored quest prop or trigger for the artifact.
+        # Treat arrival at the indicated destination as finding it so the
+        # CollectTask cannot strand players at an empty location.
+        if map_key(runtime.map_id) == "a0009_fortress_01_dun":
+            quest_id = "pw212-zeal-02-n"
+            progress = _quest_log(s).get(quest_id)
+            quest = self._quest_catalog().quest(quest_id)
+            if (
+                progress is not None
+                and quest is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+                and any(
+                    task.title.casefold() == "pw212-zeal-02-collect-01"
+                    for task in active_tasks(quest, progress)
+                )
+            ):
+                self._quest_feed(
+                    s, "collect", "pw212_zeal_02_memories",
+                    quest_id=quest_id,
+                )
         # A map's initial EventUpdate may arrive before its local event
         # controller is ready. Re-send quest-derived activations after map
         # entry so gated client-only NPCs become interactable at every
@@ -2763,6 +2856,7 @@ class QuestService:
                 self._quest_fire_signal(
                     s, "PlayerEndQuestTask", (f"{quest.quest_id}:{change.task.title}",),
                 )
+        self._quest_ensure_mortis_trial_mirror(s)
         # The Fyeborough Soul Collector is released by a map-local event
         # whose authored signal can fire before the newly active kill task is
         # visible to the event handler. Reconcile it after task signals so the

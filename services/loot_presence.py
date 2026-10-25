@@ -8,6 +8,9 @@ from dso_server.gameplay.status_modifier_runtime import (
     snapshot_active_status_entries,
 )
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.mortis_arena import (
+    MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
+)
 
 
 class LootPresenceService:
@@ -113,6 +116,12 @@ class LootPresenceService:
             map_difficulty=map_difficulty,
             extra_boss_gems=int(
                 getattr(socket_evaluation, "boss_bonus_gems", 0)
+            ),
+            guaranteed_gem_templates=(
+                FINAL_GEM_REWARDS
+                if str(encounter.map_id).casefold() == MORTIS_MAP
+                and str(monster.template_id).casefold() == MORTIS_FINAL_FORM
+                else ()
             ),
             additional_instant_consumables=event_drops,
             position_projector=position_projector,
