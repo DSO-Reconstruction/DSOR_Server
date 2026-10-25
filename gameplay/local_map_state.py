@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import closing
+from functools import lru_cache
 import hashlib
 import math
 import os
@@ -251,6 +252,117 @@ def map_database_path(static_database_path: str | Path, map_id: str) -> Path:
     return static_database_path.parent.parent / "maps" / f"{map_id}.db4"
 
 
+def _active_client_map_database_path(map_id: str) -> Path | None:
+    """Return a map DB only when the running client's TOC selects that file."""
+
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return None
+    map_name = str(map_id)
+    if Path(map_name).name != map_name or "/" in map_name or "\\" in map_name:
+        return None
+    maps_dir = (
+        Path(local_app_data)
+        / "Temp" / "DSOClient" / "dlcache" / "export_win32" / "maps"
+    )
+    toc = maps_dir / "__toc"
+    database = maps_dir / f"{map_name}.db4"
+    if not toc.is_file() or not database.is_file():
+        return None
+    expected = f"export_win32/maps/{map_name}.db4|f|"
+    try:
+        if any(line.startswith(expected) for line in toc.read_text(
+            encoding="utf-8", errors="replace"
+        ).splitlines()):
+            return database
+    except OSError:
+        return None
+    return None
+
+
+@lru_cache(maxsize=128)
+def _active_client_instance_guids(
+    map_id: str,
+    table_name: str,
+    identity_columns: tuple[str, ...],
+    server_path: str,
+    server_mtime_ns: int,
+    client_path: str,
+    client_mtime_ns: int,
+) -> tuple[tuple[int, bytes], ...]:
+    """Map instance row IDs to active-client GUIDs when authored data agrees.
+
+    Client builds regenerate instance GUIDs. Use a client GUID only when the
+    same row still has the same authored identity, template, transform and
+    event set on both sides; otherwise retain the server's authored record.
+    """
+
+    del server_mtime_ns, client_mtime_ns  # They participate in the cache key.
+    if (not table_name.startswith("_Instance_")
+            or not table_name.replace("_", "").isalnum()
+            or any(not column.replace("_", "").isalnum()
+                   for column in identity_columns)):
+        return ()
+    server = _open_read_only(Path(server_path))
+    try:
+        client = _open_read_only(Path(client_path))
+        quoted_identity = ", ".join(f'"{column}"' for column in identity_columns)
+        server_rows = {
+            int(row[0]): row[1:]
+            for row in server.execute(
+                f'SELECT rowid, {quoted_identity} FROM "{table_name}"'
+            )
+        }
+        client_rows = {
+            int(row[0]): row[1:]
+            for row in client.execute(
+                f'SELECT rowid, "Guid", {quoted_identity} '
+                f'FROM "{table_name}"'
+            )
+        }
+        result = []
+        for row_id, authored in server_rows.items():
+            runtime = client_rows.get(row_id)
+            if runtime is None:
+                continue
+            guid, *runtime_identity = runtime
+            if tuple(authored) == tuple(runtime_identity) and len(guid or b"") == 16:
+                result.append((row_id, bytes(guid)))
+        return tuple(result)
+    except sqlite3.Error:
+        return ()
+    finally:
+        server.close()
+        if "client" in locals():
+            client.close()
+
+
+def active_client_instance_guid_overrides(
+    static_database_path: str | Path,
+    map_id: str,
+    table_name: str,
+    identity_columns: tuple[str, ...],
+) -> dict[int, bytes]:
+    client_path = _active_client_map_database_path(map_id)
+    if client_path is None:
+        return {}
+    server_path = map_database_path(static_database_path, map_id)
+    if not server_path.is_file():
+        return {}
+    try:
+        server_stat = server_path.stat()
+        client_stat = client_path.stat()
+    except OSError:
+        return {}
+    return dict(_active_client_instance_guids(
+        str(map_id), table_name, tuple(identity_columns),
+        str(server_path.resolve()),
+        server_stat.st_mtime_ns,
+        str(client_path.resolve()),
+        client_stat.st_mtime_ns,
+    ))
+
+
 def load_map_coordinate_frame(
     static_database_path: str | Path, map_id: str
 ) -> MapCoordinateFrame:
@@ -435,6 +547,17 @@ def load_local_npc_definitions(
         # Hiding the NPC is enough to disable the whole debug vendor: the
         # client never sees it, and its shop cannot resolve without it.
         vendor_enabled = debug_vendor_enabled()
+        client_guid_overrides = active_client_instance_guid_overrides(
+            static_database_path,
+            str(map_id),
+            "_Instance_NPC",
+            ("_ID", "Id", "Transform", "EventSetRow"),
+        )
+        if client_guid_overrides and os.getenv("DSO_NPC_TRACE") == "1":
+            print(
+                f"[npc-trace] {map_id} using {len(client_guid_overrides)} "
+                "TOC-selected client NPC scene GUIDs"
+            )
         definitions = []
         for row in database.execute(query, parameters):
             # Matched on the instance id: the vendor shares its template with
@@ -499,7 +622,9 @@ def load_local_npc_definitions(
                     # Keep active actor ids stable across event rotations.
                     actor_id=npc_actor_id_for_row(int(row[0])),
                     row_id=int(row[0]),
-                    instance_guid=bytes(row[1]),
+                    instance_guid=client_guid_overrides.get(
+                        int(row[0]), bytes(row[1])
+                    ),
                     instance_id=str(row[2] or ""),
                     template_id=str(row[3] or ""),
                     shop_id=str(row[4] or "").strip(),
@@ -646,6 +771,15 @@ def load_local_crafting_props(
 
     path = map_database_path(static_database_path, map_id)
     prop_actor_base = local_prop_actor_base(static_database_path, map_id)
+    client_guid_overrides = active_client_instance_guid_overrides(
+        static_database_path,
+        str(map_id),
+        "_Instance_StateObject",
+        (
+            "_ID", "Id", "Transform", "EventSetRow", "InteractOperation",
+            "OperationId", "State",
+        ),
+    )
     database = _open_read_only(path)
     try:
         entries = []
@@ -671,7 +805,9 @@ def load_local_crafting_props(
                     # point at a different local object.
                     prop_id=prop_actor_base + int(row[0]) - 1,
                     template_id=str(row[2] or ""),
-                    instance_guid=bytes(row[1]),
+                    instance_guid=client_guid_overrides.get(
+                        int(row[0]), bytes(row[1])
+                    ),
                     field_20=0xFFFFFFFF,
                     field_24=1,
                     field_28=0,

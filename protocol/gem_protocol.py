@@ -45,6 +45,7 @@ EQUIPMENT_RUNE_CATEGORY = "EquipmentRune"
 SOCKET_CATEGORY_BY_CONTAINER = {
     "JewelTrinket": EQUIPMENT_JEWEL_CATEGORY,
     "RuneTrinket": EQUIPMENT_RUNE_CATEGORY,
+    "AncientTrinket": "EquipmentAncient",
 }
 
 

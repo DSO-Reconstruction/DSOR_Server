@@ -30,6 +30,7 @@ from typing import Iterable, Mapping
 
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
+    active_client_instance_guid_overrides,
     effective_event_set_declarations,
     local_prop_actor_base,
     map_database_path,
@@ -970,6 +971,15 @@ def _load_map_event_content(
     with sqlite3.connect(
         f"file:{path.as_posix()}?mode=ro", uri=True
     ) as database:
+        client_state_object_guids = active_client_instance_guid_overrides(
+            database_path,
+            map_id,
+            "_Instance_StateObject",
+            (
+                "_ID", "Id", "Transform", "EventSetRow", "InteractOperation",
+                "OperationId", "State",
+            ),
+        )
         event_sets: dict[int, EventSetDefinition] = {}
         for row_id, flags in database.execute(
             "SELECT Id, EventFlags FROM _Instance_EventSets"
@@ -1178,7 +1188,9 @@ def _load_map_event_content(
                 template_id=template_id,
                 instance_guid=(
                     ZERO_GUID if quest_seal or quest_controlled
-                    else bytes(guid) if guid else ZERO_GUID
+                    else client_state_object_guids.get(
+                        int(row_id), bytes(guid) if guid else ZERO_GUID
+                    )
                 ),
                 position=position,
                 rotation=rotation,

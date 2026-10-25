@@ -141,8 +141,9 @@ def decode_crafting_request(payload: bytes) -> CraftingRequest:
     item_ids = tuple(reader.read_uint32_le() for _ in range(count))
     # Live command order after the item ids:
     #
-    #   payment selector (0=gold, 1=Andermant), source slot, requested recipe
-    #   executions, recipe resource, operation mode, two reserved uint32s.
+    #   payment selector (0=gold, 1=Andermant, 5=special recipe branch),
+    #   source slot, requested recipe executions, recipe resource, operation
+    #   mode, two reserved uint32s.
     #
     # Dismantling proves the distinction between the two uint32 fields.  The
     # value before the recipe tracks the selected stack (56, 54, ...), while
@@ -154,10 +155,10 @@ def decode_crafting_request(payload: bytes) -> CraftingRequest:
     mode = reader.read_uint32_le()
     field_10 = reader.read_uint32_le()
     field_14 = reader.read_uint32_le()
-    # The retail enchantment-transfer workbench reuses CraftingCommand with
-    # selector 5. It is an operation selector for that special recipe, not a
-    # wallet currency; the interaction handler routes it without debiting a
-    # currency balance.
+    # Selector 5 is used by special workbench recipes. Enchantment-transfer
+    # recipes are identified by their recipe resource and do not debit a
+    # wallet balance; other selector-5 recipes can charge their authored UC
+    # price (the mercenary equipment recipes do this).
     if payment_currency not in (0, 1, 5):
         raise ValueError(
             f"CraftingCommand payment currency {payment_currency} "
@@ -385,6 +386,12 @@ def crafting_price_for_payment(
             raise ValueError("recipe cannot be paid with Andermant")
         unit_price = int(price.rc) * (level if scale_rc_to_player_level else 1)
         return PurchasePrice(rc=unit_price * count)
+    if int(payment_currency) == 5:
+        if int(price.uc) <= 0:
+            raise ValueError(
+                "recipe cannot be paid with legacy progression currency"
+            )
+        return PurchasePrice(uc=int(price.uc) * count)
     if int(payment_currency) != 0:
         raise ValueError("unsupported crafting payment currency")
     if int(price.vc) > 0:

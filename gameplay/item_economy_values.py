@@ -16,13 +16,15 @@ from dso_server.protocol.inventory_codec import ItemInfo
 
 GEM_MELT_CATEGORIES = frozenset(("EquipmentGem", "EquipmentJewel"))
 RUNE_MELT_CATEGORIES = frozenset(("EquipmentRune",))
+_MAX_ITEM_VC_VALUE = 0xFFFF_FFFF
 
 
 def item_stack_vc_value(item: ItemInfo, item_row: Mapping[str, Any]) -> int:
-    """Return the value serialized by retail's ``GameItem::GetVCPrice``."""
+    """Return the stack VC value representable by ``Game::ItemInfo``."""
 
-    return max(0, int(item_row.get("PriceVC") or 0)) * max(
-        1, int(item.amount)
+    return min(
+        _MAX_ITEM_VC_VALUE,
+        max(0, int(item_row.get("PriceVC") or 0)) * max(1, int(item.amount)),
     )
 
 

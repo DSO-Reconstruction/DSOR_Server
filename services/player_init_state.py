@@ -521,6 +521,34 @@ class PlayerInitializationStateService:
                 f"{relocated_essences}"
             )
         class_name = CLASS_NAMES[int(character.class_id)]
+        loot_cache = prime_world_loot_cache(self.static_database_path)
+        mercenary_equipment_categories = {
+            "MercenaryJewelry",
+            "MercenaryDefenseBackitem",
+        }
+        mercenary_item_ids = tuple(
+            int(item.item_id)
+            for item in inventory.items
+            if (
+                (
+                    loot_cache.items_by_id.get(str(item.template_id)) or {}
+                ).get("ItemCategory") in mercenary_equipment_categories
+            )
+        )
+        if mercenary_item_ids:
+            enchanted_mercenary_ids = roll_new_equipment_enchantments(
+                self.static_database_path,
+                inventory,
+                mercenary_item_ids,
+                class_name=class_name,
+                map_difficulty=state.map_access.map_difficulty,
+            )
+            if enchanted_mercenary_ids:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] maximized enchantment rolls "
+                    f"and base values on {len(enchanted_mercenary_ids)} "
+                    f"mercenary equipment item(s): {enchanted_mercenary_ids}"
+                )
         if class_name == "dwarf":
             inventory, enchanted_item_ids = (
                 backfill_missing_equipment_enchantments(

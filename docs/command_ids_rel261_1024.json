@@ -1,0 +1,1115 @@
+{
+ "Achievements::AchievementInfoCommand": {
+  "id": 276
+ },
+ "Achievements::ClearDungeonInfoCommand": {
+  "id": 278
+ },
+ "BulletSkillCommand": {
+  "id": 72
+ },
+ "CharacterGenerationCommand": {
+  "id": 134
+ },
+ "ChatClientLoggedInCommand": {
+  "id": 226
+ },
+ "ChatErrorReportCommand": {
+  "id": 227
+ },
+ "ChatServiceStartedCommand": {
+  "id": 230
+ },
+ "Commands::AcceptWantedThiefMissionCommand": {
+  "id": 361
+ },
+ "Commands::AcceptedTierSpenderChallengesCommand": {
+  "id": 313
+ },
+ "Commands::AcpForceLogoutCommand": {
+  "id": 5
+ },
+ "Commands::AcpSendMessageToAllPlayersCommand": {
+  "id": 8
+ },
+ "Commands::AcpSendMessageToPlayerCommand": {
+  "id": 7
+ },
+ "Commands::AcpServerShutdownCommand": {
+  "id": 6
+ },
+ "Commands::ActivateGodModeCommand": {
+  "id": 256
+ },
+ "Commands::ActiveEventsCommand": {
+  "id": 222
+ },
+ "Commands::ActivityGetExtraBonusCommand": {
+  "id": 333
+ },
+ "Commands::ActorRequestCommand": {
+  "id": 28
+ },
+ "Commands::ActorStatsUpdateCommand": {
+  "id": 123
+ },
+ "Commands::ActorsEnterVicinityCommand": {
+  "id": 116
+ },
+ "Commands::ActorsLeftVicinityCommand": {
+  "id": 115
+ },
+ "Commands::AddSeasonPassExpCommand": {
+  "id": 356
+ },
+ "Commands::AddStickerbookFromInventoryCommand": {
+  "id": 307
+ },
+ "Commands::ApplyItemCustomizationChangesCommand": {
+  "id": 322
+ },
+ "Commands::BeginAutoplayCommand": {
+  "id": 289
+ },
+ "Commands::BuddyListCommand": {
+  "id": 176
+ },
+ "Commands::BuddyStatusCommand": {
+  "id": 177
+ },
+ "Commands::CameBackBindUser2026Command": {
+  "id": 380
+ },
+ "Commands::ChapterProgressCommand": {
+  "id": 147
+ },
+ "Commands::ChapterUnlockedCommand": {
+  "id": 146
+ },
+ "Commands::CharacterSelectionCommand": {
+  "id": 135
+ },
+ "Commands::CharacterServiceAccountLogoutCommand": {
+  "id": 292
+ },
+ "Commands::ClientAverageFrameInfoTrackingCommand": {
+  "id": 232
+ },
+ "Commands::ClientCurrentPositionFrameInfoTrackingCommand": {
+  "id": 233
+ },
+ "Commands::ClientJoinedMapServerCommand": {
+  "id": 24
+ },
+ "Commands::ClientLogEventCommand": {
+  "id": 234
+ },
+ "Commands::ConversionStoryInfoCommand": {
+  "id": 133
+ },
+ "Commands::CraftingCommand": {
+  "id": 92
+ },
+ "Commands::CraftingResultAcceptanceCommand": {
+  "id": 94
+ },
+ "Commands::CraftingResultCommand": {
+  "id": 93
+ },
+ "Commands::CurrencyChangedCommand": {
+  "id": 128
+ },
+ "Commands::CurrencyConversionCommand": {
+  "id": 87
+ },
+ "Commands::DailyChallengeProgressCommand": {
+  "id": 149
+ },
+ "Commands::DailyChallengeSelectionCommand": {
+  "id": 148
+ },
+ "Commands::DebugDamageComputationEffectCommand": {
+  "id": 265
+ },
+ "Commands::DebugDamageComputationSkillCommand": {
+  "id": 264
+ },
+ "Commands::DebugMonsterInfoCommand": {
+  "id": 261
+ },
+ "Commands::DebugMonsterRequestCommand": {
+  "id": 262
+ },
+ "Commands::DefendCommand": {
+  "id": 106
+ },
+ "Commands::DeliverCommand": {
+  "id": 104
+ },
+ "Commands::DeltaDNACommand": {
+  "id": 325
+ },
+ "Commands::DestroyablePropUpdateCommand": {
+  "id": 59
+ },
+ "Commands::DiscardEventCommand": {
+  "id": 220
+ },
+ "Commands::DiscardItemCommand": {
+  "id": 46
+ },
+ "Commands::DiscardMonsterCommand": {
+  "id": 43
+ },
+ "Commands::DiscardNPCCommand": {
+  "id": 39
+ },
+ "Commands::DiscardPlayerCommand": {
+  "id": 30
+ },
+ "Commands::DiscardPropCommand": {
+  "id": 53
+ },
+ "Commands::EncounterCommand": {
+  "id": 102
+ },
+ "Commands::EndAutoplayCommand": {
+  "id": 290
+ },
+ "Commands::EventParticipationInfoCommand": {
+  "id": 223
+ },
+ "Commands::EventProgressChangedCommand": {
+  "id": 225
+ },
+ "Commands::EventProgressInfoCommand": {
+  "id": 224
+ },
+ "Commands::EventUpdateCommand": {
+  "id": 221
+ },
+ "Commands::ExitInfoCommand": {
+  "id": 68
+ },
+ "Commands::FactionInfoCommand": {
+  "id": 122
+ },
+ "Commands::FastPayPurchaseSuccessfulCommand": {
+  "id": 301
+ },
+ "Commands::ForceLogoutCommand": {
+  "id": 18
+ },
+ "Commands::ForcePlayerUpdateCommand": {
+  "id": 25
+ },
+ "Commands::ForceTransactionRequestCommand": {
+  "id": 17
+ },
+ "Commands::ForceTransformCommand": {
+  "id": 113
+ },
+ "Commands::ForkCommand": {
+  "id": 3
+ },
+ "Commands::ForkResultCommand": {
+  "id": 4
+ },
+ "Commands::GameCurrencyChangedCommand": {
+  "id": 310
+ },
+ "Commands::GauntletAbortionCommand": {
+  "id": 296
+ },
+ "Commands::GauntletConversionCommand": {
+  "id": 297
+ },
+ "Commands::GauntletInfoCommand": {
+  "id": 294
+ },
+ "Commands::GauntletNotificationInfoCommand": {
+  "id": 299
+ },
+ "Commands::GauntletNotificationResponseCommand": {
+  "id": 300
+ },
+ "Commands::GauntletResultCommand": {
+  "id": 295
+ },
+ "Commands::GauntletStartCommand": {
+  "id": 298
+ },
+ "Commands::GemRemovalResponseCommand": {
+  "id": 86
+ },
+ "Commands::GetBlackFridayTransactionsInfoCommand": {
+  "id": 375
+ },
+ "Commands::GetBlackFridayTransactionsInfoResultCommand": {
+  "id": 376
+ },
+ "Commands::GetCameBackSigninAward2026Command": {
+  "id": 349
+ },
+ "Commands::GetCameBackSigninAwardCommand": {
+  "id": 346
+ },
+ "Commands::GetCameBackSigninInfo2026Command": {
+  "id": 347
+ },
+ "Commands::GetCameBackSigninInfoCommand": {
+  "id": 344
+ },
+ "Commands::GetCameBackSigninInfoResult2026Command": {
+  "id": 348
+ },
+ "Commands::GetCameBackSigninInfoResultCommand": {
+  "id": 345
+ },
+ "Commands::GetCameBackUserBindOrPointsAward2026Command": {
+  "id": 379
+ },
+ "Commands::GetCameBackUserInfo2026Command": {
+  "id": 377
+ },
+ "Commands::GetCameBackUserInfoResult2026Command": {
+  "id": 378
+ },
+ "Commands::GetCraftingCakesAwardCommand": {
+  "id": 338
+ },
+ "Commands::GetCraftingCakesInfoCommand": {
+  "id": 336
+ },
+ "Commands::GetCraftingCakesInfoResultCommand": {
+  "id": 337
+ },
+ "Commands::GetEndlessTowerAllBuffsCommand": {
+  "id": 368
+ },
+ "Commands::GetEndlessTowerAllBuffsResultCommand": {
+  "id": 369
+ },
+ "Commands::GetHighRankFirstPassAwardCommand": {
+  "id": 372
+ },
+ "Commands::GetHighScoreRankAllDataCommand": {
+  "id": 365
+ },
+ "Commands::GetHighScoreRankAllDataResultCommand": {
+  "id": 366
+ },
+ "Commands::GetHighScoreRankGroupDataCommand": {
+  "id": 370
+ },
+ "Commands::GetHighScoreRankGroupDataResultCommand": {
+  "id": 371
+ },
+ "Commands::GetPaymentLoginInfoCommand": {
+  "id": 342
+ },
+ "Commands::GetPaymentLoginInfoResultCommand": {
+  "id": 343
+ },
+ "Commands::GetPaymentSigninAwardCommand": {
+  "id": 341
+ },
+ "Commands::GetPaymentSigninInfoCommand": {
+  "id": 339
+ },
+ "Commands::GetPaymentSigninInfoResultCommand": {
+  "id": 340
+ },
+ "Commands::GetSeasonPassAwardCommand": {
+  "id": 355
+ },
+ "Commands::GetSeasonPassMissionsInfoCommand": {
+  "id": 357
+ },
+ "Commands::GetSeasonPassMissionsInfoResultCommand": {
+  "id": 358
+ },
+ "Commands::GetSeasonPassRewardsInfoCommand": {
+  "id": 353
+ },
+ "Commands::GetSeasonPassRewardsInfoResultCommand": {
+  "id": 354
+ },
+ "Commands::GetSecondDaySignedAwardCommand": {
+  "id": 373
+ },
+ "Commands::GetSecondDaySignedAwardResultCommand": {
+  "id": 374
+ },
+ "Commands::GetSelfEndlessTowerDataCommand": {
+  "id": 367
+ },
+ "Commands::GetWantedThiefInfoCommand": {
+  "id": 359
+ },
+ "Commands::GetWantedThiefInfoResultCommand": {
+  "id": 360
+ },
+ "Commands::GlyphRemovalCommand": {
+  "id": 51
+ },
+ "Commands::GodModeCreateItemCommand": {
+  "id": 259
+ },
+ "Commands::GodModeKillCommand": {
+  "id": 257
+ },
+ "Commands::GodModeTeleportCommand": {
+  "id": 258
+ },
+ "Commands::GodModeToggleLootDropCommand": {
+  "id": 260
+ },
+ "Commands::GroupCandidatesRequestCommand": {
+  "id": 164
+ },
+ "Commands::GroupCandidatesResponseCommand": {
+  "id": 165
+ },
+ "Commands::GroupEditCommand": {
+  "id": 161
+ },
+ "Commands::GroupEditResponseCommand": {
+  "id": 162
+ },
+ "Commands::GroupFoundationCommand": {
+  "id": 152
+ },
+ "Commands::GroupFoundationResponseCommand": {
+  "id": 153
+ },
+ "Commands::GroupInvitationResponseCommand": {
+  "id": 156
+ },
+ "Commands::GroupInviteCommand": {
+  "id": 154
+ },
+ "Commands::GroupJoinRequestCommand": {
+  "id": 157
+ },
+ "Commands::GroupJoinRequestResponseCommand": {
+  "id": 158
+ },
+ "Commands::GroupKickCommand": {
+  "id": 159
+ },
+ "Commands::GroupLeaveCommand": {
+  "id": 160
+ },
+ "Commands::GroupListCommand": {
+  "id": 150
+ },
+ "Commands::GroupMemberQueryCommand": {
+  "id": 184
+ },
+ "Commands::GroupMemberQueryResultCommand": {
+  "id": 185
+ },
+ "Commands::GroupMultipleInviteCommand": {
+  "id": 155
+ },
+ "Commands::GroupQueryCommand": {
+  "id": 182
+ },
+ "Commands::GroupQueryResultCommand": {
+  "id": 183
+ },
+ "Commands::GroupStatusCommand": {
+  "id": 151
+ },
+ "Commands::GroupXPChangedCommand": {
+  "id": 126
+ },
+ "Commands::GroupXPFactorChangeCommand": {
+  "id": 317
+ },
+ "Commands::GroupingFailedCommand": {
+  "id": 163
+ },
+ "Commands::GuildFoundationCommand": {
+  "id": 168
+ },
+ "Commands::GuildFoundationResponseCommand": {
+  "id": 169
+ },
+ "Commands::GuildInvitationResponseCommand": {
+  "id": 171
+ },
+ "Commands::GuildInviteCommand": {
+  "id": 170
+ },
+ "Commands::GuildKickCommand": {
+  "id": 172
+ },
+ "Commands::GuildLeaveCommand": {
+  "id": 173
+ },
+ "Commands::GuildListCommand": {
+  "id": 166
+ },
+ "Commands::GuildMessageOfTheDayChangeCommand": {
+  "id": 188
+ },
+ "Commands::GuildMessageOfTheDayCommand": {
+  "id": 186
+ },
+ "Commands::GuildMessageOfTheDayRequestCommand": {
+  "id": 187
+ },
+ "Commands::GuildNameEditCommand": {
+  "id": 174
+ },
+ "Commands::GuildNameEditResponseCommand": {
+  "id": 175
+ },
+ "Commands::GuildStatusCommand": {
+  "id": 167
+ },
+ "Commands::HitCommand": {
+  "id": 107
+ },
+ "Commands::HonorPointsChangedCommand": {
+  "id": 127
+ },
+ "Commands::IgnoredListCommand": {
+  "id": 178
+ },
+ "Commands::IgnoredStatusCommand": {
+  "id": 179
+ },
+ "Commands::InformPlayerLoginStateCommand": {
+  "id": 324
+ },
+ "Commands::InstanceConfigClientInfoCommand": {
+  "id": 27
+ },
+ "Commands::InstanceConfigCommand": {
+  "id": 26
+ },
+ "Commands::InventoryCommand": {
+  "id": 85
+ },
+ "Commands::InventoryInfoCommand": {
+  "id": 84
+ },
+ "Commands::ItemCustomizationInfoCommand": {
+  "id": 320
+ },
+ "Commands::ItemCustomizationUpdateCommand": {
+  "id": 321
+ },
+ "Commands::ItemInfoCommand": {
+  "id": 47
+ },
+ "Commands::ItemUpdateCommand": {
+  "id": 48
+ },
+ "Commands::KickOutToHubLimitTimeLeftCommand": {
+  "id": 363
+ },
+ "Commands::KillCommand": {
+  "id": 108
+ },
+ "Commands::KillMapServerCommand": {
+  "id": 13
+ },
+ "Commands::KillMonsterGetTotalScoresCommand": {
+  "id": 364
+ },
+ "Commands::LockQuickbarCommand": {
+  "id": 83
+ },
+ "Commands::LoginQueueFullInstanceCommand": {
+  "id": 22
+ },
+ "Commands::LoginQueueFullQueueCommand": {
+  "id": 21
+ },
+ "Commands::LoginQueueInstanceNotReadyCommand": {
+  "id": 23
+ },
+ "Commands::LoginQueueWaitCommand": {
+  "id": 20
+ },
+ "Commands::LogoutCommand": {
+  "id": 99
+ },
+ "Commands::MapAccessLockedCommand": {
+  "id": 315
+ },
+ "Commands::MapServerInfoCommand": {
+  "id": 2
+ },
+ "Commands::MapStatusCommand": {
+  "id": 14
+ },
+ "Commands::MasterServerInfoCommand": {
+  "id": 1
+ },
+ "Commands::MembershipBookInfoCommand": {
+  "id": 19
+ },
+ "Commands::MembershipUpdateCommand": {
+  "id": 36
+ },
+ "Commands::MessageCommand": {
+  "id": 137
+ },
+ "Commands::MonsterUpdateCommand": {
+  "id": 44
+ },
+ "Commands::NPCInfoCommand": {
+  "id": 40
+ },
+ "Commands::NPCRequestCommand": {
+  "id": 41
+ },
+ "Commands::NewDestroyableCommand": {
+  "id": 58
+ },
+ "Commands::NewEventCommand": {
+  "id": 219
+ },
+ "Commands::NewItemCommand": {
+  "id": 45
+ },
+ "Commands::NewMonsterCommand": {
+  "id": 42
+ },
+ "Commands::NewNPCCommand": {
+  "id": 38
+ },
+ "Commands::NewPlayerCommand": {
+  "id": 29
+ },
+ "Commands::NewPropCommand": {
+  "id": 52
+ },
+ "Commands::NewRemotePlayerCommand": {
+  "id": 33
+ },
+ "Commands::NotificationCommand": {
+  "id": 136
+ },
+ "Commands::OCPBookingCommand": {
+  "id": 271
+ },
+ "Commands::OCPMethodsCommand": {
+  "id": 268
+ },
+ "Commands::OCPOfferRequestCommand": {
+  "id": 267
+ },
+ "Commands::OCPOfferResponseCommand": {
+  "id": 270
+ },
+ "Commands::OCPOffersChangedCommand": {
+  "id": 269
+ },
+ "Commands::ObstacleUpdateCommand": {
+  "id": 114
+ },
+ "Commands::OfferCommand": {
+  "id": 90
+ },
+ "Commands::OpenPaymentDeeplinkCommand": {
+  "id": 274
+ },
+ "Commands::OperateHatchEggsCommand": {
+  "id": 351
+ },
+ "Commands::PayCommand": {
+  "id": 105
+ },
+ "Commands::PaymentForceLogoutCommand": {
+  "id": 16
+ },
+ "Commands::PickupInfoCommand": {
+  "id": 101
+ },
+ "Commands::PickupItemCommand": {
+  "id": 100
+ },
+ "Commands::PlayerDeletedCommand": {
+  "id": 16
+ },
+ "Commands::PlayerLevelUpdateCommand": {
+  "id": 124
+ },
+ "Commands::PlayerLoginInfoCommand": {
+  "id": 326
+ },
+ "Commands::PlayerLogoutInfoCommand": {
+  "id": 327
+ },
+ "Commands::PlayerQueryCommand": {
+  "id": 180
+ },
+ "Commands::PlayerQueryResultCommand": {
+  "id": 181
+ },
+ "Commands::PlayerReadyCommand": {
+  "id": 31
+ },
+ "Commands::PlayerStatusCommand": {
+  "id": 15
+ },
+ "Commands::PlayerUpdateCommand": {
+  "id": 32
+ },
+ "Commands::PositionMarkerInfoCommand": {
+  "id": 69
+ },
+ "Commands::PreloadRessourceCommand": {
+  "id": 231
+ },
+ "Commands::PropInfoCommand": {
+  "id": 54
+ },
+ "Commands::PropInteractionCommand": {
+  "id": 57
+ },
+ "Commands::PropRequestCommand": {
+  "id": 56
+ },
+ "Commands::PropUpdateCommand": {
+  "id": 55
+ },
+ "Commands::QuestCommand": {
+  "id": 138
+ },
+ "Commands::QuestDisableCommand": {
+  "id": 145
+ },
+ "Commands::QuestLogInfoCommand": {
+  "id": 140
+ },
+ "Commands::QuestMonsterIndicationInfoCommand": {
+  "id": 142
+ },
+ "Commands::QuestMonsterIndicationRequestCommand": {
+  "id": 141
+ },
+ "Commands::QuestTriggerIndicationInfoCommand": {
+  "id": 144
+ },
+ "Commands::QuestTriggerIndicationRequestCommand": {
+  "id": 143
+ },
+ "Commands::QuestTriggerSignalCommand": {
+  "id": 293
+ },
+ "Commands::QuestUpdateCommand": {
+  "id": 139
+ },
+ "Commands::QuickResurrectGroupMemberCommand": {
+  "id": 291
+ },
+ "Commands::QuickSlotsCommand": {
+  "id": 81
+ },
+ "Commands::QuickSlotsInfoCommand": {
+  "id": 80
+ },
+ "Commands::QuickbarInfoCommand": {
+  "id": 82
+ },
+ "Commands::RecipeBookInfoCommand": {
+  "id": 311
+ },
+ "Commands::RecipeUpdateCommand": {
+  "id": 312
+ },
+ "Commands::RedeemVoucherCommand": {
+  "id": 272
+ },
+ "Commands::RedeemVoucherResponseCommand": {
+  "id": 273
+ },
+ "Commands::RefreshWantedThiefMissionCommand": {
+  "id": 362
+ },
+ "Commands::RemotePlayerInfoCommand": {
+  "id": 34
+ },
+ "Commands::RequestFindRandomMonsterCommand": {
+  "id": 288
+ },
+ "Commands::RequestOfferCommand": {
+  "id": 89
+ },
+ "Commands::RespawnCommand": {
+  "id": 98
+ },
+ "Commands::ResumeMasterServerCommand": {
+  "id": 319
+ },
+ "Commands::ResurrectCommand": {
+  "id": 110
+ },
+ "Commands::RevenueRecognitionCommand": {
+  "id": 319
+ },
+ "Commands::ReviveCommand": {
+  "id": 109
+ },
+ "Commands::SalvageCommand": {
+  "id": 49
+ },
+ "Commands::SalvageCookItemCommand": {
+  "id": 50
+ },
+ "Commands::SelectWishingWellMsgCommand": {
+  "id": 352
+ },
+ "Commands::SendQuickbarsCommand": {
+  "id": 302
+ },
+ "Commands::ServerToClientMsgCommand": {
+  "id": 381
+ },
+ "Commands::SetEventParticipationCommand": {
+  "id": 120
+ },
+ "Commands::SetTitleCommand": {
+  "id": 277
+ },
+ "Commands::SettingsInfoCommand": {
+  "id": 37
+ },
+ "Commands::ShowDeathDialogCommand": {
+  "id": 129
+ },
+ "Commands::SkinPurchaseResponseCommand": {
+  "id": 323
+ },
+ "Commands::SocialRenamePlayerCommand": {
+  "id": 190
+ },
+ "Commands::SocialUpdateLevelCommand": {
+  "id": 189
+ },
+ "Commands::SpectateActorCommand": {
+  "id": 118
+ },
+ "Commands::SpectatorCameraCommand": {
+  "id": 117
+ },
+ "Commands::StagingSignalCommand": {
+  "id": 275
+ },
+ "Commands::StickerbookInfoCommand": {
+  "id": 303
+ },
+ "Commands::StickerbookItemInfoCommand": {
+  "id": 304
+ },
+ "Commands::StillAliveCommand": {
+  "id": 111
+ },
+ "Commands::SuspendMasterServerCommand": {
+  "id": 9
+ },
+ "Commands::SwitchMapCommand": {
+  "id": 112
+ },
+ "Commands::TalkCommand": {
+  "id": 103
+ },
+ "Commands::TeamStatusCommand": {
+  "id": 191
+ },
+ "Commands::TimedChallengesInfoCommand": {
+  "id": 131
+ },
+ "Commands::TimedOffersInfoCommand": {
+  "id": 130
+ },
+ "Commands::TransactionCommand": {
+  "id": 91
+ },
+ "Commands::TravelCommand": {
+  "id": 97
+ },
+ "Commands::UnlockMapCommand": {
+  "id": 96
+ },
+ "Commands::UpdateProgressTierSpenderChallengesCommand": {
+  "id": 314
+ },
+ "Commands::UpdateShowPlayerOverheadIconsCommand": {
+  "id": 35
+ },
+ "Commands::UpdateSpectatorCameraCommand": {
+  "id": 119
+ },
+ "Commands::UpdateStickerbookFavoriteCommand": {
+  "id": 305
+ },
+ "Commands::UpdateStickerbookFavoritePosCommand": {
+  "id": 306
+ },
+ "Commands::UpgradeStickerbookItemCommand": {
+  "id": 308
+ },
+ "Commands::UseSteamInventoryCommand": {
+  "id": 334
+ },
+ "Commands::UseSteamInventoryResultCommand": {
+  "id": 335
+ },
+ "Commands::UseStickerBookItemCommand": {
+  "id": 309
+ },
+ "Commands::UseTravelItemCommand": {
+  "id": 121
+ },
+ "Commands::UserHatchEggsInfoCommand": {
+  "id": 350
+ },
+ "Commands::VariationInfoCommand": {
+  "id": 67
+ },
+ "Commands::XPChangedCommand": {
+  "id": 125
+ },
+ "DebugSpecialOfferCommand": {
+  "id": 263
+ },
+ "MoveCommand": {
+  "id": 95
+ },
+ "PVP::AbortMatchQueueCommand": {
+  "id": 209
+ },
+ "PVP::AutoBalanceRequestCommand": {
+  "id": 216
+ },
+ "PVP::BattlegroundEventCommand": {
+  "id": 214
+ },
+ "PVP::BattlegroundInviteCommand": {
+  "id": 212
+ },
+ "PVP::BattlegroundInviteResponseCommand": {
+  "id": 213
+ },
+ "PVP::BattlegroundRegistrationResultCommand": {
+  "id": 218
+ },
+ "PVP::EnableAutoBalanceCommand": {
+  "id": 217
+ },
+ "PVP::JoinBattleGroundCommand": {
+  "id": 210
+ },
+ "PVP::JoinBattlegroundResponseCommand": {
+  "id": 211
+ },
+ "PVP::JoinMatchQueueCommand": {
+  "id": 206
+ },
+ "PVP::JoinMatchQueueInfoCommand": {
+  "id": 208
+ },
+ "PVP::JoinMatchQueueResponseCommand": {
+  "id": 207
+ },
+ "PVP::LeavePVPCommand": {
+  "id": 199
+ },
+ "PVP::MatchMakingInfoCommand": {
+  "id": 215
+ },
+ "PVP::PVPEventCommand": {
+  "id": 197
+ },
+ "PVP::PVPEventProgressUpdateCommand": {
+  "id": 205
+ },
+ "PVP::PVPFlagCommand": {
+  "id": 192
+ },
+ "PVP::PVPMatchCountdownCommand": {
+  "id": 195
+ },
+ "PVP::PVPMatchDescriptionCommand": {
+  "id": 202
+ },
+ "PVP::PVPMatchInfoCommand": {
+  "id": 196
+ },
+ "PVP::PVPMatchOverCommand": {
+  "id": 193
+ },
+ "PVP::PVPMatchStartCommand": {
+  "id": 194
+ },
+ "PVP::PVPStateCommand": {
+  "id": 198
+ },
+ "PVP::RefillPVPServerCommand": {
+  "id": 200
+ },
+ "PVP::ResetMatchQueuesCommand": {
+  "id": 316
+ },
+ "PVP::SetBattlegroundIdCommand": {
+  "id": 203
+ },
+ "PVP::ShowPVPDeathDialogCommand": {
+  "id": 204
+ },
+ "PVP::StageInfoCommand": {
+  "id": 201
+ },
+ "Ranking::HonorLocalUserRankingInfoCommand": {
+  "id": 242
+ },
+ "Ranking::HonorLocalUserRankingInfoResponseCommand": {
+  "id": 243
+ },
+ "Ranking::HonorOverallLocalUserRankingInfoCommand": {
+  "id": 244
+ },
+ "Ranking::HonorOverallLocalUserRankingInfoResponseCommand": {
+  "id": 245
+ },
+ "Ranking::HonorOverallUserRankingInfoCommand": {
+  "id": 240
+ },
+ "Ranking::HonorOverallUserRankingResponseCommand": {
+  "id": 241
+ },
+ "Ranking::HonorRankingInfoCommand": {
+  "id": 235
+ },
+ "Ranking::HonorRankingMatchUpdateCommand": {
+  "id": 237
+ },
+ "Ranking::HonorRankingMatchUpdateResponseCommand": {
+  "id": 238
+ },
+ "Ranking::HonorRankingResponseCommand": {
+  "id": 236
+ },
+ "Ranking::HonorRankingUpdateCommand": {
+  "id": 239
+ },
+ "Ranking::OverallLocalUserRankingInfoCommand": {
+  "id": 254
+ },
+ "Ranking::OverallLocalUserRankingInfoResponseCommand": {
+  "id": 255
+ },
+ "Ranking::OverallUserRankingInfoCommand": {
+  "id": 252
+ },
+ "Ranking::OverallUserRankingResponseCommand": {
+  "id": 253
+ },
+ "Ranking::ParallelWorldLocalUserRankingInfoCommand": {
+  "id": 248
+ },
+ "Ranking::ParallelWorldLocalUserRankingResponseCommand": {
+  "id": 249
+ },
+ "Ranking::ParallelWorldUserRankingInfoCommand": {
+  "id": 246
+ },
+ "Ranking::ParallelWorldUserRankingResponseCommand": {
+  "id": 247
+ },
+ "Ranking::ParallelWorldUserRankingUpdateCommand": {
+  "id": 250
+ },
+ "Ranking::ParallelWorldUserRankingUpdateResponseCommand": {
+  "id": 251
+ },
+ "ShiftedSkillCommand": {
+  "id": 74
+ },
+ "SkillBookInfoCommand": {
+  "id": 88
+ },
+ "SkillCommand": {
+  "id": 70
+ },
+ "SkillStopCommand": {
+  "id": 77
+ },
+ "SpecialOfferCommand": {
+  "id": 132
+ },
+ "StatusEffects::DiscardLocationEffectCommand": {
+  "id": 61
+ },
+ "StatusEffects::DiscardTrapCommand": {
+  "id": 64
+ },
+ "StatusEffects::LocationEffectInfoCommand": {
+  "id": 62
+ },
+ "StatusEffects::NewLocationEffectCommand": {
+  "id": 60
+ },
+ "StatusEffects::NewTrapCommand": {
+  "id": 63
+ },
+ "StatusEffects::StatusEffectCommand": {
+  "id": 79
+ },
+ "StatusEffects::StatusEffectInfoCommand": {
+  "id": 78
+ },
+ "StatusEffects::TrapInfoCommand": {
+  "id": 65
+ },
+ "StatusEffects::TrapTrippedCommand": {
+  "id": 66
+ },
+ "SustainedSkillCommand": {
+  "id": 76
+ },
+ "TalentSelectionInfoCommand": {
+  "id": 283
+ },
+ "Talents::DeselectTalentCommand": {
+  "id": 280
+ },
+ "Talents::EnableTalentPreselectionCommand": {
+  "id": 281
+ },
+ "Talents::ResetTalentCategoryCommand": {
+  "id": 287
+ },
+ "Talents::ResetTalentsCommand": {
+  "id": 286
+ },
+ "Talents::SelectTalentCommand": {
+  "id": 279
+ },
+ "Talents::TalentCategoryPointsInfoCommand": {
+  "id": 282
+ },
+ "Talents::UnlockSkillTalentPreselectionCommand": {
+  "id": 284
+ },
+ "Talents::UnlockSkillTalentPreselectionInfoCommand": {
+  "id": 285
+ },
+ "TargetBulletSkillCommand": {
+  "id": 75
+ },
+ "TargetPointBulletSkillCommand": {
+  "id": 73
+ },
+ "TargetSkillCommand": {
+  "id": 71
+ }
+}

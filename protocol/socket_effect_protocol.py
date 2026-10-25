@@ -358,7 +358,7 @@ def _split_ids(value: str) -> tuple[str, ...]:
 
 
 class SocketEffectDatabase:
-    """Read-only compiled view of every EquipmentJewel/EquipmentRune rule."""
+    """Read-only compiled view of socketed jewel, rune, and ancient rules."""
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path).resolve()
@@ -736,7 +736,9 @@ class SocketEffectDatabase:
                 """
                 SELECT Id, ItemCategory, BaseModifier, UniqueModifier
                 FROM _Template_Item
-                WHERE lower(ItemCategory) IN ('equipmentjewel','equipmentrune')
+                WHERE lower(ItemCategory) IN (
+                    'equipmentjewel', 'equipmentrune', 'equipmentancient'
+                )
                 ORDER BY rowid
                 """
             ).fetchall()
