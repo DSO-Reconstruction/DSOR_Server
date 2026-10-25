@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import os
+from collections import OrderedDict
+from contextlib import closing
+from functools import wraps
 from pathlib import Path
 import sqlite3
+import threading
 
 from dso_server.persistence import static_schema_compat as compat
 from dso_server.protocol.inventory_codec import AMMUNITION_SLOTS
@@ -18,11 +22,47 @@ from dso_server.protocol.character_selection import (
 )
 
 
+def _cached_content(method):
+    """Cache immutable content results for one explicit database lifetime."""
+
+    @wraps(method)
+    def cached(self, *args, **kwargs):
+        key = (str(self.path), method.__name__, args, tuple(sorted(kwargs.items())))
+        with self._content_cache_lock:
+            revision = self._content_revision
+            if key in self._content_cache:
+                self._content_cache.move_to_end(key)
+                return self._content_cache[key]
+        value = method(self, *args, **kwargs)
+        with self._content_cache_lock:
+            if revision == self._content_revision:
+                self._content_cache[key] = value
+                self._content_cache.move_to_end(key)
+                while len(self._content_cache) > 4096:
+                    self._content_cache.popitem(last=False)
+        return value
+
+    return cached
+
+
 class StaticGameDatabase:
     """Read-only validator for identifiers shared by the client and server."""
 
     def __init__(self, path: str | os.PathLike[str]) -> None:
         self.path = Path(path)
+        self._content_cache = OrderedDict()
+        self._content_cache_lock = threading.Lock()
+        self._content_revision = 0
+
+    def invalidate_content_cache(self) -> None:
+        """Call after publishing replacement static content, outside gameplay.
+
+        Normal reads never stat the database. A new database instance also
+        starts a fresh cache, matching the server's content reload lifecycle.
+        """
+        with self._content_cache_lock:
+            self._content_revision += 1
+            self._content_cache.clear()
 
     def _connect(self) -> sqlite3.Connection:
         if not self.path.is_file():
@@ -43,7 +83,7 @@ class StaticGameDatabase:
 
     def validate(self, model: CharacterSelection) -> list[str]:
         warnings = []
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             map_lookup = compat.map_template_row_query(
                 connection, ("MapTemplate",)
             )
@@ -136,7 +176,7 @@ class StaticGameDatabase:
         if class_name is None:
             raise CharacterSelectionError(f"unknown class id {class_id}")
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 'SELECT "CharGenItems" FROM "_Template_StartEquipment" '
                 'WHERE "Id"=? LIMIT 1',
@@ -183,7 +223,7 @@ class StaticGameDatabase:
         slot.
         """
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 'SELECT "SlotType" FROM "_Template_Item" '
                 'WHERE "Id"=? LIMIT 1',
@@ -244,6 +284,7 @@ class StaticGameDatabase:
         # replacement, use the first one deterministically.
         return (candidates[0],)
 
+    @_cached_content
     def player_template_row_index(self, class_id: int) -> int:
         """Return the zero-based row in TemplateManager's player array.
 
@@ -258,7 +299,7 @@ class StaticGameDatabase:
             raise CharacterSelectionError(f"unknown class id {class_id}")
         template_id = f"human_male_{class_name}"
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             player_row = connection.execute(
                 'SELECT rowid FROM "_Template_Player" '
                 'WHERE "Id"=? LIMIT 1',
@@ -274,6 +315,7 @@ class StaticGameDatabase:
             ).fetchone()[0]
         return local_index
 
+    @_cached_content
     def remote_player_animation_set(self, class_id: int) -> str:
         """Return the client-valid base animation set for a remote class.
 
@@ -289,7 +331,7 @@ class StaticGameDatabase:
             raise CharacterSelectionError(f"unknown class id {class_id}")
         template_id = f"remote_human_male_{class_name}"
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 'SELECT "AnimSet" FROM "_Template_RemotePlayer" '
                 'WHERE "Id"=? LIMIT 1',
@@ -302,6 +344,7 @@ class StaticGameDatabase:
             )
         return animation_set
 
+    @_cached_content
     def remote_player_template_row_index(self, class_id: int) -> int:
         """Return the zero-based template row used by NewRemotePlayer.
 
@@ -314,7 +357,7 @@ class StaticGameDatabase:
         if class_name is None:
             raise CharacterSelectionError(f"unknown class id {class_id}")
         template_id = f"remote_human_male_{class_name}"
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 'SELECT rowid FROM "_Template_RemotePlayer" '
                 'WHERE "Id"=? LIMIT 1',
@@ -331,6 +374,7 @@ class StaticGameDatabase:
             ).fetchone()[0]
         return int(index)
 
+    @_cached_content
     def character_selection_visual_item_template(
             self, item_template_id: str, appearance_id: str = "") -> str:
         """Resolve a selected equipment skin to the item used by previews.
@@ -346,7 +390,7 @@ class StaticGameDatabase:
         appearance_id = str(appearance_id or "")
         if not appearance_id:
             return fallback
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             if not compat.table_exists(connection, "_Template_EquipmentSkin"):
                 return fallback
             skin_id = appearance_id
@@ -388,6 +432,7 @@ class StaticGameDatabase:
                 return candidate
         return fallback
 
+    @_cached_content
     def remote_equipment_skin(
         self, template_id: str, appearance_id: str = ""
     ) -> str:
@@ -401,7 +446,7 @@ class StaticGameDatabase:
 
         template_id = str(template_id)
         appearance_id = str(appearance_id or "")
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             if appearance_id:
                 for table in (
                     "_Template_ItemAppearance",
@@ -445,10 +490,11 @@ class StaticGameDatabase:
             f"item {template_id!r} has no remote equipment skin"
         )
 
+    @_cached_content
     def remote_equipment_icon(self, template_id: str) -> str:
         """Return the client icon used for non-geometry equipment slots."""
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 'SELECT "IconBrush" FROM "_Template_Item" '
                 'WHERE "Id"=? LIMIT 1',
@@ -469,7 +515,7 @@ class StaticGameDatabase:
         not infer this from a map-name suffix.
         """
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 compat.map_template_row_query(connection, ("AreaType",)),
                 (str(map_id),),
@@ -490,7 +536,7 @@ class StaticGameDatabase:
     def gameplay_map_chat_region(self, map_id: str) -> str:
         """Return the database-owned chat region for a gameplay map."""
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             row = connection.execute(
                 compat.map_template_row_query(connection, ("ChatRegion",)),
                 (str(map_id),),
@@ -519,7 +565,7 @@ class StaticGameDatabase:
         if class_name is None:
             raise CharacterSelectionError(f"unknown class id {class_id}")
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 'SELECT rowid FROM "_Template_Skill" '
                 'WHERE "CharClass"=? ORDER BY rowid',
@@ -572,7 +618,7 @@ class StaticGameDatabase:
             return ()
 
         placeholders = ",".join("?" for _ in resource_ids)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 f'SELECT "Id", "CharClass", "UnlockLevel", "Hidden", "IsLive" '
                 f'FROM "_Template_Skill" WHERE "Id" IN ({placeholders})',
@@ -633,7 +679,7 @@ class StaticGameDatabase:
         if not requested:
             return (0,) * word_count
         placeholders = ",".join("?" for _ in requested)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 f'SELECT "Id", "MapLookupIndex" FROM "_Template_TravelMap" '
                 f'WHERE "Id" IN ({placeholders})',
@@ -670,7 +716,7 @@ class StaticGameDatabase:
         share one client access bit.
         """
 
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 'SELECT "Id", "MapLookupIndex" '
                 'FROM "_Template_TravelMap" '
@@ -713,7 +759,7 @@ class StaticGameDatabase:
             raise CharacterSelectionError(f"invalid player level {level}")
 
         next_level = min(level + 1, 100)
-        with self._connect() as connection:
+        with closing(self._connect()) as connection:
             rows = connection.execute(
                 'SELECT "Level", "LevelXP" FROM "_Template_XPLevels" '
                 'WHERE "CharClass"=? AND "Level" IN (?, ?)',

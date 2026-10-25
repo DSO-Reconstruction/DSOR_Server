@@ -1275,16 +1275,18 @@ class AccountStateStore:
 
     def _wallet_owner(self, character_id: int, fallback: int = 0):
         registry = self.account_registry
-        owner = registry.character_owner(int(character_id)) if registry is not None else None
-        if owner is None:
+        if registry is None:
             return None
-        account_id = int(owner.account_id)
+        ownership = registry.wallet_owner(int(character_id))
+        if ownership is None:
+            return None
+        account_id, character_ids = ownership
         if account_id not in self.account_wallets:
             # One-time migration: use each character's durable balance (profile
             # only if it has never entered a map). Do not add starting grants.
             balances = [int(self.states[cid].currency.andermant)
                         if cid in self.states else int(self.character_profiles[cid].premium_currency)
-                        for cid in owner.character_ids
+                         for cid in character_ids
                         if cid in self.states or cid in self.character_profiles]
             self.account_wallets[account_id] = max(balances, default=max(0, int(fallback)))
             self._database.queue_wallet(account_id, self.account_wallets[account_id])
@@ -1369,8 +1371,17 @@ class AccountStateStore:
         if flush:
             self.flush()
 
-    def put(self, state: AccountState, *, flush: bool = False) -> None:
+    def put(
+        self, state: AccountState, *, flush: bool = False,
+        profile: CharacterProfile | None = None,
+    ) -> None:
         saved = copy.deepcopy(state)
+        saved_profile = (
+            _profile_from_document(_profile_to_document(profile))
+            if profile is not None else None
+        )
+        if saved_profile is not None and saved_profile.character_id != saved.character_id:
+            raise ValueError("profile and state must belong to the same character")
         saved.saved_at = datetime.now(timezone.utc).isoformat()
         with self.lock:
             current = self.states.get(int(saved.character_id))
@@ -1383,7 +1394,14 @@ class AccountStateStore:
             self.states[int(saved.character_id)] = saved
             owner = self._wallet_owner(saved.character_id)
             wallet = (owner, self.account_wallets[owner]) if owner is not None else None
-            self._database.queue_state(saved.character_id, saved, wallet=wallet)
+            if saved_profile is not None:
+                saved_profile = replace(
+                    saved_profile, premium_currency=saved.currency.andermant
+                )
+                self.character_profiles[saved.character_id] = saved_profile
+            self._database.queue_state(
+                saved.character_id, saved, wallet=wallet, profile=saved_profile
+            )
         if flush:
             self.flush()
 

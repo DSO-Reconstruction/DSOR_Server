@@ -566,7 +566,10 @@ class PlayerPersistenceService:
             CharacterService._quest_leave_map(self, s, notify=False)
         if store is None:
             return False
-        CharacterService._refresh_premium_bags(s)
+        # Trade reconciles both participants before committing either side.
+        # Its durable boundary must not emit a bag/status notification first.
+        if reason != "player trade":
+            CharacterService._refresh_premium_bags(s)
         state = CharacterService._capture_account_state(self, s)
         if state is None:
             return False
@@ -583,7 +586,7 @@ class PlayerPersistenceService:
         # for the async writer, so a destination server could reload the
         # previous equipment (including empty gem/rune/jewel sockets).
         durable_snapshot = bool(flush or closing_session)
-        store.put(state, flush=durable_snapshot)
+        profile = None
         # The per-account selection payload embeds the active character's
         # equipment, which this snapshot may have just changed. Its cache key
         # only tracks the roster, so the entry is dropped here rather than
@@ -618,13 +621,13 @@ class PlayerPersistenceService:
                         character.progression_u64 = int(
                             getattr(live, 'progression_u64', 0)
                         )
-                    store.put_profile(
-                        CharacterProfile.from_character_record(
-                            character, gold=state.currency.gold
-                        ),
-                        flush=durable_snapshot,
+                    profile = CharacterProfile.from_character_record(
+                        character, gold=state.currency.gold
                     )
                     break
+        # State, wallet and roster metadata describe one snapshot. Publish all
+        # of them in one writer batch and wait for just one durable commit.
+        store.put(state, profile=profile, flush=durable_snapshot)
         if reason != 'interval':
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] queued account state for "
@@ -654,7 +657,10 @@ class PlayerPersistenceService:
         coalesced, and any caller passing ``flush=True`` bypasses this.
         """
 
-        CharacterService._refresh_premium_bags(s)
+        # The trade preflight already reconciled bags; post-commit saves must
+        # complete even when the participant's outbound queue is full.
+        if reason != "player trade":
+            CharacterService._refresh_premium_bags(s)
         callback = s.gameplay_persist_callback
         if callback is None:
             return False

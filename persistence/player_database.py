@@ -179,10 +179,15 @@ class AsyncPlayerDatabase:
             self._ensure_writer_locked()
             self._wake_event.set()
 
-    def queue_state(self, character_id: int, state: Any, *, wallet=None) -> None:
+    def queue_state(
+        self, character_id: int, state: Any, *, wallet=None, profile=None
+    ) -> None:
+        """Queue one character snapshot and its matching profile atomically."""
         with self._condition:
             character_id = int(character_id)
             self._pending_states[character_id] = state
+            if profile is not None:
+                self._pending_profiles[character_id] = profile
             if wallet is not None:
                 self._pending_wallets[int(wallet[0])] = int(wallet[1])
             self._pending_deletes.discard(character_id)
@@ -225,7 +230,7 @@ class AsyncPlayerDatabase:
             return pending
 
     def flush(self, timeout: float = 15.0) -> bool:
-        """Wait for queued commits; used by startup tests and shutdown only."""
+        """Wait for queued commits at a durable mutation or lifecycle boundary."""
 
         with self._condition:
             target = self._queued_revision

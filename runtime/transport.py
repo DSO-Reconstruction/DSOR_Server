@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable, Iterator, MutableMapping
+import heapq
 from typing import TypeVar
 import traceback
 
@@ -17,6 +18,7 @@ from dso_server.runtime.concurrency import (
     SESSION_FLOW_DOMAIN,
     assert_no_state_locks_held,
 )
+from dso_server.runtime.outbound import BoundedOutboundSender, OutboundCapacityError
 
 
 # Direct Session construction is useful in protocol tests and small tooling.
@@ -51,6 +53,12 @@ _UNSPLIT_RELIABLE_FRAMING_BYTES = (
 # data plus 24 bytes of headers -- and unsplit reliable datagrams are held to
 # the same size.
 RELIABLE_DATAGRAM_LIMIT = FRAG_SIZE + 24
+MAX_SESSIONS = max(1, int(os.getenv("DSO_MAX_SESSIONS", "4096")))
+HANDSHAKE_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DSO_HANDSHAKE_TIMEOUT_SECONDS", "10")))
+RELIABLE_PENDING_LIMIT = max(64, int(os.getenv("DSO_RELIABLE_PENDING_LIMIT", "4096")))
+RELIABLE_PENDING_BYTES = max(65536, int(os.getenv("DSO_RELIABLE_PENDING_BYTES", str(8 << 20))))
+RELIABLE_ACK_TIMEOUT_SECONDS = max(2.0, float(os.getenv("DSO_RELIABLE_ACK_TIMEOUT_SECONDS", "30")))
+_ACK_SEQUENCE_LIMIT = 8192
 
 
 class SessionRegistry(MutableMapping[tuple, _SessionValue]):
@@ -367,8 +375,8 @@ class FrameBuilder:
             self.compound_id = (self.compound_id + 1) & 0xffff
             ord_idx = struct.pack('<I', self._ord())[:3]
 
+        preceding_bytes = 0
         for idx, chunk in enumerate(chunks):
-            preceding_bytes = sum(len(part) for part in chunks[:idx])
             chunk_bits = min(
                 len(chunk) * 8,
                 total_bit_length - preceding_bytes * 8,
@@ -423,16 +431,14 @@ class FrameBuilder:
                         return
             if pace_seconds and idx != total - 1:
                 time.sleep(pace_seconds)
+            preceding_bytes += len(chunk)
 
 class _OutboundLock:
     """One session's send serialization, with contention reporting.
 
-    Ordering-index allocation, reliable registration and the socket write must
-    be one transaction, so this lock is unavoidable. What is avoidable is
-    being unable to see it: the map simulation thread acquires every viewer's
-    outbound lock in turn, so one client holding its own lock for a long time
-    stalls monster updates for everybody on that map. That failure is silent
-    with a plain ``threading.Lock`` -- no owner, no timeout, no diagnostic.
+    Ordering-index allocation, reliable registration and enqueueing form one
+    transaction. Production socket writes and pacing run on the bounded
+    sender; standalone sessions retain synchronous writes for small tools.
     """
 
     __slots__ = (
@@ -561,9 +567,12 @@ class Session:
     def __init__(
             self, addr, sock,
             gameplay_deadline_scheduler: GameplayDeadlineScheduler | None = None,
-            gameplay_ingress_scheduler: GameplayDeadlineScheduler | None = None):
+            gameplay_ingress_scheduler: GameplayDeadlineScheduler | None = None,
+            *, outbound_sender: BoundedOutboundSender | None = None):
         self.addr = addr
         self.sock = sock
+        self.outbound_sender = outbound_sender
+        self.transport_failure_reason = None
         self.gameplay_deadline_scheduler = (
             gameplay_deadline_scheduler
             if gameplay_deadline_scheduler is not None
@@ -585,6 +594,7 @@ class Session:
         # other session lock run.
         self.retirement_lock = threading.Lock()
         self.retired = False
+        self.retiring = False
         self.map_bootstrap_sent = False
         self.character_data_sent = False
         self.bulk_data_sent = False
@@ -642,6 +652,12 @@ class Session:
             f"session[{addr[0]}:{addr[1]}]",
         )
         self.pending_reliable = {}
+        # Stable insertion order survives retries taking a new datagram ID.
+        # Removing ACKed entries is O(1), as is finding the blocking oldest.
+        self._pending_reliable_order = {}
+        self.pending_reliable_bytes = 0
+        self.last_reliable_ack_progress_at = time.perf_counter()
+        self.reliable_pending_started_at = None
         self.pending_lock = threading.Lock()
         # Frame/order allocation, reliable registration, and the UDP write
         # must be one transaction. Gameplay deadline workers send from many
@@ -707,6 +723,10 @@ class Session:
         # Inventory item actions (including socket insertion) and a map
         # handoff must not snapshot different sides of the same mutation.
         self.gameplay_inventory_action_lock = threading.RLock()
+        # A command's publication and a disconnect snapshot must not overlap.
+        # Reentrant because a command may retire its own session.
+        self.gameplay_mutation_lock = threading.RLock()
+        self.gameplay_retire_callback = None
         # Switch-character countdown outside hubs (services/map_transition.py)
         self.gameplay_logout_timer = None
         self.gameplay_logout_generation = 0
@@ -955,22 +975,34 @@ class Session:
         )
 
     def _send_locked(
-            self, data: bytes, *, track: bool, label: str) -> tuple[bool, float]:
+            self, data: bytes, *, track: bool, label: str,
+            pace_after: float = 0.0) -> tuple[bool, float]:
         """Register and transmit one already-framed datagram.
 
-        The caller owns ``outbound_lock``. Return whether reliable
-        backpressure began and the duration of the socket call.
+        The caller owns ``outbound_lock``. Production enqueues to a bounded
+        FIFO; standalone sessions write directly. Return backpressure state
+        and the duration of any synchronous socket call.
         """
 
+        if self.transport_failure_reason:
+            raise OutboundCapacityError(self.transport_failure_reason)
         backpressure_began = False
         if track and len(data) >= 4 and 0x80 <= data[0] <= 0x8f:
             sequence = int.from_bytes(data[1:4], 'little')
             queued_at = time.perf_counter()
             with self.pending_lock:
+                if (len(self.pending_reliable) >= RELIABLE_PENDING_LIMIT
+                        or self.pending_reliable_bytes + len(data) > RELIABLE_PENDING_BYTES):
+                    self.transport_failure_reason = "reliable output capacity exceeded"
+                    raise OutboundCapacityError(self.transport_failure_reason)
+                if not self.pending_reliable:
+                    self.last_reliable_ack_progress_at = queued_at
+                    self.reliable_pending_started_at = None
                 self.pending_reliable[sequence] = {
                     'data': data,
                     'label': label,
-                    'sent_at': queued_at,
+                    'sent_at': None if self.outbound_sender is not None else queued_at,
+                    'first_sent_at': None,
                     # First transmission. ``sent_at`` is reset by every retry
                     # and dict order is lost when an item is re-keyed under
                     # its new datagram sequence, so neither survives as an age.
@@ -979,6 +1011,9 @@ class Session:
                     'queued_at': queued_at,
                     'attempts': 1,
                 }
+                item = self.pending_reliable[sequence]
+                self._pending_reliable_order[id(item)] = item
+                self.pending_reliable_bytes += len(data)
                 backlog = len(self.pending_reliable)
                 self.reliable_backlog_peak = max(
                     int(self.reliable_backlog_peak), backlog
@@ -990,13 +1025,43 @@ class Session:
                     self.reliable_backpressure_active = True
                     self.reliable_backpressure_started_at = time.perf_counter()
                     backpressure_began = True
-        self.last_send_at = time.perf_counter()
         send_started = time.perf_counter()
+        if self.outbound_sender is not None:
+            try:
+                self.outbound_sender.enqueue(self, data, pace_after=pace_after)
+            except (OutboundCapacityError, RuntimeError) as exc:
+                self.transport_failure_reason = str(exc)
+                raise
+            return backpressure_began, 0.0
         try:
             self.sock.sendto(data, self.addr)
         except OSError:
             pass
+        self._mark_send_attempt(data)
         return backpressure_began, time.perf_counter() - send_started
+
+    def _check_reliable_budget(self, packet_count: int, packet_bytes: int) -> None:
+        """Reject large batches before framing or queueing their fragments."""
+        with self.pending_lock:
+            if (len(self.pending_reliable) + packet_count > RELIABLE_PENDING_LIMIT
+                    or self.pending_reliable_bytes + packet_bytes > RELIABLE_PENDING_BYTES):
+                self.transport_failure_reason = "reliable output capacity exceeded"
+                raise OutboundCapacityError(self.transport_failure_reason)
+
+    def _mark_send_attempt(self, data: bytes) -> None:
+        now = time.perf_counter()
+        self.last_send_at = now
+        if len(data) >= 4 and 0x80 <= data[0] <= 0x8f:
+            sequence = int.from_bytes(data[1:4], 'little')
+            with self.pending_lock:
+                item = self.pending_reliable.get(sequence)
+                if item is not None:
+                    if self.reliable_pending_started_at is None:
+                        self.reliable_pending_started_at = now
+                        self.last_reliable_ack_progress_at = now
+                    item['sent_at'] = now
+                    if item.get('first_sent_at') is None:
+                        item['first_sent_at'] = now
 
     def _report_send_health(
             self, *, label: str, backpressure_began: bool,
@@ -1239,8 +1304,8 @@ class Session:
 
         payload_or_parts accepts either a complete bytes payload or an
         iterable of pre-sized fragments. The outbound lock deliberately spans
-        compound/order/reliable allocation, optional pacing, and every UDP
-        write. Otherwise a concurrent ordinary reliable command can put a
+        compound/order/reliable allocation and enqueueing. Otherwise a
+        concurrent ordinary reliable command can put a
         later order index on the wire between fragments and make RakNet hold
         the receiver's ordered stream until the missing fragment arrives.
 
@@ -1258,17 +1323,35 @@ class Session:
                 data,
                 track=track,
                 label=label,
+                pace_after=pace_seconds if self.outbound_sender is not None else 0.0,
             )
             send_health.append((label, backpressure_began, socket_seconds))
 
         with self.outbound_lock:
+            if track:
+                if isinstance(payload_or_parts, bytes):
+                    fragments = max(1, (len(payload_or_parts) + FRAG_SIZE - 1) // FRAG_SIZE)
+                    payload_bytes = len(payload_or_parts)
+                else:
+                    payload_or_parts = tuple(payload_or_parts)
+                    fragments = len(payload_or_parts)
+                    payload_bytes = sum(len(part) for part in payload_or_parts)
+                # A trailer can share the final fragment or need its own
+                # datagram; reserve the conservative independent-frame cost.
+                trailing_payloads = tuple(trailing_payloads)
+                trailer_bytes = sum(len(FrameBuilder._payload_spec(p)[0]) + 14
+                                    for p in trailing_payloads)
+                self._check_reliable_budget(
+                    fragments + len(trailing_payloads),
+                    payload_bytes + 24 * fragments + trailer_bytes,
+                )
             if isinstance(payload_or_parts, bytes):
                 self.fb.send_split(
                     payload_or_parts,
                     self.sock,
                     self.addr,
                     trailing_payloads=trailing_payloads,
-                    pace_seconds=pace_seconds,
+                    pace_seconds=pace_seconds if self.outbound_sender is None else 0.0,
                     send_callback=send_fragment,
                     label_prefix=label_prefix,
                     total_bit_length=total_bit_length,
@@ -1279,7 +1362,7 @@ class Session:
                     self.sock,
                     self.addr,
                     trailing_payloads=trailing_payloads,
-                    pace_seconds=pace_seconds,
+                    pace_seconds=pace_seconds if self.outbound_sender is None else 0.0,
                     send_callback=send_fragment,
                     label_prefix=label_prefix,
                     total_bit_length=total_bit_length,
@@ -1300,14 +1383,21 @@ class Session:
             for sequence in sequences:
                 item = self.pending_reliable.pop(sequence, None)
                 if item:
+                    self._pending_reliable_order.pop(id(item), None)
+                    self.pending_reliable_bytes = max(
+                        0, self.pending_reliable_bytes - len(item['data'])
+                    )
+                    self.last_reliable_ack_progress_at = now
                     acknowledged.append((sequence, item['label']))
-                    latency = max(0.0, now - float(item['sent_at']))
+                    latency = max(0.0, now - float(item['sent_at'] or now))
                     self.last_reliable_ack_latency_seconds = latency
                     self.maximum_reliable_ack_latency_seconds = max(
                         float(self.maximum_reliable_ack_latency_seconds),
                         latency,
                     )
             backlog = len(self.pending_reliable)
+            if not backlog:
+                self.reliable_pending_started_at = None
             if (
                 self.reliable_backpressure_active
                 and backlog < max(1, RELIABLE_BACKLOG_SOFT_LIMIT // 2)
@@ -1343,11 +1433,11 @@ class Session:
         """
 
         with self.pending_lock:
-            oldest = min(
-                self.pending_reliable.values(),
-                key=lambda item: item.get('queued_at', now),
-                default=None,
-            )
+            oldest = next(iter(self._pending_reliable_order.values()), None)
+            if oldest is None and self.pending_reliable:
+                # Compatibility for diagnostics/tests injecting pending rows.
+                oldest = min(self.pending_reliable.values(),
+                             key=lambda item: item.get('queued_at', now))
             if oldest is None:
                 return None
             return (
@@ -1368,27 +1458,30 @@ class Session:
 
     def retransmit(
             self, sequences, interval=NAK_RETRANSMIT_GRACE_SECONDS,
-            max_attempts=RELIABLE_MAX_ATTEMPTS):
+            max_attempts=RELIABLE_MAX_ATTEMPTS,
+            burst_limit=RELIABLE_RETRANSMIT_BURST_LIMIT):
         '''Retransmit reliable frames without creating ordering gaps.'''
         retransmissions = []
         dropped = []
         now = time.perf_counter()
         with self.pending_lock:
             for sequence in sequences:
+                if burst_limit and len(retransmissions) >= burst_limit:
+                    break
                 item = self.pending_reliable.get(sequence)
                 if not item:
                     continue
                 # A NAK for a freshly transmitted replacement can be received
                 # before that replacement reaches the socket.  Keep its
                 # sequence mapping intact so a late ACK can still retire it.
-                if now - item['sent_at'] < interval:
+                if item['sent_at'] is None or now - item['sent_at'] < interval:
                     continue
                 del self.pending_reliable[sequence]
                 packet, retry_sequence = self.fb.retransmit_frameset(
                     item['data']
                 )
                 item['data'] = packet
-                item['sent_at'] = now
+                item['sent_at'] = None if self.outbound_sender is not None else now
                 item['attempts'] += 1
                 self.pending_reliable[retry_sequence] = item
                 retransmissions.append(
@@ -1419,16 +1512,16 @@ class Session:
         dropped = []
         now = time.perf_counter()
         with self.pending_lock:
-            overdue = sorted(
-                (
+            candidates = (
                     (item['queued_at'], sequence)
                     for sequence, item in self.pending_reliable.items()
-                    if now - item['sent_at'] >= interval
-                ),
-                key=lambda entry: entry[0],
+                    if item['sent_at'] is not None and now - item['sent_at'] >= interval
             )
-            if burst_limit is not None and burst_limit > 0:
-                overdue = overdue[:burst_limit]
+            overdue = (
+                heapq.nsmallest(burst_limit, candidates)
+                if burst_limit is not None and burst_limit > 0
+                else sorted(candidates)
+            )
             for _queued_at, sequence in overdue:
                 item = self.pending_reliable.pop(sequence, None)
                 if item is None:
@@ -1437,7 +1530,7 @@ class Session:
                     item['data']
                 )
                 item['data'] = packet
-                item['sent_at'] = now
+                item['sent_at'] = None if self.outbound_sender is not None else now
                 item['attempts'] += 1
                 self.pending_reliable[retry_sequence] = item
                 retransmissions.append(
@@ -1451,7 +1544,24 @@ class Session:
         return retransmissions, dropped
 
     def ack(self, seq: int):
-        self.send(b'\xc0' + b'\x00\x01' + b'\x01' + struct.pack('<I', seq)[:3])
+        # Control traffic has no ordered-frame counters to protect. In
+        # particular an ACK must never wait behind a paced payload batch.
+        self._send_control(
+            b'\xc0' + b'\x00\x01' + b'\x01' + struct.pack('<I', seq)[:3]
+        )
+
+    def _send_control(self, data: bytes) -> None:
+        """Send unqueued control traffic using the bounded socket timeout."""
+        try:
+            self.sock.sendto(data, self.addr)
+        except OSError:
+            pass
+
+    def send_disconnect(self) -> None:
+        # Retirement discards queued payloads. A terminal notification must
+        # reach the socket first, without waiting for that payload queue.
+        packet = self.fb.unreliable(b'\x15')
+        self._send_control(packet)
 
 UNSPECIFIED_HOSTS = ("", "0.0.0.0", "::")
 
@@ -1489,6 +1599,9 @@ class RakNetServer:
         self.sock = None
         self._stop_event = threading.Event()
         self._threads: list[threading.Thread] = []
+        self.gameplay_command_offload = False
+        self._outbound_sender = None
+        self._lifecycle_scheduler = None
         self._last_udp_reset_log_at = 0.0
         # Optional ``callable(client_ip) -> bool`` consulted before a RakNet
         # handshake starts. ``None`` accepts every address, which is what the
@@ -1529,6 +1642,8 @@ class RakNetServer:
             raise RuntimeError(f"{self.service_name} is already running")
         self._stop_event.clear()
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        # Bound a congested UDP send as well as the receive shutdown latency.
+        self.sock.settimeout(0.05)
         # On Windows SO_REUSEADDR lets another server silently take over the
         # same UDP endpoint, mixing services from old and new processes.
         address_option = (
@@ -1544,6 +1659,14 @@ class RakNetServer:
             self.sock = None
             raise
         self.gameplay_deadline_scheduler.start()
+        self._outbound_sender = BoundedOutboundSender(name=f"{self.service_name}-outbound")
+        self._outbound_sender.start()
+        self._lifecycle_scheduler = GameplayDeadlineScheduler(
+            name=f"{self.service_name}-lifecycle", worker_count=2,
+            max_pending=MAX_SESSIONS,
+        )
+        self._lifecycle_scheduler.start()
+        self.gameplay_command_offload = True
         if self.gameplay_ingress_scheduler is not self.gameplay_deadline_scheduler:
             self.gameplay_ingress_scheduler.start()
         if (
@@ -1642,24 +1765,38 @@ class RakNetServer:
             self.sock,
             self.gameplay_deadline_scheduler,
             self.gameplay_ingress_scheduler,
+            outbound_sender=self._outbound_sender,
         )
+
+    def request_session_retirement(self, session: Session, reason: str) -> None:
+        """Let maintenance perform cleanup without blocking a packet handler."""
+        if not session.retired:
+            session.transport_failure_reason = str(reason)
 
     def stop(self):
         """Stop receiving, cancel session timers, and release the UDP port."""
 
         self._stop_event.set()
+        self.gameplay_command_offload = False
         sock, self.sock = self.sock, None
         if sock is not None:
             sock.close()
-        # Detach the complete generation set in one registry operation. Every
-        # callback, timer cancellation, persistence request, and pending-frame
-        # cleanup below therefore runs without holding the registry lock.
-        for session in self._detach_all_sessions():
+        # Keep retiring endpoints reserved until their final snapshot is
+        # durable. Drain every queued cleanup before closing shared stores.
+        for session in self.session_snapshot():
             self._retire_session(
                 session,
                 reason="server shutdown",
                 remove=False,
             )
+        if self._lifecycle_scheduler is not None:
+            self._lifecycle_scheduler.shutdown(
+                wait=True, cancel_pending=False, timeout=None,
+            )
+            self._lifecycle_scheduler = None
+        if self._outbound_sender is not None:
+            self._outbound_sender.close()
+            self._outbound_sender = None
         for thread in self._threads:
             if thread is not threading.current_thread():
                 thread.join(timeout=0.5)
@@ -1689,6 +1826,8 @@ class RakNetServer:
                 if sock is None:
                     return
                 data, addr = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
             except ConnectionResetError as exc:
                 # Windows reports an ICMP "port unreachable" generated by a
                 # client that closed its UDP socket as WSAECONNRESET on the
@@ -1818,10 +1957,12 @@ class RakNetServer:
     ) -> None:
         """Run one endpoint's maintenance without owning the worker loop."""
 
-        if self._session_reliably_stale(session, now):
+        if session.retiring:
+            return
+        if session.transport_failure_reason or self._session_reliably_stale(session, now):
             self._retire_session(
                 session,
-                reason="reliable receive timeout",
+                reason=session.transport_failure_reason or "transport idle or ACK timeout",
                 remove=True,
             )
             return
@@ -1851,10 +1992,8 @@ class RakNetServer:
     def _report_stuck_reliable(self, session: Session, now: float) -> None:
         """Name a reliable frame a still-talking client never acknowledges.
 
-        Only a silent client is retired; one that keeps sending while refusing
-        a single datagram is retried forever, and its ordered stream holds
-        every later monster update, hit and reply behind that frame. The
-        server looks healthy throughout, so say which frame it is.
+        Report the blocked frame before the ACK deadline retires the peer;
+        its ordered stream holds every later update behind that frame.
         """
 
         if now - session.last_stuck_reliable_log_at < 10.0:
@@ -1880,17 +2019,24 @@ class RakNetServer:
     @staticmethod
     def _session_reliably_stale(
             session: Session, now: float | None = None) -> bool:
+        current = time.perf_counter() if now is None else float(now)
         if not session.connected:
-            return False
+            return current - float(session.last_received_at) >= HANDSHAKE_TIMEOUT_SECONDS
         with session.pending_lock:
             has_pending_reliable = bool(session.pending_reliable)
-        if not has_pending_reliable:
-            return False
-        current = time.perf_counter() if now is None else float(now)
+            oldest = next(iter(session._pending_reliable_order.values()), None)
+            oldest_sent = oldest.get('first_sent_at') if oldest is not None else None
+            ack_stalled = (
+                has_pending_reliable
+                and session.reliable_pending_started_at is not None
+                and current - session.last_reliable_ack_progress_at >= RELIABLE_ACK_TIMEOUT_SECONDS
+            )
+            oldest_stalled = (oldest_sent is not None
+                             and current - oldest_sent >= RELIABLE_ACK_TIMEOUT_SECONDS)
         return (
             current - float(session.last_received_at)
             >= RELIABLE_SESSION_IDLE_TIMEOUT_SECONDS
-        )
+        ) or ack_stalled or oldest_stalled
 
     @staticmethod
     def _cancel_session_activity(session: Session) -> None:
@@ -1941,8 +2087,8 @@ class RakNetServer:
             # ignores a bare 0x15, so it travels in a frameset, unreliable so
             # that an ordered stream stalled behind a missing frame -- often
             # the very reason for the drop -- cannot hold it back.
-            session.send(session.fb.unreliable(b'\x15'))
-        except OSError as exc:
+            session.send_disconnect()
+        except (OSError, OutboundCapacityError) as exc:
             print(
                 f"[{self.service_name}] could not notify {session.addr} of "
                 f"disconnect: {exc}"
@@ -1953,20 +2099,78 @@ class RakNetServer:
             self, session: Session, *, reason: str, remove: bool) -> bool:
         """Stop one abandoned connection without stopping the UDP service."""
 
+        scheduler = getattr(self, "_lifecycle_scheduler", None)
+        if scheduler is not None:
+            with session.retirement_lock:
+                if session.retired or session.retiring:
+                    return False
+                session.retiring = True
+                was_connected = session.connected
+                session.connected = False
+            if session.outbound_sender is not None:
+                session.outbound_sender.discard(session)
+            try:
+                scheduler.timer(
+                    0.0, self._retire_session_now,
+                    args=(session,),
+                    kwargs={"reason": reason, "remove": remove,
+                            "was_connected_override": was_connected},
+                ).start()
+            except RuntimeError:
+                # Admission is bounded by MAX_SESSIONS, so a full cleanup
+                # queue is exceptional. Keep the endpoint reserved and let
+                # maintenance retry rather than waiting on a packet thread.
+                with session.retirement_lock:
+                    session.retiring = False
+                    session.connected = was_connected
+                    session.transport_failure_reason = reason
+                return False
+            return True
+        return self._retire_session_now(session, reason=reason, remove=remove)
+
+    def _retire_session_now(
+            self, session: Session, *, reason: str, remove: bool,
+            was_connected_override=None) -> bool:
+        defer_detach = session.retiring
         # Identity-based detachment cannot remove a replacement which reused
-        # the same UDP endpoint. It must happen before any callback so callback
-        # code can safely reconnect, query the registry, or trigger retirement
-        # again without seeing this generation as active.
-        self._detach_session(session)
+        # the same endpoint. Production keeps the endpoint reserved through
+        # persistence so reconnect cannot initialize from an older snapshot.
+        if not defer_detach:
+            self._detach_session(session)
+        if session.outbound_sender is not None:
+            session.outbound_sender.discard(session)
         with session.retirement_lock:
             if session.retired:
                 return False
             session.retired = True
-            was_connected = session.connected
+            was_connected = (session.connected if was_connected_override is None
+                             else was_connected_override)
             session.connected = False
-            presence_callback = session.gameplay_presence_callback
-            persist_callback = session.gameplay_persist_callback
+        try:
+            with session.gameplay_mutation_lock:
+                # Initialization can install callbacks while retirement waits
+                # for its mutation gate; read them after the initializer ends.
+                presence_callback = session.gameplay_presence_callback
+                persist_callback = session.gameplay_persist_callback
+                self._finish_session_retirement(
+                    session, reason, was_connected, presence_callback, persist_callback,
+                )
+        finally:
+            if defer_detach:
+                self._detach_session(session)
+        return True
 
+    def _finish_session_retirement(
+            self, session, reason, was_connected, presence_callback, persist_callback):
+        callback = session.gameplay_retire_callback
+        if callback is not None:
+            try:
+                callback(session)
+            except Exception as exc:
+                print(
+                    f"[{self.service_name}] gameplay cleanup failed for "
+                    f"{session.addr}: {type(exc).__name__}: {exc}"
+                )
         if was_connected and presence_callback is not None:
             try:
                 presence_callback(session, 'disconnect')
@@ -1986,6 +2190,9 @@ class RakNetServer:
         self._cancel_session_activity(session)
         with session.pending_lock:
             session.pending_reliable.clear()
+            session._pending_reliable_order.clear()
+            session.pending_reliable_bytes = 0
+            session.reliable_pending_started_at = None
         print(
             f"[{self.service_name}] retired session {session.addr}: {reason}"
         )
@@ -1999,7 +2206,14 @@ class RakNetServer:
     def _dispatch(self, data: bytes, addr):
         if not data: return
         pid = data[0]
-        if pid in (0x01, 0x02, 0x05, 0x07):
+        if pid in (0x01, 0x02):
+            self._reply_unconnected_ping(None, data, addr=addr)
+            return
+        if pid in (0x05, 0x07):
+            if not self._connection_is_authorized(addr[0]):
+                return
+            if addr not in self.sessions and len(self.sessions) >= MAX_SESSIONS:
+                return
             s = self._session(addr)
         else:
             # Only offline messages open a session. A frameset, ACK or NAK
@@ -2012,12 +2226,17 @@ class RakNetServer:
             s = self.sessions.get(addr)
             if s is None:
                 return
+        if s.retired or s.retiring or s.transport_failure_reason:
+            return
         s.last_received_at = time.perf_counter()
 
         # A post-selection map connection may reuse the character connection's
         # UDP source port.  OpenConnectionRequest1 starts a fresh RakNet session,
         # so do not carry reliable/order counters across that reconnect.
         if pid == 0x05 and s.connected:
+            if getattr(self, "_lifecycle_scheduler", None) is not None:
+                self._retire_session(s, reason='connection replaced', remove=True)
+                return
             replacement = self._new_session(addr)
             replacement.last_received_at = time.perf_counter()
             if self._replace_session(s, replacement):
@@ -2033,10 +2252,8 @@ class RakNetServer:
                 # whatever that competing lifecycle action installed.
                 s = self._session(addr)
 
-        if pid in (0x01, 0x02):
-            self._reply_unconnected_ping(s, data)
-        elif pid == 0x05:
-            self._reply_open1(s, data)
+        if pid == 0x05:
+            self._reply_open1(s, data, authorized=True)
         elif pid == 0x07:
             self._reply_open2(s, data)
         elif pid == 0xc0:
@@ -2052,6 +2269,8 @@ class RakNetServer:
             return []
         record_count = int.from_bytes(data[1:3], 'big')
         sequences = []
+        seen = set()
+        expanded = 0
         offset = 3
         for _ in range(record_count):
             if offset + 4 > len(data):
@@ -2061,14 +2280,25 @@ class RakNetServer:
             start = int.from_bytes(data[offset:offset + 3], 'little')
             offset += 3
             if singleton:
-                sequences.append(start)
+                expanded += 1
+                if expanded > _ACK_SEQUENCE_LIMIT:
+                    return []
+                if start not in seen:
+                    seen.add(start)
+                    sequences.append(start)
                 continue
             if offset + 3 > len(data):
                 break
             end = int.from_bytes(data[offset:offset + 3], 'little')
             offset += 3
             if end >= start and end - start <= 4096:
-                sequences.extend(range(start, end + 1))
+                expanded += end - start + 1
+                if expanded > _ACK_SEQUENCE_LIMIT:
+                    return []
+                for sequence in range(start, end + 1):
+                    if sequence not in seen:
+                        seen.add(sequence)
+                        sequences.append(sequence)
         return sequences
 
     def _handle_ack(self, s: Session, data: bytes):
@@ -2108,15 +2338,22 @@ class RakNetServer:
                 f"{tuple(label for _sequence, label in dropped[:5])}"
             )
 
-    def _reply_unconnected_ping(self, s: Session, data: bytes):
+    def _reply_unconnected_ping(self, s: Session | None, data: bytes, *, addr=None):
         ping_time = data[1:9] if len(data) >= 9 else bytes(8)
         message = self.service_name.encode('utf-8')
-        s.send(b'\x1c'
+        packet = (b'\x1c'
                + ping_time
                + SERVER_GUID
                + RAKNET_MAGIC
                + struct.pack('>H', len(message))
                + message)
+        if s is not None:
+            s.send(packet)
+        elif self.sock is not None:
+            try:
+                self.sock.sendto(packet, addr)
+            except OSError:
+                pass
 
     def _connection_is_authorized(self, client_ip: str) -> bool:
         """Whether an unauthenticated address may open a RakNet session."""
@@ -2137,6 +2374,8 @@ class RakNetServer:
         if not allowed:
             now = time.perf_counter()
             if now - self._last_rejection_log_at.get(client_ip, 0.0) > 5.0:
+                if len(self._last_rejection_log_at) >= 1024:
+                    self._last_rejection_log_at.pop(next(iter(self._last_rejection_log_at)))
                 self._last_rejection_log_at[client_ip] = now
                 print(
                     f"[{self.service_name}] refused {client_ip}: no active "
@@ -2144,8 +2383,8 @@ class RakNetServer:
                 )
         return allowed
 
-    def _reply_open1(self, s: Session, data: bytes):
-        if not self._connection_is_authorized(s.addr[0]):
+    def _reply_open1(self, s: Session, data: bytes, *, authorized=False):
+        if not authorized and not self._connection_is_authorized(s.addr[0]):
             return
         discovered_mtu = max(576, min(1492, len(data) + 28))
         s.send(b'\x06'

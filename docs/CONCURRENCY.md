@@ -9,11 +9,26 @@ make unsafe ownership crossings fail loudly instead of freezing the server.
 
 Gameplay currently enters the same state from several execution contexts:
 
-- the RakNet receive thread dispatches player commands;
+- the RakNet receive thread queues player commands for per-session FIFO execution;
 - fixed-rate map workers update monsters;
 - deadline workers deliver delayed impacts and expirations;
 - presence code publishes state to other sessions;
 - the background database writer persists snapshots.
+
+Queued gameplay handlers hold the session's plain `gameplay_mutation_lock`
+transaction gate. This is separate from the short-lived `session_flow` and
+`map_combat` state locks: handler I/O waits run on workers while reception
+continues. Trade elects one executor under its registry lock, freezes accepted
+offers, releases the registry lock, and reserves both participants' mutation
+gates. Other trade commands observe `busy` and return instead of waiting for
+the executor while retaining a participant gate. Session-targeted CMS actions
+and final retirement persistence use the same gate.
+
+Retiring endpoints remain reserved until their cleanup worker has finished the
+final snapshot. Subsequent handshake packets retry after that boundary, so a
+new session cannot initialize against an in-flight old snapshot. Arena phase
+changes discard stale movement/casts while retaining queued inventory/social
+requests; changing the map or retiring the session invalidates the whole FIFO.
 
 A flow lock and a combat lock can therefore form a cycle even when each
 individual method looks correct. The common failure shape is:

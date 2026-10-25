@@ -27,7 +27,7 @@ from dso_server.protocol.reward_protocol import (
     OCPBookingReward, ocp_booking_notification_payload,
 )
 from dso_server.protocol.skill_book_protocol import experience_commands
-from dso_server.runtime.admin_commands import AdminCommandQueue
+from dso_server.runtime.admin_commands import AdminCommandQueue, call_admin_command
 from dso_server.services.admin_effects import ADMIN_EFFECTS, matching_admin_effects
 from dso_server.services.base import CharacterService
 from dso_server.services.customization import CustomizationService
@@ -254,7 +254,7 @@ class LiveAdministration:
         repository = self.service.repository
         repository.audit(actor, "character." + action + ".requested", cid, {**details, "reason": reason})
         try:
-            result = server.admin_commands.call(execute)
+            result = call_admin_command(server.admin_commands, execute, session=s)
             self.service.store.flush()
         except Exception as exc:
             repository.audit(actor, "character." + action + ".failed", cid, {**details, "reason": reason, "error": str(exc)[:500]})
@@ -300,7 +300,7 @@ class LiveAdministration:
                 CharacterService._achievement_on_level_up(s, class_id, level)
             CharacterService._request_account_save(s, "admin-cms-level")
             return True
-        return bool(server.admin_commands.call(execute))
+        return bool(call_admin_command(server.admin_commands, execute, session=s))
 
     def set_wisdom_level(self, cid, experience):
         """Apply a Wisdom XP threshold to a ready live character and refresh its UI."""
@@ -334,7 +334,7 @@ class LiveAdministration:
                 s, "admin-cms-wisdom", flush=True)
             return True
 
-        return bool(server.admin_commands.call(execute))
+        return bool(call_admin_command(server.admin_commands, execute, session=s))
 
     def set_honor_points(self, cid, honor_points):
         """Apply a career honor total to a ready live character and save it."""
@@ -359,7 +359,7 @@ class LiveAdministration:
                 s, "admin-cms-honor-points", flush=True)
             return True
 
-        return bool(server.admin_commands.call(execute))
+        return bool(call_admin_command(server.admin_commands, execute, session=s))
 
 
     def deliver(self, booking_id):
@@ -396,7 +396,7 @@ class LiveAdministration:
                                 raise ValueError("character session changed; acknowledgement will retry at next entry")
                             return PlayerPersistenceService._persist_gameplay_session(
                                 server, s, reason="CMS booking acknowledgement")
-                        server.admin_commands.call(acknowledge)
+                        call_admin_command(server.admin_commands, acknowledge, session=s)
                         service.store.flush()
                         service.repository.finish_booking(booking_id)
                         return service.repository.booking(booking_id)
@@ -428,7 +428,7 @@ class LiveAdministration:
                         s.send_reliable_ordered_split(packet, total_bit_length=bits, track=True,
                                                      label_prefix="admin-booking")
                         return True
-                    if server.admin_commands.call(commit):
+                    if call_admin_command(server.admin_commands, commit, session=s):
                         service.store.flush()
                         service.repository.finish_booking(booking_id)
                         return service.repository.booking(booking_id)

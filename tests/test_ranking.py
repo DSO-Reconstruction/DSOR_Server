@@ -233,6 +233,41 @@ def test_malformed_query_sends_nothing(board):
     assert session.recorder.messages == []
 
 
+def test_pages_share_snapshot_and_allocate_only_requested_rows(board, monkeypatch):
+    from dso_server.services import ranking
+    server, _, store, dispatch = board
+    for identity in range(100, 200):
+        add(store, identity, identity)
+    scans, encoded = [], []
+    load = server._honor_ranking_records
+    encode = ranking._wire_row
+    monkeypatch.setattr(server, "_honor_ranking_records", lambda s: (scans.append(1), load(s))[1])
+    monkeypatch.setattr(ranking, "_wire_row", lambda row, rank: (encoded.append(rank), encode(row, rank))[1])
+    read_page(dispatch(request_bytes(count=10)))
+    read_page(dispatch(request_bytes(start=10, count=10)))
+    assert len(scans) == 1
+    assert encoded == list(range(20))
+
+
+def test_snapshot_refreshes_live_scores_after_expiry(board, monkeypatch):
+    from dso_server.services import ranking
+    _, session, _, dispatch = board
+    now = [100.0]
+    monkeypatch.setattr(ranking.time, "monotonic", lambda: now[0])
+    assert read_page(dispatch(request_bytes())).rows[0][1] == 75
+    session.gameplay_honor_points = 123
+    now[0] += ranking.RANKING_SNAPSHOT_SECONDS + 0.01
+    assert read_page(dispatch(request_bytes())).rows[0][1] == 123
+
+
+def test_unrecorded_board_does_not_scan_characters(board, monkeypatch):
+    server, _, _, dispatch = board
+    def unexpected(_session):
+        raise AssertionError("unrecorded board must not read scores")
+    monkeypatch.setattr(server, "_honor_ranking_records", unexpected)
+    assert read_page(dispatch(request_bytes(DETAIL, board=2))).rows == []
+
+
 def test_pvp_scores_survive_database_reload_and_missing_fields_default(tmp_path):
     path = tmp_path / "players.sqlite3"
     store = AccountStateStore(path)

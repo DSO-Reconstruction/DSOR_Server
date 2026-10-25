@@ -315,7 +315,10 @@ class PlayerResourceService:
     def _apply_player_status_resource(s: Session, definitions) -> None:
         """Apply immediate CurrSkillResource programs from user effects."""
 
-        definitions = tuple(definitions)
+        definitions = tuple(
+            definition for definition in definitions
+            if "currskillresource" in definition.modifier_kinds
+        )
         if not definitions:
             return
         with s.flow_lock:

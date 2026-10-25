@@ -474,9 +474,19 @@ class ServerApplication:
             self.accounts.stop()
         for service in reversed(self.services):
             service.stop()
-        self.account_store.close()
-        if self.account_registry is not None:
-            self.account_registry.close()
+        close_errors = []
+        for store in (getattr(self, "social_store", None), self.account_store,
+                      self.account_registry):
+            if store is not None:
+                try:
+                    store.close()
+                except Exception as exc:
+                    close_errors.append(exc)
+                    print(f"[Shutdown] {type(store).__name__} close failed: {exc}")
+        if close_errors:
+            # Let a later stop retry a failed writer, but always give the other
+            # stores a chance to drain on this attempt.
+            raise close_errors[0]
         self._started = False
         self._stop_event.set()
         print("Stopped.")

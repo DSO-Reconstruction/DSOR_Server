@@ -18,6 +18,7 @@ import xml.etree.ElementTree as ElementTree
 from dso_server.gameplay.event_system import load_event_catalog, UINT32_MAX
 from dso_server.services import events as game_events
 from dso_server.paths import DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT
+from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
 
@@ -326,8 +327,9 @@ class EventAdministration:
                 if cid is None:
                     continue
                 try:
-                    refreshed = server.admin_commands.call(lambda: refresh_session_events(
-                        server, session, cid, context, previous, catalog))
+                    refreshed = call_admin_command(server.admin_commands,
+                        lambda: refresh_session_events(server, session, cid, context, previous, catalog),
+                        session=session)
                     result["updated" if refreshed else "deferred"] += 1
                 except Exception as exc:
                     result["deferred"] += 1

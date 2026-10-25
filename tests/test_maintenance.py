@@ -314,3 +314,24 @@ def test_real_timer_requests_stop_without_running_application_cleanup_on_timer_t
             controller.schedule(1)
     finally:
         controller.close()
+
+
+def test_social_writer_failure_does_not_skip_player_database_drain():
+    app = ServerApplication.__new__(ServerApplication)
+    app._started = True
+    app.maintenance = SimpleNamespace(close=lambda: None)
+    app.stall_watchdog = SimpleNamespace(stop=lambda: None, statistics=lambda: {"stall_count": 0})
+    app.autosaver = SimpleNamespace(stop=lambda: None)
+    app.accounts = None
+    app.services = ()
+    drained = []
+
+    def fail():
+        raise TimeoutError("social disk stalled")
+
+    app.social_store = SimpleNamespace(close=fail)
+    app.account_store = SimpleNamespace(close=lambda: drained.append("players"))
+    app.account_registry = SimpleNamespace(close=lambda: drained.append("accounts"))
+    with pytest.raises(TimeoutError, match="social disk stalled"):
+        app.stop()
+    assert drained == ["players", "accounts"]

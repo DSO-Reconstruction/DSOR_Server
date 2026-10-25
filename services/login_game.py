@@ -299,30 +299,13 @@ class LoginGameServer(DispatchService, LoginServer):
 
     def _dispatch_gameplay_skill_command_now(
             self, s: Session, command_id: int, payload: bytes) -> None:
-        """Execute one queued legacy-route cast via CharacterServer logic."""
+        """Execute queued legacy-route input via CharacterServer logic."""
+        self._dispatch_char_op_now(s, payload)
 
-        if command_id in {
-            BULLET_SKILL_COMMAND,
-            TARGET_POINT_BULLET_SKILL_COMMAND,
-            TARGET_BULLET_SKILL_COMMAND,
-        }:
-            CharacterServer._handle_bullet_skill(s, payload)
-            return
-        if command_id in {
-            SKILL_COMMAND,
-            TARGET_SKILL_COMMAND,
-            SHIFTED_SKILL_COMMAND,
-        }:
-            CharacterServer._handle_spatial_skill(s, payload)
-            return
-        raise ValueError(
-            f"unsupported queued gameplay skill command 0x{command_id:04x}"
-        )
-
-    def _on_char_op(self, s: Session, payload: bytes):
+    def _dispatch_char_op_now(self, s: Session, payload: bytes):
         """Handle gameplay readiness when localhost routes the map via 2190."""
         if not s.gameplay_mode:
-            return super()._on_char_op(s, payload)
+            return super()._dispatch_char_op_now(s, payload)
 
         command_id = (
             int.from_bytes(payload[1:3], 'little') if len(payload) >= 3 else None
@@ -353,17 +336,13 @@ class LoginGameServer(DispatchService, LoginServer):
             TARGET_POINT_BULLET_SKILL_COMMAND,
             TARGET_BULLET_SKILL_COMMAND,
         }:
-            self._enqueue_gameplay_skill_command(
-                s, command_id, payload
-            )
+            CharacterServer._handle_bullet_skill(s, payload)
         elif command_id in {
             SKILL_COMMAND,
             TARGET_SKILL_COMMAND,
             SHIFTED_SKILL_COMMAND,
         }:
-            self._enqueue_gameplay_skill_command(
-                s, command_id, payload
-            )
+            CharacterServer._handle_spatial_skill(s, payload)
         elif command_id == 0x0055:
             CharacterServer._handle_inventory_item_action(self, s, payload)
         elif command_id == PICKUP_ITEM_COMMAND:

@@ -1,5 +1,52 @@
 # Concurrency limits and performance
 
+## Production latency review, October 2026
+
+The receive path now queues gameplay mutations alongside movement and casts.
+Disk durability remains part of the handler transaction, while packet reception
+and acknowledgements continue independently. State/profile saves share one
+database barrier. Password hashing no longer owns the account registry lock,
+and social serialization/writes run outside the membership lock.
+Administrative mutations also leave the receive thread and share session
+transaction gates with gameplay, initialization, trades, and retirement.
+
+Transport uses bounded, paced per-session outboxes; control ACKs bypass their
+ordered-payload lock. Offline pings are stateless, abandoned handshakes expire,
+and reliable streams have hard byte/count and acknowledgement deadlines.
+ACK/NAK expansion has an aggregate work budget. See OPERATIONS.md for limits.
+
+Monster separation uses a spatial index while preserving the previous actor
+processing order, including corrections that move a candidate between cells.
+Resource and remote-visual modifier resolution use primed RAM catalogs; trap
+definitions and immutable equipment appearance queries are cached. Leaderboard
+pages share short-lived rankings, and chat logging uses a bounded disk writer.
+
+Isolated Python 3.12 probes (not production throughput measurements):
+
+| Work | Before | After |
+| --- | --- | --- |
+| Sparse crowd separation, 600 actors | 21.30 ms | 1.88 ms |
+| Sparse crowd separation, 1,000 actors | 61.40 ms | 3.21 ms |
+| Tiny state/profile durable save, median | 46.00 ms, two barriers | 29.54 ms, one barrier |
+
+Regression checks cover collision parity, absence of SQL in resource resolution,
+cache invalidation, queue capacities/order, nonblocking ACKs, stalled audit I/O,
+authentication races, and atomic state/profile persistence. Earlier performance
+investigations below describe their measured historical implementations.
+
+The final combined selection of affected regression suites passed all 305 tests,
+including trade persistence after outbound failure, initialization/retirement
+ordering, and administrative mutation gates. Python compilation also passed.
+
+The full regression run during this review reported 1,439 passed, 211 failed,
+and 3 expected failures. Of the failures, 206 reproduced exactly with the
+pre-change combat/static/resource/appearance methods restored in an isolated
+process, and two safe-login failures also reproduced with the previous save
+method. The remaining three assert historical map-prop packet counts or a
+superseded stickerbook packet label. Those unrelated expectations were not
+changed to make this performance review pass. These results are regression
+evidence, not a production load test.
+
 > **Implementation status.** Items 1-5 of Section 7 are done; only the
 > allocation-free retransmission early-out in item 6 remains. Measured results:
 >

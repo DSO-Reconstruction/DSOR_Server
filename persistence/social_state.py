@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import copy
+from collections import deque
 from dataclasses import asdict, dataclass, field
+from functools import wraps
 import json
+import os
 from pathlib import Path
+import tempfile
 import threading
+import time
 from datetime import datetime, timezone
 from dso_server.paths import DEFAULT_SOCIAL_STATE_PATH
 
@@ -72,6 +77,21 @@ class Group:
     members: list[SocialMember] = field(default_factory=list)
 
 
+def _durable_mutation(method):
+    """Keep existing durable-return semantics without holding the social lock."""
+    @wraps(method)
+    def invoke(self, *args, **kwargs):
+        if self.lock._is_owned():
+            raise RuntimeError("social mutations must run without the caller holding the social lock")
+        with self.lock:
+            if self._closed:
+                raise RuntimeError("social state store is closed")
+            result = method(self, *args, **kwargs)
+        self.flush()
+        return result
+    return invoke
+
+
 class SocialStateStore:
     def __init__(self, path: str | Path = DEFAULT_SOCIAL_STATE_PATH):
         self.path = Path(path)
@@ -81,7 +101,27 @@ class SocialStateStore:
         self.buddies: dict[int, set[int]] = {}
         self.next_guild_id = 50_000_001
         self.next_group_id = 60_000_001
+        self._guild_memberships: dict[int, int] = {}
+        self._group_memberships: dict[int, int] = {}
+        self._guild_names: set[str] = set()
+        self._condition = threading.Condition()
+        self._queued_revision = 0
+        self._written_revision = 0
+        self._thread: threading.Thread | None = None
+        self._last_error: Exception | None = None
+        self._closed = False
+        self._stop = False
+        self.warnings: deque[str] = deque(maxlen=32)
         self._load()
+        self._guild_memberships = {
+            member.character_id: guild.guild_id
+            for guild in self.guilds.values() for member in guild.members
+        }
+        self._group_memberships = {
+            member.character_id: group.group_id
+            for group in self.groups.values() for member in group.members
+        }
+        self._guild_names = {guild.name.casefold() for guild in self.guilds.values()}
 
     @staticmethod
     def _now() -> str:
@@ -170,35 +210,120 @@ class SocialStateStore:
                     if int(buddy_id) != owner
                 }
         if repaired:
+            self._queue_write_locked()
             self.flush()
 
-    def flush(self) -> None:
+    def _queue_write_locked(self) -> None:
+        # One revision counter represents all pending work. A mutation burst
+        # cannot build an unbounded queue of whole-world JSON snapshots.
+        with self._condition:
+            self._queued_revision += 1
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._writer_loop, name="social-state-writer", daemon=True
+                )
+                self._thread.start()
+            self._condition.notify_all()
+
+    def _write_snapshot(self, snapshot) -> None:
+        next_guild_id, next_group_id, guilds, groups, buddies = snapshot
+        document = {
+            "version": STATE_VERSION,
+            "next_guild_id": next_guild_id,
+            "next_group_id": next_group_id,
+            "guilds": [asdict(value) for value in guilds],
+            "groups": [asdict(value) for value in groups],
+            "buddies": {
+                str(owner_id): sorted(buddy_ids)
+                for owner_id, buddy_ids in buddies if buddy_ids
+            },
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self.path.parent,
+                prefix=f".{self.path.name}.", suffix=".tmp", delete=False,
+            ) as output:
+                temporary = Path(output.name)
+                json.dump(document, output, ensure_ascii=False, separators=(",", ":"))
+                output.write("\n")
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _writer_loop(self) -> None:
+        while True:
+            with self._condition:
+                while self._written_revision >= self._queued_revision:
+                    if self._stop or not self._condition.wait(timeout=1.0):
+                        # Idle stores should not retain a daemon forever (also
+                        # useful for short-lived tooling and test instances).
+                        self._thread = None
+                        return
+                self._condition.wait(timeout=0.01)
+            # Mutations replace changed entities/sets. These shallow references
+            # are immutable snapshots, so asdict/JSON/fsync need no social lock.
+            with self.lock:
+                snapshot = (
+                    self.next_guild_id, self.next_group_id,
+                    tuple(self.guilds.values()), tuple(self.groups.values()),
+                    tuple(self.buddies.items()),
+                )
+                with self._condition:
+                    revision = self._queued_revision
+            try:
+                self._write_snapshot(snapshot)
+            except Exception as exc:
+                with self._condition:
+                    self._last_error = exc
+                    self.warnings.append(f"social state write failed: {exc}")
+                    self._condition.notify_all()
+                    self._condition.wait(timeout=0.1)
+                continue
+            with self._condition:
+                self._written_revision = max(self._written_revision, revision)
+                self._last_error = None
+                self._condition.notify_all()
+
+    def flush(self, timeout: float = 15.0) -> None:
+        """Wait for queued mutations, raising if persistence cannot catch up."""
+        if self.lock._is_owned():
+            raise RuntimeError("social flush must run without holding the social lock")
+        deadline = time.monotonic() + max(0.01, float(timeout))
+        with self._condition:
+            target = self._queued_revision
+            while self._written_revision < target:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        f"timed out flushing social state: {self._last_error}"
+                    ) from self._last_error
+                self._condition.wait(remaining)
+
+    def close(self, timeout: float = 15.0) -> None:
+        """Drain writes before shutdown; retain pending work on timeout."""
         with self.lock:
-            document = {
-                "version": STATE_VERSION,
-                "next_guild_id": self.next_guild_id,
-                "next_group_id": self.next_group_id,
-                "guilds": [asdict(value) for value in self.guilds.values()],
-                "groups": [asdict(value) for value in self.groups.values()],
-                "buddies": {
-                    str(owner_id): sorted(buddy_ids)
-                    for owner_id, buddy_ids in self.buddies.items()
-                    if buddy_ids
-                },
-            }
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(
-                json.dumps(document, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
-            )
+            self._closed = True
+        self.flush(timeout)
+        with self._condition:
+            self._stop = True
+            thread = self._thread
+            self._condition.notify_all()
+        if thread is not None:
+            thread.join(timeout=timeout)
+            if thread.is_alive():
+                raise TimeoutError("timed out stopping social state writer")
 
     def guild_for(self, character_id: int) -> Guild | None:
         with self.lock:
-            for guild in self.guilds.values():
-                if any(m.character_id == character_id for m in guild.members):
-                    return copy.deepcopy(guild)
-        return None
+            guild = self.guilds.get(self._guild_memberships.get(int(character_id)))
+            return copy.deepcopy(guild) if guild is not None else None
 
+    @_durable_mutation
     def create_guild(
         self, name: str, description: str, member: SocialMember
     ) -> Guild:
@@ -208,7 +333,7 @@ class SocialStateStore:
         with self.lock:
             if self.guild_for(member.character_id):
                 raise ValueError("character is already in a guild")
-            if any(g.name.casefold() == cleaned.casefold() for g in self.guilds.values()):
+            if cleaned.casefold() in self._guild_names:
                 raise ValueError("guild name is already in use")
             member = copy.deepcopy(member)
             member.rank = GUILD_RANK_LEADER
@@ -218,28 +343,26 @@ class SocialStateStore:
             )
             self.next_guild_id += 1
             self.guilds[guild.guild_id] = guild
-            self.flush()
+            self._guild_names.add(guild.name.casefold())
+            self._guild_memberships[member.character_id] = guild.guild_id
+            self._queue_write_locked()
             return copy.deepcopy(guild)
 
+    @_durable_mutation
     def leave_guild(self, character_id: int) -> Guild | None:
         with self.lock:
-            guild = next(
-                (
-                    value
-                    for value in self.guilds.values()
-                    if any(m.character_id == character_id for m in value.members)
-                ),
-                None,
-            )
+            guild = self.guild_for(character_id)
             if guild is None:
                 return None
             departing = next(m for m in guild.members if m.character_id == character_id)
             guild.members = [
                 m for m in guild.members if m.character_id != character_id
             ]
+            self._guild_memberships.pop(int(character_id), None)
             if not guild.members:
                 del self.guilds[guild.guild_id]
-                self.flush()
+                self._guild_names.discard(guild.name.casefold())
+                self._queue_write_locked()
                 return None
             if departing.rank == GUILD_RANK_LEADER:
                 successor = min(
@@ -252,43 +375,46 @@ class SocialStateStore:
                 )
                 successor.rank = GUILD_RANK_LEADER
                 successor.can_invite = True
-            self.flush()
+            self.guilds[guild.guild_id] = guild
+            self._queue_write_locked()
             return copy.deepcopy(guild)
 
     def group_for(self, character_id: int) -> Group | None:
         with self.lock:
-            for group in self.groups.values():
-                if any(m.character_id == character_id for m in group.members):
-                    return copy.deepcopy(group)
-        return None
+            group = self.groups.get(self._group_memberships.get(int(character_id)))
+            return copy.deepcopy(group) if group is not None else None
 
     def buddies_for(self, character_id: int) -> tuple[int, ...]:
         with self.lock:
             return tuple(sorted(self.buddies.get(int(character_id), ())))
 
+    @_durable_mutation
     def add_buddy(self, character_id: int, buddy_character_id: int) -> None:
         owner = int(character_id)
         buddy = int(buddy_character_id)
         if owner == buddy:
             raise ValueError("a character cannot add itself as a buddy")
         with self.lock:
-            buddies = self.buddies.setdefault(owner, set())
+            buddies = set(self.buddies.get(owner, ()))
             if buddy in buddies:
                 raise ValueError("character is already a buddy")
             buddies.add(buddy)
-            self.flush()
+            self.buddies[owner] = buddies
+            self._queue_write_locked()
 
+    @_durable_mutation
     def remove_buddy(self, character_id: int, buddy_character_id: int) -> bool:
         owner = int(character_id)
         buddy = int(buddy_character_id)
         with self.lock:
-            buddies = self.buddies.get(owner)
+            buddies = set(self.buddies.get(owner, ()))
             if not buddies or buddy not in buddies:
                 return False
             buddies.remove(buddy)
+            self.buddies[owner] = buddies
             if not buddies:
                 self.buddies.pop(owner, None)
-            self.flush()
+            self._queue_write_locked()
             return True
 
     def group_by_id(self, group_id: int) -> Group | None:
@@ -306,6 +432,7 @@ class SocialStateStore:
                 if group.listed and (not map_id or group.map_id == map_id)
             )
 
+    @_durable_mutation
     def create_group(
         self, name: str, description: str, map_id: str, member: SocialMember
     ) -> Group:
@@ -329,9 +456,11 @@ class SocialStateStore:
             )
             self.next_group_id += 1
             self.groups[group.group_id] = group
-            self.flush()
+            self._group_memberships[member.character_id] = group.group_id
+            self._queue_write_locked()
             return copy.deepcopy(group)
 
+    @_durable_mutation
     def add_group_member(
         self,
         group_id: int,
@@ -339,7 +468,7 @@ class SocialStateStore:
         member: SocialMember,
     ) -> Group:
         with self.lock:
-            group = self.groups.get(int(group_id))
+            group = copy.deepcopy(self.groups.get(int(group_id)))
             if group is None:
                 raise ValueError("group no longer exists")
             inviter = next(
@@ -366,9 +495,12 @@ class SocialStateStore:
             joined = copy.deepcopy(member)
             joined.can_invite = False
             group.members.append(joined)
-            self.flush()
+            self.groups[group.group_id] = group
+            self._group_memberships[joined.character_id] = group.group_id
+            self._queue_write_locked()
             return copy.deepcopy(group)
 
+    @_durable_mutation
     def add_guild_member(
         self,
         guild_id: int,
@@ -376,7 +508,7 @@ class SocialStateStore:
         member: SocialMember,
     ) -> Guild:
         with self.lock:
-            guild = self.guilds.get(int(guild_id))
+            guild = copy.deepcopy(self.guilds.get(int(guild_id)))
             if guild is None:
                 raise ValueError("guild no longer exists")
             inviter = next(
@@ -402,27 +534,24 @@ class SocialStateStore:
             joined.rank = GUILD_RANK_MEMBER
             joined.can_invite = False
             guild.members.append(joined)
-            self.flush()
+            self.guilds[guild.guild_id] = guild
+            self._guild_memberships[joined.character_id] = guild.guild_id
+            self._queue_write_locked()
             return copy.deepcopy(guild)
 
+    @_durable_mutation
     def leave_group(self, character_id: int) -> Group | None:
         with self.lock:
-            group = next(
-                (
-                    value
-                    for value in self.groups.values()
-                    if any(m.character_id == character_id for m in value.members)
-                ),
-                None,
-            )
+            group = self.group_for(character_id)
             if group is None:
                 return None
             group.members = [
                 m for m in group.members if m.character_id != character_id
             ]
+            self._group_memberships.pop(int(character_id), None)
             if not group.members:
                 del self.groups[group.group_id]
-                self.flush()
+                self._queue_write_locked()
                 return None
             if group.owner_character_id == character_id:
                 successor = min(
@@ -430,7 +559,8 @@ class SocialStateStore:
                 )
                 group.owner_character_id = successor.character_id
                 successor.can_invite = True
-            self.flush()
+            self.groups[group.group_id] = group
+            self._queue_write_locked()
             return copy.deepcopy(group)
 
 

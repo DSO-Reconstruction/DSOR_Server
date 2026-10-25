@@ -32,6 +32,7 @@ from dso_server.protocol.player_init_protocol import (
     CHAPTER_PROGRESS_COMMAND, ServerCommand, encode_server_command_batch,
 )
 from dso_server.protocol.quest_protocol import QUEST_UPDATE_COMMAND, QuestUpdate
+from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.services.accounts import FailureThrottle
 from dso_server.services.admin_bookings import BookingDelivery, CURRENCIES
 from dso_server.services.admin_items import item_catalog, item_metadata
@@ -198,9 +199,10 @@ class AdminService:
                 if open_shop_id != shop_id:
                     continue
                 try:
-                    refreshed += bool(server.admin_commands.call(
+                    refreshed += bool(call_admin_command(server.admin_commands,
                         lambda server=server, player_session=player_session:
-                            server._refresh_open_npc_shop(player_session, shop_id)
+                            server._refresh_open_npc_shop(player_session, shop_id),
+                        session=player_session,
                     ))
                 except Exception as exc:
                     # The durable CMS write is already committed. A player who
@@ -295,10 +297,9 @@ class AdminService:
                     character = session.gameplay_character
                     if character is None or int(character.character_id) != cid:
                         continue
-                    with session.flow_lock:
-                        for key, value in changes.items():
-                            setattr(character, key, value)
-                    gameplay_sessions += 1
+                    gameplay_sessions += bool(self._update_session_character(
+                        server, session, cid, changes,
+                    ))
         details = {**changes, "reason": reason, "roster": roster,
                    "chat_sessions": chat_sessions, "gameplay_sessions": gameplay_sessions}
         self.repository.audit(account.username, "character.privileges", cid, details)
@@ -480,19 +481,10 @@ class AdminService:
                     character = session.gameplay_character
                     if character is None or int(character.character_id) != cid:
                         continue
-                    with session.flow_lock:
-                        for key, value in values.items():
-                            setattr(character, key, value)
-                        if "level" in values:
-                            character.progression_u32 = saved["progression_u32"]
-                            points = tuple(session.gameplay_talent_category_points)
-                            if len(points) == 4:
-                                # Slot 0 mirrors earned experience, and an XP grant
-                                # takes the larger of the two; leaving the old value
-                                # here would pull a lowered level straight back up.
-                                session.gameplay_talent_category_points = (
-                                    saved["progression_u32"], points[1], points[2], points[3])
-                    gameplay_sessions += 1
+                    gameplay_sessions += bool(self._update_session_character(
+                        server, session, cid, values,
+                        progression_xp=saved.get("progression_u32"),
+                    ))
             if "level" in values and values["level"] != profile.level:
                 self.live.refresh_progress(cid, previous_level=profile.level)
         details = {**values, "reason": reason, "experience": saved.get("progression_u32"),
@@ -500,6 +492,31 @@ class AdminService:
                    "gameplay_sessions": gameplay_sessions}
         self.repository.audit(account.username, "character.identity", cid, details)
         return {"ok": True, "chat_sessions": chat_sessions, "gameplay_sessions": gameplay_sessions}
+
+    @staticmethod
+    def _update_session_character(server, session, cid, changes, *, progression_xp=None):
+        """Serialize live identity/privilege publication with gameplay commands."""
+        def commit():
+            if not server.is_session_current(session):
+                return False
+            with session.flow_lock:
+                character = session.gameplay_character
+                if character is None or int(character.character_id) != cid:
+                    return False
+                for key, value in changes.items():
+                    setattr(character, key, value)
+                if progression_xp is not None:
+                    character.progression_u32 = progression_xp
+                    points = tuple(session.gameplay_talent_category_points)
+                    if len(points) == 4:
+                        # XP grants compare both totals; update them together so
+                        # a lowered level cannot inherit the previous XP floor.
+                        session.gameplay_talent_category_points = (
+                            progression_xp, points[1], points[2], points[3],
+                        )
+            return True
+
+        return call_admin_command(server.admin_commands, commit, session=session)
 
     def copy_character_inventory(self, source_cid, target_cid, actor, reason):
         """Append copies of every owned item to a fully loaded live character."""
@@ -651,7 +668,7 @@ class AdminService:
             )
             return True
 
-        if not target_server.admin_commands.call(commit):
+        if not call_admin_command(target_server.admin_commands, commit, session=target_session):
             raise ValueError("target inventory changed; try the copy again")
         self.store.flush()
         self.repository.audit(actor.username, "character.inventory.copy", target_cid, {
@@ -748,7 +765,7 @@ class AdminService:
                     session, commands, label="admin-main-quests-completed"
                 )
                 return True
-            if not server.admin_commands.call(commit):
+            if not call_admin_command(server.admin_commands, commit, session=session):
                 raise ValueError("character session changed; refresh and retry")
         self.repository.audit(actor.username, "character.quests.complete_main", cid, {
             "quest_count": len(quests), "newly_completed": completed,
@@ -884,7 +901,7 @@ class AdminService:
                     session, commands, label="admin-ammon-pw-quests-completed"
                 )
                 return True
-            if not server.admin_commands.call(commit):
+            if not call_admin_command(server.admin_commands, commit, session=session):
                 raise ValueError("character session changed; refresh and retry")
         self.repository.audit(actor.username, "character.quests.complete_ammon_parallel_worlds", cid, {
             "quest_count": len(quests), "newly_completed": completed,
@@ -942,7 +959,7 @@ class AdminService:
             )
             return True
 
-        if not server.admin_commands.call(commit):
+        if not call_admin_command(server.admin_commands, commit, session=session):
             raise ValueError("character session changed; refresh and retry")
         self.repository.audit(actor.username, "character.quests.complete_active", cid, {
             "completed": completed, "failed": failed, "reason": reason,
@@ -1032,7 +1049,7 @@ class AdminService:
                     label_prefix="admin-inventory-item-delete",
                 )
                 return True
-            if not server.admin_commands.call(commit):
+            if not call_admin_command(server.admin_commands, commit, session=session):
                 raise ValueError("character inventory changed; refresh and try again")
         self.repository.audit(actor.username, "character.inventory.item.delete", cid, {
             "item_id": item_id, "template_id": item.template_id,

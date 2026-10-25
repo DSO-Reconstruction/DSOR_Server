@@ -713,8 +713,21 @@ class PresenceVisualService:
         visuals: dict[int, RemoteEquipmentVisual] = {}
         hidden_skins = hidden_skins or {}
         for item_id, slots in sorted(inventory.equipment_slots.items()):
+            visible_slots = tuple(int(slot) for slot in slots if 0 <= int(slot) <= 7)
+            if not visible_slots:
+                continue
             item = items_by_id.get(int(item_id))
             if item is None:
+                continue
+            item_skin = str(item.field_f8 or item.field_80 or "")
+            visible_slots = tuple(
+                slot for slot in visible_slots
+                if not (
+                    (hidden_skin := str(hidden_skins.get(12 if slot == 7 else slot, "")))
+                    and (not item_skin or hidden_skin == item_skin)
+                )
+            )
+            if not visible_slots:
                 continue
             try:
                 skin = self.static_database.remote_equipment_skin(
@@ -724,26 +737,11 @@ class PresenceVisualService:
             except (OSError, ValueError, CharacterSelectionError):
                 continue
             color = item_tint(item)
-            for slot in slots:
-                slot = int(slot)
+            for slot in visible_slots:
                 # RemotePlayerInfo's additional-skin slots 0..7 are the
                 # visible helmet, shoulders, torso, gloves, boots, both hands
                 # and cloak. Accessories do not create actor geometry.
-                if 0 <= slot <= 7:
-                    customization_slot = 12 if slot == 7 else slot
-                    hidden_skin = str(
-                        hidden_skins.get(customization_slot, "")
-                    )
-                    item_skin = str(item.field_f8 or item.field_80 or "")
-                    if hidden_skin and (
-                        not item_skin or hidden_skin == item_skin
-                    ):
-                        continue
-                    visuals[slot] = RemoteEquipmentVisual(
-                        slot,
-                        (skin,),
-                        color,
-                    )
+                visuals[slot] = RemoteEquipmentVisual(slot, (skin,), color)
         return tuple(visuals[slot] for slot in sorted(visuals))
 
     @staticmethod

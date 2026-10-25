@@ -120,6 +120,11 @@ and drains the player-database writer.
 | `DSO_DISABLE_STATUS_EFFECTS` | `0` | diagnostic: no status effects at all, in either direction |
 | `DSO_RELIABLE_RETRANSMIT_BURST_LIMIT` | `16` | overdue reliable datagrams re-sent per session per 20 Hz pass |
 | `DSO_RELIABLE_STUCK_WARNING_SECONDS` | `5` | report a reliable datagram that a still-talking client has not acknowledged for this long |
+| `DSO_MAX_SESSIONS` | `4096` | maximum sessions per UDP service; offline discovery pings do not allocate sessions |
+| `DSO_HANDSHAKE_TIMEOUT_SECONDS` | `10` | expire connections that never finish their handshake |
+| `DSO_RELIABLE_PENDING_LIMIT` | `4096` | hard pending reliable datagram limit per peer; exceeding it retires the stream |
+| `DSO_RELIABLE_PENDING_BYTES` | `8388608` | hard pending reliable byte limit per peer |
+| `DSO_RELIABLE_ACK_TIMEOUT_SECONDS` | `30` | retire reliable streams that cannot acknowledge their outstanding output, even while receiving other traffic |
 | `DSO_UDP_RECEIVE_BUFFER_BYTES` | `1048576` | UDP `SO_RCVBUF`; `0` keeps the OS default |
 | `DSO_UDP_SEND_BUFFER_BYTES` | `1048576` | UDP `SO_SNDBUF`; `0` keeps the OS default |
 | `DSO_STALL_WATCHDOG_SECONDS` | `0.5` | report whole-process stalls over this length; `0` disables |
@@ -128,6 +133,34 @@ and drains the player-database writer.
 | `DSO_VERBOSE_PACKET_LOGGING` | `0` | per-command diagnostic logging |
 
 Set testing overrides to `0` for production-like balance.
+
+Gameplay commands use a bounded per-session FIFO, including inventory and
+social operations. Durable saves still complete before those handlers return,
+but their waits do not run on the UDP receive thread. Character state, profile,
+and wallet changes from one gameplay snapshot share a single writer transaction.
+Social updates also retain durable-return semantics; JSON serialization and
+atomic file replacement run outside the membership lock.
+
+Administrative mutations run on a separate worker with a 64-command queue.
+Targeted commands share the session mutation gate with gameplay, initialization,
+trade, and retirement, so moving work off reception preserves state ordering.
+
+UDP payloads drain through two sender workers with per-peer FIFO ordering and
+deadline-based pacing. Each service bounds queued output to 32,768 datagrams or
+64 MiB, and each peer to 4,096 datagrams or 8 MiB. ACKs bypass payload pacing.
+Queue overflow retires an ordered stream instead of silently dropping its frames.
+
+Honor rankings share a snapshot for one second and cache at most eight sorted
+boards. A requested page only encodes its own rows. Chat audit records use a
+background writer with a 4,096-record / 4 MiB buffer; overload drops new audit
+records and counts/reports the loss. Logs rotate at 10 MiB with three backups.
+Accepted audit records drain on normal shutdown; write failures are reported.
+
+Class and appearance lookup results are cached for the lifetime of their
+`StaticGameDatabase`. Content replacement code must call
+`invalidate_content_cache()` or construct a new instance. Combat caches are
+scoped to the loaded encounter; restart/reload encounters after static-content
+changes. These caches do not poll the filesystem on each cast.
 
 ## The dsor client's static database
 

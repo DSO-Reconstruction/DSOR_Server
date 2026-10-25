@@ -5,6 +5,7 @@ from __future__ import annotations
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import RakNetServer, Session
 from dso_server.paths import DEFAULT_CHAT_AUDIT_PATH
+from dso_server.runtime.audit_log import AsyncAuditLog
 from dso_server.runtime.maintenance import (
     DEFAULT_SHUTDOWN_MINUTES, MAX_SHUTDOWN_MINUTES,
 )
@@ -62,7 +63,18 @@ class ChatServer(RakNetServer):
         if audit_path == 'chat-service.log':
             audit_path = os.getenv('DSO_CHAT_AUDIT_LOG', str(DEFAULT_CHAT_AUDIT_PATH))
         self.audit_path = Path(audit_path) if audit_path else None
-        self.audit_lock = threading.Lock()
+        self._audit_writer = AsyncAuditLog(self.audit_path) if self.audit_path else None
+
+    def stop(self):
+        try:
+            super().stop()
+        finally:
+            writer = getattr(self, "_audit_writer", None)
+            if writer is not None:
+                try:
+                    writer.close()
+                except (OSError, TimeoutError) as exc:
+                    print(f"[ChatService] audit shutdown failed: {exc}")
 
     def _character_for_user_id(self, user_id: int):
         roster = getattr(self.character_selection, 'characters', ())
@@ -553,11 +565,8 @@ class ChatServer(RakNetServer):
             f'{time.strftime("%Y-%m-%d %H:%M:%S")} '
             f'{s.addr[0]}:{s.addr[1]} {event} {detail}\n'
         )
-        if self.audit_path is not None:
-            with self.audit_lock:
-                self.audit_path.parent.mkdir(parents=True, exist_ok=True)
-                with self.audit_path.open('a', encoding='utf-8') as stream:
-                    stream.write(line)
+        if self._audit_writer is not None:
+            self._audit_writer.append(line)
 
     def _authenticate_hello(self, s: Session, hello) -> bool | None:
         """Resolve the hello's session GUID against the account registry.

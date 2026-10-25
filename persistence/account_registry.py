@@ -211,6 +211,16 @@ class AccountRegistry:
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute("PRAGMA busy_timeout=10000")
         self._create_schema()
+        # Claims change only through this registry. Gameplay wallet lookups
+        # need ownership, not a fresh account/character SQL query chain.
+        self._character_owners: dict[int, int] = {}
+        self._owned_characters: dict[int, set[int]] = {}
+        for row in self._connection.execute(
+            "SELECT character_id, account_id FROM account_characters"
+        ):
+            character_id, account_id = int(row[0]), int(row[1])
+            self._character_owners[character_id] = account_id
+            self._owned_characters.setdefault(account_id, set()).add(character_id)
 
     # -- schema ------------------------------------------------------------
 
@@ -406,28 +416,38 @@ class AccountRegistry:
                 "SELECT * FROM accounts WHERE username=? COLLATE NOCASE",
                 (str(username or ""),),
             ).fetchone()
-            if row is None:
-                # Spend comparable time on unknown names so the response time
-                # does not disclose which half of the pair was wrong.
-                hash_password(
-                    str(password or ""),
-                    b"\x00" * 16,
-                    self.password_iterations,
-                )
-                raise InvalidCredentialsError("unknown username or password")
-            expected = bytes(row["password_hash"])
-            actual = hash_password(
+        if row is None:
+            # Keep unknown-name timing comparable without serializing every
+            # session lookup behind deliberately expensive password hashing.
+            hash_password(
                 str(password or ""),
-                bytes(row["password_salt"]),
-                int(row["iterations"]),
+                b"\x00" * 16,
+                self.password_iterations,
             )
-            if not hmac.compare_digest(expected, actual):
+            raise InvalidCredentialsError("unknown username or password")
+        expected = bytes(row["password_hash"])
+        actual = hash_password(
+            str(password or ""), bytes(row["password_salt"]),
+            int(row["iterations"]),
+        )
+        if not hmac.compare_digest(expected, actual):
+            raise InvalidCredentialsError("unknown username or password")
+        with self._lock:
+            current = self._connection.execute(
+                "SELECT * FROM accounts WHERE account_id=?",
+                (int(row["account_id"]),),
+            ).fetchone()
+            # A reset/deletion during hashing must invalidate the old proof.
+            if current is None or any(
+                current[field] != row[field]
+                for field in ("password_salt", "password_hash", "iterations")
+            ):
                 raise InvalidCredentialsError("unknown username or password")
-            if bool(row["disabled"]):
+            if bool(current["disabled"]):
                 raise AccountDisabledError(
-                    f"account {row['username']!r} is disabled"
+                    f"account {current['username']!r} is disabled"
                 )
-            return self._account_from_row(row)
+            return self._account_from_row(current)
 
     def set_password(
         self, username: str, current_password: str, new_password: str
@@ -465,10 +485,17 @@ class AccountRegistry:
 
     def delete_account(self, username: str) -> bool:
         with self._lock:
+            row = self._connection.execute(
+                "SELECT account_id FROM accounts WHERE username=? COLLATE NOCASE",
+                (str(username),),
+            ).fetchone()
             cursor = self._connection.execute(
                 "DELETE FROM accounts WHERE username=? COLLATE NOCASE",
                 (str(username),),
             )
+            if cursor.rowcount and row is not None:
+                for character_id in self._owned_characters.pop(int(row[0]), ()):
+                    self._character_owners.pop(character_id, None)
             return cursor.rowcount > 0
 
     # -- character claims --------------------------------------------------
@@ -489,6 +516,8 @@ class AccountRegistry:
             "(character_id, account_id, claimed_at) VALUES(?, ?, ?)",
             (int(character_id), int(account_id), time.time()),
         )
+        self._character_owners[int(character_id)] = int(account_id)
+        self._owned_characters.setdefault(int(account_id), set()).add(int(character_id))
 
     def claim_character(
         self, username: str, character_id: int
@@ -504,7 +533,18 @@ class AccountRegistry:
                 "DELETE FROM account_characters WHERE character_id=?",
                 (int(character_id),),
             )
+            account_id = self._character_owners.pop(int(character_id), None)
+            if account_id is not None:
+                self._owned_characters[account_id].discard(int(character_id))
             return cursor.rowcount > 0
+
+    def wallet_owner(self, character_id: int) -> tuple[int, tuple[int, ...]] | None:
+        """Return the RAM ownership needed for an account-wide currency wallet."""
+        with self._lock:
+            account_id = self._character_owners.get(int(character_id))
+            if account_id is None:
+                return None
+            return account_id, tuple(sorted(self._owned_characters[account_id]))
 
     def character_owner(self, character_id: int) -> AccountRecord | None:
         with self._lock:
@@ -596,6 +636,10 @@ class AccountRegistry:
             self.session_ttl_seconds if ttl_seconds is None else ttl_seconds
         )
         with self._lock:
+            # Recheck disabling/deletion between verification and issuance.
+            account = self.account_by_id(account.account_id)
+            if account.disabled:
+                raise AccountDisabledError(f"account {account.username!r} is disabled")
             if replace_existing:
                 # One live session per account: logging in again anywhere ends
                 # the previous one, so a stolen GUID cannot outlive a re-login.

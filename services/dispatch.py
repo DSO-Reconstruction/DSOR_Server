@@ -53,6 +53,12 @@ _GAMEPLAY_SKILL_DISPATCH_SLOW_COMMAND_SECONDS = 0.050
 _GAMEPLAY_SKILL_DISPATCH_STALL_LOG_INTERVAL_SECONDS = 2.0
 
 
+def _spatial_input(command_id):
+    return (command_id == _GAMEPLAY_MOVE_COMMAND
+            or command_id in _GAMEPLAY_BULLET_SKILL_COMMANDS
+            or command_id in _GAMEPLAY_SPATIAL_SKILL_COMMANDS)
+
+
 class DispatchService:
     """Gameplay and character-selection command dispatch."""
 
@@ -70,16 +76,20 @@ class DispatchService:
         )
 
     def _gameplay_skill_dispatch_session_is_current(
-            self, s: Session, context: tuple) -> bool:
+            self, s: Session, context: tuple, command_id=None) -> bool:
         """Reject queued work after disconnect, replacement, or map change."""
 
         if (
             not getattr(s, "connected", False)
             or getattr(s, "retired", False)
+            or getattr(s, "transport_failure_reason", None)
             or not getattr(s, "gameplay_mode", False)
             or getattr(s, "gameplay_exit_transition_started", False)
-            or self._gameplay_skill_dispatch_context(s) != context
         ):
+            return False
+        current = self._gameplay_skill_dispatch_context(s)
+        if (current != context if command_id is None or _spatial_input(command_id)
+                else current[:3] != context[:3]):
             return False
         is_current = getattr(self, "is_session_current", None)
         return is_current is None or bool(is_current(s))
@@ -118,10 +128,13 @@ class DispatchService:
                 f"gameplay skill ingress; dropped={dropped}: "
                 f"{type(exc).__name__}: {exc}"
             )
+            retire = getattr(self, "request_session_retirement", None)
+            if retire is not None:
+                retire(s, "gameplay input scheduler unavailable")
 
     def _enqueue_gameplay_skill_command(
             self, s: Session, command_id: int, payload: bytes) -> bool:
-        """Queue ordered hot-path input away from the UDP receive thread.
+        """Queue ordered gameplay input away from the UDP receive thread.
 
         The historical field/method names mention skills, but movement belongs
         in the same per-session FIFO. A movement update performs vicinity,
@@ -130,12 +143,13 @@ class DispatchService:
         RakNet ACKs and connected-ping replies by hundreds of milliseconds.
 
         Adjacent movement commands are latest-state updates and may coalesce.
-        A cast between two moves remains a FIFO boundary, preserving the
-        authoritative position from which that cast was issued.
+        Any command between two moves remains a FIFO boundary. Inventory,
+        social and travel commands share that boundary so durable writes and
+        content queries cannot block packet intake or overtake earlier casts.
         """
 
         context = self._gameplay_skill_dispatch_context(s)
-        if not self._gameplay_skill_dispatch_session_is_current(s, context):
+        if not self._gameplay_skill_dispatch_session_is_current(s, context, command_id):
             return False
         bit_length = getattr(s, "current_message_bit_length", None)
         if bit_length is None:
@@ -151,9 +165,22 @@ class DispatchService:
                 # Countdown movement must never execute after the start. An
                 # already scheduled drain remains the sole queue owner and
                 # will observe this incremented generation.
+                previous_context = s.gameplay_skill_dispatch_context
+                retained = (
+                    [entry for entry in s.gameplay_skill_dispatch_queue
+                     if not _spatial_input(entry[2])]
+                    if previous_context is not None and previous_context[:3] == context[:3]
+                    else ()
+                )
                 s.gameplay_skill_dispatch_queue.clear()
                 s.gameplay_skill_dispatch_context = context
                 s.gameplay_skill_dispatch_generation += 1
+                # Arena phase changes invalidate old movement/casts, but an
+                # acknowledged inventory or social request must still execute.
+                s.gameplay_skill_dispatch_queue.extend(
+                    (s.gameplay_skill_dispatch_generation, *entry[1:])
+                    for entry in retained
+                )
             generation = s.gameplay_skill_dispatch_generation
             queued_entry = (
                 generation,
@@ -209,10 +236,14 @@ class DispatchService:
                     )
         if log_overflow:
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] WARNING: gameplay skill ingress "
+                f"[{GAMEPLAY_SERVICE_NAME}] WARNING: gameplay ingress "
                 f"capacity {_GAMEPLAY_SKILL_DISPATCH_QUEUE_LIMIT} reached "
-                f"for {getattr(s, 'addr', '<unknown>')}; dropping newest cast"
+                f"for {getattr(s, 'addr', '<unknown>')}"
             )
+        if dropped:
+            retire = getattr(self, "request_session_retirement", None)
+            if retire is not None:
+                retire(s, "gameplay input capacity exceeded")
         if schedule_token is not None:
             self._schedule_gameplay_skill_dispatch(s, schedule_token)
         if stall_snapshot is not None:
@@ -240,18 +271,7 @@ class DispatchService:
             self, s: Session, command_id: int, payload: bytes) -> None:
         """Execute one queued command through its authoritative handler."""
 
-        if command_id == _GAMEPLAY_MOVE_COMMAND:
-            self._handle_gameplay_move(s, payload)
-            return
-        if command_id in _GAMEPLAY_BULLET_SKILL_COMMANDS:
-            self._handle_bullet_skill(s, payload)
-            return
-        if command_id in _GAMEPLAY_SPATIAL_SKILL_COMMANDS:
-            self._handle_spatial_skill(s, payload)
-            return
-        raise ValueError(
-            f"unsupported queued gameplay skill command 0x{command_id:04x}"
-        )
+        self._dispatch_char_op_now(s, payload)
 
     def _finish_gameplay_skill_dispatch_slice(
             self, s: Session, token: int) -> None:
@@ -261,16 +281,16 @@ class DispatchService:
         with s.gameplay_skill_dispatch_lock:
             if s.gameplay_skill_dispatch_scheduled_token != token:
                 return
-            if s.gameplay_skill_dispatch_queue:
+            while s.gameplay_skill_dispatch_queue:
                 next_context = s.gameplay_skill_dispatch_queue[0][1]
                 if self._gameplay_skill_dispatch_session_is_current(
-                        s, next_context):
+                        s, next_context, s.gameplay_skill_dispatch_queue[0][2]):
                     next_token = (
                         self._reserve_gameplay_skill_dispatch_locked(s)
                     )
+                    break
                 else:
-                    s.gameplay_skill_dispatch_queue.clear()
-                    s.gameplay_skill_dispatch_scheduled_token = None
+                    s.gameplay_skill_dispatch_queue.popleft()
             else:
                 s.gameplay_skill_dispatch_scheduled_token = None
         if next_token is not None:
@@ -300,7 +320,7 @@ class DispatchService:
                 if (
                     queued_generation != generation
                     or not self._gameplay_skill_dispatch_session_is_current(
-                        s, context
+                        s, context, command_id
                     )
                 ):
                     processed += 1
@@ -315,9 +335,15 @@ class DispatchService:
                     )
                     s.gameplay_skill_dispatch_current_command = command_id
                 try:
-                    self._dispatch_gameplay_skill_command_now(
-                        s, command_id, payload
-                    )
+                    # Trades reserve both participants' mutation gates. This
+                    # gate is distinct from flow_lock: handlers may take short
+                    # state snapshots and wait for persistence without holding
+                    # a guarded state lock across either operation.
+                    with s.gameplay_mutation_lock:
+                        if self._gameplay_skill_dispatch_session_is_current(s, context, command_id):
+                            self._dispatch_gameplay_skill_command_now(
+                                s, command_id, payload
+                            )
                 except Exception as exc:
                     print(
                         f"[{GAMEPLAY_SERVICE_NAME}] ERROR: queued gameplay "
@@ -416,6 +442,21 @@ class DispatchService:
         command_id = (
             int.from_bytes(payload[1:3], 'little') if len(payload) >= 3 else None
         )
+        hot_input = _spatial_input(command_id)
+        if (
+            s.gameplay_mode and command_id is not None and command_id != 0x006F
+            and (hot_input or getattr(self, "gameplay_command_offload", False))
+        ):
+            self._enqueue_gameplay_skill_command(s, command_id, payload)
+            return
+        self._dispatch_char_op_now(s, payload)
+
+    def _dispatch_char_op_now(self, s: Session, payload: bytes):
+        command_id = (
+            int.from_bytes(payload[1:3], 'little') if len(payload) >= 3 else None
+        )
+        if command_id is None:
+            return
         if VERBOSE_PACKET_LOGGING or not s.gameplay_mode:
             print(
                 f"[DrasaCharacterService] 0x8b raw={payload.hex()} "
@@ -450,17 +491,11 @@ class DispatchService:
             elif command_id == UPDATE_SHOW_PLAYER_OVERHEAD_ICONS_COMMAND:
                 self._handle_update_show_player_overhead_icons(s, payload)
             elif command_id == _GAMEPLAY_MOVE_COMMAND:
-                self._enqueue_gameplay_skill_command(
-                    s, command_id, payload
-                )
+                self._handle_gameplay_move(s, payload)
             elif command_id in _GAMEPLAY_BULLET_SKILL_COMMANDS:
-                self._enqueue_gameplay_skill_command(
-                    s, command_id, payload
-                )
+                self._handle_bullet_skill(s, payload)
             elif command_id in _GAMEPLAY_SPATIAL_SKILL_COMMANDS:
-                self._enqueue_gameplay_skill_command(
-                    s, command_id, payload
-                )
+                self._handle_spatial_skill(s, payload)
             elif command_id == 0x0055:
                 self._handle_inventory_item_action(s, payload)
             elif command_id == APPLY_ITEM_CUSTOMIZATION_COMMAND:

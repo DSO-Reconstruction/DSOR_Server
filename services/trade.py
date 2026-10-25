@@ -6,7 +6,9 @@ from the backpack or the extra bag, and gold); each accepts the offers as
 they stand, and any change takes both acceptances back. When both have
 accepted, the exchange is made at once for both, or not at all:
 
-* both inventories are snapshotted, both mutations computed off-lock: the
+* both accepted offers are frozen while electing one executor; the two
+  session mutation gates exclude competing inventory commands and retirement;
+* both inventories are snapshotted, both mutations computed outside flow locks: the
   offered stacks are consumed from the giver (InventoryMutationBuilder.consume)
   and restored in the receiver under a fresh id from the receiver's own id
   space (item ids are per character, see rekey_inventory_items);
@@ -18,12 +20,15 @@ accepted, the exchange is made at once for both, or not at all:
   (the vendor sale's batch), both are saved and the store flushed.
 
 The registry is shared by the gameplay servers (login, characters) of the
-process, under one plain lock never held while taking a session's flow_lock.
+process, under one plain lock never held while taking a session's flow_lock
+or mutation gate. Busy trades reject offer, cancel and duplicate ready input.
 """
 
 from __future__ import annotations
 
 import copy
+from contextlib import ExitStack
+from functools import wraps
 import threading
 import time
 import weakref
@@ -31,6 +36,7 @@ from dataclasses import dataclass, field, replace
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.runtime.outbound import OutboundCapacityError
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
 from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
 from dso_server.protocol.trade_protocol import (
@@ -60,6 +66,27 @@ class _Side:
     ready: bool = False
 
 
+@dataclass(frozen=True)
+class _AcceptedSide:
+    character_id: int
+    name: str
+    gold: int
+    items: tuple[tuple[int, int], ...]
+    ready: bool
+
+
+def _snapshot_side(side: _Side) -> _AcceptedSide:
+    return _AcceptedSide(side.character_id, side.name, side.gold, tuple(side.items), side.ready)
+
+
+def _serialized_notification(method):
+    @wraps(method)
+    def invoke(trade, *args, **kwargs):
+        with trade.notification_lock:
+            return method(trade, *args, **kwargs)
+    return invoke
+
+
 @dataclass
 class _Trade:
     requester: _Side
@@ -69,6 +96,7 @@ class _Trade:
     # Set while one thread makes the exchange (both acceptances may arrive on
     # two gameplay servers' threads at once).
     busy: bool = False
+    notification_lock: object = field(default_factory=threading.RLock, repr=False)
 
     def side(self, character_id: int) -> _Side:
         return self.requester if self.requester.character_id == character_id else self.invited
@@ -87,7 +115,9 @@ class TradeService:
 
     @staticmethod
     def _trade_sessions():
-        for server in list(_SERVERS):
+        with _LOCK:
+            servers = tuple(_SERVERS)
+        for server in servers:
             for session in server._active_gameplay_sessions():
                 if session.gameplay_character is not None:
                     yield server, session
@@ -99,13 +129,25 @@ class TradeService:
 
     @staticmethod
     def _trade_capable(s: Session | None) -> bool:
-        return s is not None and _CAPABLE.get(id(s)) is s
+        with _LOCK:
+            return s is not None and _CAPABLE.get(id(s)) is s
 
     @staticmethod
     def _trade_send(s: Session | None, state: TradeState) -> None:
         if not TradeService._trade_capable(s):
             return
-        s.send_reliable_ordered(encode_trade_state(state), track=True, label="trade-state")
+        packet = encode_trade_state(state)
+        try:
+            s.send_reliable_ordered(packet, track=True, label="trade-state")
+        except (OSError, OutboundCapacityError, RuntimeError) as exc:
+            TradeService._trade_delivery_failed(s, exc)
+
+    @staticmethod
+    def _trade_delivery_failed(s: Session, exc: Exception) -> None:
+        # Maintenance retires this endpoint. The other participant must still
+        # receive its result, and a delivery failure cannot undo a saved trade.
+        s.transport_failure_reason = s.transport_failure_reason or str(exc)
+        print(f"[{GAMEPLAY_SERVICE_NAME}] trade delivery failed for {s.addr}: {exc}")
 
     @staticmethod
     def _trade_items_of(s: Session, side: _Side) -> tuple[TradeItem, ...]:
@@ -118,25 +160,38 @@ class TradeService:
         )
 
     @staticmethod
+    @_serialized_notification
     def _trade_publish(trade: _Trade, messages: dict[int, str] | None = None) -> None:
         """Send each participant the trade as the server holds it."""
         messages = messages or {}
-        for side in (trade.requester, trade.invited):
-            other = trade.other(side.character_id)
+        with _LOCK:
+            if (_TRADES.get(trade.requester.character_id) is not trade
+                    or _TRADES.get(trade.invited.character_id) is not trade):
+                return
+            sides = (_snapshot_side(trade.requester), _snapshot_side(trade.invited))
+            opened = trade.open
+        for index, side in enumerate(sides):
+            other = sides[1 - index]
             _, s = TradeService._trade_session(side.character_id)
             _, partner = TradeService._trade_session(other.character_id)
-            if trade.open:
+            if opened:
                 phase = PHASE_OPEN
             else:
-                phase = PHASE_REQUESTED if side is trade.requester else PHASE_INVITED
+                phase = PHASE_REQUESTED if index == 0 else PHASE_INVITED
             TradeService._trade_send(s, TradeState(
                 phase, other.name, side.gold, tuple(side.items), side.ready, other.gold,
                 TradeService._trade_items_of(partner, other) if partner is not None else (),
                 other.ready, messages.get(side.character_id, "")))
 
     @staticmethod
-    def _trade_close(trade: _Trade, messages: dict[int, str], phase: int = PHASE_CLOSED) -> None:
+    @_serialized_notification
+    def _trade_close(
+        trade: _Trade, messages: dict[int, str], phase: int = PHASE_CLOSED,
+        *, force: bool = False,
+    ) -> bool:
         with _LOCK:
+            if trade.busy and not force:
+                return False
             for side in (trade.requester, trade.invited):
                 if _TRADES.get(side.character_id) is trade:
                     del _TRADES[side.character_id]
@@ -144,11 +199,26 @@ class TradeService:
             _, s = TradeService._trade_session(side.character_id)
             TradeService._trade_send(s, TradeState(phase, trade.other(side.character_id).name,
                                                    message=messages.get(side.character_id, "")))
+        return True
+
+    @staticmethod
+    def _trade_retire_session(session: Session) -> None:
+        """Release abandoned invitations/trades when a participant disconnects."""
+        with _LOCK:
+            _CAPABLE.pop(id(session), None)
+            character = session.gameplay_character
+            trade = _TRADES.get(int(character.character_id)) if character is not None else None
+        if trade is not None:
+            TradeService._trade_close(trade, {
+                trade.other(int(character.character_id)).character_id:
+                    f"{character.name} is no longer here",
+            })
 
     # -- commands --------------------------------------------------------------
 
     def _handle_trade_command(self, s: Session, payload: bytes) -> None:
-        _SERVERS.add(self)
+        with _LOCK:
+            _SERVERS.add(self)
         command = command_id_of(payload)
         CharacterService._accept_gameplay_state_command(s, command)
         with s.flow_lock:
@@ -163,6 +233,7 @@ class TradeService:
                     if not session.connected:
                         del _CAPABLE[key]
                 _CAPABLE[id(s)] = s
+                s.gameplay_retire_callback = TradeService._trade_retire_session
             return
         if command == TRADE_REQUEST_COMMAND:
             self._trade_request(s, me, character.name, decode_trade_request(payload))
@@ -182,31 +253,39 @@ class TradeService:
             TradeService._trade_close(trade, {other.character_id: f"{character.name} cancelled the trade"})
         elif command == TRADE_ANSWER_COMMAND:
             accept = decode_trade_answer(payload)
-            if trade.open or trade.invited.character_id != me:
-                return
+            with _LOCK:
+                if (_TRADES.get(me) is not trade or trade.busy
+                        or trade.open or trade.invited.character_id != me):
+                    return
+                if accept:
+                    trade.open = True
             if not accept:
                 TradeService._trade_close(trade, {other.character_id: f"{character.name} declined the trade"})
                 return
-            trade.open = True
             TradeService._trade_publish(trade)
         elif command == TRADE_OFFER_COMMAND:
             if trade.open:
                 self._trade_offer(s, trade, me, decode_trade_offer(payload))
         elif command == TRADE_READY_COMMAND:
             ready = decode_trade_ready(payload)
-            if not trade.open:
-                return
             with _LOCK:
-                if trade.busy:
+                if _TRADES.get(me) is not trade or trade.busy or not trade.open:
                     return
                 trade.side(me).ready = ready
                 execute = trade.requester.ready and trade.invited.ready
                 trade.busy = execute
+                accepted = (_snapshot_side(trade.requester), _snapshot_side(trade.invited))
             if execute:
                 try:
-                    self._trade_execute(trade)
+                    self._trade_execute(trade, accepted)
+                except Exception:
+                    # A failed encoder/persistence callback must not leave a
+                    # reusable accepted trade or block future invitations.
+                    TradeService._trade_close(trade, {}, force=True)
+                    raise
                 finally:
-                    trade.busy = False
+                    with _LOCK:
+                        trade.busy = False
             else:
                 TradeService._trade_publish(trade)
 
@@ -274,22 +353,46 @@ class TradeService:
                     or getattr(item, "quest_id", "")):
                 continue
             items.append((int(item_id), max(1, min(int(amount), int(item.amount)))))
-        side.gold = max(0, min(int(offer.gold), int(currency.gold) if currency is not None else 0))
-        side.items = items
-        trade.requester.ready = trade.invited.ready = False
+        with _LOCK:
+            if _TRADES.get(me) is not trade or trade.busy or not trade.open:
+                return
+            side.gold = max(0, min(int(offer.gold), int(currency.gold) if currency is not None else 0))
+            side.items = items
+            trade.requester.ready = trade.invited.ready = False
         TradeService._trade_publish(trade)
 
     # -- the exchange ----------------------------------------------------------
 
-    def _trade_execute(self, trade: _Trade) -> None:
+    def _trade_execute(self, trade: _Trade, accepted: tuple[_AcceptedSide, _AcceptedSide]) -> None:
         (_, sa), (_, sb) = (TradeService._trade_session(trade.requester.character_id),
                             TradeService._trade_session(trade.invited.character_id))
         if sa is None or sb is None:
-            TradeService._trade_close(trade, {})
+            TradeService._trade_close(trade, {}, force=True)
             return
-        sides = ((trade.requester, sa), (trade.invited, sb))
+        # The dispatcher's per-session gate excludes the counterpart's item,
+        # travel and commerce commands while both inventories are exchanged.
+        # Do not hold _LOCK here: the counterpart must be able to observe busy
+        # and return from READY/OFFER/CANCEL while we await its session gate.
+        with ExitStack() as locks:
+            for session in sorted((sa, sb), key=id):
+                lock = session.gameplay_mutation_lock
+                if not lock.acquire(timeout=15.0):
+                    raise TimeoutError("timed out waiting for a trade participant")
+                locks.callback(lock.release)
+            if any(not s.connected or s.retired or s.gameplay_exit_transition_started for s in (sa, sb)):
+                TradeService._trade_close(trade, {}, force=True)
+                return
+            self._trade_execute_locked(trade, ((accepted[0], sa), (accepted[1], sb)))
+
+    def _trade_execute_locked(self, trade: _Trade, sides) -> None:
+        accepted_by_id = {side.character_id: side for side, _ in sides}
+        def other_side(side):
+            return accepted_by_id[trade.other(side.character_id).character_id]
         snapshots = {}
         for side, s in sides:
+            # This may emit membership/bag updates. Complete it before either
+            # inventory changes; the later "player trade" saves skip delivery.
+            CharacterService._refresh_premium_bags(s)
             CharacterService._sync_inventory_live_health(s)
             with s.flow_lock:
                 snapshots[side.character_id] = (s.gameplay_inventory, s.gameplay_next_item_id, s.gameplay_currency_state)
@@ -316,7 +419,7 @@ class TradeService:
                     out.append(part)
                 given[side.character_id] = out
             for side, _ in sides:
-                receiver = trade.other(side.character_id)
+                receiver = other_side(side)
                 builder = builders[receiver.character_id]
                 for item in given[side.character_id]:
                     moved = copy.deepcopy(item)
@@ -329,14 +432,15 @@ class TradeService:
                         raise ValueError(f"{receiver.name}'s bags are full")
             results = {}
             for side, _ in sides:
-                other = trade.other(side.character_id)
+                other = other_side(side)
                 currency = snapshots[side.character_id][2]
                 gold = int(currency.gold) - side.gold + other.gold
                 if int(currency.gold) < side.gold:
                     raise ValueError(f"{side.name} no longer has that much gold")
                 results[side.character_id] = (builders[side.character_id].finish(), replace(currency, amount=gold))
         except ValueError as exc:
-            trade.requester.ready = trade.invited.ready = False
+            with _LOCK:
+                trade.requester.ready = trade.invited.ready = False
             message = str(exc)
             TradeService._trade_publish(trade, {trade.requester.character_id: message, trade.invited.character_id: message})
             return
@@ -362,11 +466,30 @@ class TradeService:
                             done_s.gameplay_inventory = old_inventory
                             done_s.gameplay_next_item_id = old_next
                             done_s.gameplay_currency_state = old_currency
-                trade.requester.ready = trade.invited.ready = False
+                with _LOCK:
+                    trade.requester.ready = trade.invited.ready = False
                 message = "an inventory changed, check the offers again"
                 TradeService._trade_publish(trade, {trade.requester.character_id: message, trade.invited.character_id: message})
                 return
             committed.append((side, s))
+
+        # Publish both committed inventories durably before any encoding or
+        # socket work can fail. Attempt both saves even if one persistence
+        # callback raises; retain its error and suppress success notifications.
+        persistence_errors = []
+        for _side, s in sides:
+            try:
+                CharacterService._request_account_save(s, "player trade", flush=True)
+            except Exception as exc:
+                persistence_errors.append(exc)
+        store = getattr(self, "account_store", None)
+        if store is not None:
+            try:
+                store.flush()
+            except Exception as exc:
+                persistence_errors.append(exc)
+        if persistence_errors:
+            raise persistence_errors[0]
 
         for side, s in sides:
             mutation, currency = results[side.character_id]
@@ -375,12 +498,11 @@ class TradeService:
                 ServerCommand(CURRENCY_CHANGED_COMMAND, replace(currency, notify=True), LOCAL_PLAYER_ACTOR_ID),
                 ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
             ), include_terminator=True)
-            CharacterService._send_world_loot_state_batch(s, packet, bits, label="player-trade")
-            CharacterService._request_account_save(s, "player trade", flush=True)
-        store = getattr(self, "account_store", None)
-        if store is not None:
-            store.flush()
+            try:
+                CharacterService._send_world_loot_state_batch(s, packet, bits, label="player-trade")
+            except (OSError, OutboundCapacityError, RuntimeError) as exc:
+                TradeService._trade_delivery_failed(s, exc)
         print(f"[{GAMEPLAY_SERVICE_NAME}] trade {trade.requester.name} -> {trade.invited.name}: "
               f"{trade.requester.items} + {trade.requester.gold} gold for "
               f"{trade.invited.items} + {trade.invited.gold} gold")
-        TradeService._trade_close(trade, {}, PHASE_DONE)
+        TradeService._trade_close(trade, {}, PHASE_DONE, force=True)

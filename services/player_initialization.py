@@ -97,6 +97,21 @@ class PlayerInitializationService(
 
     def _send_local_player_initialization(
             self, s: Session, *, scheduled: bool = False):
+        # Initialization publishes inventory and a durable snapshot just like
+        # an ordinary mutation. Retirement must wait for that publication,
+        # and a delayed fallback must not revive an already retired session.
+        with s.gameplay_mutation_lock:
+            if s.retired or s.retiring or s.transport_failure_reason:
+                return
+            if getattr(self, "gameplay_command_offload", False) and (
+                    not s.connected or not self.is_session_current(s)):
+                return
+            return CharacterService._send_local_player_initialization_locked(
+                self, s, scheduled=scheduled,
+            )
+
+    def _send_local_player_initialization_locked(
+            self, s: Session, *, scheduled: bool = False):
         if not CharacterService._begin_local_player_initialization(
             self, s, scheduled=scheduled
         ):

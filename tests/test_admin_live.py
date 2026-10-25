@@ -193,7 +193,7 @@ def test_live_routes_require_admin_csrf_and_reason(cms, online):
     assert request(cms, "POST", "/api/characters/42/effect", payload, cookie, csrf)[0] == 400
 
 
-def test_queue_runs_on_existing_udp_thread_and_propagates_errors():
+def test_queue_runs_on_dedicated_worker_and_propagates_errors():
     server = RakNetServer("127.0.0.1", 0, "admin-queue-test")
     events = []
     server._dispatch = Mock(side_effect=lambda *args: events.append("datagram"))
@@ -201,8 +201,9 @@ def test_queue_runs_on_existing_udp_thread_and_propagates_errors():
     server.start()
     try:
         thread_id = queue.call(lambda: (events.append("control"), threading.get_ident())[1])
-        assert events[:2] == ["datagram", "control"]
+        assert events == ["control"]
         assert thread_id != threading.get_ident()
+        assert thread_id not in {thread.ident for thread in server._threads}
         assert queue.call(lambda: queue.call(threading.get_ident)) == thread_id
         with pytest.raises(ValueError, match="rejected"):
             queue.call(lambda: (_ for _ in ()).throw(ValueError("rejected")))
@@ -357,3 +358,57 @@ def test_live_cms_andermant_is_shared_across_owned_characters(cms, online):
     # The same request/receipt cannot credit the account twice.
     booking(cms)
     assert cms.store.get(44).currency.andermant == 125
+
+
+@pytest.mark.parametrize('operation,changes', [
+    ('set_identity', {'name': 'RenamedHero', 'level': 2}),
+    ('set_privileges', {'admin_name_color': True}),
+])
+def test_live_character_fields_are_published_under_mutation_gate(cms, online, operation, changes):
+    import builtins
+    import copy
+
+    server, session = online
+    # Gameplay owns a detached character copy, as it does after initialization.
+    session.gameplay_character = copy.copy(session.gameplay_character)
+    session.gameplay_talent_category_points = (999, 2, 3, 4)
+    original_setattr = builtins.setattr
+    written = []
+
+    def checked_setattr(target, name, value):
+        if target is session.gameplay_character:
+            assert session.gameplay_mutation_lock._is_owned()
+            written.append(name)
+        original_setattr(target, name, value)
+
+    def refresh(*_args, **_kwargs):
+        # Refresh queues its own operation; do not wait on it inside the
+        # identity commit while retaining the player's mutation gate.
+        assert not session.gameplay_mutation_lock._is_owned()
+        return True
+
+    with patch('dso_server.services.admin.setattr', side_effect=checked_setattr, create=True), \
+            patch.object(cms.service.live, 'refresh_progress', side_effect=refresh):
+        result = getattr(cms.service, operation)(42, changes, cms.admin, 'Update character')
+    assert result['gameplay_sessions'] == 1
+    assert set(written) == set(changes)
+    for name, value in changes.items():
+        assert getattr(session.gameplay_character, name) == value
+    if 'level' in changes:
+        assert session.gameplay_talent_category_points == (
+            session.gameplay_character.progression_u32, 2, 3, 4,
+        )
+
+
+def test_identity_publication_rechecks_character_after_queue_wait(cms, online):
+    server, session = online
+    replacement = SimpleNamespace(character_id=999, name='OtherHero')
+
+    def replaced(operation):
+        session.gameplay_character = replacement
+        return operation()
+
+    server.admin_commands.call = replaced
+    result = cms.service.set_identity(42, {'name': 'RenamedHero'}, cms.admin, 'Update character')
+    assert result['gameplay_sessions'] == 0
+    assert replacement.name == 'OtherHero'

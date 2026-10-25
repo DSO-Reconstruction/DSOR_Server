@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from contextlib import closing
 from functools import lru_cache
 import math
 import os
@@ -309,9 +310,9 @@ def _ally_aura_skill_unlocks(
     """
 
     try:
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             row = database.execute(
                 "SELECT COALESCE(AuraTargets, ''), COALESCE(AuraRadius, 0), "
                 "COALESCE(AuraEffectAffectedTemplateId, ''), "
@@ -343,7 +344,7 @@ def _ally_aura_skill_unlocks(
         if not skills:
             return ()
         path = Path(static_database_path).parent.parent / "maps" / f"{map_id}.db4"
-        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as database:
             spawns = []
             for (transform,) in database.execute(
                 "SELECT Transform FROM _Instance_SpawnPoint WHERE NpcId=?",
@@ -377,9 +378,9 @@ def _star_beam_aura(
     """
 
     try:
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             row = database.execute(
                 "SELECT COALESCE(AuraTargets, ''), COALESCE(AuraRadius, 0), "
                 "COALESCE(AuraStarBeamWidth, 0), COALESCE(AuraStartAngle, 0), "
@@ -1119,9 +1120,9 @@ class MonsterSummonRequest:
 @lru_cache(maxsize=256)
 def _monster_template_lifetime(static_database_path: str, template_id: str) -> float:
     try:
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             row = database.execute(
                 "SELECT COALESCE(LifeTime, 0) FROM _Template_Monster WHERE Id=?",
                 (str(template_id),),
@@ -1155,6 +1156,38 @@ class DamageResolution:
     # Kill.animation_time on the wire; player delivery uses retail's long life.
     corpse_lifetime_ticks: int = 300
     cast_id: int = 0
+
+
+class _MonsterOccupancy:
+    """Positions already visited by a movement pass, indexed in X/Z cells.
+
+    Sequence numbers preserve the old separation order. After a correction,
+    callers query again from the corrected point, considering only positions
+    that the original ordered pass has not yet visited.
+    """
+
+    def __init__(self, cell_size: float = 2.0) -> None:
+        self.cell_size = float(cell_size)
+        self._cells: dict[tuple[int, int], list[tuple[int, tuple]]] = {}
+        self._count = 0
+
+    def append(self, position) -> None:
+        cell = (math.floor(position[0] / self.cell_size),
+                math.floor(position[2] / self.cell_size))
+        self._cells.setdefault(cell, []).append((self._count, position))
+        self._count += 1
+
+    def nearby(self, position, radius: float, after: int = -1):
+        scale = self.cell_size
+        candidates = []
+        for x in range(math.floor((position[0] - radius) / scale),
+                       math.floor((position[0] + radius) / scale) + 1):
+            for z in range(math.floor((position[2] - radius) / scale),
+                           math.floor((position[2] + radius) / scale) + 1):
+                candidates.extend(entry for entry in self._cells.get((x, z), ())
+                                  if entry[0] > after)
+        candidates.sort(key=lambda entry: entry[0])
+        return iter(candidates)
 
 
 class LocalCombatState:
@@ -1305,10 +1338,10 @@ class LocalCombatState:
                 int(entry.effect_id) for entry in command.value.entries
             )
         if permanent_effect_ids:
-            with sqlite3.connect(
+            with closing(sqlite3.connect(
                 f"file:{encounter.static_database_path.as_posix()}?mode=ro",
                 uri=True,
-            ) as database:
+            )) as database:
                 for actor_id, effect_ids in permanent_effect_ids.items():
                     ammo_types = set()
                     for effect_id in effect_ids:
@@ -1453,7 +1486,7 @@ class LocalCombatState:
             int, PlayerSummonDefinition | None
         ] = {}
         self._player_trap_definitions: dict[
-            tuple[int, tuple[int, ...]], PlayerTrapDefinition | None
+            str, PlayerTrapDefinition | None
         ] = {}
         self.player_summons: dict[int, PlayerSummonActor] = {}
         self.player_summon_health: dict[int, list[int]] = {}
@@ -1706,10 +1739,10 @@ class LocalCombatState:
         result: dict[int, frozenset[str]] = {}
         if not permanent_effect_ids:
             return result
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{Path(static_database_path).as_posix()}?mode=ro",
             uri=True,
-        ) as database:
+        )) as database:
             for actor_id, effect_ids in permanent_effect_ids.items():
                 ammo_types = set()
                 for effect_id in effect_ids:
@@ -2324,9 +2357,9 @@ class LocalCombatState:
         duration_ticks = MONSTER_RETURN_HOME_DURATION_TICKS
         try:
             path = self.encounter.static_database_path
-            with sqlite3.connect(
+            with closing(sqlite3.connect(
                 f"file:{path.as_posix()}?mode=ro", uri=True
-            ) as database:
+            )) as database:
                 row = database.execute(
                     "SELECT rowid - 1, COALESCE(StatusEffectDuration, 0) "
                     "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
@@ -2366,9 +2399,9 @@ class LocalCombatState:
             try:
                 path = self.encounter.static_database_path
                 placeholders = ",".join("?" * len(unknown))
-                with sqlite3.connect(
+                with closing(sqlite3.connect(
                     f"file:{path.as_posix()}?mode=ro", uri=True
-                ) as database:
+                )) as database:
                     for row in database.execute(
                         "SELECT Id, COALESCE(KeepOnWayHome, 0) "
                         "FROM _Template_StatusEffect "
@@ -2602,7 +2635,7 @@ class LocalCombatState:
         if skill_index in self._player_skill_geometry:
             return self._player_skill_geometry[skill_index]
         path = self.encounter.static_database_path
-        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as db:
             row = db.execute(
                 """
                 SELECT s.Id, s.SkillType, s.TargetingType, s.AttackRange,
@@ -2882,10 +2915,10 @@ class LocalCombatState:
         skill_index = int(skill_index)
         if skill_index not in self._player_summon_definitions:
             path = self.encounter.static_database_path
-            with sqlite3.connect(
+            with closing(sqlite3.connect(
                 f"file:{path.as_posix()}?mode=ro",
                 uri=True,
-            ) as database:
+            )) as database:
                 row = database.execute(
                     """
                     SELECT s.Id, COALESCE(s.Summons, 0),
@@ -3365,10 +3398,12 @@ class LocalCombatState:
         resource_id = str(geometry.trap_on_hit or "").strip()
         if not resource_id:
             return None
-        with sqlite3.connect(
+        if resource_id in self._player_trap_definitions:
+            return self._player_trap_definitions[resource_id]
+        with closing(sqlite3.connect(
             f"file:{self.encounter.static_database_path.as_posix()}?mode=ro",
             uri=True,
-        ) as database:
+        )) as database:
             row = database.execute(
                 "SELECT Graphics, StatusEffectId, COALESCE(LifeTime, 0), "
                 "COALESCE(TripperStatusEffect, ''), "
@@ -3377,6 +3412,7 @@ class LocalCombatState:
                 (resource_id,),
             ).fetchone()
             if row is None:
+                self._player_trap_definitions[resource_id] = None
                 return None
             effects = list(
                 self._load_location_aura_effects(database, str(row[1] or ""))
@@ -3392,7 +3428,7 @@ class LocalCombatState:
                     database, str(row[3] or "")
                 )
             )
-        return PlayerTrapDefinition(
+        definition = PlayerTrapDefinition(
             resource_id=resource_id,
             graphics=str(row[0] or ""),
             lifetime_seconds=max(0.05, float(row[2] or 0.0)),
@@ -3401,6 +3437,8 @@ class LocalCombatState:
                 effect.resource_id: effect for effect in effects
             }.values()),
         )
+        self._player_trap_definitions[resource_id] = definition
+        return definition
 
     def spawn_player_trap(
         self,
@@ -3765,7 +3803,7 @@ class LocalCombatState:
         if cached is not None:
             return cached
         path = self.encounter.static_database_path
-        with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)) as db:
             row = db.execute(
                 "SELECT COALESCE(AuraEffectId, '') FROM _Template_StatusEffect "
                 "WHERE Id=? LIMIT 1",
@@ -4923,9 +4961,9 @@ class LocalCombatState:
         immunity: tuple[frozenset[str], float] | None = None
         try:
             path = self.encounter.static_database_path
-            with sqlite3.connect(
+            with closing(sqlite3.connect(
                 f"file:{path.as_posix()}?mode=ro", uri=True
-            ) as database:
+            )) as database:
                 row = database.execute(
                     "SELECT COALESCE(Groups, ''), COALESCE(StopModifiers, '') "
                     "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
@@ -5250,9 +5288,9 @@ class LocalCombatState:
             return cached
         path = self.encounter.static_database_path
         results = []
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{path.as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             for definition in definitions:
                 for kind, arguments in self._status_modifier_program(
                     int(definition.effect_id)
@@ -5410,10 +5448,10 @@ class LocalCombatState:
         cached = self._monster_attack_effects.get(definition.resource_id)
         if cached is not None:
             return cached
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{self.encounter.static_database_path.as_posix()}?mode=ro",
             uri=True,
-        ) as database:
+        )) as database:
             effects = self._load_victim_status_effects(
                 database, definition.victim_status_effects
             )
@@ -5426,10 +5464,10 @@ class LocalCombatState:
         cached = self._monster_user_effects.get(definition.resource_id)
         if cached is not None:
             return cached
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{self.encounter.static_database_path.as_posix()}?mode=ro",
             uri=True,
-        ) as database:
+        )) as database:
             effects = self._load_victim_status_effects(
                 database,
                 definition.user_status_effects,
@@ -5849,9 +5887,9 @@ class LocalCombatState:
         bullet_death_effects = list(geometry.bullet_death_effects)
         path = self.encounter.static_database_path
 
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{path.as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             instructions: list[
                 tuple[str, tuple[str, ...], int, tuple[float, ...]]
             ] = []
@@ -6471,34 +6509,32 @@ class LocalCombatState:
         """Resolve immediate ``CurrSkillResource`` modifier programs."""
 
         total = 0.0
-        path = self.encounter.static_database_path
-        with sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True
-        ) as database:
-            for definition in definitions:
-                if "currskillresource" not in definition.modifier_kinds:
-                    continue
-                for kind, arguments in self._status_modifier_program(
-                    int(definition.effect_id)
+        for definition in definitions:
+            if "currskillresource" not in definition.modifier_kinds:
+                continue
+            for kind, arguments in self._status_modifier_program(
+                int(definition.effect_id)
+            ):
+                if (
+                    kind.casefold() != "currskillresource"
+                    or not arguments
                 ):
-                    if (
-                        kind.casefold() != "currskillresource"
-                        or not arguments
-                    ):
-                        continue
-                    amount = self._modifier_amount(
-                        database, arguments[0], tuple(definition.values)
-                    )
-                    if amount is None:
-                        continue
-                    operation = (
-                        arguments[1].casefold()
-                        if len(arguments) > 1 else "absolute"
-                    )
-                    total += (
-                        float(maximum_resource) * float(amount)
-                        if operation == "relative" else float(amount)
-                    )
+                    continue
+                # Status programs and all ActorVariables are primed when the
+                # encounter is created. This path runs under the map lock.
+                amount = self._modifier_amount(
+                    None, arguments[0], tuple(definition.values)
+                )
+                if amount is None:
+                    continue
+                operation = (
+                    arguments[1].casefold()
+                    if len(arguments) > 1 else "absolute"
+                )
+                total += (
+                    float(maximum_resource) * float(amount)
+                    if operation == "relative" else float(amount)
+                )
         return total
 
     def player_skill_speed_multiplier(
@@ -6763,9 +6799,9 @@ class LocalCombatState:
         if cached is not None:
             return float(cached)
         path = self.encounter.static_database_path
-        with sqlite3.connect(
+        with closing(sqlite3.connect(
             f"file:{path.as_posix()}?mode=ro", uri=True
-        ) as database:
+        )) as database:
             row = database.execute(
                 "SELECT AuraRadius FROM _Template_StatusEffect "
                 "WHERE Id='skill_mindcontrol_taunt_aura' LIMIT 1"
@@ -7432,13 +7468,17 @@ class LocalCombatState:
         actor_id: int,
         destination: tuple[float, float, float],
         player_position: tuple[float, float, float],
-        occupied: list[tuple[float, float, float]],
+        occupied: _MonsterOccupancy | list[tuple[float, float, float]],
     ) -> tuple[float, float, float]:
         """Keep independently routed actors from converging into one model."""
 
         clearance = self.monsters[actor_id].collision_radius * 2.0 + 0.15
         result = destination
-        for other in occupied:
+        spatial = isinstance(occupied, _MonsterOccupancy)
+        candidates = (occupied.nearby(result, clearance) if spatial
+                      else iter(enumerate(occupied)))
+        while (entry := next(candidates, None)) is not None:
+            index, other = entry
             dx = result[0] - other[0]
             dz = result[2] - other[2]
             separation = math.hypot(dx, dz)
@@ -7463,6 +7503,10 @@ class LocalCombatState:
                 destination[1],
                 result[2] + away_z * correction,
             )
+            if spatial:
+                # A correction may enter another cell. Preserve the original
+                # one-pass ordering, including actors newly within reach.
+                candidates = occupied.nearby(result, clearance, after=index)
         return result
 
     def _advance_on_cached_route(
@@ -7716,7 +7760,7 @@ class LocalCombatState:
         self._route_refresh_budget = 2
         current_time = time.perf_counter() if now is None else float(now)
         movements = []
-        occupied: list[tuple[float, float, float]] = []
+        occupied = _MonsterOccupancy()
         actors = tuple(actor_id for actor_id in self.living_actor_ids
                        if eligible_actor_ids is None or actor_id in eligible_actor_ids)
         # Rotate access to the bounded A* budget so low actor IDs cannot starve
@@ -9077,47 +9121,18 @@ class LocalCombatState:
         if geometry is None or not modifier_sources:
             return ()
         result = []
-        path = self.encounter.static_database_path
-        with sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True
-        ) as database:
-            for source in modifier_sources:
-                if not hasattr(source, "effect_id"):
-                    continue
-                effect_id = int(source.effect_id)
-                program = self._status_effect_modifier_programs.get(effect_id)
-                if program is None:
-                    row = database.execute(
-                        "SELECT StartModifiers FROM _Template_StatusEffect "
-                        "WHERE rowid=? LIMIT 1",
-                        (effect_id + 1,),
-                    ).fetchone()
-                    parsed = []
-                    for raw in str(row[0] if row else "").split(";"):
-                        kind, separator, arguments = raw.partition(":")
-                        if not separator:
-                            continue
-                        parsed.append(
-                            (
-                                kind.strip(),
-                                tuple(
-                                    value.strip()
-                                    for value in arguments.split(",")
-                                ),
-                            )
-                        )
-                    program = tuple(parsed)
-                    self._status_effect_modifier_programs[effect_id] = program
-                if any(
-                    kind.casefold() == "skillsequence"
-                    and len(arguments) >= 3
-                    and arguments[0].casefold() == "execute"
-                    and self._skill_scope_matches(
-                        geometry, (arguments[1],)
-                    )
-                    for kind, arguments in program
-                ):
-                    result.append(source)
+        for source in modifier_sources:
+            if not hasattr(source, "effect_id"):
+                continue
+            program = self._status_modifier_program(int(source.effect_id))
+            if any(
+                kind.casefold() == "skillsequence"
+                and len(arguments) >= 3
+                and arguments[0].casefold() == "execute"
+                and self._skill_scope_matches(geometry, (arguments[1],))
+                for kind, arguments in program
+            ):
+                result.append(source)
         return tuple(result)
 
     def _status_effect_runtime_program(
@@ -9505,7 +9520,7 @@ class LocalCombatState:
         return cache[monster_template_id]
 
     def _load_player_status_minion_auras(self, monster_template_id: str):
-        with sqlite3.connect(f"file:{self.encounter.static_database_path.as_posix()}?mode=ro", uri=True) as db:
+        with closing(sqlite3.connect(f"file:{self.encounter.static_database_path.as_posix()}?mode=ro", uri=True)) as db:
             row = db.execute(
                 "SELECT PermanentStatusEffect, LifeTime FROM _Template_Monster WHERE Id=?",
                 (monster_template_id,),
