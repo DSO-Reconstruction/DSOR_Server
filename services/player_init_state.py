@@ -131,6 +131,7 @@ class PlayerInitializationState:
     category_talent_presets: dict = field(default_factory=dict)
     active_skill_preselection: int = 0
     active_skill_selections: tuple = ()
+    unlocked_skill_presets: int = 0
 
     # Durable per-account state and status effects.
     currency_state: Any = None
@@ -846,6 +847,9 @@ class PlayerInitializationStateService:
         )
         state.skill_talent_presets = skill_talent_presets
         state.category_talent_presets = category_talent_presets
+        state.unlocked_skill_presets = int(
+            getattr(persisted_state, "unlocked_skill_presets", 0) or 0
+        )
         state.active_skill_preselection = active_skill_preselection
         state.active_skill_selections = active_skill_selections
 
@@ -1624,6 +1628,7 @@ class PlayerInitializationStateService:
                 state.category_talent_presets
             )
             s.gameplay_talent_category_points = state.talent_category_points
+            s.gameplay_unlocked_skill_presets = state.unlocked_skill_presets
             s.gameplay_wisdom_maximum_xp = (
                 self.talent_database.maximum_progress_xp(1)
             )

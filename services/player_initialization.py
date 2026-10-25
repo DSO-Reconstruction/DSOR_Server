@@ -144,6 +144,7 @@ class PlayerInitializationService(
         )
         CharacterService._send_initialization_followups(self, s, state)
         CharacterService._restore_consumable_timers(self, s)
+        CharacterService._restore_talent_preset_cooldowns(self, s)
         CharacterService._log_initialization_summary(
             s, state, world, commands, initialization
         )

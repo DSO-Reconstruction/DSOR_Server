@@ -828,6 +828,8 @@ class Session:
             3: {0: ()},
         }
         self.gameplay_talent_category_points = (0, 0, 0, 0)
+        # Skill presets 5..8 bought with Andermant (0..4).
+        self.gameplay_unlocked_skill_presets = 0
         self.gameplay_wisdom_maximum_xp = 0
         self.gameplay_talent_effect_instance_ids = {}
         self.gameplay_inventory = None

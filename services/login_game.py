@@ -458,6 +458,12 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_select_talent_preselection(
                 self, s, payload
             )
+        elif command_id == DESELECT_TALENT_COMMAND:
+            CharacterServer._handle_deselect_talent(self, s, payload)
+        elif command_id == UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND:
+            CharacterServer._handle_unlock_skill_talent_preselection(
+                self, s, payload
+            )
         elif command_id == RESET_TALENT_PRESELECTION_COMMAND:
             CharacterServer._handle_reset_talent_preselection(
                 self, s, payload

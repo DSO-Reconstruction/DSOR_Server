@@ -307,6 +307,9 @@ class PlayerPersistenceService:
             talent_category_points = tuple(
                 int(value) for value in s.gameplay_talent_category_points
             )
+            unlocked_skill_presets = int(
+                getattr(s, "gameplay_unlocked_skill_presets", 0)
+            )
             active_costume = str(s.gameplay_active_costume)
             hidden_equipment_skins = dict(
                 getattr(s, "gameplay_hidden_equipment_skins", {})
@@ -526,6 +529,7 @@ class PlayerPersistenceService:
             membership_active=membership_active,
             recipe_book_resources=recipe_book_resources,
             talent_category_points=talent_category_points,
+            unlocked_skill_presets=unlocked_skill_presets,
             timed_status_effect_expiries=(
                 timed_status_effect_expiries
             ),
