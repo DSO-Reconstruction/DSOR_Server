@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import sqlite3
+from functools import lru_cache
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -21,8 +23,124 @@ def _reconciled_pool_value(
     return min(bounded_maximum, old_current)
 
 
+@lru_cache(maxsize=8)
+def _resource_bound_effect_ids(database_path: str) -> frozenset[int]:
+    """Effects a skill starts with ``OFF:noskillresource``.
+
+    CONTRACT: they end once their holder's skill resource is spent.
+    EVIDENCE (data): IronDwarf's skill_irondwarf_transform (and the CNY 2026
+    set's set_cny2026_dwarf_iron_trans) is ``D:600 ... OFF:noskillresource``;
+    its StartModifiers fill the steam (CurrSkillResource 1.0) and drain it
+    (SkillResourceRegeneration -5 against the dwarf's +3), so the
+    transformation lasts as long as its steam.
+    FAILURE: without it the transformation stayed 600 s, the steam at 0 and
+    draining: "steam does not regenerate" after an Iron Dwarf.
+    UNVERIFIED: the retail client's OFF trigger was not traced; read from the
+    column's own name and the drain it pairs with.
+    """
+
+    ids = set()
+    try:
+        with sqlite3.connect(
+            f"file:{Path(database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            rows = database.execute(
+                "SELECT UserStatusEffects FROM _Template_Skill "
+                "WHERE UserStatusEffects LIKE '%noskillresource%'"
+            ).fetchall()
+            for (column,) in rows:
+                for raw in str(column or "").split(";"):
+                    parts = [part.strip() for part in raw.split(",")]
+                    if not any(
+                        part.casefold() == "off:noskillresource"
+                        for part in parts[1:]
+                    ):
+                        continue
+                    row = database.execute(
+                        "SELECT rowid - 1 FROM _Template_StatusEffect "
+                        "WHERE Id=? LIMIT 1",
+                        (parts[0],),
+                    ).fetchone()
+                    if row is not None:
+                        ids.add(int(row[0]))
+    except (OSError, sqlite3.Error):
+        return frozenset()
+    return frozenset(ids)
+
+
 class PlayerResourceService:
     """Own live vitality limits, skill payments, and resource regeneration."""
+
+    @staticmethod
+    def _end_player_runtime_effects(s: Session, matches, *, label: str) -> bool:
+        """End the player's own running effects that ``matches`` selects.
+
+        Each one is dropped with its timers, removed on the client with the
+        retail no-details cleanup (also relayed to the viewers) and the vitals
+        it changed are reconciled. Returns whether any ended.
+        """
+
+        timers = []
+        removed = []
+        with s.flow_lock:
+            now = time.perf_counter()
+            for instance_id, (entry, expires_at) in tuple(
+                s.gameplay_runtime_status_effects.items()
+            ):
+                if expires_at is not None and expires_at <= now:
+                    continue
+                if not matches(entry):
+                    continue
+                s.gameplay_runtime_status_effects.pop(instance_id, None)
+                for prefix in ("player-status-tick", "runtime-effect-expire"):
+                    timer = s.gameplay_projectile_timers.pop(
+                        (prefix, int(instance_id)), None
+                    )
+                    if timer is not None:
+                        timers.append(timer)
+                removed.append(entry)
+            server_tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
+            if removed:
+                s.gameplay_disabled_feature_cache = None
+        for timer in timers:
+            timer.cancel()
+        if not removed:
+            return False
+        value = StatusEffect(False, tuple(
+            CharacterService._consumable_cleanup_entry(
+                entry, server_tick=server_tick
+            )
+            for entry in removed
+        ))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),
+            track=True,
+            label=label,
+        )
+        if s.gameplay_presence_callback is not None:
+            s.gameplay_presence_callback(s, ("status_effects", (value,)))
+        CharacterService._refresh_player_combat_vitals(
+            s, inventory_changed=False
+        )
+        return True
+
+    @staticmethod
+    def _end_resource_bound_effects(s: Session) -> bool:
+        """End the effects that last only while the skill resource does."""
+
+        combat = s.gameplay_combat_state
+        path = (
+            combat.encounter.static_database_path
+            if combat is not None else DEFAULT_STATIC_DB_PATH
+        )
+        ids = _resource_bound_effect_ids(str(path))
+        if not ids:
+            return False
+        return CharacterService._end_player_runtime_effects(
+            s,
+            lambda entry: int(entry.effect_id) in ids,
+            label="player-resource-exhausted",
+        )
 
     @staticmethod
     def _refresh_player_combat_vitals(
@@ -217,6 +335,8 @@ class PlayerResourceService:
         )
         if accepted:
             CharacterService._request_account_save(s, "skill resource changed")
+            if float(current) <= 1e-6:
+                CharacterService._end_resource_bound_effects(s)
         else:
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] rejected skill index "
@@ -396,6 +516,8 @@ class PlayerResourceService:
                 track=True,
                 label="passive-resource-regeneration",
             )
+            if current_resource <= 1e-6:
+                CharacterService._end_resource_bound_effects(target_session)
 
 
 __all__ = ["PlayerResourceService"]

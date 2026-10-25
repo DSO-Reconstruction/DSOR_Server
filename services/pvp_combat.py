@@ -307,6 +307,19 @@ class PVPCombatService:
             CharacterService._refresh_player_combat_vitals(
                 s, inventory_changed=False,
             )
+        # The caster's own running effects of those groups end too.
+        # EVIDENCE (data): IronDwarfEnd's only effect is
+        # StatusEffectGroupCleanse "Transform", the group of the
+        # skill_irondwarf_transform its IronDwarf started on the caster.
+        # FAILURE: only effects others had put on the player were searched,
+        # so casting IronDwarfEnd left the transformation running.
+        CharacterService._end_player_runtime_effects(
+            s,
+            lambda entry: bool(
+                cleansed & combat._status_groups_for_effect(int(entry.effect_id))
+            ),
+            label="player-skill-cleanse-own",
+        )
 
     @staticmethod
     def _player_is_untargetable(s: Session) -> bool:
