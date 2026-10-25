@@ -1488,11 +1488,17 @@ class WorldService:
                 )
             healed_actor_id = int(player_actor_id)
             with candidate_combat.lock:
-                previous = candidate_combat.player_health.get(
+                previous, maximum = candidate_combat.player_health.get(
                     int(player_actor_id),
-                    [candidate_combat.player_maximum_health],
-                )[0]
-                if int(previous) <= 0:
+                    (
+                        candidate_combat.player_maximum_health,
+                        candidate_combat.player_maximum_health,
+                    ),
+                )
+                # A globe is only taken by a wounded character. At full
+                # health it stays on the ground; auto pickup runs again on
+                # every move in range, so it is collected once health drops.
+                if int(previous) <= 0 or int(previous) >= int(maximum):
                     return False
                 current, maximum = candidate_combat.heal_player(
                     full=candidate_drop.item.template_id.endswith('_full'),

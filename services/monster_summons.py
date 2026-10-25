@@ -62,6 +62,9 @@ class MonsterSummonService:
                     centre[1],
                     centre[2] + math.sin(angle) * SUMMON_RING_RADIUS,
                 )
+                if index < len(request.positions):
+                    # Placed where its Minion instruction puts it.
+                    position = centre = request.positions[index]
                 try:
                     position = _grounded_spawn_position(
                         encounter.navigation,

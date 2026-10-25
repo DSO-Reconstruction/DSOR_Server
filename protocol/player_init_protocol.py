@@ -2303,6 +2303,7 @@ def build_local_player_init_commands(
     persistent_status_effects: tuple[StatusEffectEntry, ...] = (),
     talent_categories: tuple[TalentCategorySelection, ...] | None = None,
     talent_category_points: tuple[int, int, int, int] | None = None,
+    unlocked_skill_presets: int = 0,
     prop_info: PropInfo | None = None,
     notifications: tuple[NotificationEntry, ...] = (),
     activity_signin_calendar: ActivitySigninCalendar | None = None,
@@ -2572,7 +2573,9 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 UNLOCK_SKILL_TALENT_PRESELECTION_INFO_COMMAND,
-                UnlockSkillTalentPreselectionInfo(0),
+                UnlockSkillTalentPreselectionInfo(
+                    max(0, int(unlocked_skill_presets))
+                ),
                 0,
             ),
             ServerCommand(

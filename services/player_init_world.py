@@ -646,6 +646,7 @@ class PlayerInitializationWorldService:
             ),
             talent_categories=state.talent_categories,
             talent_category_points=state.talent_category_points,
+            unlocked_skill_presets=state.unlocked_skill_presets,
             prop_info=world.crafting_props,
             notifications=notifications,
             activity_signin_calendar=ActivitySigninCalendar(

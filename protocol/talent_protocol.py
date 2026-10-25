@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
+import math
 from pathlib import Path
+import re
 import sqlite3
 
 from dso_server.persistence import readonly_db
@@ -16,9 +18,38 @@ SELECT_TALENT_COMMAND = command_id("Talents::SelectTalentCommand", 0x0117)
 SELECT_TALENT_PRESELECTION_COMMAND = command_id("Talents::EnableTalentPreselectionCommand", 0x0119)
 RESET_TALENT_PRESELECTION_COMMAND = command_id("Talents::ResetTalentsCommand", 0x011E)
 RESET_TALENT_CATEGORY_COMMAND = command_id("Talents::ResetTalentCategoryCommand", 0x011F)
+DESELECT_TALENT_COMMAND = command_id("Talents::DeselectTalentCommand", 0x0118)
+UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND = command_id(
+    "Talents::UnlockSkillTalentPreselectionCommand", 0x011C
+)
 TALENT_CATEGORY_NAMES = ("Skill", "Knowledge", "Group", "Fame")
 TALENT_CATEGORY_PRESELECTION_COUNTS = (8, 4, 4, 1)
 SKILL_TALENT_PRESELECTION_COUNT = TALENT_CATEGORY_PRESELECTION_COUNTS[0]
+# Presets below the membership's NumTalentSets are free.  Skill presets 4..7
+# (4 = the most any privilege grants) are bought one after the other with
+# Andermant: UnlockSkillTalentPreselection, priced by
+# _Globals.UnlockPreselectionCost.  ClientTalentManager applies the same rule
+# to its preset buttons.
+SKILL_TALENT_BOUGHT_PRESELECTION_FIRST = 4
+SKILL_TALENT_UNLOCKABLE_PRESELECTIONS = (
+    SKILL_TALENT_PRESELECTION_COUNT - SKILL_TALENT_BOUGHT_PRESELECTION_FIRST
+)
+# _Template_Privileges row of each membership tier (inactive = NoPrivileges).
+MEMBERSHIP_PRIVILEGES = {1: "Premium", 2: "Deluxe"}
+# Switching a Skill/Knowledge/Group preset outside a hub puts this status
+# effect (groups SkillPreset/KnowledgePreset/GroupPreset, 300 s) on the
+# player; the client disables the other preset buttons while it runs.  Honor
+# has a single preset and no cooldown.
+TALENT_PRESET_COOLDOWN_EFFECTS = (
+    "SkillPresetCooldown",
+    "KnowledgePresetCooldown",
+    "GroupPresetCooldown",
+)
+# The status effect whose TalentRespecCost:$0,relative scales respec prices.
+TALENT_RESPEC_COST_EFFECT = "talent_reset_costs_buff"
+# The Skills & Talents window's Wisdom trader and the trait that unlocks it.
+WISDOM_TALENT_SHOP_ID = "skilltree_wisdom_trader"
+WISDOM_TALENT_SHOP_TALENT = "trait_wisdom_all_dungeon_shop"
 # Skill-talent layouts are zero based.  The first layout is 0 and the second
 # layout selected in the 2026-09-09 retail trace is 1.
 ACTIVE_SKILL_TALENT_PRESELECTION = 0
@@ -69,6 +100,68 @@ class ResetTalentCategory:
     category: int
     category_id: str
     preselection: int
+
+
+@dataclass(frozen=True)
+class DeselectTalent:
+    talent_id: str
+
+
+@dataclass(frozen=True)
+class UnlockSkillTalentPreselection:
+    # The bought Skill preset count once this purchase is applied: the client
+    # sends its current count plus one, whichever button was clicked.
+    unlocked: int
+
+
+def talent_preselection_available(
+    category: int,
+    preselection: int,
+    *,
+    talent_sets: int,
+    unlocked_skill_presets: int,
+) -> bool:
+    """Return whether a preset may be switched to (the client's rule)."""
+
+    category = int(category)
+    preselection = int(preselection)
+    if not 0 <= category < len(TALENT_CATEGORY_PRESELECTION_COUNTS):
+        return False
+    if not 0 <= preselection < TALENT_CATEGORY_PRESELECTION_COUNTS[category]:
+        return False
+    if category == 3 or preselection < int(talent_sets):
+        return True
+    return category == 0 and (
+        SKILL_TALENT_BOUGHT_PRESELECTION_FIRST
+        <= preselection
+        < SKILL_TALENT_BOUGHT_PRESELECTION_FIRST + int(unlocked_skill_presets)
+    )
+
+
+def talent_respec_cost(
+    *,
+    spent_points: int,
+    cost_per_point: int,
+    level_multiplier: float,
+    factor: float = 1.0,
+) -> int:
+    """Gold (copper) price of a respec, PlayerTalentModule's formula.
+
+    floor(VCRespecCostsPerPoint * RespecVCCostMultiplier[level] * spent *
+    TalentRespecCostFactor + 0.5); above 999999 it is rounded down to a
+    multiple of 10000.  Honor resets are free and never priced here.
+    """
+
+    cost = max(0, math.floor(
+        int(cost_per_point)
+        * float(level_multiplier)
+        * int(spent_points)
+        * float(factor)
+        + 0.5
+    ))
+    if cost > 999999:
+        cost = int(cost * 0.0001) * 10000
+    return int(cost)
 
 
 @dataclass(frozen=True)
@@ -171,6 +264,92 @@ def encode_select_talent(value: SelectTalent) -> tuple[bytes, int]:
     writer.write_bytes(SELECT_TALENT_COMMAND.to_bytes(2, "little"))
     writer.write_string(value.talent_id)
     writer.write_uint32_le(int(value.rank_delta))
+    return writer.finish()
+
+
+def decode_deselect_talent(
+    payload: bytes, bit_length: int | None = None
+) -> DeselectTalent:
+    """Decode client command ``0x0118`` (talent id): Honor focus talent
+    right-click and switching an active trait off."""
+
+    bit_length = len(payload) * 8 if bit_length is None else int(bit_length)
+    reader = BitReader(payload, bit_length)
+    if reader.read_uint8() != 0x8B:
+        raise ValueError("DeselectTalent does not begin with client marker 0x8b")
+    command_id = int.from_bytes(reader.read_bytes(2), "little")
+    if command_id != DESELECT_TALENT_COMMAND:
+        raise ValueError(
+            f"expected DeselectTalent command 0x{DESELECT_TALENT_COMMAND:04x}, "
+            f"got 0x{command_id:04x}"
+        )
+    request = DeselectTalent(reader.read_string())
+    if not request.talent_id:
+        raise ValueError("DeselectTalent requires a talent id")
+    if reader.remaining:
+        raise ValueError(
+            f"DeselectTalent contains {reader.remaining} trailing bit(s)"
+        )
+    return request
+
+
+def encode_deselect_talent(value: DeselectTalent) -> tuple[bytes, int]:
+    if not value.talent_id:
+        raise ValueError("DeselectTalent requires a talent id")
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(DESELECT_TALENT_COMMAND.to_bytes(2, "little"))
+    writer.write_string(value.talent_id)
+    return writer.finish()
+
+
+def decode_unlock_skill_talent_preselection(
+    payload: bytes, bit_length: int | None = None
+) -> UnlockSkillTalentPreselection:
+    """Decode client command ``0x011c`` (u32 bought Skill presets + 1)."""
+
+    bit_length = len(payload) * 8 if bit_length is None else int(bit_length)
+    reader = BitReader(payload, bit_length)
+    if reader.read_uint8() != 0x8B:
+        raise ValueError(
+            "UnlockSkillTalentPreselection does not begin with client "
+            "marker 0x8b"
+        )
+    command_id = int.from_bytes(reader.read_bytes(2), "little")
+    if command_id != UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND:
+        raise ValueError(
+            "expected UnlockSkillTalentPreselection command "
+            f"0x{UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND:04x}, "
+            f"got 0x{command_id:04x}"
+        )
+    request = UnlockSkillTalentPreselection(reader.read_uint32_le())
+    if not 1 <= request.unlocked <= SKILL_TALENT_UNLOCKABLE_PRESELECTIONS:
+        raise ValueError(
+            f"UnlockSkillTalentPreselection count {request.unlocked} is "
+            f"outside 1..{SKILL_TALENT_UNLOCKABLE_PRESELECTIONS}"
+        )
+    if reader.remaining:
+        raise ValueError(
+            "UnlockSkillTalentPreselection contains "
+            f"{reader.remaining} trailing bit(s)"
+        )
+    return request
+
+
+def encode_unlock_skill_talent_preselection(
+    value: UnlockSkillTalentPreselection,
+) -> tuple[bytes, int]:
+    if not 1 <= int(value.unlocked) <= SKILL_TALENT_UNLOCKABLE_PRESELECTIONS:
+        raise ValueError(
+            "UnlockSkillTalentPreselection count is outside "
+            f"1..{SKILL_TALENT_UNLOCKABLE_PRESELECTIONS}"
+        )
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(
+        UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND.to_bytes(2, "little")
+    )
+    writer.write_uint32_le(int(value.unlocked))
     return writer.finish()
 
 
@@ -478,8 +657,94 @@ class TalentDatabase:
 
     @staticmethod
     def _class_from_talent_id(talent_id: str) -> str:
-        prefix = str(talent_id).split("_", 1)[0]
-        return prefix if prefix in {"dwarf", "mage", "ranger", "warrior"} else ""
+        # The client takes the first "_" token in either case.
+        prefix = str(talent_id).split("_", 1)[0].casefold()
+        return (
+            prefix
+            if prefix in {"dwarf", "mage", "ranger", "warrior", "niwalk"}
+            else ""
+        )
+
+    def _global(self, name: str):
+        if not re.fullmatch(r"[A-Za-z0-9_]+", str(name)):
+            raise ValueError(f"invalid _Globals column {name!r}")
+        with self._connect() as connection:
+            row = connection.execute(
+                f"SELECT [{name}] FROM [_Globals] LIMIT 1"
+            ).fetchone()
+        if row is None:
+            raise ValueError("_Globals has no row")
+        return row[0]
+
+    def unlock_preselection_costs(self) -> tuple[int, ...]:
+        """Andermant price of each bought Skill preset, in order."""
+
+        return tuple(
+            int(part)
+            for part in str(
+                self._global("UnlockPreselectionCost") or ""
+            ).split(";")
+            if part.strip()
+        )
+
+    def talent_sets(self, membership_type: int, active: bool) -> int:
+        """Presets of every tree the membership grants (NumTalentSets)."""
+
+        privilege = (
+            MEMBERSHIP_PRIVILEGES.get(int(membership_type))
+            if active
+            else None
+        ) or "NoPrivileges"
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT [NumTalentSets] FROM [_Template_Privileges] "
+                "WHERE [Id] = ? LIMIT 1",
+                (privilege,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown privilege {privilege!r}")
+        return max(1, int(row[0]))
+
+    def respec_cost_per_point(self) -> int:
+        return max(0, int(self._global("VCRespecCostsPerPoint") or 0))
+
+    def respec_level_multiplier(self, level: int) -> float:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT [RespecVCCostMultiplier] "
+                "FROM [_Template_DynamicLevelCosts] WHERE [Level] = ? LIMIT 1",
+                (max(1, int(level)),),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"no respec price for level {level}")
+        return float(row[0])
+
+    def preset_cooldown(
+        self, category_id: int
+    ) -> tuple[str, int, float] | None:
+        """The preset cooldown effect of a tree: (id, wire id, seconds)."""
+
+        if not 0 <= int(category_id) < len(TALENT_PRESET_COOLDOWN_EFFECTS):
+            return None
+        effect_id = TALENT_PRESET_COOLDOWN_EFFECTS[int(category_id)]
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT rowid, [StatusEffectDuration] "
+                "FROM [_Template_StatusEffect] WHERE [Id] = ? LIMIT 1",
+                (effect_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return effect_id, int(row[0]) - 1, max(0.0, float(row[1] or 0.0))
+
+    def respec_cost_effect_wire_id(self) -> int | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT rowid FROM [_Template_StatusEffect] "
+                "WHERE [Id] = ? LIMIT 1",
+                (TALENT_RESPEC_COST_EFFECT,),
+            ).fetchone()
+        return None if row is None else int(row[0]) - 1
 
     def maximum_progress_xp(self, category_id: int) -> int:
         if category_id == 0:

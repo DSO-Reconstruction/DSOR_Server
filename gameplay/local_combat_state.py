@@ -269,6 +269,173 @@ MONSTER_TELEPORT_TOLERANCE = max(
 )
 SERVER_TICKS_PER_SECOND = 25.0
 
+# Khalys's flood leaves four safe circles inside its aura, (+-6, +-6) m from
+# its centre in the effect's own frame, 2.16 m across their flames' ring.
+# CONTRACT: a player inside one is spared the flood's strikes; the circles
+# turn with the effect's yaw, as the client draws them.
+# EVIDENCE (data): Boss01_b_FloodDamage and Boss01FloodDamage StartSequence
+# boss_01_andermacht plays effects/boss_01_skill_03_state, whose nodes
+# emitter_fire_safe1..4 sit at (-6,6) (-6,-6) (6,-6) (6,6), each an arc of
+# radius 2.16 (pe2_0_g1..g4 x -2.161..2.151); the flood's lines reach 20.91
+# (AuraRadius 20.84). a0404_culttower03.map: s07_deco_platform_01 (4.26 m
+# square) at (86|98, 0, 2|-10) around Khalys's spawn (92.04, 0, -4.01).
+# UNVERIFIED: retail's own test (no LocationEffectClearing row exists for it).
+LOCATION_AURA_SAFE_CIRCLES = {
+    effect: (((-6.0, 6.0), (-6.0, -6.0), (6.0, -6.0), (6.0, 6.0)), 2.16)
+    for effect in ("boss01_b_flooddamage", "boss01flooddamage")
+}
+
+
+@lru_cache(maxsize=256)
+def _ally_aura_skill_unlocks(
+    static_database_path: str, map_id: str, effect_id: str,
+) -> tuple[tuple[float, int, int, tuple[tuple[tuple[float, float, float], float], ...]], ...]:
+    """What a caster's ally aura makes a placed helper cast at once.
+
+    CONTRACT: (AuraRadius, skill row index, HitFrame, ((spawn, yaw), ...))
+    per child UnlockHiddenSkills of an AuraTargets:Allies aura limited to an
+    AuraEffectAffectedTemplateId, with that template's authored spawn points
+    on the map (yaw atan2(m8, m0), as local_monster_state places monsters).
+    EVIDENCE (data): boss_khalys_base_andermight_flood_activate puts
+    boss_khalys_aura_activate_andermight_wave (Allies, 6 m, D 10, affects
+    boss_khalys_spawner_andermight_wave) on Khalys; its child
+    boss_khalys_effect_activate_andermight_wave unlocks the spawner's hidden
+    add_khalys_base_andermight_flood (ForceExecution, HitFrame 1), whose
+    Boss01FloodDamage OZ:2 lands at (92, 0, -4) from the spawner at (94, 0,
+    -4) turned -90 degrees (e_bos_khalys_pw_boss, pw015_khalys_boss_01).
+    UNVERIFIED: the spawner itself is not simulated; the flood is credited
+    to the caster of the aura.
+    """
+
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT COALESCE(AuraTargets, ''), COALESCE(AuraRadius, 0), "
+                "COALESCE(AuraEffectAffectedTemplateId, ''), "
+                "COALESCE(AuraEffectId, '') FROM _Template_StatusEffect "
+                "WHERE Id=?", (str(effect_id),),
+            ).fetchone()
+            if (
+                row is None or str(row[0]).strip().casefold() != "allies"
+                or float(row[1]) <= 0.0 or not str(row[2]).strip()
+            ):
+                return ()
+            skills = []
+            for child in str(row[3]).split(";"):
+                program = database.execute(
+                    "SELECT COALESCE(StartModifiers, '') "
+                    "FROM _Template_StatusEffect WHERE Id=?",
+                    (child.strip(),),
+                ).fetchone()
+                for encoded in str(program[0] if program else "").split(";"):
+                    kind, separator, value = encoded.partition(":")
+                    if separator and kind.strip().casefold() == "unlockhiddenskills":
+                        skill = database.execute(
+                            "SELECT rowid - 1, COALESCE(HitFrame, 0) "
+                            "FROM _Template_Skill WHERE Id=?",
+                            (value.strip(),),
+                        ).fetchone()
+                        if skill is not None:
+                            skills.append((int(skill[0]), int(skill[1])))
+        if not skills:
+            return ()
+        path = Path(static_database_path).parent.parent / "maps" / f"{map_id}.db4"
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+            spawns = []
+            for (transform,) in database.execute(
+                "SELECT Transform FROM _Instance_SpawnPoint WHERE NpcId=?",
+                (str(row[2]).strip(),),
+            ):
+                if not isinstance(transform, bytes) or len(transform) != 64:
+                    continue
+                matrix = struct.unpack("<16f", transform)
+                spawns.append((
+                    (float(matrix[12]), float(matrix[13]), float(matrix[14])),
+                    math.atan2(matrix[8], matrix[0]),
+                ))
+    except (OSError, sqlite3.Error):
+        return ()
+    return tuple(
+        (float(row[1]), index, hit_frame, tuple(spawns))
+        for index, hit_frame in skills
+    )
+
+
+@lru_cache(maxsize=256)
+def _star_beam_aura(
+    static_database_path: str, effect_id: str,
+) -> tuple[float, float, float, float, float] | None:
+    """(radius, width, start angle, degrees per second, beam spacing).
+
+    EVIDENCE (data): boss_khalys_beam_aura (boss_khalys_base_beam's
+    UserStatusEffects, D 4): AuraTargets Enemies, AuraRadius 20.85,
+    AuraStarBeamWidth 1.1, AuraStarBeamAngle 360 (one beam), AuraStartAngle
+    -60, AuraRotationSpeed 30; its visual boss_01_beam is one straight beam.
+    """
+
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT COALESCE(AuraTargets, ''), COALESCE(AuraRadius, 0), "
+                "COALESCE(AuraStarBeamWidth, 0), COALESCE(AuraStartAngle, 0), "
+                "COALESCE(AuraRotationSpeed, 0), COALESCE(AuraStarBeamAngle, 0) "
+                "FROM _Template_StatusEffect WHERE Id=?", (str(effect_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return None
+    if (
+        row is None or str(row[0]).strip().casefold() != "enemies"
+        or float(row[1]) <= 0.0 or float(row[2]) <= 0.0
+    ):
+        return None
+    return (
+        float(row[1]), float(row[2]), float(row[3]), float(row[4]),
+        float(row[5]) if 0.0 < float(row[5]) < 360.0 else 360.0,
+    )
+
+
+@dataclass(frozen=True)
+class MonsterBeamAura:
+    """A rotating star beam a monster carries (SEE: _star_beam_aura)."""
+
+    instance_id: int
+    owner_actor_id: int
+    definition: "VictimStatusEffectDefinition"
+    centre: tuple[float, float, float]
+    yaw: float
+    starts_at: float
+    expires_at: float
+    starts_tick: int
+    skill_index: int
+    radius: float
+    width: float
+    start_angle: float
+    rotation_speed: float
+    spacing: float
+
+    def touches(self, point, now: float, reach: float) -> bool:
+        """Whether a point is within ``reach`` of one of its beams now."""
+
+        dx = float(point[0]) - self.centre[0]
+        dz = float(point[2]) - self.centre[2]
+        turned = self.start_angle + self.rotation_speed * max(
+            0.0, now - self.starts_at
+        )
+        for index in range(max(1, round(360.0 / self.spacing))):
+            # Forward is -Z at yaw 0, turning as the server turns OX/OZ.
+            yaw = self.yaw + math.radians(turned + index * self.spacing)
+            ux, uz = -math.sin(yaw), -math.cos(yaw)
+            along = min(self.radius, max(0.0, dx * ux + dz * uz))
+            if math.hypot(dx - ux * along, dz - uz * along) <= (
+                self.width * 0.5 + reach
+            ):
+                return True
+        return False
+
 # ``Messaging::Hit::SetDamageTypes`` consumes this enum in the exact order
 # recovered from the client: Physical, Fire, Ice, Lightning, DarkMagic,
 # Poison.  The client selects elemental combat text (including
@@ -943,6 +1110,24 @@ class MonsterSummonRequest:
     limit: int
     position: tuple[float, float, float]
     level: int
+    # A status effect's Minion instructions place each one where authored
+    # (around the caster, turned by its aim) instead of on a ring.
+    positions: tuple[tuple[float, float, float], ...] = ()
+
+
+@lru_cache(maxsize=256)
+def _monster_template_lifetime(static_database_path: str, template_id: str) -> float:
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            row = database.execute(
+                "SELECT COALESCE(LifeTime, 0) FROM _Template_Monster WHERE Id=?",
+                (str(template_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return -1.0
+    return -1.0 if row is None else float(row[0] or 0.0)
 
 
 @dataclass(frozen=True)
@@ -1214,6 +1399,8 @@ class LocalCombatState:
         # (services/monster_summons.py).
         self.monster_summoned_actor_ids: dict[int, set[int]] = {}
         self.pending_monster_summons: list[MonsterSummonRequest] = []
+        # (due time, request): Minion instructions with a DE wait for it.
+        self._delayed_monster_summons: list[tuple[float, MonsterSummonRequest]] = []
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
         self._static_line_of_sight: StaticLineOfSight | None = None
@@ -1273,6 +1460,10 @@ class LocalCombatState:
             tuple[int, int, int], float
         ] = {}
         self._monster_location_aura_program_cache: dict[tuple, tuple] = {}
+        # Rotating star beams monsters carry (Khalys's beam), keyed apart
+        # from the location visuals' ids (resolve_monster_location_auras).
+        self.monster_beam_auras: dict[int, MonsterBeamAura] = {}
+        self._next_monster_beam_id = 0x40000000
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
@@ -3653,7 +3844,8 @@ class LocalCombatState:
         while inside, from the effect's start (after its DE) to its end.
         Each strike is mitigated by the player's defense for its damage type
         and sent as a Hit with the skill's index. Only while the monster
-        lives.
+        lives. A player in one of its safe circles is spared
+        (LOCATION_AURA_SAFE_CIRCLES: Khalys's flood).
         EVIDENCE (data): Boss01_b_Skill03 Boss01_b_FloodDamage (20.84 m, D 10,
         child CurrHealthPoints -0.1 relative every 0.25 s);
         BossSmithEarthqake's five _aura_0N, DE 1..5 s along OZ -2.5..-12.5;
@@ -3672,6 +3864,7 @@ class LocalCombatState:
             player_actor_id,
             [self.player_maximum_health, self.player_maximum_health],
         )
+        inside = []
         for visual in self.active_player_location_visuals(now=current_time):
             owner = int(visual.owner_actor_id)
             monster = self.monsters.get(owner)
@@ -3692,12 +3885,41 @@ class LocalCombatState:
                 or current_time + 1e-9 < starts_at
                 or self._distance(visual.position, player_world) > radius
                 + PLAYER_PROJECTILE_COLLISION_RADIUS
+                or self._in_location_aura_safe_circle(visual, player_world)
             ):
                 continue
+            inside.append((
+                int(visual.instance_id), owner, definition, starts_at,
+                visual.expires_at, int(visual.starts_tick),
+                int(visual.source_skill_index),
+            ))
+        # A monster's rotating star beam strikes a player its beam touches.
+        for beam in tuple(self.monster_beam_auras.values()):
+            if beam.expires_at <= current_time:
+                del self.monster_beam_auras[beam.instance_id]
+                continue
+            if (
+                self.monster_health.get(beam.owner_actor_id, 0) <= 0
+                or current_time + 1e-9 < beam.starts_at
+                or not beam.touches(
+                    player_world, current_time,
+                    PLAYER_PROJECTILE_COLLISION_RADIUS,
+                )
+            ):
+                continue
+            inside.append((
+                beam.instance_id, beam.owner_actor_id, beam.definition,
+                beam.starts_at, beam.expires_at, beam.starts_tick,
+                beam.skill_index,
+            ))
+        for (
+            instance_id, owner, definition, starts_at, expires_at,
+            starts_tick, skill_index,
+        ) in inside:
             for index, (interval, start, tick) in enumerate(
                 self._monster_location_aura_programs(definition)
             ):
-                key = (int(visual.instance_id), player_actor_id, index)
+                key = (instance_id, player_actor_id, index)
                 live.add(key)
                 strikes = []
                 next_at = self._monster_location_aura_ticks.get(key)
@@ -3709,7 +3931,7 @@ class LocalCombatState:
                 while (
                     tick
                     and next_at <= current_time + 1e-9
-                    and next_at <= visual.expires_at + 1e-9
+                    and next_at <= expires_at + 1e-9
                     and len(strikes) < 4
                 ):
                     strikes.append(tick)
@@ -3739,19 +3961,189 @@ class LocalCombatState:
                         killed=current == 0,
                         position=player_world,
                         server_tick=(
-                            visual.starts_tick + round(
+                            starts_tick + round(
                                 (current_time - starts_at)
                                 * SERVER_TICKS_PER_SECOND
                             )
                         ) & 0xFFFFFFFF,
                         hit_tags=(0,),
-                        skill_index=int(visual.source_skill_index),
+                        skill_index=skill_index,
                         victim_status_effects=(),
                     ))
         for key in tuple(self._monster_location_aura_ticks):
             if key[1] == player_actor_id and key not in live:
                 del self._monster_location_aura_ticks[key]
         return tuple(resolutions)
+
+    def _start_monster_beam_auras(
+        self, actor_id: int, attack, centre, yaw: float, now: float,
+    ) -> None:
+        """Arm the rotating star beams among a monster cast's user effects.
+
+        CONTRACT: from the cast's start (+ the effect's DE) for its D, at the
+        caster's place and aim (the beam skill keeps it there: SkillUnblock
+        180 frames > D 4 s). SEE: MonsterBeamAura, _star_beam_aura.
+        """
+
+        for effect in attack.user_status_effects:
+            if effect.chance <= 0.0 or effect.duration_ticks <= 0:
+                continue
+            beam = _star_beam_aura(
+                str(self.encounter.static_database_path), effect.resource_id,
+            )
+            if beam is None:
+                continue
+            radius, width, start_angle, speed, spacing = beam
+            starts_at = now + effect.delay_ticks / SERVER_TICKS_PER_SECOND
+            instance_id = self._next_monster_beam_id
+            self._next_monster_beam_id = (instance_id + 1) & 0x7FFFFFFF or 0x40000000
+            self.monster_beam_auras[instance_id] = MonsterBeamAura(
+                instance_id=instance_id,
+                owner_actor_id=int(actor_id),
+                definition=effect,
+                centre=tuple(float(v) for v in centre[:3]),
+                yaw=float(yaw),
+                starts_at=starts_at,
+                expires_at=starts_at
+                + effect.duration_ticks / SERVER_TICKS_PER_SECOND,
+                starts_tick=(
+                    int(attack.server_tick) + int(effect.delay_ticks)
+                ) & 0xFFFFFFFF,
+                skill_index=int(attack.skill_index),
+                radius=radius,
+                width=width,
+                start_angle=start_angle,
+                rotation_speed=speed,
+                spacing=spacing,
+            )
+
+    def _queue_monster_status_minions(
+        self, actor_id: int, attack, centre, yaw: float, now: float,
+    ) -> None:
+        """Summon the adds a monster cast's user effects name (Minion:).
+
+        CONTRACT: one monster per Minion instruction at its authored (x, z)
+        around the caster, turned by its aim as OX/OZ are, after the effect's
+        DE. Templates with a LifeTime are left out: the server cannot yet end
+        them (Khalys's bullet portals, 3.9 s; her illusions, 24 s).
+        EVIDENCE (data): boss_khalys_base_andermight_flood_activate_summon
+        (difficulty 5-10) boss_khalys_andermight_creature,DE:6.0: Minion:
+        pw015_boss_add_anderworld_creature,2,(0,0,16) (0,0,-16) (16,0,0)
+        (-16,0,0).
+        UNVERIFIED: the Minion's second argument (1 or 2 here, 0 on other
+        spawners) is read as no count; one add per instruction.
+        """
+
+        monster = self.monsters.get(int(actor_id))
+        if monster is None:
+            return
+        cos_yaw, sin_yaw = math.cos(float(yaw)), math.sin(float(yaw))
+        static_path = str(self.encounter.static_database_path)
+        for effect in attack.user_status_effects:
+            if effect.chance <= 0.0:
+                continue
+            by_template: dict[str, list[tuple[float, float, float]]] = {}
+            for template_id, _amount, (ox, oy, oz, _turn) in (
+                self.player_status_minion_specs(effect)
+            ):
+                if _monster_template_lifetime(static_path, template_id) != 0.0:
+                    continue
+                by_template.setdefault(template_id, []).append((
+                    float(centre[0]) + ox * cos_yaw + oz * sin_yaw,
+                    float(centre[1]) + oy,
+                    float(centre[2]) - ox * sin_yaw + oz * cos_yaw,
+                ))
+            for template_id, positions in by_template.items():
+                self._delayed_monster_summons.append((
+                    now + effect.delay_ticks / SERVER_TICKS_PER_SECOND,
+                    MonsterSummonRequest(
+                        caster_actor_id=int(actor_id),
+                        template_id=template_id,
+                        amount=len(positions),
+                        limit=0,
+                        position=tuple(float(v) for v in centre[:3]),
+                        level=int(monster.level),
+                        positions=tuple(positions),
+                    ),
+                ))
+
+    def release_due_monster_summons(self, now: float | None = None) -> None:
+        """Move the delayed status-effect summons that are due to the queue."""
+
+        current_time = time.perf_counter() if now is None else float(now)
+        due = [r for at, r in self._delayed_monster_summons if at <= current_time]
+        if due:
+            self._delayed_monster_summons = [
+                (at, r) for at, r in self._delayed_monster_summons
+                if at > current_time
+            ]
+            self.pending_monster_summons.extend(
+                r for r in due if r.caster_actor_id in self.living_actor_ids
+            )
+
+    def monster_activated_location_visuals(self, attack) -> tuple[
+        tuple[tuple[VictimStatusEffectDefinition, ...],
+              tuple[float, float, float], float, int, float], ...
+    ]:
+        """Ground effects a helper casts when a monster's ally aura wakes it.
+
+        Returns (visuals, position, yaw, skill index, delay seconds) per
+        authored helper within the aura's radius of the caster.
+        SEE: _ally_aura_skill_unlocks (Khalys's andermight flood).
+        """
+
+        result = []
+        centre = attack.position
+        for effect in attack.user_status_effects:
+            if effect.chance <= 0.0:
+                continue
+            for radius, skill_index, hit_frame, spawns in _ally_aura_skill_unlocks(
+                str(self.encounter.static_database_path),
+                str(self.encounter.map_id), effect.resource_id,
+            ):
+                visuals = self.player_skill_location_visuals(skill_index)
+                if not visuals:
+                    continue
+                for position, yaw in spawns:
+                    if math.hypot(
+                        position[0] - float(centre[0]),
+                        position[2] - float(centre[2]),
+                    ) > radius:
+                        continue
+                    result.append((
+                        visuals, position, yaw, skill_index,
+                        (effect.delay_ticks + max(0, hit_frame))
+                        / SERVER_TICKS_PER_SECOND,
+                    ))
+        return tuple(result)
+
+    @staticmethod
+    def _in_location_aura_safe_circle(
+        visual: PlayerLocationVisual,
+        world: tuple[float, float, float],
+    ) -> bool:
+        """Whether a point stands in one of a ground aura's safe circles.
+
+        SEE: LOCATION_AURA_SAFE_CIRCLES. The circles' local (x, z) turn with
+        the visual's yaw as start_player_location_visuals turns OX/OZ.
+        """
+
+        circles = LOCATION_AURA_SAFE_CIRCLES.get(
+            visual.definition.resource_id.strip().casefold()
+        )
+        if circles is None:
+            return False
+        centres, radius = circles
+        cos_yaw, sin_yaw = math.cos(visual.yaw), math.sin(visual.yaw)
+        dx = float(world[0]) - float(visual.position[0])
+        dz = float(world[2]) - float(visual.position[2])
+        return any(
+            math.hypot(
+                dx - (x * cos_yaw + z * sin_yaw),
+                dz - (-x * sin_yaw + z * cos_yaw),
+            ) <= radius
+            for x, z in centres
+        )
 
     def _monster_aura_program_damage(
         self,
@@ -11120,6 +11512,12 @@ class LocalCombatState:
                     now=current_time,
                     source_actor_id=actor_id,
                 )
+            self._start_monster_beam_auras(
+                actor_id, attack, monster_position, yaw, current_time,
+            )
+            self._queue_monster_status_minions(
+                actor_id, attack, monster_position, yaw, current_time,
+            )
             if tower_fire_burst or boss_projectile_in_flight:
                 previous = self.pending_monster_attacks.get(actor_id)
                 if previous is not None:
