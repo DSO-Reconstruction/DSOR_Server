@@ -59,6 +59,10 @@ ENCHANTMENT_FREE_TRINKET_CATEGORIES = frozenset((
     'JewelTrinket',
     'RuneTrinket',
 ))
+MERCENARY_EQUIPMENT_CATEGORIES = frozenset((
+    'MercenaryDefenseBackitem',
+    'MercenaryJewelry',
+))
 # Every ItemCategory this content revision authors under an
 # ``item_equipment_*`` IconConfiguration.
 #
@@ -80,6 +84,8 @@ EQUIPMENT_ITEM_CATEGORIES = frozenset((
     'JewelTrinket',
     'Jewelry',
     'LootGenItem',
+    'MercenaryDefenseBackitem',
+    'MercenaryJewelry',
     'OffenseBackitem',
     'OffenseQuiver',
     'OffenseShield',
@@ -1315,16 +1321,18 @@ def _roll_item_enchantments(
         if int(enchantment_tier) in database.enchantment_tiers
         else 0
     )
-    return [
-        ItemEnchantmentInfo(
-            value=max(0.0, min(1.0, float(rng.random()))),
+    max_roll = definition.item_category in MERCENARY_EQUIPMENT_CATEGORIES
+    enchantments = []
+    for template_id in resolved_ids:
+        random_roll = max(0.0, min(1.0, float(rng.random())))
+        enchantments.append(ItemEnchantmentInfo(
+            value=1.0 if max_roll else random_roll,
             kind=int(rarity),
             field_08=tier,
             field_0c=max(1, int(item_level)),
             template_id=template_id,
-        )
-        for template_id in resolved_ids
-    ]
+        ))
+    return enchantments
 
 
 def backfill_missing_equipment_enchantments(
@@ -1431,13 +1439,31 @@ def roll_new_equipment_enchantments(
         rng = random.Random()
     changed = []
     for item in info.items:
-        if (
-            int(item.item_id) not in wanted_ids
-            or item.enchantments
-        ):
+        if int(item.item_id) not in wanted_ids:
             continue
         row = database.items_by_id.get(str(item.template_id))
         if not _is_equipment_row(row):
+            continue
+        is_mercenary_equipment = str(
+            row.get("ItemCategory") or ""
+        ) in MERCENARY_EQUIPMENT_CATEGORIES
+        base_values_changed = False
+        if is_mercenary_equipment:
+            if int(item.field_38) != 16:
+                item.field_38 = 16
+                base_values_changed = True
+            if item.enchantments:
+                maxed_enchantments = [
+                    replace(enchantment, value=1.0)
+                    for enchantment in item.enchantments
+                ]
+                if maxed_enchantments != item.enchantments:
+                    item.enchantments = maxed_enchantments
+                    base_values_changed = True
+                if base_values_changed:
+                    changed.append(int(item.item_id))
+                continue
+        elif item.enchantments:
             continue
         definition = LootItemDefinition(
             template_id=str(row["Id"]),
@@ -1462,7 +1488,7 @@ def roll_new_equipment_enchantments(
             enchantment_tier=int(map_difficulty),
             rng=rng,
         )
-        if item.enchantments:
+        if item.enchantments or base_values_changed:
             changed.append(int(item.item_id))
     return tuple(changed)
 
@@ -1993,7 +2019,12 @@ def generate_monster_loot(
                 template_id=definition.template_id,
                 field_100=item_position,
                 field_80=appearance,
-                field_38=0,
+                field_38=(
+                    16
+                    if definition.item_category
+                    in MERCENARY_EQUIPMENT_CATEGORIES
+                    else 0
+                ),
                 field_3e=True,
                 enchantments=(
                     _roll_item_enchantments(

@@ -694,10 +694,7 @@ class InventoryInteractionService:
             for character in str(request.recipe_id).casefold()
             if character.isalnum()
         )
-        if (
-            request.payment_currency == 5
-            or "enchantmenttransfer" in normalized_recipe_id
-        ):
+        if "enchantmenttransfer" in normalized_recipe_id:
             self._handle_enchantment_transfer(s, request)
             return
         with s.flow_lock:
@@ -761,6 +758,46 @@ class InventoryInteractionService:
                 craft_count * int(recipe.result_amount),
                 item_level=max(1, int(character.level)),
             )
+            result_row = prime_world_loot_cache(
+                self.static_database_path
+            ).items_by_id.get(recipe.result_template_id)
+            if str((result_row or {}).get("ItemCategory") or "") in {
+                "MercenaryJewelry",
+                "MercenaryDefenseBackitem",
+            }:
+                crafted_item_ids = tuple(
+                    int(item.item_id)
+                    for item in builder.changed_items
+                    if item.template_id == recipe.result_template_id
+                )
+                enchanted_item_ids = roll_new_equipment_enchantments(
+                    self.static_database_path,
+                    builder.inventory,
+                    crafted_item_ids,
+                    class_name=CLASS_NAMES[int(character.class_id)],
+                    map_difficulty=int(s.gameplay_map_difficulty),
+                )
+                if enchanted_item_ids:
+                    refresh_inventory_economy_values(
+                        self.static_database_path,
+                        builder.inventory,
+                        item_ids=enchanted_item_ids,
+                        force_melt_value=True,
+                    )
+                    enchanted_id_set = set(enchanted_item_ids)
+                    enchanted_by_id = {
+                        int(item.item_id): item
+                        for item in builder.inventory.items
+                        if int(item.item_id) in enchanted_id_set
+                    }
+                    builder.changed_items = [
+                        copy.deepcopy(
+                            enchanted_by_id.get(
+                                int(item.item_id), item
+                            )
+                        )
+                        for item in builder.changed_items
+                    ]
             mutation = builder.finish()
             if mutation.inventory.equipment_slots != equipment_before:
                 raise ValueError(
