@@ -2998,11 +2998,13 @@ class LocalCombatState:
                         attack_skill_index = int(attack_row[0])
                         attack_skill_type = str(attack_row[1])
                         execute_sequence = str(attack_row[6]).strip()
-                        attack_playback_enabled = (
-                            bool(execute_sequence)
-                            and execute_sequence.casefold()
-                            != "empty_sequence"
-                        )
+                        # empty_sequence only means no FX: the attack
+                        # still plays its CoolDownCategory row of the
+                        # summon's AnimSet (minionskill_teslaturret,
+                        # Skill01 -> skill_01-loop on dwarf_turret_tesla).
+                        # FAILURE: with no SkillCommand the Tesla Turret
+                        # stood still while it struck ("pas animee").
+                        attack_playback_enabled = bool(execute_sequence)
                         attack_skill_unblock_frame = max(
                             0, int(attack_row[2])
                         )
