@@ -499,6 +499,7 @@ Commands begin with `!`, are authorized from the selected character's
 | `!map <mapId> [difficulty]` | persist and transfer through the normal map handoff |
 | `!where` | show the current map and character position |
 | `!speed [character name]` | toggle +100% movement speed for yourself or a named online character |
+| `!stress <amount> [templateId]` | load test: spawn 1-500 hostile monsters in rings around you, inside the 18.5 m announcement radius, copying the map's commonest ordinary monster unless a template is named; they fight and drop loot as usual, never respawn, and `!killmobs` clears them |
 | `!shutdown [minutes]` | broadcast the native maintenance timer and stop gracefully (default: 5 minutes) |
 
 Command text is never broadcast to map, region, group, or guild chat.
