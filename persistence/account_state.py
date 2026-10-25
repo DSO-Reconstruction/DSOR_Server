@@ -35,7 +35,10 @@ from dso_server.gameplay.achievement_content import (
     load_achievement_catalog,
     refresh_derived_achievements,
 )
-from dso_server.protocol.talent_protocol import ACTIVE_SKILL_TALENT_PRESELECTION
+from dso_server.protocol.talent_protocol import (
+    ACTIVE_SKILL_TALENT_PRESELECTION,
+    SKILL_TALENT_UNLOCKABLE_PRESELECTIONS,
+)
 from dso_server.protocol.player_init_protocol import (
     CurrencyChanged,
     QuickSlotInfo,
@@ -215,6 +218,8 @@ class AccountState:
     )
     recipe_book_resources: tuple[str, ...] = ()
     talent_category_points: tuple[int, int, int, int] = ()
+    # Skill presets 5..8 bought with Andermant (UnlockSkillTalentPreselection).
+    unlocked_skill_presets: int = 0
     # Wall-clock expiry (Unix seconds) for finite effects that survive map
     # handoffs and relogs. Effects absent from this map remain indefinite.
     timed_status_effect_expiries: dict[int, float] = field(
@@ -703,6 +708,7 @@ def _state_to_document(state: AccountState) -> dict:
         },
         "recipe_book_resources": list(state.recipe_book_resources),
         "talent_category_points": list(state.talent_category_points),
+        "unlocked_skill_presets": int(state.unlocked_skill_presets),
         "saved_at": state.saved_at,
     }
 
@@ -960,6 +966,10 @@ def _state_from_document(document: dict) -> AccountState:
         talent_category_points=tuple(
             max(0, int(value))
             for value in document.get("talent_category_points", ())
+        ),
+        unlocked_skill_presets=min(
+            SKILL_TALENT_UNLOCKABLE_PRESELECTIONS,
+            max(0, int(document.get("unlocked_skill_presets", 0))),
         ),
         timed_status_effect_expiries={
             int(instance_id): float(expires_at)

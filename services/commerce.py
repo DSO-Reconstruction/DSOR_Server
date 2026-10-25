@@ -108,6 +108,21 @@ class CommerceService:
                 f"{request.npc_actor_id}, which has no local shop"
             )
             return
+        if (
+            shop_id == WISDOM_TALENT_SHOP_ID
+            and int(request.npc_actor_id) == 0
+            and CharacterService._active_talent_rank(
+                s, 1, WISDOM_TALENT_SHOP_TALENT
+            ) <= 0
+        ):
+            # The Skills & Talents window opens this trader from anywhere,
+            # but only with the Wisdom trait that unlocks it.
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] RequestOffer for "
+                f"{shop_id!r} needs the {WISDOM_TALENT_SHOP_TALENT!r} "
+                "Wisdom talent"
+            )
+            return
 
         offers = self._build_shop_offer_snapshot(s, shop_id)
         with s.flow_lock:

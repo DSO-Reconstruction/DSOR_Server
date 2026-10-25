@@ -571,6 +571,10 @@ class DispatchService:
                 self._handle_select_talent(s, payload)
             elif command_id == SELECT_TALENT_PRESELECTION_COMMAND:
                 self._handle_select_talent_preselection(s, payload)
+            elif command_id == DESELECT_TALENT_COMMAND:
+                self._handle_deselect_talent(s, payload)
+            elif command_id == UNLOCK_SKILL_TALENT_PRESELECTION_COMMAND:
+                self._handle_unlock_skill_talent_preselection(s, payload)
             elif command_id == RESET_TALENT_PRESELECTION_COMMAND:
                 self._handle_reset_talent_preselection(s, payload)
             elif command_id == RESET_TALENT_CATEGORY_COMMAND:
