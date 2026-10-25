@@ -452,6 +452,9 @@ class InventoryMapService:
                     inventory,
                     action.item_id,
                     static_database_path=self.static_database_path,
+                    owner_level=int(
+                        getattr(s.gameplay_character, "level", 0) or 0
+                    ),
                 )
                 updated_currency, updated_ic = debit_currency(
                     currency,

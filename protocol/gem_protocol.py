@@ -173,6 +173,7 @@ def _level_scaled_value(value: str, level: int) -> int:
 def _socket_unlock_rules(
     static_database_path: str | Path,
     item: ItemInfo,
+    owner_level: int = 0,
 ) -> tuple[int, int]:
     """Return the item's current maximum socket count and next RC price."""
 
@@ -196,16 +197,28 @@ def _socket_unlock_rules(
             raise ValueError(
                 f"item {item.template_id!r} is not socketable equipment"
             )
+        # Trinkets are handed out at item level 1 (the starting rune and
+        # jewel trinkets) and open their sockets as their owner levels:
+        # MaxSocketCount 1:5 ... 100:10 reads the character's level for
+        # them. Their price is the TrinketSocketCosts column, not a rarity.
+        # FAILURE: a level 110 character's starting trinkets stopped at
+        # socket 5 ("je peux pas ouvrir plus que le Socket 5").
+        # ASSUMPTION: the owner's level, from the trinkets' level-1 creation;
+        # the retail rule was not traced in the client.
+        trinket = str(row["ItemCategory"] or "") in SOCKET_CATEGORY_BY_CONTAINER
+        level = max(1, int(item.item_level))
+        if trinket:
+            level = max(level, int(owner_level))
         maximum = _level_scaled_value(
             str(row["MaxSocketCount"] or ""),
-            max(1, int(item.item_level)),
+            level,
         )
         if maximum <= 0:
             raise ValueError(
                 f"item {item.template_id!r} has no purchasable sockets"
             )
 
-        rarity_name = next(
+        rarity_name = "TrinketSocketCosts" if trinket else next(
             (
                 name
                 for name, rarity_id in OFFER_RARITY_IDS.items()
@@ -243,6 +256,7 @@ def unlock_gem_socket(
     equipment_item_id: int,
     *,
     static_database_path: str | Path,
+    owner_level: int = 0,
 ) -> SocketUnlockMutation:
     """Purchase exactly the next sequential socket on an equipment item."""
 
@@ -252,6 +266,7 @@ def unlock_gem_socket(
     maximum, price_rc = _socket_unlock_rules(
         static_database_path,
         equipment,
+        owner_level,
     )
     if equipment.socket_count >= maximum:
         raise ValueError(
