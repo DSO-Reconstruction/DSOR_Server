@@ -1,61 +1,66 @@
 # Recovering the client's command id table
 
-## Server default: `release261_203`
+## Server default: `release261_1024`
 
-The server uses [`command_ids_rel261_203.json`](command_ids_rel261_203.json) by
+The server uses [`command_ids_rel261_1024.json`](command_ids_rel261_1024.json)
+by default, matching the R261_1024 client. Set `DSO_COMMAND_IDS` to
+`docs/command_ids_rel261_203.json` or `docs/command_ids_rel261_192.json` to
+select an older client table. `DSO_COMMAND_IDS=builtin` selects the original
+patch5 literals.
 
-default, matching the new `rel261_203` client. The earlier `rel261_192` table
-remains available for explicit use through `DSO_COMMAND_IDS`.
+This analysis recovers registered command names and IDs. It does not compare
+serializer field layouts against the previous executable, so the existing
+`DSO_SKILL_HIT_MARKER_BITS` setting is retained. For `dro_client64-patch5` or
+the DSOR client, set `DSO_COMMAND_IDS=builtin` and
+`DSO_SKILL_HIT_MARKER_BITS=0`.
 
-This table and the corresponding marker-bit defaults were adapted from
+## R261_1024 update analysis
 
-[upstream commit a2cfa7d](https://github.com/shockblaze/DSOR_Server_Kitty261/commit/a2cfa7d308ade059c788f1ef0903b27a640375de).
+The executable analyzed was
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe`. Its embedded
+revision marker is `261_1024`; SHA-256:
+`5ccb022ed3637cd977900d20cfbe1c802caf9250ec52877064442508438d3db6`.
+The recovered table is [`command_ids_rel261_1024.json`](command_ids_rel261_1024.json).
 
-For `dro_client64-patch5` or the DSOR client, set
+The scan found the same 371 command class names as release261_203: no new
+or removed class names. Two existing IDs changed:
 
-`DSO_COMMAND_IDS=builtin` and `DSO_SKILL_HIT_MARKER_BITS=0`.
+| command class | release261_203 | R261_1024 |
+| --- | ---: | ---: |
+| `Commands::PaymentForceLogoutCommand` | `0x10A` | `0x10` |
+| `Commands::ResumeMasterServerCommand` | `0x0A` | `0x13F` |
+
+R261_1024 assigns IDs `0x10` and `0x13F` to two class names apiece in the
+recovered table: `PlayerDeletedCommand` shares `0x10`, and
+`RevenueRecognitionCommand` shares `0x13F`. The server sends
+`PlayerDeletedCommand` after a character deletion; its ID remains `0x10`.
+`PaymentForceLogoutCommand`, `ResumeMasterServerCommand`, and
+`RevenueRecognitionCommand` are not emitted by this server. Because the table
+is keyed by class name, it preserves each recovered ID without collapsing
+entries that share an ID. The duplicate-ID routing contexts still need live
+client confirmation.
+
+The scan found 371 classes, 369 distinct IDs spanning 1–381, and seven
+non-command base classes without a creator. The command table was recovered
+from the 64-bit executable. R261_203 remains available for explicit selection.
 
 ## rel261_203 update analysis
 
-The October 2026 client update was analyzed from
+The previous October 2026 client update was analyzed from
 
-`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe` (the embedded
+`%LOCALAPPDATA%\Temp\DSOClient\dlcache\dro_client64.exe` (revision marker
 
-revision marker is `261_203`; SHA-256
+`261_203`; SHA-256
 
 `e0fe05f0f3746bc8ae55927958d1dd93641eb1948ccdd9d4f474da93dac49f81`). The
 
-recovered table is in
+prior table remains in
 
-[`command_ids_rel261_203.json`](command_ids_rel261_203.json). It contains the
+[`command_ids_rel261_203.json`](command_ids_rel261_203.json). Compared with
 
-same 371 command class names as rel261_192, so no new registered commands were
+rel261_192, only `DebugSpecialOfferCommand` changed (0x84 to 0x107);
 
-found. The class-to-id change is:
-
-| command class              |   rel261_192 |    rel261_203 | note                 |
-| -------------------------- | -----------: | ------------: | -------------------- |
-| `DebugSpecialOfferCommand` | `0x84` (132) | `0x107` (263) | moved to a unique id |
-
-`SpecialOfferCommand` remains at `0x84` (132). The rel261_192 source table had
-
-both classes assigned to 132; rel261_203 assigns distinct ids. The new table
-
-has 371 classes, 371 unique ids spanning 1–381, and no duplicate ids. Its
-
-actor-scope flags were recovered from vtable slots 13 and 14 and match the
-
-rel261_192 flags for all 371 classes (299 actor-scoped, 72 unscoped).
-
-Recovery followed each command's RTTI class-name registration to its creator,
-
-followed the creator to the constructor, read the constructor's vtable, then
-
-read `GetCommandId()` from vtable slot 3. This is the same chain described in
-
-§2 below, applied to the rel261_203 x64 executable. The table is selected by
-
-default; `DSO_COMMAND_IDS` can select another supported client table.
+`SpecialOfferCommand` remained 0x84.
 
 The detailed command recovery notes below document the patch5 table in
 

@@ -28,6 +28,7 @@ include-package-data = false
 dso_server = [
     "docs/command_ids_rel261_192.json",
     "docs/command_ids_rel261_203.json",
+    "docs/command_ids_rel261_1024.json",
     "data/catalogs/*.json",
     "data/events.json",
     "data/quests.xml",
