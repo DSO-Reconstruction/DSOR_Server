@@ -303,6 +303,8 @@ class WorldService:
 
         if combat is None:
             return batch
+        from dso_server.gameplay.mortis_arena import released_spawn_batch
+        batch = released_spawn_batch(combat, batch)
         commands = tuple(batch.commands)
         startup_overrides = {}
         presentation_changed = False

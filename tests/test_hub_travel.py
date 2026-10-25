@@ -128,6 +128,30 @@ class HubTravelTests(unittest.TestCase):
             self.server._resolve_hub_travel_destination(session), "a0200_kingscity"
         )
 
+    def test_mortis_return_stone_goes_to_cardhun_regardless_of_last_town(self):
+        session = self._session(current_map="pw214_mortis_boss", last_town="a0200_kingscity")
+        exit = SimpleNamespace(
+            destination_map_id="home", destination_entry_name="", name="home",
+        )
+        with patch.object(CharacterServer, "_begin_map_transfer", return_value=True) as begin:
+            self.assertTrue(self.server._activate_map_exit(session, exit, trigger="client cmd 0x0060"))
+        begin.assert_called_once()
+        self.assertEqual(begin.call_args.args[2], "pw000_hub")
+        self.assertEqual(
+            begin.call_args.kwargs["spawn_position"],
+            load_local_travel_point_position(DEFAULT_STATIC_DB_PATH, "pw000_hub"),
+        )
+        self.assertTrue(begin.call_args.kwargs["gameplay_switch"])
+
+    def test_other_home_exits_resolve_to_a_real_last_visited_town(self):
+        session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
+        exit = SimpleNamespace(
+            destination_map_id="home", destination_entry_name="", name="home",
+        )
+        with patch.object(CharacterServer, "_begin_map_transfer", return_value=True) as begin:
+            self.assertTrue(self.server._activate_map_exit(session, exit, trigger="client cmd 0x0060"))
+        self.assertEqual(begin.call_args.args[2], "b1100_hub")
+
     def test_ordinary_destinations_arrive_at_their_travel_stone(self):
         session = self._session(current_map="a0303_wildcave", last_town="b1100_hub")
         session.gameplay_unlocked_maps.add("a0200_kingscity")

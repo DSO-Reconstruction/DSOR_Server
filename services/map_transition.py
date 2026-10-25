@@ -519,6 +519,14 @@ class MapTransitionService:
             selected_access_id = str(
                 destination_access_id or definition.destination_map_id
             )
+            home_exit = selected_access_id.casefold() in {"home", "hub"}
+            if home_exit:
+                # Arena return stones use a symbolic ExitURL, not a map file.
+                # Mortis' Exile returns to Cardhun regardless of the last town.
+                selected_access_id = (
+                    "pw000_hub" if str(s.gameplay_map).casefold() == "pw214_mortis_boss"
+                    else CharacterService._resolve_hub_travel_destination(self, s)
+                )
             destination_access = resolve_map_access(
                 self.static_database_path,
                 selected_access_id,
@@ -544,11 +552,16 @@ class MapTransitionService:
             ):
                 raise ValueError("the destination requires its unlocking quest")
             try:
-                destination_position = load_local_entry_position(
-                    self.static_database_path,
-                    destination_physical_map_id,
-                    definition.destination_entry_name,
-                )
+                if home_exit:
+                    destination_position = load_local_travel_point_position(
+                        self.static_database_path, destination_physical_map_id,
+                    )
+                else:
+                    destination_position = load_local_entry_position(
+                        self.static_database_path,
+                        destination_physical_map_id,
+                        definition.destination_entry_name,
+                    )
             except ValueError as exc:
                 destination_position = load_local_spawn_position(
                     self.static_database_path,

@@ -18,6 +18,7 @@ from dso_server.protocol.combat_protocol import (
     SHIFTED_SKILL_COMMAND,
     SKILL_COMMAND,
     TARGET_BULLET_SKILL_COMMAND,
+    TARGET_POINT_BULLET_SKILL_COMMAND,
     TARGET_SKILL_COMMAND,
 )
 from dso_server.protocol.gameplay_protocol import (
@@ -554,6 +555,7 @@ class MonsterAttackDefinition:
     player_width: float = 0.0
     end_width: float = 0.0
     angle_degrees: float = 0.0
+    movement_skill: bool = False
 
     @property
     def support(self) -> bool:
@@ -1586,6 +1588,7 @@ def _load_runtime_template(
             targeting_type = str(skill_row[7])
             skill_bullet_id = str(skill_row[35] or "").strip()
             has_bullet = bool(skill_bullet_id)
+            mortis_charge = skill_resource_id.casefold() == "bossmortisunbound_charge"
             self_buff = False
             summon = (
                 int(skill_row[26] or 0) != 0
@@ -1605,9 +1608,9 @@ def _load_runtime_template(
             # movement skills through BulletSkillCommand with an empty point
             # array (the source of the client Math::point assertion). A summon
             # is cast on the caster's own place, whatever its targeting.
-            if skill_type.casefold() in {
+            if (not mortis_charge and skill_type.casefold() in {
                 "charge", "chargethrough", "jump",
-            } or (
+            }) or (
                 skill_type.casefold() == "shifted"
                 and has_bullet
                 and not summon
@@ -1616,10 +1619,33 @@ def _load_runtime_template(
                 }
             ):
                 continue
-            if summon and skill_type == "Shifted":
+            if mortis_charge:
+                # ChargeThrough consumes a destination-point array. Its body
+                # projectile must never use the point-free BulletSkill payload.
+                command_id = TARGET_POINT_BULLET_SKILL_COMMAND
+            elif skill_type == "Shifted" and (
+                has_bullet or skill_resource_id.casefold() == "bossmortisunbound_gravedigger"
+            ) and targeting_type.casefold() in {
+                "radius", "point", "location", "randomposition",
+            }:
+                command_id = SHIFTED_SKILL_COMMAND
+            elif summon and skill_type == "Shifted":
                 command_id = SHIFTED_SKILL_COMMAND
             elif summon and skill_type == "Melee":
                 command_id = SKILL_COMMAND
+            elif (
+                has_bullet
+                and skill_type.casefold() == "rangedtargetpoint"
+            ) or (
+                has_bullet
+                and targeting_type.casefold() in {"point", "location"}
+                and skill_type.casefold() != "shifted"
+            ):
+                # These projectiles carry an explicit world point list in
+                # TargetPointBulletSkillCommand. Sending them as BulletSkill
+                # leaves that list uninitialized in the client; impact then
+                # indexes an empty Array<Math::point> and asserts.
+                command_id = TARGET_POINT_BULLET_SKILL_COMMAND
             elif has_bullet:
                 # Ranged skills with a bullet require BulletSkillCommand on
                 # the client. Radius-targeted Shifted skills instead carry
@@ -1716,6 +1742,7 @@ def _load_runtime_template(
                         player_width=max(0.0, float(skill_row[32] or 0.0)),
                         end_width=max(0.0, float(skill_row[33] or 0.0)),
                         angle_degrees=max(0.0, float(skill_row[34] or 0.0)),
+                        movement_skill=mortis_charge,
                     ),
                 )
             )

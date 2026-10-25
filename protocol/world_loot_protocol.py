@@ -1665,6 +1665,7 @@ def generate_monster_loot(
     wisdom_eligible: bool = False,
     map_difficulty: int = 0,
     extra_boss_gems: int = 0,
+    guaranteed_gem_templates: tuple[str, ...] = (),
     additional_instant_consumables: tuple[tuple[str, int], ...] = (),
     position_projector: (
         Callable[
@@ -1909,6 +1910,21 @@ def generate_monster_loot(
                     specifications.append(
                         (generator.choice(gem_pool), 1, 1, "", 0)
                     )
+
+        # Encounter rewards bypass normal loot probability and random gem
+        # selection. Resolve exact templates so a requested tier never falls
+        # back to a different rank, and add one of each outside event scaling.
+        for gem_template in dict.fromkeys(guaranteed_gem_templates):
+            row = database.items_by_id.get(gem_template)
+            if row is None or row.get("ItemCategory") != "EquipmentGem":
+                raise ValueError(f"guaranteed gem {gem_template!r} is not an equipment gem")
+            specifications.append((
+                LootItemDefinition(
+                    gem_template, "EquipmentGem",
+                    str(row.get("AutoPickUp") or "None"), "0", "0", "",
+                ),
+                1, 1, "", 0,
+            ))
 
         event_collectible_ids = {
             str(template_id)

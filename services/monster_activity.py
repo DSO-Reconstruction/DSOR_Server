@@ -424,6 +424,44 @@ class MonsterActivityService:
                             context,
                         )
                     )
+                elif attack.command_id == TARGET_POINT_BULLET_SKILL_COMMAND:
+                    definition = attack.definition
+                    bullet_count = max(
+                        1,
+                        int(
+                            getattr(definition, "bullet_count", 1)
+                            if definition is not None else 1
+                        ),
+                    )
+                    target_position = tuple(
+                        float(value)
+                        for value in attack.target_position[:3]
+                    )
+                    skill_commands.append(
+                        TargetPointBulletSkillServerCommand(
+                            TargetPointBulletSkill(
+                                skill_level=attack.skill_level,
+                                skill_index=attack.skill_index,
+                                aim_angle=attack.aim_angle,
+                                server_tick=attack.server_tick,
+                                cast_id=attack.cast_id,
+                                direction=attack.direction,
+                                variant=attack.variant,
+                                target_position=target_position,
+                                additional_target_positions=(
+                                    target_position,
+                                ) * (bullet_count - 1),
+                            ),
+                            attack.attacker_actor_id,
+                            context,
+                            max(
+                                0,
+                                int(round(
+                                    float(getattr(definition, "hit_range", 0.0))
+                                )),
+                            ),
+                        )
+                    )
                 elif attack.command_id == TARGET_BULLET_SKILL_COMMAND:
                     bullet_count = max(1, getattr(attack, "bullet_count", 1))
                     if bullet_count == 1 and attack.definition is not None:
