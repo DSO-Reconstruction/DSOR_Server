@@ -184,7 +184,8 @@ class ChatServer(RakNetServer):
                 "Admin commands: !help | !item <templateId> [amount] | "
                 "!map <mapId> [difficulty] | !where | !speed [character name] | "
                 "!unlockmaps [character name] | !immortal [character name] | "
-                "!killmobs | !shutdown [minutes]",
+                "!killmobs | !stress <amount> [templateId] | "
+                "!shutdown [minutes]",
             )
             return
         if gameplay is None or gameplay_server is None:
@@ -259,6 +260,24 @@ class ChatServer(RakNetServer):
             killed = gameplay_server._admin_kill_all_monsters(gameplay)
             self._send_system_message(
                 s, f"Killed {killed} monster(s) on the current map instance."
+            )
+            return
+        if command == "!stress":
+            if len(arguments) not in {2, 3}:
+                raise ValueError("usage: !stress <amount> [templateId]")
+            try:
+                amount = int(arguments[1])
+            except ValueError:
+                raise ValueError(
+                    "usage: !stress <amount> [templateId]; amount must be a "
+                    "whole number"
+                ) from None
+            spawned, template_id = gameplay_server._admin_spawn_stress_monsters(
+                gameplay, amount, arguments[2] if len(arguments) == 3 else None,
+            )
+            self._send_system_message(
+                s, f"Spawned {spawned}x {template_id} around you. "
+                "!killmobs clears them.",
             )
             return
         if command == "!where":

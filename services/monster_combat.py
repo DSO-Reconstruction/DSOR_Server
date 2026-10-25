@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+import math
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.runtime.monster_runtime_diagnostics import mark_phase
+from dso_server.gameplay.local_monster_state import (
+    _grounded_spawn_position,
+    _load_monster,
+    _load_runtime_definition,
+    _spawn_group,
+)
+from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.services.monster_chase_loop import (
     _FixedRateChaseLoop,
     MONSTER_TICK_IDLE,
@@ -16,10 +26,158 @@ from dso_server.services.player_owned_resolution_dispatch import (
 )
 
 
+# ``!stress`` load-test spawns. Rings start this far from the GM and sit this
+# far apart, so the largest wave still lands inside the client's monster
+# announcement radius (MONSTER_VISIBILITY_ENTER_RADIUS, 18.5 m).
+STRESS_SPAWN_LIMIT = 500
+STRESS_SPAWN_INNER_RADIUS = 2.0
+STRESS_SPAWN_SPACING = 1.4
+
+
+def stress_spawn_positions(
+        center: tuple[float, float, float], amount: int,
+) -> tuple[tuple[float, float, float], ...]:
+    """Lay ``amount`` points in rings around ``center``, spacing apart."""
+
+    positions = []
+    radius = STRESS_SPAWN_INNER_RADIUS
+    while len(positions) < amount:
+        count = max(1, int(2.0 * math.pi * radius / STRESS_SPAWN_SPACING))
+        # Stagger each ring so neighbours on adjacent rings do not line up.
+        offset = (radius / STRESS_SPAWN_SPACING) * 0.5
+        for index in range(min(count, amount - len(positions))):
+            angle = (index + offset) * 2.0 * math.pi / count
+            positions.append((
+                float(center[0]) + radius * math.cos(angle),
+                float(center[1]),
+                float(center[2]) + radius * math.sin(angle),
+            ))
+        radius += STRESS_SPAWN_SPACING
+    return tuple(positions)
+
+
 class MonsterCombatService(
         PlayerOwnedResolutionDispatchService,
         MonsterTickContextService):
     """Monster pursuit, attacks, return-home state, and vicinity delivery."""
+
+    def _admin_spawn_stress_monsters(
+            self, s: Session, amount: int, template_id: str | None = None,
+    ) -> tuple[int, str]:
+        """Spawn hostile monsters in rings around a GM for load testing.
+
+        Without ``template_id`` the most common ordinary monster of the map
+        instance is copied, so its level and client assets already fit the
+        map. The actors join the shared encounter like an event wave: they
+        are announced to everyone on the instance, fight and drop loot as
+        usual, never respawn, and ``!killmobs`` clears them.
+        """
+
+        amount = int(amount)
+        if not 1 <= amount <= STRESS_SPAWN_LIMIT:
+            raise ValueError(f"amount must be from 1 to {STRESS_SPAWN_LIMIT}")
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            encounter = s.gameplay_monster_encounter
+            move = s.gameplay_last_move
+            spawn = s.gameplay_spawn_position
+            monster_level = s.gameplay_monster_level
+            difficulty = int(s.gameplay_scaling_difficulty or 0)
+        if combat is None or encounter is None:
+            raise ValueError("the current map has no combat encounter")
+        if move is not None:
+            center = encounter.coordinate_frame.wire_to_world(
+                move.relative_position
+            )
+        elif spawn is not None:
+            center = tuple(float(value) for value in spawn)
+        else:
+            raise ValueError("your position on this map is not known yet")
+        database_path = encounter.static_database_path
+        if template_id is None:
+            with combat.lock:
+                counts: dict[str, int] = {}
+                for actor_id in combat.alive_actor_ids:
+                    monster = combat.monsters[actor_id]
+                    if (
+                        monster.invulnerable
+                        or str(monster.rank_id).casefold().startswith("rank_boss")
+                        or str(monster.template_id).casefold().startswith(
+                            "damage_doll"
+                        )
+                    ):
+                        continue
+                    counts[monster.template_id] = (
+                        counts.get(monster.template_id, 0) + 1
+                    )
+            if not counts:
+                raise ValueError(
+                    "this map has no monster to copy; name one: "
+                    "!stress <amount> <templateId>"
+                )
+            template_id = max(sorted(counts), key=counts.__getitem__)
+        if _load_runtime_definition(database_path, template_id, 0) is None:
+            raise ValueError(
+                f"monster template {template_id!r} has no runtime definition"
+            )
+
+        with combat.lock:
+            actor_ids = combat.allocate_runtime_actor_ids(amount)
+        monsters = []
+        definitions = []
+        for actor_id, position in zip(
+            actor_ids, stress_spawn_positions(center, amount), strict=True,
+        ):
+            try:
+                position = _grounded_spawn_position(
+                    encounter.navigation,
+                    encounter.terrain,
+                    position,
+                    reference_position=center,
+                    max_horizontal_distance=STRESS_SPAWN_SPACING * 2.0,
+                )
+            except (NavigationError, CollisionTerrainError, ValueError):
+                pass
+            definitions.append(
+                _load_runtime_definition(database_path, template_id, actor_id)
+            )
+            monsters.append(_load_monster(
+                database_path,
+                template_id,
+                actor_id,
+                position,
+                monster_level=monster_level,
+                scaling_difficulty=difficulty,
+            ))
+        group = _spawn_group(database_path, tuple(monsters))
+        ammo = combat.load_ammo_vulnerabilities(
+            database_path, group.spawn_batch.commands
+        )
+        with combat.lock:
+            added = combat.add_runtime_monsters(
+                group, definitions, ammo_vulnerabilities=ammo
+            )
+        viewers = (
+            s,
+            *(
+                peer
+                for peer in self._active_gameplay_sessions(
+                    map_id=s.gameplay_map, excluding=s, instance_of=s,
+                )
+                if peer.gameplay_combat_state is combat
+            ),
+        )
+        for viewer in viewers:
+            with viewer.flow_lock:
+                ready = viewer.gameplay_presence_ready
+            if ready:
+                self._announce_runtime_group(viewer, combat, group)
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] stress-spawned {len(added)}x "
+            f"{template_id} around {s.gameplay_character.name} on "
+            f"{s.gameplay_map}"
+        )
+        return len(added), template_id
 
     def _admin_kill_all_monsters(self, s: Session) -> int:
         """Resolve every living monster in this shared map instance as a GM kill."""
