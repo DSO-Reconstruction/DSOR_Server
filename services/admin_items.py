@@ -52,7 +52,7 @@ def item_language_directory():
     return None
 
 
-@lru_cache(maxsize=4)
+@lru_cache(maxsize=64)
 def locale_titles(language_directory):
     """Index every ``db.*.xml`` locale key the client would display."""
     titles = {}
@@ -65,6 +65,28 @@ def locale_titles(language_directory):
             if key and text:
                 titles[key] = text
     return titles
+
+
+def item_language_directories():
+    """Return every available locale directory, in a stable search order."""
+    roots = (DEFAULT_LANGUAGE_ROOT, *_FALLBACK_LANGUAGE_ROOTS)
+    available = set()
+    for root in roots:
+        if root.is_dir():
+            available.update(
+                child.name for child in root.iterdir()
+                if child.is_dir() and _has_locale_files(child)
+            )
+
+    locale_order = (*LANGUAGE_PREFERENCE,
+                    *sorted(available - set(LANGUAGE_PREFERENCE), key=str.casefold))
+    directories = []
+    for locale in locale_order:
+        for root in roots:
+            candidate = root / locale
+            if locale in available and candidate.is_dir() and _has_locale_files(candidate):
+                directories.append(candidate)
+    return tuple(directories)
 
 
 def _display_name(titles, template_id, name, locale_key):
@@ -80,24 +102,42 @@ def _display_name(titles, template_id, name, locale_key):
 
 
 @lru_cache(maxsize=4)
-def _catalog(static_database_path, language_directory):
+def _catalog(static_database_path, language_directory, search_language_directories):
     titles = locale_titles(language_directory)
+    search_titles = tuple(locale_titles(directory) for directory in search_language_directories)
     with closing(sqlite3.connect(
             Path(static_database_path).resolve().as_uri() + "?mode=ro", uri=True)) as db:
         rows = db.execute(
             "SELECT Id,Name,LocaleIdTitle,ItemCategory,DefaultRarity,RequiredLevel,MaxStackSize,SlotType "
             "FROM _Template_Item").fetchall()
-    return tuple({
-        "template_id": str(row[0]), "category": str(row[3] or ""),
-        "name": _display_name(titles, row[0], row[1], row[2]),
-        "template_name": str(row[1] or "").strip(),
-        "rarity": row[4], "required_level": row[5], "max_stack_size": row[6], "slot_types": row[7],
-    } for row in rows)
+    catalog = []
+    for row in rows:
+        template_id = str(row[0])
+        template_name = str(row[1] or "").strip()
+        locale_key = str(row[2] or "")
+        name = _display_name(titles, template_id, template_name, locale_key)
+        search_names = {name, template_name}
+        localized_names = []
+        for directory, localized_titles in zip(search_language_directories, search_titles):
+            for key in (locale_key, f"{template_id}Title"):
+                localized = str(localized_titles.get(key) or "").strip()
+                if localized and not localized.startswith("Localize:"):
+                    search_names.add(localized)
+                    localized_names.append((directory.name, localized))
+        catalog.append({
+            "template_id": template_id, "category": str(row[3] or ""),
+            "name": name, "template_name": template_name,
+            "search_names": tuple(sorted(search_names, key=str.casefold)),
+            "localized_names": tuple(dict.fromkeys(localized_names)),
+            "rarity": row[4], "required_level": row[5], "max_stack_size": row[6], "slot_types": row[7],
+        })
+    return tuple(catalog)
 
 
 def item_catalog(static_database_path):
-    """All item templates with the name the client shows for each."""
-    return _catalog(Path(static_database_path).resolve(), item_language_directory())
+    """All item templates with display names and searchable names in every locale."""
+    return _catalog(Path(static_database_path).resolve(), item_language_directory(),
+                    item_language_directories())
 
 
 def socket_limit(schedule, level):
