@@ -848,6 +848,13 @@ class InventoryMapService:
             try:
                 if inventory is None:
                     raise ValueError("player inventory is not initialized")
+                # Repair saves made while the incorrect slot 34 was still used
+                # for a second essence before interpreting a switch/equip.
+                # Otherwise the client cannot display that item, and a later
+                # X-key swap can displace it into ordinary inventory.
+                inventory, _relocated_essences = (
+                    repair_ammunition_slot_allocations(inventory)
+                )
                 item = next(
                     (
                         item for item in inventory.items
@@ -879,6 +886,16 @@ class InventoryMapService:
                         preferred_slots = tuple(
                             int(value) for value in arguments
                         )
+                        # Older clients may still name the retired secondary
+                        # slot. Treat that request as the supported partner;
+                        # the item's SlotType resolver still rejects items
+                        # that cannot occupy an essence slot.
+                        preferred_slots = tuple(
+                            SECONDARY_AMMUNITION_SLOT
+                            if slot == LEGACY_SECONDARY_AMMUNITION_SLOT
+                            else slot
+                            for slot in preferred_slots
+                        )
                     else:
                         replaced_ids = tuple(
                             int(value) for value in arguments if value
@@ -890,6 +907,31 @@ class InventoryMapService:
                                 replaced_id, ()
                             )
                         )
+                    # The X-key essence toggle can arrive as a move/swap with
+                    # no explicit destination or displaced-item list. Infer
+                    # the opposite supported essence slot from the current
+                    # allocation so the client and authoritative inventory
+                    # cannot disagree about which essence is active.
+                    if (
+                        not preferred_slots
+                        and action.operation in {
+                            MOVE_ITEM_EQUIPMENT_OPERATION, 0x0B
+                        }
+                    ):
+                        former_ammunition_slots = tuple(
+                            int(slot)
+                            for slot in inventory.equipment_slots.get(
+                                int(action.item_id), ()
+                            )
+                            if int(slot) in AMMUNITION_SLOTS
+                        )
+                        if former_ammunition_slots:
+                            current_slot = former_ammunition_slots[0]
+                            preferred_slots = (
+                                SECONDARY_AMMUNITION_SLOT
+                                if current_slot == ACTIVE_AMMUNITION_SLOT
+                                else ACTIVE_AMMUNITION_SLOT,
+                            )
                     occupied_slots = tuple(
                         int(slot)
                         for equipped_item_id, equipped_slots

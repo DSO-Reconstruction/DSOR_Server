@@ -771,7 +771,17 @@ class PlayerInitializationWorldService:
                 for key in sorted(s.gameplay_stickerbook_entries)
             )
             quick_slots = copy.deepcopy(s.gameplay_quick_slots)
-        followup_commands = []
+        # InventoryInfo arrives inside the split PlayerReady initialization
+        # while the client is rebuilding its inventory widgets. Reapply the
+        # complete allocation map after readiness so equipment-only entries
+        # such as the two essence slots are rendered from the live GameItems.
+        # Keep ItemInfo out of this refresh: the client already owns those
+        # objects, and re-adding them can rebuild neighboring equipment twice.
+        followup_commands = [ServerCommand(
+            INVENTORY_INFO_COMMAND,
+            equipment_allocation_snapshot(state.inventory),
+            LOCAL_PLAYER_ACTOR_ID,
+        )]
         if isinstance(quick_slots, QuickSlotsInfo):
             # The client can discard the quickbar snapshot sent inside the
             # initial map batch while it is rebuilding its UI. Reapply the

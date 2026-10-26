@@ -218,7 +218,7 @@ class StaticGameDatabase:
         then the first unoccupied slot. The numeric mapping is recovered from
         retail InventoryInfo equipment records: rings are 8/9, amulet 10,
         belt 11, weapon modifier/banner 12, and the hand pair is 5/6. The
-        essence pair is 35 (active) and 34 (secondary), confirmed on the
+        essence pair is 35 (active) and 36 (secondary), confirmed on the
         live client; 35 comes first so a lone essence lands in the active
         slot.
         """

@@ -24,14 +24,13 @@ BOOTSTRAP_ITEM_ID = 0x00F00001
 BOOTSTRAP_ITEM_TEMPLATE = "all_base_trinket_rune_01"
 BOOTSTRAP_EQUIPMENT_SLOT = 14
 # The client's essence pair.  Slot 35 holds the active essence: its damage
-# factor and ammunition type apply to every cast.  Slot 34 parks the essence
-# the player switches to; it must stay equipped but must not act.  The
-# resolver used to hand a second essence slot 36, which the client does not
-# show, so saved allocations there are migrated by
-# ``repair_ammunition_slot_allocations``.
+# factor and ammunition type apply to every cast.  Slot 36 parks the essence
+# the player switches to; it must stay equipped but must not act.  An earlier
+# server build incorrectly used slot 34 for the parked essence, so saved
+# allocations there are migrated by ``repair_ammunition_slot_allocations``.
 ACTIVE_AMMUNITION_SLOT = 35
-SECONDARY_AMMUNITION_SLOT = 34
-LEGACY_SECONDARY_AMMUNITION_SLOT = 36
+SECONDARY_AMMUNITION_SLOT = 36
+LEGACY_SECONDARY_AMMUNITION_SLOT = 34
 AMMUNITION_SLOTS = (ACTIVE_AMMUNITION_SLOT, SECONDARY_AMMUNITION_SLOT)
 BOOTSTRAP_SECOND_RUNE_ID = 0x00F00002
 BOOTSTRAP_CONSUMABLE_ID = 0x00F00003
@@ -756,11 +755,13 @@ def consume_equipped_stack(
 def active_equipment_slots(inventory) -> dict[int, tuple[int, ...]]:
     """Return the equipment allocations whose items act on the player.
 
-    Everything equipped acts, except the essence parked in the secondary
-    ammunition slot: the client keeps it equipped for the switch key, but only
-    the active slot's essence contributes its damage factor and ammunition
-    type.  Accepts any object with an ``equipment_slots`` mapping, including
-    the light stand-ins tests and offline tooling pass to the stat calculator.
+    Everything equipped acts, except an essence parked in the secondary
+    ammunition slot or stranded in the retired slot 34 by an older server.
+    The client keeps the secondary essence equipped for the switch key, but
+    only the active slot's essence contributes its damage factor and
+    ammunition type.  Accepts any object with an ``equipment_slots`` mapping,
+    including the light stand-ins and offline tooling pass to the stat
+    calculator.
     """
 
     result: dict[int, tuple[int, ...]] = {}
@@ -768,7 +769,10 @@ def active_equipment_slots(inventory) -> dict[int, tuple[int, ...]]:
         inventory, "equipment_slots", {}
     ).items():
         slots = tuple(int(slot) for slot in raw_slots)
-        if SECONDARY_AMMUNITION_SLOT in slots:
+        if any(
+            slot in (SECONDARY_AMMUNITION_SLOT, LEGACY_SECONDARY_AMMUNITION_SLOT)
+            for slot in slots
+        ):
             continue
         result[int(raw_item_id)] = slots
     return result
@@ -777,10 +781,10 @@ def active_equipment_slots(inventory) -> dict[int, tuple[int, ...]]:
 def repair_ammunition_slot_allocations(
     info: InventoryInfo,
 ) -> tuple[InventoryInfo, tuple[int, ...]]:
-    """Move essences saved in the retired slot 36 into the essence pair.
+    """Move essences saved in the retired slot 34 into the essence pair.
 
     Returns the (possibly unchanged) inventory and the relocated item ids.  A
-    legacy item takes the secondary slot 34 when it is free, otherwise the
+    legacy item takes the secondary slot 36 when it is free, otherwise the
     first free ordinary storage slot; if storage is full it is left alone
     rather than blocking the map entry.
     """

@@ -517,7 +517,7 @@ class PlayerInitializationStateService:
         if relocated_essences:
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] moved {len(relocated_essences)} "
-                "essence(s) out of retired equipment slot 36: "
+                "essence(s) out of retired equipment slot 34: "
                 f"{relocated_essences}"
             )
         class_name = CLASS_NAMES[int(character.class_id)]
