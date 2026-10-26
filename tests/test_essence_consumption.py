@@ -2,7 +2,7 @@
 
 The essence in slot 35 shrinks by the skill's authored cost, the client gets
 an ``InventoryInfo`` delta with the reduced stack, and when the stack is used
-up the item and its damage factor are gone. The parked essence in slot 34,
+up the item and its damage factor are gone. The parked essence in slot 36,
 zero-cost skills and battlegrounds spend nothing.
 """
 

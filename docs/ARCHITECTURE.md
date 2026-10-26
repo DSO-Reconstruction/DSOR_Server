@@ -192,13 +192,14 @@ is authoritative state — a move that is not applied server-side survives only
 until the next full `InventoryInfo`.
 
 Essences occupy a slot pair: 35 is the active essence whose damage factor and
-ammunition type apply to every cast, 34 parks the one the player switches to.
+ammunition type apply to every cast, 36 parks the one the player switches to.
 `active_equipment_slots` in `protocol/inventory_codec.py` is the single filter
 that hides the parked essence from combat stats and the item-set evaluation.
 An equipped item moved onto an equivalent occupied slot swaps with the item it
 displaces (the essence switch, ring onto ring); an item equipped from a bag
-sends the displaced item to its former bag slot. Slot 36 was never an essence
-slot; allocations saved there are migrated to 34 at initialization. Every
+sends the displaced item to its former bag slot. Slot 34 was an incorrect
+secondary-essence allocation in an older server build; those allocations are
+migrated to 36 at initialization. Every
 accepted cast spends the active essence's `_Template_Skill.AmmoCost`
 (`_consume_active_essence`): the stack shrinks by an `InventoryInfo` delta,
 and when it is used up its allocation is dropped and the combat stats are

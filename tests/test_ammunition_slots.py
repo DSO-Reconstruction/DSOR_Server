@@ -1,10 +1,9 @@
-"""Essences use the client's slot pair: 35 is active, 34 is the parked spare.
+"""Essences use the client's slot pair: 35 is active, 36 is the parked spare.
 
-The live client refused nothing but the server did: an essence dragged to
-slot 34 was rejected because the resolver mapped ``AmmoSlot`` to 35 and 36.
-Only the essence in the active slot may act, an equipped item moving onto
-its partner's slot swaps with it, and essences saved in the retired slot 36
-are migrated on the next map entry.
+The live client sends slot 36 when switching to the parked essence. Older
+server builds incorrectly used slot 34, so those saved allocations migrate
+to 36. Only the essence in slot 35 may act, and switching into an occupied
+partner slot swaps both items.
 """
 
 from __future__ import annotations
@@ -66,21 +65,21 @@ class SlotResolverTests(unittest.TestCase):
         self.assertEqual(
             self.resolve(occupied_slots=(35,)), (SECONDARY_AMMUNITION_SLOT,)
         )
-        self.assertEqual(SECONDARY_AMMUNITION_SLOT, 34)
+        self.assertEqual(SECONDARY_AMMUNITION_SLOT, 36)
 
     def test_explicit_requests_for_either_slot_are_honoured(self):
-        self.assertEqual(self.resolve(preferred_slots=(34,)), (34,))
+        self.assertEqual(self.resolve(preferred_slots=(36,)), (36,))
         self.assertEqual(self.resolve(preferred_slots=(35,)), (35,))
 
-    def test_slot_36_is_no_longer_an_essence_slot(self):
-        self.assertNotIn(36, self.resolve(preferred_slots=(36,)))
-        self.assertNotIn(36, self.resolve(occupied_slots=(34, 35)))
+    def test_slot_34_is_no_longer_an_essence_slot(self):
+        self.assertNotIn(34, self.resolve(preferred_slots=(34,)))
+        self.assertNotIn(34, self.resolve(occupied_slots=(35, 36)))
 
 
 class ActiveAllocationTests(unittest.TestCase):
     def test_parked_essence_is_hidden_from_effects(self):
         inventory = SimpleNamespace(
-            equipment_slots={1: (35,), 2: (34,), 3: (0,), 4: (5, 6)}
+            equipment_slots={1: (35,), 2: (36,), 3: (0,), 4: (5, 6)}
         )
         self.assertEqual(
             active_equipment_slots(inventory), {1: (35,), 3: (0,), 4: (5, 6)}
@@ -106,13 +105,13 @@ class CombatStatsTests(unittest.TestCase):
             bgh_alone.maximum_damage, baseline.maximum_damage * 7.0, places=3
         )
         both = self.stats(
-            [essence(1, BGH), essence(2, SNOW)], {1: (35,), 2: (34,)}
+            [essence(1, BGH), essence(2, SNOW)], {1: (35,), 2: (36,)}
         )
         self.assertAlmostEqual(
             both.maximum_damage, bgh_alone.maximum_damage, places=3
         )
         snow_active = self.stats(
-            [essence(1, BGH), essence(2, SNOW)], {1: (34,), 2: (35,)}
+            [essence(1, BGH), essence(2, SNOW)], {1: (36,), 2: (35,)}
         )
         self.assertAlmostEqual(
             snow_active.maximum_damage, baseline.maximum_damage * 2.0, places=3
@@ -120,7 +119,7 @@ class CombatStatsTests(unittest.TestCase):
 
     def test_only_the_active_essence_supplies_its_ammunition_type(self):
         snow_active = self.stats(
-            [essence(1, BGH), essence(2, SNOW)], {1: (34,), 2: (35,)}
+            [essence(1, BGH), essence(2, SNOW)], {1: (36,), 2: (35,)}
         )
         self.assertEqual(
             LocalCombatState._active_ammunition_types(
@@ -129,7 +128,7 @@ class CombatStatsTests(unittest.TestCase):
             frozenset({"ammotype02"}),
         )
         snow_parked = self.stats(
-            [essence(1, BGH), essence(2, SNOW)], {1: (35,), 2: (34,)}
+            [essence(1, BGH), essence(2, SNOW)], {1: (35,), 2: (36,)}
         )
         self.assertEqual(
             LocalCombatState._active_ammunition_types(
@@ -140,18 +139,18 @@ class CombatStatsTests(unittest.TestCase):
 
 
 class LegacySlotRepairTests(unittest.TestCase):
-    def test_slot_36_moves_to_the_secondary_slot(self):
-        inventory = InventoryInfo(equipment_slots={7: (36,), 8: (35,)})
+    def test_slot_34_moves_to_the_secondary_slot(self):
+        inventory = InventoryInfo(equipment_slots={7: (34,), 8: (35,)})
         repaired, moved = repair_ammunition_slot_allocations(inventory)
         self.assertEqual(moved, (7,))
         self.assertEqual(repaired.equipment_slots[7], (SECONDARY_AMMUNITION_SLOT,))
         self.assertEqual(repaired.equipment_slots[8], (35,))
         # The input is left untouched.
-        self.assertEqual(inventory.equipment_slots[7], (36,))
+        self.assertEqual(inventory.equipment_slots[7], (34,))
 
-    def test_slot_36_goes_to_the_bag_when_the_pair_is_full(self):
+    def test_slot_34_goes_to_the_bag_when_the_pair_is_full(self):
         inventory = InventoryInfo(
-            equipment_slots={7: (36,), 8: (35,), 9: (34,)},
+            equipment_slots={7: (34,), 8: (35,), 9: (36,)},
             storage_58={100: 0},
         )
         inventory.storage_size = 10
@@ -165,7 +164,7 @@ class LegacySlotRepairTests(unittest.TestCase):
         repaired, moved = repair_ammunition_slot_allocations(inventory)
         self.assertIs(repaired, inventory)
         self.assertEqual(moved, ())
-        self.assertEqual(LEGACY_SECONDARY_AMMUNITION_SLOT, 36)
+        self.assertEqual(LEGACY_SECONDARY_AMMUNITION_SLOT, 34)
 
 
 class EquipHandlerTests(unittest.TestCase):
@@ -222,31 +221,31 @@ class EquipHandlerTests(unittest.TestCase):
         self.assertEqual(self._where(session, BGH_ID), ("bag", 5))
         second = self._act(session, SNOW_ID, 0x01, SECONDARY_AMMUNITION_SLOT)
         self.assertNotIn("rejected", second)
-        self.assertEqual(self._where(session, SNOW_ID), (34,))
+        self.assertEqual(self._where(session, SNOW_ID), (36,))
         self.assertEqual(self._where(session, BGH_ID), ("bag", 5))
 
     def test_swap_between_the_pair_keeps_both_equipped(self):
-        session = self._session(snow_at=(34,), bgh_at=(35,))
+        session = self._session(snow_at=(36,), bgh_at=(35,))
         output = self._act(session, SNOW_ID, 0x0B, BGH_ID)
         self.assertNotIn("rejected", output)
         self.assertEqual(self._where(session, SNOW_ID), (35,))
-        self.assertEqual(self._where(session, BGH_ID), (34,))
+        self.assertEqual(self._where(session, BGH_ID), (36,))
         self.assertIn(f"swapped_into_former_slot=({BGH_ID},)", output)
 
     def test_moving_the_active_essence_onto_the_spare_swaps_them(self):
-        session = self._session(snow_at=(35,), bgh_at=(34,))
+        session = self._session(snow_at=(35,), bgh_at=(36,))
         output = self._act(
             session, SNOW_ID, MOVE_ITEM_EQUIPMENT_OPERATION, SECONDARY_AMMUNITION_SLOT
         )
         self.assertNotIn("rejected", output)
-        self.assertEqual(self._where(session, SNOW_ID), (34,))
+        self.assertEqual(self._where(session, SNOW_ID), (36,))
         self.assertEqual(self._where(session, BGH_ID), (35,))
 
     def test_equipping_from_the_bag_still_sends_the_displaced_essence_to_the_bag(self):
-        session = self._session(snow_at=3, bgh_at=(34,))
+        session = self._session(snow_at=3, bgh_at=(36,))
         output = self._act(session, SNOW_ID, 0x01, SECONDARY_AMMUNITION_SLOT)
         self.assertNotIn("rejected", output)
-        self.assertEqual(self._where(session, SNOW_ID), (34,))
+        self.assertEqual(self._where(session, SNOW_ID), (36,))
         self.assertEqual(self._where(session, BGH_ID), ("bag", 3))
 
 
