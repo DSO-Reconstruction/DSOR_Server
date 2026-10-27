@@ -1833,6 +1833,38 @@ class MapEventService:
                     already_active = flag in runtime.active_flags()
                 if not already_active:
                     self._start_map_local_event(runtime, definition)
+            # Ashen Plains' Varnok exit is authored behind a client-only
+            # trigger gated by ce2025-main-quest-11. The optional "World of
+            # Varnok" chain can independently direct the player to that boss.
+            # Make the authored local event authoritative whenever either
+            # boss objective is active, including map re-entry and acceptance
+            # while already in Ashen Plains.
+            if map_key(runtime.map_id) == "ce202504":
+                quest_log = getattr(s, "gameplay_quest_log", {}) or {}
+                boss_quest_active = any(
+                    str(quest_id).casefold() in {
+                        "ce2025-main-quest-12",
+                        "ce2025-side-quest-16",
+                    }
+                    and progress.state == QUEST_STATE_ACCEPTED
+                    for quest_id, progress in quest_log.items()
+                )
+                if boss_quest_active:
+                    varnok_event = runtime.catalog.event(
+                        "ce_2025_varnok_tower_open_client",
+                    )
+                    if (
+                        varnok_event is not None
+                        and varnok_event.applies_to(runtime.map_id)
+                    ):
+                        with runtime.lock:
+                            already_active = varnok_event.key in runtime.active_flags()
+                        if not already_active:
+                            self._start_map_local_event(runtime, varnok_event)
+                        _log(
+                            "ensured Varnok tower entrance for active boss quest "
+                            f"on {runtime.map_id}"
+                        )
             # The reusable Telepolos Umbra Stones share an EventSet with the
             # Hero of Light quest phase that hides them. That client-only
             # activation has no authored end signal, so a shared map instance
@@ -1890,6 +1922,22 @@ class MapEventService:
                 "quest 06 on h0004_temple_dun"
             )
             self._emit_map_signal(s, runtime, sandhill_signal)
+        tidal_entry_signal = "k0003_entry_loi_start_signal"
+        if (
+            kind == "playerenteredmap"
+            and map_key(runtime.map_id) == "k0002_greylingforest"
+            and "k0001-what-lies-within" in quests_accepted
+            and not any(
+                rule.signal_id.casefold() == tidal_entry_signal
+                for rule in rules
+            )
+        ):
+            # The authored Tidal Wildwood door only listens for the unrelated
+            # An Old Curse quest. What Lies Within also sends players there;
+            # let its accepted quest start the same entry-door event.
+            door_rule = runtime.catalog.rule(tidal_entry_signal)
+            if door_rule is not None:
+                rules = (*rules, door_rule)
         if (
             kind == "monsterseliminated"
             and _fractured_planes_floor_number_from_map(runtime.map_id)

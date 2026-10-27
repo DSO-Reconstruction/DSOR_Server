@@ -117,6 +117,19 @@ _CLIENT_SCENE_ACTOR_ID_MAPS = frozenset({
     "a0008_crypt_dun",
     "a0302_wildforest",
     "a0303_wildcave",
+    # The Immortals event maps register authored SpawnPoints in the ordinary
+    # actor range; keep server-published quest mobs clear of those IDs.
+    "ce202502",
+    "ce202503",
+    "ce202504",
+    # Greyling Forest has eight authored SpawnPoints (quest Wisps, unique
+    # creatures, and scene mobs). The client can register these in the normal
+    # 0x30000 actor range, so server monsters must use the secondary range.
+    "k0002_greylingforest",
+    # Tidal Wildwood has hundreds of authored SpawnPoints, including its
+    # Lord of Ashes encounter. The client scene can reserve these ordinary
+    # actor IDs before server monsters are announced.
+    "k0003_tidalwildwood",
     # Torsrond's client scene registers authored SpawnPoints in the ordinary
     # 0x30000 range. Keep server controlled quest actors such as Captain
     # Ulkell in the secondary actor range to avoid that collision.
@@ -402,6 +415,39 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # The Immortals event's SpawnList registry is absent from static.db4.
+    # These map lists explicitly name the Forlorns and Mindless Fiends needed
+    # by the event's main-quest kill objectives.
+    "ce202502": {
+        "ce202502_mindless_drifters": (
+            "ce2025_monster_mindless_drifters",
+        ),
+        # The server-side SpawnList registry is absent from static.db4.
+        # Grayshade's four "shijieshouwei" density areas are the Homunculi
+        # wave for Lost Souls; falling back to the map's fixed actors can
+        # populate them with unrelated templates that the quest cannot count.
+        "shijieshouwei": (
+            "ce2025_monster_shijieshouwei",
+        ),
+    },
+    "ce202503": {
+        "mindless_drifters": (
+            "ce2025_monster_mindless_drifters",
+        ),
+        "ce202502_mindless_fiends": (
+            "ce2025_monster_mindless_fiends",
+        ),
+    },
+    "ce202504": {
+        "ce202502_mindless_fiends": (
+            "ce2025_monster_mindless_fiends",
+        ),
+        # Ashen Plains uses this density list for the Evil Eyes required by
+        # the Aether Tears quest. Its server-side SpawnList is not exported.
+        "monster_eye_demon": (
+            "ce2025_monster_eye_demon",
+        ),
+    },
     # The Dragan fortress database has authored main-hall density areas with
     # an 8-minute respawn interval, but its list_mainhall membership is not
     # included in static.db4. Populate those areas with the map's ordinary
@@ -498,6 +544,25 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
             "b1201_s_gen_norsegnome",
         ),
     },
+}
+
+
+# These three quest maps have density areas but no map-prefix monster
+# templates or fixed monsters to seed their default spawn pools.
+_K_SERIES_QUEST_REGION_MONSTERS = (
+    "necro_defender",
+    "blazing_wolf",
+    "test_spirit_archer_01",
+    "test_spirit_warrior_01",
+    "monster_wisp",
+    "monster_slime",
+    "tainted_sludge",
+    "lord_of_ashes",
+)
+_MAP_MONSTER_TEMPLATE_ADDITIONS = {
+    "k0002_greylingforest": _K_SERIES_QUEST_REGION_MONSTERS,
+    "k0003_tidalwildwood": _K_SERIES_QUEST_REGION_MONSTERS,
+    "k0004_hallofparadoxes": _K_SERIES_QUEST_REGION_MONSTERS,
 }
 
 
@@ -2594,7 +2659,7 @@ def _load_map_monster_templates(
         "dummy",
         "invisible",
     )
-    return tuple(
+    templates = tuple(
         str(row[0])
         for row in rows
         if not any(
@@ -2602,6 +2667,8 @@ def _load_map_monster_templates(
             for fragment in excluded_fragments
         )
     )
+    additions = _MAP_MONSTER_TEMPLATE_ADDITIONS.get(str(map_id).casefold(), ())
+    return tuple(dict.fromkeys((*templates, *additions)))
 
 
 def _area_template_pool(
