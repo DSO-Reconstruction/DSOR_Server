@@ -488,6 +488,7 @@ class PlayerPersistenceService:
                 else None
             ),
             inventory=inventory,
+            starter_equipment_version=STARTER_EQUIPMENT_VERSION,
             vendor_buyback=copy.deepcopy(vendor_buyback),
             currency=currency,
             currency_ic=int(currency_ic),

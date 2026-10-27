@@ -23,6 +23,7 @@ from dso_server.persistence.account_state import (
     AccountState,
     AccountStateStore,
     CharacterProfile,
+    STARTER_EQUIPMENT_VERSION,
 )
 from dso_server.protocol.chat_protocol import (
     CHAT_CLIENT_SERVICE,

@@ -48,6 +48,9 @@ from dso_server.protocol.player_init_protocol import (
 )
 
 
+STARTER_EQUIPMENT_VERSION = 1
+
+
 @dataclass(frozen=True)
 class CharacterProfile:
     """Persistent roster metadata for characters created by the local server."""
@@ -234,6 +237,10 @@ class AccountState:
     # Player skill/category cooldowns and casting cadence use wall-clock
     # deadlines in saves, so reconnecting cannot bypass a live cooldown.
     player_skill_timing: dict[str, object] = field(default_factory=dict)
+    # Version of the one-time starter-equipment repair. Once the initial
+    # loadout has been reconciled, missing starter items are player changes
+    # and must not be re-created on later logins.
+    starter_equipment_version: int = 0
 
 
 @dataclass(frozen=True)
@@ -587,6 +594,7 @@ def _state_to_document(state: AccountState) -> dict:
             list(state.position) if state.position is not None else None
         ),
         "inventory": _inventory_to_document(state.inventory),
+        "starter_equipment_version": int(state.starter_equipment_version),
         "vendor_buyback": [
             {"item": _item_to_document(item), "price": price}
             for item, price in state.vendor_buyback
@@ -812,6 +820,9 @@ def _state_from_document(document: dict) -> AccountState:
         admin_invulnerable=document.get("admin_invulnerable") is True,
         position=position,
         inventory=_inventory_from_document(document["inventory"]),
+        starter_equipment_version=max(
+            0, int(document.get("starter_equipment_version", 0))
+        ),
         vendor_buyback=tuple(
             (_item_from_document(entry["item"]), max(0, int(entry["price"])))
             for entry in document.get("vendor_buyback", ())
