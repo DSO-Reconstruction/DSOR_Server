@@ -45,8 +45,8 @@ KILL_COMMAND = command_id("Commands::KillCommand", 0x006C)
 SKILL_COMMAND_DERIVED_FLAG: bool | None = None
 
 # On by default: the release261_192 client this server targets (the xm1rth
-# fork's) always reads the skill inheritance marker and the Hit tag-boundary
-# bit; without them it logs "invalid command ending in multi command 71/107" and
+# fork's) always reads the skill inheritance marker and the Hit rift-hit flag
+# (+0x4a); without them it logs "invalid command ending in multi command 71/107" and
 # the misread actor ids and positions end in a matrix44 assertion.
 # DSO_SKILL_HIT_MARKER_BITS=0 writes both only when a value carries them, the
 # layout of dro_client64-patch5 and the DSOR client (crates/proto combat.rs).
@@ -974,13 +974,17 @@ def decode_monster_attack_batch(
 class Hit:
     """Authoritative damage transition consumed by ``HandleHitCommand``.
 
-    Retail always sends a reserved bit between ``hit_tags`` and the two native
-    flags at object offsets ``+0x48`` and ``+0x49``. Omitting it shifts every
+    The flags follow ``hit_tags`` in object order: ``+0x48`` blocked
+    ("floatingBlock"), ``+0x49`` critical ("floatingCritical",
+    ``combat/critical_hit``) and, from release261, ``+0x4a`` rift hit
+    ("floatingRift", ``combat/rift_hit``); the release261_1024 decoder
+    (0x14097b0f0) reads them in that order. Omitting the third bit shifts every
     following bit field, including health, damage, actor ids and combat-text
     data, and the client then drops the whole 0x85 batch: release261 reports
     ``DecodeCommand() invalid command ending in multi command 107!`` followed
     by ``Received HitCommand with unknown actor id (...)`` for the
-    one-bit-shifted actor id it then reads.
+    one-bit-shifted actor id it then reads. Writing it first instead moved
+    block onto the critical flag and critical onto the rift flag.
     """
 
     server_tick: int
@@ -1004,9 +1008,9 @@ class Hit:
     # string length as a count of one-bit reactions happened to preserve an
     # empty value but corrupted every elemental hit.
     combat_text_type: str = ""
-    # The reserved retail bit described above.  Retail has always been observed
-    # clear; it is kept so captured packets round-trip.
-    tag_boundary_bit: bool = False
+    # Client +0x4a, sent only in the release261 layout. The server never
+    # produces rift hits; it is kept so captured packets round-trip.
+    rift_hit: bool = False
 
 
 @dataclass(frozen=True)
@@ -1073,11 +1077,11 @@ def _write_hit_body(
     writer.write_uint32_le(len(value.hit_tags))
     for tag in value.hit_tags:
         writer.write_uint8(tag)
-    if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
-            else legacy_hit_tag_boundary_bit):
-        writer.write_bool(value.tag_boundary_bit)
     writer.write_bool(value.field_48)
     writer.write_bool(value.field_49)
+    if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
+            else legacy_hit_tag_boundary_bit):
+        writer.write_bool(value.rift_hit)
     _write_uint64_le(writer, value.current_health)
     _write_uint64_le(writer, value.maximum_health)
     writer.write_uint32_le(value.absorbed_damage)
@@ -1098,14 +1102,14 @@ def _read_hit_body(
         legacy_hit_tag_boundary_bit: bool | None = None) -> Hit:
     server_tick = reader.read_uint32_le()
     tags = tuple(reader.read_uint8() for _ in range(reader.read_uint32_le()))
-    tag_boundary_bit = (
+    field_48 = reader.read_bool()
+    field_49 = reader.read_bool()
+    rift_hit = (
         reader.read_bool()
         if (SKILL_HIT_MARKER_BITS if legacy_hit_tag_boundary_bit is None
             else legacy_hit_tag_boundary_bit)
         else False
     )
-    field_48 = reader.read_bool()
-    field_49 = reader.read_bool()
     current_health = reader.read_uint64_le()
     maximum_health = reader.read_uint64_le()
     integers = tuple(reader.read_uint32_le() for _ in range(7))
@@ -1125,7 +1129,7 @@ def _read_hit_body(
         field_80,
         field_81,
         combat_text_type,
-        tag_boundary_bit,
+        rift_hit,
     )
 
 
