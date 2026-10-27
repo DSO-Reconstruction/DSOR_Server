@@ -120,6 +120,39 @@ def test_scoped_cooldown_modifiers_resolve_stacks_variables_and_additive_buckets
     )).cooldown_seconds == 0
 
 
+def test_stacked_cost_modifiers_add_into_one_relative_bucket(combat):
+    _, explosive = skill(combat, "explosiveshot")
+    modified = combat._modified_player_skill_geometry(explosive, (
+        parse_modifier("ResourceCost:-0.3,relative,RangerSkills"),
+        parse_modifier("ResourceCost:-0.3,relative,explosiveshot"),
+        parse_modifier("ResourceCost:-0.05,absolute,explosiveshot"),
+    ))
+    # 0.8 * (1 - 0.6) - 0.05, not 0.8 * 0.7 * 0.7 - 0.05.
+    assert modified.resource_cost_fraction == pytest.approx(
+        explosive.resource_cost_fraction * 0.4 - 0.05
+    )
+
+
+@pytest.mark.parametrize("available,accepted", [(30, True), (29.5, True), (29.4, False)])
+def test_skill_cost_uses_class_base_pool_not_raised_maximum(combat, available, accepted):
+    """A level-100 ranger with pet/wisdom bonuses has 194 concentration.
+
+    Jump (ResourceCost 0.3) still costs 30, the client's base-pool price, and
+    the client's half-up rounded comparison decides whether it may be cast.
+    """
+    s = funded_session(combat, available)
+    s.gameplay_character = SimpleNamespace(character_id=23, class_id=2, level=100)
+    combat.register_player(123, 1000, maximum_resource=194, current_resource=available)
+    index, geometry = skill(combat, "jump")
+    with patch.object(s, "send_reliable_ordered"), \
+         patch.object(CharacterService, "_request_account_save"):
+        assert CharacterService._apply_player_skill_resource(
+            s, combat, skill_index=index, modifier_sources=(), now=100,
+        ) is accepted
+    expected = max(0.0, available - 100 * geometry.resource_cost_fraction) if accepted else available
+    assert combat.player_resource[123][0] == pytest.approx(expected)
+
+
 def test_snapshot_restore_keeps_elapsed_time_and_recovery_category():
     original = PlayerSkillTimingState({"skill01": 110, "skill02": 99}, 100.5, "skill01")
     document = snapshot_player_skill_timing(original, now=100, now_epoch=1000)
