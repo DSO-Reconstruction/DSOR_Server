@@ -332,8 +332,15 @@ def clone_item_info(item: ItemInfo) -> ItemInfo:
     return clone
 
 
-def clone_inventory_info(info: InventoryInfo) -> InventoryInfo:
+def clone_inventory_info(
+    info: InventoryInfo, items: Iterable[ItemInfo] | None = None,
+) -> InventoryInfo:
     """Return an independent ``InventoryInfo`` snapshot.
+
+    ``items`` replaces the cloned item list, for the delta/final
+    ``InventoryInfo`` views that carry only the changed items (or none):
+    copying every owned item just to discard the list cost a vendor purchase
+    two full deepcopies.
 
     ``copy.deepcopy`` of a fully-equipped level-100 inventory measured 6.5 ms
     at p50 (251 items) and was executed while holding the owner's session
@@ -348,7 +355,10 @@ def clone_inventory_info(info: InventoryInfo) -> InventoryInfo:
     """
 
     clone = copy.copy(info)
-    clone.items = [clone_item_info(item) for item in info.items]
+    clone.items = [
+        clone_item_info(item)
+        for item in (info.items if items is None else items)
+    ]
     # Values are tuples, so the mapping itself is the only mutable level.
     clone.equipment_slots = dict(info.equipment_slots)
     clone.storage_58 = dict(info.storage_58)

@@ -59,8 +59,11 @@ def test_authored_shared_category_and_other_skill_cooldowns_are_independent(comb
     assert first.cooldown_category == variant.cooldown_category == "Skill15"
     assert reserve_player_skill_timing(s, first, now=100) is not None
     assert reserve_player_skill_timing(s, basic, now=101) is not None
-    assert reserve_player_skill_timing(s, variant, now=109.9) is None
-    assert reserve_player_skill_timing(s, variant, now=110) is not None
+    assert reserve_player_skill_timing(s, variant, now=109.8) is None
+    # Jitter grace: a cast arriving just early is accepted, but its cooldown
+    # runs from the previous deadline, so the grace never shortens it.
+    assert reserve_player_skill_timing(s, variant, now=109.9) is not None
+    assert s.gameplay_player_skill_timing.cooldowns["skill15"] == pytest.approx(120)
     # Shared map combat must never share one player's cooldowns with another.
     assert reserve_player_skill_timing(session(), variant, now=100) is not None
 
@@ -74,7 +77,9 @@ def test_cadence_scales_uses_shared_recovery_and_does_not_accumulate_grace(comba
     assert reserve_player_skill_timing(s, other, speed=2, now=100.1) is None
     assert reserve_player_skill_timing(s, basic, speed=2, now=100.28) is not None
     assert s.gameplay_player_skill_timing.cast_ready_at == pytest.approx(100.64)
-    assert reserve_player_skill_timing(s, basic, speed=2, now=100.56) is None
+    assert reserve_player_skill_timing(s, basic, speed=2, now=100.48) is None
+    assert reserve_player_skill_timing(s, basic, speed=2, now=100.50) is not None
+    assert s.gameplay_player_skill_timing.cast_ready_at == pytest.approx(100.96)
     _, unscaled = skill(combat, "frostnova")
     r = reserve_player_skill_timing(session(), unscaled, speed=10, now=100)
     assert r.cast_ready_at == pytest.approx(100 + unscaled.skill_unblock_frame / 25)
@@ -160,6 +165,22 @@ def test_failed_resource_payment_rolls_back_and_premature_cast_never_pays(combat
         assert CharacterService._accept_player_skill_timing(s, combat, **args)
         assert not CharacterService._accept_player_skill_timing(s, combat, **args)
         assert pay.call_count == 2
+
+
+def test_cadence_is_judged_by_arrival_not_by_when_a_worker_reaches_the_cast(combat):
+    s = session()
+    index, geometry = skill(combat, "markshot")
+    recovery = geometry.skill_unblock_frame / 25
+    with patch.object(CharacterService, "_apply_player_skill_resource", return_value=True):
+        args = dict(skill_index=index, modifier_sources=(), speed=1)
+        s.current_message_received_at = 100.0
+        assert CharacterService._accept_player_skill_timing(s, combat, now=100.0, **args)
+        # The previous arrow sat in the ingress queue; this one arrived on
+        # schedule and is processed at once.
+        s.current_message_received_at = 100.0 + recovery
+        assert CharacterService._accept_player_skill_timing(s, combat, now=100.4 + recovery, **args)
+        s.current_message_received_at = None
+        assert s.gameplay_player_skill_timing.cast_ready_at == pytest.approx(100.0 + 2 * recovery)
 
 
 def funded_session(combat, current_resource):

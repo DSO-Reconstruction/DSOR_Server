@@ -332,6 +332,7 @@ class DispatchService:
                     continue
                 previous_bit_length = s.current_message_bit_length
                 s.current_message_bit_length = bit_length
+                s.current_message_received_at = queued_at
                 started_at = time.perf_counter()
                 with s.gameplay_skill_dispatch_lock:
                     s.gameplay_skill_dispatch_running_since = started_at
@@ -359,6 +360,7 @@ class DispatchService:
                     traceback.print_exc()
                 finally:
                     s.current_message_bit_length = previous_bit_length
+                    s.current_message_received_at = None
                     finished_at = time.perf_counter()
                     with s.gameplay_skill_dispatch_lock:
                         s.gameplay_skill_dispatch_last_progress_at = finished_at

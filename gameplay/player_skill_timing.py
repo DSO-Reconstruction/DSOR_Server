@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import math
+import os
 import time
 
 from dso_server.gameplay.status_modifier_runtime import (
@@ -16,6 +17,16 @@ from dso_server.gameplay.status_modifier_runtime import (
 )
 
 TICKS_PER_SECOND = 25.0
+# How early (seconds) a cast may arrive against its cadence or cooldown
+# deadline. One packet delayed in transit pushes the next deadline back by
+# that delay, so the following on-time cast reaches the server early: with a
+# single tick (40 ms) every network hiccup dropped a cast the client had
+# already drawn (Hunting Arrow flew, no damage). Deadlines advance from the
+# previous one, so the grace never adds up to extra casts.
+CAST_GRACE_SECONDS = max(
+    1.0 / TICKS_PER_SECOND,
+    float(os.getenv("DSO_SKILL_CAST_GRACE_SECONDS", "0.15")),
+)
 
 
 @dataclass
@@ -98,9 +109,10 @@ class SkillTimingReservation:
 def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
     """Reserve an incoming cast, returning None when it is premature.
 
-    One tick of cadence tolerance absorbs packet jitter. Advancing from the
-    previous deadline prevents that tolerance accumulating into extra casts.
-    Cooldowns themselves always use the authoritative expiry without grace.
+    ``CAST_GRACE_SECONDS`` absorbs packet jitter for both cadence and
+    cooldowns. Advancing from the previous deadline prevents that tolerance
+    accumulating into extra casts. Callers pass the command's arrival time as
+    ``now`` so server-side queueing is never mistaken for an early cast.
     """
     now = time.perf_counter() if now is None else float(now)
     category = str(geometry.cooldown_category or geometry.resource_id).casefold()
@@ -110,9 +122,9 @@ def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
         previous_ready = state.cast_ready_at
         previous_category = state.cast_category
         force = geometry.force_execution and category != previous_category
-        if previous_cooldown > now + 1e-6 or (
+        if previous_cooldown > now + CAST_GRACE_SECONDS + 1e-6 or (
             not force
-            and previous_ready > now + 1.0 / TICKS_PER_SECOND + 1e-6
+            and previous_ready > now + CAST_GRACE_SECONDS + 1e-6
         ):
             return None
         scale = max(0.01, _finite(speed, 1.0)) if geometry.scale_skill_timing else 1.0
@@ -122,7 +134,9 @@ def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
         # Authored escape/charge skills can interrupt recovery. Their own
         # cooldown still gates the interrupt, and their recovery starts now.
         ready = (now if force else max(now, previous_ready)) + frames / TICKS_PER_SECOND
-        cooldown = now + max(0.0, _finite(geometry.cooldown_seconds))
+        cooldown = max(now, previous_cooldown) + max(
+            0.0, _finite(geometry.cooldown_seconds)
+        )
         state.cast_ready_at = ready
         state.cast_category = category
         state.cooldowns = {

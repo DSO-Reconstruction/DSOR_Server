@@ -11,6 +11,22 @@ from dso_server.services.events import EVENT_NOTIFICATION_KIND
 from dso_server.protocol.shop_protocol import OFFER_COMMAND
 
 
+def _transaction_touches_npc_gates(template_ids) -> bool:
+    """Whether trading these items can change what NPCInfo shows.
+
+    NPC offers and markers follow the quest log and map events, which a
+    vendor trade never changes; the only inventory input is a gate key such
+    as ``key_from_f4102_to_f4201`` (``_quest_reveal_flags``). Rebuilding
+    every NPC's quest list after each buy cost end-game characters a quarter
+    second per click, since it scales with the size of the quest log.
+    """
+
+    return any(
+        str(template_id).casefold().startswith("key_")
+        for template_id in template_ids
+    )
+
+
 class CommerceService:
     """NPC/OCP offers, rewards, and purchase transactions."""
 
@@ -867,7 +883,10 @@ class CommerceService:
         CharacterService._sync_inventory_live_health(s)
         with s.flow_lock:
             s.gameplay_client_command_state[TRANSACTION_COMMAND] = transaction
-            inventory = copy.deepcopy(s.gameplay_inventory)
+            inventory = (
+                None if s.gameplay_inventory is None
+                else clone_inventory_info(s.gameplay_inventory)
+            )
             currency = s.gameplay_currency_state
             game_currencies = dict(s.gameplay_game_currencies)
             next_item_id = s.gameplay_next_item_id
@@ -902,6 +921,7 @@ class CommerceService:
                     raise ValueError("this shop does not allow item trading")
                 builder = InventoryMutationBuilder(inventory, next_item_id)
                 gold_delta = 0
+                traded_templates = []
                 for entry in item_entries:
                     if entry.amount == 4:
                         item = builder.item(entry.field_58)
@@ -912,6 +932,7 @@ class CommerceService:
                             raise ValueError("sale item must be in the backpack")
                         value = item_sell_value(self.static_database_path, item, item.amount)
                         sold = builder.consume(item.item_id)
+                        traded_templates.append(sold.template_id)
                         buyback.insert(0, (sold, value))
                         # Bound retained item data per character; newest first.
                         buyback = buyback[:20]
@@ -922,6 +943,7 @@ class CommerceService:
                         if index is None:
                             raise ValueError("item is no longer available for repurchase")
                         item, value = buyback.pop(index)
+                        traded_templates.append(item.template_id)
                         definition = load_purchase_item_definition(
                             self.static_database_path, item.template_id)
                         builder.restore_item(item, ingredient_bag=definition.ingredient_bag)
@@ -950,7 +972,8 @@ class CommerceService:
                     s, packet, packet_bits, label="vendor-item-transaction")
                 CharacterService._request_account_save(
                     s, "vendor sale/repurchase", flush=True)
-                CharacterService._quest_refresh_npc_infos(self, s)
+                if _transaction_touches_npc_gates(traded_templates):
+                    CharacterService._quest_refresh_npc_infos(self, s)
                 return
             if open_offers is None:
                 raise ValueError(
@@ -1091,13 +1114,11 @@ class CommerceService:
                 for item in changed_items
             ]
 
-            delta_inventory = copy.deepcopy(inventory)
-            delta_inventory.items = copy.deepcopy(changed_items)
+            delta_inventory = clone_inventory_info(inventory, changed_items)
             delta_inventory.changed_item_ids = list(replaced_item_ids)
             delta_inventory.field_158 = dict(replacements)
             delta_inventory.field_1e0 = True
-            final_inventory = copy.deepcopy(inventory)
-            final_inventory.items = []
+            final_inventory = clone_inventory_info(inventory, ())
             final_inventory.changed_item_ids = []
             final_inventory.field_158 = {}
             final_inventory.field_1e0 = False
@@ -1200,7 +1221,10 @@ class CommerceService:
             f"with price={total_price.as_tuple()} "
             f"({len(packet)} bytes/{packet_bits} bits)"
         )
-        CharacterService._quest_refresh_npc_infos(self, s)
+        if _transaction_touches_npc_gates(
+            item.template_id for item in changed_items
+        ):
+            CharacterService._quest_refresh_npc_infos(self, s)
         CharacterService._persist_gameplay_session(
             self, s, reason='vendor transaction'
         )

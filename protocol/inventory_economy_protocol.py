@@ -30,7 +30,11 @@ from dso_server.protocol.currency_protocol import (
     GameCurrencyChanged,
     normalize_game_currency_balances,
 )
-from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
+from dso_server.protocol.inventory_codec import (
+    InventoryInfo,
+    ItemInfo,
+    clone_inventory_info,
+)
 from dso_server.protocol.player_init_protocol import CurrencyChanged
 
 
@@ -500,7 +504,7 @@ class InventoryMutationBuilder:
     """Apply a set of inventory changes and publish one coherent delta."""
 
     def __init__(self, inventory: InventoryInfo, next_item_id: int) -> None:
-        self.inventory = copy.deepcopy(inventory)
+        self.inventory = clone_inventory_info(inventory)
         self.next_item_id = int(next_item_id)
         self.changed_items: list[ItemInfo] = []
         self.removed_item_ids: list[int] = []
@@ -839,13 +843,11 @@ class InventoryMutationBuilder:
         self.inventory.changed_item_ids = []
         self.inventory.field_158 = {}
         self.inventory.field_1e0 = False
-        delta = copy.deepcopy(self.inventory)
-        delta.items = copy.deepcopy(self.changed_items)
+        delta = clone_inventory_info(self.inventory, self.changed_items)
         delta.changed_item_ids = list(dict.fromkeys(self.removed_item_ids))
         delta.field_158 = dict(self.replacements)
         delta.field_1e0 = True
-        final = copy.deepcopy(self.inventory)
-        final.items = []
+        final = clone_inventory_info(self.inventory, ())
         final.changed_item_ids = []
         final.field_158 = {}
         final.field_1e0 = False

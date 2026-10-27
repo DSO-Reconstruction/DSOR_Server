@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from contextlib import closing
 from functools import lru_cache
+from collections import deque
 import math
 import os
 import random
@@ -227,6 +228,14 @@ PLAYER_PROJECTILE_COLLISION_RADIUS = max(
 )
 PLAYER_PROJECTILE_HITBOX_TOLERANCE = max(
     0.0, float(os.getenv("DSO_PLAYER_HITBOX_TOLERANCE", "0.20"))
+)
+# How far back (seconds) a player's hit may still find a monster on its
+# published path. The client draws a monster one publish interval behind its
+# newest MoveCommand, and the cast reaches the server a network round trip
+# after the frame the player aimed at: a Hunting Arrow loosed at a walking
+# monster went through it on screen and missed its newer server position.
+PLAYER_HIT_LAG_COMPENSATION_SECONDS = max(
+    0.0, float(os.getenv("DSO_PLAYER_HIT_LAG_COMPENSATION_SECONDS", "0.4"))
 )
 
 
@@ -1029,6 +1038,9 @@ class PendingPlayerHit:
     # An area impact's radius around ``origin`` (the aimed point), checked
     # again when it lands: a meteor falls 2.6 s after the cast.
     area_radius: float = 0.0
+    # The victim's radius that the cast selected it with, when not its
+    # capsule (a cone measures the ActorShapeId radius).
+    area_contact_radius: float | None = None
 
 
 @dataclass
@@ -1250,6 +1262,116 @@ class _MonsterOccupancy:
         return iter(candidates)
 
 
+def _client_bullet_sweep_hits(
+    along: float, lateral: float, radius: float, step: float,
+) -> bool:
+    """One tick of the client's bullet-versus-actor sweep (stationary actor).
+
+    dro_client64 0x14095dbd0, called from SkillUpdateTask's actor sweep
+    (0x1409d5fbc) with ``radius`` = BulletRadius + the actor's ActorShapeId
+    radius and ``step`` = Velocity * 0.04. The bullet is at the origin moving
+    along +x; the actor is ``along`` ahead and ``lateral`` beside it. The
+    native test squares the gap (|d| - R) where a swept circle would square
+    |d| (MULSS at 0x14095dd4d), so it reaches well beside the bullet's path.
+    """
+
+    distance = math.hypot(along, lateral)
+    if distance < radius:
+        return True
+    gap = distance - radius
+    if gap > step or along < 0.0:
+        return False
+    remainder = radius * radius - (gap * gap - along * along)
+    return remainder > 0.0 and along - math.sqrt(remainder) <= step
+
+
+@lru_cache(maxsize=256)
+def _client_bullet_lateral_reach(radius: float, step: float) -> float:
+    """Widest miss distance at which the client's sweep can stop a bullet.
+
+    The client draws its own collision: the arrow ends on the first monster
+    its sweep touches, whatever the server decides. A Hunting Arrow (radius
+    0.2, 21 u/s) stops on a small monster 1.5 m beside its line, and on a
+    medium one at 2.1 m, where the server accepted 0.8 m for both. Every
+    phase of the 25 Hz step against the actor is considered.
+    """
+
+    if radius <= 0.0 or step <= 0.0:
+        return max(0.0, radius)
+    samples = 200
+    span = radius + step
+
+    def reachable(lateral):
+        return any(
+            _client_bullet_sweep_hits(span * index / samples, lateral, radius, step)
+            for index in range(samples + 1)
+        )
+
+    low, high = radius, radius + step + radius
+    for _ in range(30):
+        middle = (low + high) / 2.0
+        if reachable(middle):
+            low = middle
+        else:
+            high = middle
+    return low
+
+
+class _PublishedMonsterPositions(dict):
+    """Last published monster transforms, plus a short timed trail of them.
+
+    Write sites keep plain item assignment. The trail lets player hit tests
+    follow the path a client may still be drawing
+    (``PLAYER_HIT_LAG_COMPENSATION_SECONDS``).
+    """
+
+    TRAIL_LENGTH = 16
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # Spawn transforms were never published; trails start at the first.
+        self.trails = {}
+
+    def __setitem__(self, key, value) -> None:
+        super().__setitem__(key, value)
+        trail = self.trails.get(key)
+        if trail is None:
+            trail = self.trails[key] = deque(maxlen=self.TRAIL_LENGTH)
+        trail.append((time.perf_counter(), value))
+
+    def __delitem__(self, key) -> None:
+        super().__delitem__(key)
+        self.trails.pop(key, None)
+
+    def pop(self, key, *default):
+        self.trails.pop(key, None)
+        return super().pop(key, *default)
+
+    def clear(self) -> None:
+        super().clear()
+        self.trails.clear()
+
+    def recent(self, key, window: float) -> tuple:
+        """``(stamp, position)`` newest first over the last ``window`` seconds.
+
+        The sample before the oldest of them is kept too: the client may
+        still be drawing the monster on its way from there.
+        """
+
+        trail = self.trails.get(key)
+        if not trail or window <= 0.0:
+            return ()
+        cutoff = time.perf_counter() - window
+        result = []
+        for stamp, position in reversed(trail):
+            if stamp < cutoff:
+                if result:
+                    result.append((stamp, position))
+                break
+            result.append((stamp, position))
+        return tuple(result)
+
+
 class LocalCombatState:
     """Mutable map-world health, transforms, cooldowns, and projectile state."""
 
@@ -1458,7 +1580,9 @@ class LocalCombatState:
         # This gates only network snapshots. Positions and A* routes still
         # advance at 25 Hz so collision and attack acquisition remain exact.
         self.monster_last_movement_publish_ticks: dict[int, int] = {}
-        self.monster_last_published_positions = dict(self.monster_positions)
+        self.monster_last_published_positions = _PublishedMonsterPositions(
+            self.monster_positions
+        )
         self.monster_routes: dict[int, _MonsterRouteState] = {}
         self._route_refresh_budget = 0
         self._route_actor_cursor = 0
@@ -7487,6 +7611,40 @@ class LocalCombatState:
             current[2] + dz * ratio,
         )
 
+    def _recent_monster_path(
+        self, monster: MonsterCombatant,
+    ) -> tuple[tuple[float, float, float], ...]:
+        """Published positions a client may still be drawing, newest first.
+
+        Covers ``PLAYER_HIT_LAG_COMPENSATION_SECONDS``. A walking monster
+        is published every few ticks, and a start or stop at once, so a step
+        longer than one publish interval of running is a jump (spawn, return
+        home, knock-back): the client snapped across it, and the path stops
+        there rather than sweeping hits along the jump.
+        """
+
+        published = self.monster_last_published_positions
+        if not isinstance(published, _PublishedMonsterPositions):
+            return ()
+        trail = published.recent(
+            monster.actor_id, PLAYER_HIT_LAG_COMPENSATION_SECONDS
+        )
+        longest_step = (
+            max(0.0, monster.run_speed)
+            * MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS
+            / SERVER_TICKS_PER_SECOND
+            * MONSTER_TELEPORT_TOLERANCE
+            + 0.5
+        )
+        path = []
+        for _stamp, position in trail:
+            if path and math.hypot(
+                position[0] - path[-1][0], position[2] - path[-1][2]
+            ) > longest_step:
+                break
+            path.append(tuple(float(value) for value in position))
+        return tuple(path)
+
     def _viewer_monster_ray_proximity(
         self,
         origin: tuple[float, float, float],
@@ -7518,6 +7676,15 @@ class LocalCombatState:
                 current,
             )
         ]
+        # Lag compensation: the path published over the last moments, which
+        # is where this viewer may still be drawing the monster.
+        path = self._recent_monster_path(monster)
+        candidates.extend(
+            self._swept_monster_ray_proximity(
+                origin, aim_x, aim_z, maximum_range, older, newer,
+            )
+            for newer, older in zip(path, path[1:])
+        )
         if visible_position is not None:
             visible = tuple(float(value) for value in visible_position)
             candidates.append(
@@ -7540,19 +7707,42 @@ class LocalCombatState:
         return min(candidates, key=lambda value: (value[1], value[0]))
 
     @staticmethod
+    def _monster_bullet_shape_radius(monster: MonsterCombatant) -> float:
+        """The monster radius the client's bullet and cone sweeps use.
+
+        Both read the ActorShapeId navigation radius (0x14095dfb4), not
+        CapsuleRadius, which is 0.3 for most monsters whatever their size.
+        """
+
+        return max(
+            max(0.0, monster.collision_radius),
+            max(0.0, monster.target_radius or 0.0),
+        )
+
+    @staticmethod
     def _player_projectile_contact_radius(
         target_radius: float, projectile_radius: float, player_width: float = 0.0,
+        projectile_velocity: float = 0.0,
     ) -> float:
         """Use one contact envelope for acquisition and impact validation.
 
         Narrow ranger arrows previously acquired only the authored capsule,
         then allowed movement tolerance at impact. A visible edge contact
-        rejected during acquisition never reached that second check.
+        rejected during acquisition never reached that second check. With
+        the bullet's speed, the envelope is the client's own sweep reach
+        (``_client_bullet_lateral_reach``), so an arrow the player saw stop
+        on a monster also hits it here.
         """
+        combined = max(0.0, target_radius) + max(
+            0.25, projectile_radius, player_width / 2.0
+        )
+        if projectile_velocity > 0.0:
+            combined = _client_bullet_lateral_reach(
+                round(combined, 3),
+                round(projectile_velocity / SERVER_TICKS_PER_SECOND, 3),
+            )
         return max(
-            PLAYER_PROJECTILE_COLLISION_RADIUS,
-            max(0.0, target_radius)
-            + max(0.25, projectile_radius, player_width / 2.0),
+            PLAYER_PROJECTILE_COLLISION_RADIUS, combined,
         ) + PLAYER_PROJECTILE_HITBOX_TOLERANCE
 
     def _client_visible_projectile_distance(
@@ -7585,7 +7775,9 @@ class LocalCombatState:
         aim_z = direction[2] / direction_length
         current = self.monster_positions[monster.actor_id]
         collision_radius = self._player_projectile_contact_radius(
-            monster.collision_radius, geometry.projectile_radius, geometry.player_width,
+            self._monster_bullet_shape_radius(monster),
+            geometry.projectile_radius, geometry.player_width,
+            geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier),
         )
         forward, _miss_distance = self._viewer_monster_ray_proximity(
             player_position,
@@ -7702,7 +7894,9 @@ class LocalCombatState:
                 # replaceable movement datagram is skipped. Test both the
                 # bounded map publish sweep and that viewer's delivered point.
                 collision_radius = self._player_projectile_contact_radius(
-                    monster.collision_radius, geometry.projectile_radius, geometry.player_width,
+                    self._monster_bullet_shape_radius(monster),
+                    geometry.projectile_radius, geometry.player_width,
+                    geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier),
                 )
                 forward, miss_distance = self._viewer_monster_ray_proximity(
                     player_position,
@@ -8961,6 +9155,10 @@ class LocalCombatState:
                     set(eligible_actor_ids).union(visible, explicit_target_actor_ids))
         length = math.hypot(direction[0], direction[2])
         reach = max(geometry.attack_range, geometry.projectile_range)
+        directional = (
+            not projectile
+            and geometry.targeting_type.casefold() in {"angle", "cone"}
+        )
         entities = []
         for actor_id in self.living_actor_ids:
             if actor_id in self.returning_home_actor_ids or (eligible is not None and actor_id not in eligible):
@@ -8969,7 +9167,9 @@ class LocalCombatState:
             position = self.monster_positions[actor_id]
             contact = None
             contact_radius = self._player_projectile_contact_radius(
-                monster.collision_radius, geometry.projectile_radius, geometry.player_width,
+                self._monster_bullet_shape_radius(monster),
+                geometry.projectile_radius, geometry.player_width,
+                geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier),
             )
             if projectile and length > 1e-6 and reach > 0:
                 contact = self._viewer_monster_ray_proximity(
@@ -8983,7 +9183,11 @@ class LocalCombatState:
                 ).impact_count
             entities.append(CombatEntity(actor_id, position, monster.collision_radius,
                                          visible.get(actor_id), contact, impact_count, monster.target_radius,
-                                         projectile_contact_radius=contact_radius))
+                                         projectile_contact_radius=contact_radius,
+                                         recent_positions=(
+                                             self._recent_monster_path(monster)
+                                             if directional else ()
+                                         )))
         entities.extend(additional_entities)
         delay = (max(0.0, float(impact_delay_override)) if impact_delay_override is not None
                  else self._player_skill_impact_delay(geometry, attack_speed_multiplier))
@@ -9376,6 +9580,12 @@ class LocalCombatState:
                         ) if effect.chance >= 1.0
                     ), default=0.0),
                 ),
+                area_contact_radius=(
+                    max(monster.collision_radius, monster.target_radius)
+                    if geometry.targeting_type.casefold() == "cone"
+                    and monster.target_radius is not None
+                    else None
+                ),
                 damage_modifier=target_geometry.damage_modifier,
                 damage_type=target_geometry.damage_type,
                 player_minimum_damage=(
@@ -9445,7 +9655,9 @@ class LocalCombatState:
             else None
         )
         radius = self._player_projectile_contact_radius(
-            target.collision_radius, pending.projectile_radius,
+            self._monster_bullet_shape_radius(target),
+            pending.projectile_radius,
+            projectile_velocity=pending.projectile_velocity,
         )
         # Bullet StartOffset is a visual muzzle position in front of the
         # caster. A target between the player capsule and that muzzle has
@@ -11335,15 +11547,27 @@ class LocalCombatState:
         # An area impact's victims were chosen at the cast; one that walked
         # out of it before it fell is not hurt (a meteor lands 2.6 s later and
         # struck monsters standing beside its crater).
+        # The path published over the lag window still counts: the player
+        # saw the monster there (Scatter Shot's edge, 0.36 s after the cast).
         current = self.monster_positions.get(monster.actor_id)
         if (
             pending.motion_type == "Area"
             and pending.area_radius > 0.0
             and (
                 current is None
-                or self._distance(current, pending.origin)
-                > pending.area_radius + monster.collision_radius
-                + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+                or all(
+                    self._distance(sample, pending.origin)
+                    > pending.area_radius
+                    + (
+                        monster.collision_radius
+                        if pending.area_contact_radius is None
+                        else pending.area_contact_radius
+                    )
+                    + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+                    for sample in (
+                        current, *self._recent_monster_path(monster)
+                    )
+                )
             )
         ):
             return None

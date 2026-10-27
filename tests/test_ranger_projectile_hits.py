@@ -1,5 +1,6 @@
 """Narrow arrows use the same monster contact envelope throughout a cast."""
 
+from dataclasses import replace
 from functools import lru_cache
 import math
 import sqlite3
@@ -7,7 +8,9 @@ import sqlite3
 import pytest
 
 from dso_server.gameplay.combat_entities import CombatEntity
-from dso_server.gameplay.local_combat_state import LocalCombatState
+from dso_server.gameplay.local_combat_state import (
+    LocalCombatState, _client_bullet_lateral_reach,
+)
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.combat_protocol import BulletSkill
@@ -101,6 +104,22 @@ def test_ranger_arrow_edge_tolerance_does_not_bypass_walls(combat, monkeypatch, 
     assert not shoot(combat, explicit=explicit)
 
 
+def age_published_trail(combat, actor, seconds):
+    """Pretend every transform published so far went out ``seconds`` ago."""
+    trail = combat.monster_last_published_positions.trails[actor]
+    for index, (stamp, position) in enumerate(trail):
+        trail[index] = (stamp - seconds, position)
+
+
+def walk(combat, actor, start, end, step=0.4):
+    """Publish a walk from ``start`` to ``end`` in ordinary-sized steps."""
+    count = max(1, math.ceil(math.dist(start, end) / step))
+    for index in range(count + 1):
+        position = tuple(a + (b - a) * index / count for a, b in zip(start, end))
+        combat.monster_positions[actor] = position
+        combat.monster_last_published_positions[actor] = position
+
+
 def test_ranger_arrow_is_cancelled_when_target_leaves_contact_envelope(combat):
     actor = combat.encounter.actor_ids[0]
     combat.monster_positions[actor] = (0.65, 2.0, 8.0)
@@ -109,6 +128,8 @@ def test_ranger_arrow_is_cancelled_when_target_leaves_contact_envelope(combat):
     sidestepped = (3.0, 2.0, 8.0)
     combat.monster_positions[actor] = sidestepped
     combat.monster_last_published_positions[actor] = sidestepped
+    # Long enough ago that no client still draws it in the arrow's path.
+    age_published_trail(combat, actor, 1.0)
     assert combat.runtime_player_hit_remaining(
         1, 321, 0, now=pending.due_at, visible_actor_positions={actor: sidestepped},
     ) is None
@@ -142,3 +163,115 @@ def test_legacy_arrow_acquisition_uses_the_same_contact_tolerance(combat):
         combat.encounter.coordinate_frame.world_to_wire((0.0, 2.0, 0.0)), now=100.0,
     )
     assert pending is not None and pending.target_actor_id == actor
+
+
+@pytest.mark.parametrize("resource", ("markshot", "mightyshot"))
+def test_ranger_arrow_hits_a_monster_still_drawn_on_its_recent_path(combat, resource):
+    # The player aimed at the monster where the client drew it; it has since
+    # walked out of the arrow's lane on the server.
+    actor = combat.encounter.actor_ids[0]
+    combat.monster_health[actor] = 1000
+    walk(combat, actor, (0.0, 2.0, 8.0), (3.5, 2.0, 8.0))
+    (pending,) = shoot(combat, resource)
+    assert combat.runtime_player_hit_remaining(1, 321, 0, now=pending.due_at) == 0.0
+    result = combat.resolve_runtime_player_hit(1, 321, 0, now=pending.due_at)
+    assert result is not None and result.damage > 0
+
+
+def test_ranger_arrow_ignores_a_path_older_than_the_lag_window(combat):
+    actor = combat.encounter.actor_ids[0]
+    walk(combat, actor, (0.0, 2.0, 8.0), (3.5, 2.0, 8.0))
+    age_published_trail(combat, actor, 1.0)
+    assert not shoot(combat)
+
+
+def test_ranger_arrow_path_does_not_sweep_across_a_teleport(combat):
+    actor = combat.encounter.actor_ids[0]
+    for position in ((-6.0, 2.0, 8.0), (6.0, 2.0, 8.0)):
+        combat.monster_positions[actor] = position
+        combat.monster_last_published_positions[actor] = position
+    assert not shoot(combat)
+
+
+def scatter_shot(combat, actor):
+    frame = combat.encounter.coordinate_frame
+    return combat.start_spatial_skill_hits(
+        skill_index=skill_id("multishot"), cast_id=321, server_tick=2000,
+        player_position=frame.world_to_wire((0.0, 2.0, 0.0)), source_actor_id=1,
+        eligible_actor_ids=(actor,), now=100.0, player_damage_range=(10.0, 10.0),
+    )
+
+
+def test_scatter_shot_hits_a_monster_still_drawn_inside_its_cone(combat):
+    # Aim angle 0 faces -z. The monster crossed the cone and now stands
+    # beside it, still inside the skill's reach.
+    actor = combat.encounter.actor_ids[0]
+    combat.monster_health[actor] = 1000
+    walk(combat, actor, (2.0, 2.0, -6.0), (8.0, 2.0, -6.0))
+    (pending,) = scatter_shot(combat, actor)
+    result = combat.resolve_runtime_player_hit(1, 321, 0, now=pending.due_at)
+    assert result is not None and result.damage > 0
+
+
+def test_scatter_shot_still_misses_a_monster_that_left_its_cone_long_ago(combat):
+    actor = combat.encounter.actor_ids[0]
+    walk(combat, actor, (2.0, 2.0, -6.0), (8.0, 2.0, -6.0))
+    age_published_trail(combat, actor, 1.0)
+    assert not scatter_shot(combat, actor)
+
+
+@pytest.mark.parametrize("radius,reach", [
+    # BulletRadius + ActorShapeId radius against Velocity 21 * 0.04: the
+    # widest miss the client's own sweep still stops the arrow on.
+    (0.2 + 0.525, 1.506), (0.25 + 0.525, 1.582),
+    (0.2 + 1.053, 2.093), (0.2 + 1.581, 2.621),
+])
+def test_client_bullet_sweep_reach_matches_the_native_test(radius, reach):
+    assert _client_bullet_lateral_reach(radius, 0.84) == pytest.approx(reach, abs=0.01)
+
+
+def place(combat, actor, position):
+    """A standing monster, published where it stands."""
+    combat.monster_positions[actor] = position
+    combat.monster_last_published_positions[actor] = position
+    age_published_trail(combat, actor, 1.0)
+
+
+def medium_monster(combat, actor):
+    # ActorShapeId "medium" (1.053) with the 0.3 capsule most monsters carry.
+    combat.monsters[actor] = replace(
+        combat.monsters[actor], collision_radius=0.3, target_radius=1.053,
+    )
+
+
+@pytest.mark.parametrize("resource", ("markshot", "mightyshot"))
+def test_ranger_arrow_hits_where_the_client_stops_it_on_a_medium_monster(combat, resource):
+    actor = combat.encounter.actor_ids[0]
+    medium_monster(combat, actor)
+    combat.monster_health[actor] = 1000
+    place(combat, actor, (1.9, 2.0, 8.0))
+    (pending,) = shoot(combat, resource)
+    assert combat.runtime_player_hit_remaining(1, 321, 0, now=pending.due_at) == 0.0
+    result = combat.resolve_runtime_player_hit(1, 321, 0, now=pending.due_at)
+    assert result is not None and result.damage > 0
+
+
+def test_ranger_arrow_still_misses_beyond_the_client_sweep(combat):
+    actor = combat.encounter.actor_ids[0]
+    medium_monster(combat, actor)
+    place(combat, actor, (2.6, 2.0, 8.0))
+    assert not shoot(combat)
+
+
+def test_scatter_shot_cone_uses_the_monster_shape_radius(combat):
+    # 6 m ahead the cone is 3.32 m wide each side; a medium monster 4 m
+    # aside overlaps it by its 1.05 m shape, as the client's cone test sees.
+    actor = combat.encounter.actor_ids[0]
+    medium_monster(combat, actor)
+    combat.monster_health[actor] = 1000
+    place(combat, actor, (4.0, 2.0, -6.0))
+    (pending,) = scatter_shot(combat, actor)
+    result = combat.resolve_runtime_player_hit(1, 321, 0, now=pending.due_at)
+    assert result is not None and result.damage > 0
+    place(combat, actor, (5.0, 2.0, -6.0))
+    assert not scatter_shot(combat, actor)

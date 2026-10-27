@@ -555,6 +555,21 @@ class Session:
         self._message_context.bit_length = value
 
     @property
+    def current_message_received_at(self):
+        """``perf_counter`` time the executing queued command arrived.
+
+        Cast cadence is judged against arrival, not against when a shared
+        ingress worker reached the command: queueing behind other work is
+        not the client casting early. ``None`` for inline dispatch.
+        """
+
+        return getattr(self._message_context, "received_at", None)
+
+    @current_message_received_at.setter
+    def current_message_received_at(self, value) -> None:
+        self._message_context.received_at = value
+
+    @property
     def gameplay_map(self):
         return self._gameplay_map
 

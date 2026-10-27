@@ -39,7 +39,16 @@ class PlayerCombatService(PlayerCastTimingService):
         geometry = combat._modified_player_skill_geometry(
             geometry, tuple(modifier_sources)
         )
-        reservation = reserve_player_skill_timing(s, geometry, speed, now=now)
+        # Judge cadence by when the cast arrived: time spent queued behind
+        # other ingress work is not the client casting early.
+        received_at = getattr(s, "current_message_received_at", None)
+        timing_now = (
+            min(float(now), float(received_at))
+            if isinstance(received_at, (int, float)) else now
+        )
+        reservation = reserve_player_skill_timing(
+            s, geometry, speed, now=timing_now
+        )
         if reservation is None:
             if SKILL_TRACE:
                 print(f"[{GAMEPLAY_SERVICE_NAME}] skill {skill_index} rejected: cooldown or casting cadence")

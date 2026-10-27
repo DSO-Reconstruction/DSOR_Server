@@ -10,7 +10,6 @@ unlocked premium ``storage_80`` bag.
 from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
-import copy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +21,12 @@ from dso_server.protocol.currency_protocol import (
     GameCurrencyChanged,
     normalize_game_currency_balances,
 )
-from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo, free_inventory_location
+from dso_server.protocol.inventory_codec import (
+    InventoryInfo,
+    ItemInfo,
+    clone_inventory_info,
+    free_inventory_location,
+)
 from dso_server.protocol.player_init_protocol import CurrencyChanged
 from dso_server.protocol.shop_protocol import OFFER_RARITY_IDS, ShopOffer
 
@@ -450,7 +454,7 @@ def add_purchased_item(
 
     # Retail replaces a modified stack with a newly allocated item id and
     # publishes new->old in field_158. Preserve that identity transition.
-    for old_item in list(info.items):
+    for index, old_item in enumerate(list(info.items)):
         if (
             remaining <= 0
             or old_item.template_id != definition.template_id
@@ -475,7 +479,7 @@ def add_purchased_item(
                 max(0, int(definition.unit_vc_price)) * new_amount
             ),
         )
-        info.items[info.items.index(old_item)] = new_item
+        info.items[index] = new_item
         _replace_item_id(info, old_item.item_id, new_id)
         changed_items.append(new_item)
         replaced_ids.append(old_item.item_id)
@@ -508,13 +512,12 @@ def add_purchased_item(
     info.field_158 = {}
     info.field_1e0 = False
 
-    delta = copy.deepcopy(info)
-    delta.items = copy.deepcopy(changed_items)
+    delta = clone_inventory_info(info, changed_items)
     delta.changed_item_ids = list(replaced_ids)
     delta.field_158 = dict(replacements)
     delta.field_1e0 = True
 
-    final = copy.deepcopy(info)
+    final = clone_inventory_info(info, ())
     final.items = []
     final.changed_item_ids = []
     final.field_158 = {}

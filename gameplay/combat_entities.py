@@ -22,6 +22,9 @@ class CombatEntity:
     # A replication adapter can supply the complete projectile/target contact
     # radius, including the same movement tolerance used at impact time.
     projectile_contact_radius: float | None = None
+    # Positions the viewer may still be drawing (lag compensation), newest
+    # first. Directional (angle/cone) skills accept any of them.
+    recent_positions: tuple = ()
 
     @property
     def observed_position(self):
@@ -143,15 +146,29 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                 if geometry.attack_range > 0 and reach > geometry.attack_range + size:
                     continue
             elif targeting in {"angle", "cone"}:
-                dx, dz = position[0] - origin[0], position[2] - origin[2]
-                reach = math.hypot(dx, dz)
-                forward = dx * aim[0] + dz * aim[1]
-                if forward < -size or reach > radius + size:
-                    continue
-                width = _directional_width(geometry, forward, radius)
-                if width <= 0 and geometry.angle_degrees > 0:
-                    width = max(0.0, forward) * math.tan(math.radians(geometry.angle_degrees / 2))
-                if abs(dx * aim[1] - dz * aim[0]) > max(0.0, width) + size:
+                if targeting == "cone" and entity.target_radius is not None:
+                    # The client's cone test (SkillUpdateTask
+                    # HandleConeTargetSkill, 0x140a3dd80) widens by the
+                    # ActorShapeId radius, not the 0.3 physics capsule.
+                    size = max(size, entity.target_radius)
+                # The client swung at the monster where it drew it: the
+                # delivered sample, the authoritative position, or the path
+                # published since (Scatter Shot visibly hit monsters walking
+                # across its cone and the server judged one stale sample).
+                reach = None
+                for sample in (position, entity.position, *entity.recent_positions):
+                    dx, dz = sample[0] - origin[0], sample[2] - origin[2]
+                    sample_reach = math.hypot(dx, dz)
+                    forward = dx * aim[0] + dz * aim[1]
+                    if forward < -size or sample_reach > radius + size:
+                        continue
+                    width = _directional_width(geometry, forward, radius)
+                    if width <= 0 and geometry.angle_degrees > 0:
+                        width = max(0.0, forward) * math.tan(math.radians(geometry.angle_degrees / 2))
+                    if abs(dx * aim[1] - dz * aim[0]) > max(0.0, width) + size:
+                        continue
+                    reach = sample_reach if reach is None else min(reach, sample_reach)
+                if reach is None:
                     continue
             elif targeting == "actor":
                 continue
