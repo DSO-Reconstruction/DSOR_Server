@@ -1354,6 +1354,24 @@ class MapTransitionService:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected locked map travel to {map_id!r}")
             return
         CharacterService._accept_gameplay_state_command(s, command_id)
+        # A travel stone's journey costs the destination's TravelCosts (gold;
+        # gui.window travelmap travelCostHeading). Checked before leaving,
+        # debited once the transfer starts.
+        # UNVERIFIED: the Premium "free traveling to all activated Travel
+        # Stones" privilege is not applied.
+        stone_price = 0
+        if getattr(request, "travel_point_id", "") and required_item_id is None:
+            try:
+                with sqlite3.connect(f"file:{Path(self.static_database_path).as_posix()}?mode=ro", uri=True) as db:
+                    row = db.execute("SELECT PriceVC FROM _Template_TravelCosts WHERE Id=?", (map_id,)).fetchone()
+                stone_price = max(0, int(row[0] or 0)) if row else 0
+            except sqlite3.Error:
+                stone_price = 0
+            with s.flow_lock:
+                currency = s.gameplay_currency_state
+            if stone_price and (currency is None or int(currency.gold) < stone_price):
+                print(f"[{GAMEPLAY_SERVICE_NAME}] rejected travel to {map_id!r}: {stone_price} copper needed")
+                return
         try:
             if getattr(request, "entry_name", None):
                 access = resolve_map_access(self.static_database_path, map_id,
@@ -1394,6 +1412,19 @@ class MapTransitionService:
                     s.gameplay_next_item_id = original_next_item_id
                     s.gameplay_pending_travel_item = pending
             return
+        if stone_price:
+            from dso_server.protocol.commerce_protocol import PurchasePrice, debit_currency
+            with s.flow_lock:
+                updated, updated_ic = debit_currency(s.gameplay_currency_state, PurchasePrice(vc=stone_price),
+                                                     ic_balance=s.gameplay_currency_ic)
+                s.gameplay_currency_state = replace(updated, notify=True)
+                s.gameplay_currency_ic = updated_ic
+                updated = s.gameplay_currency_state
+            s.send_reliable_ordered(encode_server_command_batch((ServerCommand(
+                CURRENCY_CHANGED_COMMAND, updated, LOCAL_PLAYER_ACTOR_ID),), include_terminator=True),
+                track=True, label='travel-stone-costs')
+            CharacterService._request_account_save(s, 'travel stone costs')
+            print(f"[{GAMEPLAY_SERVICE_NAME}] travel to {map_id!r} cost {stone_price} copper")
         if consumed_travel_item:
             self._season_pass_feed(
                 s, "UseDungeonKeys", value=str(pending["template_id"]),
