@@ -173,6 +173,10 @@ class PlayerSummonService:
                 )
         for timer in expiry_timers:
             timer.start()
+        # The owner's Minion auras (Black Dwarf) reach the new construction
+        # and a live turret-duration bonus applies to its lifetime.
+        from dso_server.services.minion_auras import request_minion_aura_sync
+        request_minion_aura_sync(s)
         CharacterService._start_monster_chase(s)
 
     @staticmethod
@@ -617,6 +621,9 @@ class PlayerSummonService:
                 CharacterService._send_player_location_visuals_to(
                     s, location_visuals
                 )
+        # Owner feedback of a Minion aura ends with its last admitted minion.
+        from dso_server.services.minion_auras import request_minion_aura_sync
+        request_minion_aura_sync(s)
         if discard_timer is not None:
             # The already-published LocationEffectInfo expires now and runs
             # the actor's authored teardown.  DiscardMonster follows only

@@ -243,23 +243,16 @@ class AchievementServiceTests(unittest.TestCase):
         server._achievement_on_map_entered(other, (GRIMFORD,))
         self.assertEqual(self._records(other), [])
 
-    def test_recipe_achievements_are_granted_once(self):
+    def test_initialization_preserves_earned_gates_without_free_unlocks(self):
         server, s = self.server, self.session
         first = {a.resource_id: a.values for a in server._achievement_init_info(s).achievements}
-        recipe_gates = {k: v for k, v in first.items() if k.startswith(("crafting_", "unlock_crafting_"))}
-        self.assertTrue(recipe_gates)
-        # Recipe gates are completed (stamped) and their points complete the
-        # first score milestone along with them.
-        self.assertTrue(all(values[1] > 0 for values in recipe_gates.values()))
-        self.assertEqual(first["general_score_50"][0], 50)
-        self.assertTrue(first["general_score_50"][1] > 0)
-        self.assertIn("initialization achievements granted", self.saves)
-        self.saves.clear()
+        self.assertEqual(first, {})
+        catalog = server._achievement_catalog()
+        definition = next(d for d in catalog.achievements.values() if d.kind == "crafting")
+        complete_achievement(s.gameplay_achievements, definition, now=RETAIL_MOMENT)
         second = {a.resource_id: a.values for a in server._achievement_init_info(s).achievements}
-        self.assertEqual(first, second)
+        self.assertEqual(second[definition.achievement_id][1:], RETAIL_GRIMFORD_VALUES[1:])
         self.assertEqual(self.saves, [])
-        document = AchievementService._achievement_document(s)
-        self.assertTrue({k.casefold() for k in recipe_gates} <= set(document))
 
     def test_kill_quest_and_level_hooks(self):
         server, s = self.server, self.session

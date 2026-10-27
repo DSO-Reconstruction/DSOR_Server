@@ -510,6 +510,25 @@ class ChatServer(RakNetServer):
         # Unknown/private channels must not leak globally.
         return (sender,)
 
+    def _ignores_chat_sender(self, recipient: Session, sender: Session) -> bool:
+        """Whether ``recipient`` keeps the sender on its persisted ignore list.
+
+        Ignoring is recipient-side: an ignored player's whispers and channel
+        lines are not delivered to the character ignoring them, while the
+        ignoring character may still write to everyone else.
+        """
+
+        if (
+            self.social_store is None
+            or recipient is sender
+            or recipient.chat_user_id is None
+            or sender.chat_user_id is None
+        ):
+            return False
+        return self.social_store.ignores(
+            int(recipient.chat_user_id), int(sender.chat_user_id)
+        )
+
     def _resolve_whisper_target(
             self, sender: Session, requested_name: str, text: str):
         """Resolve the chat UI's space-split whisper target.
@@ -727,6 +746,18 @@ class ChatServer(RakNetServer):
                     raise ValueError(
                         f'whisper target {whisper.target_name!r} is not online'
                     )
+                if self._ignores_chat_sender(target, s):
+                    # Dropped silently, like an offline target, so the
+                    # sender does not learn about the ignore.
+                    self._audit(
+                        s, 'blocked',
+                        f'whisper to user_id={target.chat_user_id} (ignored)',
+                    )
+                    print(
+                        f"[ChatService] whisper {s.chat_user_name} -> "
+                        f"{target.chat_user_name} blocked by ignore list"
+                    )
+                    return
                 whisper = replace(
                     whisper,
                     user_type=(
@@ -784,7 +815,11 @@ class ChatServer(RakNetServer):
             self._audit(s, 'rejected', f'{exc}; raw={payload.hex()}')
             return
         self._audit(s, 'received', command)
-        recipients = self._channel_recipients(s, message.channel)
+        recipients = tuple(
+            recipient
+            for recipient in self._channel_recipients(s, message.channel)
+            if not self._ignores_chat_sender(recipient, s)
+        )
         for recipient in recipients:
             recipient.send_reliable_ordered(
                 response,

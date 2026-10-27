@@ -62,6 +62,493 @@ GROUP_MEMBER_QUERY_RESULT_COMMAND = command_id("Commands::GroupMemberQueryResult
 GROUP_MEMBER_QUERY_OK = 0
 GROUP_MEMBER_QUERY_FAILED = 1
 
+# Group/guild management and ignored players.  Every layout below was read
+# from the release261_1024 client's generated Decode (vtable slot 5); the
+# operation enums come from the ClientSocialManager senders and handlers
+# cited at each constant.  Client requests carry no trailing actor context;
+# server replies append one only when the class is ``actor_scoped``.
+GROUP_MULTIPLE_INVITE_COMMAND = command_id("Commands::GroupMultipleInviteCommand", 155)
+GROUP_JOIN_REQUEST_COMMAND = command_id("Commands::GroupJoinRequestCommand", 157)
+GROUP_JOIN_RESPONSE_COMMAND = command_id("Commands::GroupJoinRequestResponseCommand", 158)
+GROUP_KICK_COMMAND = command_id("Commands::GroupKickCommand", 159)
+GROUP_EDIT_COMMAND = command_id("Commands::GroupEditCommand", 161)
+GROUP_EDIT_RESULT_COMMAND = command_id("Commands::GroupEditResponseCommand", 162)
+GROUP_CANDIDATES_COMMAND = command_id("Commands::GroupCandidatesRequestCommand", 164)
+GROUP_CANDIDATES_RESULT_COMMAND = command_id("Commands::GroupCandidatesResponseCommand", 165)
+GUILD_KICK_COMMAND = command_id("Commands::GuildKickCommand", 172)
+GUILD_NAME_EDIT_COMMAND = command_id("Commands::GuildNameEditCommand", 174)
+GUILD_NAME_EDIT_RESULT_COMMAND = command_id("Commands::GuildNameEditResponseCommand", 175)
+IGNORED_LIST_COMMAND = command_id("Commands::IgnoredListCommand", 178)
+GUILD_MOTD_COMMAND = command_id("Commands::GuildMessageOfTheDayCommand", 186)
+GUILD_MOTD_REQUEST_COMMAND = command_id("Commands::GuildMessageOfTheDayRequestCommand", 187)
+GUILD_MOTD_CHANGE_COMMAND = command_id("Commands::GuildMessageOfTheDayChangeCommand", 188)
+SOCIAL_MANAGEMENT_COMMANDS = frozenset({
+    GROUP_MULTIPLE_INVITE_COMMAND, GROUP_JOIN_REQUEST_COMMAND, GROUP_JOIN_RESPONSE_COMMAND,
+    GROUP_KICK_COMMAND, GROUP_EDIT_COMMAND, GROUP_CANDIDATES_COMMAND, GUILD_KICK_COMMAND,
+    GUILD_NAME_EDIT_COMMAND, IGNORED_LIST_COMMAND, GUILD_MOTD_REQUEST_COMMAND,
+    GUILD_MOTD_CHANGE_COMMAND,
+})
+
+# IgnoredListCommand's operation (validated -1..2).  ClientSocialManager
+# sends 1 from AddPlayerToIgnored (0x14026fa4c), 2 from
+# RemovePlayerFromIgnored (0x1402808f8) and 0 from the social window's
+# refresh (0x1402810e4).
+IGNORED_LIST_REFRESH = 0
+IGNORED_LIST_ADD = 1
+IGNORED_LIST_REMOVE = 2
+# IgnoredStatusCommand's type (validated -1..3).  HandleIgnoredStatusCommand
+# (0x14027c974) replaces its list only for 0; 1..3 are accepted and ignored.
+IGNORED_STATUS_FULL_LIST = 0
+
+# GroupEditResponseCommand's status (validated -1..1).  The handler
+# (0x140277298) renames the group (``groupChangedName``) for 0; for 1 it
+# shows ``groupNameEmpty`` or, with a name, ``rankedTeamNameInvalid``.
+GROUP_EDIT_OK = 0
+GROUP_EDIT_INVALID_NAME = 1
+
+# GuildNameEditResponseCommand's status (validated -1..4), from
+# HandleGuildNameEditResponseCommand (0x14027bd58).
+GUILD_RENAME_OK = 0  # guildRenamed; the client then re-sends GuildListCommand
+GUILD_RENAME_NOT_ENOUGH_FUNDS = 1  # notEnoughFundsForEditingGuild
+GUILD_RENAME_NAME_TAKEN = 2  # guildNameAlreadyAssigned
+GUILD_RENAME_NAME_INVALID = 3  # guildNameInvalid
+GUILD_RENAME_NO_CHANGE = 4  # noNameChange
+
+# Game::GroupJoinRequestResponseType (validated -1..11).  The leader's
+# client sends 0 from AcceptGroupJoinRequest (0x14026ecd8) and refusals from
+# RefuseGroupJoinRequest[ByReason] (0x140280180/0x1402801ac).  The
+# requester's handler (0x1402789e8) shows the matching gui.window.grouping
+# text.
+GROUP_JOIN_ACCEPTED = 0  # groupJoinRequestAccepted
+GROUP_JOIN_REFUSED = 1  # groupJoinRequestRefused
+GROUP_JOIN_ALREADY_IN_GROUP = 2  # youAreAlreadyInAGroup
+GROUP_JOIN_LEADER_NOT_IN_GROUP = 3  # playerNotInAGroup
+GROUP_JOIN_LEADER_OFFLINE = 4  # isNotLoggedIn (name)
+GROUP_JOIN_NOT_LEADER = 5  # playerNotLeader
+GROUP_JOIN_UNKNOWN_PLAYER = 6  # unknownPlayer (name)
+GROUP_JOIN_RIGHTS_REQUIRED = 7  # leaderRightsRequired
+GROUP_JOIN_NO_GROUP = 8  # groupRequestErrorNoGroup
+GROUP_JOIN_REQUESTS_DISABLED = 9  # groupRequestDisabledNotifications
+GROUP_JOIN_FAILED = 10  # ocpRequestFailed (generic)
+GROUP_JOIN_PENDING = 11  # groupRequestPending
+GROUP_JOIN_MAX_STATUS = 11
+
+# ``gui.window.grouping/inviteNumberLimit``: "Invite up to ten players
+# simultaneously".
+GROUP_MULTIPLE_INVITE_LIMIT = 10
+# The generated array readers (0x14095ef6c/0x14095d24c) accept up to one
+# million entries; the server bounds what it will even parse.
+_MAX_SOCIAL_ARRAY = 1000
+
+
+@dataclass(frozen=True)
+class SocialKickRequest:
+    """GroupKickCommand/GuildKickCommand: ``string, uint32, uint32``.
+
+    GroupKickPlayer (0x140274894) and GuildKickPlayer (0x1402762a8) set only
+    the target name; both uint32 fields keep their constructor defaults.
+    """
+
+    target_name: str
+    field_60: int = 0
+    field_64: int = 0
+
+
+@dataclass(frozen=True)
+class SocialEditRequest:
+    """GroupEditCommand/GuildNameEditCommand: ``uint32, string, string, bool``.
+
+    ClientSocialManager::EditGroup (0x140272664) fills the sender's name,
+    the new group name and the "hide group" flag.  GuildNameEdit
+    (0x140272c14) fills the new name and the payment flag: FoundGuildDialog
+    sends ``False`` from its silver button and ``True`` only after the
+    Andermant confirmation (0x14042f370/0x14042f84c).
+    """
+
+    field_20: int
+    source_name: str
+    name: str
+    flag: bool
+
+
+@dataclass(frozen=True)
+class IgnoredListRequest:
+    operation: int
+    field_24: int
+    name: str
+
+
+@dataclass(frozen=True)
+class GuildMotdRequest:
+    """GuildMessageOfTheDayRequestCommand (``/motd`` and chat login)."""
+
+    field_20: int
+
+
+@dataclass(frozen=True)
+class GuildMotdChange:
+    """GuildMessageOfTheDayChangeCommand (``/cmotd text``; ``/dmotd`` = "")."""
+
+    field_20: int
+    message: str
+
+
+@dataclass(frozen=True)
+class GroupJoinRequest:
+    """GroupJoinRequestCommand: ``string, string, uint32, uint32, bool``.
+
+    ClientSocialManager::GroupJoinRequest (0x1402742a8) writes the sender's
+    name, the selected finder entry's group name (GroupInfo +0x48), a local
+    player id (+0x410, unused here), leaves +0xa4 at zero and sets the bool
+    after ``confirmGroupLeaveForJoinRequest``.
+    """
+
+    source_name: str
+    group_name: str
+    field_a0: int
+    field_a4: int
+    leave_current: bool
+
+
+@dataclass(frozen=True)
+class GroupJoinResponse:
+    """GroupJoinRequestResponseCommand ``enum8, uint32, uint32, string, string``.
+
+    Sent by the leader: requester id (notification value +0x1c), the second
+    notification value (the group id), the leader's name and, for
+    acceptance only, the notification payload's ``timeStamp`` token.
+    """
+
+    status: int
+    requester_id: int
+    group_id: int
+    leader_name: str
+    token: str
+
+
+@dataclass(frozen=True)
+class GroupMultipleInvite:
+    """GroupMultipleInviteCommand: ``string, string[], uint32``."""
+
+    source_name: str
+    target_names: tuple[str, ...]
+    field_80: int
+
+
+@dataclass(frozen=True)
+class GroupCandidatesRequest:
+    """GroupCandidatesRequestCommand: ``uint32, bool, uint32[]``.
+
+    RequestGroupInviteCandidates (0x140280e14) sets +0x20 to a local player
+    id, +0x24 True for "Invite players nearby" and False for "Invite
+    friends"; it leaves the uint32 array empty.
+    """
+
+    field_20: int
+    nearby: bool
+    excluded_ids: tuple[int, ...]
+
+
+def _read_social_array_count(reader: BitReader) -> int:
+    count = reader.read_uint32_le()
+    if count > _MAX_SOCIAL_ARRAY:
+        raise ValueError(f"social request array is too long ({count})")
+    return count
+
+
+def decode_social_management(
+    payload: bytes, command: int, bit_length: int | None = None
+):
+    """Decode one client group/guild management or ignore-list request."""
+
+    reader = _client_reader(payload, command, bit_length)
+    u32, string = reader.read_uint32_le, reader.read_string
+    if command in {GROUP_KICK_COMMAND, GUILD_KICK_COMMAND}:
+        result = SocialKickRequest(string(), u32(), u32())
+    elif command in {GROUP_EDIT_COMMAND, GUILD_NAME_EDIT_COMMAND}:
+        result = SocialEditRequest(u32(), string(), string(), reader.read_bool())
+    elif command == IGNORED_LIST_COMMAND:
+        operation = reader.read_uint8()
+        if operation not in {IGNORED_LIST_REFRESH, IGNORED_LIST_ADD, IGNORED_LIST_REMOVE}:
+            raise ValueError(f"invalid IgnoredList operation {operation}")
+        result = IgnoredListRequest(operation, u32(), string())
+    elif command == GUILD_MOTD_REQUEST_COMMAND:
+        result = GuildMotdRequest(u32())
+    elif command == GUILD_MOTD_CHANGE_COMMAND:
+        result = GuildMotdChange(u32(), string())
+    elif command == GROUP_JOIN_REQUEST_COMMAND:
+        result = GroupJoinRequest(string(), string(), u32(), u32(), reader.read_bool())
+    elif command == GROUP_JOIN_RESPONSE_COMMAND:
+        status = reader.read_uint8()
+        if status > GROUP_JOIN_MAX_STATUS:
+            raise ValueError(f"invalid GroupJoinRequestResponse status {status}")
+        result = GroupJoinResponse(status, u32(), u32(), string(), string())
+    elif command == GROUP_MULTIPLE_INVITE_COMMAND:
+        source = string()
+        names = tuple(string() for _ in range(_read_social_array_count(reader)))
+        result = GroupMultipleInvite(source, names, u32())
+    elif command == GROUP_CANDIDATES_COMMAND:
+        field_20, nearby = u32(), reader.read_bool()
+        excluded = tuple(u32() for _ in range(_read_social_array_count(reader)))
+        result = GroupCandidatesRequest(field_20, nearby, excluded)
+    else:
+        raise ValueError(f"unknown social management command 0x{command:04x}")
+    _finish_byte_rounded(reader, "social management request")
+    return result
+
+
+def _server_writer(command: int) -> BitWriter:
+    writer = BitWriter()
+    writer.write_uint8(0x85)
+    writer.write_bytes(int(command).to_bytes(2, "little"))
+    return writer
+
+
+def _server_reader(payload: bytes, bit_length: int, command: int) -> BitReader:
+    reader = BitReader(payload, bit_length)
+    if reader.read_uint8() != 0x85:
+        raise ValueError("expected a server command batch")
+    actual = int.from_bytes(reader.read_bytes(2), "little")
+    if actual != command:
+        raise ValueError(f"expected command 0x{command:04x}, got 0x{actual:04x}")
+    return reader
+
+
+def _finish_server(reader: BitReader, label: str) -> None:
+    if reader.read_uint8() != 0xFF or reader.remaining:
+        raise ValueError(f"{label} has trailing data")
+
+
+def encode_guild_motd(message: str, field_20: int = 0) -> tuple[bytes, int]:
+    """Encode GuildMessageOfTheDayCommand: ``string, uint32``; no actor.
+
+    HandleGuildMessageOfTheDayCommand (0x14027bb74) posts the string to the
+    guild chat channel under ``gui.window.chat/GuildMessage`` ("Guild News")
+    and ignores the uint32, which this server fills with the guild id.
+    """
+
+    writer = _server_writer(GUILD_MOTD_COMMAND)
+    writer.write_string(message)
+    writer.write_uint32_le(int(field_20) & 0xFFFFFFFF)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_guild_motd(payload: bytes, bit_length: int) -> tuple[str, int]:
+    reader = _server_reader(payload, bit_length, GUILD_MOTD_COMMAND)
+    value = (reader.read_string(), reader.read_uint32_le())
+    _finish_server(reader, "GuildMessageOfTheDay")
+    return value
+
+
+def encode_group_edit_result(
+    status: int, request: SocialEditRequest, *, field_1c: int = 0,
+) -> tuple[bytes, int]:
+    """Encode GroupEditResponseCommand; no actor context.
+
+    Layout ``enum8(-1..1), uint32, uint32, string, string, bool``: the status
+    and a uint32 precede an echo of the GroupEditCommand body.  The handler
+    reads only the status, the name (+0x68) and the hidden flag (+0xa8),
+    which it stores as the group's hidden state.
+    """
+
+    if status not in {GROUP_EDIT_OK, GROUP_EDIT_INVALID_NAME}:
+        raise ValueError(f"invalid GroupEditResponse status {status}")
+    writer = _server_writer(GROUP_EDIT_RESULT_COMMAND)
+    writer.write_uint8(status)
+    writer.write_uint32_le(int(field_1c) & 0xFFFFFFFF)
+    writer.write_uint32_le(int(request.field_20) & 0xFFFFFFFF)
+    writer.write_string(request.source_name)
+    writer.write_string(request.name)
+    writer.write_bool(bool(request.flag))
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_group_edit_result(payload: bytes, bit_length: int):
+    """Decode into ``(status, field_1c, SocialEditRequest)``."""
+
+    reader = _server_reader(payload, bit_length, GROUP_EDIT_RESULT_COMMAND)
+    status, field_1c = reader.read_uint8(), reader.read_uint32_le()
+    request = SocialEditRequest(
+        reader.read_uint32_le(), reader.read_string(), reader.read_string(),
+        reader.read_bool(),
+    )
+    _finish_server(reader, "GroupEditResponse")
+    return status, field_1c, request
+
+
+def encode_guild_name_edit_result(
+    status: int, name: str, *, source_name: str = "", field_1c: int = 0,
+    field_60: int = 0, flag: bool = False,
+) -> tuple[bytes, int]:
+    """Encode GuildNameEditResponseCommand; no actor context.
+
+    Layout ``enum8(-1..4), uint32, string, uint32, string, bool`` (+0x18,
+    +0x1c, +0x20, +0x60, +0x68, +0xa8).  The handler formats its message
+    with the name at +0x68 and reads nothing else besides the status.
+    """
+
+    if not GUILD_RENAME_OK <= int(status) <= GUILD_RENAME_NO_CHANGE:
+        raise ValueError(f"invalid GuildNameEditResponse status {status}")
+    writer = _server_writer(GUILD_NAME_EDIT_RESULT_COMMAND)
+    writer.write_uint8(int(status))
+    writer.write_uint32_le(int(field_1c) & 0xFFFFFFFF)
+    writer.write_string(source_name)
+    writer.write_uint32_le(int(field_60) & 0xFFFFFFFF)
+    writer.write_string(name)
+    writer.write_bool(bool(flag))
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_guild_name_edit_result(payload: bytes, bit_length: int):
+    """Decode into ``(status, field_1c, source_name, field_60, name, flag)``."""
+
+    reader = _server_reader(payload, bit_length, GUILD_NAME_EDIT_RESULT_COMMAND)
+    value = (
+        reader.read_uint8(), reader.read_uint32_le(), reader.read_string(),
+        reader.read_uint32_le(), reader.read_string(), reader.read_bool(),
+    )
+    _finish_server(reader, "GuildNameEditResponse")
+    return value
+
+
+def encode_group_candidates(
+    field_20: int, members, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Encode GroupCandidatesResponseCommand (actor-scoped).
+
+    Layout ``uint32`` then the 230-byte PlayerSummary array reader shared
+    with GroupStatus (0x140a3da98), then the outer actor context.  The
+    handler (0x1402771a8) passes only the array to
+    SocialWidget::UpdateMultipleInvite.
+    """
+
+    writer = _server_writer(GROUP_CANDIDATES_RESULT_COMMAND)
+    writer.write_uint32_le(int(field_20) & 0xFFFFFFFF)
+    writer.write_uint32_le(len(members))
+    for member in members:
+        _write_player_summary(writer, member)
+    writer.write_uint32_le(int(actor_id) & 0xFFFFFFFF)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_group_candidates(payload: bytes, bit_length: int):
+    """Decode into ``(field_20, members, actor_id)``."""
+
+    reader = _server_reader(payload, bit_length, GROUP_CANDIDATES_RESULT_COMMAND)
+    field_20 = reader.read_uint32_le()
+    members = tuple(
+        _read_player_summary(reader) for _ in range(reader.read_uint32_le())
+    )
+    actor_id = reader.read_uint32_le()
+    _finish_server(reader, "GroupCandidatesResponse")
+    return field_20, members, actor_id
+
+
+def encode_group_join_response(
+    status: int, requester_id: int, group_id: int, leader_name: str,
+    token: str = "", *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Encode GroupJoinRequestResponseCommand to the requester (actor-scoped).
+
+    Same body as the leader's request: ``enum8(-1..11), uint32, uint32,
+    string, string`` followed by the outer actor context.  Statuses 4 and 6
+    format the name at +0x30; 0 additionally makes the client re-request
+    its GroupStatus.
+    """
+
+    if not 0 <= int(status) <= GROUP_JOIN_MAX_STATUS:
+        raise ValueError(f"invalid GroupJoinRequestResponse status {status}")
+    writer = _server_writer(GROUP_JOIN_RESPONSE_COMMAND)
+    writer.write_uint8(int(status))
+    writer.write_uint32_le(int(requester_id) & 0xFFFFFFFF)
+    writer.write_uint32_le(int(group_id) & 0xFFFFFFFF)
+    writer.write_string(leader_name)
+    writer.write_string(token)
+    writer.write_uint32_le(int(actor_id) & 0xFFFFFFFF)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_group_join_response(payload: bytes, bit_length: int):
+    """Decode into ``(GroupJoinResponse, actor_id)``."""
+
+    reader = _server_reader(payload, bit_length, GROUP_JOIN_RESPONSE_COMMAND)
+    value = GroupJoinResponse(
+        reader.read_uint8(), reader.read_uint32_le(), reader.read_uint32_le(),
+        reader.read_string(), reader.read_string(),
+    )
+    actor_id = reader.read_uint32_le()
+    _finish_server(reader, "GroupJoinRequestResponse")
+    return value, actor_id
+
+
+def encode_social_kick_notice(
+    command: int, target_name: str, *, actor_id: int,
+) -> tuple[bytes, int]:
+    """Tell a removed member they were kicked (actor-scoped).
+
+    The client registers handlers for both kick commands: GroupKickCommand
+    (0x14027922c) shows ``youWereKicked`` and GuildKickCommand (0x14027b8fc)
+    ``youWereKickedFromGuild``; neither reads the body, which keeps the
+    request layout ``string, uint32, uint32``.
+    """
+
+    if command not in {GROUP_KICK_COMMAND, GUILD_KICK_COMMAND}:
+        raise ValueError(f"invalid kick command 0x{command:04x}")
+    writer = _server_writer(command)
+    writer.write_string(target_name)
+    writer.write_uint32_le(0)
+    writer.write_uint32_le(0)
+    writer.write_uint32_le(int(actor_id) & 0xFFFFFFFF)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_social_kick_notice(payload: bytes, bit_length: int, command: int):
+    """Decode into ``(SocialKickRequest, actor_id)``."""
+
+    reader = _server_reader(payload, bit_length, command)
+    value = SocialKickRequest(
+        reader.read_string(), reader.read_uint32_le(), reader.read_uint32_le(),
+    )
+    actor_id = reader.read_uint32_le()
+    _finish_server(reader, "kick notice")
+    return value, actor_id
+
+
+def encode_ignored_status(
+    names: tuple[str, ...], field_1c: int = 0,
+) -> tuple[bytes, int]:
+    """Encode a standalone IgnoredStatusCommand full list; no actor.
+
+    Layout ``enum8(-1..3), uint32, string[]`` (array reader 0x14095ef6c).
+    Type 0 replaces ClientSocialManager's ignore list (+0x120) and refreshes
+    the social widget.  The uint32 is unread by the handler.
+    """
+
+    writer = _server_writer(IGNORED_STATUS_COMMAND)
+    writer.write_uint8(IGNORED_STATUS_FULL_LIST)
+    writer.write_uint32_le(int(field_1c) & 0xFFFFFFFF)
+    writer.write_uint32_le(len(names))
+    for name in names:
+        writer.write_string(name)
+    writer.write_uint8(0xFF)
+    return writer.finish()
+
+
+def decode_ignored_status(payload: bytes, bit_length: int):
+    """Decode into ``(status, field_1c, names)``."""
+
+    reader = _server_reader(payload, bit_length, IGNORED_STATUS_COMMAND)
+    status, field_1c = reader.read_uint8(), reader.read_uint32_le()
+    names = tuple(reader.read_string() for _ in range(reader.read_uint32_le()))
+    _finish_server(reader, "IgnoredStatus")
+    return status, field_1c, names
+
 
 def _client_reader(
     payload: bytes, command_id: int, bit_length: int | None = None
@@ -433,11 +920,23 @@ class GroupStatus:
     owner_character_id: int
     # Retail fills this slot with the receiving character id.
     server_tick: int
-    listed: bool
+    # GroupStatusCommand +0x28.  The handler (0x140279828) copies it to
+    # ClientSocialManager +0x168, the receiver's leader-rights flag that
+    # EditGroup, GroupKickPlayer and AcceptGroupJoinRequest check before
+    # answering ``leaderRightsRequired``/``playerNotLeader`` locally.
+    leader_rights: bool
     members: tuple[PlayerSummary, ...]
     name: str
+    # +0x58 is copied to the manager's hidden-group flag (+0x1fc), the same
+    # field GroupEditResponse's bool updates.
     private: bool
     description: str
+
+    @property
+    def listed(self) -> bool:
+        """Compatibility alias for the leader-rights slot's earlier name."""
+
+        return self.leader_rights
 
 
 def encode_group_status(value: GroupStatus) -> tuple[bytes, int]:
@@ -448,7 +947,7 @@ def encode_group_status(value: GroupStatus) -> tuple[bytes, int]:
     writer.write_uint32_le(value.group_id)
     writer.write_uint32_le(value.owner_character_id)
     writer.write_uint32_le(value.server_tick)
-    writer.write_bool(value.listed)
+    writer.write_bool(value.leader_rights)
     writer.write_uint32_le(len(value.members))
     for member in value.members:
         _write_player_summary(writer, member)
@@ -734,6 +1233,7 @@ class GuildStatus:
     field_68: int
     field_6c: int
     members: tuple[GuildMember, ...]
+    ignored_names: tuple[str, ...] = ()
 
 
 def encode_guild_status(value: GuildStatus) -> tuple[bytes, int]:
@@ -775,7 +1275,9 @@ def encode_guild_status(value: GuildStatus) -> tuple[bytes, int]:
     writer.write_bytes(IGNORED_STATUS_COMMAND.to_bytes(2, "little"))
     writer.write_uint8(0)
     writer.write_uint32_le(value.server_tick)
-    writer.write_uint32_le(0)
+    writer.write_uint32_le(len(value.ignored_names))
+    for name in value.ignored_names:
+        writer.write_string(name)
     writer.write_uint8(0xFF)
     return writer.finish()
 
@@ -824,8 +1326,7 @@ def decode_guild_status(payload: bytes, bit_length: int) -> GuildStatus:
         raise ValueError("local IgnoredStatus has an invalid status")
     if reader.read_uint32_le() != server_tick:
         raise ValueError("GuildStatus/IgnoredStatus ticks do not match")
-    if reader.read_uint32_le() != 0:
-        raise ValueError("non-empty IgnoredStatus is not modeled")
+    ignored_names = tuple(reader.read_string() for _ in range(reader.read_uint32_le()))
     if reader.read_uint8() != 0xFF or reader.remaining:
         raise ValueError("GuildStatus compound response has trailing data")
     return GuildStatus(
@@ -837,6 +1338,7 @@ def decode_guild_status(payload: bytes, bit_length: int) -> GuildStatus:
         field_68,
         field_6c,
         tuple(members),
+        ignored_names,
     )
 
 

@@ -47,6 +47,7 @@ CHAPTER_PROGRESS_COMMAND = command_id("Commands::ChapterProgressCommand", 0x0093
 TALK_COMMAND = command_id("Commands::TalkCommand", 0x0067)
 DELIVER_COMMAND = command_id("Commands::DeliverCommand", 0x0068)
 PAY_COMMAND = command_id("Commands::PayCommand", 0x0069)
+DEFEND_COMMAND = command_id("Commands::DefendCommand", 0x006A)
 ENCOUNTER_COMMAND = command_id("Commands::EncounterCommand", 0x0066)
 
 # QuestCommand.operation (three client senders, docs §2)
@@ -78,6 +79,8 @@ NPC_TASK_TARGET = 1
 NPC_TALK_DIALOG = 2
 NPC_DELIVERY_DIALOG = 3
 NPC_PAY_DIALOG = 4
+# Current client NpcInteractionInfo branch 0x1404af866 selects HoldGround.
+NPC_DEFEND_DIALOG = 5
 # World/main-story indication; other quest types use QuestDefinition.quest_type_id.
 # Kept as a compatibility constant for captured tutorial records.
 QUEST_INDICATION = 6
@@ -108,6 +111,12 @@ class Deliver:
 class Pay:
     npc_actor_id: int
     pay_id: str
+
+
+@dataclass(frozen=True)
+class Defend:
+    npc_actor_id: int
+    holdground_id: str
 
 
 @dataclass(frozen=True)
@@ -265,6 +274,24 @@ def encode_pay(value: Pay) -> tuple[bytes, int]:
     writer.write_bytes(PAY_COMMAND.to_bytes(2, "little"))
     writer.write_uint32_le(value.npc_actor_id)
     writer.write_string(value.pay_id)
+    return writer.finish()
+
+
+def decode_defend(payload: bytes, bit_length: int | None = None) -> Defend:
+    # Current client vtable 0x14117a510, serializer 0x140980100:
+    # selected NPC actor u32, followed by the ordinary u16-length string.
+    reader = _client_reader(payload, DEFEND_COMMAND, bit_length)
+    value = Defend(reader.read_uint32_le(), reader.read_string())
+    _finish(reader, "DefendCommand")
+    return value
+
+
+def encode_defend(value: Defend) -> tuple[bytes, int]:
+    writer = BitWriter()
+    writer.write_uint8(CLIENT_MESSAGE_ID)
+    writer.write_bytes(DEFEND_COMMAND.to_bytes(2, "little"))
+    writer.write_uint32_le(value.npc_actor_id)
+    writer.write_string(value.holdground_id)
     return writer.finish()
 
 
@@ -484,6 +511,11 @@ __all__ = [
     "NPC_DELIVERY_DIALOG",
     "NPC_PAY_DIALOG",
     "PAY_COMMAND",
+    "DEFEND_COMMAND",
+    "NPC_DEFEND_DIALOG",
+    "Defend",
+    "decode_defend",
+    "encode_defend",
     "Deliver",
     "Pay",
     "decode_pay",

@@ -332,8 +332,15 @@ def clone_item_info(item: ItemInfo) -> ItemInfo:
     return clone
 
 
-def clone_inventory_info(info: InventoryInfo) -> InventoryInfo:
+def clone_inventory_info(
+    info: InventoryInfo, items: Iterable[ItemInfo] | None = None,
+) -> InventoryInfo:
     """Return an independent ``InventoryInfo`` snapshot.
+
+    ``items`` replaces the cloned item list, for the delta/final
+    ``InventoryInfo`` views that carry only the changed items (or none):
+    copying every owned item just to discard the list cost a vendor purchase
+    two full deepcopies.
 
     ``copy.deepcopy`` of a fully-equipped level-100 inventory measured 6.5 ms
     at p50 (251 items) and was executed while holding the owner's session
@@ -348,7 +355,10 @@ def clone_inventory_info(info: InventoryInfo) -> InventoryInfo:
     """
 
     clone = copy.copy(info)
-    clone.items = [clone_item_info(item) for item in info.items]
+    clone.items = [
+        clone_item_info(item)
+        for item in (info.items if items is None else items)
+    ]
     # Values are tuples, so the mapping itself is the only mutable level.
     clone.equipment_slots = dict(info.equipment_slots)
     clone.storage_58 = dict(info.storage_58)
@@ -987,23 +997,6 @@ def encode_bootstrap_inventory_info(
             )
         )
         trinket_allocations[item_id] = (13 + index,)
-    for index in range(5, 7):
-        item_id = BOOTSTRAP_STARTER_RUNE_ID_START + index
-        starter_trinkets.append(
-            ItemInfo(
-                item_id=item_id,
-                template_id="all_base_trinket_rune_01",
-                socket_count=5,
-                socketed_templates=["", "", "", "", ""],
-                item_level=1,
-                field_08=0,
-                field_18=0x2100 + index,
-                field_30=1,
-                field_38=0,
-                created_at=created_at,
-            )
-        )
-        trinket_allocations[item_id] = (13 + index,)
     for index in range(3):
         item_id = BOOTSTRAP_STARTER_JEWEL_ID_START + index
         starter_trinkets.append(
@@ -1116,10 +1109,8 @@ def encode_bootstrap_inventory_info(
     equipment_slots = {**core_allocations, **trinket_allocations}
     equipment_slots[ring_death.item_id] = (8,)
     equipment_slots[ring_life.item_id] = (9,)
-    # All seven RuneTrinket equipment slots are populated. RuneTrinket and
-    # JewelTrinket items each keep their normal five gem sockets.
-    # The client's equipment table exposes seven RuneTrinket slots and three
-    # JewelTrinket slots, all populated here.
+    # Five rune and three jewel trinkets are available initially. Divination
+    # Stones earn the two additional rune slots; each base item has five sockets.
     return encode_inventory_info(
         InventoryInfo(
             items=core_items + starter_trinkets + [

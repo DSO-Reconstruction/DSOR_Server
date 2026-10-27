@@ -279,7 +279,9 @@ def _read_message_argument(reader: BitReader) -> MessageArgument:
     """
 
     kind = reader.read_uint8()
-    if kind in (1, 4):
+    # Kind 3 is an actor id (MessageParam reader 0x140a97a2c): a uint32 like
+    # kinds 1 and 4, resolved by the client against its actor/PvP roster.
+    if kind in (1, 3, 4):
         return MessageArgument(kind, reader.read_uint32_le())
     if kind == 2:
         return MessageArgument(kind, string_value=reader.read_string())
@@ -291,7 +293,7 @@ def _write_message_argument(
 ) -> None:
     kind = int(argument.kind)
     writer.write_uint8(kind)
-    if kind in (1, 4):
+    if kind in (1, 3, 4):
         writer.write_uint32_le(int(argument.uint32_value))
         return
     if kind == 2:

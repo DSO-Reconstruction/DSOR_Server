@@ -190,19 +190,38 @@ class PlayerRespawnService:
         # runtime records so an old stun/DoT cannot survive the new life.
         runtime = getattr(s, "gameplay_runtime_status_effects", {})
         victims = getattr(s, "gameplay_victim_status_effect_instances", {})
-        if not runtime and not victims:
+        persistent = getattr(s, "gameplay_persistent_status_effects", {})
+        if not runtime and not victims and not persistent:
             return
         database_path = getattr(
             getattr(s.gameplay_combat_state, "encounter", None),
             "static_database_path", DEFAULT_STATIC_DB_PATH,
         )
         removed_ids = _effects_removed_on_death(str(database_path))
+        from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+        effect_groups = load_status_runtime_catalog(database_path).groups
         timers = []
         changed = False
+        removed_quest_reward = False
         with s.flow_lock:
+            for instance_id, entry in tuple(persistent.items()):
+                if (entry.effect_id not in removed_ids
+                        or "questreward" not in effect_groups.get(entry.effect_id, ())):
+                    continue
+                persistent.pop(instance_id, None)
+                s.gameplay_timed_status_effect_expiries.pop(instance_id, None)
+                for prefix in ("consumable-expire", "consumable-health-tick", "consumable-xp-tick"):
+                    timer = s.gameplay_projectile_timers.pop((prefix, instance_id), None)
+                    if timer is not None:
+                        timers.append(timer)
+                changed = removed_quest_reward = True
             for instance_id, (entry, _expiry) in tuple(runtime.items()):
                 if int(entry.effect_id) in removed_ids:
                     runtime.pop(instance_id, None)
+                    getattr(s, "gameplay_item_set_programs", {}).pop(instance_id, None)
+                    program_timer = s.gameplay_projectile_timers.pop(("item-set-program-expire", int(instance_id)), None)
+                    if program_timer is not None:
+                        timers.append(program_timer)
                     changed = True
                     timer = s.gameplay_projectile_timers.pop(
                         ("player-status-tick", int(instance_id)), None
@@ -215,12 +234,16 @@ class PlayerRespawnService:
                     changed = True
         for timer in timers:
             timer.cancel()
+        if removed_quest_reward:
+            CharacterService._request_account_save(s, "quest status rewards", flush=True)
         if changed:
             CharacterService._refresh_player_combat_vitals(s)
 
     @staticmethod
-    def _notify_player_death(s: Session) -> None:
+    def _notify_player_death(s: Session, *, expected_generation=None) -> None:
         with s.flow_lock:
+            if expected_generation is not None and expected_generation != s.gameplay_chase_generation:
+                return
             if getattr(s, "gameplay_death_pending", False):
                 return
             s.gameplay_death_pending = True
@@ -290,6 +313,13 @@ class PlayerRespawnService:
             allowed = respawn_map_allowed(str(self.static_database_path), str(s.gameplay_map))
         except (ValueError, OSError, sqlite3.Error) as exc:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected RespawnCommand: {exc}")
+            return
+        if (getattr(s, "gameplay_match", None) is not None
+                and getattr(s, "gameplay_match_callback", None) is not None):
+            # The PvP death dialog's Respawn button sends this command too
+            # (PVPDeathDialog 0x140302b14). Battleground deaths are resolved
+            # by the match, never by the open-world respawn options.
+            s.gameplay_match_callback(s, ("match_respawn_request", request))
             return
         with s.flow_lock:
             combat = s.gameplay_combat_state

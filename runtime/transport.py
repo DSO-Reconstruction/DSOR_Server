@@ -555,6 +555,21 @@ class Session:
         self._message_context.bit_length = value
 
     @property
+    def current_message_received_at(self):
+        """``perf_counter`` time the executing queued command arrived.
+
+        Cast cadence is judged against arrival, not against when a shared
+        ingress worker reached the command: queueing behind other work is
+        not the client casting early. ``None`` for inline dispatch.
+        """
+
+        return getattr(self._message_context, "received_at", None)
+
+    @current_message_received_at.setter
+    def current_message_received_at(self, value) -> None:
+        self._message_context.received_at = value
+
+    @property
     def gameplay_map(self):
         return self._gameplay_map
 
@@ -774,6 +789,8 @@ class Session:
         # position.
         self.gameplay_delivered_monster_positions = {}
         self.gameplay_no_target_cast_streak = 0
+        # Authoritative per-player cast deadlines, restored across map loads.
+        self.gameplay_player_skill_timing = None
         self.gameplay_last_monster_resync_at = 0.0
         self.gameplay_last_tier_spender_shuffle_at = 0.0
         self.gameplay_last_tier_spender_shuffle_backpressure_log_at = 0.0
@@ -799,6 +816,7 @@ class Session:
         self.gameplay_mount_generation = 0
         self.gameplay_stickerbook_entries = {}
         self.gameplay_recipe_book_resources = ()
+        self.gameplay_rune_trinket_unlocked_slots = set()
         self.gameplay_active_costume = ""
         self.gameplay_active_pet = ""
         self.gameplay_active_mercenary = ""

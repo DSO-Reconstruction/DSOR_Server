@@ -15,6 +15,51 @@ from dso_server.persistence.character_roster import load_character_roster
 class LifecycleService:
     """Connection lifecycle, route arming, and map bootstrap."""
 
+    def start(self):
+        super().start()
+        threading.Thread(
+            target=self._warm_static_catalogs,
+            name=f"{self.service_name}-catalog-warmup", daemon=True,
+        ).start()
+
+    def _warm_static_catalogs(self) -> None:
+        """Build the large lazily-loaded catalogs before the first map entry.
+
+        Map initialization holds the session's mutation gate. On the first
+        entry after a start it also parsed quests.xml and the signal and
+        consumable tables (~1.9 s cold), and the client's queued commands
+        meanwhile tripped the ingress stall warning. Composed test servers
+        never call start(), so they keep loading lazily.
+        """
+
+        from dso_server.gameplay.map_event_state import load_map_signal_catalog
+        from dso_server.gameplay.map_unlocks import map_unlock_catalog
+        from dso_server.gameplay.skin_collection import load_skin_catalog
+        from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+        from dso_server.protocol.consumable_protocol import load_consumable_catalog
+
+        started = time.perf_counter()
+        warmed = []
+        path = self.static_database_path
+        for label, load in (
+            ("quests", self._quest_catalog),
+            ("map signals", lambda: load_map_signal_catalog(path)),
+            ("consumables", lambda: load_consumable_catalog(path)),
+            ("map unlocks", lambda: map_unlock_catalog(str(path))),
+            ("events", self._event_catalog),
+            ("skins", lambda: load_skin_catalog(path)),
+            ("status runtime", lambda: load_status_runtime_catalog(path)),
+        ):
+            try:
+                load()
+            except Exception as exc:
+                print(f"[{self.service_name}] catalog warm-up skipped {label}: "
+                      f"{type(exc).__name__}: {exc}")
+            else:
+                warmed.append(label)
+        print(f"[{self.service_name}] warmed {', '.join(warmed)} catalogs in "
+              f"{time.perf_counter() - started:.2f}s")
+
     def __init__(
             self, host: str, port: int = 2192, gameplay_router=None,
             static_database=None,

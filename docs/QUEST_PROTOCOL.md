@@ -139,6 +139,7 @@ rejects values above 4):
 | `1` | last task finished: quest ready to turn in | `0000-00-00 00:00:00` |
 | `2` | right after `QuestCommand(1)`: quest closed | completion time, `YYYY-MM-DD HH:MM:SS` UTC |
 | `3` | server cancellation: remove the quest and its guidance | `0000-00-00 00:00:00` |
+| `4` | authored failure; offer again and reset progress on fresh acceptance | `0000-00-00 00:00:00` |
 
 Retail's sequences, from the capture:
 
@@ -274,14 +275,11 @@ Implemented on 2026-09-09 (retail flow of §1 to §8 replayed in
 
 Ground quest `<Drop inventory="false">` items now use personal world loot and
 credit only their owning quest on successful pickup; see [QUEST_DROPS.md](QUEST_DROPS.md).
-Known simplifications: direct-inventory quest drops retain immediate collection
-credit without a physical item grant; `pay`,
-`crafting` and `holdground` events are not fed (`battle` and `victory` are fed
-by `services/battleground.py` when a match finishes, with its battleground id);
-`<Spawn>`/`<Config>` are not executed; `statuseffect`
-rewards are logged, not granted; monster indications are sent on request
-and on each change rather than every 30 ticks; quests with a giver ignore
-their `startSignal` (only giver-less quests self-start).
+The earlier inventory/drop, pay, spawn, defense, and status-reward gaps have
+subsequent implementations described below. Defense configurations still need
+valid exported maps, placements, and templates. Monster indications are sent
+on request and on each change rather than every 30 ticks; quests with a giver
+ignore their `startSignal` (only giver-less quests self-start).
 
 ### Quest categories and inventory delivery (2026-09-09)
 
@@ -515,3 +513,40 @@ validated and rejected transfers, logout, stale saves, multi-map handoff, repeat
 instances, late joiners, clear-region lists, shared and non-player final kills,
 tracker recovery and dynamic XP. Live client validation
 is still required for the new cancellation/completion flow.
+
+### Defense encounters and status rewards (2026-10-26)
+
+Current `dro_client64.exe` confirms NPC interaction kind **5** selects a
+HoldGround (`0x1404af866`). Its source is the full authored binding id and its
+target is the quest id. `DefendCommand` uses the normal command header followed
+by `u32 npc_actor_id` and a u16-length UTF-8 `holdground_id` string (vtable
+`0x14117a510`, serializer `0x140980100`, sender `0x140176284`). The server checks
+quest/task guards, map, active NPC identity, and an eight-metre interaction range.
+
+`<HoldGround>` retains its NPC, guards, and difficulty configs. An empty
+difficulty is native wildcard -1 (`0x1409edf9c`), represented by `None` in the
+Python model; exact tiers take precedence. `_Template_HoldGround` supplies the
+defender and up to nine timed waves. Each wave token binds a map position marker
+to a monster template; repeated tokens produce distinct enemies. Intermediate
+empty waves preserve authored delays. Final success requires the last delay
+and every owned wave enemy to be defeated while the defender remains alive.
+
+Native `<Failure/>` marks the quest failed, state **4** (`0x1409eceec`;
+acceptance/reset at `0x1409e0604`). Reacceptance replaces the old counters/tokens.
+Runtime encounters are not saved as running fights: cancellation, disconnect,
+map replacement, and owner/defender death stop their actors and timers. Earned
+quest progress is saved, and stale callbacks cannot complete another attempt.
+Group credit uses eligible same-instance attempts captured at encounter start.
+
+The actual resolver supports 49/85 authored defense tasks (49/78 live tasks),
+with 48 supported for all declared map/config variants. Missing exported maps
+and broken authored references remain listed in the feature-gap audit. Supported
+world defenses wait for DefendCommand; only unavailable story setups retain
+the earlier automatic-success compatibility fallback.
+
+All 16 authored status-reward rows resolve seven native effects. The reward
+transaction stages quest closure with its XP, currency, items, and effects,
+saves before publication, and retains native exclusivity, clock, expiry, and
+KeepOnDeath behavior. Full bags or invalid content leave the quest finished
+and ready to retry. A transport failure does not skip accepted rewards, vitality
+changes, or achievement updates. Existing closed quests are not paid again.

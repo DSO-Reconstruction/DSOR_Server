@@ -581,6 +581,13 @@ class PlayerProjectileService:
                     s,
                     label="world-loot-spawn",
                 )
+        if (getattr(s, "gameplay_match", None) is not None
+                and getattr(s, "gameplay_match_callback", None) is not None):
+            # Battleground objectives score damage dealt to team structures.
+            s.gameplay_match_callback(s, ("match_monster_damage", tuple(
+                (int(item[0].target_actor_id), int(item[0].damage))
+                for item in dispatches
+            )))
         if killed_monsters:
             CharacterService._award_monster_kill_xp(
                 s,

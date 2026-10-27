@@ -456,6 +456,59 @@ def event_set_enabled(declarations: str, active_flags) -> bool:
     return (not required or bool(required & set(active_flags))) and not (forbidden & set(active_flags))
 
 
+def _parse_event_set_rows(
+    rows, map_id: str,
+) -> tuple[tuple[int, frozenset[str], frozenset[str]], ...]:
+    parsed = []
+    for row_id, declarations in rows:
+        pairs = _event_set_declarations(
+            effective_event_set_declarations(map_id, int(row_id), declarations)
+        )
+        parsed.append((
+            int(row_id),
+            frozenset(name for name, value in pairs if name and value == "true"),
+            frozenset(name for name, value in pairs if name and value != "true"),
+        ))
+    return tuple(parsed)
+
+
+@lru_cache(maxsize=512)
+def _cached_event_set_rows(
+    path: str, map_id: str,
+) -> tuple[tuple[int, frozenset[str], frozenset[str]], ...]:
+    """``(row, required, forbidden)`` for every ``_Instance_EventSets`` row.
+
+    Each map database carries the whole ~2,000-row EventSets table. One map
+    entry re-read and re-parsed it 20+ times under the session's mutation
+    gate (about 0.4 s warm, the bulk of an ingress stall). Cached per file
+    like the monster encounter cache: map data is swapped with the server
+    stopped.
+    """
+
+    database = _open_read_only(Path(path))
+    try:
+        return _parse_event_set_rows(
+            database.execute("SELECT Id, EventFlags FROM _Instance_EventSets"),
+            map_id,
+        )
+    finally:
+        database.close()
+
+
+def _event_set_rows_for(
+    database: sqlite3.Connection, map_id: str,
+) -> tuple[tuple[int, frozenset[str], frozenset[str]], ...]:
+    path = next((str(row[2]) for row in database.execute("PRAGMA database_list")
+                 if row[1] == "main"), "")
+    if not path:
+        # An in-memory database (tests) has no file identity to cache by.
+        return _parse_event_set_rows(
+            database.execute("SELECT Id, EventFlags FROM _Instance_EventSets"),
+            map_id,
+        )
+    return _cached_event_set_rows(path, map_id)
+
+
 def load_local_event_set_flags(
     static_database_path: str | Path,
     map_id: str,
@@ -463,18 +516,10 @@ def load_local_event_set_flags(
     """Map each ``_Instance_EventSets`` row to the flags that reveal it."""
 
     path = map_database_path(static_database_path, map_id)
-    database = _open_read_only(path)
-    try:
-        return {
-            int(row[0]): event_set_required_flags(
-                effective_event_set_declarations(map_id, int(row[0]), row[1])
-            )
-            for row in database.execute(
-                "SELECT Id, EventFlags FROM _Instance_EventSets"
-            )
-        }
-    finally:
-        database.close()
+    return {
+        row_id: required
+        for row_id, required, _forbidden in _cached_event_set_rows(str(path), map_id)
+    }
 
 
 def _enabled_event_set_ids(
@@ -483,20 +528,15 @@ def _enabled_event_set_ids(
     *,
     map_id: str | None = None,
 ) -> frozenset[int]:
-    active_flags = {
+    active_flags = frozenset(
         str(value).casefold() for value in active_event_flags
-    }
+    )
+    # Same rule as event_set_enabled: positive flags are alternatives,
+    # negative ones hide the row while their event runs.
     return frozenset(
-        int(row[0])
-        for row in database.execute(
-            "SELECT Id, EventFlags FROM _Instance_EventSets"
-        )
-        if event_set_enabled(
-            effective_event_set_declarations(
-                map_id or "", int(row[0]), row[1]
-            ),
-            active_flags,
-        )
+        row_id
+        for row_id, required, forbidden in _event_set_rows_for(database, map_id or "")
+        if (not required or required & active_flags) and not (forbidden & active_flags)
     )
 
 

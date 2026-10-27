@@ -18,6 +18,7 @@ from dso_server.gameplay.status_modifier_runtime import (
     resolve_modifier_value,
     snapshot_active_status_entries,
 )
+from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 
 
 @dataclass(frozen=True)
@@ -48,6 +49,7 @@ class StatusModifierRuntimeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.catalog = load_status_modifier_catalog(DEFAULT_STATIC_DB_PATH)
+        cls.effect_ids = load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids
 
     def test_parser_preserves_arguments_and_strips_debug_label(self):
         modifier = parse_modifier(
@@ -70,9 +72,9 @@ class StatusModifierRuntimeTests(unittest.TestCase):
         self.assertIsNone(resolve_modifier_value('$8', (1.0,)))
 
     def test_active_instant_buff_exposes_all_three_bonus_families(self):
-        # buff_reactivation_campaign_instant_01
         modifiers = evaluate_active_status_modifiers(
-            self.catalog, (_entry(5990),)
+            self.catalog,
+            (_entry(self.effect_ids['buff_reactivation_campaign_instant_01']),),
         )
         self.assertEqual(modifiers.xp_gain, ModifierAmounts(relative=1.0))
         self.assertEqual(
@@ -88,7 +90,7 @@ class StatusModifierRuntimeTests(unittest.TestCase):
     def test_xp_gain_stack_count_is_clamped_to_static_maximum(self):
         # e_qaizah_start_xpgain is +2.5% and has MaxStackSize 10.  A corrupt
         # or stale wire stack index must never amplify it beyond +25%.
-        effect = _entry(2335, stack_index=99)
+        effect = _entry(self.effect_ids['e_qaizah_start_xpgain'], stack_index=99)
         self.assertAlmostEqual(
             active_xp_gain_multiplier(DEFAULT_STATIC_DB_PATH, (effect,)),
             1.25,
@@ -117,8 +119,8 @@ class StatusModifierRuntimeTests(unittest.TestCase):
         # Reactivation doubles gold and Wisdom. The boss progress effect would
         # add 5%, but the event catalog has already applied it on this path.
         effects = (
-            _entry(5990),
-            _entry(2300, values=(0.05,)),
+            _entry(self.effect_ids['buff_reactivation_campaign_instant_01']),
+            _entry(self.effect_ids['buff_progressdrop_boss_bonus'], values=(0.05,)),
         )
         updated = apply_status_drop_amounts(
             DEFAULT_STATIC_DB_PATH,

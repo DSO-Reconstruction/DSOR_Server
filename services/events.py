@@ -589,6 +589,11 @@ class EventService:
         with s.flow_lock:
             s.gameplay_event_progress = progress
 
+        CharacterService._achievement_feed(
+            self, s, "eventprogresscollected", (advance.event.template.resource_id,),
+            progress=int(advance.progress["amount"]),
+        )
+
         changed = EventProgressChanged((
             int(advance.event.event_id),
             int(advance.progress["amount"]),

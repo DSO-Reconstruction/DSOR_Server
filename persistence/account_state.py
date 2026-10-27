@@ -31,9 +31,7 @@ from dso_server.protocol.membership_protocol import (
 )
 from dso_server.gameplay.achievement_content import (
     AchievementProgress,
-    complete_achievement,
     load_achievement_catalog,
-    refresh_derived_achievements,
 )
 from dso_server.protocol.talent_protocol import (
     ACTIVE_SKILL_TALENT_PRESELECTION,
@@ -209,6 +207,9 @@ class AccountState:
     active_costume: str = ""
     # EquipmentSlotType -> skin resource hidden by the client's transmog UI.
     hidden_equipment_skins: dict[int, str] = field(default_factory=dict)
+    # Skins collected from held equipment (gameplay/skin_collection.py);
+    # only grows, and counts the UnlockSkin achievements.
+    unlocked_skins: tuple[str, ...] = ()
     active_pet: str = ""
     active_mercenary: str = ""
     active_decorations: tuple[str, ...] = ()
@@ -220,6 +221,7 @@ class AccountState:
         default_factory=normalize_game_currency_balances
     )
     recipe_book_resources: tuple[str, ...] = ()
+    rune_trinket_unlocked_slots: tuple[int, ...] = ()
     talent_category_points: tuple[int, int, int, int] = ()
     # Skill presets 5..8 bought with Andermant (UnlockSkillTalentPreselection).
     unlocked_skill_presets: int = 0
@@ -232,6 +234,9 @@ class AccountState:
     # Wire ids are row numbers that a client-data update can shift; login
     # re-resolves these names (gameplay/status_runtime_catalog.py).
     status_effect_names: dict[int, str] = field(default_factory=dict)
+    # Player skill/category cooldowns and casting cadence use wall-clock
+    # deadlines in saves, so reconnecting cannot bypass a live cooldown.
+    player_skill_timing: dict[str, object] = field(default_factory=dict)
     # Version of the one-time starter-equipment repair. Once the initial
     # loadout has been reconciled, missing starter items are player changes
     # and must not be re-created on later logins.
@@ -660,6 +665,7 @@ def _state_to_document(state: AccountState) -> dict:
             str(instance_id): str(name)
             for instance_id, name in state.status_effect_names.items()
         },
+        "player_skill_timing": copy.deepcopy(state.player_skill_timing),
         "timed_status_effect_expiries": {
             str(instance_id): float(expires_at)
             for instance_id, expires_at
@@ -684,6 +690,9 @@ def _state_to_document(state: AccountState) -> dict:
             for slot, skin in state.hidden_equipment_skins.items()
             if str(skin)
         },
+        "unlocked_skins": sorted({
+            str(skin) for skin in state.unlocked_skins if str(skin)
+        }),
         "active_pet": str(state.active_pet),
         "active_mercenary": str(state.active_mercenary),
         "active_decorations": list(state.active_decorations),
@@ -715,6 +724,7 @@ def _state_to_document(state: AccountState) -> dict:
             "active": bool(state.membership_active),
         },
         "recipe_book_resources": list(state.recipe_book_resources),
+        "rune_trinket_unlocked_slots": list(state.rune_trinket_unlocked_slots),
         "talent_category_points": list(state.talent_category_points),
         "unlocked_skill_presets": int(state.unlocked_skill_presets),
         "saved_at": state.saved_at,
@@ -948,6 +958,9 @@ def _state_from_document(document: dict) -> AccountState:
             ).items()
             if str(skin)
         },
+        unlocked_skins=tuple(sorted({
+            str(skin) for skin in document.get("unlocked_skins", ()) if str(skin)
+        })),
         active_pet=str(document.get("active_pet", "")),
         active_mercenary=str(document.get("active_mercenary", "")),
         active_decorations=tuple(
@@ -974,6 +987,10 @@ def _state_from_document(document: dict) -> AccountState:
             for value in document.get("recipe_book_resources", ())
             if str(value)
         )),
+        rune_trinket_unlocked_slots=tuple(sorted({
+            int(value) for value in document.get("rune_trinket_unlocked_slots", ())
+            if int(value) in (18, 19)
+        })),
         talent_category_points=tuple(
             max(0, int(value))
             for value in document.get("talent_category_points", ())
@@ -988,6 +1005,7 @@ def _state_from_document(document: dict) -> AccountState:
                 "timed_status_effect_expiries", {}
             ).items()
         },
+        player_skill_timing=copy.deepcopy(document.get("player_skill_timing", {})),
     )
     if state.talent_category_points and len(state.talent_category_points) != 4:
         raise ValueError("persisted talent category points require four values")
@@ -1094,6 +1112,9 @@ class AccountStateStore:
     ) -> None:
         self.path = Path(path)
         self.lock = threading.RLock()
+        # Serialize read/evaluate/reward/save across characters on an account.
+        # Never acquire this from inside flow_lock or the general store lock.
+        self.achievement_lock = threading.RLock()
         self.states: dict[int, AccountState] = {}
         self.character_profiles: dict[int, CharacterProfile] = {}
         self.warnings: list[str] = []
@@ -1108,11 +1129,12 @@ class AccountStateStore:
         self._migrate_rune_trinket_equipment_slots(static_database_path)
         self.account_registry = None
         self.account_wallets = self._database.load_wallets()
+        self.account_achievements = self._database.load_account_achievements()
 
     def _migrate_rune_trinket_equipment_slots(
         self, static_database_path: str | Path
     ) -> None:
-        """Unlock RuneTrinket equipment slots six and seven for saved players.
+        """Restore base trinkets only for slots a saved player has unlocked.
 
         The client treats an occupied RuneTrinket equipment slot as unlocked.
         Add a blank base trinket to each missing slot so it can be replaced by
@@ -1174,27 +1196,16 @@ class AccountStateStore:
                 for key, value in state.achievements.items()
                 if isinstance(value, dict)
             }
-            for definition in unlock_achievements:
-                changed = complete_achievement(
-                    achievement_state, definition
-                ) or changed
-            if changed:
-                refresh_derived_achievements(
-                    achievement_catalog, achievement_state
-                )
-                state.achievements = {
-                    key: progress.to_document()
-                    for key, progress in achievement_state.items()
-                    if progress.progress or progress.completed
-                }
-
             occupied_slots = {
                 int(slot)
                 for slots in state.inventory.equipment_slots.values()
                 for slot in slots
             }
             missing_slots = [
-                slot for slot in (18, 19) if slot not in occupied_slots
+                slot for slot, definition in zip((18, 19), unlock_achievements)
+                if slot not in occupied_slots
+                and (slot in state.rune_trinket_unlocked_slots
+                     or achievement_state.get(definition.key, AchievementProgress()).completed)
             ]
             if not missing_slots:
                 if changed:
@@ -1250,8 +1261,8 @@ class AccountStateStore:
         if migrated:
             self._database.flush()
             print(
-                "[PlayerDatabase] completed both RuneTrinket slot-unlock "
-                f"achievements for {len(migrated)} saved character(s)"
+                "[PlayerDatabase] restored unlocked RuneTrinket slots "
+                f"for {len(migrated)} saved character(s)"
             )
 
     def _load_database_documents(
@@ -1333,6 +1344,37 @@ class AccountStateStore:
                 result.currency = self.currency_for_character(character_id, result.currency)
             return result
 
+    def achievement_snapshot(self, character_id: int, catalog) -> dict[str, dict]:
+        """Shared progress, migrating old character copies without adding them.
+
+        Copies historically repeated the same accomplishments on relog. Take
+        their high-water value once; subsequent events use the shared document.
+        The first achievement save persists this migration with its character.
+        """
+        with self.lock:
+            ownership = (self.account_registry.wallet_owner(int(character_id))
+                         if self.account_registry is not None else None)
+            if ownership is None:
+                return {}
+            owner, character_ids = ownership
+            if owner in self.account_achievements:
+                return copy.deepcopy(self.account_achievements[owner])
+            merged = {}
+            for identity in character_ids:
+                state = self.states.get(identity)
+                for key, document in (state.achievements.items() if state else ()):
+                    definition = catalog.achievement(key)
+                    if definition is None or not definition.account_wide:
+                        continue
+                    candidate = AchievementProgress.from_document(document)
+                    previous = merged.get(definition.key)
+                    if previous is None or (candidate.completed, candidate.progress) > (
+                            previous.completed, previous.progress):
+                        merged[definition.key] = candidate
+                    elif candidate.reward_status == "granted":
+                        previous.reward_status = "granted"
+            return {key: progress.to_document() for key, progress in merged.items()}
+
     def saved_at_for_character(self, character_id: int) -> str:
         """Read only a character's activity timestamp without copying its state."""
         with self.lock:
@@ -1385,6 +1427,7 @@ class AccountStateStore:
     def put(
         self, state: AccountState, *, flush: bool = False,
         profile: CharacterProfile | None = None,
+        achievement_catalog=None,
     ) -> None:
         saved = copy.deepcopy(state)
         saved_profile = (
@@ -1401,17 +1444,35 @@ class AccountStateStore:
                 # its durable commit. Never replace that reward/receipt with an
                 # older session snapshot; initialization installs the new IDs.
                 return
+            if current is not None and any(
+                document.get("reward_status") == "granted"
+                and saved.achievements.get(key, {}).get("reward_status") != "granted"
+                for key, document in current.achievements.items()
+            ):
+                # A capture taken before reward delivery cannot erase the item
+                # or its receipt after the achievement transaction commits.
+                return
             saved.currency = self.commit_currency(saved.character_id, saved.currency)
             self.states[int(saved.character_id)] = saved
             owner = self._wallet_owner(saved.character_id)
             wallet = (owner, self.account_wallets[owner]) if owner is not None else None
+            achievements = None
+            if owner is not None and achievement_catalog is not None:
+                document = {
+                    key: copy.deepcopy(value) for key, value in saved.achievements.items()
+                    if (definition := achievement_catalog.achievement(key)) is not None
+                    and definition.account_wide
+                }
+                self.account_achievements[owner] = document
+                achievements = (owner, document)
             if saved_profile is not None:
                 saved_profile = replace(
                     saved_profile, premium_currency=saved.currency.andermant
                 )
                 self.character_profiles[saved.character_id] = saved_profile
             self._database.queue_state(
-                saved.character_id, saved, wallet=wallet, profile=saved_profile
+                saved.character_id, saved, wallet=wallet, profile=saved_profile,
+                achievements=achievements,
             )
         if flush:
             self.flush()

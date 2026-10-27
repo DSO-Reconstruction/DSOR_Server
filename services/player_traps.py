@@ -180,6 +180,9 @@ class PlayerTrapService:
             if not expired:
                 tripped = any(
                     actor_id not in combat.returning_home_actor_ids
+                    # An arena team's own structures do not spring its traps.
+                    and combat.monster_hostile_to_player(
+                        actor_id, trap.owner_actor_id)
                     and math.dist(
                         trap.position, combat.monster_positions[actor_id]
                     )

@@ -197,6 +197,14 @@ class SocketStatusDefinition:
     aura_shape: str = ""
     stop_effect_ids: tuple[int, ...] = ()
     modifier_kinds: frozenset[str] = frozenset()
+    # Item-set program markers read by _send_player_skill_status_effects.
+    # Socket procs are never set programs; without these fields every timed
+    # socket proc raised AttributeError there and failed the monster tick.
+    persistent: bool = False
+    item_set_program: bool = False
+    item_set_target: str = "user"
+    item_set_parent_effect_id: int | None = None
+    item_set_ancestry: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -3,15 +3,19 @@
 from threading import RLock
 from types import SimpleNamespace
 from unittest.mock import Mock
+import sqlite3
 import time
 
+from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
 from dso_server.services.character_server import CharacterServer
 from dso_server.services.player_resources import _resource_bound_effect_ids
 
-TRANSFORM = 5037  # skill_irondwarf_transform (static.db4 row - 1)
-OTHER = 4698      # dwarf_tesla_graphics
+_EFFECT_IDS = load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids
+TRANSFORM = _EFFECT_IDS['skill_irondwarf_transform']
+OTHER = _EFFECT_IDS['dwarf_tesla_graphics']
+CNY_TRANSFORM = _EFFECT_IDS['set_cny2026_dwarf_iron_trans']
 
 
 def _entry(effect_id, instance):
@@ -31,7 +35,7 @@ def _session():
 
 
 def test_only_the_transformations_end_with_the_steam():
-    assert {TRANSFORM, 6036} <= _resource_bound_effect_ids(str(DEFAULT_STATIC_DB_PATH))
+    assert {TRANSFORM, CNY_TRANSFORM} <= _resource_bound_effect_ids(str(DEFAULT_STATIC_DB_PATH))
     assert OTHER not in _resource_bound_effect_ids(str(DEFAULT_STATIC_DB_PATH))
 
 
@@ -53,5 +57,11 @@ def test_iron_dwarf_end_cleanses_the_casters_own_transformation():
     s.gameplay_character = SimpleNamespace(character_id=200000001)
     s.gameplay_remote_actor_id = 0x103C1
     s.gameplay_victim_status_effect_instances = {}
-    CharacterServer._cleanse_player_skill_debuffs(s, combat, skill_index=1899, modifier_sources=())
+    with sqlite3.connect(f'file:{DEFAULT_STATIC_DB_PATH.as_posix()}?mode=ro', uri=True) as database:
+        skill_index = database.execute(
+            'SELECT rowid - 1 FROM _Template_Skill WHERE Id = ?', ('IronDwarfEnd',)
+        ).fetchone()[0]
+    CharacterServer._cleanse_player_skill_debuffs(
+        s, combat, skill_index=skill_index, modifier_sources=()
+    )
     assert set(s.gameplay_runtime_status_effects) == {8}

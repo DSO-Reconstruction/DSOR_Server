@@ -40,6 +40,8 @@ from dso_server.gameplay.local_combat_state import (
     MONSTER_RETURN_HOME_EFFECT_ID,
     MONSTER_RETURN_HOME_TIMEOUT_SECONDS,
     MonsterMovement,
+    PLAYER_PROJECTILE_COLLISION_RADIUS,
+    PLAYER_PROJECTILE_HITBOX_TOLERANCE,
     PLAYER_SUMMON_OWNER_RANGE,
     LocalCombatState,
     VictimStatusEffectDefinition,
@@ -2584,7 +2586,13 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         origin = (0.0, monster.position[1], 0.0)
         direction = (1.0, 0.0, 0.0, 0.0)
-        collision_radius = monster.collision_radius + 0.25
+        # Acquisition and impact share the client's sweep reach plus the
+        # configured tolerance; movement compensation stops after one
+        # publication interval once the lag window has passed.
+        collision_radius = self.state._player_projectile_contact_radius(
+            self.state._monster_bullet_shape_radius(monster), 0.25, 0.0,
+            geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier),
+        )
         current = (5.0, monster.position[1], collision_radius + 0.10)
         self.state.monster_positions[actor_id] = current
         self.state.monster_last_published_positions[actor_id] = current
@@ -2627,6 +2635,11 @@ class LocalCombatStateTests(unittest.TestCase):
         self.state.monster_last_published_positions[actor_id] = (
             5.0, monster.position[1], 0.0
         )
+        # Published before the lag-compensation window: no viewer still
+        # draws the monster there.
+        trail = self.state.monster_last_published_positions.trails[actor_id]
+        for index, (stamp, position) in enumerate(trail):
+            trail[index] = (stamp - 10.0, position)
         self.assertEqual(
             self.state._skill_targets(
                 origin,

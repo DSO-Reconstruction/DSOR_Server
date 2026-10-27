@@ -68,9 +68,21 @@ class EmoteTests(unittest.TestCase):
         self.unlock(item)
         self.assertNotIn(item.item_id, [i.item_id for i in self.source.gameplay_inventory.items])
         self.assertIn("emote_handkiss_01", self.source.gameplay_stickerbook_entries)
-        data, bits, _ = self.source.recorder.messages[-1]
+        # The unlock batch is followed by the stickerbook achievement record
+        # (first owned emote completes stickerbook_first_emotes_01).
+        labels = [label for _data, _bits, label in self.source.recorder.messages]
+        index = next(i for i, label in enumerate(labels)
+                     if label.startswith("stickerbook-unlock"))
+        data, bits, _ = self.source.recorder.messages[index]
         commands = decode_server_command_batch(data, bits)
         self.assertEqual(commands[-1].value.entry.resource_id, "emote_handkiss_01")
+        achievements = [
+            command.value.achievements[0].resource_id
+            for data, bits, _label in self.source.recorder.messages[index + 1:]
+            for command in decode_server_command_batch(data, bits)
+            if hasattr(command.value, "achievements")
+        ]
+        self.assertIn("stickerbook_first_emotes_01", achievements)
         self.assertTrue(self.persist.call_args.kwargs["flush"])
         self.assertEqual(load_sticker_definition(
             DEFAULT_STATIC_DB_PATH, "emote_handkiss_01").kind, "emote")

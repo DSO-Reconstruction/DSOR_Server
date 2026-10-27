@@ -23,6 +23,7 @@ class EntityPlanningTests(unittest.TestCase):
             impact_radius=0.0, location_status_effects=(), location_visual_effects=(),
             bullet_death_effects=(), start_offset=(0.0, 0.0, 0.0, 0.0),
             bullet_emit_delay=0.2, projectile_velocity=10.0,
+            scale_skill_timing=True,
         )
         self.entities = (CombatEntity(101, (0.0, 0.0, 3.0), 0.5),
                          CombatEntity(202, (0.0, 0.0, 6.0), 0.5),

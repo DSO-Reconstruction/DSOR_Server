@@ -312,7 +312,9 @@ class ItemSetDatabase:
                 continue
             seen_signatures.add(signature)
             equipped_count = sum(
-                part in equipped for part in definition.parts
+                any(alternative.strip() in equipped
+                    for alternative in part.split("|"))
+                for part in definition.parts
             )
             if equipped_count <= 0:
                 continue

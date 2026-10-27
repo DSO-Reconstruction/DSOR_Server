@@ -41,6 +41,7 @@ class AsyncPlayerDatabase:
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._pending_wallets: dict[int, int] = {}
+        self._pending_achievements: dict[int, dict] = {}
         self._pending_states: dict[int, Any] = {}
         self._pending_profiles: dict[int, Any] = {}
         self._pending_deletes: set[int] = set()
@@ -76,6 +77,10 @@ class AsyncPlayerDatabase:
             CREATE TABLE IF NOT EXISTS account_wallets (
                 account_id INTEGER PRIMARY KEY,
                 andermant INTEGER NOT NULL CHECK(andermant >= 0)
+            );
+            CREATE TABLE IF NOT EXISTS account_achievements (
+                account_id INTEGER PRIMARY KEY,
+                progress_json TEXT NOT NULL
             );
             CREATE TABLE IF NOT EXISTS character_profiles (
                 character_id INTEGER PRIMARY KEY,
@@ -172,6 +177,15 @@ class AsyncPlayerDatabase:
         with closing(self._connect()) as connection:
             return dict(connection.execute("SELECT account_id, andermant FROM account_wallets"))
 
+    def load_account_achievements(self) -> dict[int, dict]:
+        with closing(self._connect()) as connection:
+            return {
+                int(account_id): json.loads(payload)
+                for account_id, payload in connection.execute(
+                    "SELECT account_id, progress_json FROM account_achievements"
+                )
+            }
+
     def queue_wallet(self, account_id: int, amount: int) -> None:
         with self._condition:
             self._pending_wallets[int(account_id)] = int(amount)
@@ -180,7 +194,8 @@ class AsyncPlayerDatabase:
             self._wake_event.set()
 
     def queue_state(
-        self, character_id: int, state: Any, *, wallet=None, profile=None
+        self, character_id: int, state: Any, *, wallet=None, profile=None,
+        achievements=None,
     ) -> None:
         """Queue one character snapshot and its matching profile atomically."""
         with self._condition:
@@ -190,6 +205,8 @@ class AsyncPlayerDatabase:
                 self._pending_profiles[character_id] = profile
             if wallet is not None:
                 self._pending_wallets[int(wallet[0])] = int(wallet[1])
+            if achievements is not None:
+                self._pending_achievements[int(achievements[0])] = achievements[1]
             self._pending_deletes.discard(character_id)
             self._queued_revision += 1
             self._ensure_writer_locked()
@@ -370,6 +387,7 @@ class AsyncPlayerDatabase:
                 if (
                     self._stop_event.is_set()
                     and not self._pending_wallets
+                    and not self._pending_achievements
                     and not self._pending_states
                     and not self._pending_profiles
                     and not self._pending_deletes
@@ -377,6 +395,8 @@ class AsyncPlayerDatabase:
                     return
                 wallets = self._pending_wallets
                 self._pending_wallets = {}
+                achievements = self._pending_achievements
+                self._pending_achievements = {}
                 states = self._pending_states
                 profiles = self._pending_profiles
                 deletes = tuple(self._pending_deletes)
@@ -408,6 +428,12 @@ class AsyncPlayerDatabase:
                         "ON CONFLICT(account_id) DO UPDATE SET andermant=excluded.andermant",
                         wallets.items(),
                     )
+                    connection.executemany(
+                        "INSERT INTO account_achievements(account_id, progress_json) VALUES (?, ?) "
+                        "ON CONFLICT(account_id) DO UPDATE SET progress_json=excluded.progress_json",
+                        ((owner, json.dumps(document, separators=(",", ":"), sort_keys=True))
+                         for owner, document in achievements.items()),
+                    )
                     connection.commit()
             except Exception as exc:
                 try:
@@ -418,6 +444,8 @@ class AsyncPlayerDatabase:
                     # A newer snapshot always wins over the failed one.
                     for key, value in wallets.items():
                         self._pending_wallets.setdefault(key, value)
+                    for key, value in achievements.items():
+                        self._pending_achievements.setdefault(key, value)
                     for key, value in states.items():
                         self._pending_states.setdefault(key, value)
                     for key, value in profiles.items():
@@ -441,6 +469,7 @@ class AsyncPlayerDatabase:
                 self._condition.notify_all()
                 if (
                     self._pending_wallets
+                    or self._pending_achievements
                     or self._pending_states
                     or self._pending_profiles
                     or self._pending_deletes

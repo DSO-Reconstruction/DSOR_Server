@@ -1472,6 +1472,8 @@ class MapEventService:
                     floor, int(purchases.get("endless-tower-cleared-floor", 0)),
                 )
             CharacterService._request_account_save(viewer, "Fractured Planes floor cleared")
+            CharacterService._ranking_record_fractured_planes_floor(
+                self, viewer, floor, runtime.fractured_planes_limit_deadline)
             self._send_fractured_planes_progress(viewer)
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="fractured-planes-floor-completed",
@@ -2424,6 +2426,8 @@ class MapEventService:
 
     def _on_monsters_killed(self, s: Session, monsters) -> None:
         monsters = tuple(monsters)
+        from dso_server.services.monster_summons import cleanup_monster_summons
+        cleanup_monster_summons(self, s, monsters)
         tower_kills(self, s, monsters)
         templates = tuple(dict.fromkeys(
             str(getattr(monster, "template_id", "")).casefold()
@@ -2432,8 +2436,14 @@ class MapEventService:
         ))
         if not templates:
             return
+        if (getattr(s, "gameplay_match", None) is not None
+                and getattr(s, "gameplay_match_callback", None) is not None):
+            # Battleground objectives (Assault the Fortress structures);
+            # the authored signals below still drive the map's events.
+            s.gameplay_match_callback(s, ("match_monsters_killed", monsters))
         CharacterService._quest_on_monsters_killed(self, s, monsters)
         CharacterService._achievement_on_monsters_killed(self, s, monsters)
+        CharacterService._ranking_on_monsters_killed(self, s, monsters)
         CharacterService._on_map_companion_boss_defeated(self, s, monsters)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         score_rules = ()
@@ -2684,6 +2694,7 @@ class MapEventService:
         self._send_fractured_planes_progress(s)
         self._send_fractured_planes_effect_choices(s)
         start_tower_buffs(self, s)
+        CharacterService._ranking_on_map_entered(self, s)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
@@ -3571,6 +3582,14 @@ class MapEventService:
         if runtime is None:
             _log(f"PropInteraction {request!r} without a map runtime")
             return
+        if (getattr(s, "gameplay_match", None) is not None
+                and getattr(s, "gameplay_match_callback", None) is not None):
+            # A battleground claims its own props (fortress control points).
+            with runtime.lock:
+                candidate = runtime.props.get(int(request.prop_id))
+            if candidate is not None and s.gameplay_match_callback(
+                    s, ("match_prop_interaction", candidate.definition)):
+                return
         reward_gate = _PARALLEL_WORLD_BOSS_REWARD_CHESTS.get(
             map_key(runtime.map_id)
         )
@@ -3620,15 +3639,36 @@ class MapEventService:
         with runtime.lock:
             existing = runtime.props.get(int(request.prop_id))
             definition = existing.definition if existing is not None else None
-            if definition is not None and definition.individual_usage:
+            quest_operation = (
+                CharacterService._quest_prop_operation(s, definition)
+                if definition is not None else ""
+            )
+            if quest_operation is None:
+                _log(
+                    f"PropInteraction on quest prop {definition.instance_id!r} "
+                    "that is not live for this player; ignored"
+                )
+                return
+            # Quest progression is per character even when a plain quest
+            # prop's template omits IndividualUsage. Keep its shared state
+            # available to other eligible players; the quest log consumes
+            # this placement only for the clicker's current switch.
+            # Loot chests retain their authored instance-wide use rules.
+            quest_usage = bool(
+                definition is not None and quest_operation
+                and (definition.one_shot or definition.individual_usage)
+                and not (definition.loot_list_id or definition.chest_id)
+            )
+            if definition is not None and (definition.individual_usage or quest_usage):
                 usage_key = (
                     _individual_prop_player_id(s), int(definition.prop_id),
                 )
                 if (
                     existing.state == PROP_STATE_ACTIVE
-                    and usage_key not in runtime.individual_prop_usage
+                    and (quest_usage or usage_key not in runtime.individual_prop_usage)
                 ):
-                    runtime.individual_prop_usage.add(usage_key)
+                    if not quest_usage:
+                        runtime.individual_prop_usage.add(usage_key)
                     result = (
                         PropRuntimeState(definition, PROP_STATE_USED), True,
                     )
@@ -3638,6 +3678,10 @@ class MapEventService:
                     )
             else:
                 result = runtime.interact(request.prop_id)
+            if result is not None and result[1]:
+                CharacterService._quest_record_prop_usage(
+                    s, definition, quest_operation,
+                )
         if result is None:
             _log(
                 f"PropInteraction for unknown prop {request.prop_id} "
@@ -3646,13 +3690,6 @@ class MapEventService:
             return
         state, flipped = result
         definition = state.definition
-        quest_operation = CharacterService._quest_prop_operation(s, definition)
-        if quest_operation is None:
-            _log(
-                f"PropInteraction on quest prop {definition.instance_id!r} "
-                "that is not live for this player; ignored"
-            )
-            return
         _log(
             f"prop {definition.instance_id!r} (id {definition.prop_id}, "
             f"operation {request.operation!r}) used; state now {state.state}"
@@ -3666,11 +3703,14 @@ class MapEventService:
         # PropInfo refreshing the same prop.
         remote_actor_id = int(getattr(s, "gameplay_remote_actor_id", 0) or 0)
         viewers = (
-            (s,) if definition.individual_usage
+            (s,) if definition.individual_usage or quest_usage
             else self._map_event_sessions(runtime) or (s,)
         )
         for viewer in viewers:
-            if CharacterService._quest_prop_operation(viewer, definition) is None:
+            if (
+                viewer is not s
+                and CharacterService._quest_prop_operation(viewer, definition) is None
+            ):
                 continue
             update = PropUpdate(
                 prop_id=definition.prop_id,
@@ -4274,6 +4314,17 @@ class MapEventService:
     def _start_map_local_event(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        # Keep flag mutation and its world publication in the same order as
+        # global schedule reconciliation. This separate reentrant gate also
+        # permits a transition to synchronously trigger another local event.
+        with runtime.transition_lock:
+            self._start_map_local_event_locked(
+                runtime, definition, pending_token=pending_token,
+            )
+
+    def _start_map_local_event_locked(
+            self, runtime: MapEventRuntime,
+            definition: MapLocalEventDefinition, *, pending_token=None) -> None:
         with runtime.lock:
             if (pending_token is not None
                     and runtime.pending_start_tokens.get(definition.key) is not pending_token):
@@ -4302,6 +4353,12 @@ class MapEventService:
             handle.start()
 
     def _stop_map_local_event(
+            self, runtime: MapEventRuntime,
+            definition: MapLocalEventDefinition) -> None:
+        with runtime.transition_lock:
+            self._stop_map_local_event_locked(runtime, definition)
+
+    def _stop_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition) -> None:
         with runtime.lock:
@@ -4440,11 +4497,15 @@ class MapEventService:
             f"sessions={len(sessions)}"
         )
 
-    def _publish_event_props(self, runtime, sessions, event_sets) -> None:
+    def _publish_event_props(
+            self, runtime, sessions, event_sets, *, refresh_existing=False) -> None:
         with runtime.lock:
-            published = runtime.publish_props(
-                runtime.select_props(runtime.content.props_for_sets(event_sets))
-            )
+            definitions = runtime.select_props(runtime.content.props_for_sets(event_sets))
+            published = runtime.publish_props(definitions)
+            if refresh_existing:
+                # Replay authoritative states after a partial global refresh;
+                # preserve already-used props rather than resetting them.
+                published = tuple(runtime.props[d.prop_id] for d in definitions)
         if not published:
             return
         _log(
@@ -4476,7 +4537,9 @@ class MapEventService:
 
     def _publish_map_exits(
             self, runtime, sessions, *, event_sets=None,
-            active_override=None, update_session_state=True) -> None:
+            active_override=None, update_session_state=True,
+            disabled_event_sets=()) -> None:
+        disabled_rows = frozenset(int(row) for row in disabled_event_sets)
         with runtime.lock:
             flags = runtime.active_flags()
         try:
@@ -4507,12 +4570,19 @@ class MapEventService:
                 d for d in definitions
                 if d.event_set_row in wanted_event_sets
             )
-        if not definitions:
+        if not definitions and not disabled_rows:
             return
         for viewer in sessions:
             with viewer.flow_lock:
                 if getattr(viewer, "gameplay_exit_transition_started", False):
                     continue
+                if disabled_rows and (
+                    viewer.gameplay_map != runtime.map_id
+                    or getattr(viewer, "gameplay_map_event_runtime", None) is not runtime
+                ):
+                    continue
+                generation = getattr(viewer, "gameplay_chase_generation", None)
+                previous_exits = tuple(getattr(viewer, "gameplay_map_exits", ()))
             # The runtime's scaling difficulty is used for monster stats and
             # may combine the selected map difficulty with a scaling slider.
             # Exit labels must follow the actual access group chosen for this
@@ -4555,6 +4625,15 @@ class MapEventService:
                 entry.instance_guid for entry in native_exit_entries
             }
             if native_exit_entries and active_override is not False:
+                if disabled_rows:
+                    with viewer.flow_lock:
+                        if (
+                            viewer.gameplay_map != runtime.map_id
+                            or getattr(viewer, "gameplay_map_event_runtime", None) is not runtime
+                            or getattr(viewer, "gameplay_chase_generation", None) != generation
+                            or getattr(viewer, "gameplay_exit_transition_started", False)
+                        ):
+                            continue
                 # Some authored exits start as inactive and have no client
                 # entity yet. ExitInfo only updates the cache; VariationInfo
                 # creates the gate after EventUpdate activates its scene set.
@@ -4625,6 +4704,22 @@ class MapEventService:
                     )
                     for definition, entry_active in exit_entries
                 )
+            if disabled_rows:
+                # ExitInfo merges into the client's cache. Close only exits
+                # this viewer actually knew; publishing arbitrary inactive
+                # rows would also cache unselected difficulty variations.
+                active_guids = {
+                    definition.instance_guid for definition in active_viewer_definitions
+                }
+                exit_info_entries += tuple(
+                    ExitInfoEntry(
+                        definition.name, definition.destination_map_id, 0,
+                        definition.instance_guid,
+                    )
+                    for definition in previous_exits
+                    if definition.event_set_row in disabled_rows
+                    and definition.instance_guid not in active_guids
+                )
             exit_info = ExitInfo(exit_info_entries)
             packet, packet_bits = encode_server_command_batch(
                 (ServerCommand(
@@ -4635,11 +4730,21 @@ class MapEventService:
             with viewer.flow_lock:
                 if viewer.gameplay_map != runtime.map_id:
                     continue
-                if update_session_state:
-                    viewer.gameplay_map_exits = tuple(active_viewer_definitions)
+                if disabled_rows and (
+                    getattr(viewer, "gameplay_map_event_runtime", None) is not runtime
+                    or getattr(viewer, "gameplay_chase_generation", None) != generation
+                    or getattr(viewer, "gameplay_exit_transition_started", False)
+                ):
+                    continue
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-exit-info"
             )
+            if update_session_state:
+                with viewer.flow_lock:
+                    if (viewer.gameplay_map == runtime.map_id
+                            and getattr(viewer, "gameplay_chase_generation", None) == generation
+                            and not getattr(viewer, "gameplay_exit_transition_started", False)):
+                        viewer.gameplay_map_exits = tuple(active_viewer_definitions)
             if parallel_world_boss_map:
                 _log(
                     f"boss exits for {getattr(viewer, 'addr', '?')}: access="
@@ -4659,6 +4764,56 @@ class MapEventService:
             if combat is not None:
                 return combat
         return None
+
+    def _hide_event_npcs(self, runtime, sessions, event_sets) -> None:
+        """Disable registered event NPCs while retaining their actor identities."""
+
+        wanted = frozenset(int(row) for row in event_sets)
+        if not wanted:
+            return
+        try:
+            definitions = tuple(
+                definition
+                for definition in load_local_npc_definitions(
+                    self.static_database_path, runtime.map_id,
+                    include_inactive_event_sets=True,
+                )
+                if int(getattr(definition, "event_set_row", -1)) in wanted
+            )
+        except Exception as exc:
+            _log(f"event NPC hide failed on {runtime.map_id}: {type(exc).__name__}: {exc}")
+            return
+        for viewer in sessions:
+            with viewer.flow_lock:
+                if (
+                    viewer.gameplay_map != runtime.map_id
+                    or getattr(viewer, "gameplay_map_event_runtime", None) is not runtime
+                    or getattr(viewer, "gameplay_exit_transition_started", False)
+                ):
+                    continue
+                generation = getattr(viewer, "gameplay_chase_generation", None)
+                announced = frozenset(viewer.gameplay_announced_npc_actor_ids)
+            commands = tuple(
+                replace(local_npc_info(definition), enabled=False)
+                for definition in definitions
+                if local_npc_actor_id(definition) in announced
+            )
+            if not commands:
+                continue
+            packet, packet_bits = encode_npc_batch(
+                NPCBatch(commands), include_actor_vicinity=False,
+            )
+            with viewer.flow_lock:
+                if (
+                    viewer.gameplay_map != runtime.map_id
+                    or getattr(viewer, "gameplay_map_event_runtime", None) is not runtime
+                    or getattr(viewer, "gameplay_chase_generation", None) != generation
+                    or getattr(viewer, "gameplay_exit_transition_started", False)
+                ):
+                    continue
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits, label="map-event-hide-npc"
+            )
 
     def _spawn_event_npcs(self, runtime, sessions, event_sets) -> None:
         """Create the NPCs of newly enabled event sets.

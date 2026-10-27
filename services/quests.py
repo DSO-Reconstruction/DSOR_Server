@@ -48,6 +48,7 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_CLOSED,
     QUEST_STATE_CANCELLED,
     QUEST_STATE_FINISHED,
+    QUEST_STATE_FAILED,
     Drop,
     QuestCatalog,
     QuestDefinition,
@@ -58,6 +59,7 @@ from dso_server.gameplay.quest_content import (
     apply_quest_event,
     explore_trigger_for_task,
     load_quest_catalog,
+    reconcile_quest_progress,
     task_counters,
 )
 from dso_server.paths import DEFAULT_QUESTS_PATH
@@ -105,6 +107,9 @@ from dso_server.protocol.quest_protocol import (
     NPC_DELIVERY_DIALOG,
     NPC_PAY_DIALOG,
     PAY_COMMAND,
+    DEFEND_COMMAND,
+    NPC_DEFEND_DIALOG,
+    decode_defend,
     decode_deliver,
     decode_pay,
     QUEST_MONSTER_INDICATION_INFO_COMMAND,
@@ -142,6 +147,7 @@ from dso_server.services.base import CharacterService
 from dso_server.services.player_progression import load_player_progression_catalog
 from dso_server.gameplay.status_modifier_runtime import (
     evaluate_active_status_modifiers, load_status_modifier_catalog, snapshot_active_status_entries,
+    snapshot_player_modifier_sources,
 )
 from dso_server.services.map_events import (
     _PARALLEL_WORLD_BOSS_REWARD_CHESTS,
@@ -186,6 +192,30 @@ def _quest_log(s: Session) -> dict[str, QuestProgress]:
         log = {}
         s.gameplay_quest_log = log
     return log
+
+
+def _quest_prop_bindings(catalog: QuestCatalog, definition) -> tuple:
+    # Spawn-point props use a placement label as instance_id and the authored
+    # StateObjectId as template_id. Quest Switch.prop may name either one.
+    prop_ids = dict.fromkeys((
+        str(getattr(definition, "instance_id", "") or "").casefold(),
+        str(getattr(definition, "template_id", "") or "").casefold(),
+    ))
+    return tuple(
+        binding
+        for prop_id in prop_ids if prop_id
+        for binding in catalog.switches_for_prop(prop_id)
+    )
+
+
+def _quest_prop_usage_key(s: Session, definition) -> str:
+    # Many placements share an instance/template label. The authored row is
+    # stable across reconnects and fresh runtimes, unlike the network actor id.
+    runtime = getattr(s, "gameplay_map_event_runtime", None)
+    map_id = map_key(
+        getattr(runtime, "map_id", None) or getattr(s, "gameplay_map", "")
+    )
+    return f"{map_id}:{definition.kind}:{definition.row_id}"
 
 
 def _dormant_quests(s: Session) -> dict[str, QuestProgress]:
@@ -350,15 +380,37 @@ class QuestService:
             return durable_rule.accepts(**facts)
 
         normalized_map = map_key(map_id)
+
+        def gated_by_open_quest_task(event) -> bool:
+            # The exit event has an authored PlayerEnteredMap restore with a
+            # completed-task gate of a quest that is still open in the log.
+            # That condition decides (it is evaluated below): a destination
+            # reached some other way (admin all-maps travel, an earlier
+            # visit) does not prove this run passed the gate. The I Hear
+            # Voices exit (g0017_activate_exit, QuestTaskDone kill-02)
+            # otherwise opened before the final boss died. Exits without such
+            # an entry restore (e.g. pw008_spawn_exit) keep the discovery
+            # proof, or a relog mid-quest would close a route already used.
+            for signal_id in event.start_signals:
+                rule = signals.rule(signal_id)
+                if rule is None or rule.event_type != "playerenteredmap":
+                    continue
+                if any(task.partition(":")[0] in accepted
+                       for task in rule.quest_task_done):
+                    return True
+            return False
+
         for flag, destinations in exit_destinations.items():
+            event = signals.event(flag)
             # The discovered destination is the strongest durable proof that
             # this character has passed the route gate. This also covers
             # authored signals that require only QuestAccepted and carry no
             # completed task condition to recover after turn-in.
-            if destinations & discovered_maps:
+            if destinations & discovered_maps and not (
+                event is not None and gated_by_open_quest_task(event)
+            ):
                 restored.add(flag)
                 continue
-            event = signals.event(flag)
             if event is None or not event.applies_to(normalized_map):
                 continue
             for signal_id in event.start_signals:
@@ -431,6 +483,8 @@ class QuestService:
                     for barter in task.barters
                     if barter.actor and barter.live(progress.tokens)
                 )
+                targets.update(binding.actor.casefold() for binding in task.holdgrounds
+                               if binding.actor and binding.live(progress.tokens))
                 for event in task.events:
                     if not event.value:
                         continue
@@ -504,7 +558,7 @@ class QuestService:
                 closed_quests=closed,
                 known_quests=(
                     quest_id for quest_id, progress in log.items()
-                    if progress.state != QUEST_STATE_CANCELLED
+                    if progress.state not in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)
                 ),
                 active_events=active_events,
             ) for quest in catalog.offered_by(npc_template_id)):
@@ -562,7 +616,7 @@ class QuestService:
             )
             corruption_quest_reached = (
                 corruption_progress is not None
-                and corruption_progress.state != QUEST_STATE_CANCELLED
+                and corruption_progress.state not in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)
             )
             if offerings_complete or corruption_quest_reached:
                 # The temple's authored barrier normally waits until quest
@@ -637,13 +691,21 @@ class QuestService:
         )
 
     @staticmethod
-    def _restore_quest_state(s: Session, persisted_state) -> None:
+    def _restore_quest_state(
+        s: Session, persisted_state, *, catalog: QuestCatalog | None = None,
+    ) -> None:
         documents = getattr(persisted_state, "quest_log", None) or {}
+        if catalog is None:
+            catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         s.gameplay_quest_log = {
             str(quest_id): QuestProgress.from_document(quest_id, document)
             for quest_id, document in documents.items()
             if isinstance(document, dict)
         }
+        for quest_id, progress in s.gameplay_quest_log.items():
+            quest = catalog.quest(quest_id)
+            if quest is not None:
+                reconcile_quest_progress(quest, progress)
         s.gameplay_dormant_quests = {}
         s.gameplay_quest_tracking = None
 
@@ -707,6 +769,8 @@ class QuestService:
 
     def _quest_leave_map(self, s: Session, destination: str = "", *, notify: bool = True) -> None:
         """Cancel this run, preserving explicit onward stages of multi-map quests."""
+        from dso_server.services.quest_holdgrounds import cancel_holdgrounds
+        cancel_holdgrounds(self, s, reason="leave")
         destination = str(destination).casefold()
         for quest_id, progress in tuple(_quest_log(s).items()):
             quest = self._quest_catalog().quest(quest_id)
@@ -941,7 +1005,7 @@ class QuestService:
                     task.index == int(tracked_task_index)
                     and (not task.maps or bool(map_keys.intersection(
                         value.casefold() for value in task.maps
-                    )))
+                    )) or self._quest_clear_region_relocated(s, tracked_quest, task))
                     for task in active_tasks(tracked_quest, tracked_progress)
                 )
         # A stale or unrelated tracker must not hide the current dungeon's
@@ -1207,7 +1271,7 @@ class QuestService:
         if quest is None or not quest.auto_start:
             return
         progress = _quest_log(s).get(quest.quest_id)
-        if progress is not None and progress.state != QUEST_STATE_CANCELLED:
+        if progress is not None and progress.state not in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED):
             return
         self._quest_accept(s, quest.quest_id, offered=False)
 
@@ -1352,6 +1416,8 @@ class QuestService:
         accepted, solved, tasks_done = set(), set(), set()
         for quest_id, progress in _quest_log(s).items():
             key = quest_id.casefold()
+            if progress.state in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED):
+                continue
             if progress.state == QUEST_STATE_CLOSED:
                 solved.add(key)
             else:
@@ -1373,8 +1439,9 @@ class QuestService:
 
         A prop a task ``<Switch>`` names (the ``QuestControlled`` templates:
         quest bags, clue boxes, altars) exists for a player only while that
-        quest is accepted, the owning task is open and the switch guards
-        hold.  Retail sent those props in ``PropInfo`` with the switch id as
+        quest is accepted, the owning task is open, the switch guards hold,
+        and this placement has not been consumed for that switch. Retail
+        sent those props in ``PropInfo`` with the switch id as
         operation and dropped them as the task advanced; an event quest's
         clue box in Kingshill must not show up for a player who cannot even
         take the quest.  Plain props return ``""``.
@@ -1385,20 +1452,7 @@ class QuestService:
             return ""
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         log = _quest_log(s)
-        # Spawn-point props use the map row's placement label as instance_id
-        # and the authored StateObjectId as template_id. Quest Switch.prop
-        # names that template, so check both identities when resolving the
-        # player's active switch; otherwise the prop is filtered from PropInfo.
-        prop_ids = dict.fromkeys((
-            str(getattr(definition, "instance_id", "") or "").casefold(),
-            str(getattr(definition, "template_id", "") or "").casefold(),
-        ))
-        bindings = tuple(
-            binding
-            for prop_id in prop_ids if prop_id
-            for binding in catalog.switches_for_prop(prop_id)
-        )
-        for binding in bindings:
+        for binding in _quest_prop_bindings(catalog, definition):
             progress = log.get(binding.quest_id)
             if progress is None or progress.state != QUEST_STATE_ACCEPTED:
                 continue
@@ -1407,6 +1461,12 @@ class QuestService:
                 continue
             for task, switch in active_prop_switches(quest, progress):
                 if task.index == binding.task_index and switch == binding.switch:
+                    if (
+                        (definition.one_shot or definition.individual_usage)
+                        and _quest_prop_usage_key(s, definition)
+                        in progress.used_props.get(switch.switch_id, ())
+                    ):
+                        continue
                     return switch.switch_id
         # The parallel-world boss arena chests are also named by the
         # repeatable quest's final task. That task only becomes active after
@@ -1424,6 +1484,31 @@ class QuestService:
         ):
             return ""
         return None
+
+    @staticmethod
+    def _quest_record_prop_usage(s: Session, definition, operation: str) -> None:
+        """Consume this placement for the resolved switch before quest sync."""
+
+        if not operation or not (definition.one_shot or definition.individual_usage):
+            return
+        catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
+        log = _quest_log(s)
+        for binding in _quest_prop_bindings(catalog, definition):
+            progress = log.get(binding.quest_id)
+            quest = catalog.quest(binding.quest_id)
+            if (
+                progress is not None
+                and quest is not None
+                and progress.state == QUEST_STATE_ACCEPTED
+                and binding.switch.switch_id == operation
+                and any(
+                    task.index == binding.task_index and switch == binding.switch
+                    for task, switch in active_prop_switches(quest, progress)
+                )
+            ):
+                progress.used_props.setdefault(operation, set()).add(
+                    _quest_prop_usage_key(s, definition)
+                )
 
     @staticmethod
     def _quest_prop_entries(s: Session, states) -> tuple:
@@ -1460,9 +1545,9 @@ class QuestService:
                 and prop_visible_to_player(state.definition, s)
             ]
         # A one-shot quest prop may be authored for multiple stages in the
-        # same chain. Once a later stage makes its switch live again, restore
-        # the prop so the client can interact with it and the server can
-        # process the new stage's switch.
+        # same chain. Consumed placements are hidden for the current switch;
+        # only a different stage (or a fresh quest attempt) can make them live
+        # again. A partial counter update must not reset the prop just used.
         active_switch_props = {
             int(state.definition.prop_id)
             for state in states
@@ -1568,7 +1653,7 @@ class QuestService:
                 closed_quests=closed,
                 known_quests=(
                     quest_id for quest_id, progress in log.items()
-                    if progress.state != QUEST_STATE_CANCELLED
+                    if progress.state not in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)
                 ),
                 active_events=active_events,
             ):
@@ -1626,6 +1711,14 @@ class QuestService:
                 quest.quest_id,
                 quest.quest_type_id,
             ))
+        for quest, _task, binding in self._quest_active_holdgrounds(s):
+            if binding.actor.casefold() == npc_key:
+                interactions.append(NPCInteraction(
+                    quest.quest_id, NPC_TASK_TARGET, quest.quest_id, quest.quest_type_id,
+                ))
+                interactions.append(NPCInteraction(
+                    binding.holdground_id, NPC_DEFEND_DIALOG, quest.quest_id, quest.quest_type_id,
+                ))
         return tuple(interactions), tuple(flags)
 
     def _quest_npc_barters(self, s: Session, npc_template_id: str):
@@ -1644,6 +1737,13 @@ class QuestService:
     def _quest_decorate_npc_info(
         self, s: Session, npc_info: NPCInfo, npc_template_id: str,
     ) -> NPCInfo:
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is not None:
+            with runtime.lock:
+                defended = any(not run.stopped and run.npc_actor_id == npc_info.actor_id
+                               for run in getattr(runtime, "holdgrounds", {}).values())
+            if defended:
+                return replace(npc_info, enabled=False, interactions=(), flags=(), string_sets=(), links=())
         interactions, flags = self._quest_npc_interactions(s, npc_template_id)
         active_barters = self._quest_npc_barters(s, npc_template_id)
         barters = tuple(
@@ -1956,6 +2056,47 @@ class QuestService:
                     self._quest_feed(
                         s, "encounter", definition.template_id, quest_id=quest_id,
                     )
+
+    def _quest_active_holdgrounds(self, s: Session):
+        # The declared task map hosts the defense unless its exported scene
+        # never places the actor (see holdground_hosted_here).
+        from dso_server.services.quest_holdgrounds import holdground_hosted_here
+        catalog = self._quest_catalog()
+        return tuple(
+            (quest, task, binding)
+            for quest_id, progress in tuple(_quest_log(s).items())
+            for quest in (catalog.quest(quest_id),) if quest is not None
+            for task in active_tasks(quest, progress)
+            for binding in task.holdgrounds
+            if binding.live(progress.tokens) and holdground_hosted_here(self, s, task, binding)
+        )
+
+    def _handle_defend_command(self, s: Session, payload: bytes) -> None:
+        from dso_server.services.quest_holdgrounds import start_holdground, UnsupportedHoldGround
+        request = decode_defend(payload, getattr(s, "current_message_bit_length", None))
+        with s.flow_lock:
+            s.gameplay_client_command_state[DEFEND_COMMAND] = request
+            if s.gameplay_exit_transition_started or s.gameplay_death_pending:
+                return
+        CharacterService._accept_gameplay_state_command(s, DEFEND_COMMAND)
+        with s.gameplay_mutation_lock:
+            npc = CharacterService._resolve_npc_interaction(self, s, request.npc_actor_id)
+            if npc is None:
+                return
+            encounter, move = s.gameplay_monster_encounter, s.gameplay_last_move
+            position = (encounter.coordinate_frame.wire_to_world(move.relative_position)
+                        if encounter is not None and move is not None else s.gameplay_spawn_position)
+            if position is None or math.hypot(position[0] - npc.position[0], position[2] - npc.position[2]) > 8.0:
+                return
+            for quest, _task, binding in self._quest_active_holdgrounds(s):
+                if (binding.holdground_id.casefold() == request.holdground_id.casefold()
+                        and binding.actor.casefold() == npc.template_id.casefold()):
+                    try:
+                        start_holdground(self, s, quest.quest_id, binding,
+                                         npc_actor_id=local_npc_actor_id(npc))
+                    except UnsupportedHoldGround as error:
+                        _log(f"defense unavailable: {error}")
+                    return
 
     @staticmethod
     def _quest_delivery_item_templates(quest, barter):
@@ -2284,7 +2425,7 @@ class QuestService:
             closed_quests=closed,
             known_quests=(
                 known_id for known_id, progress in log.items()
-                if progress.state != QUEST_STATE_CANCELLED
+                if progress.state not in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)
             ),
             active_events=self._quest_active_events(s),
         ):
@@ -2306,7 +2447,7 @@ class QuestService:
             existing = log.get(quest.quest_id)
             if (
                 existing is not None
-                and existing.state == QUEST_STATE_CANCELLED
+                and existing.state in (QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)
             ):
                 # Older saved quest logs can retain the cancelled marker
                 # instead of the normal cancellation path's removal. Treat
@@ -2393,7 +2534,7 @@ class QuestService:
         if quest is None or progress is None:
             _log(f"turn-in of unknown quest {quest_id!r} ignored")
             return False
-        if progress.state == QUEST_STATE_CLOSED:
+        if progress.state in (QUEST_STATE_CLOSED, QUEST_STATE_CANCELLED, QUEST_STATE_FAILED):
             _log(f"quest {quest.quest_id!r} is already closed")
             return False
         if progress.state != QUEST_STATE_FINISHED and not all(
@@ -2401,15 +2542,37 @@ class QuestService:
         ):
             _log(f"quest {quest.quest_id!r} has unfinished tasks; turn-in refused")
             return False
+        with s.gameplay_mutation_lock:
+            return self._quest_turn_in_ready(s, quest, progress)
+
+    def _quest_turn_in_ready(self, s, quest, progress):
+        from dso_server.services.quest_status_rewards import (
+            prepare_quest_status_rewards, stage_quest_status_rewards_locked,
+            commit_quest_status_rewards_locked, finish_quest_status_rewards,
+        )
+        log = _quest_log(s)
+        try:
+            status_plan = prepare_quest_status_rewards(self, s, quest)
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(f"quest status reward preflight failed: {exc}")
+            return False
+        status_result = None
         with s.flow_lock:
             if (s.gameplay_exit_transition_started or log.get(quest.quest_id) is not progress
-                    or progress.state == QUEST_STATE_CLOSED):
+                    or progress.state in (QUEST_STATE_CLOSED, QUEST_STATE_CANCELLED, QUEST_STATE_FAILED)):
                 return False
             # Quest loot carries provenance while it is in the bag. Consume
             # those items in the same locked hand-in transition; for older
             # saves, the cleanup helper also recognizes unambiguous QuestItems.
             mutation = self._quest_cancel_inventory(s, quest)
-            if mutation is not None:
+            if status_plan is not None:
+                try:
+                    status_result = stage_quest_status_rewards_locked(s, status_plan, mutation)
+                except (OSError, ValueError) as exc:
+                    _log(f"quest status rewards could not be granted: {exc}")
+                    return False
+                commit_quest_status_rewards_locked(s, status_result)
+            elif mutation is not None:
                 s.gameplay_inventory = mutation.inventory
                 s.gameplay_next_item_id = mutation.next_item_id
             progress.state = QUEST_STATE_CLOSED
@@ -2420,14 +2583,28 @@ class QuestService:
                 runtime.completed_quests.add(self._quest_run_key(s, quest))
         CharacterService._quest_unlock_maps(self, s, quest.quest_id)
         _log(f"closed {quest.quest_id!r}")
-        if mutation is not None:
+        publication_failure = None
+        if status_result is not None:
+            publication_failure = finish_quest_status_rewards(self, s, status_result)
+        elif mutation is not None:
             self._send_quest_commands(s, tuple(ServerCommand(
                 INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
             ) for record in (mutation.delta, mutation.final)), label="quest-turn-in-items")
-        self._quest_grant_rewards(s, quest)
-        self._send_quest_commands(s, self._quest_state_commands(
+        if status_result is None:
+            self._quest_grant_rewards(s, quest)
+
+        def complete_step(operation):
+            nonlocal publication_failure
+            try:
+                return operation()
+            except OSError as exc:
+                if status_result is None:
+                    raise
+                publication_failure = publication_failure or exc
+
+        complete_step(lambda: self._send_quest_commands(s, self._quest_state_commands(
             s, quest.quest_id, QUEST_STATE_CLOSED, progress.completed_at,
-        ), label="quest-turn-in")
+        ), label="quest-turn-in"))
         # Closing a prerequisite can make an EventSet-gated follow-up giver
         # available on the same map. Publish the new per-character reveal
         # state before sending the NPC refresh.
@@ -2439,14 +2616,16 @@ class QuestService:
                 f"quest event refresh after turn-in failed: "
                 f"{type(exc).__name__}: {exc}"
             )
-        self._quest_spawn_revealed_npcs(s)
-        self._quest_refresh_map_phases(s)
-        self._quest_sync_props(s)
-        CharacterService._request_account_save(s, "quest closed")
-        self._quest_fire_signal(s, "PlayerClosedQuest", (quest.quest_id,))
+        complete_step(lambda: self._quest_spawn_revealed_npcs(s))
+        complete_step(lambda: self._quest_refresh_map_phases(s))
+        complete_step(lambda: self._quest_sync_props(s))
+        complete_step(lambda: CharacterService._request_account_save(s, "quest closed"))
+        complete_step(lambda: self._quest_fire_signal(s, "PlayerClosedQuest", (quest.quest_id,)))
         if quest.key == "f4100-railroadbarrier-02-n":
             CharacterService._quest_start_f4102_train_repair(self, s)
-        CharacterService._achievement_on_quest_closed(self, s, quest.quest_id)
+        complete_step(lambda: CharacterService._achievement_on_quest_closed(self, s, quest.quest_id))
+        if publication_failure is not None:
+            raise publication_failure
         return True
 
     def _quest_cancel_inventory(self, s: Session, quest: QuestDefinition):
@@ -2518,6 +2697,8 @@ class QuestService:
             if tracking and str(tracking[0]).casefold() == quest.key:
                 s.gameplay_quest_tracking = None
         _log(f"cancelled {quest_id!r}")
+        from dso_server.services.quest_holdgrounds import cancel_holdgrounds
+        cancel_holdgrounds(self, s, quest_id=quest_id, reason="cancel")
         if notify:
             if removed_drops:
                 CharacterService._reconcile_world_loot_visibility(s, label="quest-drop-cancel")
@@ -2556,9 +2737,6 @@ class QuestService:
                 ))
             elif reward.kind == "dynamicxp":
                 xp += self._quest_dynamic_xp(s, float(reward.value or 0))
-            elif reward.kind == "statuseffect":
-                if amount or reward.value:
-                    _log(f"reward {reward.kind} {reward.value!r} of {quest.quest_id!r} is not implemented")
         if xp > 0:
             try:
                 CharacterService._award_experience(
@@ -2627,6 +2805,11 @@ class QuestService:
         catalog = self._quest_catalog()
         log = _quest_log(s)
         changed_any = False
+        with s.flow_lock:
+            modifier_sources = snapshot_player_modifier_sources(s)
+        drop_modifiers = evaluate_active_status_modifiers(
+            load_status_modifier_catalog(self.static_database_path), modifier_sources,
+        )
         selected_ids = (quest_id,) if quest_id else tuple(log)
         for quest_id in selected_ids:
             progress = log.get(quest_id)
@@ -2635,7 +2818,14 @@ class QuestService:
             quest = catalog.quest(quest_id)
             if quest is None:
                 continue
-            result = apply_quest_event(quest, progress, kind, value, count=count)
+            result = apply_quest_event(
+                quest, progress, kind, value, count=count,
+                drop_amount_bonus=drop_modifiers.quest_drop_bonus(quest.quest_type),
+            )
+            if result.quest_failed:
+                self._quest_publish_failure(s, quest)
+                changed_any = True
+                continue
             for unsupported in result.unsupported:
                 _log(f"{quest_id!r} needs unsupported event {unsupported!r}")
             if result.spawns:
@@ -2673,6 +2863,32 @@ class QuestService:
             if getattr(s, "gameplay_quest_tracking", None):
                 self._quest_send_monster_indication(s)
         return changed_any
+
+    def _quest_publish_failure(self, s: Session, quest: QuestDefinition) -> None:
+        """Keep the native failed state until the player accepts a fresh attempt."""
+        from dso_server.services.quest_holdgrounds import cancel_holdgrounds
+        cancel_holdgrounds(self, s, quest_id=quest.quest_id, reason="failed")
+        with s.flow_lock:
+            mutation = self._quest_cancel_inventory(s, quest)
+            if mutation is not None:
+                s.gameplay_inventory = mutation.inventory
+                s.gameplay_next_item_id = mutation.next_item_id
+            for item_id, drop in tuple(s.gameplay_world_loot.items()):
+                if drop.quest_id.casefold() == quest.key:
+                    del s.gameplay_world_loot[item_id]
+            tracking = getattr(s, "gameplay_quest_tracking", None)
+            if tracking and str(tracking[0]).casefold() == quest.key:
+                s.gameplay_quest_tracking = None
+        CharacterService._request_account_save(s, "quest failed", flush=True)
+        if mutation is not None:
+            self._send_quest_commands(s, tuple(ServerCommand(
+                INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID,
+            ) for record in (mutation.delta, mutation.final)), label="quest-failed-items")
+        self._send_quest_commands(s, self._quest_state_commands(
+            s, quest.quest_id, QUEST_STATE_FAILED, NO_TIMESTAMP,
+        ), label="quest-failed")
+        CharacterService._reconcile_world_loot_visibility(s, label="quest-failed-drops")
+        self._quest_refresh_npc_infos(s)
 
     def _quest_grant_inventory_drops(self, s, quest, specifications) -> None:
         """Grant authored inventory=true quest drops as real inventory items."""
@@ -2892,6 +3108,9 @@ class QuestService:
         self._quest_feed(s, "encounter", npc_template_id)
 
     def _quest_on_monsters_killed(self, s: Session, monsters) -> None:
+        monsters = tuple(monsters)
+        from dso_server.services.quest_holdgrounds import advance_holdgrounds
+        advance_holdgrounds(self, s, killed_actor_ids=tuple(getattr(monster, "actor_id", 0) for monster in monsters))
         counts: dict[str, int] = {}
         for monster in monsters:
             template = str(getattr(monster, "template_id", ""))
@@ -2926,13 +3145,29 @@ class QuestService:
                 self._quest_feed(s, "kill", template, position=position)
         self._quest_check_shared_cleared_regions(s, counts)
 
-    def _quest_start_active_holdgrounds(self, s: Session) -> None:
-        """Resolve active main-quest defense stages the server cannot run.
+    def _quest_defense_supported(self, s, task, progress):
+        """Keep supported defenses pending for an explicit NPC interaction."""
+        from dso_server.services.quest_holdgrounds import resolve_holdground, UnsupportedHoldGround
+        live = tuple(binding for binding in task.holdgrounds if binding.live(progress.tokens))
+        if task.holdgrounds and not live:
+            return True  # Its activation guards have not opened yet.
+        for binding in live:
+            npcs = tuple(npc for npc in load_local_npc_definitions(
+                self.static_database_path, s.gameplay_map, include_inactive_event_sets=True,
+            ) if binding.actor.casefold() in {npc.template_id.casefold(), npc.instance_id.casefold()})
+            for npc in npcs:
+                try:
+                    resolve_holdground(self, s, binding, npc_actor_id=local_npc_actor_id(npc))
+                    return True
+                except UnsupportedHoldGround:
+                    continue
+        return False
 
-        The game content has no general server-side HoldGround encounter
-        simulator. Find authored HoldGroundTasks from the accepted world
-        quests on this map instead of maintaining a brittle quest-ID list.
-        Their own prerequisite guards still decide when each defense is live.
+    def _quest_start_active_holdgrounds(self, s: Session) -> None:
+        """Preserve the old story fallback only for unavailable authored setups.
+
+        Valid defenses stay open until DefendCommand starts their encounter.
+        Missing exported maps/templates must not strand existing story saves.
         """
         map_id = map_key(getattr(s, "gameplay_map", ""))
         for quest_id, progress in tuple(_quest_log(s).items()):
@@ -2951,6 +3186,7 @@ class QuestService:
                     task for task in active_tasks(quest, progress)
                     if (
                         task.task_type.casefold() == "holdgroundtask"
+                        and not self._quest_defense_supported(s, task, progress)
                         and (
                             not task.maps
                             or map_id in {map_key(task_map) for task_map in task.maps}
@@ -3002,10 +3238,17 @@ class QuestService:
                      and value.clear_regions
                      and (not value.maps or bool(map_keys.intersection(
                          item.casefold() for item in value.maps
-                     )))
+                     )) or self._quest_clear_region_relocated(s, quest, value))
                      and (not group_only or value.group)), None)
         if task is not None:
             self._quest_send_monster_indication(s)
+
+    def _quest_clear_region_relocated(self, s: Session, quest, task) -> bool:
+        """A ClearRegion whose declared map cannot contain it (see quest_task_hosts)."""
+        from dso_server.gameplay.quest_task_hosts import clear_region_relocated_to
+        return clear_region_relocated_to(
+            self.static_database_path, quest, task, getattr(s, "gameplay_map", "") or "",
+        )
 
     def _quest_check_shared_cleared_regions(self, s: Session, killed: dict[str, int]) -> None:
         # Send the new living population before a final kill advances and
@@ -3047,7 +3290,8 @@ class QuestService:
             for task in active_tasks(quest, progress):
                 if group_only and not task.group:
                     continue
-                if task.maps and str(s.gameplay_map).casefold() not in task.maps:
+                if (task.maps and str(s.gameplay_map).casefold() not in task.maps
+                        and not self._quest_clear_region_relocated(s, quest, task)):
                     continue
                 for region_id, monster in task.clear_regions.items():
                     templates = {value.strip().casefold() for value in monster.split(";") if value.strip()}

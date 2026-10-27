@@ -12,9 +12,10 @@ from those records, so a completed achievement must be sent with the
 **same** timestamp on every later login: re-stamping it looks like a new
 unlock.
 
-The rule types the server feeds are listed in :data:`SUPPORTED_TYPES`; the
-remaining template types (crafting, equipment, stickerbook, PvP, ...) are
-loaded so their state persists, but nothing advances them yet.
+The rule types the server feeds are listed in :data:`SUPPORTED_TYPES`.
+Kill rows that retail retired with the ``nomob`` placeholder (Category
+``legacy``) stay loaded for persistence but have no evaluator: they never
+progress or complete.
 """
 
 from __future__ import annotations
@@ -41,14 +42,58 @@ SUPPORTED_TYPES = MappingProxyType({
     "cleardungeon": "cleardungeon",
     "points": "points",
     "unlockachievements": "unlockachievements",
+    "crafting": "crafting",
+    "itemkill": "itemkill",
+    "equipitem": "equipitem",
+    "equiprarity": "equiprarity",
+    "eventprogresscollected": "eventprogresscollected",
+    "use": "use",
+    "unlockskin": "unlockskin",
+    "stickerbook": "stickerbook",
+    "pvp_kill": "pvp_kill",
+    "pvp_match": "pvp_match",
+    "guildmembers": "guildmembers",
+    "veteranlevelunlock": "veteranlevelunlock",
+    "collectedgamecurrency": "collectedgamecurrency",
+    "highscoreranking": "highscoreranking",
 })
 
-# Kill rules whose parameter is not a monster template.
+# Kill rules whose parameter is not a monster template: retail retired
+# these rows (Category "legacy"); the local server keeps them unsupported.
 _UNSUPPORTED_KILL_PARAMS = frozenset({"nomob"})
 
+
+def battleground_mode(value: str) -> str:
+    """The match mode a ``_Template_BattlegroundSettings`` id belongs to.
+
+    ``Pvp_Match`` rows and ``_Template_MatchAchievements.BattlegroundId``
+    name modes (``CaptureTheFlag_5v5``); the settings rows that start a match
+    add a running number and ``_default``/``_Predefined`` variants
+    (``CaptureTheFlag_5v5_01``, ``BestOf5_5v5_01_default``). A 5v5 settings
+    id therefore never names the 3v3 mode.
+    """
+
+    mode = str(value or "").strip().casefold()
+    while True:
+        head, _, tail = mode.rpartition("_")
+        if not head or not (tail.isdigit() or tail in {"default", "predefined"}):
+            return mode
+        mode = head
+
+
 # Kinds where one event advances a rule by one at most, however many of the
-# event's values name it (a map is its id, its access group and access id).
-_ONE_HIT_KINDS = frozenset({"enter_map", "cleardungeon", "class_level"})
+# event's values name it (a map is its id, its access group and access id;
+# a kill is its template and its "<template>:<difficulty>" token).
+_ONE_HIT_KINDS = frozenset({
+    "enter_map", "cleardungeon", "class_level", "crafting", "itemkill",
+    "use", "pvp_kill", "pvp_match", "veteranlevelunlock",
+    "collectedgamecurrency", "kill", "highscoreranking",
+})
+_EQUIPMENT_KINDS = frozenset({"equipitem", "equiprarity"})
+_ABSOLUTE_KINDS = frozenset({
+    "eventprogresscollected", "unlockskin", "stickerbook", "guildmembers",
+})
+_UNTARGETED_KINDS = frozenset({"unlockskin", "guildmembers"})
 
 
 def _tokens(value: object) -> tuple[str, ...]:
@@ -96,9 +141,19 @@ class AchievementDefinition:
         key = str(value or "").casefold()
         if not self.params:
             return False
+        if self.kind == "highscoreranking":
+            # Param is the worst qualifying place ("3;" = top three); the
+            # event value is the final place of one high-score settlement.
+            if not key.isdigit() or int(key) < 1:
+                return False
+            return any(
+                param.isdigit() and int(key) <= int(param) for param in self.params
+            )
         for param in self.params:
             # ClearDungeon rows carry "<map>:<seconds>"; only the map counts.
-            if param == key or param.split(":", 1)[0] == key:
+            if param == key or (
+                self.kind == "cleardungeon" and param.split(":", 1)[0] == key
+            ):
                 return True
         return False
 
@@ -107,19 +162,26 @@ class AchievementDefinition:
 class AchievementProgress:
     progress: int = 0
     completed_at: str = ""          # TIMESTAMP_FORMAT, "" while open
+    reward_status: str = ""
 
     @property
     def completed(self) -> bool:
         return bool(self.completed_at)
 
     def to_document(self) -> dict:
-        return {"progress": int(self.progress), "completed_at": str(self.completed_at)}
+        return {"progress": int(self.progress), "completed_at": str(self.completed_at),
+                "reward_status": str(self.reward_status)}
 
     @classmethod
     def from_document(cls, document: Mapping) -> "AchievementProgress":
+        completed_at = str(document.get("completed_at", "") or "")
+        status = str(document.get("reward_status", "legacy" if completed_at else ""))
+        if status not in {"", "pending", "granted", "legacy"}:
+            status = "legacy" if completed_at else ""
         return cls(
             progress=int(document.get("progress", 0) or 0),
-            completed_at=str(document.get("completed_at", "") or ""),
+            completed_at=completed_at,
+            reward_status=status,
         )
 
     def wire_values(self) -> tuple[int, ...]:
@@ -240,40 +302,60 @@ def apply_achievement_event(
     values: Iterable[str],
     *,
     count: int = 1,
+    progress: int | None = None,
     now: datetime | None = None,
 ) -> tuple[AchievementChange, ...]:
     """Advance every achievement that listens to ``kind`` for ``values``.
 
-    Counting kinds (kill, interact, pick_up, quest, enter_map, cleardungeon)
-    add ``count`` per matching value.  ``class_level`` takes the level as
-    progress.  Completing an achievement re-evaluates the ``points`` and
+    Counting kinds add ``count`` per matching value. Craft/use/kill aliases
+    describe one event, so matching aliases cannot multiply that count.
+    Equipment events carry every currently equipped item/rarity; collection,
+    guild and event-progress snapshots use the explicit absolute ``progress``.
+    ``class_level`` takes the level from values. Completing an achievement re-evaluates the ``points`` and
     ``unlockachievements`` sets, so a chain of completions can come out of
     one event.  Returns the records to send, in order.
     """
 
     kind = str(kind).casefold()
     wanted = [str(value).casefold() for value in values if str(value)]
+    if kind == "pvp_match":
+        # A settings id (CaptureTheFlag_5v5_01) also names its mode.
+        wanted = list(dict.fromkeys((*wanted, *map(battleground_mode, wanted))))
+    absolute_progress = progress
+    if kind in _ABSOLUTE_KINDS and absolute_progress is None:
+        return ()
+    if kind not in _ABSOLUTE_KINDS | _EQUIPMENT_KINDS and int(count) <= 0:
+        return ()
     changes: list[AchievementChange] = []
     completed_any = False
     for definition in catalog.for_event(kind):
-        hits = sum(1 for value in wanted if definition.matches(value))
+        hits = (
+            1 if kind in _UNTARGETED_KINDS and not definition.params
+            else sum(1 for value in wanted if definition.matches(value))
+        )
         if not hits:
             continue
         if kind in _ONE_HIT_KINDS:
             hits = 1
-        progress = state.setdefault(definition.key, AchievementProgress())
-        if progress.completed:
+        entry = state.setdefault(definition.key, AchievementProgress())
+        if entry.completed:
             continue
-        before = progress.progress
+        before = entry.progress
         if kind == "class_level":
             # values are ("<class>", "<level>")
             level = max((int(v) for v in wanted if v.isdigit()), default=0)
-            progress.progress = max(progress.progress, min(level, definition.target))
+            entry.progress = max(entry.progress, min(level, definition.target))
+        elif kind in _EQUIPMENT_KINDS:
+            # A set requires simultaneous equipment, never repeated clicks on
+            # one item. Each inventory item contributes once to the snapshot.
+            entry.progress = max(entry.progress, min(hits, definition.target))
+        elif kind in _ABSOLUTE_KINDS:
+            entry.progress = max(entry.progress, min(max(0, int(absolute_progress)), definition.target))
         else:
-            progress.progress = min(definition.target, progress.progress + hits * max(1, int(count)))
-        completed = _complete(definition, progress, state, now)
-        if progress.progress != before or completed:
-            changes.append(AchievementChange(definition, progress, completed))
+            entry.progress = min(definition.target, entry.progress + hits * int(count))
+        completed = _complete(definition, entry, state, now)
+        if entry.progress != before or completed:
+            changes.append(AchievementChange(definition, entry, completed))
             completed_any = completed_any or completed
     if completed_any:
         changes.extend(refresh_derived_achievements(catalog, state, now=now))
@@ -301,7 +383,9 @@ def refresh_derived_achievements(
         # open complete as soon as that prerequisite does.
         for key, progress in list(state.items()):
             definition = catalog.achievement(key)
-            if definition is None or progress.completed:
+            # Rows without an evaluator (retired "nomob" kills) never
+            # complete, whatever an older save recorded for them.
+            if definition is None or progress.completed or definition.event_kind is None:
                 continue
             if progress.progress >= definition.target and _complete(
                 definition, progress, state, now,
@@ -374,6 +458,7 @@ __all__ = [
     "AchievementDefinition",
     "AchievementProgress",
     "apply_achievement_event",
+    "battleground_mode",
     "complete_achievement",
     "load_achievement_catalog",
     "refresh_derived_achievements",

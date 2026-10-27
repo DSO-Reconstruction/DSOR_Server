@@ -9,6 +9,7 @@ while holding the lock a player's own hit needs.
 from __future__ import annotations
 
 from types import SimpleNamespace
+import sqlite3
 import threading
 import time
 import unittest
@@ -34,6 +35,7 @@ from dso_server.gameplay.local_combat_state import (
     VictimStatusEffectDefinition,
 )
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 
 MAP_ID = "b1201_pve"
 
@@ -200,6 +202,32 @@ class PopulatedMapSimulationTests(unittest.TestCase):
             "the unaffected peer received no monster activity",
         )
 
+    def test_failed_post_commit_publication_does_not_freeze_the_map(self):
+        """A publication error after the tick committed keeps the fanout.
+
+        A socket proc raising on every turret hit aborted the tick before
+        ``monster-activity-fanout``; the loop kept ticking but no viewer
+        received monster movement or attacks again (2026-10-27 live report).
+        """
+
+        from dso_server.services import monster_combat
+
+        monster_combat._post_commit_failure_logged_at.clear()
+        with patch.object(
+            type(self.server), "_dispatch_player_owned_resolutions",
+            side_effect=AttributeError("publication failed"),
+        ) as dispatch, patch("builtins.print") as log:
+            self.assertTrue(self._tick())
+            self.assertIn(self.peer.addr, self._recipients(),
+                          "monster activity was not published after the failure")
+            self.assertTrue(self._tick())
+
+        self.assertEqual(dispatch.call_count, 2)
+        reports = [call for call in log.call_args_list
+                   if "player-owned-resolutions" in str(call)]
+        self.assertEqual(len(reports), 1, "failure must be logged, rate-limited")
+        self.assertIn("AttributeError", str(reports[0]))
+
     def test_a_backlogged_peer_is_skipped_but_the_map_continues(self):
         self._saturate(self.peer)
 
@@ -342,7 +370,14 @@ class PopulatedMapSimulationTests(unittest.TestCase):
         self.peer.gameplay_remote_actor_id = peer_actor_id
         self.owner.gameplay_pvp_enabled = True
         self.peer.gameplay_pvp_enabled = True
-        definition = self.combat.player_summon_definition(1892)
+        with sqlite3.connect(
+            f'file:{DEFAULT_STATIC_DB_PATH.as_posix()}?mode=ro', uri=True
+        ) as database:
+            skill_index = database.execute(
+                'SELECT rowid - 1 FROM _Template_Skill WHERE Id = ?',
+                ('TurretMachineGun',),
+            ).fetchone()[0]
+        definition = self.combat.player_summon_definition(skill_index)
         self.assertIsNotNone(definition)
         with self.combat.lock:
             self.combat.spawn_player_summon(
@@ -428,6 +463,8 @@ class PopulatedMapSimulationTests(unittest.TestCase):
         definition = load_instant_consumable_definition(
             DEFAULT_STATIC_DB_PATH, 'pvp_command_buff'
         )
+        effect_ids = load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids
+        receiver_effect_id = effect_ids['pvp_protection_aura_effect']
 
         with patch.object(
             self.server.social_store,
@@ -445,18 +482,18 @@ class PopulatedMapSimulationTests(unittest.TestCase):
             instance_id
             for instance_id, (entry, _expires_at)
             in self.owner.gameplay_runtime_status_effects.items()
-            if entry.effect_id == 5903
+            if entry.effect_id == receiver_effect_id
         )
         peer_receiver_ids = tuple(
             instance_id
             for instance_id, (entry, _expires_at)
             in self.peer.gameplay_runtime_status_effects.items()
-            if entry.effect_id == 5903
+            if entry.effect_id == receiver_effect_id
         )
         self.assertEqual(len(owner_receiver_ids), 1)
         self.assertEqual(len(peer_receiver_ids), 1)
         self.assertNotIn(
-            5902,
+            effect_ids['pvp_command_aura'],
             tuple(
                 entry.effect_id
                 for entry, _expires_at

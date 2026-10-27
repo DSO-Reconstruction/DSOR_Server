@@ -11,6 +11,7 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_CLOSED, QUEST_STATE_FINISHED, QuestProgress, load_quest_catalog,
 )
 from dso_server.paths import DEFAULT_QUESTS_PATH
+from dso_server.runtime import file_revisions
 from dso_server.services import events as events_service
 from dso_server.tests import test_quests as quest_fixtures
 
@@ -28,7 +29,7 @@ class EventRequirementTests(unittest.TestCase):
 
     def test_all_authored_event_quests_require_a_matching_event(self):
         quests = [q for q in self.catalog.quests.values() if q.event_id]
-        self.assertEqual(len(quests), 414)
+        self.assertEqual(len(quests), 415)
         for quest in quests:
             with self.subTest(quest=quest.quest_id):
                 self.assertFalse(quest.event_requirement_met(()))
@@ -90,6 +91,9 @@ class EventQuestServiceTests(unittest.TestCase):
             **overrides,
         }]
         self.schedule.write_text(json.dumps({"events": entries}), encoding="utf-8")
+        # Schedule writers publish their edit (as the CMS does); lookups
+        # otherwise reuse the last observed revision for up to a second.
+        file_revisions.invalidate(self.schedule)
 
     def offered(self, quest_id):
         quest = self.server._quest_catalog().quest(quest_id)

@@ -135,14 +135,12 @@ def test_overflow_survives_database_restart_and_map_rekey_with_full_item_data(tm
         restored = store.get(42).inventory
     finally:
         store.close()
-    # Loading also unlocks the two RuneTrinket equipment slots (18, 19) with
-    # an equipped extension item each (persistence/account_state.py); the
-    # bags and their overflow are otherwise restored unchanged.
+    # Loading does not grant unearned RuneTrinket slots or achievements.
     unlocked = {
         item_id for item_id, slots in restored.equipment_slots.items()
         if tuple(slots) in {(18,), (19,)}
     }
-    assert len(unlocked) == 2
+    assert len(unlocked) == 0
     restored.items = [i for i in restored.items if i.item_id not in unlocked]
     for item_id in unlocked:
         del restored.equipment_slots[item_id]

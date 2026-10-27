@@ -76,7 +76,7 @@ def board(tmp_path):
     store = AccountStateStore(tmp_path / "players.sqlite3")
     server = CharacterServer.__new__(CharacterServer)
     server.account_store = store
-    server.social_store = SimpleNamespace(guild_for=lambda _: None)
+    server.social_store = SimpleNamespace(guild_for=lambda _: None, buddies_for=lambda _: ())
     session = _session(50990, 50, "Online")
     session.gameplay_character.class_id = 0
     session.gameplay_honor_points = 75
@@ -216,7 +216,9 @@ def test_alltime_detail_includes_saved_results_and_sorts_columns(board):
     assert result.rows[1][0] == "Online"
 
 
-def test_unrecorded_periods_return_empty_boards(board):
+def test_periods_without_activity_return_empty_boards(board):
+    # Daily honor starts from the totals at the period start (see
+    # test_ranking_boards.py); nobody has gained honor yet.
     _, _, _, dispatch = board
     assert read_page(dispatch(request_bytes(DETAIL, board=2))).rows == []
     packet, bits, _ = dispatch(bytes.fromhex("8bf2000000000002"))
@@ -260,12 +262,12 @@ def test_snapshot_refreshes_live_scores_after_expiry(board, monkeypatch):
     assert read_page(dispatch(request_bytes())).rows[0][1] == 123
 
 
-def test_unrecorded_board_does_not_scan_characters(board, monkeypatch):
+def test_unknown_board_does_not_scan_characters(board, monkeypatch):
     server, _, _, dispatch = board
     def unexpected(_session):
-        raise AssertionError("unrecorded board must not read scores")
+        raise AssertionError("an unknown board must not read scores")
     monkeypatch.setattr(server, "_honor_ranking_records", unexpected)
-    assert read_page(dispatch(request_bytes(DETAIL, board=2))).rows == []
+    assert read_page(dispatch(request_bytes(DETAIL, board=0xFF))).rows == []
 
 
 def test_pvp_scores_survive_database_reload_and_missing_fields_default(tmp_path):

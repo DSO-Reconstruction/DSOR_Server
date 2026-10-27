@@ -524,10 +524,15 @@ class TalentDatabase:
 
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
+        self._exists = False
 
     def _connect(self) -> sqlite3.Connection:
-        if not self.path.is_file():
-            raise FileNotFoundError(self.path)
+        # Checked once: talent lookups run ~200 times per map entry, and a
+        # stat() per lookup is slow on a busy hard disk.
+        if not self._exists:
+            if not self.path.is_file():
+                raise FileNotFoundError(self.path)
+            self._exists = True
         # Talent selection reads every selected definition more than once.
         # Reuse the thread's connection so each lookup does not reload SQLite's
         # schema on the UDP receive thread.

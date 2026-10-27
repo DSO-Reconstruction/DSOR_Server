@@ -302,6 +302,13 @@ class TradeService:
             message = f"{target.gameplay_character.name} cannot trade (their client has no trade)"
         elif target.gameplay_map != s.gameplay_map:
             message = f"{target.gameplay_character.name} is not on your map"
+        elif getattr(self, "social_store", None) is not None and self.social_store.ignores(
+                me, int(target.gameplay_character.character_id)):
+            message = f"you are ignoring {target.gameplay_character.name}"
+        elif getattr(self, "social_store", None) is not None and self.social_store.ignores(
+                int(target.gameplay_character.character_id), me):
+            # Persisted ignores block trade invitations like group/guild ones.
+            message = f"{target.gameplay_character.name} is not accepting your trade requests"
         if message is not None:
             TradeService._trade_send(s, TradeState(PHASE_CLOSED, str(target_name), message=message))
             return

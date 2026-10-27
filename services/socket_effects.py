@@ -97,9 +97,15 @@ class SocketEffectService:
                 event_seed=int(event_seed),
             )
         elif previous and not low_health:
-            CharacterService._stop_socket_event_effects(
-                s, "lowhealth", server_tick=int(server_tick)
-            )
+            from dso_server.services.item_set_events import stop_item_set_condition
+            try:
+                CharacterService._stop_socket_event_effects(
+                    s, "lowhealth", server_tick=int(server_tick)
+                )
+            finally:
+                stop_item_set_condition(
+                    s, "notlowhealth", server_tick=int(server_tick)
+                )
 
     @staticmethod
     def _socket_definition_key(definition) -> tuple:
@@ -273,6 +279,16 @@ class SocketEffectService:
         empty_results = tuple(() for _ in occurrences)
         if _depth > 2:
             return empty_results
+        # The same accepted block/pickup/health transition also belongs to
+        # item sets, even if the wearer has no event-triggered socket item.
+        from dso_server.services.item_set_events import (
+            BRIDGED_EVENTS, dispatch_item_set_event,
+        )
+        for trigger, server_tick, event_seed in occurrences:
+            if trigger in BRIDGED_EVENTS:
+                dispatch_item_set_event(
+                    s, trigger, server_tick=server_tick, event_seed=event_seed,
+                )
         evaluation = _evaluation if _evaluation is not None else getattr(
             s, "gameplay_socket_effect_evaluation", None
         )

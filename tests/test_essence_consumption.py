@@ -35,9 +35,6 @@ from dso_server.services.character_server import CharacterServer
 from dso_server.tests.fixtures.characters import character_server
 
 
-ICE_MISSILE = 1849    # AmmoCost 2
-MAGIC_MISSILE = 1847  # AmmoCost 1
-FIREBALL = 1848       # AmmoCost 3
 ACTIVE_ID = 920_001
 PARKED_ID = 920_002
 SNOW = "e_chr_2012_snow_ammunition"
@@ -55,6 +52,11 @@ def _skill_index(resource_id: str) -> int:
     finally:
         database.close()
     return int(row[0])
+
+
+ICE_MISSILE = _skill_index("iceball")
+MAGIC_MISSILE = _skill_index("magicmissile")
+FIREBALL = _skill_index("fireball")
 
 
 class FakeSocket:
@@ -268,7 +270,7 @@ class CastWiringTests(unittest.TestCase):
             side_effect=lambda s, combat, *, skill_index: spent.append(skill_index) or True,
         ):
             fixture.cast()
-        self.assertEqual(spent, [ICE_MISSILE])
+        self.assertEqual(spent, [fixture.skill.skill_index])
 
 
 if __name__ == "__main__":

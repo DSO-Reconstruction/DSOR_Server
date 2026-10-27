@@ -24,6 +24,13 @@ VIRTUAL_CURRENCY_DROP_TEMPLATES = frozenset((
     'money_vc_gold',
 ))
 
+# ``_Template_ActorAttributes``: every ``<QuestType>QuestDropFactor`` starts
+# at 1.0 and is clamped to [1, 10000]; IgnoreSkillCost to [0, 1] and
+# AdditionalSkillCost to [-100, 100].
+QUEST_DROP_FACTOR_LIMITS = (1.0, 10000.0)
+IGNORE_SKILL_COST_LIMITS = (0.0, 1.0)
+ADDITIONAL_SKILL_COST_LIMITS = (-100.0, 100.0)
+
 
 @dataclass(frozen=True)
 class ModifierInstruction:
@@ -83,6 +90,73 @@ class ActiveStatusModifiers:
     virtual_currency_drop: ModifierAmounts = ModifierAmounts()
     drop_amounts: tuple[tuple[str, ModifierAmounts], ...] = ()
     quest_experience: ModifierAmounts = ModifierAmounts()
+    quest_drop_factors: tuple[tuple[str, ModifierAmounts], ...] = ()
+    health_globe_hitpoints: ModifierAmounts = ModifierAmounts()
+    health_globe_resource: ModifierAmounts = ModifierAmounts()
+    additional_essence_cost: float = 0.0
+    ignore_essence_cost: float = 0.0
+
+    def quest_drop_factor(self, quest_type: str) -> float:
+        '''``<QuestType>QuestDropFactor`` for one quest's ``type``.
+
+        ``QuestDropFactor:1,relative,Local`` raises ``LocalQuestDropFactor``
+        from 1.0 to 2.0 ("Doubles the amount of dropped quest items for side
+        quests", gui.statuseffects ``backitemQuestdrop``). The factor itself
+        is deterministic: the Parrot's "chance" comes from the pet applying
+        ``event_quest_drop`` with ``C:0.2``, not from this modifier.
+        '''
+
+        amounts = dict(self.quest_drop_factors).get(
+            str(quest_type or '').casefold(), ModifierAmounts()
+        )
+        low, high = QUEST_DROP_FACTOR_LIMITS
+        factor = 1.0 * max(0.0, 1.0 + amounts.relative) + amounts.absolute
+        return min(high, max(low, factor))
+
+    def quest_drop_bonus(self, quest_type: str) -> ModifierAmounts:
+        '''The quest drop factor as a relative amount for ``apply()``.'''
+
+        return ModifierAmounts(relative=self.quest_drop_factor(quest_type) - 1.0)
+
+    def health_globe_fractions(
+        self, hitpoints: float, resource: float = 0.0,
+    ) -> tuple[float, float]:
+        '''Healing Sphere restore fractions after ``HealthGlobeBonus``.
+
+        ``Healthglobe`` restores ``CurrHealthPoints:$0,relative`` and
+        ``CurrSkillResource:$1,relative`` (fractions of the maximum). An
+        absolute bonus adds percentage points ("+ {0}% Health Points from
+        Healing Spheres", ``hpRestoreAbsolutPlus``; "Picking up Healing
+        Spheres will restore {0} of your Resource", ``srRestoreAbsolutPlus``);
+        a relative bonus scales the authored base.
+        '''
+
+        def fraction(base: float, amounts: ModifierAmounts) -> float:
+            return max(
+                0.0,
+                max(0.0, float(base)) * max(0.0, 1.0 + amounts.relative)
+                + amounts.absolute,
+            )
+
+        return (
+            fraction(hitpoints, self.health_globe_hitpoints),
+            fraction(resource, self.health_globe_resource),
+        )
+
+    def essence_cost(self, base: int, *, roll: float = 1.0) -> int:
+        '''One accepted cast's essence (``AmmoCost``) consumption.
+
+        ``IgnoreSkillCost`` is the chance that a skill does not consume any
+        essences (``ignoreSkillCost``); ``AdditionalSkillCost`` changes the
+        consumption, which "will never be reduced below 1"
+        (``additionalSkillCostMinus``). Mana/rage costs are separate.
+        '''
+
+        if base <= 0:
+            return 0
+        if 0.0 <= float(roll) < self.ignore_essence_cost:
+            return 0
+        return max(1, int(math.floor(base + self.additional_essence_cost + 0.5)))
 
     def drop_amount_bonus(
         self,
@@ -271,6 +345,25 @@ def snapshot_active_status_entries(
     return tuple(entries)
 
 
+def snapshot_player_modifier_sources(session) -> tuple[object, ...]:
+    """Read active status and already eligible equipment rules under flow_lock.
+
+    Item-set tiers contribute their compiled modifiers (``QuestDropFactor``,
+    ``HealthGlobeBonus``, Black Essence skill-cost rules) next to the status
+    entries; socket rules arrive through their status entries.
+    """
+
+    return snapshot_active_status_entries(
+        getattr(session, 'gameplay_persistent_status_effects', {}),
+        getattr(session, 'gameplay_timed_status_effect_expiries', {}),
+        getattr(session, 'gameplay_runtime_status_effects', {}),
+        getattr(session, 'gameplay_item_set_effects', {}),
+        getattr(session, 'gameplay_socket_effects', {}),
+    ) + tuple(getattr(
+        getattr(session, 'gameplay_item_set_evaluation', None), 'modifiers', (),
+    ))
+
+
 def evaluate_active_status_modifiers(
     catalog: StatusModifierCatalog,
     status_effects: Iterable[object],
@@ -281,74 +374,124 @@ def evaluate_active_status_modifiers(
     quest_experience = ModifierAmounts()
     virtual_currency = ModifierAmounts()
     drops: dict[str, ModifierAmounts] = {}
-    entries = _status_entries(status_effects)
+    quest_drops: dict[str, ModifierAmounts] = {}
+    globe_health = ModifierAmounts()
+    globe_resource = ModifierAmounts()
+    additional_essence_cost = 0.0
+    ignore_essence_cost = 0.0
+    sources = tuple(status_effects)
+    programs = []
+    for entry in _status_entries(sources):
+        definition = catalog.definitions.get(int(entry.effect_id))
+        if definition is None:
+            continue
+        count = min(max(1, int(getattr(entry, 'field_18', 0)) + 1),
+                    definition.max_stack_size)
+        values = tuple(getattr(entry, 'values', ()))
+        programs.extend((modifier, count, values)
+                        for modifier in definition.start_modifiers)
+    # Active set thresholds supply compiled modifiers directly, rather than
+    # status entries. Their eligibility (including RequiredLevel) is already
+    # resolved by the equipment evaluator. ItemSetModifier keeps the authored
+    # spelling (``QuestDropFactor``), so kinds are compared casefolded.
+    programs.extend((source, 1, ()) for source in sources
+                    if hasattr(source, 'kind') and hasattr(source, 'arguments')
+                    and not hasattr(source, 'effect_id'))
     # Talent ranks modify actor variables before their companion effect reads
     # them. Reading InitialValue alone reduced +106% Wisdom gold to +1.7%.
     actor_variables = dict(catalog.actor_variables)
-    for entry in entries:
-        definition = catalog.definitions.get(int(entry.effect_id))
-        if definition is None:
+    for modifier, stack_count, values in programs:
+        if (str(modifier.kind).casefold() != 'actorvariable'
+                or len(modifier.arguments) < 3):
             continue
-        stack_count = min(
-            max(1, int(getattr(entry, 'field_18', 0)) + 1),
-            definition.max_stack_size,
+        value = resolve_modifier_value(
+            modifier.arguments[0], values, actor_variables
         )
-        values = tuple(getattr(entry, 'values', ()))
-        for modifier in definition.start_modifiers:
-            if modifier.kind != 'actorvariable' or len(modifier.arguments) < 3:
-                continue
-            value = resolve_modifier_value(modifier.arguments[0], values, actor_variables)
-            if value is None:
-                continue
-            value *= stack_count
-            variable_id = modifier.arguments[2].strip().casefold()
-            current = actor_variables.get(variable_id, 0.0)
-            actor_variables[variable_id] = (
-                current * (1.0 + value)
-                if modifier.arguments[1].casefold() == 'relative'
-                else current + value
-            )
-    for entry in entries:
-        definition = catalog.definitions.get(int(entry.effect_id))
-        if definition is None:
+        if value is None or not math.isfinite(value):
             continue
-        stack_count = min(
-            max(1, int(getattr(entry, 'field_18', 0)) + 1),
-            definition.max_stack_size,
+        value *= stack_count
+        variable_id = modifier.arguments[2].strip().casefold()
+        current = actor_variables.get(variable_id, 0.0)
+        actor_variables[variable_id] = (
+            current * (1.0 + value)
+            if modifier.arguments[1].casefold() == 'relative'
+            else current + value
         )
-        values = tuple(getattr(entry, 'values', ()))
-        for modifier in definition.start_modifiers:
-            kind = modifier.kind
-            if kind not in {
-                'xpgain', 'questexperience', 'virtualcurrencydropamount', 'dropamount'
-            }:
-                continue
-            if len(modifier.arguments) < 2:
+    for modifier, stack_count, values in programs:
+        kind = str(modifier.kind).casefold()
+        if kind in {'additionalskillcost', 'ignoreskillcost'}:
+            # Black Essence sets: ``AdditionalSkillCost:-1.0`` and
+            # ``IgnoreSkillCost:0.15`` carry one operand and no skill scope.
+            # Scoped multi-argument forms are not authored on any set.
+            if len(modifier.arguments) != 1:
                 continue
             value = resolve_modifier_value(
                 modifier.arguments[0], values, actor_variables
             )
-            if value is None:
+            if value is None or not math.isfinite(value):
                 continue
-            value *= stack_count
-            operation = modifier.arguments[1]
-            if kind == 'xpgain':
-                xp_gain = xp_gain.plus(value, operation)
-            elif kind == 'questexperience':
-                quest_experience = quest_experience.plus(value, operation)
-            elif kind == 'virtualcurrencydropamount':
-                virtual_currency = virtual_currency.plus(value, operation)
-            elif len(modifier.arguments) >= 3:
-                target = modifier.arguments[2].strip().casefold()
-                if target:
-                    drops[target] = drops.get(
-                        target, ModifierAmounts()
-                    ).plus(value, operation)
+            if kind == 'additionalskillcost':
+                additional_essence_cost += value * stack_count
+            else:
+                ignore_essence_cost += value * stack_count
+            continue
+        if kind not in {
+            'xpgain', 'questexperience', 'virtualcurrencydropamount',
+            'dropamount', 'questdropfactor', 'healthglobebonus',
+        }:
+            continue
+        if len(modifier.arguments) < 2:
+            continue
+        value = resolve_modifier_value(
+            modifier.arguments[0], values, actor_variables
+        )
+        if (
+            value is None
+            or not math.isfinite(value)
+            or modifier.arguments[1].casefold() not in {'relative', 'absolute'}
+        ):
+            continue
+        value *= stack_count
+        operation = modifier.arguments[1]
+        if kind == 'xpgain':
+            xp_gain = xp_gain.plus(value, operation)
+        elif kind == 'questexperience':
+            quest_experience = quest_experience.plus(value, operation)
+        elif kind == 'virtualcurrencydropamount':
+            virtual_currency = virtual_currency.plus(value, operation)
+        elif len(modifier.arguments) >= 3:
+            target = modifier.arguments[2].split('#', 1)[0].strip().casefold()
+            if kind == 'questdropfactor' and target:
+                # Targets name ``<Type>QuestDropFactor`` attributes, i.e. a
+                # quest's ``type`` (Local, Repeatable, Event, ...).
+                quest_drops[target] = quest_drops.get(
+                    target, ModifierAmounts()
+                ).plus(value, operation)
+            elif kind == 'healthglobebonus':
+                if target == 'hitpoints':
+                    globe_health = globe_health.plus(value, operation)
+                elif target == 'skillresource':
+                    globe_resource = globe_resource.plus(value, operation)
+            elif kind == 'dropamount' and target:
+                drops[target] = drops.get(
+                    target, ModifierAmounts()
+                ).plus(value, operation)
     return ActiveStatusModifiers(
         xp_gain=xp_gain,
         quest_experience=quest_experience,
         virtual_currency_drop=virtual_currency,
         drop_amounts=tuple(sorted(drops.items())),
+        quest_drop_factors=tuple(sorted(quest_drops.items())),
+        health_globe_hitpoints=globe_health,
+        health_globe_resource=globe_resource,
+        additional_essence_cost=min(
+            ADDITIONAL_SKILL_COST_LIMITS[1],
+            max(ADDITIONAL_SKILL_COST_LIMITS[0], additional_essence_cost),
+        ),
+        ignore_essence_cost=min(
+            IGNORE_SKILL_COST_LIMITS[1],
+            max(IGNORE_SKILL_COST_LIMITS[0], ignore_essence_cost),
+        ),
     )
 
 
@@ -448,4 +591,5 @@ __all__ = [
     'parse_modifier_program',
     'resolve_modifier_value',
     'snapshot_active_status_entries',
+    'snapshot_player_modifier_sources',
 ]

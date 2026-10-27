@@ -78,7 +78,7 @@ def test_wounded_character_takes_the_globe_and_heals(world):
 
     assert world.server._pickup_world_item(s, item_id, automatic=True)
     assert item_id not in s.gameplay_world_loot
-    assert current_health(s) == min(maximum, maximum // 2 + round(maximum * 0.25))
+    assert current_health(s) == min(maximum, maximum // 2 + round(maximum * 0.20))
 
 
 def test_globe_left_at_full_health_is_collected_after_damage(world):

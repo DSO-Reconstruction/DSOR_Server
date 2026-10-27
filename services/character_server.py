@@ -38,6 +38,8 @@ from dso_server.services.consumables import ConsumableService
 from dso_server.services.premium_bags import PremiumBagService
 from dso_server.services.inventory_map import InventoryMapService
 from dso_server.services.inventory_interactions import InventoryInteractionService
+from dso_server.services.food_recycling import FoodRecyclingService
+from dso_server.services.seasonal_activities import SeasonalActivityService
 from dso_server.services.map_transition import MapTransitionService
 from dso_server.services.map_unlocks import MapUnlockService
 from dso_server.services.player_respawn import PlayerRespawnService
@@ -84,6 +86,8 @@ class CharacterServer(
         PlayerCombatService,
         ConsumableService,
         InventoryInteractionService,
+        FoodRecyclingService,
+        SeasonalActivityService,
         InventoryMapService,
         PremiumBagService,
         MapTransitionService,

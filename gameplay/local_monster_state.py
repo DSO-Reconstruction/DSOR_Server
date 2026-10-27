@@ -874,6 +874,37 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
 
 
+# ``_Template_Monster.PvPMinionType`` of the Assault-the-Fortress structures
+# and their summons (defense towers, the stage targets, rammer and bomb
+# spawners, rammers, bombs). Every one of them authors ``Resistances='0'``,
+# the skill-less stage targets and ``*_invincible`` stand-ins have no
+# Skills, and the spawners' only skill is a summon -- each of which the
+# ordinary loaders reject. The exceptions below are scoped to this exact
+# type, so no other monster's loading changes.
+PVP_PROGRESSION_MINION_TYPE = "MAIN_PVP_Progression"
+_PVP_PROGRESSION_RESISTANCES = (
+    "Fire:0;Ice:0;Lightning:0;Poison:0;DarkMagic:0"
+)
+
+
+@lru_cache(maxsize=512)
+def is_pvp_progression_template(
+    static_database_path: Path, template_id: str,
+) -> bool:
+    """Whether ``template_id`` is an Assault-the-Fortress structure/summon."""
+
+    try:
+        with _open_read_only(Path(static_database_path)) as database:
+            row = database.execute(
+                "SELECT COALESCE(PvPMinionType, '') FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
+                (str(template_id),),
+            ).fetchone()
+    except (OSError, sqlite3.Error):
+        return False
+    return row is not None and str(row[0]) == PVP_PROGRESSION_MINION_TYPE
+
+
 def _parse_resistances(value: str) -> dict[str, float]:
     result = {}
     for entry in str(value or "").split(";"):
@@ -1184,6 +1215,11 @@ def _load_monster(
         * health_factor
         * difficulty_health
     )
+    if (str(resistance_text).strip() in {"", "0"}
+            and is_pvp_progression_template(
+                Path(static_database_path), str(template_id))):
+        # The fortress structures author a bare '0': no elemental resistance.
+        resistance_text = _PVP_PROGRESSION_RESISTANCES
     resistances = _parse_resistances(resistance_text)
     # ScaleMonsterForRank() unconditionally looks up these attributes. Retail
     # omits shield (8) and physical armor (20) from this particular snapshot
@@ -1303,6 +1339,7 @@ def load_player_summon_spawn(
     yaw: float = 0.0,
     scaling_difficulty: int = 0,
     map_companion: bool = False,
+    map_level_scaling: bool = False,
 ) -> MonsterSpawnGroup:
     """Build the friendly ``NewMonster`` lifecycle used by player summons.
 
@@ -1320,7 +1357,8 @@ def load_player_summon_spawn(
         str(template_id),
         int(actor_id),
         tuple(float(value) for value in position),
-        monster_level=None if map_companion else max(1, int(level)),
+        monster_level=(None if map_companion and not map_level_scaling
+                       else max(1, int(level))),
         scaling_difficulty=max(0, int(scaling_difficulty)),
     )
     monster = replace(
@@ -1520,7 +1558,8 @@ def _load_runtime_template(
             "COALESCE(SummonMonsterAmount, 0), "
             "COALESCE(SummonMonsterLimit, 0), "
             "COALESCE(BehaviorType, ''), "
-            "COALESCE(StartupDuration, 0) "
+            "COALESCE(StartupDuration, 0), "
+            "COALESCE(PvPMinionType, '') "
             "FROM _Template_Monster WHERE Id=? LIMIT 1",
             (str(template_id),),
         ).fetchone()
@@ -1767,19 +1806,25 @@ def _load_runtime_template(
         tuple(value for value in attacks if not value.support)
         + tuple(value for value in attacks if value.support)
     )
-    if attacks[0].support:
+    pvp_progression = str(movement_row[12]) == PVP_PROGRESSION_MINION_TYPE
+    if attacks[0].support and not pvp_progression:
+        # A fortress rammer/bomb spawner's only skill is its summon; it is
+        # still its autonomous action (PvPSpawnerRammerSummon/BombsSummon).
         return None
     attack = attacks[0]
+    static_strategies = {
+        "staticstrategy", "noturnstaticstrategy",
+        "sleeplessstaticstrategy", "boss04strategy",
+        "boss03strategy",
+    }
+    if pvp_progression:
+        # The spawners' NoTurnNoTargetStaticStrategy is a fixed structure.
+        static_strategies = static_strategies | {"noturnnotargetstaticstrategy"}
     return (
         attacks,
         (
             0.0
-            if str(movement_row[10]).casefold()
-            in {
-                "staticstrategy", "noturnstaticstrategy",
-                "sleeplessstaticstrategy", "boss04strategy",
-                "boss03strategy",
-            }
+            if str(movement_row[10]).casefold() in static_strategies
             else max(0.1, float(movement_row[0]))
         ),
         max(0.0, float(movement_row[1])),
@@ -1820,6 +1865,10 @@ def _load_runtime_definition(
             stationary
             or str(template_id).casefold().startswith("damage_doll")
             or str(template_id).casefold() == "e_dra_fortress_normal_powernode"
+            # Fortress stage targets (drawbridge switch, gun controls) and
+            # the ``*_invincible`` tower stand-ins author no Skills.
+            or is_pvp_progression_template(
+                Path(static_database_path), str(template_id))
         ):
             return MonsterRuntimeDefinition(
                 actor_id=int(actor_id),

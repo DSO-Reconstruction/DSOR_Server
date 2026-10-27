@@ -317,13 +317,25 @@ class SeasonPassService:
         with s.flow_lock:
             if s.gameplay_season_pass is not state:
                 return
+        CharacterService._request_account_save(
+            s, "Season Pass rewards claimed", flush=True,
+        )
+        deferred_achievement_packets = []
+        for currency_id, balance in game_currencies.items():
+            gained = int(balance) - int(original_game_currencies.get(currency_id, 0))
+            if gained > 0:
+                CharacterService._achievement_feed(
+                    self, s, "collectedgamecurrency", (currency_id,), count=gained,
+                    deferred_packets=deferred_achievement_packets,
+                )
         s.send_reliable_ordered_split(
             packet, total_bit_length=packet_bits, track=True,
             label_prefix="season-pass-awards",
         )
-        CharacterService._request_account_save(
-            s, "Season Pass rewards claimed", flush=True,
-        )
+        for achievement_packet, achievement_bits, achievement_label in deferred_achievement_packets:
+            CharacterService._send_world_loot_state_batch(
+                s, achievement_packet, achievement_bits, label=achievement_label
+            )
         print(
             f"[DrasaOnlineMapServer] Season Pass rewards claimed "
             f"for {s.addr}: requested={request.award_ids}, "

@@ -6,6 +6,7 @@ import copy
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from functools import wraps
+import hmac
 import json
 import os
 from pathlib import Path
@@ -29,9 +30,75 @@ from dso_server.protocol.social_protocol import (
 # first acceptance can be honoured.
 GROUP_MEMBER_LIMIT = 5
 
+# ``gui.window.grouping/groupEditWindowDescriptionCreate``: "Group names can
+# contain up to 40 characters".  The same bound applies to the edit dialog.
+GROUP_NAME_MAX_LENGTH = 40
+
+# Local choices (no authored value exists in the client or static.db4):
+# guild names keep the historical 3..32 bound, a guild's message of the day
+# is bounded so one officer cannot grow every member's chat batch without
+# limit, an ignore list holds at most 100 characters, and an unanswered
+# group/guild invitation or join request lapses after five minutes.
+GUILD_NAME_MIN_LENGTH = 3
+GUILD_NAME_MAX_LENGTH = 32
+GUILD_MESSAGE_MAX_LENGTH = 1024
+IGNORE_LIST_LIMIT = 100
+INVITATION_TTL_SECONDS = 300.0
+
+INVITATION_KINDS = frozenset({"group", "guild", "group-request"})
+
 
 class GroupFullError(ValueError):
     """Raised when a join would exceed :data:`GROUP_MEMBER_LIMIT`."""
+
+
+class SocialPermissionError(ValueError):
+    """The acting character lacks the rank/leadership the operation needs."""
+
+
+class SocialTargetError(ValueError):
+    """The named character is not a member of the actor's collection."""
+
+
+class SocialNameError(ValueError):
+    """A group or guild name is empty, too long, or otherwise invalid."""
+
+
+class SocialNameTakenError(ValueError):
+    """Another guild already uses the requested name."""
+
+
+class SocialNoChangeError(ValueError):
+    """The request would not change any durable state."""
+
+
+class SocialContactBlockedError(ValueError):
+    """One of the two characters ignores the other."""
+
+
+class InvitationPendingError(ValueError):
+    """The same invitation or join request is still waiting for an answer."""
+
+
+class InvitationMissingError(ValueError):
+    """No live invitation matches the answer (forged, replayed, or expired)."""
+
+
+@dataclass(frozen=True)
+class PendingInvitation:
+    """One server-issued invitation capability.
+
+    The ledger is keyed by ``(kind, source, target, collective_id)``: for
+    ``group``/``guild`` the source is the inviter and the target the invited
+    character; for ``group-request`` the source is the character asking to
+    join and the target the group leader who must answer.  ``token`` is the
+    opaque value delivered in the client notification; ``leave_current``
+    records a join request sent with "leave my current group" confirmed.
+    """
+
+    token: str
+    expires_at: float
+    leave_current: bool = False
 
 
 # Persisted files written before the guild member's class and rank bytes were
@@ -63,6 +130,7 @@ class Guild:
     name: str
     description: str
     members: list[SocialMember] = field(default_factory=list)
+    message_of_the_day: str = ""
 
 
 @dataclass
@@ -99,6 +167,10 @@ class SocialStateStore:
         self.guilds: dict[int, Guild] = {}
         self.groups: dict[int, Group] = {}
         self.buddies: dict[int, set[int]] = {}
+        # owner character id -> {ignored character id: name when ignored}.
+        self.ignored: dict[int, dict[int, str]] = {}
+        # Invitations are session-era capabilities, never restored after restart.
+        self._invitations: dict[tuple[str, int, int, int], PendingInvitation] = {}
         self.next_guild_id = 50_000_001
         self.next_group_id = 60_000_001
         self._guild_memberships: dict[int, int] = {}
@@ -141,6 +213,7 @@ class SocialStateStore:
                 str(raw["name"]),
                 str(raw.get("description", "")),
                 [SocialMember(**member) for member in raw.get("members", ())],
+                str(raw.get("message_of_the_day", "")),
             )
             if version < STATE_VERSION:
                 for member in guild.members:
@@ -209,6 +282,17 @@ class SocialStateStore:
                     for buddy_id in buddy_ids
                     if int(buddy_id) != owner
                 }
+        raw_ignored = document.get("ignored", {})
+        if isinstance(raw_ignored, dict):
+            for owner, entries in raw_ignored.items():
+                if not isinstance(entries, dict):
+                    continue
+                kept = {
+                    int(target): str(name) for target, name in entries.items()
+                    if int(target) != int(owner)
+                }
+                if kept:
+                    self.ignored[int(owner)] = kept
         if repaired:
             self._queue_write_locked()
             self.flush()
@@ -226,7 +310,7 @@ class SocialStateStore:
             self._condition.notify_all()
 
     def _write_snapshot(self, snapshot) -> None:
-        next_guild_id, next_group_id, guilds, groups, buddies = snapshot
+        next_guild_id, next_group_id, guilds, groups, buddies, ignored = snapshot
         document = {
             "version": STATE_VERSION,
             "next_guild_id": next_guild_id,
@@ -237,6 +321,7 @@ class SocialStateStore:
                 str(owner_id): sorted(buddy_ids)
                 for owner_id, buddy_ids in buddies if buddy_ids
             },
+            "ignored": {str(owner): entries for owner, entries in ignored if entries},
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = None
@@ -272,6 +357,7 @@ class SocialStateStore:
                     self.next_guild_id, self.next_group_id,
                     tuple(self.guilds.values()), tuple(self.groups.values()),
                     tuple(self.buddies.items()),
+                    tuple(self.ignored.items()),
                 )
                 with self._condition:
                     revision = self._queued_revision
@@ -323,18 +409,34 @@ class SocialStateStore:
             guild = self.guilds.get(self._guild_memberships.get(int(character_id)))
             return copy.deepcopy(guild) if guild is not None else None
 
+    def _validate_guild_foundation_locked(self, character_id: int, name: str) -> str:
+        cleaned = str(name).strip()
+        if not GUILD_NAME_MIN_LENGTH <= len(cleaned) <= GUILD_NAME_MAX_LENGTH:
+            raise ValueError("guild name must contain 3..32 characters")
+        if self._guild_memberships.get(int(character_id)) in self.guilds:
+            raise ValueError("character is already in a guild")
+        if cleaned.casefold() in self._guild_names:
+            raise ValueError("guild name is already in use")
+        return cleaned
+
+    def validate_guild_foundation(self, character_id: int, name: str) -> str:
+        """Check a foundation without changing state; return the name.
+
+        Lets the caller charge the authored foundation fee only for a
+        request :meth:`create_guild` would accept (it repeats the check).
+        """
+
+        with self.lock:
+            return self._validate_guild_foundation_locked(character_id, name)
+
     @_durable_mutation
     def create_guild(
         self, name: str, description: str, member: SocialMember
     ) -> Guild:
-        cleaned = name.strip()
-        if not 3 <= len(cleaned) <= 32:
-            raise ValueError("guild name must contain 3..32 characters")
         with self.lock:
-            if self.guild_for(member.character_id):
-                raise ValueError("character is already in a guild")
-            if cleaned.casefold() in self._guild_names:
-                raise ValueError("guild name is already in use")
+            cleaned = self._validate_guild_foundation_locked(
+                member.character_id, name
+            )
             member = copy.deepcopy(member)
             member.rank = GUILD_RANK_LEADER
             member.can_invite = True
@@ -350,6 +452,7 @@ class SocialStateStore:
 
     @_durable_mutation
     def leave_guild(self, character_id: int) -> Guild | None:
+        character_id = int(character_id)
         with self.lock:
             guild = self.guild_for(character_id)
             if guild is None:
@@ -358,7 +461,11 @@ class SocialStateStore:
             guild.members = [
                 m for m in guild.members if m.character_id != character_id
             ]
-            self._guild_memberships.pop(int(character_id), None)
+            self._guild_memberships.pop(character_id, None)
+            self._drop_invitations_locked(
+                lambda key: key[0] == "guild" and key[1] == character_id
+                and key[3] == guild.guild_id
+            )
             if not guild.members:
                 del self.guilds[guild.guild_id]
                 self._guild_names.discard(guild.name.casefold())
@@ -395,6 +502,13 @@ class SocialStateStore:
         if owner == buddy:
             raise ValueError("a character cannot add itself as a buddy")
         with self.lock:
+            # ClientSocialManager refuses a buddy on the own ignore list
+            # (gui.window.social/cannotBeBuddyIfIgnored); the server also
+            # refuses a request towards someone who ignores the requester.
+            if self.social_contact_blocked(owner, buddy):
+                raise SocialContactBlockedError(
+                    "an ignored character cannot become a buddy"
+                )
             buddies = set(self.buddies.get(owner, ()))
             if buddy in buddies:
                 raise ValueError("character is already a buddy")
@@ -424,6 +538,388 @@ class SocialStateStore:
             group = self.groups.get(int(group_id))
             return copy.deepcopy(group) if group is not None else None
 
+    # -- ignored players ---------------------------------------------------
+
+    def ignored_for(self, character_id: int) -> tuple[tuple[int, str], ...]:
+        """Return ``(character_id, name)`` pairs the owner ignores."""
+
+        with self.lock:
+            return tuple(sorted(self.ignored.get(int(character_id), {}).items()))
+
+    def ignores(self, owner: int, target: int) -> bool:
+        with self.lock:
+            return int(target) in self.ignored.get(int(owner), {})
+
+    def social_contact_blocked(self, first: int, second: int) -> bool:
+        """True when either character ignores the other."""
+
+        with self.lock:
+            return self.ignores(first, second) or self.ignores(second, first)
+
+    @_durable_mutation
+    def set_ignored(
+        self, owner: int, target: int, name: str, *, remove: bool = False
+    ) -> bool:
+        """Add or remove one ignored character; return whether it changed.
+
+        Mirrors ClientSocialManager::AddPlayerToIgnored (0x14026fa4c): a
+        character cannot ignore itself (``cannotIgnoreSelf``) or a character
+        on its own buddy list (``cannotIgnoreBuddy``).  Ignoring someone
+        withdraws every pending invitation/join request between the two.
+        """
+
+        owner, target = int(owner), int(target)
+        if owner == target:
+            raise ValueError("a character cannot ignore itself")
+        current = self.ignored.get(owner, {})
+        if remove:
+            if target not in current:
+                return False
+            entries = {key: value for key, value in current.items() if key != target}
+        else:
+            if target in current:
+                return False
+            if target in self.buddies.get(owner, ()):
+                raise SocialContactBlockedError("a buddy cannot be ignored")
+            if len(current) >= IGNORE_LIST_LIMIT:
+                raise ValueError(
+                    f"an ignore list holds at most {IGNORE_LIST_LIMIT} characters"
+                )
+            entries = {**current, target: str(name)}
+        if entries:
+            self.ignored[owner] = entries
+        else:
+            self.ignored.pop(owner, None)
+        if not remove:
+            self._drop_invitations_locked(
+                lambda key: {key[1], key[2]} == {owner, target}
+            )
+        self._queue_write_locked()
+        return True
+
+    # -- invitation ledger ---------------------------------------------------
+
+    def _drop_invitations_locked(self, predicate) -> None:
+        self._invitations = {
+            key: value for key, value in self._invitations.items()
+            if not predicate(key)
+        }
+
+    def _purge_expired_invitations_locked(self, clock: float) -> None:
+        self._invitations = {
+            key: value for key, value in self._invitations.items()
+            if value.expires_at > clock
+        }
+
+    def _authorized_inviter(self, kind: str, collective_id: int, inviter: int):
+        """Return the live collection when ``inviter`` may admit members.
+
+        Groups admit through the leader or a member granted ``can_invite``;
+        guilds through officers, the leader, or ``can_invite`` members (the
+        same rule ``add_group_member``/``add_guild_member`` enforce).
+        """
+
+        collective = (self.groups if kind == "group" else self.guilds).get(
+            int(collective_id)
+        )
+        if collective is None:
+            raise InvitationMissingError("social collection no longer exists")
+        member = next(
+            (m for m in collective.members if m.character_id == int(inviter)),
+            None,
+        )
+        allowed = member is not None and (
+            member.can_invite
+            or (
+                collective.owner_character_id == int(inviter)
+                if kind == "group"
+                else member.rank in {GUILD_RANK_LEADER, GUILD_RANK_OFFICER}
+            )
+        )
+        if not allowed:
+            raise SocialPermissionError("character cannot invite to this collection")
+        return collective
+
+    @staticmethod
+    def _invitation_roles(kind: str, source: int, target: int):
+        """Return ``(collection kind, admitting member, joining member)``."""
+
+        if kind == "group-request":
+            return "group", int(target), int(source)
+        return kind, int(source), int(target)
+
+    def pending_invitation(
+        self, kind: str, source: int, target: int, collective_id: int,
+        *, now: float | None = None,
+    ) -> PendingInvitation | None:
+        clock = time.monotonic() if now is None else float(now)
+        with self.lock:
+            record = self._invitations.get(
+                (kind, int(source), int(target), int(collective_id))
+            )
+            return record if record is not None and record.expires_at > clock else None
+
+    def issue_invitation(
+        self, kind: str, source: int, target: int, collective_id: int,
+        token: str, *, now: float | None = None, leave_current: bool = False,
+    ) -> PendingInvitation:
+        """Record a capability the target's answer must later present.
+
+        Raises before anything is delivered when the two characters ignore
+        each other, the admitting member lost the right to admit, the
+        joining character already belongs to this collection, a group is
+        full, or the same invitation is still pending.
+        """
+
+        if kind not in INVITATION_KINDS:
+            raise ValueError("invalid invitation kind")
+        if not str(token):
+            raise ValueError("an invitation needs a token")
+        source, target = int(source), int(target)
+        if source == target:
+            raise ValueError("a character cannot invite itself")
+        actual_kind, inviter, joining = self._invitation_roles(kind, source, target)
+        clock = time.monotonic() if now is None else float(now)
+        with self.lock:
+            if self._closed:
+                raise RuntimeError("social state store is closed")
+            if self.social_contact_blocked(source, target):
+                raise SocialContactBlockedError("social contact is ignored")
+            collective = self._authorized_inviter(actual_kind, collective_id, inviter)
+            if any(m.character_id == joining for m in collective.members):
+                raise ValueError("character is already a member")
+            if actual_kind == "group" and len(collective.members) >= GROUP_MEMBER_LIMIT:
+                raise GroupFullError("group is full")
+            self._purge_expired_invitations_locked(clock)
+            key = (kind, source, target, int(collective_id))
+            if key in self._invitations:
+                raise InvitationPendingError("the invitation is still pending")
+            record = PendingInvitation(
+                str(token), clock + INVITATION_TTL_SECONDS, bool(leave_current)
+            )
+            self._invitations[key] = record
+            return record
+
+    @_durable_mutation
+    def answer_invitation(
+        self, kind: str, source: int, target: int, collective_id: int,
+        member: SocialMember | None = None, *, accept: bool,
+        token: str | None = None, now: float | None = None,
+    ):
+        """Consume one issued invitation; on acceptance add the member.
+
+        The caller passes the authenticated answering character as
+        ``target`` (``group``/``guild``) or the authenticated leader
+        (``group-request``), so a fabricated or replayed answer cannot match
+        a ledger entry.  A token, when the client echoes one, must match
+        exactly; a mismatch leaves the real invitation in place.  The entry
+        is consumed before membership is checked, so one invitation admits
+        at most once.  Returns the joined collection, or ``None`` for a
+        refusal.
+        """
+
+        key = (kind, int(source), int(target), int(collective_id))
+        clock = time.monotonic() if now is None else float(now)
+        record = self._invitations.get(key)
+        if record is None or record.expires_at <= clock:
+            self._invitations.pop(key, None)
+            raise InvitationMissingError("social invitation is missing or expired")
+        if token is not None and not hmac.compare_digest(
+            record.token.encode("utf-8"), str(token).encode("utf-8")
+        ):
+            raise InvitationMissingError("social invitation token does not match")
+        del self._invitations[key]
+        if not accept:
+            return None
+        if self.social_contact_blocked(source, target):
+            raise SocialContactBlockedError("social contact is ignored")
+        actual_kind, inviter, joining = self._invitation_roles(kind, source, target)
+        if member is None or int(member.character_id) != joining:
+            raise ValueError("invitation recipient does not match")
+        self._authorized_inviter(actual_kind, collective_id, inviter)
+        if actual_kind == "group":
+            current = self._group_memberships.get(joining)
+            if current is not None and current != int(collective_id):
+                previous = self.groups.get(current)
+                # AcceptGroupInvite (0x14026ea94) only accepts while the own
+                # group has at most one member; a confirmed join request
+                # (confirmGroupLeaveForJoinRequest) leaves any group.
+                if previous is not None and (
+                    record.leave_current or len(previous.members) <= 1
+                ):
+                    self._leave_group_locked(joining)
+            return type(self).add_group_member.__wrapped__(
+                self, collective_id, inviter, member
+            )
+        return type(self).add_guild_member.__wrapped__(
+            self, collective_id, inviter, member
+        )
+
+    # -- management ------------------------------------------------------------
+
+    def _collection_for_locked(self, kind: str, character_id: int):
+        if kind == "group":
+            return self.groups.get(self._group_memberships.get(int(character_id)))
+        if kind == "guild":
+            return self.guilds.get(self._guild_memberships.get(int(character_id)))
+        raise ValueError(f"unsupported social collection {kind!r}")
+
+    @_durable_mutation
+    def kick_member(
+        self, kind: str, actor: int, target_name: str
+    ) -> tuple[int, SocialMember]:
+        """Remove a named member; return ``(collection id, removed member)``.
+
+        Groups: only the leader (GroupKickPlayer 0x140274894 requires the
+        GroupStatus leader-rights flag).  Guilds: the actor's rank must be
+        strictly higher than the target's (GuildKickPlayer 0x1402762a8,
+        ``insufficientGuildRights``), so officers remove members and only
+        the leader removes officers.  Nobody removes themselves.
+        """
+
+        actor = int(actor)
+        stored = self._collection_for_locked(kind, actor)
+        if stored is None:
+            raise SocialPermissionError("character has no social membership")
+        collective = copy.deepcopy(stored)
+        source = next(m for m in collective.members if m.character_id == actor)
+        wanted = str(target_name).strip().casefold()
+        target = next(
+            (m for m in collective.members if m.name.casefold() == wanted), None
+        )
+        if target is None:
+            raise SocialTargetError("character is not a member")
+        if target.character_id == actor:
+            raise SocialTargetError("a character cannot remove itself")
+        if kind == "group":
+            if collective.owner_character_id != actor:
+                raise SocialPermissionError("only the group leader can remove members")
+            collective_id = collective.group_id
+        else:
+            if int(source.rank) <= int(target.rank):
+                raise SocialPermissionError("guild rank is too low to remove this member")
+            collective_id = collective.guild_id
+        collective.members = [
+            m for m in collective.members if m.character_id != target.character_id
+        ]
+        if kind == "group":
+            self.groups[collective_id] = collective
+            self._group_memberships.pop(target.character_id, None)
+        else:
+            self.guilds[collective_id] = collective
+            self._guild_memberships.pop(target.character_id, None)
+        # Invitations the removed member issued for this collection are void.
+        self._drop_invitations_locked(
+            lambda key: key[0] == kind and key[1] == target.character_id
+            and key[3] == collective_id
+        )
+        self._queue_write_locked()
+        return collective_id, copy.deepcopy(target)
+
+    def _validate_group_name(self, name: str) -> str:
+        cleaned = str(name).strip()
+        if not cleaned:
+            raise SocialNameError("group name is empty")
+        if len(cleaned) > GROUP_NAME_MAX_LENGTH:
+            raise SocialNameError(
+                f"group name must contain at most {GROUP_NAME_MAX_LENGTH} characters"
+            )
+        return cleaned
+
+    @_durable_mutation
+    def edit_group(self, actor: int, name: str, hidden: bool) -> Group:
+        """Rename the leader's group and set its hidden flag.
+
+        A hidden group is private and leaves the group finder
+        (``groupEditWindowHideGroupTooltip``).  Unchanged settings raise
+        :class:`SocialNoChangeError` without a write.
+        """
+
+        stored = self._collection_for_locked("group", actor)
+        if stored is None or stored.owner_character_id != int(actor):
+            raise SocialPermissionError("only the leader can edit the group")
+        cleaned = self._validate_group_name(name)
+        hidden = bool(hidden)
+        if (stored.name, stored.private, stored.listed) == (cleaned, hidden, not hidden):
+            raise SocialNoChangeError("group settings are unchanged")
+        group = copy.deepcopy(stored)
+        group.name, group.private, group.listed = cleaned, hidden, not hidden
+        self.groups[group.group_id] = group
+        self._queue_write_locked()
+        return copy.deepcopy(group)
+
+    def validate_guild_rename(self, actor: int, name: str) -> str:
+        """Check a leader's rename without changing state; return the name.
+
+        Raises :class:`SocialPermissionError`, :class:`SocialNameError`,
+        :class:`SocialNoChangeError` or :class:`SocialNameTakenError`.  The
+        caller charges the rename cost only after this check passes, and
+        :meth:`rename_guild` repeats it atomically.
+        """
+
+        with self.lock:
+            return self._validate_guild_rename_locked(int(actor), name)[1]
+
+    def _validate_guild_rename_locked(self, actor: int, name: str):
+        guild = self._collection_for_locked("guild", actor)
+        if guild is None or not any(
+            m.character_id == actor and m.rank == GUILD_RANK_LEADER
+            for m in guild.members
+        ):
+            raise SocialPermissionError("only the guild leader can rename the guild")
+        cleaned = str(name).strip()
+        if not GUILD_NAME_MIN_LENGTH <= len(cleaned) <= GUILD_NAME_MAX_LENGTH:
+            raise SocialNameError(
+                f"guild name must contain {GUILD_NAME_MIN_LENGTH}.."
+                f"{GUILD_NAME_MAX_LENGTH} characters"
+            )
+        if cleaned == guild.name:
+            raise SocialNoChangeError("guild name is unchanged")
+        if (
+            cleaned.casefold() != guild.name.casefold()
+            and cleaned.casefold() in self._guild_names
+        ):
+            raise SocialNameTakenError("guild name is already in use")
+        return guild, cleaned
+
+    @_durable_mutation
+    def rename_guild(self, actor: int, name: str) -> Guild:
+        stored, cleaned = self._validate_guild_rename_locked(int(actor), name)
+        guild = copy.deepcopy(stored)
+        self._guild_names.discard(guild.name.casefold())
+        guild.name = cleaned
+        self._guild_names.add(cleaned.casefold())
+        self.guilds[guild.guild_id] = guild
+        self._queue_write_locked()
+        return copy.deepcopy(guild)
+
+    @_durable_mutation
+    def change_guild_message(self, actor: int, message: str) -> Guild:
+        """Set (or clear) the guild's message of the day.
+
+        Officers and the leader may change it; an empty message deletes it
+        (the client's ``/dmotd`` sends an empty change).  An unchanged
+        message raises :class:`SocialNoChangeError` without a write.
+        """
+
+        stored = self._collection_for_locked("guild", actor)
+        if stored is None or not any(
+            m.character_id == int(actor)
+            and m.rank in {GUILD_RANK_LEADER, GUILD_RANK_OFFICER}
+            for m in stored.members
+        ):
+            raise SocialPermissionError("guild officer permission required")
+        message = str(message).strip()
+        if len(message) > GUILD_MESSAGE_MAX_LENGTH:
+            raise ValueError("guild message is too long")
+        if message == stored.message_of_the_day:
+            raise SocialNoChangeError("guild message is unchanged")
+        guild = copy.deepcopy(stored)
+        guild.message_of_the_day = message
+        self.guilds[guild.guild_id] = guild
+        self._queue_write_locked()
+        return copy.deepcopy(guild)
+
     def groups_in_map(self, map_id: str) -> tuple[Group, ...]:
         with self.lock:
             return tuple(
@@ -436,9 +932,7 @@ class SocialStateStore:
     def create_group(
         self, name: str, description: str, map_id: str, member: SocialMember
     ) -> Group:
-        cleaned = name.strip()
-        if not 1 <= len(cleaned) <= 32:
-            raise ValueError("group name must contain 1..32 characters")
+        cleaned = self._validate_group_name(name)
         with self.lock:
             if self.group_for(member.character_id):
                 raise ValueError("character is already in a group")
@@ -541,27 +1035,45 @@ class SocialStateStore:
 
     @_durable_mutation
     def leave_group(self, character_id: int) -> Group | None:
-        with self.lock:
-            group = self.group_for(character_id)
-            if group is None:
-                return None
-            group.members = [
-                m for m in group.members if m.character_id != character_id
-            ]
-            self._group_memberships.pop(int(character_id), None)
-            if not group.members:
-                del self.groups[group.group_id]
-                self._queue_write_locked()
-                return None
-            if group.owner_character_id == character_id:
-                successor = min(
-                    group.members, key=lambda m: (m.joined_at, m.character_id)
-                )
-                group.owner_character_id = successor.character_id
-                successor.can_invite = True
-            self.groups[group.group_id] = group
+        return self._leave_group_locked(character_id)
+
+    def _leave_group_locked(self, character_id: int) -> Group | None:
+        """Remove one member (caller holds the lock and queues persistence).
+
+        The longest-standing remaining member inherits leadership and the
+        right to invite; the last member dissolves the group.
+        """
+
+        character_id = int(character_id)
+        stored = self.groups.get(self._group_memberships.get(character_id))
+        if stored is None:
+            return None
+        group = copy.deepcopy(stored)
+        group.members = [
+            m for m in group.members if m.character_id != character_id
+        ]
+        self._group_memberships.pop(character_id, None)
+        self._drop_invitations_locked(
+            lambda key: key[0] == "group" and key[1] == character_id
+            and key[3] == group.group_id
+        )
+        if not group.members:
+            del self.groups[group.group_id]
+            self._drop_invitations_locked(
+                lambda key: key[0] in {"group", "group-request"}
+                and key[3] == group.group_id
+            )
             self._queue_write_locked()
-            return copy.deepcopy(group)
+            return None
+        if group.owner_character_id == character_id:
+            successor = min(
+                group.members, key=lambda m: (m.joined_at, m.character_id)
+            )
+            group.owner_character_id = successor.character_id
+            successor.can_invite = True
+        self.groups[group.group_id] = group
+        self._queue_write_locked()
+        return copy.deepcopy(group)
 
 
 def make_social_member(
