@@ -309,19 +309,27 @@ class PlayerResourceService:
                 s.gameplay_remote_actor_id
                 or CharacterService._remote_actor_id(character.character_id)
             )
+            class_name = CLASS_NAMES.get(int(character.class_id), "mage")
+            level = max(1, int(getattr(character, "level", 1)))
         cost_fraction, gain_fraction = (
             combat.player_skill_resource_fractions(
                 skill_index,
                 modifier_sources=tuple(modifier_sources),
             )
         )
+        # The client prices skills against the class's base pool for its
+        # level, not the maximum pets and wisdom raise (see
+        # LocalCombatState.apply_player_skill_resource).
+        resource_pool = prime_player_combat_database(
+            combat.encounter.static_database_path
+        ).base_resource(class_name, level)
         if os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {"1", "true", "yes"}:
             # What a cast pays and which active effects priced it (Banner of
             # War's ResourceCost -100% is effect 5530).
             effect_ids = sorted({int(getattr(m, "effect_id", -1)) for m in modifier_sources
                                  if getattr(m, "effect_id", None) is not None})
             print(f"[skill-resource] skill {skill_index} cost {cost_fraction:.3f} "
-                  f"gain {gain_fraction:.3f} effects {effect_ids}")
+                  f"gain {gain_fraction:.3f} pool {resource_pool:g} effects {effect_ids}")
         if cost_fraction <= 0.0 and gain_fraction <= 0.0:
             return True
         with combat.lock:
@@ -331,6 +339,7 @@ class PlayerResourceService:
                     cost_fraction=cost_fraction,
                     gain_fraction=gain_fraction,
                     now=now,
+                    resource_pool=resource_pool,
                 )
             )
             if accepted and on_commit is not None:

@@ -58,6 +58,42 @@ def distance(a, b):
     return math.dist(a[:3], b[:3])
 
 
+# SkillUpdateTask's radius query (0x140a3d020) skips actors more than this far
+# above or below its centre (0x140e31624).
+CLIENT_AREA_HEIGHT_TOLERANCE = 10.0
+
+
+def shape_radius(entity):
+    """The radius the client's skill queries give an actor.
+
+    Every SkillUpdateTask query (radius 0x140a3d020, angle 0x140a3e3e8, cone
+    0x140a3dd80, actor 0x1409d6b10) adds the ActorShapeId navigation radius
+    (0x14095dfb4: small 0.525, medium 1.053, large 1.581), not the 0.3
+    physics capsule most monsters carry whatever their size.
+    """
+    if entity.target_radius is None:
+        return entity.collision_radius
+    return max(entity.collision_radius, entity.target_radius)
+
+
+def _area_reach(entity, centre, radius, samples=None):
+    """Flat distance at which the client's radius query finds ``entity``.
+
+    The native test is 3D ``distance <= radius + shape``; the flat distance
+    accepts every actor it does (a monster a step higher than the caster fell
+    out of the 3D test, 2026-10-18). ``None`` when no sample is inside.
+    """
+    size = shape_radius(entity)
+    reach = None
+    for sample in samples or (entity.observed_position, entity.position):
+        if abs(sample[1] - centre[1]) > CLIENT_AREA_HEIGHT_TOLERANCE:
+            continue
+        sample_reach = math.hypot(sample[0] - centre[0], sample[2] - centre[2])
+        if sample_reach <= radius + size:
+            reach = sample_reach if reach is None else min(reach, sample_reach)
+    return reach
+
+
 def _contact(entity, origin, aim, maximum_range):
     if entity.ray_contact is not None:
         return entity.ray_contact
@@ -106,12 +142,14 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                      projectile, explicit_targets=(), point=None,
                      attack_speed=1.0, impact_delay=0.0, area_radius=0.0,
                      require_explicit_target=False, range_tolerance=0.6,
-                     static_reach=None):
+                     static_reach=None, caster_radius=0.0):
     """Produce one ordered impact plan across all eligible entity types.
 
     ``static_reach(start, end)`` returns how far a bullet flies from ``start``
     towards ``end`` (both feet positions) before the map's static collision
     stops it. It applies to bullets with ``static_collision`` only.
+    ``caster_radius`` is the caster's own ActorShapeId radius, which the
+    client's actor-targeted test subtracts as well as the target's.
     """
     entities = tuple({e.actor_id: e for e in entities}.values())
     explicit = tuple(dict.fromkeys(int(v) for v in explicit_targets))
@@ -143,14 +181,20 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                     reach = min(distance(origin, position), distance(origin, entity.position))
                 else:
                     reach = distance(origin, position)
+                # HandleActorTargetSkill (0x1409d6b10) hits when the centre
+                # distance minus both actors' shape radii is within HitRange:
+                # Angry Strike reached a medium monster 0.525 m further.
+                size += max(0.0, caster_radius)
                 if geometry.attack_range > 0 and reach > geometry.attack_range + size:
                     continue
             elif targeting in {"angle", "cone"}:
-                if targeting == "cone" and entity.target_radius is not None:
-                    # The client's cone test (SkillUpdateTask
-                    # HandleConeTargetSkill, 0x140a3dd80) widens by the
-                    # ActorShapeId radius, not the 0.3 physics capsule.
-                    size = max(size, entity.target_radius)
+                # Both native queries (angle 0x140a3e3e8, cone 0x140a3dd80)
+                # reach HitRange plus the ActorShapeId radius. The cone also
+                # widens its sides by it; the angle compares the centre's
+                # bearing, so the capsule keeps bounding its sides.
+                reach_size = shape_radius(entity)
+                if targeting == "cone":
+                    size = reach_size
                 # The client swung at the monster where it drew it: the
                 # delivered sample, the authoritative position, or the path
                 # published since (Scatter Shot visibly hit monsters walking
@@ -160,7 +204,7 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                     dx, dz = sample[0] - origin[0], sample[2] - origin[2]
                     sample_reach = math.hypot(dx, dz)
                     forward = dx * aim[0] + dz * aim[1]
-                    if forward < -size or sample_reach > radius + size:
+                    if forward < -size or sample_reach > radius + reach_size:
                         continue
                     width = _directional_width(geometry, forward, radius)
                     if width <= 0 and geometry.angle_degrees > 0:
@@ -177,10 +221,13 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                 # standing a little higher than the caster fell out of a radius
                 # skill that the arc of another still reached ("avec le bloody
                 # swing je touche pas le mob alors qu'il est au meme endroit",
-                # 2026-10-18; rageful swing, an Angle skill, hit it).
-                centre = point or origin
-                reach = math.hypot(position[0] - centre[0], position[2] - centre[2])
-                if reach > radius + size:
+                # 2026-10-18; rageful swing, an Angle skill, hit it). The
+                # client's radius query adds the ActorShapeId radius: Frost
+                # Nova, the 360s and Earthquake missed a medium monster up to
+                # 0.75 m inside the ring the client drew hitting it.
+                reach = _area_reach(entity, point or origin, radius, (
+                    position, entity.position, *entity.recent_positions))
+                if reach is None:
                     continue
             candidates.append((reach, entity.actor_id, entity))
         return EntitySkillPlan(geometry, tuple(
@@ -192,13 +239,15 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     emit = projectile_emit_delay(geometry, attack_speed)
     velocity = geometry.projectile_velocity / max(0.01, geometry.skill_timing_multiplier)
     offset = max(0.0, -geometry.start_offset[2])
-    # ImpactRadius splashes only an exploding projectile (the dwarf's C14
-    # micro-rocket and grenade: BulletRadius 0, "Multiple Enemies"). A bullet
-    # with its own radius and one impact strikes one enemy: the fireball's
-    # 2.35 hit every monster around its victim, though its SkillTarget is
-    # "Single Enemy".
+    # A Radius-targeted bullet explodes on its victim: HandleSkillHit
+    # (0x1409d8fc4) runs the actor hit and then the radius query around the
+    # impact with the bullet's ImpactRadius, so the fireball's 2.35 burns the
+    # monsters beside its victim, as in retail (its tooltip's "Single Enemy"
+    # notwithstanding). Other bullets splash only when they explode (the
+    # dwarf's C14 micro-rocket: BulletRadius 0) or pierce several enemies.
     impact_splash = (geometry.impact_radius
-                     if geometry.impact_count > 1 or geometry.projectile_radius <= 0
+                     if targeting in {"radius", "radiusrandomtarget"}
+                     or geometry.impact_count > 1 or geometry.projectile_radius <= 0
                      else 0.0)
     splash_radius = max(impact_splash, max((
         effect.aura_radius for effect in (
@@ -224,8 +273,10 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
         <= maximum_range + by_id[v].collision_radius) and in_sight(by_id[v])]
     contacts = {}
     if point is not None:
-        direct = sorted((e for e in entities if distance(point, e.observed_position)
-                         <= max(radius, splash_radius) + e.collision_radius),
+        # A point bullet (Frozen Orb, Grenade) explodes through the same
+        # radius query as a ground skill.
+        direct = sorted((e for e in entities
+                         if _area_reach(e, point, max(radius, splash_radius)) is not None),
                         key=lambda e: (distance(point, e.observed_position), e.actor_id))
     elif not direct and not require_explicit_target:
         candidates = []
@@ -288,7 +339,8 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
             if point is not None or splash_radius <= 0:
                 continue
             splash = sorted((e for e in entities if e.actor_id not in seen and
-                             distance(target_position, e.position) <= splash_radius + e.collision_radius),
+                             _area_reach(e, target_position, splash_radius,
+                                         (e.position,)) is not None),
                             key=lambda e: (distance(target_position, e.position), e.actor_id))
             for entity in splash:
                 seen.add(entity.actor_id)

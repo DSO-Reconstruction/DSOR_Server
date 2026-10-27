@@ -18,10 +18,13 @@ import time
 from dso_server.runtime.concurrency import InstrumentedRLock, MAP_COMBAT_DOMAIN
 from dso_server.gameplay.player_skill_timing import timing_actor_variables
 from dso_server.gameplay.status_modifier_runtime import resolve_modifier_value
-from dso_server.gameplay.navigation_shapes import monster_target_radii
+from dso_server.gameplay.navigation_shapes import (
+    monster_target_radii, navigation_shape_radii,
+)
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
     ORBITING_MOTION_TYPES,
+    shape_radius,
     plan_entity_skill,
     projectile_emit_delay,
     shifted_skill_phases,
@@ -237,6 +240,16 @@ PLAYER_PROJECTILE_HITBOX_TOLERANCE = max(
 PLAYER_HIT_LAG_COMPENSATION_SECONDS = max(
     0.0, float(os.getenv("DSO_PLAYER_HIT_LAG_COMPENSATION_SECONDS", "0.4"))
 )
+
+
+@lru_cache(maxsize=1)
+def _player_shape_radius() -> float:
+    """Every player character's ActorShapeId is ``small`` (_Template_Player)."""
+
+    try:
+        return float(navigation_shape_radii()["small"])
+    except (OSError, ValueError, KeyError):
+        return 0.525
 
 
 def _parse_skill_radius_bonuses(raw: str) -> dict[str, float]:
@@ -2404,21 +2417,34 @@ class LocalCombatState:
         cost_fraction: float,
         gain_fraction: float,
         now: float,
+        resource_pool: float | None = None,
     ) -> tuple[bool, float, float, float, float]:
-        """Atomically pay/gain one skill's authored resource fractions."""
+        """Atomically pay/gain one skill's authored resource fractions.
+
+        CONTRACT: fractions price against ``resource_pool``, the class's
+        ``_Template_XPLevels.BaseMana`` for its level, never the raised
+        maximum. The cast is refused only when the half-up rounded pool is
+        below the half-up rounded cost; the debit itself is unrounded.
+        EVIDENCE (client): the pre-cast check 0x140a1afa4 reads the pool from
+        the per-class level table (0x140844050) and returns 0xE when
+        ``floor(CurrSkillResource+.5) < floor(ResourceCost*pool+.5)``; the
+        execute step 0x1407f1500 spends ``ResourceCost*pool`` and gains
+        ``ResourceGain*pool``.
+        FAILURE: pricing against a maximum raised by pets and wisdom (194 on
+        a level-100 ranger) made Jump cost 58 instead of the client's 30, so
+        casts the client drew were refused and never hit.
+        ``None`` (minimal harnesses) prices against the maximum.
+        """
 
         actor_id = int(actor_id)
         resource = self.player_resource.setdefault(
             actor_id, [100.0, 100.0]
         )
         current, maximum = resource
-        cost = max(0.0, float(maximum) * max(0.0, cost_fraction))
-        gain = max(0.0, float(maximum) * max(0.0, gain_fraction))
-        # Integer-valued HUD resources still originate from fractional
-        # database costs. Round only at the final pool boundary.
-        cost = float(round(cost))
-        gain = float(round(gain))
-        if current + 1e-6 < cost:
+        pool = float(maximum if resource_pool is None else resource_pool)
+        cost = max(0.0, pool * max(0.0, cost_fraction))
+        gain = max(0.0, pool * max(0.0, gain_fraction))
+        if math.floor(current + 0.5) < math.floor(cost + 0.5):
             return False, current, maximum, cost, gain
         current = min(maximum, max(0.0, current - cost + gain))
         resource[0] = current
@@ -6324,6 +6350,13 @@ class LocalCombatState:
         timing_multiplier = geometry.skill_timing_multiplier
         cooldown_absolute = 0.0
         cooldown_relative = 0.0
+        # Skill attributes keep one absolute and one relative bucket that
+        # every modifier adds into (0x1408d8f74): two -30% cost reducers are
+        # -60%, not 0.7 * 0.7.
+        cost_absolute = 0.0
+        cost_relative = 0.0
+        gain_absolute = 0.0
+        gain_relative = 0.0
         trap_on_hit = geometry.trap_on_hit
         cleanse_groups = set(geometry.cleanse_groups)
         damage_weights: dict[str, float] = {}
@@ -6684,19 +6717,17 @@ class LocalCombatState:
                     elif normalized_kind in {
                         "resourcecost", "additionalskillcost"
                     }:
-                        resource_cost_fraction = self._apply_numeric_modifier(
-                            resource_cost_fraction,
-                            amount,
-                            operation,
-                            stack_count,
-                        )
+                        scaled = amount * max(1, int(stack_count))
+                        if operation.casefold() == "relative":
+                            cost_relative += scaled
+                        else:
+                            cost_absolute += scaled
                     elif normalized_kind == "resourcegain":
-                        resource_gain_fraction = self._apply_numeric_modifier(
-                            resource_gain_fraction,
-                            amount,
-                            operation,
-                            stack_count,
-                        )
+                        scaled = amount * max(1, int(stack_count))
+                        if operation.casefold() == "relative":
+                            gain_relative += scaled
+                        else:
+                            gain_absolute += scaled
                     else:
                         timing_multiplier = self._apply_numeric_modifier(
                             timing_multiplier,
@@ -6940,8 +6971,16 @@ class LocalCombatState:
                 bullet_death_effects
             ),
             trap_on_hit=trap_on_hit,
-            resource_cost_fraction=max(0.0, resource_cost_fraction),
-            resource_gain_fraction=max(0.0, resource_gain_fraction),
+            resource_cost_fraction=max(
+                0.0,
+                resource_cost_fraction * max(0.0, 1.0 + cost_relative)
+                + cost_absolute,
+            ),
+            resource_gain_fraction=max(
+                0.0,
+                resource_gain_fraction * max(0.0, 1.0 + gain_relative)
+                + gain_absolute,
+            ),
             cleanse_groups=frozenset(cleanse_groups),
         )
         # Bound memory even when development sessions repeatedly alter socket
@@ -9155,10 +9194,9 @@ class LocalCombatState:
                     set(eligible_actor_ids).union(visible, explicit_target_actor_ids))
         length = math.hypot(direction[0], direction[2])
         reach = max(geometry.attack_range, geometry.projectile_range)
-        directional = (
-            not projectile
-            and geometry.targeting_type.casefold() in {"angle", "cone"}
-        )
+        # Area, angle and cone skills test the path the viewer may still be
+        # drawing; bullets have their own swept contact.
+        spatial = not projectile
         entities = []
         for actor_id in self.living_actor_ids:
             if actor_id in self.returning_home_actor_ids or (eligible is not None and actor_id not in eligible):
@@ -9186,7 +9224,7 @@ class LocalCombatState:
                                          projectile_contact_radius=contact_radius,
                                          recent_positions=(
                                              self._recent_monster_path(monster)
-                                             if directional else ()
+                                             if spatial else ()
                                          )))
         entities.extend(additional_entities)
         delay = (max(0.0, float(impact_delay_override)) if impact_delay_override is not None
@@ -9200,6 +9238,7 @@ class LocalCombatState:
             range_tolerance=PLAYER_PROJECTILE_COLLISION_RADIUS,
             static_reach=(self._bullet_static_reach(geometry.start_offset)
                           if projectile and geometry.static_collision else None),
+            caster_radius=_player_shape_radius(),
         )
 
     def _monster_shot_blocked(self, definition, start, target) -> bool:
@@ -9580,11 +9619,17 @@ class LocalCombatState:
                         ) if effect.chance >= 1.0
                     ), default=0.0),
                 ),
+                # The reach the planner chose this victim with: its
+                # ActorShapeId radius, plus the caster's for an actor target.
+                # The capsule dropped a Frost Nova or Angry Strike victim the
+                # cast had accepted once the hit frame came.
                 area_contact_radius=(
-                    max(monster.collision_radius, monster.target_radius)
-                    if geometry.targeting_type.casefold() == "cone"
-                    and monster.target_radius is not None
-                    else None
+                    shape_radius(monster)
+                    + (
+                        _player_shape_radius()
+                        if geometry.targeting_type.casefold() == "actor"
+                        else 0.0
+                    )
                 ),
                 damage_modifier=target_geometry.damage_modifier,
                 damage_type=target_geometry.damage_type,
