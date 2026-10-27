@@ -32,6 +32,7 @@ from dso_server.protocol.player_init_protocol import (
     EventUpdateEntry,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.runtime.file_revisions import observed_revision, resolved_path
 
 
 UINT32_MAX = 0xFFFFFFFF
@@ -798,13 +799,19 @@ def load_event_catalog(
     database_path: str | Path,
     schedule_path: str | Path,
 ) -> EventCatalog:
-    database = Path(database_path).resolve()
-    schedule = Path(schedule_path).resolve()
-    database_stat = database.stat()
-    schedule_revision = _schedule_revision(schedule)
+    # Looked up many times per map entry: use the last observed revisions
+    # instead of stat()ing both files each time (runtime/file_revisions.py).
+    # The CMS invalidates the schedule after writing it.
+    database = resolved_path(str(database_path))
+    schedule = resolved_path(str(schedule_path))
+    database_revision = observed_revision(database)
+    schedule_revision = observed_revision(schedule)
+    if database_revision is None:
+        raise FileNotFoundError(database)
+    if schedule_revision is None:
+        raise FileNotFoundError(schedule)
     return _load_catalog(
-        str(database), database_stat.st_mtime_ns, database_stat.st_size,
-        str(schedule), *schedule_revision,
+        str(database), *database_revision, str(schedule), *schedule_revision,
     )
 
 

@@ -9,6 +9,7 @@ import threading
 
 from dso_server.runtime.context import *
 from dso_server.protocol.trade_protocol import TRADE_CLIENT_COMMANDS
+from dso_server.protocol.food_recycling_protocol import SALVAGE_COOK_ITEM_COMMAND
 from dso_server.protocol.prop_protocol import (
     PROP_INTERACTION_COMMAND,
     QUEST_TRIGGER_SIGNAL_COMMAND,
@@ -20,6 +21,7 @@ from dso_server.protocol.quest_protocol import (
     TALK_COMMAND,
     DELIVER_COMMAND,
     PAY_COMMAND,
+    DEFEND_COMMAND,
 )
 from dso_server.runtime.transport import Session
 from dso_server.protocol.daily_challenge_protocol import DAILY_CHALLENGE_SELECTION_COMMAND
@@ -30,6 +32,9 @@ from dso_server.protocol.wanted_thief_protocol import (
     REFRESH_WANTED_THIEF_MISSION_COMMAND,
 )
 from dso_server.protocol.season_pass_protocol import SEASON_PASS_COMMANDS
+from dso_server.protocol.social_protocol import SOCIAL_MANAGEMENT_COMMANDS
+from dso_server.protocol.seasonal_activity_protocol import SEASONAL_ACTIVITY_COMMANDS
+from dso_server.protocol.pvp_match_protocol import PVP_OBJECTIVE_COMMANDS
 from dso_server.protocol.gameplay_protocol import (
     CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND, LOGOUT_COMMAND, decode_logout,
 )
@@ -464,7 +469,7 @@ class DispatchService:
                 f"{f'0x{command_id:04x}' if command_id is not None else 'short'}"
             )
         if NPC_TRACE and command_id in (
-            0x0029, 0x0066, TALK_COMMAND, DELIVER_COMMAND, PAY_COMMAND,
+            0x0029, 0x0066, TALK_COMMAND, DELIVER_COMMAND, PAY_COMMAND, DEFEND_COMMAND,
             QUEST_COMMAND,
         ):
             print(
@@ -573,6 +578,8 @@ class DispatchService:
                 self._handle_transaction(s, payload)
             elif command_id == SALVAGE_COMMAND:
                 self._handle_salvage(s, payload)
+            elif command_id == SALVAGE_COOK_ITEM_COMMAND:
+                self._handle_food_recycling(s, payload)
             elif command_id == CRAFTING_COMMAND:
                 self._handle_crafting(s, payload)
             elif command_id == CRAFTING_RESULT_ACCEPTANCE_COMMAND:
@@ -651,6 +658,8 @@ class DispatchService:
                 self._handle_pay_command(s, payload)
             elif command_id == TALK_COMMAND:
                 self._handle_talk_command(s, payload)
+            elif command_id == DEFEND_COMMAND:
+                self._handle_defend_command(s, payload)
             elif command_id == QUEST_MONSTER_INDICATION_REQUEST_COMMAND:
                 self._handle_quest_monster_indication_request(s, payload)
             elif command_id == QUEST_TRIGGER_INDICATION_REQUEST_COMMAND:
@@ -662,6 +671,12 @@ class DispatchService:
                 self._handle_fractured_planes_first_clear_acceptance(
                     s, payload
                 )
+            elif command_id in SOCIAL_MANAGEMENT_COMMANDS:
+                self._handle_social_management(s, payload, command_id)
+            elif command_id in SEASONAL_ACTIVITY_COMMANDS:
+                self._handle_seasonal_activity(s, payload, command_id)
+            elif command_id in PVP_OBJECTIVE_COMMANDS:
+                self._handle_pvp_objective_command(s, payload, command_id)
             elif command_id in {
                 0x00BB, 0x00E2, 0x00E8,
                 0x00EA, CLIENT_CURRENT_POSITION_FRAME_INFO_COMMAND,

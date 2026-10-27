@@ -56,6 +56,9 @@ class SocketMinionDefinition:
     startup_duration_seconds: float = 0.0
     follows_owner: bool = False
     map_companion: bool = False
+    movement_locked: bool = False
+    map_level_scaling: bool = False
+    map_scaling_difficulty: int = 0
     fixed_direction: bool = False
     patrol_points: tuple[tuple[float, float, float], ...] = ()
     overheat_attack_skill_database_index: int | None = None

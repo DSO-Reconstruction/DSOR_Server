@@ -211,6 +211,7 @@ class StaticGameDatabase:
         *,
         preferred_slots: tuple[int, ...] = (),
         occupied_slots: tuple[int, ...] = (),
+        unavailable_slots: tuple[int, ...] = (),
     ) -> tuple[int, ...]:
         """Resolve an item's generated SlotType to Inventory slot ids.
 
@@ -266,12 +267,15 @@ class StaticGameDatabase:
             "ConsumableSlot": (37, 38, 39, 40),
         }
         try:
-            candidates = equivalent_slots[slot_type]
+            candidates = tuple(slot for slot in equivalent_slots[slot_type]
+                               if slot not in unavailable_slots)
         except KeyError as exc:
             raise CharacterSelectionError(
                 f"item {template_id!r} has unsupported equipment SlotType "
                 f"{slot_type!r}"
             ) from exc
+        if not candidates or set(preferred_slots).intersection(unavailable_slots):
+            raise CharacterSelectionError("requested equipment slot is locked")
         for slot in preferred_slots:
             slot = int(slot)
             if slot in candidates:

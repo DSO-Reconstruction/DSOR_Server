@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import random
 from functools import lru_cache
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.status_modifier_runtime import (
+    evaluate_active_status_modifiers, load_status_modifier_catalog,
+    snapshot_player_modifier_sources,
+)
 
 
 def _reconciled_pool_value(
@@ -80,6 +85,13 @@ class PlayerResourceService:
         it changed are reconciled. Returns whether any ended.
         """
 
+        from dso_server.services.item_set_programs import stop_item_set_effects
+        tracked = getattr(s, "gameplay_item_set_programs", {})
+        set_ids = {entry.effect_id for instance_id, (entry, _expiry)
+                   in tuple(s.gameplay_runtime_status_effects.items())
+                   if instance_id in tracked and matches(entry)}
+        if set_ids:
+            stop_item_set_effects(s, set_ids, server_tick=s.gameplay_chase_server_tick)
         timers = []
         removed = []
         with s.flow_lock:
@@ -105,7 +117,7 @@ class PlayerResourceService:
         for timer in timers:
             timer.cancel()
         if not removed:
-            return False
+            return bool(set_ids)
         value = StatusEffect(False, tuple(
             CharacterService._consumable_cleanup_entry(
                 entry, server_tick=server_tick
@@ -275,8 +287,14 @@ class PlayerResourceService:
     @staticmethod
     def _apply_player_skill_resource(
             s: Session, combat, *, skill_index: int,
-            modifier_sources: tuple[object, ...], now: float) -> bool:
-        """Atomically pay/gain one cast and publish its exact resource pool."""
+            modifier_sources: tuple[object, ...], now: float,
+            on_commit=None) -> bool:
+        """Atomically pay/gain one cast and publish its exact resource pool.
+
+        ``on_commit`` marks a successful debit before publication can fail.
+        It runs under combat.lock and must only update caller-local state;
+        callbacks must not take another lock or perform I/O.
+        """
 
         with s.flow_lock:
             character = s.gameplay_character
@@ -315,6 +333,8 @@ class PlayerResourceService:
                     now=now,
                 )
             )
+            if accepted and on_commit is not None:
+                on_commit()
             current_health = combat.player_health.get(
                 int(actor_id), [max(1, int(round(inventory.health_points)))]
             )[0]
@@ -322,17 +342,28 @@ class PlayerResourceService:
             if s.gameplay_inventory is not inventory:
                 return False
             inventory.secondary_resource = float(current)
-        s.send_reliable_ordered(
-            encode_actor_stats_update_batch(
-                ActorStatsUpdate(current_health, current),
-                actor_id=LOCAL_PLAYER_ACTOR_ID,
-            ),
-            track=True,
-            label=(
-                "player-skill-resource"
-                if accepted else "player-skill-resource-rejected"
-            ),
-        )
+        try:
+            s.send_reliable_ordered(
+                encode_actor_stats_update_batch(
+                    ActorStatsUpdate(current_health, current),
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                ),
+                track=True,
+                label=(
+                    "player-skill-resource"
+                    if accepted else "player-skill-resource-rejected"
+                ),
+            )
+        finally:
+            # A rejected cast, a generator, or a free cast never spent a
+            # resource. Successful debits still proc if publication fails.
+            if accepted and float(cost) > 0.0:
+                from dso_server.services.item_set_events import dispatch_item_set_event
+                dispatch_item_set_event(
+                    s, "costskillresource",
+                    server_tick=int(s.gameplay_chase_server_tick),
+                    event_seed=int(skill_index),
+                )
         if accepted:
             CharacterService._request_account_save(s, "skill resource changed")
             if float(current) <= 1e-6:
@@ -388,6 +419,19 @@ class PlayerResourceService:
             None,
         )
         if essence is None or int(essence.amount) <= 0:
+            return False
+        with s.flow_lock:
+            modifiers = snapshot_player_modifier_sources(s)
+        bonuses = evaluate_active_status_modifiers(
+            load_status_modifier_catalog(combat.encounter.static_database_path),
+            modifiers,
+        )
+        # Called only after ingress/cooldown/resource validation accepts the
+        # cast. Roll once here, never during a preflight or a rejected cast.
+        cost = bonuses.essence_cost(
+            int(cost), roll=random.random() if bonuses.ignore_essence_cost > 0 else 1.0,
+        )
+        if cost <= 0:
             return False
         spent = min(int(cost), int(essence.amount))
         try:

@@ -9,6 +9,9 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
 from dso_server.services import movement_validation
+from dso_server.gameplay.player_skill_timing import (
+    reserve_player_skill_timing, rollback_player_skill_timing,
+)
 
 
 SKILL_TRACE = os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {
@@ -18,6 +21,52 @@ SKILL_TRACE = os.getenv("DSO_SKILL_TRACE", "0").strip().lower() in {
 
 class PlayerCombatService(PlayerCastTimingService):
     """Player skill validation, targeting, projectiles, and impacts."""
+
+    @staticmethod
+    def _accept_player_skill_timing(
+        s, combat, *, skill_index, modifier_sources, speed, now,
+        pay_resources=True,
+    ) -> bool:
+        """Gate one client request before any resource or combat side effects.
+
+        Geometry resolution never holds flow_lock while waiting on map state.
+        The reservation also serializes duplicate requests; failed resource
+        payment rolls it back so a rejected cast does not start a cooldown.
+        """
+        geometry = combat._load_player_skill_geometry(skill_index)
+        if geometry is None:
+            return False
+        geometry = combat._modified_player_skill_geometry(
+            geometry, tuple(modifier_sources)
+        )
+        reservation = reserve_player_skill_timing(s, geometry, speed, now=now)
+        if reservation is None:
+            if SKILL_TRACE:
+                print(f"[{GAMEPLAY_SERVICE_NAME}] skill {skill_index} rejected: cooldown or casting cadence")
+            return False
+        if pay_resources:
+            committed = False
+
+            def resource_committed():
+                # Called under combat.lock: deliberately no locks or I/O.
+                nonlocal committed
+                committed = True
+
+            try:
+                accepted = CharacterService._apply_player_skill_resource(
+                    s, combat, skill_index=skill_index,
+                    modifier_sources=tuple(modifier_sources), now=now,
+                    on_commit=resource_committed,
+                )
+            except Exception:
+                if not committed:
+                    rollback_player_skill_timing(s, reservation)
+                raise
+            if not accepted:
+                if not committed:
+                    rollback_player_skill_timing(s, reservation)
+                return False
+        return True
 
     @staticmethod
     def _trace_spatial_skill(
@@ -204,10 +253,6 @@ class PlayerCombatService(PlayerCastTimingService):
             s, "skills", "regularskills"
         ):
             return
-        CharacterService._cancel_mount_cast(s, "combat skill started")
-        CharacterService._remove_mount_ride(
-            s, reason="combat skill started"
-        )
         now = time.perf_counter()
         timers = []
         old_timers = []
@@ -353,17 +398,19 @@ class PlayerCombatService(PlayerCastTimingService):
 
         if (
             rejection is None
-            and runtime_cast
             and combat is not None
-            and not CharacterService._apply_player_skill_resource(
-                s,
-                combat,
+            and not CharacterService._accept_player_skill_timing(
+                s, combat,
                 skill_index=skill.skill_index,
                 modifier_sources=tuple(modifier_effect_ids),
-                now=now,
+                speed=skill_speed_multiplier, now=now,
+                pay_resources=runtime_cast,
             )
         ):
             return
+        if rejection is None:
+            CharacterService._cancel_mount_cast(s, "combat skill started")
+            CharacterService._remove_mount_ride(s, reason="combat skill started")
         if rejection is None and runtime_cast and combat is not None:
             # The cast is accepted: it burns essence. The damage range above
             # was calculated with the essence still equipped, which is the
@@ -673,10 +720,6 @@ class PlayerCombatService(PlayerCastTimingService):
             s, client_skill.skill_index
         ):
             return
-        CharacterService._cancel_mount_cast(s, "combat skill started")
-        CharacterService._remove_mount_ride(
-            s, reason="combat skill started"
-        )
         now = time.perf_counter()
         timers = []
         old_timers = []
@@ -863,15 +906,17 @@ class PlayerCombatService(PlayerCastTimingService):
             rejection is None
             and combat is not None
             and source_actor_id is not None
-            and not CharacterService._apply_player_skill_resource(
-                s,
-                combat,
+            and not CharacterService._accept_player_skill_timing(
+                s, combat,
                 skill_index=client_skill.skill_index,
                 modifier_sources=tuple(modifier_effect_ids),
-                now=now,
+                speed=skill_speed_multiplier, now=now,
             )
         ):
             return
+        if rejection is None:
+            CharacterService._cancel_mount_cast(s, "combat skill started")
+            CharacterService._remove_mount_ride(s, reason="combat skill started")
         if rejection is None and combat is not None:
             # Cleanse at cast start, before the destination allowance and
             # any MoveCommand that follows the escape.

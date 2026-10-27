@@ -676,85 +676,10 @@ class CommerceService:
             )
             return
         invitation_kind = str(action.payload.get("invitation", ""))
-        if invitation_kind in {"group", "guild"}:
-            target = self._character_for_session(s)
-            source_character_id = int(
-                action.payload.get("sourceCharacterId", 0)
-            )
-            target_character_id = int(
-                action.payload.get("targetCharacterId", 0)
-            )
-            collective_id = int(action.payload.get("collectiveId", 0))
-            if target_character_id != int(target.character_id):
-                raise ValueError("social invitation belongs to another character")
-            source_session = next(
-                (
-                    session for session in self._active_gameplay_sessions()
-                    if (
-                        session.gameplay_character is not None
-                        and int(session.gameplay_character.character_id)
-                        == source_character_id
-                    )
-                ),
-                None,
-            )
-            if action.subtype == 3:
-                if invitation_kind == "group":
-                    self.social_store.add_group_member(
-                        collective_id,
-                        source_character_id,
-                        self._social_member(s),
-                    )
-                    status_encoder = encode_group_status
-                    status_getter = self._group_status_for
-                    response_id = GROUP_INVITATION_RESPONSE_COMMAND
-                else:
-                    self.social_store.add_guild_member(
-                        collective_id,
-                        source_character_id,
-                        self._social_member(s),
-                    )
-                    status_encoder = encode_guild_status
-                    status_getter = self._guild_status_for
-                    response_id = GUILD_INVITATION_RESPONSE_COMMAND
-                for member_session in self._active_gameplay_sessions():
-                    member_character = member_session.gameplay_character
-                    if member_character is None:
-                        continue
-                    member_status = status_getter(
-                        member_character.character_id
-                    )
-                    is_member = (
-                        member_status.group_id != 0
-                        if invitation_kind == "group"
-                        else member_status.guild_id != 0
-                    )
-                    if not is_member:
-                        continue
-                    member_session.send_reliable_ordered(
-                        status_encoder(member_status),
-                        track=True,
-                        label=f"{invitation_kind}-status-after-join",
-                    )
-                if source_session is not None:
-                    source_session.send_reliable_ordered(
-                        encode_invitation_response(
-                            response_id,
-                            0,
-                            target.name,
-                            int(target.character_id),
-                            collective_id,
-                        ),
-                        track=True,
-                        label=f"{invitation_kind}-invitation-accepted",
-                    )
-                self._refresh_social_chat_memberships(
-                    source_character_id,
-                    target.character_id,
-                )
-            CharacterService._accept_gameplay_state_command(
-                s, CLIENT_NOTIFICATION_COMMAND
-            )
+        if invitation_kind in {"group", "guild", "group-request"}:
+            # The echoed payload is client-controlled; social invitations are
+            # only completed through the social store's invitation ledger.
+            CharacterService._handle_social_notification_action(self, s, action)
             return
         if "dailyLoginCount" not in action.payload:
             if (

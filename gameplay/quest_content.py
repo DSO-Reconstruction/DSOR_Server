@@ -13,21 +13,22 @@ Simplifications, all deliberate and logged where they apply:
 * Ground ``<Drop>`` items are returned to the service for materialization;
   only a successful pickup feeds ``collect``. Direct-inventory drops retain
   immediate collection credit (their inventory grant is not modeled here).
-* General ``holdground`` events are not fed by the server yet. ``battle``
-  and ``victory`` are fed when a battleground finishes, with the match's
-  battleground id.
-* ``<Config>`` elements (hold-ground setups) are parsed but not executed.
+* Hold-ground bindings retain difficulty configurations and guards. Their
+  authoritative encounters feed success/failure through the same token engine.
+  ``battle`` and ``victory`` use the battleground's id when a match finishes.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 import random
 from types import MappingProxyType
 from typing import Iterable, Mapping
 import xml.etree.ElementTree as ET
+from dso_server.gameplay.status_modifier_runtime import ModifierAmounts
+from dso_server.runtime.file_revisions import observed_revision
 
 
 # QuestState values carried by QuestUpdate/QuestLogInfo (docs/QUEST_PROTOCOL.md §3).
@@ -36,6 +37,8 @@ QUEST_STATE_FINISHED = 1
 QUEST_STATE_CLOSED = 2
 # ClientQuestManager state 3 removes the quest and clears its guidance.
 QUEST_STATE_CANCELLED = 3
+# Native QuestFailed; acceptance resets its tokens and counters (client 0x1409e0604).
+QUEST_STATE_FAILED = 4
 
 # Task counters per quest in QuestLogInfo (Game::QuestLog MaxTasksCount).
 MAX_TASKS = 16
@@ -51,9 +54,7 @@ QUEST_TYPE_IDS = MappingProxyType({
     "craftingrepeatable": 11, "wantedrepeatable": 12, "treasurediggingrepeatable": 13,
 })
 
-UNSUPPORTED_EVENT_TYPES = frozenset({
-    "holdgroundfailed",
-})
+UNSUPPORTED_EVENT_TYPES = frozenset()
 
 # A few decoded client quest tasks omit their ExploreTask trigger Event. Keep
 # these runtime compatibility bindings here instead of patching quest data.
@@ -137,6 +138,7 @@ class TaskEvent:
     drops: tuple[Drop, ...]
     return_amounts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
     spawns: tuple[QuestSpawn, ...] = ()
+    failure: bool = False
 
 
 @dataclass(frozen=True)
@@ -175,6 +177,24 @@ class BarterDefinition:
 
 
 @dataclass(frozen=True)
+class HoldGroundDefinition:
+    """An authored defense interaction and its difficulty-specific setup."""
+
+    holdground_id: str
+    actor: str
+    configurations: tuple[tuple[int | None, str], ...]
+    guards: tuple[Guard, ...] = ()
+
+    def live(self, tokens: Mapping[str, int]) -> bool:
+        return all(guard.holds(tokens) for guard in self.guards)
+
+    def config_for_difficulty(self, difficulty: int) -> str:
+        exact = next((value for tier, value in self.configurations
+                      if tier == int(difficulty)), "")
+        return exact or next((value for tier, value in self.configurations if tier is None), "")
+
+
+@dataclass(frozen=True)
 class TaskDefinition:
     index: int
     title: str
@@ -192,6 +212,7 @@ class TaskDefinition:
     pre_tasks: tuple[str, ...] = ()  # titles that must be finished first
     barters: tuple[BarterDefinition, ...] = ()
     return_amounts: Mapping[str, int] = field(default_factory=lambda: MappingProxyType({}))
+    holdgrounds: tuple[HoldGroundDefinition, ...] = ()
 
     @property
     def counter_guard(self) -> Guard | None:
@@ -330,9 +351,12 @@ class QuestProgress:
     completed_at: str = NO_TIMESTAMP
     map_instance: str = ""
     continue_on_map: str = ""
+    # Authored prop placements already consumed by each switch in this quest
+    # attempt. Network actor ids and map runtime instances are not persistent.
+    used_props: dict[str, set[str]] = field(default_factory=dict)
 
     def to_document(self) -> dict:
-        return {
+        document = {
             "state": int(self.state),
             "tokens": {str(k): int(v) for k, v in self.tokens.items()},
             "finished_mask": int(self.finished_mask),
@@ -340,10 +364,16 @@ class QuestProgress:
             "map_instance": self.map_instance,
             "continue_on_map": self.continue_on_map,
         }
+        if self.used_props:
+            document["used_props"] = {
+                key: sorted(values) for key, values in self.used_props.items()
+            }
+        return document
 
     @classmethod
     def from_document(cls, quest_id: str, document: Mapping) -> "QuestProgress":
         tokens = document.get("tokens", {})
+        used_props = document.get("used_props", {})
         return cls(
             quest_id=str(quest_id),
             state=int(document.get("state", QUEST_STATE_ACCEPTED)),
@@ -354,6 +384,11 @@ class QuestProgress:
             completed_at=str(document.get("completed_at", NO_TIMESTAMP)),
             map_instance=str(document.get("map_instance", "")),
             continue_on_map=str(document.get("continue_on_map", "")),
+            used_props={
+                str(key): {str(value) for value in values}
+                for key, values in used_props.items()
+                if isinstance(values, (list, tuple, set))
+            } if isinstance(used_props, Mapping) else {},
         )
 
     def task_finished(self, index: int) -> bool:
@@ -378,6 +413,7 @@ class QuestEventResult:
     drops: tuple[Drop, ...] = ()
     spawns: tuple[QuestSpawn, ...] = ()
     inventory_drops: tuple[Drop, ...] = ()
+    quest_failed: bool = False
 
 
 def _parse_guards(element: ET.Element) -> tuple[Guard, ...]:
@@ -398,6 +434,7 @@ def _parse_task(
     events = []
     for child in element.findall("Event"):
         events.append(TaskEvent(
+            failure=child.find("Failure") is not None,
             kind=str(child.get("type", "")).casefold(),
             value=str(child.get("value", "")),
             guards=_parse_guards(child),
@@ -494,6 +531,19 @@ def _parse_task(
             if b.tag in {"Barter", "Pay"} and b.get("id")
         ),
         pre_tasks=tuple(_tokens(element.get("preTasks"))),
+        holdgrounds=tuple(
+            HoldGroundDefinition(
+                holdground_id=str(binding.get("id")),
+                actor=str(binding.get("actor", "")),
+                configurations=tuple(
+                    (int(config.get("difficulty")) if config.get("difficulty") else None,
+                     str(config.get("value")))
+                    for config in binding.findall("Config") if config.get("value")
+                ),
+                guards=_parse_guards(binding),
+            )
+            for binding in element.findall("HoldGround") if binding.get("id")
+        ),
     )
 
 
@@ -668,7 +718,10 @@ _build_catalog_cached = lru_cache(maxsize=4)(_build_catalog)
 
 def load_quest_catalog(path: str | Path) -> QuestCatalog:
     path = Path(path)
-    if not path.is_file():
+    # Hundreds of lookups per map entry: never stat quests.xml on each one
+    # (runtime/file_revisions.py).
+    revision = observed_revision(path)
+    if revision is None:
         return QuestCatalog(
             quests=MappingProxyType({}),
             by_giver=MappingProxyType({}),
@@ -678,13 +731,36 @@ def load_quest_catalog(path: str | Path) -> QuestCatalog:
             by_chapter=MappingProxyType({}),
             prop_switches=MappingProxyType({}),
         )
-    stat = path.stat()
-    return _build_catalog_cached(str(path), stat.st_mtime_ns, stat.st_size)
+    return _build_catalog_cached(str(path), *revision)
 
 
 # ---------------------------------------------------------------------------
 # Progress engine
 # ---------------------------------------------------------------------------
+
+def reconcile_quest_progress(quest: QuestDefinition, progress: QuestProgress) -> None:
+    """Restore progress after a content update removes trailing objectives.
+
+    Release 261_1024 removes the final encounter task from three summer quests.
+    Their remaining task indices and token names are unchanged. Retain those
+    counters and earned completion bits, discard bits outside the current task
+    layout, and make an already delivered quest ready for its normal turn-in.
+    Closed quests stay closed: changing rewards must never pay them again.
+
+    This does not infer task completion from guards (an eventless CompleteTask
+    can still require an NPC encounter), replay events, or grant rewards.
+    Reordering/removing interior tasks needs an explicit identity migration.
+    """
+
+    current_mask = sum(1 << task.index for task in quest.tasks)
+    progress.finished_mask &= current_mask
+    if (
+        progress.state == QUEST_STATE_ACCEPTED
+        and current_mask
+        and progress.finished_mask == current_mask
+    ):
+        progress.state = QUEST_STATE_FINISHED
+
 
 def active_tasks(
     quest: QuestDefinition, progress: QuestProgress,
@@ -746,6 +822,7 @@ def apply_quest_event(
     *,
     count: int = 1,
     rng: random.Random | None = None,
+    drop_amount_bonus: ModifierAmounts = ModifierAmounts(),
 ) -> QuestEventResult:
     """Feed one world event into a quest and return what changed.
 
@@ -790,19 +867,24 @@ def apply_quest_event(
                     continue
                 if not all(guard.holds(progress.tokens) for guard in event.guards):
                     continue
+                if event.failure:
+                    progress.state = QUEST_STATE_FAILED
+                    return QuestEventResult((), False, quest_failed=True)
                 matched = True
                 spawns.extend(event.spawns)
                 for token in event.returns:
                     progress.tokens[token] = progress.tokens.get(token, 0) + event.return_amounts.get(token, 1)
                 for drop in event.drops:
                     if drop.chance >= 1.0 or rng.random() < drop.chance:
+                        if drop_amount_bonus != ModifierAmounts():
+                            drop = replace(drop, amount=drop_amount_bonus.apply(drop.amount, minimum=1))
                         if not drop.to_inventory:
                             drops.append(drop)
                             continue
                         inventory_drops.append(drop)
                         inner = apply_quest_event(
                             quest, progress, "collect", drop.item_id,
-                            count=drop.amount, rng=rng,
+                            count=drop.amount, rng=rng, drop_amount_bonus=drop_amount_bonus,
                         )
                         changes.extend(inner.changes)
                         drops.extend(inner.drops)
@@ -863,9 +945,11 @@ __all__ = [
     "QUEST_STATE_ACCEPTED",
     "QUEST_STATE_CLOSED",
     "QUEST_STATE_FINISHED",
+    "QUEST_STATE_FAILED",
     "UNSUPPORTED_EVENT_TYPES",
     "Drop",
     "Guard",
+    "HoldGroundDefinition",
     "QuestCatalog",
     "QuestDefinition",
     "QuestEventResult",
@@ -883,5 +967,6 @@ __all__ = [
     "apply_quest_event",
     "explore_trigger_for_task",
     "load_quest_catalog",
+    "reconcile_quest_progress",
     "task_counters",
 ]

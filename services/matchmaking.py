@@ -20,8 +20,19 @@ Reproduces the flow recorded from retail up to the point the match starts;
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import itertools
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.protocol.pvp_match_protocol import (
+    BATTLEGROUND_IDS,
+    MATCH_TEAM_SIZES,
+    MATCHMAKING_EVENT_ABORTED_BY_GROUP_LEADER,
+    MATCHMAKING_EVENT_GROUP_LEVEL_RANGE,
+    MATCHMAKING_EVENT_GROUP_TOO_BIG,
+    MATCHMAKING_EVENT_JOINED_BY_GROUP_LEADER,
+    QUEUE_KIND_GROUP,
+    SUPPORTED_MATCH_MODES,
+)
 
 from dso_server.gameplay.pvp_match_state import (
     MATCH_ACCEPT_SECONDS,
@@ -29,12 +40,16 @@ from dso_server.gameplay.pvp_match_state import (
     MatchParticipant,
     MatchPhase,
     MatchmakingRegistry,
+    MatchmakingRules,
     PVPMatch,
     QueueEntry,
 )
+from dso_server.gameplay.pvp_objectives import load_battleground_settings
 
 
 _REGISTRY_LOCK = threading.RLock()
+# Party ids only need to be unique within this process's queue.
+_PARTY_IDS = itertools.count(1)
 
 
 class MatchmakingService:
@@ -233,53 +248,203 @@ class MatchmakingService:
         character_id = CharacterService._match_character_id(s)
         if character_id is None:
             return
-        if request.match_mode not in MATCH_TEAM_SIZES:
-            self._send_pvp(
-                s,
-                encode_join_match_queue_response(JoinMatchQueueResponse(
-                    result=0, accepted=False, actor_id=LOCAL_PLAYER_ACTOR_ID,
-                )),
-                label="pvp-queue-rejected",
-            )
-            print(
-                f"[{GAMEPLAY_SERVICE_NAME}] rejected JoinMatchQueue for "
-                f"unsupported mode {request.match_mode}"
+        if request.match_mode not in SUPPORTED_MATCH_MODES:
+            CharacterService._reject_match_queue(
+                self, s, request.match_mode,
+                reason=f"unsupported mode {request.match_mode}",
             )
             return
+        if getattr(s, "gameplay_match", None) is not None:
+            CharacterService._reject_match_queue(
+                self, s, request.match_mode,
+                reason="already in a battleground",
+            )
+            return
+        party = (s,)
+        if int(request.queue_kind) == QUEUE_KIND_GROUP:
+            party = CharacterService._queue_party_sessions(
+                self, s, int(request.match_mode)
+            )
+            if party is None:
+                CharacterService._reject_match_queue(
+                    self, s, request.match_mode,
+                    reason="only the group leader can queue the group",
+                )
+                return
+            if isinstance(party, int):
+                CharacterService._reject_match_queue(
+                    self, s, request.match_mode, event=party,
+                    reason=f"group rejected with matchmaking event {party}",
+                )
+                return
+        party_id = next(_PARTY_IDS) if len(party) > 1 else 0
         registry = CharacterService._matchmaking_registry(self)
-        entry = registry.enqueue(QueueEntry(
-            character_id=character_id,
-            account_id=s.account_id,
-            match_mode=int(request.match_mode),
-            queue_kind=int(request.queue_kind),
-            session=s,
-            class_id=CharacterService._match_class_id(self, s),
-        ))
-        with s.flow_lock:
-            s.gameplay_match_queue_entry = entry
+        joined_at = time.perf_counter()
+        entries = []
+        for member in party:
+            member_id = CharacterService._match_character_id(member)
+            if member_id is None:
+                continue
+            character = member.gameplay_character
+            entry = registry.enqueue(QueueEntry(
+                character_id=member_id,
+                account_id=member.account_id,
+                match_mode=int(request.match_mode),
+                queue_kind=int(request.queue_kind),
+                joined_at=joined_at,
+                session=member,
+                class_id=CharacterService._match_class_id(self, member),
+                party_id=party_id,
+                party_leader_id=character_id if party_id else 0,
+                level=max(1, int(getattr(character, "level", 1) or 1)),
+                honor_points=int(getattr(member, "gameplay_honor_points", 0) or 0),
+            ))
+            with member.flow_lock:
+                member.gameplay_match_queue_entry = entry
+            entries.append((member, entry))
+        for member, entry in entries:
+            leader = member is s
+            if leader:
+                self._send_pvp(
+                    member,
+                    encode_join_match_queue_response(JoinMatchQueueResponse(
+                        result=0, accepted=True,
+                        actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    )),
+                    label="pvp-queue-accepted",
+                )
+            self._send_queue_status(
+                member, entry,
+                event=(
+                    MATCHMAKING_EVENT_JOINED_BY_USER if leader
+                    else MATCHMAKING_EVENT_JOINED_BY_GROUP_LEADER
+                ),
+            )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] queued character(s) "
+            f"{[entry.character_id for _member, entry in entries]} for "
+            f"PvP mode {request.match_mode} (kind {request.queue_kind}, "
+            f"party {party_id}); "
+            f"{registry.waiting_count(request.match_mode)} waiting"
+        )
+        self._try_form_match(int(request.match_mode))
+
+    def _reject_match_queue(self, s: Session, match_mode: int, *,
+                            reason: str, event: int | None = None) -> None:
+        """Refuse a queue request, naming the group problem when there is one.
+
+        ``MatchMakingInfo`` events 5 (group too big) and 6 (group level range)
+        are the client's own explanations for a refused group queue.
+        """
+
+        if event is not None:
+            self._send_pvp(
+                s,
+                encode_matchmaking_info(MatchMakingInfo(
+                    state=int(event),
+                    server_tick=int(server_time() // 40) & 0xFFFFFFFF,
+                    match_mode=int(match_mode),
+                    message="",
+                )),
+                label="pvp-queue-group-rejected",
+            )
         self._send_pvp(
             s,
             encode_join_match_queue_response(JoinMatchQueueResponse(
-                result=0, accepted=True, actor_id=LOCAL_PLAYER_ACTOR_ID,
+                result=0, accepted=False, actor_id=LOCAL_PLAYER_ACTOR_ID,
             )),
-            label="pvp-queue-accepted",
+            label="pvp-queue-rejected",
         )
-        self._send_queue_status(s, entry)
         print(
-            f"[{GAMEPLAY_SERVICE_NAME}] queued character {character_id} for "
-            f"PvP mode {entry.match_mode} (kind {entry.queue_kind}); "
-            f"{registry.waiting_count(entry.match_mode)} waiting"
+            f"[{GAMEPLAY_SERVICE_NAME}] rejected JoinMatchQueue: {reason}"
         )
-        self._try_form_match(entry.match_mode)
 
-    def _send_queue_status(self, s: Session, entry: QueueEntry) -> None:
+    def _queue_party_sessions(self, s: Session, match_mode: int):
+        """The sessions a group leader queues together, or a refusal event.
+
+        Only the group's owner queues a group. Every online member who is not
+        already in a battleground joins the queue as one party. A party
+        larger than the mode's team is refused with ``GROUP_TOO_BIG``; one
+        whose character levels span more than the battleground's authored
+        ``PlayerXpLevelSearchRange`` is refused with ``GROUP_LEVEL_RANGE``.
+        A player without a group simply queues alone.
+        """
+
+        character_id = CharacterService._match_character_id(s)
+        store = getattr(self, "social_store", None)
+        group = (
+            store.group_for(int(character_id))
+            if store is not None and character_id is not None else None
+        )
+        if group is None or len(group.members) <= 1:
+            return (s,)
+        if int(group.owner_character_id) != int(character_id):
+            return None
+        member_ids = [int(member.character_id) for member in group.members]
+        online: dict[int, Session] = {int(character_id): s}
+        try:
+            sessions = self._active_gameplay_sessions()
+        except AttributeError:
+            sessions = ()
+        for session in sessions:
+            member_id = CharacterService._match_character_id(session)
+            if (member_id in member_ids and member_id not in online
+                    and getattr(session, "gameplay_match", None) is None):
+                online[member_id] = session
+        party = tuple(
+            online[member_id]
+            for member_id in [int(character_id)] + member_ids
+            if member_id in online
+        )
+        party = tuple(dict.fromkeys(party))
+        if len(party) > max(MATCH_TEAM_SIZES.get(int(match_mode), (1,))):
+            return MATCHMAKING_EVENT_GROUP_TOO_BIG
+        settings = CharacterService._battleground_settings(self, match_mode)
+        levels = [
+            max(1, int(getattr(member.gameplay_character, "level", 1) or 1))
+            for member in party
+        ]
+        if (settings is not None and levels
+                and max(levels) - min(levels) > settings.level_search_range):
+            return MATCHMAKING_EVENT_GROUP_LEVEL_RANGE
+        return party
+
+    def _battleground_settings(self, match_mode: int):
+        """The authored ``_Template_BattlegroundSettings`` row of a mode."""
+
+        battleground_id = BATTLEGROUND_IDS.get(int(match_mode))
+        if battleground_id is None:
+            return None
+        try:
+            return load_battleground_settings(
+                self.static_database_path, battleground_id
+            )
+        except Exception as exc:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] no battleground settings for "
+                f"{battleground_id}: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _matchmaking_rules(self, match_mode: int) -> MatchmakingRules | None:
+        settings = CharacterService._battleground_settings(self, match_mode)
+        if settings is None:
+            return None
+        return MatchmakingRules(
+            level_range=int(settings.level_search_range),
+            pvp_level_range=int(settings.pvp_level_search_range),
+            max_wait_seconds=float(settings.rating_max_wait_seconds),
+        )
+
+    def _send_queue_status(self, s: Session, entry: QueueEntry, *,
+                           event: int = MATCHMAKING_EVENT_JOINED_BY_USER) -> None:
         """Send the pair retail repeats while a player waits."""
 
         registry = CharacterService._matchmaking_registry(self)
         waiting = registry.waiting_count(entry.match_mode)
         tick = int(server_time() // 40) & 0xFFFFFFFF
         info = encode_matchmaking_info(MatchMakingInfo(
-            state=MATCHMAKING_EVENT_JOINED_BY_USER,
+            state=int(event),
             server_tick=tick,
             match_mode=entry.match_mode,
             message="",
@@ -314,14 +479,42 @@ class MatchmakingService:
             s.gameplay_match_queue_entry = None
         if removed is None:
             return
+        CharacterService._send_queue_left(
+            self, s, removed.match_mode, MATCHMAKING_EVENT_ABORTED_BY_USER,
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} left the "
+            f"PvP queue ({reason})"
+        )
+        if removed.party_id and removed.party_leader_id == character_id:
+            # A group leader's abort takes the whole party out of the queue.
+            for member in registry.party_members(removed.party_id):
+                if registry.dequeue(member.character_id) is None:
+                    continue
+                session = member.session
+                if session is None:
+                    continue
+                with session.flow_lock:
+                    session.gameplay_match_queue_entry = None
+                CharacterService._send_queue_left(
+                    self, session, member.match_mode,
+                    MATCHMAKING_EVENT_ABORTED_BY_GROUP_LEADER,
+                )
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] character "
+                    f"{member.character_id} left the PvP queue (group "
+                    f"leader {character_id} aborted)"
+                )
+
+    def _send_queue_left(self, s: Session, match_mode: int, event: int) -> None:
         self._send_pvp(
             s,
             encode_matchmaking_info(MatchMakingInfo(
-                state=MATCHMAKING_EVENT_ABORTED_BY_USER,
+                state=int(event),
                 server_tick=int(server_time() // 40) & 0xFFFFFFFF,
                 # Keep the mode so the client can clear the queue UI for the
                 # specific queue that was just cancelled.
-                match_mode=removed.match_mode,
+                match_mode=int(match_mode),
                 message="",
             )),
             label="pvp-queue-left",
@@ -337,10 +530,6 @@ class MatchmakingService:
             )),
             label="pvp-queue-info-cleared",
         )
-        print(
-            f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} left the "
-            f"PvP queue ({reason})"
-        )
 
     # ------------------------------------------------------------------
     # invitation
@@ -348,8 +537,17 @@ class MatchmakingService:
 
     def _try_form_match(self, match_mode: int) -> PVPMatch | None:
         registry = CharacterService._matchmaking_registry(self)
-        match = registry.form_match(match_mode)
+        rules = CharacterService._matchmaking_rules(self, match_mode)
+        match = registry.form_match(match_mode, rules=rules)
         if match is None:
+            CharacterService._arm_queue_retry(self, match_mode, rules)
+            return None
+        if not CharacterService._prepare_match_objectives(self, match):
+            # The mode's objective content is missing; the match could never
+            # be decided, so nobody is invited into it.
+            CharacterService._cancel_match(
+                self, match, reason="objective content unavailable",
+            )
             return None
         for entry in match.participants:
             session = entry.session
@@ -380,6 +578,52 @@ class MatchmakingService:
             f"{[e.character_id for e in match.participants]}"
         )
         return match
+
+    def _arm_queue_retry(self, match_mode: int,
+                         rules: MatchmakingRules | None) -> None:
+        """Re-run matchmaking when the oldest party's search window lifts.
+
+        Only needed when enough players wait but the windows kept them apart;
+        with too few players the next queue join retries anyway. The timer is
+        hosted on a waiting player's session, like the match timers.
+        """
+
+        registry = CharacterService._matchmaking_registry(self)
+        match_mode = int(match_mode)
+        sizes = MATCH_TEAM_SIZES.get(match_mode)
+        if (rules is None or not sizes
+                or registry.waiting_count(match_mode) < sum(sizes)):
+            return
+        moment = registry.next_window_change(match_mode, rules)
+        if moment is None:
+            return
+        host = next((
+            entry.session for entry in registry.queued_for(match_mode)
+            if entry.session is not None
+            and getattr(entry.session, "connected", False)
+            and not getattr(entry.session, "retired", False)
+        ), None)
+        if host is None:
+            return
+        with registry.lock:
+            previous = registry.queue_timers.pop(match_mode, None)
+        if previous is not None:
+            previous.cancel()
+
+        def fire(server, mode):
+            with registry.lock:
+                registry.queue_timers.pop(mode, None)
+            CharacterService._try_form_match(server, mode)
+
+        timer = host.gameplay_deadline_timer(
+            max(0.0, moment - time.perf_counter()) + 0.05,
+            fire,
+            args=(self, match_mode),
+        )
+        timer.daemon = True
+        with registry.lock:
+            registry.queue_timers[match_mode] = timer
+        timer.start()
 
     def _arm_match_timer(self, match: PVPMatch, key: str, delay: float,
                          callback) -> None:
@@ -515,13 +759,21 @@ class MatchmakingService:
                 label="pvp-match-cancelled",
             )
             if entry.accepted and not entry.declined:
+                # A party stays a party when it goes back into the queue.
                 queued = registry.enqueue(QueueEntry(
                     character_id=entry.character_id,
                     account_id=entry.account_id,
                     match_mode=match.match_mode,
-                    queue_kind=QUEUE_KIND_SINGLE,
+                    queue_kind=(
+                        QUEUE_KIND_GROUP if entry.party_id
+                        else QUEUE_KIND_SINGLE
+                    ),
                     session=session,
                     class_id=entry.class_id,
+                    party_id=entry.party_id,
+                    party_leader_id=entry.party_leader_id,
+                    level=entry.level,
+                    honor_points=entry.honor_points,
                 ))
                 with session.flow_lock:
                     session.gameplay_match_queue_entry = queued
@@ -531,6 +783,9 @@ class MatchmakingService:
             f"[{GAMEPLAY_SERVICE_NAME}] cancelled PvP match "
             f"{match.match_id}: {reason}; requeued {requeued}"
         )
+        if requeued:
+            # Others may already be waiting for exactly these players.
+            CharacterService._try_form_match(self, match.match_mode)
 
     # ------------------------------------------------------------------
     # arena entry
@@ -669,6 +924,9 @@ class MatchmakingService:
         # The arena's map-access row authors the PvP balance buff
         # (``pvp_char_modifier``); install it with the rest of the entry state.
         CharacterService._apply_battleground_map_effects(self, s)
+        # A session re-bound after the objectives are up needs the flags that
+        # are lying on the ground; its world-item table was reset on load.
+        CharacterService._show_ground_flags(self, s, match)
         self._send_match_info(s, match)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} entered PvP "

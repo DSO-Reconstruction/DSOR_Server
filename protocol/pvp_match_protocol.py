@@ -57,6 +57,17 @@ JOIN_BATTLEGROUND_COMMAND = command_id("PVP::JoinBattleGroundCommand", 0x00D2)
 JOIN_BATTLEGROUND_RESPONSE_COMMAND = command_id("PVP::JoinBattlegroundResponseCommand", 0x00D3)
 MATCHMAKING_INFO_COMMAND = command_id("PVP::MatchMakingInfoCommand", 0x00D7)
 HONOR_POINTS_CHANGED_COMMAND = command_id("Commands::HonorPointsChangedCommand", 0x007F)
+PVP_EVENT_COMMAND = command_id("PVP::PVPEventCommand", 0x00C5)
+PVP_STATE_COMMAND = command_id("PVP::PVPStateCommand", 0x00C6)
+STAGE_INFO_COMMAND = command_id("PVP::StageInfoCommand", 0x00C9)
+PVP_EVENT_PROGRESS_UPDATE_COMMAND = command_id(
+    "PVP::PVPEventProgressUpdateCommand", 0x00CD
+)
+# Client requests for objective modes, routed to
+# BattlegroundService._handle_pvp_objective_command. The client sends
+# ``PVPEventCommand`` and never handles it (no handler is registered for it);
+# see ``PVPEvent`` below.
+PVP_OBJECTIVE_COMMANDS: frozenset[int] = frozenset({PVP_EVENT_COMMAND})
 BATCH_TERMINATOR = 0xFF
 SERVER_BATCH_MESSAGE = 0x85
 CLIENT_COMMAND_MESSAGE = 0x8B
@@ -82,8 +93,11 @@ ACTOR_SCOPED_COMMANDS = frozenset({
     JOIN_MATCH_QUEUE_RESPONSE_COMMAND,
     SHOW_PVP_DEATH_DIALOG_COMMAND,
     HONOR_POINTS_CHANGED_COMMAND,
+    PVP_EVENT_PROGRESS_UPDATE_COMMAND,
 })
 UNSCOPED_SERVER_COMMANDS = frozenset({
+    PVP_STATE_COMMAND,
+    STAGE_INFO_COMMAND,
     PVP_MATCH_DESCRIPTION_COMMAND,
     PVP_MATCH_OVER_COMMAND,
     PVP_MATCH_START_COMMAND,
@@ -138,15 +152,44 @@ BATTLEGROUND_IDS = {
     MATCH_MODE_LAST_MAN_STANDING_8FFA: "LastManStanding_8ffa_01",
 }
 
-# Arena map each mode is played on.  ``b1102_dm`` is the map retail sent this
-# account to for a 1v1; the rest are the local maps whose names match the
-# corresponding battleground.
+# Arena map each mode is played on: the ``MapName`` that
+# ``_Template_BattlegroundSettings`` authors for the battleground id above
+# (``b1102_dm`` is also the map retail sent this account to for a 1v1).
+# The client loads the same table to describe the battleground, so the map
+# and the id must agree; tests check this against static.db4.
 BATTLEGROUND_MAPS = {
     MATCH_MODE_BEST_OF_3_1V1: "b1102_dm",
-    MATCH_MODE_BEST_OF_5_5V5: "pvp_tdm_01",
-    MATCH_MODE_CAPTURE_THE_FLAG_5V5: "pvp_ctf_01",
-    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: "pvp_con_01",
-    MATCH_MODE_LAST_MAN_STANDING_8FFA: "pvp_br_01",
+    MATCH_MODE_BEST_OF_5_5V5: "a0206_tdm",
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5: "c2103_ctf",
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: "f4103_atf",
+    MATCH_MODE_LAST_MAN_STANDING_8FFA: "a0206_8ffa_lms",
+}
+
+# Every map a ``_Template_BattlegroundSettings`` row names, including the
+# rows no queue mode selects (``BestOf5_5v5_02`` on ``pvp_tdm_01``, the
+# prototypes, tournament and debug rows). Any of them is an arena map.
+AUTHORED_BATTLEGROUND_MAPS = frozenset({
+    "a0205_ctf", "a0206_8ffa_dtf", "a0206_8ffa_lms", "a0206_tdm",
+    "a0208_sur", "a0209_atf", "b1102_dm", "c2103_ctf", "f4103_atf",
+    "pvp_prototype_01", "pvp_prototype_02", "pvp_prototype_03",
+    "pvp_tdm_01",
+})
+
+# ``_Template_Achievements`` rows of type ``Pvp_Match`` name a battleground
+# family in ``Param``: ``BestOf3_1v1`` (pvp_win_dm_01, "Win 'Duel'"),
+# ``BestOf5_3v3`` (pvp_win_tdm_01, "Win 'Team Death Match'"),
+# ``CaptureTheFlag_5v5`` (pvp_win_ctf_01) and ``AssaultTheFortress_6v6``
+# (pvp_win_atf_01, "Win 'Storm the Fortress'"). The live queue modes are the
+# same games: BestOf5_5v5 shares ``BestOf5_3v3``'s map (a0206_tdm), ruleset
+# (BestOfX) and WinningCondition (3); AssaultTheFortress_5v5 shares
+# ``AssaultTheFortress_6v6``'s map (f4103_atf) and ruleset (CastleRush).
+# ``LastManStanding_8ffa`` is the name ``_Template_MatchAchievements`` uses.
+ACHIEVEMENT_MODE_NAMES = {
+    MATCH_MODE_BEST_OF_3_1V1: "BestOf3_1v1",
+    MATCH_MODE_BEST_OF_5_5V5: "BestOf5_3v3",
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5: "CaptureTheFlag_5v5",
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: "AssaultTheFortress_6v6",
+    MATCH_MODE_LAST_MAN_STANDING_8FFA: "LastManStanding_8ffa",
 }
 
 # The 0x86 map load announces a ruleset, and a battleground needs its own.
@@ -156,17 +199,52 @@ BATTLEGROUND_MAPS = {
 # never brings its PvP subsystem up on the map, and the match countdown, its
 # movement lock and the end-of-match overview are all silently inert -- the
 # commands arrive and are dropped because nothing is listening for them.
-BATTLEGROUND_RULESET = 14
+#
+# The value is the client's ``Ruleset`` enum: ``HandleClientInfo``
+# (0x140ab0670) reads it as a ``uint32`` into ``DrasaClientBase::SetRuleSet``,
+# and the string->enum function 0x140839c34 numbers the names below. 14 is
+# ``bestofx``, the ``Ruleset`` of BestOf3_1v1. The client branches on it:
+# CTF jingles only play under 8, the scoreboard's Score column is flags under
+# 8 and castle points under 13, the stage bar and its warnings need 13, and
+# the score widget runs free-for-all under 9 and 15 (ScoreWidget 0x14031380c).
+RULESET_VALUES = {
+    "closedpve": 0, "openpve": 1, "scalingpve": 2, "scalingpvp": 3,
+    "pvp": 4, "hub": 5, "privatehub": 6, "teamdeathmatch": 7,
+    "capturetheflag": 8, "deathmatchffa": 9, "bossmap": 10, "eventmap": 11,
+    "survival": 12, "castlerush": 13, "bestofx": 14, "holdflag": 15,
+}
+BATTLEGROUND_RULESET = RULESET_VALUES["bestofx"]
+RULESET_CAPTURE_THE_FLAG = RULESET_VALUES["capturetheflag"]
+RULESET_CASTLE_RUSH = RULESET_VALUES["castlerush"]
+
+# ``_Template_BattlegroundSettings.Ruleset`` of every battleground map (every
+# row naming one map agrees; tests check this against static.db4).
+BATTLEGROUND_MAP_RULESETS = {
+    "a0205_ctf": RULESET_VALUES["capturetheflag"],
+    "a0206_8ffa_dtf": RULESET_VALUES["holdflag"],
+    "a0206_8ffa_lms": RULESET_VALUES["deathmatchffa"],
+    "a0206_tdm": RULESET_VALUES["bestofx"],
+    "a0208_sur": RULESET_VALUES["survival"],
+    "a0209_atf": RULESET_VALUES["castlerush"],
+    "b1102_dm": RULESET_VALUES["bestofx"],
+    "c2103_ctf": RULESET_VALUES["capturetheflag"],
+    "f4103_atf": RULESET_VALUES["castlerush"],
+    "pvp_prototype_01": RULESET_VALUES["bestofx"],
+    "pvp_prototype_02": RULESET_VALUES["capturetheflag"],
+    "pvp_prototype_03": RULESET_VALUES["capturetheflag"],
+    "pvp_tdm_01": RULESET_VALUES["bestofx"],
+}
 
 
 def battleground_ruleset(map_id: str) -> int | None:
     """The map-load ruleset for an arena, or ``None`` for an ordinary map."""
 
-    return (
-        BATTLEGROUND_RULESET
-        if str(map_id) in set(BATTLEGROUND_MAPS.values())
-        else None
-    )
+    ruleset = BATTLEGROUND_MAP_RULESETS.get(str(map_id))
+    if ruleset is None and (
+            str(map_id) in AUTHORED_BATTLEGROUND_MAPS
+            or str(map_id) in set(BATTLEGROUND_MAPS.values())):
+        ruleset = BATTLEGROUND_RULESET
+    return ruleset
 
 
 # Team sizes per mode, used by the queue to decide when a match is full.
@@ -175,15 +253,39 @@ MATCH_TEAM_SIZES = {
     MATCH_MODE_BEST_OF_5_5V5: (5, 5),
     MATCH_MODE_CAPTURE_THE_FLAG_5V5: (5, 5),
     MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: (5, 5),
-    MATCH_MODE_LAST_MAN_STANDING_8FFA: (8,),
+    MATCH_MODE_LAST_MAN_STANDING_8FFA: (1,) * 8,
 }
 
-# Rounds needed to take the match, per mode name ("BestOf3" -> 2).
+# Modes decided by an objective rather than by eliminating a team.
+OBJECTIVE_MATCH_MODES = frozenset((
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5,
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5,
+))
+# Objective modes whose objective the server can run to a result: capture
+# the flag (services/battleground_objectives.py) and Assault the Fortress,
+# whose team-owned structures the combat world now models
+# (services/battleground_fortress.py).
+PLAYABLE_OBJECTIVE_MATCH_MODES = frozenset((
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5,
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5,
+))
+
+# Modes the queue accepts. A wire-valid mode outside this set is refused
+# rather than started, so the mode list matches what can be completed.
+SUPPORTED_MATCH_MODES = frozenset((
+    MATCH_MODE_BEST_OF_3_1V1,
+    MATCH_MODE_BEST_OF_5_5V5,
+    MATCH_MODE_LAST_MAN_STANDING_8FFA,
+)) | PLAYABLE_OBJECTIVE_MATCH_MODES
+
+# Rounds needed to take the match, per mode name ("BestOf3" -> 2). An
+# objective mode is one round decided by its objective; its
+# ``WinningCondition`` (3 for capture the flag) counts captures, not rounds.
 MATCH_ROUNDS_TO_WIN = {
     MATCH_MODE_BEST_OF_3_1V1: 2,
     MATCH_MODE_BEST_OF_5_5V5: 3,
-    MATCH_MODE_CAPTURE_THE_FLAG_5V5: 3,
-    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: 3,
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5: 1,
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: 1,
     MATCH_MODE_LAST_MAN_STANDING_8FFA: 1,
 }
 
@@ -815,11 +917,17 @@ class MatchOver:
     flag: bool = False
 
 
+# ``PVPMatchOver``'s winner is compared with each team index by the client;
+# a value matching no team is the tie ``scorescreenTeamsTied`` shows (see
+# docs/PVP_MATCHMAKING.md section 9).
+MATCH_WINNER_DRAW = -1
+
+
 def encode_match_over(value: MatchOver) -> tuple[bytes, int]:
     writer = BitWriter()
     _begin_server_command(writer, PVP_MATCH_OVER_COMMAND)
     writer.write_uint32_le(int(value.server_tick))
-    writer.write_uint32_le(int(value.winning_team))
+    writer.write_uint32_le(int(value.winning_team) & 0xFFFFFFFF)
     writer.write_bool(bool(value.flag))
     return _finish_server_command(writer, PVP_MATCH_OVER_COMMAND)
 
@@ -828,9 +936,13 @@ def decode_match_over(
         payload: bytes, bit_length: int | None = None) -> MatchOver:
     reader = BitReader(payload, bit_length)
     _start_server_command(reader, PVP_MATCH_OVER_COMMAND)
+    server_tick = reader.read_uint32_le()
+    winning_team = reader.read_uint32_le()
+    if winning_team == 0xFFFFFFFF:
+        winning_team = MATCH_WINNER_DRAW
     value = MatchOver(
-        reader.read_uint32_le(),
-        reader.read_uint32_le(),
+        server_tick,
+        winning_team,
         reader.read_bool(),
     )
     _end_server_command(reader, PVP_MATCH_OVER_COMMAND)
@@ -839,9 +951,20 @@ def decode_match_over(
 
 @dataclass(frozen=True)
 class ShowPVPDeathDialog:
-    """``PVP::ShowPVPDeathDialogCommand`` (0x00CC), Encode at 0x14099bac4."""
+    """``PVP::ShowPVPDeathDialogCommand`` (0x00CC), Encode at 0x14099bac4.
 
-    respawn_delay_ticks: int = 0
+    One ``int32`` (decoded at +0x20) plus the wrapper's actor id. The
+    handler (0x1402f3998) opens ``PVPDeathDialog`` (``ui/pvpdeathdialog.bxml``,
+    headline ``pvpDeathDialogHeadline`` "Respawn") through ``Setup(int)``
+    (0x140302fd8), which stores the value at dialog+0x40 and prints it with
+    ``"%d"``. ``PVPEventProgressUpdateCommand`` (0xCD) later overwrites the
+    same field (0x1402f7340): it is the match's event progress -- the
+    "Insignias of Honor" the dialog text says are lost while not fighting --
+    not a respawn timer. The dialog's Respawn button sends an ordinary
+    ``RespawnCommand`` with ``nearest_exit`` set (0x140302b14).
+    """
+
+    event_progress: int = 0
     actor_id: int = 0
 
 
@@ -849,7 +972,7 @@ def encode_show_pvp_death_dialog(
         value: ShowPVPDeathDialog) -> tuple[bytes, int]:
     writer = BitWriter()
     _begin_server_command(writer, SHOW_PVP_DEATH_DIALOG_COMMAND)
-    writer.write_uint32_le(int(value.respawn_delay_ticks))
+    writer.write_uint32_le(int(value.event_progress) & 0xFFFFFFFF)
     return _finish_server_command(
         writer, SHOW_PVP_DEATH_DIALOG_COMMAND, value.actor_id
     )
@@ -859,9 +982,9 @@ def decode_show_pvp_death_dialog(
         payload: bytes, bit_length: int | None = None) -> ShowPVPDeathDialog:
     reader = BitReader(payload, bit_length)
     _start_server_command(reader, SHOW_PVP_DEATH_DIALOG_COMMAND)
-    delay = reader.read_uint32_le()
+    progress = reader.read_uint32_le()
     actor_id = _end_server_command(reader, SHOW_PVP_DEATH_DIALOG_COMMAND)
-    return ShowPVPDeathDialog(delay, actor_id or 0)
+    return ShowPVPDeathDialog(progress, actor_id or 0)
 
 
 @dataclass(frozen=True)
@@ -889,6 +1012,210 @@ def decode_honor_points_changed(
     honor = reader.read_uint32_le()
     actor_id = _end_server_command(reader, HONOR_POINTS_CHANGED_COMMAND)
     return HonorPointsChanged(honor, actor_id or 0)
+
+
+# ---------------------------------------------------------------------------
+# Objective modes
+# ---------------------------------------------------------------------------
+
+# ``PVPEvent.event_type`` values the client is known to send. The struct is
+# read by 0x140a539a8 (types above 9 become -1). Only two senders exist:
+#
+# * ClientBattlegroundManager (0x1402f4d88) sends type 2 on every game tick
+#   while the local player stands inside a trigger volume whose
+#   ``TriggeredEventCategory`` is ``CTFTeamBase`` -- it names no volume and
+#   checks no team or phase, so the server decides from the position;
+# * ``Game::PVPEventModifier::Apply`` (0x140909ee8, the ``ctfdropflag``
+#   status effect) passes type 7 to a GameWorld virtual that is a no-op on
+#   the client, so type 7 never reaches the wire.
+PVP_EVENT_IN_TEAM_BASE = 2
+PVP_EVENT_DROP_FLAG = 7
+PVP_EVENT_TYPE_RANGE = (-1, 9)
+
+
+@dataclass(frozen=True)
+class PVPEvent:
+    """``PVP::PVPEventCommand`` (0x00C5), client -> server only.
+
+    An ``int8`` type then eight 32-bit fields of the struct at command+0x20,
+    in wire order +0x0c, +0x10, +0x14, +0x1c (``uint32``), +0x18 (``int32``,
+    default -1), +0x20 (``uint32``), +0x24, +0x28 (``int32``) -- 264 bits.
+    +0x0c/+0x10 share one invalid-id default, so they are probably source
+    and target actor ids; the rest are unnamed. The type-2 base signal leaves
+    every field at its default. Client-sent commands carry no actor trailer.
+    """
+
+    event_type: int = PVP_EVENT_IN_TEAM_BASE
+    field_0c: int = 0
+    field_10: int = 0
+    field_14: int = 0
+    field_1c: int = 0
+    field_18: int = -1
+    field_20: int = 0
+    field_24: int = 0
+    field_28: int = 0
+
+
+def _write_int32(writer: BitWriter, value: int) -> None:
+    writer.write_uint32_le(int(value) & 0xFFFFFFFF)
+
+
+def _read_int32(reader: BitReader) -> int:
+    value = reader.read_uint32_le()
+    return value - (1 << 32) if value & 0x80000000 else value
+
+
+def encode_pvp_event(value: PVPEvent) -> tuple[bytes, int]:
+    writer = BitWriter()
+    writer.write_uint8(CLIENT_COMMAND_MESSAGE)
+    writer.write_bytes(PVP_EVENT_COMMAND.to_bytes(2, "little"))
+    _write_enum8(writer, value.event_type, PVP_EVENT_TYPE_RANGE, "PvP event")
+    for field_value in (value.field_0c, value.field_10, value.field_14,
+                        value.field_1c):
+        writer.write_uint32_le(int(field_value) & 0xFFFFFFFF)
+    _write_int32(writer, value.field_18)
+    writer.write_uint32_le(int(value.field_20) & 0xFFFFFFFF)
+    _write_int32(writer, value.field_24)
+    _write_int32(writer, value.field_28)
+    return writer.finish()
+
+
+def decode_pvp_event(
+        payload: bytes, bit_length: int | None = None) -> PVPEvent:
+    reader = BitReader(payload, bit_length)
+    _start_client_command(reader, PVP_EVENT_COMMAND)
+    raw = reader.read_bits(8)
+    # The client folds any type above 9 to -1 rather than rejecting it.
+    event_type = raw - 256 if raw >= 0x80 else raw
+    if event_type > PVP_EVENT_TYPE_RANGE[1]:
+        event_type = -1
+    value = PVPEvent(
+        event_type,
+        reader.read_uint32_le(),
+        reader.read_uint32_le(),
+        reader.read_uint32_le(),
+        reader.read_uint32_le(),
+        _read_int32(reader),
+        reader.read_uint32_le(),
+        _read_int32(reader),
+        _read_int32(reader),
+    )
+    _end_client_command(reader, "PVPEvent")
+    return value
+
+
+# ``PVPState.state``: which objective line the HUD shows. The handler
+# (0x1402f3528) stores it at manager+0xb8 and marks it dirty only when it
+# changes; the line is rebuilt (0x1402f595c) from OnFrame while the battle
+# state is 3 (after PVPMatchStart), choosing team/enemy wording from the
+# local player's team index in PVPMatchInfo (0 = Blue, 1 = Red) and from the
+# team of each actor in ``actors``.
+PVP_STATE_NONE = 0
+PVP_STATE_FLAGS_AT_BASE = 1          # ctfBasicRuleBlue / ctfBasicRuleRed
+PVP_STATE_RED_FLAG_CARRIED = 2       # a Blue player carries the red flag
+PVP_STATE_BLUE_FLAG_CARRIED = 3      # a Red player carries the blue flag
+PVP_STATE_BOTH_FLAGS_CARRIED = 4
+PVP_STATE_RED_FLAG_DROPPED = 5
+PVP_STATE_BLUE_FLAG_DROPPED = 6
+PVP_STATE_BOTH_FLAGS_DROPPED = 7
+PVP_STATE_CASTLE_RUSH_STAGE_1 = 8    # attacker/defenderObjectiveStage1
+PVP_STATE_CASTLE_RUSH_STAGE_2 = 9    # attacker/defenderObjectiveStage2
+PVP_STATE_HOLD_FLAG_DROPPED = 10
+PVP_STATE_HOLD_FLAG_HELD = 11
+PVP_STATE_RANGE = (-1, 11)
+
+
+@dataclass(frozen=True)
+class PVPState:
+    """``PVP::PVPStateCommand`` (0x00C6), server -> client, no actor trailer.
+
+    An ``enum8`` state (-1..11) and an ``Array<Id<GameActor>>`` (``int32``
+    count, then ``uint32`` actor ids) -- the flag carriers, as the viewer's
+    client knows those actors.
+    """
+
+    state: int = PVP_STATE_NONE
+    actors: tuple[int, ...] = ()
+
+
+def encode_pvp_state(value: PVPState) -> tuple[bytes, int]:
+    writer = BitWriter()
+    _begin_server_command(writer, PVP_STATE_COMMAND)
+    _write_enum8(writer, value.state, PVP_STATE_RANGE, "PvP state")
+    writer.write_uint32_le(len(value.actors))
+    for actor_id in value.actors:
+        writer.write_uint32_le(int(actor_id))
+    return _finish_server_command(writer, PVP_STATE_COMMAND)
+
+
+def decode_pvp_state(
+        payload: bytes, bit_length: int | None = None) -> PVPState:
+    reader = BitReader(payload, bit_length)
+    _start_server_command(reader, PVP_STATE_COMMAND)
+    state = _read_enum8(reader, PVP_STATE_RANGE, "PvP state")
+    count = reader.read_uint32_le()
+    actors = tuple(reader.read_uint32_le() for _ in range(count))
+    _end_server_command(reader, PVP_STATE_COMMAND)
+    return PVPState(state, actors)
+
+
+@dataclass(frozen=True)
+class StageInfo:
+    """``PVP::StageInfoCommand`` (0x00C9), server -> client, no actor.
+
+    A ``Dictionary<StringAtom, float>`` (reader 0x1409d7cbc): ``int32``
+    count, then per entry a string and a ``float32``. ScoreWidget
+    (``UpdateStageProgress`` 0x140314580, CastleRush maps only) uses entry
+    0: the key is the stage target's monster template id (its
+    ``db.monster`` title is shown under ``stagedescription``), the value its
+    health fraction 0..1.
+    """
+
+    entries: tuple[tuple[str, float], ...] = ()
+
+
+def encode_stage_info(value: StageInfo) -> tuple[bytes, int]:
+    writer = BitWriter()
+    _begin_server_command(writer, STAGE_INFO_COMMAND)
+    writer.write_uint32_le(len(value.entries))
+    for key, fraction in value.entries:
+        writer.write_string(str(key))
+        writer.write_float(float(fraction))
+    return _finish_server_command(writer, STAGE_INFO_COMMAND)
+
+
+def decode_stage_info(
+        payload: bytes, bit_length: int | None = None) -> StageInfo:
+    reader = BitReader(payload, bit_length)
+    _start_server_command(reader, STAGE_INFO_COMMAND)
+    count = reader.read_uint32_le()
+    entries = tuple(
+        (reader.read_string(), reader.read_float()) for _ in range(count)
+    )
+    _end_server_command(reader, STAGE_INFO_COMMAND)
+    return StageInfo(entries)
+
+
+# ``MessageCommand`` (0x89) types that announce objective events. Unlike
+# PVPState these are per recipient: the server picks the type from the
+# recipient's side. The argument is an actor id (MessageParam kind 3) that
+# the client resolves in its PvP roster (0x1402f1298). Texts are in
+# ``gui.window.messages``; jingles (0x1400d220c) play only on a
+# capture-the-flag map (ruleset 8). Evidence: ClientGameWorld::
+# HandleMessageCommand (0x1401d0b48) and the UI dispatcher (0x140616d90).
+CTF_MESSAGE_WE_TOOK_FLAG_SELF = 12      # jingle ctf_team_ctf
+CTF_MESSAGE_WE_TOOK_FLAG_TEAMMATE = 13  # jingle ctf_team_ctf
+CTF_MESSAGE_ENEMY_TOOK_FLAG = 14        # jingle ctf_enemy_ctf
+CTF_MESSAGE_TEAM_SCORED = 15            # ctfTeamScoredPoint
+CTF_MESSAGE_ENEMY_SCORED = 16           # ctfEnemyScoredPoint
+CTF_MESSAGE_ENEMY_LOST_FLAG = 17        # jingle ctf_enemy_lost_flag
+CTF_MESSAGE_TEAM_LOST_FLAG = 18         # jingle ctf_team_lost_flag
+CTF_MESSAGE_TEAM_RECAPTURED = 19        # ctfTeamRecapturedFlag
+CTF_MESSAGE_ENEMY_RECAPTURED = 20       # ctfEnemyRecapturedFlag
+CTF_MESSAGE_TEAM_FLAG_RESET = 21        # jingle ctf_team_flag_reset
+CTF_MESSAGE_ENEMY_FLAG_RESET = 22       # jingle ctf_enemy_flag_reset
+MESSAGE_PVP_AUTO_BALANCED = 31          # pvpAutoBalanced
+MESSAGE_ARGUMENT_ACTOR = 3
 
 
 HONOR_LEVEL_THRESHOLDS: tuple[tuple[int, str], ...] = (
@@ -924,6 +1251,20 @@ def honor_level_title_for(honor_points: int) -> str:
     return "pvptitle00"
 
 
+def honor_level_for(honor_points: int) -> int:
+    """The ``_Template_HonorLevels.HonorLevel`` (0..20) for career honor.
+
+    This is the "PvP level" that ``PlayerPvPLevelSearchRange`` in
+    ``_Template_BattlegroundSettings`` is measured in.
+    """
+
+    points = max(0, int(honor_points or 0))
+    for index, (threshold, _title) in enumerate(HONOR_LEVEL_THRESHOLDS):
+        if points >= threshold:
+            return len(HONOR_LEVEL_THRESHOLDS) - 1 - index
+    return 0
+
+
 # ---------------------------------------------------------------------------
 # Scoreboard
 # ---------------------------------------------------------------------------
@@ -942,6 +1283,18 @@ class MatchPlayer:
     field 16 (written after player name) is copied to ``PvPMember + 0x0c``,
     which the scoreboard uses for the class emblem (Warrior=0, Mage=1,
     Ranger=2, Dwarf=3).
+
+    The release261_1024 member reader (0x140aa22b4) and FillTable
+    (0x140304d24) pin more columns: ``kills``/``deaths``/``damage_dealt`` are
+    the Kills/Deaths/DmgDealt columns, and ``score`` is the Score column --
+    headed ``scoredFlags`` (flag captures) on a capture-the-flag map
+    (ruleset 8) and ``scoredPoints`` on a CastleRush map (ruleset 13).
+    ``stats`` is not a ``uint32`` array but a
+    ``Dictionary<StringAtom, PvPAchievementInfo>`` (0x140aa0c38): ``int32``
+    count, then per entry the key (an ``_Template_MatchAchievements`` id such
+    as ``achievement_score``), an ``int32``, an ``int32`` and a string
+    (0x140aa2268). Each entry here is ``(key, int, int, text)``; the server
+    awards no match achievements yet and sends none.
     """
 
     actor_id: int = 0
@@ -960,7 +1313,7 @@ class MatchPlayer:
     enemy: bool = False
     name: str = ""
     class_id: int = 0
-    stats: tuple[int, ...] = ()
+    stats: tuple[tuple[str, int, int, str], ...] = ()
     rounds_lost: int = 0
 
     def write(self, writer: BitWriter) -> None:
@@ -977,8 +1330,11 @@ class MatchPlayer:
         writer.write_string(self.name)
         writer.write_uint32_le(int(self.class_id))
         writer.write_uint32_le(len(self.stats))
-        for entry in self.stats:
-            writer.write_uint32_le(int(entry))
+        for key, first, second, text in self.stats:
+            writer.write_string(str(key))
+            writer.write_uint32_le(int(first) & 0xFFFFFFFF)
+            writer.write_uint32_le(int(second) & 0xFFFFFFFF)
+            writer.write_string(str(text))
         writer.write_uint32_le(int(self.rounds_lost))
 
     @classmethod
@@ -991,7 +1347,11 @@ class MatchPlayer:
         name = reader.read_string()
         class_id = reader.read_uint32_le()
         count = reader.read_uint32_le()
-        stats = tuple(reader.read_uint32_le() for _ in range(count))
+        stats = tuple(
+            (reader.read_string(), reader.read_uint32_le(),
+             reader.read_uint32_le(), reader.read_string())
+            for _ in range(count)
+        )
         rounds_lost = reader.read_uint32_le()
         return cls(*head, support, rating, level, enemy, name, class_id,
                    stats, rounds_lost)
@@ -1004,6 +1364,13 @@ class MatchTeam:
     ``uint32`` team id, ``uint32`` rounds won, ``uint32``, a float, then the
     player array.  The float held 0.371 and 0.629 for the two recorded teams
     -- a win probability, since the pair sums to one.
+
+    In the release261_1024 reader (0x140aa2420) the team id is the client's
+    TeamId (BlueTeam 0, RedTeam 1, Yellow 2 ... Orange 7, Observer 8), and
+    ``rounds_won`` is the *displayed* team score -- the HUD's Team1/2Score
+    (0x14031492c) and the scoreboard title read it; an objective mode puts
+    its objective score there. ``score`` is stored (PvPTeam+0x14) but never
+    displayed by this client.
     """
 
     team_id: int = 0
@@ -1040,6 +1407,11 @@ class MatchInfo:
     the battleground id, and a trailing ``uint32``.  Retail repeats it about
     every two seconds and on every scoreboard change; it is what drives both
     the in-match HUD and the end-of-match overview.
+
+    The trailing ``uint32`` (kept as ``stage``) is a time bonus in ticks:
+    when non-zero the client floats ``TimeBonus`` "+MM:SS minutes" above the
+    local player (0x1402f2948); the timer itself still follows the duration.
+    The server sends 0.
     """
 
     round_start_tick: int = 0

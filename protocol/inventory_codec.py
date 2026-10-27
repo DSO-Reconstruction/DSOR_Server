@@ -987,23 +987,6 @@ def encode_bootstrap_inventory_info(
             )
         )
         trinket_allocations[item_id] = (13 + index,)
-    for index in range(5, 7):
-        item_id = BOOTSTRAP_STARTER_RUNE_ID_START + index
-        starter_trinkets.append(
-            ItemInfo(
-                item_id=item_id,
-                template_id="all_base_trinket_rune_01",
-                socket_count=5,
-                socketed_templates=["", "", "", "", ""],
-                item_level=1,
-                field_08=0,
-                field_18=0x2100 + index,
-                field_30=1,
-                field_38=0,
-                created_at=created_at,
-            )
-        )
-        trinket_allocations[item_id] = (13 + index,)
     for index in range(3):
         item_id = BOOTSTRAP_STARTER_JEWEL_ID_START + index
         starter_trinkets.append(
@@ -1116,10 +1099,8 @@ def encode_bootstrap_inventory_info(
     equipment_slots = {**core_allocations, **trinket_allocations}
     equipment_slots[ring_death.item_id] = (8,)
     equipment_slots[ring_life.item_id] = (9,)
-    # All seven RuneTrinket equipment slots are populated. RuneTrinket and
-    # JewelTrinket items each keep their normal five gem sockets.
-    # The client's equipment table exposes seven RuneTrinket slots and three
-    # JewelTrinket slots, all populated here.
+    # Five rune and three jewel trinkets are available initially. Divination
+    # Stones earn the two additional rune slots; each base item has five sockets.
     return encode_inventory_info(
         InventoryInfo(
             items=core_items + starter_trinkets + [

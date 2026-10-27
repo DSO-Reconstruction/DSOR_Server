@@ -426,10 +426,14 @@ class InventoryMapService:
 
     def _handle_inventory_item_action_locked(
             self, s: Session, payload: bytes) -> None:
+        from dso_server.services.rune_progression import unlocked_rune_slots
+
         action = decode_inventory_item_action(payload)
         with s.flow_lock:
             s.gameplay_client_command_state[0x0055] = action
             inventory = s.gameplay_inventory
+            # Preserve occupied legacy extra slots before an unequip/swap.
+            s.gameplay_rune_trinket_unlocked_slots = set(unlocked_rune_slots(s))
             currency = s.gameplay_currency_state
             next_item_id = s.gameplay_next_item_id
             character = s.gameplay_character
@@ -943,6 +947,10 @@ class InventoryMapService:
                         item.template_id,
                         preferred_slots=preferred_slots,
                         occupied_slots=occupied_slots,
+                        unavailable_slots=tuple(
+                            slot for slot in (18, 19)
+                            if slot not in s.gameplay_rune_trinket_unlocked_slots
+                        ),
                     )
                     if (
                         action.operation != 0x0B
@@ -1146,6 +1154,9 @@ class InventoryMapService:
                 packet_bits,
                 label="equipment-snapshot",
             )
+            from dso_server.services.item_set_programs import reconcile_item_set_programs
+            reconcile_item_set_programs(s)
+            CharacterService._achievement_on_equipment_changed(self, s)
             CharacterService._refresh_player_combat_vitals(s)
             CharacterService._request_account_save(
                 s, "equipment changed", flush=True
@@ -1226,6 +1237,13 @@ class InventoryMapService:
         # ordinary use operation still points to the same authored
         # cast_mount_* -> ride_mount_* status-effect flow.
         if action.operation == 0x13 and inventory is not None:
+            from dso_server.services.rune_progression import handle_rune_extension_use
+            from dso_server.services.recipe_progression import handle_recipe_item_use
+
+            if handle_rune_extension_use(self, s, action.item_id):
+                return
+            if handle_recipe_item_use(self, s, action.item_id):
+                return
             inventory_item = next(
                 (
                     candidate
@@ -1375,12 +1393,23 @@ class InventoryMapService:
                     s.gameplay_game_currencies = dict(
                         currency_credit.game_currencies
                     )
-                CharacterService._send_world_loot_state_batch(
-                    s, packet, packet_bits, label="currency-item-consumed"
-                )
                 CharacterService._request_account_save(
                     s, "currency item consumed", flush=True
                 )
+                deferred_achievement_packets = []
+                if currency_credit.game_currency_update is not None:
+                    CharacterService._achievement_feed(
+                        self, s, "collectedgamecurrency",
+                        (inventory_item.template_id,), count=currency_credit.amount,
+                        deferred_packets=deferred_achievement_packets,
+                    )
+                CharacterService._send_world_loot_state_batch(
+                    s, packet, packet_bits, label="currency-item-consumed"
+                )
+                for achievement_packet, achievement_bits, achievement_label in deferred_achievement_packets:
+                    CharacterService._send_world_loot_state_batch(
+                        s, achievement_packet, achievement_bits, label=achievement_label
+                    )
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] consumed currency item "
                     f"{inventory_item.template_id!r}: credited "
@@ -1618,10 +1647,22 @@ class InventoryMapService:
             return
 
         with s.flow_lock:
+            previous_game_currencies = dict(s.gameplay_game_currencies)
             s.gameplay_currency_state = mutation.currency
             s.gameplay_inventory = mutation.inventory
             s.gameplay_game_currencies = game_currencies
             s.gameplay_next_item_id = receipt_next_item_id
+        CharacterService._persist_gameplay_session(
+            self, s, reason=f'{route_name} opened', flush=True
+        )
+        deferred_achievement_packets = []
+        for currency_id, balance in game_currencies.items():
+            gained = int(balance) - int(previous_game_currencies.get(currency_id, 0))
+            if gained > 0:
+                CharacterService._achievement_feed(
+                    self, s, "collectedgamecurrency", (currency_id,), count=gained,
+                    deferred_packets=deferred_achievement_packets,
+                )
         s.send_reliable_ordered_split(
             packet,
             total_bit_length=packet_bits,
@@ -1630,13 +1671,14 @@ class InventoryMapService:
                 f'{route_name}-open-{route_name}-open'
             ),
         )
+        for achievement_packet, achievement_bits, achievement_label in deferred_achievement_packets:
+            CharacterService._send_world_loot_state_batch(
+                s, achievement_packet, achievement_bits, label=achievement_label
+            )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] opened {route_name} "
             f"{route_id!r} from item {action.item_id}; delivered "
             f"{[(reward.definition.template_id, reward.amount) for reward in contents.rewards]} "
             f"(currency_changed={mutation.currency_changed}, "
             f"{len(packet)} bytes/{packet_bits} bits)"
-        )
-        CharacterService._persist_gameplay_session(
-            self, s, reason=f'{route_name} opened'
         )

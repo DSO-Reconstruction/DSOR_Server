@@ -341,7 +341,13 @@ class PlayerInitializationWorldService:
             initial_flags=active_event_flags,
             monster_level=map_access.monster_level,
             scaling_difficulty=map_access.monster_scaling_difficulty,
-            fresh_instance=not peers_present,
+            # Match entrants initialize concurrently, before either is a
+            # presence-ready peer. Their instance key is the match's own
+            # (pvp-match-<id>), so they always join one runtime -- like the
+            # match's shared combat state -- instead of each starting one.
+            fresh_instance=not peers_present and not (
+                CharacterService._entering_battleground(self, s, gameplay_map)
+            ),
         )
         CharacterService._quest_prepare_map(self, s)
         crafting_props = CharacterService._map_event_prop_info(s)
@@ -625,8 +631,7 @@ class PlayerInitializationWorldService:
                 RecipeBookEntry(resource_id, resource_id)
                 for resource_id in s.gameplay_recipe_book_resources
             )),
-            # Persisted progress and completion stamps; the recipe-gate
-            # achievements are granted once and then replayed verbatim.
+            # Replay earned progress and the original completion stamps.
             achievements=CharacterService._achievement_init_info(self, s),
             persistent_status_effects=(
                 tuple(
@@ -665,6 +670,11 @@ class PlayerInitializationWorldService:
                 int(season_pass_state["experience"]),
                 tuple(season_pass_state["pass_types"]),
                 tuple(season_pass_state["claimed_awards"]),
+            ),
+            # Persisted incubations (services/seasonal_activities.py); also
+            # records a 2026 recall returner from the previous save stamp.
+            hatch_eggs_info=CharacterService._seasonal_initialization(
+                self, s, persisted_state,
             ),
         ))
         # Restore obstacle collision before PlayerReady, alongside the quest
@@ -802,6 +812,9 @@ class PlayerInitializationWorldService:
             tuple(followup_commands),
             label="restore-player-ui-state",
         )
+        # Persisted egg incubations (services/seasonal_activities.py); the
+        # init batch omits UserHatchEggsInfo for this client build.
+        CharacterService._seasonal_send_initial_hatch_info(self, s)
 
         # Global PvP mode belongs to the character, not the socket.  The
         # value was already restored from AccountState, but without this
@@ -846,6 +859,18 @@ class PlayerInitializationWorldService:
                         self._guild_status_for(character_id)
                     ),
                     "initial-guild-status",
+                )
+            )
+        elif (
+            character_id is not None
+            and self.social_store.ignored_for(character_id)
+        ):
+            # The guild snapshot above already carries IgnoredStatus; a
+            # guildless character with ignores gets the list on its own.
+            social_snapshots.append(
+                (
+                    CharacterService._ignored_status_packet(self, character_id),
+                    "initial-ignored-status",
                 )
             )
         if (

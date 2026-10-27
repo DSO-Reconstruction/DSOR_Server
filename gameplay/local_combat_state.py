@@ -15,6 +15,8 @@ import threading
 import time
 
 from dso_server.runtime.concurrency import InstrumentedRLock, MAP_COMBAT_DOMAIN
+from dso_server.gameplay.player_skill_timing import timing_actor_variables
+from dso_server.gameplay.status_modifier_runtime import resolve_modifier_value
 from dso_server.gameplay.navigation_shapes import monster_target_radii
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
@@ -726,6 +728,11 @@ class PlayerSkillGeometry:
     cleanse_groups: frozenset[str] = frozenset()
     # ``_Template_SkillBullet.StaticCollision``: the bullet stops at walls.
     static_collision: bool = False
+    # Cooldown categories are shared by alternate skill variants, while
+    # CoolDown modifiers select resource ids/groups rather than categories.
+    cooldown_seconds: float = 0.0
+    cooldown_category: str = ""
+    force_execution: bool = False
 
 
 def _metadata_float(metadata: dict[str, str], key: str) -> float:
@@ -776,6 +783,13 @@ class VictimStatusEffectDefinition:
     # a radius: the creator holds the child only while it stands inside
     # (Banner of War's cheaper skills and resource regeneration, 5.75 m).
     creator_aura: str = ""
+    # Actor item-set programs distinguish native persistent zero-duration
+    # effects from ordinary transient skill effects.
+    persistent: bool = False
+    item_set_program: bool = False
+    item_set_target: str = "user"
+    item_set_parent_effect_id: int | None = None
+    item_set_ancestry: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -833,6 +847,42 @@ class PlayerSummonDefinition:
     overheat_attack_motion_unblock_frame: int = 0
     overheat_attack_loop_start_frame: int = 0
     overheat_attack_skill_effect_id: int | None = None
+    # Extra monsters the same cast creates (SummonAnotherMonsterId/Amount),
+    # each with its own template, category and cap.
+    additional_summons: tuple["PlayerSummonDefinition", ...] = ()
+
+
+@dataclass(frozen=True)
+class PlayerSummonShape:
+    """Talent/item rules that reshape one player summon skill.
+
+    ``SummonMonsterId:<skill>,<template>`` replaces the summoned template;
+    ``SummonMonsterAmount|Limit:<value>,<absolute|relative>,<skill>`` change
+    its count and cap; ``SummonAnotherMonsterId:<skill>,<template>`` names a
+    second template whose count is ``SummonAnotherMonsterAmount:<skill>,<n>``.
+    EVIDENCE (data): ranger_talent_packofwolves_big (Bond of Friends) and
+    set_cny2026_ranger tier 3 (``set_cny2026_ranger_3``: "When Wild Pack is
+    used with the Bond of Friends talent, you additionally summon 1 Nian").
+    """
+
+    template_id: str = ""
+    amount_absolute: float = 0.0
+    amount_relative: float = 0.0
+    limit_absolute: float = 0.0
+    limit_relative: float = 0.0
+    another_template_id: str = ""
+    another_amount: int = 0
+
+    @staticmethod
+    def _apply(base: int, absolute: float, relative: float) -> int:
+        value = float(base) * max(0.0, 1.0 + relative) + absolute
+        return max(1, int(math.floor(value + 0.5)))
+
+    def apply_amount(self, base: int) -> int:
+        return self._apply(base, self.amount_absolute, self.amount_relative)
+
+    def apply_limit(self, base: int) -> int:
+        return self._apply(base, self.limit_absolute, self.limit_relative)
 
 
 @dataclass(frozen=True)
@@ -1115,6 +1165,16 @@ class MonsterSummonRequest:
     # A status effect's Minion instructions place each one where authored
     # (around the caster, turned by its aim) instead of on a ring.
     positions: tuple[tuple[float, float, float], ...] = ()
+    # Incarnation of the caster when the skill landed. A visibility/leash
+    # reset invalidates requests already handed to the publication service.
+    caster_generation: int | None = None
+
+
+@dataclass(frozen=True)
+class TemporaryMonsterSummon:
+    caster_actor_id: int
+    caster_generation: int
+    expires_at: float
 
 
 @lru_cache(maxsize=256)
@@ -1408,6 +1468,8 @@ class LocalCombatState:
         self.scripted_monster_targets: dict[
             int, tuple[float, float, float]
         ] = {}
+        # Quest wave actors pursue only the defender of their own encounter.
+        self.holdground_targets: dict[int, int] = {}
         self.returning_home_actor_ids: set[int] = set()
         self.returning_home_started_at: dict[int, float] = {}
         self.returning_home_progress: dict[int, float] = {}
@@ -1444,6 +1506,11 @@ class LocalCombatState:
         self.pending_monster_summons: list[MonsterSummonRequest] = []
         # (due time, request): Minion instructions with a DE wait for it.
         self._delayed_monster_summons: list[tuple[float, MonsterSummonRequest]] = []
+        self._monster_summon_generations: dict[int, int] = {}
+        self.temporary_monster_summons: dict[int, TemporaryMonsterSummon] = {}
+        self.pending_monster_summon_discards: set[int] = set()
+        self._retired_monster_summon_actor_ids: set[int] = set()
+        self.monster_summon_lifecycle = None
         self._monster_cooldown_random = random.Random(0x0B055)
         self.pending_monster_attacks: dict[int, MonsterAttack] = {}
         self._static_line_of_sight: StaticLineOfSight | None = None
@@ -1488,6 +1555,14 @@ class LocalCombatState:
         self._player_trap_definitions: dict[
             str, PlayerTrapDefinition | None
         ] = {}
+        # Arena team ownership (Assault the Fortress structures and their
+        # summons). A monster with a team acts only against players of other
+        # teams, and players of its own team cannot harm it. A monster with
+        # no team -- every ordinary map monster -- is hostile to every
+        # player, exactly as before. Teams are battleground indices.
+        self.monster_teams: dict[int, int] = {}
+        self.template_teams: dict[str, int] = {}
+        self.player_teams: dict[int, int] = {}
         self.player_summons: dict[int, PlayerSummonActor] = {}
         self.player_summon_health: dict[int, list[int]] = {}
         self.player_summon_heat_hits: dict[int, int] = {}
@@ -1969,6 +2044,7 @@ class LocalCombatState:
             )
         normalized = tuple(int(value) for value in actor_ids
                            if int(value) not in self.active_monster_actor_ids
+                           and int(value) not in self._retired_monster_summon_actor_ids
                            and int(value) not in self.scripted_dormant_actor_ids)
         self.active_monster_actor_ids.update(normalized)
         for actor_id in normalized:
@@ -1988,6 +2064,11 @@ class LocalCombatState:
         """Stop simulating discarded vicinity actors."""
 
         for actor_id in (int(value) for value in actor_ids):
+            if reset:
+                self.invalidate_monster_summons(actor_id)
+                if (actor_id in self.temporary_monster_summons
+                        and self.monster_health.get(actor_id, 0) <= 0):
+                    self._retired_monster_summon_actor_ids.add(actor_id)
             self.active_monster_actor_ids.discard(actor_id)
             if reset:
                 self.returning_home_actor_ids.discard(actor_id)
@@ -2013,7 +2094,8 @@ class LocalCombatState:
             ):
                 if pending.target_actor_id == actor_id:
                     del self.pending_runtime_player_hits[key]
-            if reset and actor_id in self.monsters:
+            if (reset and actor_id in self.monsters
+                    and actor_id not in self._retired_monster_summon_actor_ids):
                 monster = self.monsters[actor_id]
                 self.monster_health[actor_id] = monster.maximum_health
                 self.monster_status_effects[actor_id].clear()
@@ -2029,9 +2111,15 @@ class LocalCombatState:
         ]
 
     def heal_player(
-        self, *, full: bool = False, actor_id: int | None = None
+        self, *, full: bool = False, actor_id: int | None = None,
+        fraction: float = 0.25,
     ) -> tuple[int, int]:
-        """Apply the local health-globe result and return current/maximum HP."""
+        """Apply the local health-globe result and return current/maximum HP.
+
+        World pickups pass the authored ``Healthglobe`` ``$0`` (0.2 for a
+        plain sphere) plus ``HealthGlobeBonus``; the 0.25 default is only the
+        legacy direct-call fallback.
+        """
 
         actor_id = (
             self.player_actor_id if actor_id is None else int(actor_id)
@@ -2046,7 +2134,7 @@ class LocalCombatState:
         if full:
             current = maximum
         else:
-            recovered = max(1, round(maximum * 0.25))
+            recovered = max(0, round(maximum * max(0.0, float(fraction))))
             current = min(maximum, current + recovered)
         health[0] = current
         if actor_id == self.player_actor_id:
@@ -2434,6 +2522,9 @@ class LocalCombatState:
         """
 
         actor_id = int(actor_id)
+        self.invalidate_monster_summons(actor_id)
+        if actor_id in self._retired_monster_summon_actor_ids:
+            return
         monster = self.monsters[actor_id]
         # Raises MonsterReturnHome and drops this actor's queued swings and
         # every player impact already in flight toward it.
@@ -2473,6 +2564,7 @@ class LocalCombatState:
         if active == (actor_id in self.returning_home_actor_ids):
             return False
         if active:
+            self.invalidate_monster_summons(actor_id)
             if reason:
                 cancelled_hits = sum(
                     pending.target_actor_id == actor_id
@@ -2676,7 +2768,10 @@ class LocalCombatState:
                         COALESCE(s.ResourceCostToDamage, 0),
                         COALESCE(s.AmmoCost, 0),
                         COALESCE(s.StatusEffectGroupCleanse, ''),
-                        COALESCE(b.StaticCollision, 0)
+                        COALESCE(b.StaticCollision, 0),
+                        COALESCE(s.CoolDown, 0),
+                        COALESCE(s.CoolDownCategory, ''),
+                        COALESCE(s.ForceExecution, 0)
                 FROM _Template_Skill AS s
                 LEFT JOIN _Template_SkillBullet AS b
                   ON b.Id = s.SkillBulletId
@@ -2813,6 +2908,9 @@ class LocalCombatState:
                     if part.strip()
                 ),
                 static_collision=bool(row[44] or 0),
+                cooldown_seconds=max(0.0, float(row[45] or 0.0)),
+                cooldown_category=str(row[46] or "").strip(),
+                force_execution=bool(row[47]),
             )
             if row is not None
             else None
@@ -2909,11 +3007,21 @@ class LocalCombatState:
         skill_index: int,
         *,
         modifier_sources: tuple[object, ...] = (),
+        template_id: str = "",
     ) -> PlayerSummonDefinition | None:
-        """Resolve the summon metadata owned by one SkillManager entry."""
+        """Resolve the summon metadata owned by one SkillManager entry.
+
+        ``template_id`` resolves the same skill for another monster template
+        (``SummonMonsterId`` / ``SummonAnotherMonsterId`` modifiers); the
+        skill keeps its category, amount, limit, offset and spawn delay.
+        """
 
         skill_index = int(skill_index)
-        if skill_index not in self._player_summon_definitions:
+        template_id = self._clean_modifier_token(template_id)
+        cache_key = (
+            (skill_index, template_id.casefold()) if template_id else skill_index
+        )
+        if cache_key not in self._player_summon_definitions:
             path = self.encounter.static_database_path
             with closing(sqlite3.connect(
                 f"file:{path.as_posix()}?mode=ro",
@@ -2922,7 +3030,7 @@ class LocalCombatState:
                 row = database.execute(
                     """
                     SELECT s.Id, COALESCE(s.Summons, 0),
-                           COALESCE(s.SummonMonsterId, ''),
+                           COALESCE(NULLIF(?, ''), s.SummonMonsterId, ''),
                            COALESCE(s.SummonMonsterAmount, 0),
                            COALESCE(s.SummonMonsterLimit, 0),
                            COALESCE(s.SummonCategory, ''),
@@ -2937,13 +3045,14 @@ class LocalCombatState:
                            COALESCE(m.StartupDuration, 0),
                            COALESCE(m.Graphics, ''),
                            COALESCE(m.StartAnimationState, ''),
-                           COALESCE(m.SummonSequence, '')
+                           COALESCE(m.SummonSequence, ''),
+                           m.Id
                     FROM _Template_Skill AS s
                     LEFT JOIN _Template_Monster AS m
-                      ON m.Id=s.SummonMonsterId
+                      ON m.Id=COALESCE(NULLIF(?, ''), s.SummonMonsterId)
                     WHERE s.rowid=? LIMIT 1
                     """,
-                    (skill_index + 1,),
+                    (template_id, template_id, skill_index + 1),
                 ).fetchone()
                 definition = None
                 if (
@@ -2951,6 +3060,8 @@ class LocalCombatState:
                     and bool(row[1])
                     and str(row[2]).strip()
                     and int(row[3]) > 0
+                    # A modifier naming an unknown template cannot spawn.
+                    and (not template_id or row[18] is not None)
                 ):
                     monster_template_id = str(row[2])
                     client_monster_template_id = monster_template_id
@@ -3264,14 +3375,56 @@ class LocalCombatState:
                         ),
                         movement_locked=movement_locked,
                     )
-            self._player_summon_definitions[skill_index] = definition
+            self._player_summon_definitions[cache_key] = definition
 
-        definition = self._player_summon_definitions[skill_index]
+        definition = self._player_summon_definitions[cache_key]
         if definition is None or not modifier_sources:
             return definition
         geometry = self._load_player_skill_geometry(skill_index)
         if geometry is None:
             return definition
+        shape = self._player_summon_shape(geometry, modifier_sources)
+        if (
+            shape.template_id
+            and not template_id
+            and shape.template_id.casefold()
+            != definition.monster_template_id.casefold()
+        ):
+            # Bond of Friends: SummonMonsterId:packofwolves,
+            # minion_packofwolves_big replaces the three wolves' template.
+            replacement = self.player_summon_definition(
+                skill_index, template_id=shape.template_id
+            )
+            if replacement is not None:
+                definition = replacement
+        definition = replace(
+            definition,
+            amount=shape.apply_amount(definition.amount),
+            limit=shape.apply_limit(definition.limit),
+        )
+        if shape.another_template_id and shape.another_amount > 0:
+            # SummonAnotherMonsterId (the talent) names the extra template;
+            # SummonAnotherMonsterAmount (CNY 2026 ranger set) supplies the
+            # count. Either alone summons nothing.
+            another = self.player_summon_definition(
+                skill_index, template_id=shape.another_template_id
+            )
+            if another is not None:
+                count = int(shape.another_amount)
+                definition = replace(definition, additional_summons=(replace(
+                    another,
+                    amount=count,
+                    # LOCAL CHOICE: no authored limit exists for the extra
+                    # monster; a recast replaces it like the primary pack
+                    # instead of stacking companions without bound.
+                    limit=count,
+                    category=(
+                        f"{definition.category}:another:"
+                        f"{another.monster_template_id}"
+                    ),
+                    # The cast's ground visuals belong to the primary only.
+                    location_visual_effects=(),
+                ),))
         geometry = self._modified_player_skill_geometry(
             geometry, modifier_sources
         )
@@ -3306,6 +3459,95 @@ class LocalCombatState:
             ),
             location_visual_effects=location_visual_effects,
         )
+
+    def _player_summon_shape(
+        self,
+        geometry: PlayerSkillGeometry,
+        modifier_sources: tuple[object, ...],
+    ) -> PlayerSummonShape:
+        """Collect the summon-shaping rules scoped to ``geometry``'s skill.
+
+        Sources are the same as for ``_modified_player_skill_geometry``:
+        talent/status entries (their StartModifiers and nested AE programs)
+        and compiled item-set/socket modifiers.
+        """
+
+        instructions: list[
+            tuple[str, tuple[str, ...], int, tuple[float, ...]]
+        ] = []
+        explicit_effect_ids = frozenset(
+            int(source.effect_id)
+            for source in modifier_sources
+            if hasattr(source, "effect_id")
+        )
+        seen_legacy_ids: set[int] = set()
+        for source in modifier_sources:
+            if hasattr(source, "kind") and hasattr(source, "arguments"):
+                instructions.append((
+                    str(source.kind),
+                    tuple(str(value) for value in source.arguments),
+                    1,
+                    (),
+                ))
+                continue
+            if hasattr(source, "effect_id"):
+                effect_id = int(source.effect_id)
+                stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+                details = tuple(
+                    float(value) for value in getattr(source, "values", ())
+                )
+            elif isinstance(source, int) and source not in seen_legacy_ids:
+                seen_legacy_ids.add(source)
+                effect_id, stack_count, details = int(source), 1, ()
+            else:
+                continue
+            instructions.extend(
+                (kind, arguments, stack_count, details)
+                for kind, arguments in self._status_modifier_program(effect_id)
+            )
+        self._expand_status_modifier_instructions(
+            instructions, explicit_effect_ids
+        )
+        shape = PlayerSummonShape()
+        for kind, arguments, stack_count, details in instructions:
+            kind = kind.casefold()
+            if kind in {"summonmonsterid", "summonanothermonsterid"}:
+                if len(arguments) < 2 or not self._skill_scope_matches(
+                    geometry, (arguments[0],)
+                ):
+                    continue
+                template = self._clean_modifier_token(arguments[1])
+                if template:
+                    shape = replace(shape, **{
+                        "template_id" if kind == "summonmonsterid"
+                        else "another_template_id": template
+                    })
+            elif kind == "summonanothermonsteramount":
+                if len(arguments) < 2 or not self._skill_scope_matches(
+                    geometry, (arguments[0],)
+                ):
+                    continue
+                amount = self._modifier_amount(None, arguments[1], details)
+                if amount is not None and math.isfinite(amount):
+                    shape = replace(shape, another_amount=max(
+                        0, shape.another_amount
+                        + int(math.floor(amount * stack_count + 0.5)),
+                    ))
+            elif kind in {"summonmonsteramount", "summonmonsterlimit"}:
+                if len(arguments) < 3 or not self._skill_scope_matches(
+                    geometry, arguments[2:]
+                ):
+                    continue
+                amount = self._modifier_amount(None, arguments[0], details)
+                if amount is None or not math.isfinite(amount):
+                    continue
+                relative = arguments[1].casefold() == "relative"
+                prefix = "amount" if kind == "summonmonsteramount" else "limit"
+                field = f"{prefix}_{'relative' if relative else 'absolute'}"
+                shape = replace(shape, **{
+                    field: getattr(shape, field) + amount * stack_count
+                })
+        return shape
 
     def player_skill_location_visuals(
         self,
@@ -3708,6 +3950,9 @@ class LocalCombatState:
                     visual.position, self.monster_positions[actor_id]
                 ) > radius + max(0.0, monster.collision_radius):
                     continue
+                if not self.monster_hostile_to_player(
+                        actor_id, visual.owner_actor_id):
+                    continue
                 key = (int(visual.instance_id), int(actor_id))
                 inside_now.add(key)
                 if key in self.player_location_aura_members:
@@ -4081,8 +4326,8 @@ class LocalCombatState:
 
         CONTRACT: one monster per Minion instruction at its authored (x, z)
         around the caster, turned by its aim as OX/OZ are, after the effect's
-        DE. Templates with a LifeTime are left out: the server cannot yet end
-        them (Khalys's bullet portals, 3.9 s; her illusions, 24 s).
+        DE. The summon service owns each finite template's authored LifeTime
+        (Khalys's bullet portals, 3.9 s; her illusions, 24 s).
         EVIDENCE (data): boss_khalys_base_andermight_flood_activate_summon
         (difficulty 5-10) boss_khalys_andermight_creature,DE:6.0: Minion:
         pw015_boss_add_anderworld_creature,2,(0,0,16) (0,0,-16) (16,0,0)
@@ -4103,7 +4348,7 @@ class LocalCombatState:
             for template_id, _amount, (ox, oy, oz, _turn) in (
                 self.player_status_minion_specs(effect)
             ):
-                if _monster_template_lifetime(static_path, template_id) != 0.0:
+                if _monster_template_lifetime(static_path, template_id) < 0.0:
                     continue
                 by_template.setdefault(template_id, []).append((
                     float(centre[0]) + ox * cos_yaw + oz * sin_yaw,
@@ -4121,6 +4366,7 @@ class LocalCombatState:
                         position=tuple(float(v) for v in centre[:3]),
                         level=int(monster.level),
                         positions=tuple(positions),
+                        caster_generation=self._monster_summon_generations.get(int(actor_id), 0),
                     ),
                 ))
 
@@ -4135,8 +4381,71 @@ class LocalCombatState:
                 if at > current_time
             ]
             self.pending_monster_summons.extend(
-                r for r in due if r.caster_actor_id in self.living_actor_ids
+                r for r in due if self.monster_summon_request_is_current(r)
             )
+
+    def monster_summon_request_is_current(self, request) -> bool:
+        """Whether a queued summon still belongs to a live, simulated caster.
+
+        Active and alive (the former ``living_actor_ids`` test), not walking
+        home, and the same incarnation that cast it: death, leash reset or
+        return-home bump the caster's generation.
+        """
+        actor_id = int(request.caster_actor_id)
+        return (
+            self.monster_health.get(actor_id, 0) > 0
+            and actor_id in self.active_monster_actor_ids
+            and actor_id not in self.returning_home_actor_ids
+            and (request.caster_generation is None or request.caster_generation
+                 == self._monster_summon_generations.get(actor_id, 0))
+        )
+
+    def register_temporary_monster_summons(
+        self, caster_actor_id, actor_ids, *, lifetime: float, now: float,
+    ) -> None:
+        """Pin lifetime once at creation, never on vicinity reactivation."""
+        if lifetime <= 0.0:
+            return
+        caster = int(caster_actor_id)
+        for actor_id in actor_ids:
+            self.temporary_monster_summons[int(actor_id)] = TemporaryMonsterSummon(
+                caster, self._monster_summon_generations.get(caster, 0),
+                float(now) + float(lifetime),
+            )
+
+    def _retire_temporary_monster_summon(self, actor_id: int) -> None:
+        record = self.temporary_monster_summons.pop(actor_id, None)
+        if record is None:
+            return
+        self.monster_summoned_actor_ids.get(record.caster_actor_id, set()).discard(actor_id)
+        self._retired_monster_summon_actor_ids.add(actor_id)
+        # A real combat death already owns its kill packet and rewards.
+        if self.monster_health.get(actor_id, 0) > 0:
+            self.retire_monsters((actor_id,))
+            self.pending_monster_summon_discards.add(actor_id)
+
+    def invalidate_monster_summons(self, caster_actor_id: int) -> None:
+        """Cancel delayed casts and retire finite children on caster reset/death.
+
+        Called under the combat lock; wire publication is drained separately.
+        Existing unlimited-lifetime summon skills retain their prior behavior.
+        """
+        caster = int(caster_actor_id)
+        self._monster_summon_generations[caster] = self._monster_summon_generations.get(caster, 0) + 1
+        self.pending_monster_summons = [r for r in self.pending_monster_summons
+                                       if r.caster_actor_id != caster]
+        self._delayed_monster_summons = [(at, r) for at, r in self._delayed_monster_summons
+                                         if r.caster_actor_id != caster]
+        for actor_id in tuple(self.monster_summoned_actor_ids.get(caster, ())):
+            self._retire_temporary_monster_summon(actor_id)
+
+    def expire_monster_summons(self, *, now: float, retire_all: bool = False) -> None:
+        for actor_id, record in tuple(self.temporary_monster_summons.items()):
+            if (retire_all or self.monster_health.get(actor_id, 0) <= 0
+                    or self.monster_health.get(record.caster_actor_id, 0) <= 0
+                    or record.caster_generation != self._monster_summon_generations.get(record.caster_actor_id, 0)
+                    or float(now) >= record.expires_at):
+                self._retire_temporary_monster_summon(actor_id)
 
     def monster_activated_location_visuals(self, attack) -> tuple[
         tuple[tuple[VictimStatusEffectDefinition, ...],
@@ -4433,8 +4742,9 @@ class LocalCombatState:
                 yaw=spawn_yaw,
                 # The summon scales with its owner. Map-difficulty modifiers
                 # apply to hostile actors, not player-owned constructions.
-                scaling_difficulty=0,
+                scaling_difficulty=int(getattr(definition, "map_scaling_difficulty", 0)),
                 map_companion=bool(getattr(definition, "map_companion", False)),
+                map_level_scaling=bool(getattr(definition, "map_level_scaling", False)),
             )
             spawn_group = add_player_summon_aura_to_spawn(
                 spawn_group,
@@ -4497,6 +4807,29 @@ class LocalCombatState:
                 - 1e-6
             )
             created.append(summon)
+        for extra in getattr(definition, "additional_summons", ()):
+            # The skill authors SummonAvoidsOverlapping; the exact retail
+            # placement is not recoverable. LOCAL CHOICE: the extra monster
+            # stands 1 m behind the cast point (the primary's ring radius).
+            behind = float(yaw) + math.pi
+            extra_spawn = self.spawn_player_summon(
+                extra,
+                owner_actor_id=owner_actor_id,
+                position=(
+                    float(position[0]) + math.cos(behind),
+                    float(position[1]),
+                    float(position[2]) + math.sin(behind),
+                ),
+                yaw=yaw,
+                level=level,
+                server_tick=server_tick,
+                cast_id=cast_id,
+                player_damage_range=player_damage_range,
+                modifier_sources=modifier_sources,
+                now=current_time,
+            )
+            created.extend(extra_spawn.actors)
+            discarded += extra_spawn.discarded_actor_ids
         return PlayerSummonSpawn(tuple(created), discarded)
 
     def expire_player_summon(
@@ -4548,6 +4881,8 @@ class LocalCombatState:
         self.last_player_summon_support_at.pop(actor_id, None)
         self.started_player_summon_effect_ids.pop(actor_id, None)
         self.last_player_summon_aura_tick.pop(actor_id, None)
+        from dso_server.gameplay.minion_auras import forget_minion
+        forget_minion(self, actor_id)
         return existed
 
     def due_player_summon_aura_refreshes(
@@ -4606,6 +4941,8 @@ class LocalCombatState:
         )
         for summon in summons:
             self.expire_player_summon(summon.actor_id)
+        from dso_server.gameplay.minion_auras import forget_minion_owner
+        forget_minion_owner(self, owner_actor_id)
         return actor_ids
 
     def player_summons_outside_owner_range(
@@ -5098,7 +5435,8 @@ class LocalCombatState:
                 "COALESCE(MaxStackSize, 1), COALESCE(AuraRadius, 0), "
                 "COALESCE(AuraHeight, 0), COALESCE(AuraShape, ''), "
                 "COALESCE(StartModifiers, ''), COALESCE(EffectHosts, 'Receiver'), "
-                "COALESCE(AuraTargets, ''), COALESCE(ExclusivityType, 'Replace') "
+                "COALESCE(AuraTargets, ''), COALESCE(ExclusivityType, 'Replace'), "
+                "COALESCE(Persistent, 0) "
                 "FROM _Template_StatusEffect "
                 "WHERE Id=? LIMIT 1",
                 (parts[0],),
@@ -5186,6 +5524,7 @@ class LocalCombatState:
                         _metadata_float(metadata, key) for key in ("OX", "OY", "OZ")
                     ),
                     max_stack_size=max(1, int(effect_row[2] or 1)),
+                    persistent=bool(effect_row[10]),
                     consume_on_max_stack=(
                         LocalCombatState._consumes_on_max_stack(
                             database,
@@ -5859,6 +6198,8 @@ class LocalCombatState:
         resource_cost_fraction = geometry.resource_cost_fraction
         resource_gain_fraction = geometry.resource_gain_fraction
         timing_multiplier = geometry.skill_timing_multiplier
+        cooldown_absolute = 0.0
+        cooldown_relative = 0.0
         trap_on_hit = geometry.trap_on_hit
         cleanse_groups = set(geometry.cleanse_groups)
         damage_weights: dict[str, float] = {}
@@ -5981,8 +6322,28 @@ class LocalCombatState:
             self._expand_status_modifier_instructions(
                 instructions, frozenset(explicit_effect_ids)
             )
+            cooldown_variables = timing_actor_variables(
+                {
+                    str(key).casefold(): float(value or 0.0)
+                    for key, value in database.execute(
+                        "SELECT Id, InitialValue FROM _Template_ActorVariables"
+                    )
+                },
+                instructions,
+            )
             for kind, arguments, stack_count, details in instructions:
                 normalized_kind = kind.casefold()
+                if normalized_kind == "cooldown":
+                    if len(arguments) < 3 or not self._skill_scope_matches(geometry, arguments[2:]):
+                        continue
+                    amount = resolve_modifier_value(arguments[0], details, cooldown_variables)
+                    if amount is None or not math.isfinite(amount):
+                        continue
+                    if arguments[1].casefold() == "relative":
+                        cooldown_relative += amount * stack_count
+                    else:
+                        cooldown_absolute += amount * stack_count
+                    continue
                 if normalized_kind == "traponhit" and len(arguments) >= 2:
                     if not self._skill_scope_matches(
                         geometry, (arguments[0],)
@@ -6433,6 +6794,11 @@ class LocalCombatState:
             impact_count=max(1, impact_count),
             damage_modifier=max(0.0, damage_modifier),
             skill_timing_multiplier=max(0.01, timing_multiplier),
+            cooldown_seconds=max(
+                0.0,
+                geometry.cooldown_seconds * max(0.0, 1.0 + cooldown_relative)
+                + cooldown_absolute,
+            ),
             damage_type=encoded_damage_types,
             user_status_effects=latest_by_resource(user_effects),
             victim_status_effects=latest_by_resource(victim_effects),
@@ -7173,6 +7539,22 @@ class LocalCombatState:
             return min(colliding, key=lambda value: (value[0], value[1]))
         return min(candidates, key=lambda value: (value[1], value[0]))
 
+    @staticmethod
+    def _player_projectile_contact_radius(
+        target_radius: float, projectile_radius: float, player_width: float = 0.0,
+    ) -> float:
+        """Use one contact envelope for acquisition and impact validation.
+
+        Narrow ranger arrows previously acquired only the authored capsule,
+        then allowed movement tolerance at impact. A visible edge contact
+        rejected during acquisition never reached that second check.
+        """
+        return max(
+            PLAYER_PROJECTILE_COLLISION_RADIUS,
+            max(0.0, target_radius)
+            + max(0.25, projectile_radius, player_width / 2.0),
+        ) + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+
     def _client_visible_projectile_distance(
         self,
         player_position: tuple[float, float, float],
@@ -7202,10 +7584,8 @@ class LocalCombatState:
         aim_x = direction[0] / direction_length
         aim_z = direction[2] / direction_length
         current = self.monster_positions[monster.actor_id]
-        collision_radius = monster.collision_radius + max(
-            0.25,
-            geometry.projectile_radius,
-            geometry.player_width / 2.0,
+        collision_radius = self._player_projectile_contact_radius(
+            monster.collision_radius, geometry.projectile_radius, geometry.player_width,
         )
         forward, _miss_distance = self._viewer_monster_ray_proximity(
             player_position,
@@ -7321,6 +7701,9 @@ class LocalCombatState:
                 # Authoritative AI continues at 25 Hz even when this viewer's
                 # replaceable movement datagram is skipped. Test both the
                 # bounded map publish sweep and that viewer's delivered point.
+                collision_radius = self._player_projectile_contact_radius(
+                    monster.collision_radius, geometry.projectile_radius, geometry.player_width,
+                )
                 forward, miss_distance = self._viewer_monster_ray_proximity(
                     player_position,
                     aim_x,
@@ -7702,6 +8085,64 @@ class LocalCombatState:
             projected[2],
         )
 
+    def assign_template_teams(self, teams) -> None:
+        """Give every monster of these templates (now or later) a team."""
+
+        self.template_teams.update({
+            str(template).casefold(): int(team)
+            for template, team in dict(teams).items()
+        })
+
+    def set_monster_team(self, actor_ids, team: int | None) -> None:
+        for actor_id in actor_ids:
+            if team is None:
+                self.monster_teams.pop(int(actor_id), None)
+            else:
+                self.monster_teams[int(actor_id)] = int(team)
+
+    def set_player_team(self, actor_id: int, team: int | None) -> None:
+        if team is None:
+            self.player_teams.pop(int(actor_id), None)
+        else:
+            self.player_teams[int(actor_id)] = int(team)
+
+    def monster_team(self, actor_id: int) -> int | None:
+        team = self.monster_teams.get(int(actor_id))
+        if team is not None:
+            return team
+        if not self.template_teams:
+            return None
+        monster = self.monsters.get(int(actor_id))
+        if monster is None:
+            return None
+        return self.template_teams.get(str(monster.template_id).casefold())
+
+    def monster_hostile_to_player(
+        self, monster_actor_id: int, player_actor_id: int,
+    ) -> bool:
+        """Whether a monster and a player may harm each other.
+
+        Always ``True`` unless both have an arena team and it is the same.
+        """
+
+        if not self.template_teams and not self.monster_teams:
+            return True
+        team = self.monster_team(monster_actor_id)
+        if team is None:
+            return True
+        player_team = self.player_teams.get(int(player_actor_id))
+        return player_team is None or player_team != team
+
+    def set_monster_invulnerable(self, actor_ids, invulnerable: bool) -> None:
+        """Toggle damage immunity (a gated arena objective)."""
+
+        for actor_id in actor_ids:
+            monster = self.monsters.get(int(actor_id))
+            if monster is not None and monster.invulnerable != bool(invulnerable):
+                self.monsters[int(actor_id)] = replace(
+                    monster, invulnerable=bool(invulnerable),
+                )
+
     def assign_monster_targets(self, actor_ids, candidates):
         """Choose a visible, living player per monster; keep nearby targets stable.
 
@@ -7712,10 +8153,18 @@ class LocalCombatState:
         for actor_id in actor_ids:
             position = self.monster_positions[actor_id]
             monster = self.monsters[actor_id]
+            defender_id = self.holdground_targets.get(actor_id)
+            defender = self.player_summons.get(defender_id)
+            if defender is not None and self.player_summon_health.get(defender_id, [0])[0] > 0:
+                self.monster_target_actor_ids[actor_id] = defender_id
+                result[actor_id] = (defender_id, defender.position)
+                continue
             choices = []
             for player_id, world, visible in candidates:
                 health = self.player_health.get(player_id)
                 if actor_id not in visible or (health is not None and health[0] <= 0):
+                    continue
+                if not self.monster_hostile_to_player(actor_id, player_id):
                     continue
                 distance = math.hypot(world[0] - position[0], world[2] - position[2])
                 choices.append((distance, player_id, world))
@@ -8072,6 +8521,7 @@ class LocalCombatState:
             # hard reset above.
             if (
                 not returning_home
+                and actor_id not in self.holdground_targets
                 and home_distance > MONSTER_HOME_ARRIVAL_DISTANCE
                 and (
                     direct_distance > monster.escape_range
@@ -8142,6 +8592,7 @@ class LocalCombatState:
             engaged = (
                 returning_home
                 or actor_id in self.scripted_monster_targets
+                or actor_id in self.holdground_targets
                 or home_distance > MONSTER_HOME_ARRIVAL_DISTANCE
                 or direct_distance
                 <= min(
@@ -8517,12 +8968,13 @@ class LocalCombatState:
             monster = self.monsters[actor_id]
             position = self.monster_positions[actor_id]
             contact = None
+            contact_radius = self._player_projectile_contact_radius(
+                monster.collision_radius, geometry.projectile_radius, geometry.player_width,
+            )
             if projectile and length > 1e-6 and reach > 0:
                 contact = self._viewer_monster_ray_proximity(
                     origin, direction[0] / length, direction[2] / length,
-                    reach, monster, position, monster.collision_radius + max(
-                        0.25, geometry.projectile_radius, geometry.player_width / 2),
-                    visible.get(actor_id),
+                    reach, monster, position, contact_radius, visible.get(actor_id),
                 )
             impact_count = geometry.impact_count
             if self.monster_status_effects.get(actor_id):
@@ -8530,7 +8982,8 @@ class LocalCombatState:
                     geometry, self._active_monster_modifier_sources(actor_id, now=now),
                 ).impact_count
             entities.append(CombatEntity(actor_id, position, monster.collision_radius,
-                                         visible.get(actor_id), contact, impact_count, monster.target_radius))
+                                         visible.get(actor_id), contact, impact_count, monster.target_radius,
+                                         projectile_contact_radius=contact_radius))
         entities.extend(additional_entities)
         delay = (max(0.0, float(impact_delay_override)) if impact_delay_override is not None
                  else self._player_skill_impact_delay(geometry, attack_speed_multiplier))
@@ -8661,7 +9114,9 @@ class LocalCombatState:
         effective_projectile_velocity = plan.projectile_velocity
         forward_offset = plan.forward_offset
         scheduled = [impact.scheduling_tuple() for impact in plan.impacts
-                     if impact.target.actor_id in self.monsters]
+                     if impact.target.actor_id in self.monsters
+                     and self.monster_hostile_to_player(
+                         impact.target.actor_id, source_actor_id)]
 
         hit_count_by_target: dict[int, int] = {}
         for (
@@ -8760,7 +9215,7 @@ class LocalCombatState:
                 emitted_at=current_time + emit_delay,
                 spawn_sweep_distance=forward_offset,
                 projectile_velocity=effective_projectile_velocity,
-                projectile_radius=geometry.projectile_radius,
+                projectile_radius=max(0.25, geometry.projectile_radius, geometry.player_width / 2.0),
                 maximum_range=(
                     max(
                         geometry.attack_range,
@@ -8861,7 +9316,9 @@ class LocalCombatState:
             return ()
         geometry = plan.geometry
         candidates = [(impact.distance, impact.target.actor_id, impact.target)
-                      for impact in plan.impacts if impact.target.actor_id in self.monsters]
+                      for impact in plan.impacts if impact.target.actor_id in self.monsters
+                      and self.monster_hostile_to_player(
+                          impact.target.actor_id, source_actor_id)]
         delay = plan.impacts[0].delay if plan.impacts else 0.0
         current_time = time.perf_counter() if now is None else float(now)
 
@@ -8987,10 +9444,9 @@ class LocalCombatState:
             if visible_actor_positions is not None
             else None
         )
-        radius = max(
-            PLAYER_PROJECTILE_COLLISION_RADIUS,
-            target.collision_radius + pending.projectile_radius,
-        ) + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+        radius = self._player_projectile_contact_radius(
+            target.collision_radius, pending.projectile_radius,
+        )
         # Bullet StartOffset is a visual muzzle position in front of the
         # caster. A target between the player capsule and that muzzle has
         # already been crossed at emission; validating only the forward ray
@@ -9851,8 +10307,19 @@ class LocalCombatState:
             )
             if geometry is None:
                 continue
+            # Effects the minion hosts (owner Minion auras, Black Dwarf
+            # overheat: gameplay/minion_auras.py) modify its own skill.
+            from dso_server.gameplay.minion_auras import (
+                minion_geometry_overrides, minion_modifier_sources,
+            )
+            hosted_sources = minion_modifier_sources(
+                self, actor_id, now=current_time
+            )
             geometry = self._modified_player_skill_geometry(
-                geometry, summon.modifier_sources
+                geometry, tuple(summon.modifier_sources) + hosted_sources
+            )
+            geometry = minion_geometry_overrides(
+                self, geometry, hosted_sources, summon.modifier_sources
             )
             is_covering_fire = (
                 geometry.resource_id == "minionskill_coveringfireturret"
@@ -9963,6 +10430,8 @@ class LocalCombatState:
                     (self._distance(summon.position, self.monster_positions[monster_actor_id]), monster_actor_id)
                     for monster_actor_id in self.living_actor_ids
                     if monster_actor_id not in self.returning_home_actor_ids
+                    and self.monster_hostile_to_player(
+                        monster_actor_id, summon.owner_actor_id)
                 ]
                 players_in_area = [
                     (self._distance(summon.position, player_positions[target_actor_id]), target_actor_id)
@@ -10027,6 +10496,8 @@ class LocalCombatState:
                     )
                     for monster_actor_id in self.living_actor_ids
                     if monster_actor_id not in self.returning_home_actor_ids
+                    and self.monster_hostile_to_player(
+                        monster_actor_id, summon.owner_actor_id)
                 ) + tuple(
                     (
                         self._distance(
@@ -10091,6 +10562,20 @@ class LocalCombatState:
                         target_position = self.monster_positions[
                             target_actor_id
                         ]
+                if (
+                    attack_skill_type == "Ranged"
+                    and geometry.impact_count > 1
+                    and target_actor_id in self.monsters
+                ):
+                    # A penetrating straight bullet (overheated Combat
+                    # Turret, BulletImpactCount +2) also strikes the actors
+                    # behind its target, each when the bullet reaches it.
+                    from dso_server.gameplay.minion_auras import (
+                        minion_penetrating_targets,
+                    )
+                    target_actor_ids = minion_penetrating_targets(
+                        self, summon, direction, geometry, target_actor_ids
+                    )
             else:
                 length = self._distance(
                     summon.position, target_position
@@ -10220,7 +10705,14 @@ class LocalCombatState:
                 )
             if target_actor_ids:
                 target_due_times = ()
-                if fixed_direction:
+                if fixed_direction or (
+                    attack_skill_type == "Ranged"
+                    and len(target_actor_ids) > 1
+                    and all(
+                        target in self.monster_positions
+                        for target in target_actor_ids
+                    )
+                ):
                     arrivals = []
                     for target in target_actor_ids:
                         travel = geometry.bullet_emit_delay + self._distance(
@@ -10836,6 +11328,9 @@ class LocalCombatState:
         monster = self.monsters[pending.target_actor_id]
         previous = self.monster_health.get(monster.actor_id, 0)
         if previous <= 0:
+            return None
+        if not self.monster_hostile_to_player(
+                monster.actor_id, pending.source_actor_id):
             return None
         # An area impact's victims were chosen at the cast; one that walked
         # out of it before it fell is not hurt (a meteor lands 2.6 s later and
@@ -11775,6 +12270,7 @@ class LocalCombatState:
                 int(other_id) != int(target_actor_id)
                 and int(other_id) not in self.monsters
                 and self.player_health.get(int(other_id), [1])[0] > 0
+                and self.monster_hostile_to_player(actor_id, int(other_id))
                 and (
                     distance := self._distance(position, monster_position)
                 ) <= definition.attack_range
@@ -12179,6 +12675,20 @@ class LocalCombatState:
                 return
         self.pending_monster_attacks[actor_id] = updated
 
+    def resolve_due_holdground_attacks(self, *, now=None):
+        """Resolve real hits on stationary quest defenders before area finalization."""
+        result = []
+        for actor_id in sorted(set(self.holdground_targets.values())):
+            defender = self.player_summons.get(actor_id)
+            health = self.player_summon_health.get(actor_id)
+            if defender is None or health is None or health[0] <= 0:
+                continue
+            result.extend(self.resolve_due_monster_attacks(
+                self.encounter.coordinate_frame.world_to_wire(defender.position),
+                player_actor_id=actor_id, target_health=health, now=now,
+            ))
+        return tuple(result)
+
     def resolve_due_monster_attacks(
         self,
         player_position: tuple[float, float, float],
@@ -12191,6 +12701,7 @@ class LocalCombatState:
         block_chance: float = 0.0,
         block_damage_reduction: float = 0.0,
         finalize_area_attacks: bool = False,
+        target_health: list[int] | None = None,
     ) -> tuple[DamageResolution, ...]:
         """Apply autonomous skill damage if the target remains in range."""
 
@@ -12271,6 +12782,12 @@ class LocalCombatState:
                 and player_actor_id in attack.resolved_target_actor_ids
             ):
                 continue
+            if (
+                is_multi_target_area
+                and not self.monster_hostile_to_player(actor_id, player_actor_id)
+            ):
+                # A team structure's area strike spares its own side.
+                continue
             if homing:
                 reached_at = self._advance_homing_bullet(
                     actor_id, attack, target_world, current_time
@@ -12303,6 +12820,7 @@ class LocalCombatState:
                     limit=int(attack.definition.summon_limit),
                     position=tuple(float(v) for v in monster_position[:3]),
                     level=int(monster.level),
+                    caster_generation=self._monster_summon_generations.get(int(actor_id), 0),
                 ))
             if (
                 aura_strike is None
@@ -12317,9 +12835,9 @@ class LocalCombatState:
                 and self.monster_health.get(attack.target_actor_id, 0) <= 0
             ):
                 continue
-            if not targets_monster and self.player_health.get(
+            if not targets_monster and (target_health if target_health is not None else self.player_health.get(
                 player_actor_id, [self.player_maximum_health]
-            )[0] <= 0:
+            ))[0] <= 0:
                 # Several impacts can be due in one tick. Only the first
                 # lethal hit owns the death transition; discard later hits.
                 continue
@@ -12473,11 +12991,11 @@ class LocalCombatState:
                 damage = self._monster_aura_program_damage(
                     actor_id,
                     aura_strike.damage_programs,
-                    self.player_health.get(
+                    (target_health if target_health is not None else self.player_health.get(
                         player_actor_id,
                         [self.player_maximum_health,
                          self.player_maximum_health],
-                    )[1],
+                    ))[1],
                     incoming_damage_multiplier,
                     current_time,
                 )
@@ -12525,7 +13043,7 @@ class LocalCombatState:
                     victim_status_effects=victim_effects,
                 ))
                 continue
-            health = self.player_health.setdefault(
+            health = target_health if target_health is not None else self.player_health.setdefault(
                 player_actor_id,
                 [self.player_maximum_health, self.player_maximum_health],
             )
@@ -12567,9 +13085,10 @@ class LocalCombatState:
                         actor_id, attack, player_actor_id
                     )
                 continue
-            self.note_player_attacked(player_actor_id, now=current_time)
+            if target_health is None:
+                self.note_player_attacked(player_actor_id, now=current_time)
             health[0] = current
-            if player_actor_id == self.player_actor_id:
+            if target_health is None and player_actor_id == self.player_actor_id:
                 self.player_current_health = current
             resolutions.append(
                 DamageResolution(

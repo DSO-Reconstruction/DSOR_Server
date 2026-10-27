@@ -15,6 +15,10 @@ from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS, boss_entrance_presentation, load_map_encounter_policy,
 )
 from dso_server.services import movement_validation
+from dso_server.gameplay.status_modifier_runtime import (
+    evaluate_active_status_modifiers, load_status_modifier_catalog,
+    snapshot_player_modifier_sources,
+)
 
 _PERSISTENT_SCRIPTED_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
@@ -85,7 +89,7 @@ _REWRITE_HISTORY_QUEST_MOB_TEMPLATES = frozenset({
 
 @contextmanager
 def _rollback_uncommitted_world_pickup_heal(
-        combat, actor_id, healed):
+        combat, actor_id, healed, restored_resource=None):
     '''Undo a speculative globe heal after item/generation validation fails.'''
 
     committed = [False]
@@ -111,6 +115,12 @@ def _rollback_uncommitted_world_pickup_heal(
                         )
                         if int(actor_id) == int(combat.player_actor_id):
                             combat.player_current_health = int(health[0])
+            if restored_resource is not None:
+                before, after = restored_resource
+                with combat.lock:
+                    resource = combat.player_resource.get(int(actor_id))
+                    if resource is not None:
+                        resource[0] = max(0.0, resource[0] - max(0.0, after - before))
 
 
 class WorldService:
@@ -338,6 +348,28 @@ class WorldService:
                             command.value, template_id=visual, field_c4=spawn_tick,
                         ))
                         startup_overrides[actor_id] = duration
+                        presentation_changed = True
+                    team = (
+                        combat.monster_team(actor_id)
+                        if getattr(combat, "template_teams", None)
+                        or getattr(combat, "monster_teams", None) else None
+                    )
+                    if team is not None:
+                        # An arena team's structure: carry its team, and show
+                        # it hostile only to the other side (the same faction
+                        # remap as enemy minions, presence_visuals.py).
+                        hostile = combat.player_teams.get(
+                            int(getattr(s, "gameplay_remote_actor_id", 0) or 0)
+                        ) != team
+                        command = NewMonsterServerCommand(replace(
+                            command.value,
+                            field_e0=int(team),
+                            placement=replace(
+                                command.value.placement,
+                                field_00=0x00010001 if hostile else 0x00010004,
+                                field_08=2 if hostile else 0,
+                            ),
+                        ))
                         presentation_changed = True
                     sent.add(actor_id)
                 kept.append(command)
@@ -737,6 +769,11 @@ class WorldService:
                 previous_move_received_at or accepted_move_at
             ),
         )
+        if (getattr(s, "gameplay_match", None) is not None
+                and s.gameplay_match_callback is not None):
+            # Battleground objectives (CTF flags and bases) react to the
+            # accepted position; see services/battleground_objectives.py.
+            s.gameplay_match_callback(s, ("match_moved", move.relative_position))
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(s, 'move')
         if VERBOSE_PACKET_LOGGING:
@@ -1435,6 +1472,7 @@ class WorldService:
         healed = None
         healed_actor_id = None
         live_health = None
+        restored_resource = None
         with s.flow_lock:
             candidate_drop = s.gameplay_world_loot.get(int(item_id))
             candidate_combat = s.gameplay_combat_state
@@ -1444,6 +1482,7 @@ class WorldService:
             presence_enabled = s.gameplay_presence_callback is not None
             remote_actor_id = s.gameplay_remote_actor_id
             event_catalog = s.gameplay_event_catalog
+            modifier_sources = snapshot_player_modifier_sources(s)
         if candidate_drop is None:
             return False
         event_collectible = bool(
@@ -1472,6 +1511,11 @@ class WorldService:
                 and instant_definition.effect_resource_id.casefold()
                 == 'healthglobe'
             )
+        )
+        globe_modifiers = (
+            evaluate_active_status_modifiers(
+                load_status_modifier_catalog(instant_database_path), modifier_sources,
+            ) if health_globe else None
         )
 
         # Combat owns live health. Mutate it before the inventory transaction;
@@ -1502,10 +1546,42 @@ class WorldService:
                 # every move in range, so it is collected once health drops.
                 if int(previous) <= 0 or int(previous) >= int(maximum):
                     return False
+                # Healthglobe: CurrHealthPoints:$0 / CurrSkillResource:$1,
+                # both relative to the maximum. Plain spheres author
+                # StatusEffectValue0 0.2, the _full variant 1.0.
+                values = tuple(
+                    instant_definition.values
+                    if instant_definition is not None else ()
+                )
+                health_fraction, resource_fraction = (
+                    globe_modifiers.health_globe_fractions(
+                        float(values[0]) if len(values) > 0 else 0.0,
+                        float(values[1]) if len(values) > 1 else 0.0,
+                    )
+                )
                 current, maximum = candidate_combat.heal_player(
                     full=candidate_drop.item.template_id.endswith('_full'),
                     actor_id=player_actor_id,
+                    fraction=health_fraction,
                 )
+                # The authored $1 itself is applied with the sphere's status
+                # entry (_apply_instant_consumable_effect); add only the
+                # HealthGlobeBonus part here so it is never counted twice.
+                resource_bonus = resource_fraction - max(
+                    0.0, float(values[1]) if len(values) > 1 else 0.0
+                )
+                resource = candidate_combat.player_resource.get(int(player_actor_id))
+                if resource is not None and resource_bonus > 0.0:
+                    before, maximum_resource = map(float, resource)
+                    # HealthGlobeBonus SkillResource is a fraction of the
+                    # recipient's pool (Upgraded Spheres: 1% + 0.5%/rank).
+                    after = min(
+                        maximum_resource,
+                        before + maximum_resource * resource_bonus,
+                    )
+                    if after > before:
+                        resource[0] = after
+                        restored_resource = (before, after)
             healed = (int(previous), int(current), int(maximum))
         elif (
             candidate_drop.item.template_id != WISDOM_ITEM_TEMPLATE
@@ -1530,7 +1606,7 @@ class WorldService:
 
         with (
             _rollback_uncommitted_world_pickup_heal(
-                candidate_combat, healed_actor_id, healed
+                candidate_combat, healed_actor_id, healed, restored_resource,
             ) as heal_commit,
             s.flow_lock,
         ):
@@ -1603,6 +1679,8 @@ class WorldService:
                     )
                     if healed is not None and inventory is not None:
                         inventory.health_points = float(current)
+                        if restored_resource is not None:
+                            inventory.secondary_resource = restored_resource[1]
                 else:
                     if inventory is None:
                         raise ValueError('player inventory is unavailable')
@@ -1643,6 +1721,19 @@ class WorldService:
                 )
                 return False
 
+        # These events belong to the consumed world drop, not the attempted
+        # pickup. Raise them only after the authoritative removal commits.
+        if health_globe and heal_transition is not None:
+            CharacterService._dispatch_socket_event(
+                s, "pickuphealthglobe",
+                server_tick=int(heal_transition[3]), event_seed=int(item_id),
+            )
+        elif str(drop.item_category).casefold() == "ingredientitem":
+            CharacterService._dispatch_socket_event(
+                s, "pickupingredientitem",
+                server_tick=int(s.gameplay_chase_server_tick),
+                event_seed=int(item_id),
+            )
         CharacterService._send_world_loot_state_batch(
             s,
             response_packet,
@@ -1686,11 +1777,16 @@ class WorldService:
                 server_tick=server_tick,
                 label="health-sphere-heal",
             )
-            CharacterService._dispatch_socket_event(
-                s,
-                "pickuphealthglobe",
-                server_tick=server_tick,
-                event_seed=int(item_id),
+        if restored_resource is not None and healed is not None:
+            # The Hit above carries health only; publish the committed
+            # HealthGlobeBonus resource like other CurrSkillResource gains.
+            s.send_reliable_ordered(
+                encode_actor_stats_update_batch(
+                    ActorStatsUpdate(int(healed[1]), float(restored_resource[1])),
+                    actor_id=LOCAL_PLAYER_ACTOR_ID,
+                ),
+                track=True,
+                label="health-sphere-resource",
             )
         if wisdom_pickup:
             with s.flow_lock:
@@ -1781,6 +1877,15 @@ class WorldService:
     @staticmethod
     def _handle_pickup_item(s: Session, payload: bytes) -> None:
         item_id = decode_pickup_item(payload)
+        if (getattr(s, "gameplay_match", None) is not None
+                and s.gameplay_match_callback is not None
+                and s.gameplay_match_callback(s, ("match_pickup", item_id))):
+            # A battleground objective item (a CTF flag) is never inventory
+            # loot; the battleground resolved the touch.
+            CharacterService._accept_gameplay_state_command(
+                s, PICKUP_ITEM_COMMAND
+            )
+            return
         with s.flow_lock:
             drop = s.gameplay_world_loot.get(item_id)
             encounter = s.gameplay_monster_encounter

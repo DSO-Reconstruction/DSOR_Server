@@ -14,6 +14,8 @@ from dso_server.protocol.gameplay_protocol import (
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.player_skill_timing import apply_skill_cooldown_effect_locked
+from dso_server.gameplay.status_modifier_runtime import load_status_modifier_catalog
 
 
 COMBAT_BATCH_COMMAND_BUDGET = 16
@@ -438,6 +440,8 @@ class CombatResolutionService:
         if database_path is None:
             return ()
         try:
+            from dso_server.services.item_set_events import active_item_set_evaluation
+            evaluation = active_item_set_evaluation(s, evaluation, database_path)
             return resolve_set_trigger_effects(
                 evaluation,
                 database_path,
@@ -652,6 +656,19 @@ class CombatResolutionService:
             return ((),) * len(resolutions)
         now = time.perf_counter()
         transactions = []
+        combat = getattr(s, "gameplay_combat_state", None)
+        path = getattr(getattr(combat, "encounter", None), "static_database_path", DEFAULT_STATIC_DB_PATH)
+        cooldown_catalog = (
+            load_status_modifier_catalog(path)
+            if any(
+                int(resolution.target_actor_id) == LOCAL_PLAYER_ACTOR_ID
+                and any(
+                    definition.modifier_kinds & {"activecooldown", "actorcooldownreset"}
+                    for definition in resolution.victim_status_effects
+                )
+                for resolution in resolutions
+            ) else None
+        )
         with s.flow_lock:
             cache = s.gameplay_victim_status_effect_instances
             consumed_this_batch = set()
@@ -676,16 +693,13 @@ class CombatResolutionService:
             for key, (_entry, expires_at) in list(cache.items()):
                 if float(expires_at) <= now:
                     cache.pop(key, None)
-            proc_effects = CharacterService._item_set_proc_effects(
-                s,
-                tuple(
-                    resolution
-                    for resolution in resolutions
-                    if not bool(
-                        getattr(resolution, "damage_immune", False)
-                    )
-                ),
-            ) if include_item_set_procs else {}
+            # A hit carries exactly the effects its caster resolved: the
+            # caster's set rules are already in the skill's victim column
+            # (item_set_procs.build_definitions).  Deriving procs here from
+            # ``s`` re-rolled them and, for every other viewer of the hit,
+            # added that viewer's own equipment.  ``include_item_set_procs``
+            # is kept for callers and no longer adds anything.
+            proc_effects = {}
             for resolution in resolutions:
                 target_actor_id = int(resolution.target_actor_id)
                 source_actor_id = int(
@@ -714,10 +728,21 @@ class CombatResolutionService:
                         proc_effects.get(int(resolution.skill_index), ())
                     )
                 )
+                # ``EffectHosts:Causer`` is hosted by whoever caused the hit,
+                # never by its victim (the minion path already keeps them on
+                # the minion); the caster's own session applies them, see
+                # _apply_caster_hosted_hit_effects.
+                definitions = tuple(
+                    definition for definition in definitions
+                    if str(getattr(definition, "effect_hosts", "")).casefold() != "causer"
+                )
                 commands = []
                 removals = []
                 for definition in definitions:
-                    if int(definition.duration_ticks) <= 0:
+                    instant_cooldown = int(definition.duration_ticks) <= 0 and bool(
+                        definition.modifier_kinds & {"activecooldown", "actorcooldownreset"}
+                    )
+                    if int(definition.duration_ticks) <= 0 and not instant_cooldown:
                         continue
                     key = (target_actor_id, int(definition.effect_id))
                     cast_id = int(getattr(resolution, 'cast_id', 0))
@@ -745,6 +770,12 @@ class CombatResolutionService:
                             applied_at=now,
                         )
                     )
+                    if target_actor_id == LOCAL_PLAYER_ACTOR_ID and cooldown_catalog is not None:
+                        apply_skill_cooldown_effect_locked(
+                            s, created, path, now=now, catalog=cooldown_catalog,
+                        )
+                    if instant_cooldown:
+                        cache.pop(key, None)
                     advanced_this_batch.add(key)
                     if cast_id:
                         cast_applications[cast_key] = now
@@ -838,6 +869,64 @@ class CombatResolutionService:
         if any(resolution.killed and int(resolution.target_actor_id) == LOCAL_PLAYER_ACTOR_ID
                for resolution in resolutions):
             CharacterService._notify_player_death(s)
+        CharacterService._apply_caster_hosted_hit_effects(s, resolutions)
+
+    @staticmethod
+    def _apply_caster_hosted_hit_effects(s: Session, resolutions) -> None:
+        """Host a hit's ``EffectHosts:Causer`` effects on the casting player.
+
+        131 status rows are Causer-hosted; in skill victim columns they are
+        the hitter's own on-hit buffs (``skill_mightystab_buff_attackspeed``,
+        ``skill_frostwind_buff_iceball_damage``,
+        ``SetLight2026_dwarf_SimpleShot_trig``).  Minion hits already keep
+        them on the minion (LocalCombatState._apply_summon_causer_effects).
+        Only the caster's own session applies them -- every viewer runs this
+        transaction, but only one maps the source to itself -- once per
+        effect per transaction, like the caster's other impact effects.  The
+        skill column is their single roll; a set-named one (Quick Shot's
+        Overload) runs as the set's program, see
+        _send_player_skill_status_effects.
+        """
+
+        character = s.gameplay_character
+        combat = s.gameplay_combat_state
+        if character is None or STATUS_EFFECTS_DISABLED:
+            return
+        own_ids = {
+            LOCAL_PLAYER_ACTOR_ID,
+            int(getattr(s, "gameplay_remote_actor_id", 0)
+                or CharacterService._remote_actor_id(character.character_id)),
+        }
+        summons = getattr(combat, "player_summons", {}) if combat is not None else {}
+        hosted = {}
+        server_tick = 0
+        for resolution in resolutions:
+            source = (
+                resolution.source_actor_id
+                if resolution.source_actor_id is not None
+                else resolution.attacker_actor_id
+            )
+            if (
+                int(source) not in own_ids
+                or int(resolution.attacker_actor_id) in summons
+                or int(resolution.target_actor_id) in own_ids
+                or bool(getattr(resolution, "damage_immune", False))
+            ):
+                continue
+            for definition in resolution.victim_status_effects:
+                if (
+                    str(getattr(definition, "effect_hosts", "")).casefold() != "causer"
+                    or int(definition.duration_ticks) <= 0
+                    or float(definition.chance) <= 0.0
+                ):
+                    continue
+                hosted.setdefault(int(definition.effect_id), definition)
+                server_tick = max(server_tick, int(resolution.server_tick))
+        if hosted:
+            CharacterService._send_player_skill_status_effects(
+                s, tuple(hosted.values()), server_tick=server_tick,
+                label="player-hit-causer-status-effects",
+            )
 
     @staticmethod
     def _send_combat_resolution(
@@ -909,7 +998,29 @@ class CombatResolutionService:
             force_fresh_effect_ids=None, effect_position=None) -> None:
         if not definitions or STATUS_EFFECTS_DISABLED:
             return
+        if getattr(s, "gameplay_item_set_programs", None):
+            CharacterService._expire_runtime_status_effects(s)
         definitions = list(definitions)
+        set_named = {
+            rule.resource_id.casefold()
+            for rule in collect_set_proc_rules(
+                getattr(s, "gameplay_item_set_evaluation", None)
+            )
+            if rule.target in {"user", "victim"}
+        }
+        if set_named:
+            # A set's SkillStatusEffect rule is delivered by the skill's own
+            # column (item_set_procs.build_definitions); it still runs as the
+            # set's program -- stack cap, immediate children, Done/Stop and
+            # unequip cleanup.  Every authored target of such a rule is C:0.0
+            # in its skill column, so only the set enables it.
+            definitions = [
+                replace(definition, item_set_program=True)
+                if not getattr(definition, "item_set_program", True)
+                and str(getattr(definition, "resource_id", "")).casefold() in set_named
+                else definition
+                for definition in definitions
+            ]
         max_stack_followups = max_stack_followups or {}
         force_fresh_effect_ids = {
             int(effect_id) for effect_id in (force_fresh_effect_ids or ())
@@ -918,6 +1029,7 @@ class CombatResolutionService:
         combat = s.gameplay_combat_state
         path = getattr(getattr(combat, 'encounter', None), 'static_database_path', DEFAULT_STATIC_DB_PATH)
         zero_duration_ids = load_status_runtime_catalog(path).zero_duration_effect_ids
+        cooldown_catalog = load_status_modifier_catalog(path)
         with s.flow_lock:
             commands = []
             removals = []
@@ -926,6 +1038,8 @@ class CombatResolutionService:
             retired_timers = []
             periodic_effects = []
             minion_effects = []
+            set_programs = []
+            stack_transitions = []
             applied_at = time.perf_counter()
             for definition in definitions:
                 combat = s.gameplay_combat_state
@@ -935,7 +1049,12 @@ class CombatResolutionService:
                 ):
                     minion_effects.append(definition)
                 duration = int(definition.duration_ticks)
-                if duration <= 0:
+                instant_cooldown = duration <= 0 and bool(
+                    definition.modifier_kinds & {"activecooldown", "actorcooldownreset"}
+                )
+                native_permanent = (duration <= 0 and definition.item_set_program
+                                    and (definition.persistent or definition.item_set_parent_effect_id is not None))
+                if duration <= 0 and not instant_cooldown and not native_permanent:
                     continue
                 if int(definition.effect_id) in consumed_this_batch:
                     continue
@@ -964,12 +1083,14 @@ class CombatResolutionService:
                         if previous is not None else 0
                     )
                 )
+                if definition.item_set_program:
+                    stack_index = min(stack_index, max(0, definition.max_stack_size - 1))
                 start_tick = int(server_tick) & 0xFFFFFFFF
                 entry = StatusEffectEntry(
                         effect_id=int(definition.effect_id),
                         field_04=instance_id,
-                        field_0c=(start_tick + duration) & 0xFFFFFFFF,
-                        field_14=25,
+                        field_0c=0 if native_permanent else (start_tick + duration) & 0xFFFFFFFF,
+                        field_14=25 if duration else 0,
                         field_08=start_tick,
                         field_18=stack_index,
                         field_10=duration,
@@ -984,7 +1105,7 @@ class CombatResolutionService:
                         # static template and ignores the wire D override.
                         # Zero-duration templates must use its permanent bit;
                         # our existing timer still expires this runtime buff.
-                        field_39=bool(stack_index > 0 and definition.effect_id in zero_duration_ids),
+                        field_39=bool(native_permanent or (stack_index > 0 and definition.effect_id in zero_duration_ids)),
                         has_details=True,
                         values=definition.values,
                 )
@@ -1028,6 +1149,10 @@ class CombatResolutionService:
                         ('runtime-effect-expire', int(previous_id)), None)
                     if expiry_timer is not None:
                         retired_timers.append(expiry_timer)
+                    program_timer = s.gameplay_projectile_timers.pop(
+                        ('item-set-program-expire', int(previous_id)), None)
+                    if program_timer is not None:
+                        retired_timers.append(program_timer)
                 if (
                     getattr(definition, "consume_on_max_stack", False)
                     and stack_index >= max(
@@ -1054,13 +1179,24 @@ class CombatResolutionService:
                             int(definition.effect_id), ()
                         )
                     )
-                else:
+                elif not instant_cooldown:
                     s.gameplay_runtime_status_effects[instance_id] = (
                         entry,
-                        applied_at
+                        None if native_permanent else applied_at
                         + duration / float(SERVER_TICKS_PER_SECOND),
                     )
-                periodic_effects.append((instance_id, definition))
+                # Instant reset programs have no persistent status instance,
+                # but still execute once and reach the client's cooldown UI.
+                apply_skill_cooldown_effect_locked(
+                    s, entry, path, now=applied_at, catalog=cooldown_catalog,
+                )
+                if not instant_cooldown and duration > 0:
+                    periodic_effects.append((instance_id, definition))
+                if definition.item_set_program:
+                    set_programs.append((instance_id, definition))
+                stack_transitions.append((definition,
+                    min(int(previous.field_18) + 1, definition.max_stack_size) if previous else 0,
+                    min(stack_index + 1, definition.max_stack_size)))
             if removals:
                 commands.append(
                     StatusEffectServerCommand(
@@ -1070,6 +1206,26 @@ class CombatResolutionService:
                 )
         for timer in retired_timers:
             timer.cancel()
+        output_error = None
+
+        def finish_effect_step(operation, *args, **kwargs):
+            # Set roots, children, vitals, and timers were accepted together.
+            # A failed send must not leave only part of that state installed.
+            nonlocal output_error
+            try:
+                return operation(*args, **kwargs)
+            except OSError as error:
+                if not set_programs:
+                    raise
+                output_error = output_error or error
+
+        if set_programs:
+            from dso_server.services.item_set_programs import accepted_item_set_programs
+            finish_effect_step(accepted_item_set_programs, s, set_programs, server_tick=server_tick)
+        if stack_transitions:
+            from dso_server.services.item_set_events import dispatch_item_set_max_stack
+            for definition, before, after in stack_transitions:
+                finish_effect_step(dispatch_item_set_max_stack, s, definition, before, after, server_tick=server_tick)
         if commands:
             if pre_removals:
                 commands.insert(
@@ -1079,7 +1235,7 @@ class CombatResolutionService:
                         LOCAL_PLAYER_ACTOR_ID,
                     ),
                 )
-            s.send_reliable_ordered(
+            finish_effect_step(s.send_reliable_ordered,
                 encode_status_effect_command_batch(
                     StatusEffectCommandBatch(tuple(commands))
                 ),
@@ -1087,7 +1243,7 @@ class CombatResolutionService:
                 label=label,
             )
             if s.gameplay_presence_callback is not None:
-                s.gameplay_presence_callback(
+                finish_effect_step(s.gameplay_presence_callback,
                     s,
                     (
                         "status_effects",
@@ -1103,34 +1259,36 @@ class CombatResolutionService:
                 "skillresourceregeneration",
             }
             if any(
-                definition.modifier_kinds & vitality_kinds
+                definition.item_set_program or definition.modifier_kinds & vitality_kinds
                 for definition in definitions
             ):
-                CharacterService._refresh_player_combat_vitals(s, inventory_changed=False)
-            CharacterService._apply_player_status_resource(
+                finish_effect_step(CharacterService._refresh_player_combat_vitals, s, inventory_changed=False)
+            finish_effect_step(CharacterService._apply_player_status_resource,
                 s, definitions
             )
         for instance_id, definition in periodic_effects:
             runtime = s.gameplay_runtime_status_effects.get(instance_id)
-            if runtime is not None and runtime[0].field_39:
+            if runtime is not None and runtime[0].field_39 and not definition.item_set_program:
                 CharacterService._schedule_counted_status_expiry(s, runtime[0], definition.duration_ticks)
-            CharacterService._schedule_player_status_ticks(
+            finish_effect_step(CharacterService._schedule_player_status_ticks,
                 s,
                 instance_id=instance_id,
                 definition=definition,
             )
         for definition in minion_effects:
-            CharacterService._spawn_socket_status_minions(
+            finish_effect_step(CharacterService._spawn_socket_status_minions,
                 s,
                 definition,
                 server_tick=server_tick,
                 position_override=effect_position,
             )
         if commands:
-            CharacterService._activate_player_user_effect_children(
+            finish_effect_step(CharacterService._activate_player_user_effect_children,
                 s, tuple((instance_id, definition) for instance_id, definition in periodic_effects),
                 server_tick=server_tick, effect_position=effect_position,
             )
+        if output_error is not None:
+            raise output_error
 
     @staticmethod
     def _schedule_counted_status_expiry(s, entry, duration_ticks):
@@ -1163,7 +1321,7 @@ class CombatResolutionService:
     @staticmethod
     def _schedule_player_status_ticks(
             s: Session, *, instance_id: int, definition) -> None:
-        """Schedule server-side health ticks described by a status-effect row."""
+        """Schedule authored health or cooldown ticks on the accepted effect."""
 
         with s.flow_lock:
             combat = s.gameplay_combat_state
@@ -1178,8 +1336,23 @@ class CombatResolutionService:
         # AB-BA deadlock with a peer's status-effect deadline.
         with combat.lock:
             program = combat.player_status_heal_program(definition)
+            if program is None:
+                cooldown_interval, tick_modifiers, _start = (
+                    combat._status_effect_runtime_program(definition.effect_id)
+                )
         if program is None:
-            return
+            kinds = {
+                raw.partition(":")[0].strip().casefold()
+                for raw in tick_modifiers.split(";")
+            }
+            if not kinds & {"activecooldown", "actorcooldownreset"}:
+                return
+            interval = max(1.0 / SERVER_TICKS_PER_SECOND, cooldown_interval)
+            duration = max(0, definition.duration_ticks) / SERVER_TICKS_PER_SECOND
+            count = int(math.floor(duration / interval + 1e-6))
+            if count <= 0:
+                return
+            program = (interval, 0.0, count, definition.delay_ticks / SERVER_TICKS_PER_SECOND)
         interval, fraction, count, delay = program
 
         with s.flow_lock:
@@ -1218,6 +1391,7 @@ class CombatResolutionService:
             fraction: float, remaining_ticks: int) -> None:
         replacement = None
         healing_transition = None
+        cooldown_catalog = None
         with s.flow_lock:
             combat = s.gameplay_combat_state
             character = s.gameplay_character
@@ -1228,6 +1402,7 @@ class CombatResolutionService:
                 or combat is None
                 or character is None
                 or runtime is None
+                or (runtime[1] is not None and time.perf_counter() > runtime[1] + 0.05)
             ):
                 s.gameplay_projectile_timers.pop(timer_key, None)
                 return
@@ -1235,19 +1410,24 @@ class CombatResolutionService:
                 s.gameplay_remote_actor_id
                 or CharacterService._remote_actor_id(character.character_id)
             )
+        path = getattr(getattr(combat, "encounter", None), "static_database_path", DEFAULT_STATIC_DB_PATH)
+        if getattr(runtime[0], "effect_id", None) is not None:
+            cooldown_catalog = load_status_modifier_catalog(path)
 
         # Keep the shared combat mutation disjoint from the session flow
         # lock. The monster simulation takes those locks as one critical
         # section, and the former flow -> combat nesting here was the second
         # participant in the live AB-BA deadlock.
-        with combat.lock:
-            previous = combat.player_health.get(
-                actor_id,
-                [combat.player_maximum_health],
-            )[0]
-            current, maximum = combat.heal_player_relative(
-                actor_id, fraction
-            )
+        previous = current = maximum = 0
+        if fraction:
+            with combat.lock:
+                previous = combat.player_health.get(
+                    actor_id,
+                    [combat.player_maximum_health],
+                )[0]
+                current, maximum = combat.heal_player_relative(
+                    actor_id, fraction
+                )
 
         with s.flow_lock:
             runtime = s.gameplay_runtime_status_effects.get(instance_id)
@@ -1257,9 +1437,14 @@ class CombatResolutionService:
                 or s.gameplay_combat_state is not combat
                 or s.gameplay_character is not character
                 or runtime is None
+                or (runtime[1] is not None and time.perf_counter() > runtime[1] + 0.05)
             ):
                 s.gameplay_projectile_timers.pop(timer_key, None)
                 return
+            if cooldown_catalog is not None:
+                apply_skill_cooldown_effect_locked(
+                    s, runtime[0], path, tick=True, catalog=cooldown_catalog,
+                )
             recovered = int(current) - int(previous)
             if recovered > 0:
                 next_tick = max(

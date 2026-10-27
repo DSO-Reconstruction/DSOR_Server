@@ -7,6 +7,7 @@ the accept / encounter / turn-in sequence is replayed through the service.
 
 from __future__ import annotations
 
+import json
 import random
 import struct
 import threading
@@ -28,7 +29,10 @@ from dso_server.gameplay.map_event_state import (
 )
 from dso_server.protocol.prop_protocol import (
     DISCARD_PROP_COMMAND,
+    PROP_STATE_ACTIVE,
+    PropInteraction,
     decode_discard_prop_batch,
+    encode_prop_interaction,
 )
 from dso_server.gameplay.quest_content import (
     QUEST_STATE_ACCEPTED,
@@ -117,7 +121,7 @@ class QuestCatalogTests(unittest.TestCase):
         cls.catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
 
     def test_catalog_shape(self):
-        self.assertEqual(len(self.catalog.quests), 1758)
+        self.assertEqual(len(self.catalog.quests), 1768)
         quest = self.catalog.quest(TUTORIAL_01)
         self.assertEqual(quest.giver, "a0001_start_starter")
         self.assertEqual(quest.goal, "a0001_start_ranger")
@@ -581,6 +585,140 @@ class QuestServiceTests(unittest.TestCase):
         self.assertIsNone(QuestService._quest_prop_operation(
             s, runtime.content.prop(next(iter(bag_ids))),
         ))
+
+    def _garden_quest_props(self, port=50180):
+        session = self._session(GARDEN, port, class_id=2)
+        self.server.sessions[session.addr] = session
+        runtime = self.server._attach_map_event_runtime(
+            session, map_id=GARDEN, initial_flags=frozenset(),
+            monster_level=None, scaling_difficulty=0, fresh_instance=True,
+        )
+        session.gameplay_quest_log[GRIMMAGSTONE_02] = QuestProgress(GRIMMAGSTONE_02)
+        bags = sorted((
+            prop for prop in runtime.content.props
+            if prop.instance_id == "a0003_WayToGrimmagstone_02_bag_01"
+        ), key=lambda prop: prop.prop_id)
+        task = next(task for task in self.server._quest_catalog().quest(GRIMMAGSTONE_02).tasks
+                    if BAG_SWITCH in task.switches)
+        self.server._quest_sync_props(session)
+        return session, runtime, bags, task
+
+    def _click_prop(self, session, definition, operation=""):
+        payload, bits = encode_prop_interaction(PropInteraction(definition.prop_id, operation))
+        session.current_message_bit_length = bits
+        self.server._handle_prop_interaction(session, payload)
+
+    def test_multi_prop_task_requires_distinct_placements(self):
+        session, runtime, bags, task = self._garden_quest_props()
+        progress = session.gameplay_quest_log[GRIMMAGSTONE_02]
+        self.assertEqual(len(bags), task.target)
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertIsNone(CharacterServer._quest_prop_operation(session, bags[0]))
+        self.assertEqual(runtime.props[bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        self.assertEqual(task.counter(progress.tokens), 1)
+        for _ in range(task.target):
+            self.server._quest_sync_props(session)
+            self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(progress.tokens), 1)
+        self.assertFalse(progress.task_finished(task.index))
+        self.assertNotIn(bags[0].prop_id, {
+            entry.prop_id for entry in CharacterServer._map_event_prop_info(session).entries
+        })
+        # All five bags have the same label; distinct authored placements
+        # must still count independently.
+        for bag in bags[1:]:
+            self._click_prop(session, bag, BAG_SWITCH)
+        self.assertEqual(task.counter(progress.tokens), task.target)
+        self.assertTrue(progress.task_finished(task.index))
+
+    def test_consumed_quest_prop_survives_reload_and_fresh_map_instance(self):
+        session, _runtime, bags, task = self._garden_quest_props()
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        document = json.loads(json.dumps(QuestService._quest_log_document(session)))
+        restored, runtime, restored_bags, _task = self._garden_quest_props(50181)
+        QuestService._restore_quest_state(restored, SimpleNamespace(quest_log=document))
+        self.server._quest_sync_props(restored)
+        self._click_prop(restored, restored_bags[0], BAG_SWITCH)
+        progress = restored.gameplay_quest_log[GRIMMAGSTONE_02]
+        self.assertEqual(task.counter(progress.tokens), 1)
+        # Rejected clicks cannot consume a fresh runtime's shared prop.
+        self.assertEqual(runtime.props[restored_bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        self._click_prop(restored, restored_bags[1], BAG_SWITCH)
+        self.assertEqual(task.counter(progress.tokens), 2)
+        self.assertEqual(QuestProgress.from_document("legacy", {}).used_props, {})
+
+    def test_shared_quest_props_allow_each_player_one_use_without_resync(self):
+        session, runtime, bags, task = self._garden_quest_props()
+        peer = self._session(GARDEN, 50182, class_id=2)
+        self.server.sessions[peer.addr] = peer
+        peer.gameplay_map_event_runtime = runtime
+        peer.gameplay_quest_log[GRIMMAGSTONE_02] = QuestProgress(GRIMMAGSTONE_02)
+        self.server._quest_sync_props(peer)
+        peer_mark = len(peer.recorder.messages)
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertFalse(bags[0].individual_usage)
+        self.assertEqual(runtime.props[bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        self.assertFalse(any(
+            label == "prop-update" for _data, _bits, label
+            in peer.recorder.messages[peer_mark:]
+        ))
+        # Both players were already on the quest. The second player can use
+        # the same placement immediately, without another quest sync first.
+        self._click_prop(peer, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(peer.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+        self.server._quest_sync_props(peer)
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(session.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+        self.assertEqual(runtime.props[bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        self._click_prop(peer, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(peer.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+
+    def test_fresh_quest_attempt_can_reuse_consumed_placement(self):
+        session, _runtime, bags, task = self._garden_quest_props()
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        session.gameplay_quest_log[GRIMMAGSTONE_02] = QuestProgress(GRIMMAGSTONE_02)
+        self.server._quest_sync_props(session)
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(session.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+
+    def test_inactive_quest_click_does_not_consume_shared_prop(self):
+        session, runtime, bags, task = self._garden_quest_props()
+        session.gameplay_quest_log.clear()
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertEqual(runtime.props[bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        session.gameplay_quest_log[GRIMMAGSTONE_02] = QuestProgress(GRIMMAGSTONE_02)
+        self._click_prop(session, bags[0], BAG_SWITCH)
+        self.assertEqual(task.counter(session.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+
+    def test_individual_quest_prop_can_serve_a_later_switch(self):
+        map_id = "h0003_oasis_dun"
+        quest_id = "h0001-oasis-trader-02-n"
+        session = self._session(map_id, 50183, class_id=2)
+        self.server.sessions[session.addr] = session
+        runtime = self.server._attach_map_event_runtime(
+            session, map_id=map_id, initial_flags=frozenset(),
+            monster_level=None, scaling_difficulty=0, fresh_instance=True,
+        )
+        crate = next(prop for prop in runtime.content.props
+                     if prop.instance_id == "h0003_oasis_trader_02_goods_crate")
+        runtime.publish_props((crate,))
+        progress = QuestProgress(quest_id)
+        session.gameplay_quest_log[quest_id] = progress
+        first_switch = CharacterServer._quest_prop_operation(session, crate)
+        self._click_prop(session, crate, first_switch)
+        self.assertTrue(progress.task_finished(1))
+        self.assertIsNone(CharacterServer._quest_prop_operation(session, crate))
+        # Advance the intervening dialogue/collection tasks to the authored
+        # second use of this same individually consumed crate.
+        progress.finished_mask = (1 << 8) - 1
+        progress.tokens["h0003-oasis-trader-02-talk-02_fin"] = 1
+        self.server._quest_sync_props(session)
+        second_switch = CharacterServer._quest_prop_operation(session, crate)
+        self.assertIsNotNone(second_switch)
+        self.assertNotEqual(first_switch, second_switch)
+        with patch.object(CharacterServer, "_quest_grant_inventory_drops"):
+            self._click_prop(session, crate, second_switch)
+        self.assertTrue(progress.task_finished(8))
 
     def test_event_set_npcs_spawn_when_their_event_starts(self):
         # Retail (16:05:23): the spellweaver, goal of the second tutorial

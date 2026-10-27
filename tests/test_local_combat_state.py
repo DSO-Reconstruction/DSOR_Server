@@ -40,6 +40,8 @@ from dso_server.gameplay.local_combat_state import (
     MONSTER_RETURN_HOME_EFFECT_ID,
     MONSTER_RETURN_HOME_TIMEOUT_SECONDS,
     MonsterMovement,
+    PLAYER_PROJECTILE_COLLISION_RADIUS,
+    PLAYER_PROJECTILE_HITBOX_TOLERANCE,
     PLAYER_SUMMON_OWNER_RANGE,
     LocalCombatState,
     VictimStatusEffectDefinition,
@@ -2584,7 +2586,11 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         origin = (0.0, monster.position[1], 0.0)
         direction = (1.0, 0.0, 0.0, 0.0)
-        collision_radius = monster.collision_radius + 0.25
+        # Acquisition and impact share the configured contact tolerance;
+        # movement compensation still stops after one publication interval.
+        collision_radius = max(
+            PLAYER_PROJECTILE_COLLISION_RADIUS, monster.collision_radius + 0.25,
+        ) + PLAYER_PROJECTILE_HITBOX_TOLERANCE
         current = (5.0, monster.position[1], collision_radius + 0.10)
         self.state.monster_positions[actor_id] = current
         self.state.monster_last_published_positions[actor_id] = current

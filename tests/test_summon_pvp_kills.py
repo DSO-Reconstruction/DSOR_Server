@@ -2,6 +2,8 @@
 
 import unittest
 from unittest.mock import patch
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
+from dso_server.persistence.readonly_db import connect
 
 from dso_server.protocol.combat_protocol import KillServerCommand
 from dso_server.protocol.pvp_match_protocol import MATCH_MODE_BEST_OF_3_1V1
@@ -15,7 +17,12 @@ class SummonPVPKillTests(unittest.TestCase):
     move = fixtures.PVPPlayerEffectTests.move
     commands = fixtures.PVPPlayerEffectTests.commands
 
-    def spawn_attack(self, skill_index=1877):
+    def spawn_attack(self, skill_resource="packofwolves"):
+        with connect(DEFAULT_STATIC_DB_PATH) as database:
+            skill_index = int(database.execute(
+                "SELECT rowid - 1 FROM _Template_Skill WHERE Id = ?",
+                (skill_resource,),
+            ).fetchone()[0])
         owner = self.source.gameplay_remote_actor_id
         target = self.target.gameplay_remote_actor_id
         definition = self.combat.player_summon_definition(skill_index)
@@ -66,7 +73,7 @@ class SummonPVPKillTests(unittest.TestCase):
     def arena(self, phase=MatchPhase.RUNNING):
         players = tuple(MatchParticipant(
             character_id=s.gameplay_character.character_id, account_id=s.account_id,
-            name=s.gameplay_character.name, level=100, team=team,
+            name=s.gameplay_character.name, level=100, class_id=1, team=team,
             session=s, accepted=True, arrived=True, actor_id=s.gameplay_remote_actor_id,
         ) for team, s in enumerate((self.source, self.target)))
         match = PVPMatch(MATCH_MODE_BEST_OF_3_1V1, players)
@@ -103,7 +110,7 @@ class SummonPVPKillTests(unittest.TestCase):
 
     def test_turret_kill_credits_owner_and_ends_arena_round_once(self):
         match = self.arena()
-        self.spawn_attack(skill_index=1892)
+        self.spawn_attack(skill_resource="TurretCombat")
         resolutions = self.resolve()
         self.assertTrue(resolutions[0].killed)
         self.dispatch(resolutions)

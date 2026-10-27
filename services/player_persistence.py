@@ -9,6 +9,7 @@ import time
 from dso_server.protocol.currency_protocol import normalize_game_currency_balances
 from dso_server.protocol.inventory_codec import owned_inventory_items
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.player_skill_timing import snapshot_player_skill_timing
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -35,6 +36,20 @@ TUTORIAL_FINAL_QUESTS = (
     "a0001-start-tutorial-03-r",
     "a0001-start-tutorial-03-m",
 )
+
+# These actions reconcile capacity at dispatch before staging their inventory
+# packet. Publishing a later bag refresh during save would overtake that packet
+# and could fail before its reward/consumption receipt reaches SQLite.
+PRE_RECONCILED_INVENTORY_SAVE_REASONS = frozenset({
+    "player trade", "workbench recipe crafted", "recipe book unlocked",
+    "rune trinket slot unlocked",
+    "currency item consumed", "Season Pass rewards claimed",
+    "payment-package opened", "mapped-chest opened",
+    "food recycled",
+    "quest status rewards",
+    "quest failed",
+    "quest defense result",
+})
 
 
 class PlayerPersistenceService:
@@ -304,6 +319,8 @@ class PlayerPersistenceService:
             recipe_book_resources = tuple(
                 s.gameplay_recipe_book_resources
             )
+            from dso_server.services.rune_progression import unlocked_rune_slots
+            rune_trinket_unlocked_slots = tuple(sorted(unlocked_rune_slots(s)))
             talent_category_points = tuple(
                 int(value) for value in s.gameplay_talent_category_points
             )
@@ -314,6 +331,9 @@ class PlayerPersistenceService:
             hidden_equipment_skins = dict(
                 getattr(s, "gameplay_hidden_equipment_skins", {})
             )
+            unlocked_skins = tuple(sorted(
+                getattr(s, "gameplay_unlocked_skins", ()) or ()
+            ))
             active_pet = str(s.gameplay_active_pet)
             active_mercenary = str(s.gameplay_active_mercenary)
             active_decorations = tuple(
@@ -349,8 +369,13 @@ class PlayerPersistenceService:
                 in s.gameplay_persistent_status_effects.items()
                 if instance_id not in transient_effect_instance_ids
             }
+            from dso_server.services.item_set_persistence import persistent_item_set_entries
+            status_effects.update(persistent_item_set_entries(s))
             timed_status_effect_expiries = dict(
                 s.gameplay_timed_status_effect_expiries
+            )
+            player_skill_timing = snapshot_player_skill_timing(
+                getattr(s, "gameplay_player_skill_timing", None),
             )
             # TalentCategorySelection/TalentSelectionEntry are frozen and hold
             # only tuples, so each preset value is already an immutable
@@ -489,6 +514,7 @@ class PlayerPersistenceService:
                 status_effects[key] for key in sorted(status_effects)
             ),
             status_effect_names=status_effect_names,
+            player_skill_timing=player_skill_timing,
             mount_ride=mount_ride,
             talent_categories=talent_categories,
             skill_talent_presets=skill_talent_presets,
@@ -521,6 +547,7 @@ class PlayerPersistenceService:
             stickerbook_entries=stickerbook_entries,
             active_costume=active_costume,
             hidden_equipment_skins=hidden_equipment_skins,
+            unlocked_skins=unlocked_skins,
             active_pet=active_pet,
             active_mercenary=active_mercenary,
             active_decorations=active_decorations,
@@ -528,6 +555,7 @@ class PlayerPersistenceService:
             membership_expires_at=membership_expires_at,
             membership_active=membership_active,
             recipe_book_resources=recipe_book_resources,
+            rune_trinket_unlocked_slots=rune_trinket_unlocked_slots,
             talent_category_points=talent_category_points,
             unlocked_skill_presets=unlocked_skill_presets,
             timed_status_effect_expiries=(
@@ -536,7 +564,8 @@ class PlayerPersistenceService:
         )
 
     def _persist_gameplay_session(
-            self, s: Session, *, reason: str, flush: bool = False) -> bool:
+            self, s: Session, *, reason: str, flush: bool = False,
+            achievement_catalog=None) -> bool:
         """Serialize session snapshots so older captures cannot win a race."""
 
         with s.flow_lock:
@@ -546,11 +575,13 @@ class PlayerPersistenceService:
                 s.gameplay_persist_lock = persist_lock
         with persist_lock:
             return PlayerPersistenceService._persist_gameplay_session_locked(
-                self, s, reason=reason, flush=flush
+                self, s, reason=reason, flush=flush,
+                achievement_catalog=achievement_catalog,
             )
 
     def _persist_gameplay_session_locked(
-            self, s: Session, *, reason: str, flush: bool = False) -> bool:
+            self, s: Session, *, reason: str, flush: bool = False,
+            achievement_catalog=None) -> bool:
         store = getattr(self, 'account_store', None)
         with s.flow_lock:
             transfer_started = s.gameplay_exit_transition_started
@@ -568,7 +599,7 @@ class PlayerPersistenceService:
             return False
         # Trade reconciles both participants before committing either side.
         # Its durable boundary must not emit a bag/status notification first.
-        if reason != "player trade":
+        if reason not in PRE_RECONCILED_INVENTORY_SAVE_REASONS and achievement_catalog is None:
             CharacterService._refresh_premium_bags(s)
         state = CharacterService._capture_account_state(self, s)
         if state is None:
@@ -627,7 +658,9 @@ class PlayerPersistenceService:
                     break
         # State, wallet and roster metadata describe one snapshot. Publish all
         # of them in one writer batch and wait for just one durable commit.
-        store.put(state, profile=profile, flush=durable_snapshot)
+        achievement_options = ({"achievement_catalog": achievement_catalog}
+                               if achievement_catalog is not None else {})
+        store.put(state, profile=profile, flush=durable_snapshot, **achievement_options)
         if reason != 'interval':
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] queued account state for "
@@ -659,7 +692,7 @@ class PlayerPersistenceService:
 
         # The trade preflight already reconciled bags; post-commit saves must
         # complete even when the participant's outbound queue is full.
-        if reason != "player trade":
+        if reason not in PRE_RECONCILED_INVENTORY_SAVE_REASONS:
             CharacterService._refresh_premium_bags(s)
         callback = s.gameplay_persist_callback
         if callback is None:

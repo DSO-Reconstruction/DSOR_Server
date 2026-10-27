@@ -19,6 +19,7 @@ from dso_server.gameplay.event_system import load_event_catalog, UINT32_MAX
 from dso_server.services import events as game_events
 from dso_server.paths import DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT
 from dso_server.runtime.admin_commands import call_admin_command
+from dso_server.runtime.file_revisions import invalidate as invalidate_file_revision
 from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
 
@@ -84,6 +85,7 @@ class EventAdministration:
         self.service = service
         self.schedule_path = Path(schedule_path or game_events.EVENT_SCHEDULE_PATH).resolve()
         self._observed = None
+        self._pending_refresh = None
         self._wake = threading.Event()
         self._stopping = threading.Event()
         self._thread = None
@@ -100,11 +102,15 @@ class EventAdministration:
             _, _, catalog = self._read()
             now = datetime.now(timezone.utc)
             snapshot = self._snapshot(catalog, now)
-            if self._observed is not None and self._observed.events != snapshot.events:
-                result = self._publish(self._observed, catalog)
+            previous = self._pending_refresh or self._observed
+            if previous is not None and (
+                    self._pending_refresh is not None or previous.events != snapshot.events):
+                result = self._publish(previous, catalog)
                 self.service.repository.audit("system", "event.schedule.refresh", "schedule", {
                     "states": {str(event.event_id): event.forced_state for event in snapshot.events}, "refresh": result})
             self._observed = snapshot
+            if self._pending_refresh is not None:
+                return 1.0
             deadlines = [moment for event in catalog.events
                          if event.forced_state not in {"active", "upcoming", "expired"}
                          for moment in (event.starts_at, event.ends_at)
@@ -298,6 +304,9 @@ class EventAdministration:
             self.service.repository.audit(actor, action + ".requested", event_id, record)
             os.replace(temporary, self.schedule_path)
             temporary = None
+            # Lookups reuse the last observed schedule revision; publish this
+            # write to the very next one.
+            invalidate_file_revision(self.schedule_path)
             self.service.repository.audit(actor, action, event_id, record)
             return load_event_catalog(self.service.static_database_path, self.schedule_path)
         except OSError as exc:
@@ -308,6 +317,7 @@ class EventAdministration:
 
     def _publish(self, previous, catalog):
         from dso_server.services.admin_event_refresh import refresh_session_events
+        from dso_server.services.global_event_refresh import refresh_map_events
         from dso_server.protocol.player_init_protocol import EVENT_UPDATE_COMMAND, encode_event_update
         result = {"updated": 0, "deferred": 0, "errors": []}
         app = self.service.application
@@ -315,6 +325,7 @@ class EventAdministration:
             return result
         update_packet, update_bits = encode_event_update(catalog.event_update())
         for server in (app.characters, app.login):
+            worlds = {}
             if hasattr(server, "post_selection_tail"):
                 server.post_selection_tail = tuple(
                     (command, update_packet, update_bits) if command == EVENT_UPDATE_COMMAND else (command, packet, bits)
@@ -324,6 +335,7 @@ class EventAdministration:
                     character = session.gameplay_character
                     cid = int(character.character_id) if character is not None else None
                     context = (session.gameplay_map, session.gameplay_chase_generation)
+                    runtime = getattr(session, "gameplay_map_event_runtime", None)
                 if cid is None:
                     continue
                 try:
@@ -331,7 +343,34 @@ class EventAdministration:
                         lambda: refresh_session_events(server, session, cid, context, previous, catalog),
                         session=session)
                     result["updated" if refreshed else "deferred"] += 1
+                    if refreshed and runtime is not None:
+                        _, viewers = worlds.setdefault(id(runtime), (runtime, []))
+                        viewers.append((session, cid, context))
                 except Exception as exc:
                     result["deferred"] += 1
                     result["errors"].append({"character_id": cid, "error": str(exc)[:200]})
+            # Publish global snapshots to every viewer before changing world
+            # entities. A per-session transition would otherwise send NPCs or
+            # exits to peers whose event-set controller is still inactive.
+            for runtime, viewers in worlds.values():
+                try:
+                    completed, errors = call_admin_command(
+                        server.admin_commands,
+                        lambda: refresh_map_events(server, runtime, viewers, previous, catalog),
+                    )
+                    deferred = len(viewers) - len(completed)
+                    result["errors"].extend(errors)
+                except Exception as exc:
+                    deferred = len(viewers)
+                    result["errors"].extend(
+                        {"character_id": cid, "error": str(exc)[:200]}
+                        for _session, cid, _context in viewers
+                    )
+                result["updated"] -= deferred
+                result["deferred"] += deferred
+        # A busy gameplay gate or failed client delivery must not permanently
+        # lose the world refresh just because the saved schedule is unchanged.
+        self._pending_refresh = (
+            (self._pending_refresh or previous) if result["deferred"] else None
+        )
         return result

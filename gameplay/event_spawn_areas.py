@@ -56,6 +56,16 @@ _EVENT_AREA_TEMPLATE_OVERRIDES = {
     # quest's ClearRegion names these five Machine Babies; the ordinary map
     # pool can otherwise select unrelated actors such as Target Crystals.
     ("pw212_elysium_dun", 4182): _ORSHA_MACHINE_BABY_TEMPLATES,
+    # Hide and Seek (3/3): the only spawn source of event set 4088
+    # (pw208_hide_and_seek_03_spawn_enemies, started by the quest's server
+    # signal while its clear-01 task is not done) is a list_q_hide_and_seek
+    # area whose membership is not exported. The quest's ClearRegion names
+    # exactly these three templates; the map pool would spawn none of them.
+    ("pw208_lost_woods_dun_04", 4088): (
+        "pw208_normal_shadow_corpser_01_q_hide_and_seek_03",
+        "pw208_normal_shadow_critter_01_q_hide_and_seek_03",
+        "pw208_normal_shadow_caster_01_q_hide_and_seek_03",
+    ),
 }
 
 _ORSHA_MACHINE_BABY_OFFSETS = (

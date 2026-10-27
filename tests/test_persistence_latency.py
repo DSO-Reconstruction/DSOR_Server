@@ -213,11 +213,13 @@ def test_social_failed_replace_preserves_file_and_reports_flush_failure(tmp_path
         assert failed.is_set()
         assert path.read_bytes() == before
         assert store.buddies_for(1) == (2,)
-        assert list(tmp_path.glob("*.tmp")) == []
     finally:
         monkeypatch.setattr(module.os, "replace", original_replace)
         monkeypatch.setattr(store, "flush", original_flush)
         store.close()
+    # The writer retries until recovery; a temporary file during an active
+    # attempt is legitimate. Check cleanup after the writer has drained.
+    assert list(tmp_path.glob("*.tmp")) == []
     assert json.loads(path.read_text())["buddies"] == {"1": [2]}
 
 

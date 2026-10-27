@@ -17,6 +17,7 @@ from dso_server.paths import (
     DEFAULT_STATIC_DB_PATH,
 )
 from dso_server.runtime.transport import Session
+from dso_server.persistence.readonly_db import connect
 
 from dso_server.protocol.pvp_match_protocol import (
     JOIN_BATTLEGROUND_COMMAND,
@@ -49,6 +50,14 @@ from dso_server.protocol.gameplay_protocol import (
 
 
 JOIN_MATCH_QUEUE_1V1 = bytes.fromhex("8bce00000000000000")
+
+
+def _status_effect_id(resource_id):
+    with connect(DEFAULT_STATIC_DB_PATH) as database:
+        return int(database.execute(
+            "SELECT rowid - 1 FROM _Template_StatusEffect WHERE Id = ?",
+            (resource_id,),
+        ).fetchone()[0])
 
 
 class _FakeSocket:
@@ -689,7 +698,8 @@ class BattlegroundTests(unittest.TestCase):
             value, actor = decode_status_effect_batch(*packet)
             self.assertEqual(actor, 1)
             reset = next(entry for entry in value.entries if entry.has_details)
-            self.assertEqual((reset.effect_id, reset.field_10), (5929, 0))
+            self.assertEqual((reset.effect_id, reset.field_10),
+                             (_status_effect_id("pvp_cooldown_reset"), 0))
             self.assertFalse(session.gameplay_runtime_status_effects)
             self.assertFalse(CharacterService._player_disabled_actor_features(session))
             session.gameplay_match = None
@@ -737,7 +747,8 @@ class BattlegroundTests(unittest.TestCase):
             runtime = replace(seed, effect_id=5905, field_04=800001)
             victim = replace(seed, effect_id=5905, field_04=800002,
                              field_20=0x10002 if session is self.home else 0x10001)
-            debuff = replace(seed, effect_id=5894, field_04=800003)
+            debuff = replace(seed, effect_id=_status_effect_id("debuff_dot_burn"),
+                             field_04=800003)
             permanent = replace(seed, effect_id=5906, field_04=800004)
             session.gameplay_runtime_status_effects = {800001: (runtime, None)}
             session.gameplay_victim_status_effect_instances = {(1, 5905): (victim, 1e20)}
@@ -806,7 +817,8 @@ class BattlegroundTests(unittest.TestCase):
                     own_team, own_row = next((team, row) for team in info.teams
                                              for row in team.players if row.actor_id == 1)
                     self.assertEqual(own_team.team_id, session.gameplay_match_team)
-                    self.assertEqual(own_row.team_slot, session.gameplay_match_team)
+                    self.assertEqual(own_row.class_id,
+                                     self.match.participant(session.gameplay_character.character_id).class_id)
                     self.assertEqual(own_team.team_id == result.winning_team,
                                      session.gameplay_match_team == winning_team)
                     self.assertEqual(own_row.honor_total,

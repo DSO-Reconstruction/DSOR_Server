@@ -18,13 +18,21 @@ from functools import lru_cache, partial
 from dso_server.persistence.readonly_db import connect
 from dso_server.protocol.gameplay_protocol import Message, MessageArgument
 from dso_server.protocol.player_init_protocol import MESSAGE_COMMAND
-from dso_server.protocol.pvp_match_protocol import MATCH_MODE_BEST_OF_3_1V1
+from dso_server.protocol.pvp_match_protocol import (
+    ACHIEVEMENT_MODE_NAMES,
+    MATCH_MODE_BEST_OF_3_1V1,
+    MATCH_MODE_LAST_MAN_STANDING_8FFA,
+)
+from dso_server.gameplay.player_skill_timing import reset_player_skill_timing
 
 from dso_server.gameplay.map_status_effects import (
     map_status_effect_definitions,
     map_status_effect_entry,
 )
 
+from dso_server.services.battleground_objectives import (
+    BattlegroundObjectiveService,
+)
 from dso_server.gameplay.pvp_match_state import (
     MATCH_COUNTDOWN_SECONDS,
     MATCH_INFO_INTERVAL_SECONDS,
@@ -52,8 +60,13 @@ def _arena_debuff_ids(database_path: str):
         ))
 
 
-class BattlegroundService:
+class BattlegroundService(BattlegroundObjectiveService):
     """Rounds, scoreboard, and completion for one battleground instance."""
+
+    def _handle_pvp_objective_command(self, s: Session, payload: bytes, command_id: int) -> None:
+        # PVP_OBJECTIVE_COMMANDS holds only PVPEventCommand; see
+        # services/battleground_objectives.py.
+        CharacterService._handle_objective_event_command(self, s, payload)
 
     # ------------------------------------------------------------------
     # rounds
@@ -69,6 +82,14 @@ class BattlegroundService:
         two sides apart until the round actually begins.
         """
 
+        override = CharacterService._objective_arena_entry(s)
+        if override is not None:
+            # The fortress moves each side's respawn forward with the stage.
+            position, heading = override
+            entries = (SimpleNamespace(
+                arena_position=tuple(position), arena_heading=float(heading),
+            ),)
+            team = 0
         if not entries:
             return
         entry = entries[team % len(entries)]
@@ -100,6 +121,7 @@ class BattlegroundService:
             if match.phase in (MatchPhase.OVER, MatchPhase.CANCELLED):
                 return
             match.phase = MatchPhase.COUNTDOWN
+            match.reset_round()
             match.round_start_tick = 0
             for participant in match.participants:
                 participant.client_round_start_tick = 0
@@ -169,6 +191,8 @@ class BattlegroundService:
                 )),
                 label="pvp-match-start",
             )
+        # Objective rounds stand their objectives up as play begins.
+        CharacterService._start_match_objectives(server, match)
         server._broadcast_match_info(match)
         CharacterService._arm_match_timer(
             server, match, "round", match.round_deadline_seconds(),
@@ -204,8 +228,10 @@ class BattlegroundService:
 
     @staticmethod
     def _send_battleground_effects(server, s, *, start=False):
-        # The zero-duration cooldown reset is a one-shot client modifier and
-        # must still be sent; the ordinary skill-buff helper skips duration 0.
+        if start:
+            reset_player_skill_timing(s)
+        # Reset client cooldowns too; this round boundary also clears casting
+        # recovery, unlike ordinary in-combat cooldown-reduction effects.
         definitions = _round_effects(str(server.static_database_path), start)
         tick = CharacterService._session_tick(s)
         entries = []
@@ -585,6 +611,10 @@ class BattlegroundService:
             if match.phase not in (MatchPhase.RUNNING, MatchPhase.COUNTDOWN):
                 return
         server._broadcast_match_info(match)
+        if (CharacterService._is_fortress_match(match)
+                and match.phase == MatchPhase.RUNNING):
+            # The stage target's health bar follows its damage.
+            CharacterService._send_fortress_stage_info(server, match)
         CharacterService._arm_match_timer(
             server, match, "info", MATCH_INFO_INTERVAL_SECONDS,
             CharacterService._repeat_match_info,
@@ -592,7 +622,7 @@ class BattlegroundService:
 
     @staticmethod
     def _expire_match_round(server, match: PVPMatch, generation: int) -> None:
-        """Decide a round that ran out its 3000 ticks with nobody dead.
+        """Decide a round that ran out its 3000 ticks without a winner.
 
         Retail's tiebreak is not visible in any recording -- all six recorded
         rounds ended on a kill well inside the limit -- so the round goes to
@@ -600,17 +630,26 @@ class BattlegroundService:
         only if even that is level.
         """
 
+        if CharacterService._is_objective_match(match):
+            # An objective round that runs out goes to the team leading the
+            # objective; a level score is a draw.
+            CharacterService._finish_objective_match(
+                server, match, CharacterService._objective_timeout_winner(match),
+            )
+            return
         with match.lock:
             if match.phase != MatchPhase.RUNNING:
                 return
-            teams = match.active_teams()
+            teams = match.living_teams()
             if not teams:
                 return
             winner = max(teams, key=lambda team: (
-                sum(e.damage_dealt for e in match.team_members(team)),
+                sum(match.round_damage_dealt.get(e.character_id, 0)
+                    for e in match.team_members(team)),
                 -team,
             ))
-        CharacterService._finish_match_round(server, match, winner)
+            outcome = CharacterService._claim_match_round(match, winner)
+        CharacterService._publish_match_round_result(server, match, outcome)
 
     @staticmethod
     def _pvp_match_opponents(source: Session, target: Session) -> bool:
@@ -632,12 +671,35 @@ class BattlegroundService:
                 return False
             return int(source_team) != int(target_team)
 
-    def _handle_match_event(self, s: Session, event) -> None:
-        """Apply one battleground scoring event raised by combat resolution."""
+    def _handle_match_event(self, s: Session, event):
+        """Apply one battleground event raised by combat or world code.
+
+        ``match_moved`` (a participant's MoveCommand) and ``match_pickup``
+        (a PickupItem) drive objectives; ``match_pickup`` answers ``True``
+        when the item was an objective the battleground owns.
+        """
 
         if not isinstance(event, tuple) or not event:
-            return
+            return None
         kind = event[0]
+        if kind == "match_moved":
+            CharacterService._objective_moved(self, s, event[1])
+            return None
+        if kind == "match_pickup":
+            return bool(CharacterService._objective_pickup(self, s, int(event[1])))
+        if kind == "match_respawn_request":
+            CharacterService._objective_respawn_request(self, s)
+            return None
+        if kind == "match_monsters_killed":
+            CharacterService._fortress_monsters_killed(self, s, event[1])
+            return None
+        if kind == "match_monster_damage":
+            CharacterService._fortress_monster_damage(self, s, event[1])
+            return None
+        if kind == "match_prop_interaction":
+            return bool(
+                CharacterService._fortress_prop_interaction(self, s, event[1])
+            )
         if kind == "match_damage":
             match = getattr(s, "gameplay_match", None)
             character_id = CharacterService._match_character_id(s)
@@ -661,28 +723,67 @@ class BattlegroundService:
         )
         if victim_id is None:
             return
-        with match.lock:
-            previous_deaths = match.participant(victim_id).deaths if match.participant(victim_id) else 0
-        decided = match.record_kill(
-            killer_id if killer_id is not None else -1, victim_id
-        )
+        if killer is not None and getattr(killer, "gameplay_match", None) is not match:
+            return
         with match.lock:
             entry = match.participant(victim_id)
-            victim_team = entry.team if entry is not None else 0
-            teams = [t for t in match.active_teams() if t != victim_team]
-        if killer is not None and entry is not None and entry.deaths > previous_deaths:
+            if entry is None:
+                return
+            previous_deaths = entry.deaths
+            killer_entry = match.participant(killer_id) if killer_id is not None else None
+            previous_kills = killer_entry.kills if killer_entry is not None else 0
+            decided = match.record_kill(
+                killer_id if killer_id is not None else -1, victim_id
+            )
+            if entry.deaths == previous_deaths:
+                return
+            credited_kill = killer_entry is not None and killer_entry.kills > previous_kills
+            objective = CharacterService._is_objective_match(match)
+            teams = match.living_teams()
+            outcome = None
+            if objective:
+                # Objective rounds are not decided by eliminating a team: the
+                # victim drops what they carried and respawns.
+                decided = False
+            if decided and teams:
+                # Keep the decisive kill and the phase transition atomic.
+                # Another death callback must not award this round again.
+                outcome = CharacterService._claim_match_round(match, teams[0])
+        if killer is not None and credited_kill:
             self._daily_challenge_feed(killer, 'PlayersKilled')
-        self._broadcast_match_info(match)
-        if not decided:
+        if objective:
+            CharacterService._objective_death(
+                self, match, victim, killer_entry, entry,
+            )
+            self._broadcast_match_info(match)
             return
-        CharacterService._finish_match_round(
-            self, match, teams[0] if teams else victim_team
-        )
+        if outcome is not None:
+            CharacterService._publish_match_round_result(self, match, outcome)
+        else:
+            self._broadcast_match_info(match)
+
+    @staticmethod
+    def _claim_match_round(match: PVPMatch, winning_team: int):
+        """Commit one round result without taking any viewer's socket lock."""
+
+        with match.lock:
+            if (match.phase != MatchPhase.RUNNING
+                    or not 0 <= int(winning_team) < match.team_count):
+                return None
+            CharacterService._cancel_match_timers(match)
+            over = match.award_round(winning_team)
+            return int(winning_team), over
 
     @staticmethod
     def _finish_match_round(server, match: PVPMatch, winning_team: int) -> None:
-        CharacterService._cancel_match_timers(match)
-        over = match.award_round(winning_team)
+        outcome = CharacterService._claim_match_round(match, winning_team)
+        CharacterService._publish_match_round_result(server, match, outcome)
+
+    @staticmethod
+    def _publish_match_round_result(server, match: PVPMatch, outcome) -> None:
+        if outcome is None:
+            return
+        winning_team, over = outcome
         server._broadcast_match_info(match)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] PvP match {match.match_id} round "
@@ -725,6 +826,9 @@ class BattlegroundService:
             rounds = match.round_index
             participants = match.participants
             match.phase = MatchPhase.OVER
+        # Flags leave the ground and carriers lose their banners before the
+        # result panel opens; a drawn objective match names no winner.
+        CharacterService._cleanup_match_objectives(server, match)
         over = encode_match_over(MatchOver(
             server_tick=match.tick(),
             winning_team=winning_team,
@@ -743,13 +847,14 @@ class BattlegroundService:
                     session.gameplay_honor_points_today = (
                         int(getattr(session, "gameplay_honor_points_today", 0)) + honor
                     )
-                    attribute = (
-                        "gameplay_pvp_matches_won" if won
-                        else "gameplay_pvp_matches_lost"
-                    )
-                    setattr(session, attribute, int(
-                        getattr(session, attribute, 0)
-                    ) + 1)
+                    if winning_team >= 0:
+                        attribute = (
+                            "gameplay_pvp_matches_won" if won
+                            else "gameplay_pvp_matches_lost"
+                        )
+                        setattr(session, attribute, int(
+                            getattr(session, attribute, 0)
+                        ) + 1)
                     total = int(session.gameplay_honor_points)
                     session.gameplay_pvp_kills = (
                         int(getattr(session, "gameplay_pvp_kills", 0)) + entry.kills)
@@ -763,8 +868,10 @@ class BattlegroundService:
                         int(getattr(session, "gameplay_pvp_kills_battle_today", 0)) + entry.kills)
 
                     is_solo = (
-                        getattr(match, "mode", None) == MATCH_MODE_BEST_OF_3_1V1
-                        or len(match.participants) <= 2
+                        match.match_mode in (
+                            MATCH_MODE_BEST_OF_3_1V1,
+                            MATCH_MODE_LAST_MAN_STANDING_8FFA,
+                        )
                     )
                     if is_solo:
                         session.gameplay_pvp_solo_matches_played = (
@@ -807,8 +914,19 @@ class BattlegroundService:
             server._send_pvp(session, over, label="pvp-match-over")
             if credit:
                 server._daily_challenge_feed(session, 'BattlegroundsPlayed')
+                server._ranking_on_pvp_match_settled(
+                    session, match_mode=match.match_mode, honor=honor,
+                    outcome="draw" if winning_team < 0 else "won" if won else "lost",
+                    kills=entry.kills, deaths=entry.deaths)
                 if won:
                     server._daily_challenge_feed(session, 'MatchesWon')
+                    # Pvp_Match achievements name the battleground family
+                    # (see ACHIEVEMENT_MODE_NAMES), not the battleground id.
+                    achievement_modes = (match.battleground_id,)
+                    family = ACHIEVEMENT_MODE_NAMES.get(match.match_mode)
+                    if family:
+                        achievement_modes += (family,)
+                    server._achievement_feed(session, "pvp_match", achievement_modes)
                 # Arena quests count finished battles and wins per
                 # battleground id (<Event type="battle|victory"
                 # value="BestOf5_5v5_01_default">).
@@ -853,8 +971,21 @@ class BattlegroundService:
         left to run its rounds out against nobody.
         """
 
-        ended = match.forfeit(character_id)
+        objective = CharacterService._is_objective_match(match)
+        if objective:
+            entry = match.participant(character_id)
+            CharacterService._objective_departed(
+                self, match, character_id,
+                entry.session if entry is not None else None,
+            )
         with match.lock:
+            ended = match.forfeit(character_id)
+            outcome = None
+            if (not ended and not objective
+                    and match.phase == MatchPhase.RUNNING):
+                living = match.living_teams()
+                if len(living) == 1:
+                    outcome = CharacterService._claim_match_round(match, living[0])
             phase = match.phase
             winning_team = match.winning_team
             anyone_left = any(
@@ -865,12 +996,16 @@ class BattlegroundService:
             f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} left PvP "
             f"match {match.match_id} ({reason})"
         )
+        CharacterService._publish_match_round_result(self, match, outcome)
         if ended and phase == MatchPhase.OVER:
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] PvP match {match.match_id} "
                 f"awarded to team {winning_team} by forfeit"
             )
             CharacterService._finish_match(self, match, 0)
+        elif objective and anyone_left:
+            # The departing session may have hosted the round's timers.
+            CharacterService._rehost_objective_timers(self, match)
         if not anyone_left:
             CharacterService._cancel_match_timers(match)
             CharacterService._matchmaking_registry(self).retire(
@@ -887,10 +1022,14 @@ class BattlegroundService:
             s.gameplay_match = None
             s.gameplay_match_team = None
         if match is None or character_id is None:
+            CharacterService._clear_flag_carrier_effects(self, s)
             return
         CharacterService._forfeit_battleground(
             self, match, character_id, reason=reason
         )
+        # A carried flag was dropped by the forfeit; its banner must not
+        # follow the player out of the arena.
+        CharacterService._clear_flag_carrier_effects(self, s)
         # The battleground forced the PvP flag on; the hub gets the account's
         # own setting back.
         store = getattr(self, "account_store", None)
@@ -1003,7 +1142,11 @@ class BattlegroundService:
                         kills=entry.kills,
                         deaths=entry.deaths,
                         damage_dealt=entry.damage_dealt,
-                        score=entry.damage_dealt,
+                        # The Score column: flag captures on a CTF map
+                        # (headed ``scoredFlags``), else damage dealt.
+                        score=CharacterService._objective_player_score(
+                            match, entry,
+                        ),
                         support=0.0,
                         # Career honor is retained as captured metadata;
                         # honor_total above is the actual match payout.
@@ -1015,9 +1158,19 @@ class BattlegroundService:
                         stats=(),
                         rounds_lost=entry.rounds_lost,
                     ))
+                objective_score = (
+                    CharacterService._objective_team_score(match, team)
+                    if CharacterService._is_objective_match(match) else None
+                )
                 teams.append(MatchTeam(
                     team_id=team,
-                    rounds_won=match.team_rounds_won[team],
+                    # The displayed team score (HUD Team1/2Score and the
+                    # scoreboard title): rounds won, or for an objective
+                    # mode the objective score (flag captures).
+                    rounds_won=(
+                        match.team_rounds_won[team]
+                        if objective_score is None else objective_score
+                    ),
                     score=0,
                     win_chance=(
                         chances[team] if team < len(chances) else 0.0
@@ -1033,7 +1186,9 @@ class BattlegroundService:
                 round_duration_ticks=match.round_duration_ticks,
                 teams=tuple(teams),
                 battleground_id=match.battleground_id,
-                stage=0,
+                # Time bonus in ticks, shown once when a fortress stage
+                # extends the round; 0 otherwise.
+                stage=int(getattr(match, "time_bonus_ticks", 0) or 0),
             )
 
     def _send_match_info(self, s: Session, match: PVPMatch) -> None:

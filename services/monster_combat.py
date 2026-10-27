@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import math
+import time
+import traceback
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -24,6 +27,35 @@ from dso_server.services.monster_tick_context import MonsterTickContextService
 from dso_server.services.player_owned_resolution_dispatch import (
     PlayerOwnedResolutionDispatchService,
 )
+
+
+POST_COMMIT_FAILURE_LOG_SECONDS = 5.0
+_post_commit_failure_logged_at: dict[str, float] = {}
+
+
+@contextmanager
+def _post_commit_step(label: str):
+    """Isolate one publication step that runs after the tick committed.
+
+    The simulation has already advanced when fanout starts. A step that
+    raised used to abort the rest of the tick, so one bad status packet
+    (e.g. a socket proc on every turret hit) suppressed every viewer's
+    monster movement and attacks while the loop itself kept ticking: the
+    map looked frozen. Log the failure with its traceback (rate-limited per
+    step) and let the remaining steps publish.
+    """
+
+    try:
+        yield
+    except Exception:
+        now = time.perf_counter()
+        if now - _post_commit_failure_logged_at.get(label, -1e9) >= POST_COMMIT_FAILURE_LOG_SECONDS:
+            _post_commit_failure_logged_at[label] = now
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] monster tick step {label!r} failed "
+                f"after commit; continuing with the remaining fanout:\n"
+                f"{traceback.format_exc()}"
+            )
 
 
 # ``!stress`` load-test spawns. Rings start this far from the GM and sit this
@@ -789,7 +821,7 @@ class MonsterCombatService(
             server_tick = owner_snapshot.server_tick
             wanted_actor_ids = {
                 actor_id
-                for actor_id in visible_monster_actor_ids
+                for actor_id in set(visible_monster_actor_ids) | set(combat.holdground_targets)
                 if (
                     actor_id in combat.monsters
                     and combat.monster_health.get(actor_id, 0) > 0
@@ -920,7 +952,10 @@ class MonsterCombatService(
                 ))
                 movements = tuple(movements)
                 attacks = tuple(attacks)
-                hostile_resolutions = []
+                # Defenders use their own summon health, without entering the
+                # player regeneration/resource tables. Resolve them before
+                # the last player's pass retires shared area attacks.
+                hostile_resolutions = list(combat.resolve_due_holdground_attacks(now=now))
                 periodic_monster_resolutions = []
                 periodic_owner_resolutions = []
                 target_stats_by_actor = prepared_target_stats
@@ -1143,97 +1178,106 @@ class MonsterCombatService(
                 victim = target_sessions.get(int(resolution.target_actor_id))
                 if victim is not None:
                     CharacterService._cancel_pending_logout(victim, "attacked")
-        CharacterService._apply_base_health_regeneration(
-            target_sessions, health_regeneration
-        )
-        CharacterService._apply_base_resource_regeneration(
-            target_sessions, resource_regeneration
-        )
-        CharacterService._dispatch_pvp_summon_resolutions(
-            combat, target_sessions, pvp_summon_resolutions
-        )
-        CharacterService._dispatch_location_aura_applications(
-            target_sessions, location_aura_applications
-        )
-        CharacterService._dispatch_player_owned_resolutions(
-            combat, target_sessions, player_owned_resolutions
-        )
+        with _post_commit_step("health-regeneration"):
+            CharacterService._apply_base_health_regeneration(
+                target_sessions, health_regeneration
+            )
+        with _post_commit_step("resource-regeneration"):
+            CharacterService._apply_base_resource_regeneration(
+                target_sessions, resource_regeneration
+            )
+        with _post_commit_step("pvp-summon-resolutions"):
+            CharacterService._dispatch_pvp_summon_resolutions(
+                combat, target_sessions, pvp_summon_resolutions
+            )
+        with _post_commit_step("location-aura-applications"):
+            CharacterService._dispatch_location_aura_applications(
+                target_sessions, location_aura_applications
+            )
+        with _post_commit_step("player-owned-resolutions"):
+            CharacterService._dispatch_player_owned_resolutions(
+                combat, target_sessions, player_owned_resolutions
+            )
         for summon in out_of_range_summons:
             owner_session = target_sessions.get(summon.owner_actor_id)
             if owner_session is None:
                 continue
-            CharacterService._expire_player_summon(
-                owner_session,
-                owner_session.gameplay_chase_generation,
-                (
-                    "player-summon-owner-range",
+            with _post_commit_step("summon-owner-range-expiry"):
+                CharacterService._expire_player_summon(
+                    owner_session,
+                    owner_session.gameplay_chase_generation,
+                    (
+                        "player-summon-owner-range",
+                        int(summon.actor_id),
+                    ),
                     int(summon.actor_id),
-                ),
-                int(summon.actor_id),
-            )
-            print(
-                f"[{GAMEPLAY_SERVICE_NAME}] despawning "
-                f"{summon.definition.monster_template_id} "
-                f"{summon.actor_id}: owner crossed "
-                f"{summon.definition.owner_despawn_range:.1f}-unit range"
-            )
+                )
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] despawning "
+                    f"{summon.definition.monster_template_id} "
+                    f"{summon.actor_id}: owner crossed "
+                    f"{summon.definition.owner_despawn_range:.1f}-unit range"
+                )
         for application in support_applications:
             target_session = target_sessions.get(
                 application.target_actor_id
             )
-            if target_session is None:
-                if application.target_actor_id in combat.player_summons:
-                    for viewer in {id(v): v for v in target_sessions.values()}.values():
-                        CharacterService._send_entity_status_effects(
-                            viewer, application.status_effects,
-                            actor_id=application.target_actor_id,
-                            server_tick=application.server_tick,
-                            label="player-summon-causer-status-effects",
-                        )
-                continue
-            CharacterService._send_player_skill_status_effects(
-                target_session,
-                application.status_effects,
-                server_tick=application.server_tick,
-                label="player-summon-support-status-effects",
-            )
+            with _post_commit_step("summon-support-status-effects"):
+                if target_session is None:
+                    if application.target_actor_id in combat.player_summons:
+                        for viewer in {id(v): v for v in target_sessions.values()}.values():
+                            CharacterService._send_entity_status_effects(
+                                viewer, application.status_effects,
+                                actor_id=application.target_actor_id,
+                                server_tick=application.server_tick,
+                                label="player-summon-causer-status-effects",
+                            )
+                    continue
+                CharacterService._send_player_skill_status_effects(
+                    target_session,
+                    application.status_effects,
+                    server_tick=application.server_tick,
+                    label="player-summon-support-status-effects",
+                )
 
         if summon_aura_refreshes:
+            with _post_commit_step("summon-aura-refreshes"):
+                if callback is not None:
+                    callback(
+                        s,
+                        (
+                            "player_summon_aura_refresh",
+                            summon_aura_refreshes,
+                        ),
+                    )
+                else:
+                    CharacterService._send_player_summon_aura_refreshes_to(
+                        s, summon_aura_refreshes
+                    )
+
+        mark_phase(s, "monster-activity-fanout")
+        with _post_commit_step("monster-activity-fanout"):
             if callback is not None:
                 callback(
                     s,
                     (
-                        "player_summon_aura_refresh",
-                        summon_aura_refreshes,
+                        "monster_activity",
+                        combat,
+                        movements,
+                        attacks,
+                        return_home_transitions,
+                        resolutions,
                     ),
                 )
             else:
-                CharacterService._send_player_summon_aura_refreshes_to(
-                    s, summon_aura_refreshes
-                )
-
-        mark_phase(s, "monster-activity-fanout")
-        if callback is not None:
-            callback(
-                s,
-                (
-                    "monster_activity",
+                CharacterService._send_monster_activity_to(
+                    s,
                     combat,
                     movements,
                     attacks,
                     return_home_transitions,
                     resolutions,
-                ),
-            )
-        else:
-            CharacterService._send_monster_activity_to(
-                s,
-                combat,
-                movements,
-                attacks,
-                return_home_transitions,
-                resolutions,
-            )
+                )
         mark_phase(s, "socket-status-updates")
         for resolution in resolutions:
             target_session = target_sessions.get(
@@ -1241,23 +1285,24 @@ class MonsterCombatService(
             )
             if target_session is None:
                 continue
-            if bool(getattr(resolution, "blocked", False)):
-                CharacterService._dispatch_socket_event(
+            with _post_commit_step("socket-status-updates"):
+                if bool(getattr(resolution, "blocked", False)):
+                    CharacterService._dispatch_socket_event(
+                        target_session,
+                        "hitblocked",
+                        server_tick=int(resolution.server_tick),
+                        event_seed=(
+                            int(resolution.attacker_actor_id)
+                            ^ int(resolution.skill_index)
+                        ),
+                    )
+                CharacterService._update_low_health_socket_state(
                     target_session,
-                    "hitblocked",
+                    current_health=int(resolution.current_health),
+                    maximum_health=int(resolution.maximum_health),
                     server_tick=int(resolution.server_tick),
-                    event_seed=(
-                        int(resolution.attacker_actor_id)
-                        ^ int(resolution.skill_index)
-                    ),
+                    event_seed=int(resolution.attacker_actor_id),
                 )
-            CharacterService._update_low_health_socket_state(
-                target_session,
-                current_health=int(resolution.current_health),
-                maximum_health=int(resolution.maximum_health),
-                server_tick=int(resolution.server_tick),
-                event_seed=int(resolution.attacker_actor_id),
-            )
         mark_phase(s, "console-attacks")
         if attacks and (
             VERBOSE_PACKET_LOGGING
@@ -1275,6 +1320,13 @@ class MonsterCombatService(
                                 value.attacker_actor_id
                             ].attack.resource_id
                             if value.attacker_actor_id in combat.monsters
+                            # Living player summons are kept apart from
+                            # monsters; only a missing actor has expired.
+                            else "player-summon:"
+                            + combat.player_summons[
+                                value.attacker_actor_id
+                            ].definition.monster_template_id
+                            if value.attacker_actor_id in combat.player_summons
                             else "expired-player-summon"
                         )
                     )}"
@@ -1314,6 +1366,18 @@ class MonsterCombatService(
         )
         if not candidates:
             return
+        tracked = getattr(s, "gameplay_item_set_programs", {})
+        set_expiries = tuple((identity, tracked[identity]) for identity in candidates if identity in tracked)
+        if set_expiries:
+            from dso_server.services.item_set_programs import stop_item_set_effects
+            generation = s.gameplay_chase_generation
+            for identity, definition in set_expiries:
+                stop_item_set_effects(s, (definition.effect_id,), server_tick=s.gameplay_chase_server_tick,
+                                     reason="done", expected_instance_id=identity,
+                                     expected_generation=generation)
+            candidates = tuple(identity for identity in candidates if identity not in dict(set_expiries))
+            if not candidates:
+                return
         with s.flow_lock:
             # Another cast can refresh an occurrence between the read-only
             # snapshot and this mutation. Never remove its renewed lease.

@@ -36,6 +36,8 @@ from dso_server.gameplay.status_runtime_catalog import (
     load_status_runtime_catalog,
     rebind_saved_status_effects,
 )
+from dso_server.gameplay.player_skill_timing import restore_player_skill_timing
+from dso_server.services.rune_progression import unlocked_rune_slots
 from dso_server.gameplay.endless_tower_effects import (
     endless_tower_player_buffs,
 )
@@ -1317,6 +1319,8 @@ class PlayerInitializationStateService:
         state.item_set_effects = item_set_effects
         state.socket_effect_evaluation = socket_effect_evaluation
         state.socket_effects = socket_effects
+        from dso_server.services.item_set_persistence import prepare_persistent_item_set_effects
+        prepare_persistent_item_set_effects(state, self.static_database_path)
 
     def _resolve_initialization_vitals(
             self, state: PlayerInitializationState) -> None:
@@ -1395,7 +1399,11 @@ class PlayerInitializationStateService:
         """Commit the resolved snapshot onto the session under one lock."""
 
         persisted_state = state.persisted_state
+        quest_catalog = self._quest_catalog()
         with s.flow_lock:
+            s.gameplay_player_skill_timing = restore_player_skill_timing(
+                getattr(persisted_state, "player_skill_timing", {}),
+            )
             s.gameplay_admin_booking_ids = (
                 persisted_state.admin_booking_ids if persisted_state is not None else ()
             )
@@ -1484,7 +1492,7 @@ class PlayerInitializationStateService:
                 else {}
             )
             CharacterService._restore_event_state(s, persisted_state)
-            CharacterService._restore_quest_state(s, persisted_state)
+            CharacterService._restore_quest_state(s, persisted_state, catalog=quest_catalog)
             CharacterService._restore_wanted_thief_state(s, persisted_state)
             CharacterService._restore_season_pass_state(s, persisted_state)
             CharacterService._restore_daily_challenge_state(s, persisted_state)
@@ -1512,14 +1520,12 @@ class PlayerInitializationStateService:
             s.gameplay_stickerbook_entries = stickerbook_entries
             s.gameplay_recipe_book_resources = tuple(
                 persisted_state.recipe_book_resources
-                if (
-                    persisted_state is not None
-                    and persisted_state.recipe_book_resources
-                )
-                else load_recipe_book_resources(
-                    self.static_database_path
-                )
+                if persisted_state is not None else ()
             )
+            s.gameplay_rune_trinket_unlocked_slots = set(
+                getattr(persisted_state, "rune_trinket_unlocked_slots", ())
+            )
+            s.gameplay_rune_trinket_unlocked_slots = set(unlocked_rune_slots(s))
             s.gameplay_active_costume = (
                 persisted_state.active_costume
                 if persisted_state is not None
@@ -1666,3 +1672,5 @@ class PlayerInitializationStateService:
             s.gameplay_next_status_effect_instance_id = (
                 state.next_status_effect_instance_id
             )
+        from dso_server.services.item_set_persistence import restore_persistent_item_set_effects
+        restore_persistent_item_set_effects(s, state, self.static_database_path)

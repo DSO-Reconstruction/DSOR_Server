@@ -1,12 +1,15 @@
 """Ranger effects must wait for their cast and projectile phases."""
 from dataclasses import replace
+from functools import lru_cache
 from types import SimpleNamespace
 from unittest.mock import patch
 import math
+import sqlite3
 import unittest
 
 import pytest
 
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.combat_protocol import BulletSkill, SkillCast, ShiftedSkill
 from dso_server.runtime.transport import Session
 from dso_server.services.character_server import CharacterServer
@@ -15,29 +18,40 @@ from dso_server.tests import test_local_combat_state as combat_fixtures
 from dso_server.tests import test_combat_entities as service_fixtures
 
 
+@lru_cache(maxsize=None)
+def skill_id(resource):
+    # Static content updates may insert skills and renumber their wire IDs.
+    with sqlite3.connect(f"{DEFAULT_STATIC_DB_PATH.as_uri()}?mode=ro", uri=True) as database:
+        return database.execute(
+            "SELECT rowid-1 FROM _Template_Skill WHERE Id=?", (resource,),
+        ).fetchone()[0]
+
+
 @pytest.fixture
 def combat():
     fixture = combat_fixtures.LocalCombatStateTests()
     fixture.setUp()
-    return fixture.state
+    # These tests place actors in synthetic space, away from map obstacles.
+    with patch.object(fixture.state, "_bullet_static_reach", return_value=None):
+        yield fixture.state
 
 
-@pytest.mark.parametrize("skill_index,delay", [(1876, 0.36), (1872, 1.0)])
+@pytest.mark.parametrize("resource,delay", [("multishot", 0.36), ("stunshot", 1.0)])
 @pytest.mark.parametrize("speed", [1.0, 2.0])
-def test_scatter_and_net_wait_for_the_complete_cast(combat, skill_index, delay, speed):
+def test_scatter_and_net_wait_for_the_complete_cast(combat, resource, delay, speed):
     actor = combat.encounter.actor_ids[0]
     origin, target = (0.0, 2.0, 0.0), (0.0, 2.0, -2.0)
     combat.monster_positions[actor] = target
     combat.monster_health[actor] = 1
     frame = combat.encounter.coordinate_frame
     (pending,) = combat.start_spatial_skill_hits(
-        skill_index=skill_index, cast_id=321, server_tick=2000,
+        skill_index=skill_id(resource), cast_id=321, server_tick=2000,
         player_position=frame.world_to_wire(origin), source_actor_id=1,
-        target_position=frame.world_to_wire(target) if skill_index == 1872 else None,
+        target_position=frame.world_to_wire(target) if resource == "stunshot" else None,
         eligible_actor_ids=(actor,), now=100.0, attack_speed_multiplier=speed,
         player_damage_range=(1000.0, 1000.0),
     )
-    expected = delay / speed if skill_index == 1876 else delay
+    expected = delay / speed if resource == "multishot" else delay
     assert pending.due_at == pytest.approx(100.0 + expected)
     assert combat.resolve_runtime_player_hit(1, 321, 0, now=100.0 + expected - 0.001) is None
     assert combat.monster_health[actor] == 1
@@ -46,15 +60,16 @@ def test_scatter_and_net_wait_for_the_complete_cast(combat, skill_index, delay, 
 
 @pytest.mark.parametrize("speed", [0.5, 1.0, 2.0, 10.0])
 def test_net_damage_and_remote_animation_have_the_same_deadline(combat, speed):
-    geometry = combat._load_player_skill_geometry(1872)
+    index = skill_id("stunshot")
+    geometry = combat._load_player_skill_geometry(index)
     session = Session(("127.0.0.1", 41985), object())
-    skill = ShiftedSkill(0, 1872, 0.0, 2000, 321, 0, (0.0, 0.0, -2.0))
+    skill = ShiftedSkill(0, index, 0.0, 2000, 321, 0, (0.0, 0.0, -2.0))
     visual_tick, impact_phase = CharacterServer._remote_skill_impact_tick(
         session, skill, geometry, (0.0, 0.0, 0.0), 10, 1.0, None,
     )
     assert impact_phase == 15
     assert visual_tick == 2025
-    assert combat.player_skill_impact_delay_seconds(1872, attack_speed_multiplier=speed) == (
+    assert combat.player_skill_impact_delay_seconds(index, attack_speed_multiplier=speed) == (
         visual_tick - 2000) / 25.0
 
 
@@ -63,9 +78,10 @@ def test_net_damage_and_remote_animation_have_the_same_deadline(combat, speed):
 def test_thicket_segments_follow_the_projectile_instead_of_appearing_before_it(combat, speed, timing):
     session = Session(("127.0.0.1", 41986), object())
     origin = (0.0, 2.0, 0.0)
-    skill = BulletSkill(0, 1879, 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
-    specs = combat.player_skill_bullet_location_trail(1879)
-    geometry = replace(combat._load_player_skill_geometry(1879), skill_timing_multiplier=timing)
+    index = skill_id("thorntrail")
+    skill = BulletSkill(0, index, 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
+    specs = combat.player_skill_bullet_location_trail(index)
+    geometry = replace(combat._load_player_skill_geometry(index), skill_timing_multiplier=timing)
     with patch.object(CharacterServer, "_schedule_player_location_visuals") as schedule, \
             patch.object(combat.encounter.navigation, "project_position", side_effect=lambda p: p), \
             patch.object(combat, "_load_player_skill_geometry", return_value=geometry):
@@ -88,18 +104,18 @@ def test_thicket_segments_follow_the_projectile_instead_of_appearing_before_it(c
         assert call.kwargs["cast_started_at"] == 100.0
 
 
-@pytest.mark.parametrize("skill_index,release,velocity,scales", [
-    (1870, 0.36, 21.0, True), (1871, 0.36, 21.0, True),
-    (1875, 0.60, 5.5, False), (1879, 0.60, 15.0, True),
+@pytest.mark.parametrize("resource,release,velocity,scales", [
+    ("mightyshot", 0.36, 21.0, True), ("explosiveshot", 0.36, 21.0, True),
+    ("birdofprey", 0.60, 5.5, False), ("thorntrail", 0.60, 15.0, True),
 ])
 @pytest.mark.parametrize("speed", [1.0, 2.0])
 def test_remaining_ranger_projectiles_wait_for_release_and_flight(
-        combat, skill_index, release, velocity, scales, speed):
+        combat, resource, release, velocity, scales, speed):
     origin = (0.0, 2.0, 0.0)
     actor = combat.encounter.actor_ids[0]
     combat.monster_positions[actor] = (0.0, 2.0, -8.0)
     combat.monster_health[actor] = 1
-    skill = BulletSkill(0, skill_index, 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
+    skill = BulletSkill(0, skill_id(resource), 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
     (pending,) = combat.start_bullet_skill_hits(
         skill, combat.encounter.coordinate_frame.world_to_wire(origin), source_actor_id=1,
         explicit_target_actor_ids=(actor,), eligible_actor_ids=(actor,), now=100.0,
@@ -114,20 +130,21 @@ def test_remaining_ranger_projectiles_wait_for_release_and_flight(
     assert combat.resolve_runtime_player_hit(1, 321, 0, now=pending.due_at) is not None
 
 
-@pytest.mark.parametrize("skill_index,seconds,scaled", [
-    (1866, 0.20, True), (1868, 0.12, False), (1873, 0.48, False),
-    (1874, 0.24, False), (1878, 0.20, True), (1880, 0.32, False),
+@pytest.mark.parametrize("resource,seconds,scaled", [
+    ("stab", 0.20, True), ("whirlwind", 0.12, False), ("jump", 0.48, False),
+    ("adrenalin", 0.24, False), ("mightystab", 0.20, True), ("hornetcloud", 0.32, False),
 ])
 @pytest.mark.parametrize("speed", [0.5, 2.0])
-def test_other_ranger_contact_frames_keep_their_authored_speed_policy(combat, skill_index, seconds, scaled, speed):
-    assert combat.player_skill_impact_delay_seconds(skill_index, attack_speed_multiplier=speed) == (
+def test_other_ranger_contact_frames_keep_their_authored_speed_policy(combat, resource, seconds, scaled, speed):
+    assert combat.player_skill_impact_delay_seconds(skill_id(resource), attack_speed_multiplier=speed) == (
         pytest.approx(seconds / speed if scaled else seconds))
 
 
-@pytest.mark.parametrize("skill_index,release,impact", [(1853, 9, 35), (1860, 5, 60)])
+@pytest.mark.parametrize("resource,release,impact", [("lightningstrike", 9, 35), ("meteor", 5, 60)])
 @pytest.mark.parametrize("speed", [0.5, 2.0, 10.0])
 def test_shared_shifted_timing_keeps_long_impact_phase_and_visual_deadline_aligned(
-        combat, skill_index, release, impact, speed):
+        combat, resource, release, impact, speed):
+    skill_index = skill_id(resource)
     geometry = combat._load_player_skill_geometry(skill_index)
     session = Session(("127.0.0.1", 41987), object())
     skill = ShiftedSkill(0, skill_index, 0.0, 2000, 321, 0, (0.0, 0.0, -2.0))
@@ -141,9 +158,10 @@ def test_shared_shifted_timing_keeps_long_impact_phase_and_visual_deadline_align
 
 
 def test_ranger_miss_lifetime_scales_with_the_projectile_timing_modifier(combat):
-    geometry = replace(combat._load_player_skill_geometry(1870), skill_timing_multiplier=0.5)
+    index = skill_id("mightyshot")
+    geometry = replace(combat._load_player_skill_geometry(index), skill_timing_multiplier=0.5)
     session = Session(("127.0.0.1", 41988), object())
-    skill = BulletSkill(0, 1870, 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
+    skill = BulletSkill(0, index, 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0)
     tick, _ = CharacterServer._remote_skill_impact_tick(
         session, skill, geometry, (0.0, 0.0, 0.0), round(9 * 0.5), 1.0, None,
     )
@@ -157,7 +175,7 @@ class TrapPlacementTests(unittest.TestCase):
         fixture.setUp()
         self.fixture = fixture
         self.session, self.combat = fixture.source, fixture.combat
-        self.session.gameplay_skill_book_ids = {1869}
+        self.session.gameplay_skill_book_ids = {skill_id("trap")}
         self.session.gameplay_character.class_id = 2
         self.session.gameplay_presence_callback = None
 
@@ -166,7 +184,7 @@ class TrapPlacementTests(unittest.TestCase):
                                 critical_hit_chance=0.0, critical_damage_multiplier=2.0, attack_speed=1.0,
                                 skill_modifier_sources=())
         with (
-            patch.object(player_combat, "decode_skill", return_value=SkillCast(0, 1869, 0.0, 200, 321)),
+            patch.object(player_combat, "decode_skill", return_value=SkillCast(0, skill_id("trap"), 0.0, 200, 321)),
             patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),
             patch.object(CharacterServer, "_apply_player_skill_resource", return_value=True),
             patch.object(CharacterServer, "_consume_active_essence"),

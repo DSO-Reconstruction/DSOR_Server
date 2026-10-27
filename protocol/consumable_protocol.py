@@ -576,7 +576,7 @@ def _load_consumable_catalog_cached(
                    ResetRunTime, KeepOnDeath, KeepOnWayHome,
                    OnResumeStartModifiers, AuraEffectId, AuraTargets,
                    EffectHosts, StartModifiers, TickModifiers,
-                   StopModifiers, DoneModifiers
+                   StopModifiers, DoneModifiers, Groups
             FROM _Template_StatusEffect
         '''))
         actor_variables = {
@@ -682,6 +682,14 @@ def _load_consumable_catalog_cached(
         references = database.execute(
             "SELECT DISTINCT RewardStatusEffect FROM _Template_DailyChallenges "
             "WHERE RewardStatusEffect<>''").fetchall()
+    # Quest-only rewards have no consumable item row. Register their native
+    # definitions too so expiry, offline clocks, and reconnect use the same
+    # lifecycle metadata as item and daily-challenge effects.
+    references = tuple(references) + tuple(
+        (str(row['Id']),) for row in status_rows
+        if 'questreward' in {token.strip().casefold()
+                             for token in str(row['Groups'] or '').split(';')}
+    )
     for (reference,) in references:
         root = dict(next(iter(status_by_resource.values())))
         root.update(StartModifiers='ActorStatusEffect:AddAE,' + reference + ';',

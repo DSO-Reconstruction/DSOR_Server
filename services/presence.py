@@ -838,6 +838,22 @@ class PresenceService:
             with combat.lock:
                 summon = getattr(combat, "player_summons", {}).get(resolution.target_actor_id)
                 summon_owner = summon.owner_actor_id if summon is not None else None
+            if resolution.killed and session.gameplay_match is None:
+                victim = next((peer for peer in peers
+                               if int(peer.gameplay_remote_actor_id)
+                               == int(resolution.target_actor_id)), None)
+                if victim is not None and victim.gameplay_match is None:
+                    death_key = (id(combat), int(resolution.server_tick),
+                                 int(resolution.source_actor_id or resolution.attacker_actor_id))
+                    with victim.flow_lock:
+                        first_death = (
+                            not victim.gameplay_death_pending
+                            and getattr(victim, "gameplay_achievement_pvp_death", None) != death_key
+                        )
+                        if first_death:
+                            victim.gameplay_achievement_pvp_death = death_key
+                    if first_death:
+                        self._achievement_feed(session, "pvp_kill", ("open",))
             # A travelling hit/DoT may land after the victim leaves the
             # caster's vicinity. Always deliver to the victim: its local
             # status cache also drives authoritative debuffs and DoT lifetime.

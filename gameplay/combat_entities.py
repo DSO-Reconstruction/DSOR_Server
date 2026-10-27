@@ -19,6 +19,9 @@ class CombatEntity:
     impact_count: int = 1
     # Actor-targeted melee uses the navigation footprint, not the bullet capsule.
     target_radius: float | None = None
+    # A replication adapter can supply the complete projectile/target contact
+    # radius, including the same movement tolerance used at impact time.
+    projectile_contact_radius: float | None = None
 
     @property
     def observed_position(self):
@@ -216,6 +219,8 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                                                origin[2] + aim[1] * maximum_range)))
             for entity in entities:
                 size = entity.collision_radius + max(0.25, geometry.projectile_radius, geometry.player_width / 2)
+                if targeting not in {"angle", "cone"} and entity.projectile_contact_radius is not None:
+                    size = entity.projectile_contact_radius
                 forward, miss = _contact(entity, origin, aim, maximum_range)
                 contacts[entity.actor_id] = forward
                 if wall is not None and forward - entity.collision_radius > wall:

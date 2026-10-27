@@ -25,7 +25,7 @@ Operation keywords follow the client's vocabulary (see
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from dso_server.persistence import readonly_db
@@ -161,6 +161,20 @@ def build_definitions(
     so applying the shell alone delivers a one-second empty aura and nothing
     else (``chillingly_cold_2025_aura_mage`` ->
     ``chillingly_cold_2025_trigger_mage``).
+
+    A User/Victim rule itself is *not* returned.  ``add``/``mod<UE|VE>`` adds
+    to or modifies the skill's own status column, and the item-set modifiers
+    are in every caster's skill modifier sources, so
+    ``_modified_player_skill_geometry`` already carries the rule in that column
+    (every one of the 2,017 rule/skill pairs of the current data, with the
+    rule's chance and the column's own trigger: ``angrystrike`` authors
+    ``set_cny2026_warrior_earthquake_dmg`` ``ON:Hit``).  Returning it here
+    applied it a second time with an independent roll -- two Earthquake stacks
+    per Angry Strike, a 64% "30%" chain chance.  The skill is the one
+    application and the one roll; delivery marks set-named resources as set
+    programs (``CombatResolutionService._send_player_skill_status_effects``)
+    and hosts ``EffectHosts:Causer`` ones on the caster.  Only the Creator
+    payload, which no column carries, is resolved here.
     """
 
     if not rules:
@@ -169,17 +183,25 @@ def build_definitions(
     database = readonly_db.connect(database_path)
     for rule in rules:
         encoded = rule.encoded
-        targets_user = rule.target == "user"
-        resolve = user_loader if targets_user and user_loader else loader
-        definitions = resolve(database, encoded)
-        if definitions:
-            grouped.setdefault(rule.target, []).extend(definitions)
-        if targets_user and owner_loader is not None:
-            # The shell is still applied above: it carries the aura shape the
-            # client draws. Only its payload is missing.
-            owned = owner_loader(database, encoded)
-            if owned:
-                grouped.setdefault("user", []).extend(owned)
+        if rule.target == "location":
+            definitions = tuple(replace(d, item_set_program=True) for d in loader(database, encoded))
+            if definitions:
+                grouped.setdefault("location", []).extend(definitions)
+            continue
+        if rule.target != "user" or owner_loader is None:
+            continue
+        shells = (user_loader or loader)(database, encoded)
+        if any(d.aura_targets.casefold() == "minion" for d in shells):
+            # A Minion aura's Causer child is feedback that exists only while
+            # an admitted minion is inside (services.minion_auras applies and
+            # ends it); it is not a cast-time payload.
+            continue
+        # The skill applies the shell (it carries the aura shape the client
+        # draws); its wearer payload follows the rule's own roll.  Every
+        # authored Creator shell rule uses C:1.0, so the two cannot diverge.
+        owned = tuple(replace(d, item_set_program=True) for d in owner_loader(database, encoded))
+        if owned:
+            grouped.setdefault("user", []).extend(owned)
     return {target: tuple(items) for target, items in grouped.items()}
 
 
@@ -195,39 +217,80 @@ class SetTriggerRule:
     resource_id: str
     chance: float
     label: str = ""
+    operation: str = "addAE"
+    options: tuple[str, ...] = ()
+    source_set_id: str = ""
+
+    @property
+    def encoded(self) -> str:
+        # Chance is rolled by the event dispatcher, exactly once. Preserve
+        # authored duration, parameter, delay, and condition overrides.
+        return ",".join((self.resource_id, "C:1.0", *self.options))
+
+    @property
+    def target(self) -> str:
+        return "location" if self.operation.casefold().endswith("le") else "user"
+
+    @property
+    def off_trigger(self) -> str:
+        return next((value.partition(":")[2].strip().casefold()
+                     for value in self.options
+                     if value.partition(":")[0].casefold() == "off"), "")
 
 
-# Triggers this server can actually raise. The remainder of the shipped
-# vocabulary needs systems that do not exist here: `pickuphealthglobe` (24
-# modifiers) and `pickupingredientitem` have no pickup events,
-# `hitblocked` no block resolution, `costskillresource` no resource-spend hook.
-SUPPORTED_TRIGGERS = {"kill", "hit"}
+# Authoritative events emitted by combat, inventory pickup, and accepted
+# status-stack transitions. ``Disabled`` deliberately remains unsupported.
+SUPPORTED_TRIGGERS = {
+    "kill", "hit", "pickuphealthglobe", "pickupingredientitem",
+    "hitblocked", "lowhealth", "costskillresource",
+    "maxstacksizeearthquake", "maxstacksizesimpleshot10",
+    "maxstacksizesimpleshot20", "maxstacksizesimpleshot30",
+}
 
 
 def collect_trigger_rules(evaluation) -> tuple[SetTriggerRule, ...]:
     """Event-triggered actor rules from an ``ItemSetEvaluation``."""
 
     rules: list[SetTriggerRule] = []
-    for modifier in getattr(evaluation, "actor_effect_rules", ()) or ():
+    modifiers = tuple(getattr(evaluation, "actor_effect_rules", ()) or ())
+    for modifier in modifiers:
         if not modifier.actor_operation.casefold().startswith("add"):
-            # modAE edits an already-applied effect's parameters rather than
-            # adding one; it is a tier-upgrade mechanic, not an event.
             continue
-        trigger = modifier.trigger
+        # Later equipped tiers upgrade the original add rule. They commonly
+        # supply only $1/$2, leaving its original trigger and duration intact.
+        metadata = dict(modifier.metadata)
+        for upgrade in modifiers:
+            if (
+                upgrade.actor_operation.casefold().startswith("mod")
+                and upgrade.actor_effect_id.casefold()
+                == modifier.actor_effect_id.casefold()
+                and (
+                    not upgrade.source_set_id
+                    or not modifier.source_set_id
+                    or upgrade.source_set_id == modifier.source_set_id
+                )
+            ):
+                metadata.update(upgrade.metadata)
+        trigger = metadata.get("on", "").strip().casefold()
         if trigger not in SUPPORTED_TRIGGERS:
             continue
         resource_id = modifier.actor_effect_id
         if not resource_id or resource_id == "empty_effect":
             continue
-        chance = float(modifier.chance)
-        if chance <= 0.0:
-            continue
+        try:
+            chance = max(0.0, min(1.0, float(metadata.get("c", "1"))))
+        except ValueError:
+            chance = 0.0
         rules.append(
             SetTriggerRule(
                 trigger=trigger,
                 resource_id=resource_id,
                 chance=chance,
                 label=modifier.label,
+                operation=modifier.actor_operation,
+                options=tuple(f"{key}:{value}" for key, value in metadata.items()
+                              if key != "c"),
+                source_set_id=modifier.source_set_id,
             )
         )
     return tuple(rules)
@@ -262,18 +325,13 @@ def resolve_for_trigger(
     definitions = []
     database = readonly_db.connect(database_path)
     for rule in passed:
-        definitions.extend(loader(database, f"{rule.resource_id},C:1.0"))
-    # 25 of the 42 shipped kill/hit effects declare StatusEffectDuration 0.
-    # Those are not timed buffs -- they are instantaneous variable writes
-    # (`item_pw_mortis_set_variable_damage_trigger` and friends) and need a
-    # different, non-status-effect application path. Sending one as a timed
-    # effect makes the client log "ignoring non-permanent effect with
-    # total-duration 0", so drop them here rather than downstream, where it
-    # would look like an accident.
-    return tuple(
-        definition for definition in definitions
-        if int(definition.duration_ticks) > 0
-    )
+        definitions.extend(
+            replace(definition, item_set_program=True, item_set_target=rule.target)
+            for definition in loader(database, rule.encoded)
+        )
+    # Native persistent roots (Mortis's counted variable contributions) and
+    # authored D/DP overrides have distinct lifetimes. The runtime owns both.
+    return tuple(definitions)
 
 
 def resolve_for_cast(

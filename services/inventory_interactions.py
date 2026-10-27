@@ -14,6 +14,8 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import map_key
 from dso_server.protocol.gameplay_protocol import ENCOUNTER_COMMAND
+from dso_server.gameplay.crafting_outputs import resolve_crafting_outputs
+from dso_server.services.recipe_progression import validate_crafting_recipe_access
 
 
 class InventoryInteractionService:
@@ -292,6 +294,8 @@ class InventoryInteractionService:
             return definitions
         with runtime.lock:
             running = frozenset(runtime.active_flags())
+            defended_npcs = {run.npc_actor_id for run in getattr(runtime, "holdgrounds", {}).values()
+                             if not run.stopped}
         try:
             scheduled = frozenset(
                 CharacterService._event_catalog(self).active_event_flags()
@@ -328,6 +332,8 @@ class InventoryInteractionService:
             include_inactive_event_sets=False,
             active_event_flags=active,
         )
+        definitions = tuple(definition for definition in definitions
+                            if local_npc_actor_id(definition) not in defended_npcs)
         if NPC_TRACE:
             print(
                 f"[NPC-TRACE] _active_npc_definitions(runtime=active) "
@@ -685,10 +691,21 @@ class InventoryInteractionService:
         )
 
     def _handle_crafting(self, s: Session, payload: bytes) -> None:
+        # Also protect callers outside the queued dispatch path. This RLock
+        # is the same mutation gate used by inventory commands and transfers.
+        with s.gameplay_mutation_lock:
+            self._handle_crafting_locked(s, payload)
+
+    def _handle_crafting_locked(self, s: Session, payload: bytes) -> None:
         request = decode_crafting_request(payload)
         CharacterService._accept_gameplay_state_command(s, CRAFTING_COMMAND)
         with s.flow_lock:
             s.gameplay_client_command_state[CRAFTING_COMMAND] = request
+        try:
+            validate_crafting_recipe_access(s, request.recipe_id, self.static_database_path)
+        except (OSError, ValueError) as exc:
+            print(f"[{GAMEPLAY_SERVICE_NAME}] rejected crafting: {exc}")
+            return
         normalized_recipe_id = "".join(
             character
             for character in str(request.recipe_id).casefold()
@@ -698,15 +715,20 @@ class InventoryInteractionService:
             self._handle_enchantment_transfer(s, request)
             return
         with s.flow_lock:
-            inventory = copy.deepcopy(s.gameplay_inventory)
+            source_inventory = s.gameplay_inventory
+            inventory = copy.deepcopy(source_inventory)
             currency = s.gameplay_currency_state
+            ic_balance = s.gameplay_currency_ic
             next_item_id = s.gameplay_next_item_id
-            character = copy.deepcopy(s.gameplay_character)
+            source_character = s.gameplay_character
+            character = copy.deepcopy(source_character)
         try:
             if inventory is None or currency is None or character is None:
                 raise ValueError("player inventory is not initialized")
             if not 1 <= int(request.amount) <= 1_000_000:
                 raise ValueError("craft amount is outside 1..1000000")
+            if len(set(request.item_ids)) != len(request.item_ids):
+                raise ValueError("crafting repeats an ingredient item ID")
             items_by_id = {
                 int(item.item_id): item for item in inventory.items
             }
@@ -736,11 +758,14 @@ class InventoryInteractionService:
                 raise ValueError(
                     "recipe is not present in the character recipe book"
                 )
-            if recipe.result_is_loot_table:
-                raise ValueError(
-                    f"generated crafting result "
-                    f"{recipe.result_template_id!r} is not an item template"
-                )
+            outputs = resolve_crafting_outputs(self.static_database_path, recipe)
+            output_amount = craft_count * sum(output.amount for output in outputs)
+            from dso_server.protocol.consumable_protocol import load_consumable_catalog
+            consumables = load_consumable_catalog(self.static_database_path)
+            consumable_amount = craft_count * sum(
+                output.amount for output in outputs
+                if consumables.definition(output.template_id) is not None
+            )
             builder = InventoryMutationBuilder(inventory, next_item_id)
             equipment_before = copy.deepcopy(inventory.equipment_slots)
             for template_id, ingredient_amount in recipe.ingredients:
@@ -750,14 +775,19 @@ class InventoryInteractionService:
                     preferred_item_ids=request.item_ids,
                     preserve_item_ids=True,
                 )
-            result_definition = load_purchase_item_definition(
-                self.static_database_path, recipe.result_template_id
-            )
-            builder.add_item(
-                result_definition,
-                craft_count * int(recipe.result_amount),
-                item_level=max(1, int(character.level)),
-            )
+            result_item_ids = set()
+            for output in outputs:
+                result_definition = load_purchase_item_definition(
+                    self.static_database_path, output.template_id,
+                )
+                previous_changes = len(builder.changed_items)
+                builder.add_item(
+                    result_definition, craft_count * int(output.amount),
+                    item_level=max(1, int(character.level)),
+                )
+                result_item_ids.update(
+                    int(item.item_id) for item in builder.changed_items[previous_changes:]
+                )
             result_row = prime_world_loot_cache(
                 self.static_database_path
             ).items_by_id.get(recipe.result_template_id)
@@ -825,12 +855,12 @@ class InventoryInteractionService:
             updated_currency, updated_ic = debit_currency(
                 currency,
                 total_price,
-                ic_balance=s.gameplay_currency_ic,
+                ic_balance=ic_balance,
             )
             result_items = tuple(
                 copy.deepcopy(item)
                 for item in mutation.changed_items
-                if item.template_id == recipe.result_template_id
+                if int(item.item_id) in result_item_ids
             )
             if not result_items:
                 raise ValueError(
@@ -866,27 +896,61 @@ class InventoryInteractionService:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected crafting: {exc}")
             return
         with s.flow_lock:
+            if (
+                s.gameplay_inventory is not source_inventory
+                or s.gameplay_character is not source_character
+                or s.gameplay_currency_state != currency
+                or s.gameplay_currency_ic != ic_balance
+                or s.gameplay_next_item_id != next_item_id
+            ):
+                print(f"[{GAMEPLAY_SERVICE_NAME}] rejected crafting: player state changed before commit")
+                return
             s.gameplay_currency_state = updated_currency
             s.gameplay_inventory = mutation.inventory
             s.gameplay_currency_ic = updated_ic
             s.gameplay_next_item_id = mutation.next_item_id
-        CharacterService._send_world_loot_state_batch(
-            s, packet, packet_bits, label="workbench-crafting"
+        deferred_achievement_packets = []
+        CharacterService._achievement_feed(
+            self, s, "crafting", (recipe.resource_id,), count=craft_count,
+            deferred_packets=deferred_achievement_packets,
         )
+        # Save first, but deliver reward allocations after the craft's delta.
+        # Reversing that packet order would overwrite newly granted rewards.
         CharacterService._request_account_save(
             s, "workbench recipe crafted", flush=True
         )
-        CharacterService._quest_feed(
-            self, s, "crafting", recipe.resource_id, count=craft_count,
+        # Server-wide anniversary cake total (services/seasonal_activities.py);
+        # the hook logs and swallows its own failures.
+        CharacterService._seasonal_record_crafting(
+            self, s, recipe.resource_id, output_amount,
         )
-        self._daily_challenge_feed(s, 'ItemsCrafted', count=craft_count * recipe.result_amount)
-        from dso_server.protocol.consumable_protocol import load_consumable_catalog
-        if load_consumable_catalog(self.static_database_path).definition(recipe.result_template_id) is not None:
-            self._daily_challenge_feed(s, 'ConsumablesCrafted', count=craft_count * recipe.result_amount)
+        try:
+            try:
+                CharacterService._send_world_loot_state_batch(
+                    s, packet, packet_bits, label="workbench-crafting"
+                )
+            finally:
+                for reward_packet, reward_bits, reward_label in deferred_achievement_packets:
+                    CharacterService._send_world_loot_state_batch(
+                        s, reward_packet, reward_bits, label=reward_label,
+                    )
+        finally:
+            # Quest/daily rewards can also change inventory. Run them after
+            # the crafting/reward packets, even if the transport has failed.
+            try:
+                CharacterService._quest_feed(
+                    self, s, "crafting", recipe.resource_id, count=craft_count,
+                )
+            finally:
+                try:
+                    self._daily_challenge_feed(s, 'ItemsCrafted', count=output_amount)
+                finally:
+                    if consumable_amount:
+                        self._daily_challenge_feed(s, 'ConsumablesCrafted', count=consumable_amount)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] crafted {craft_count}x "
             f"{recipe.result_template_id!r} from {recipe.resource_id!r}; "
-            f"output={craft_count * recipe.result_amount}, "
+            f"output={output_amount}, "
             f"mode={request.mode}, payment={request.payment_currency}, "
             f"source_slot={request.source_slot}, "
             f"price={total_price.as_tuple()}"

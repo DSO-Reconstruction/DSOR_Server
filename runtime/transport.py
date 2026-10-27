@@ -774,6 +774,8 @@ class Session:
         # position.
         self.gameplay_delivered_monster_positions = {}
         self.gameplay_no_target_cast_streak = 0
+        # Authoritative per-player cast deadlines, restored across map loads.
+        self.gameplay_player_skill_timing = None
         self.gameplay_last_monster_resync_at = 0.0
         self.gameplay_last_tier_spender_shuffle_at = 0.0
         self.gameplay_last_tier_spender_shuffle_backpressure_log_at = 0.0
@@ -799,6 +801,7 @@ class Session:
         self.gameplay_mount_generation = 0
         self.gameplay_stickerbook_entries = {}
         self.gameplay_recipe_book_resources = ()
+        self.gameplay_rune_trinket_unlocked_slots = set()
         self.gameplay_active_costume = ""
         self.gameplay_active_pet = ""
         self.gameplay_active_mercenary = ""

@@ -28,6 +28,7 @@ import xml.etree.ElementTree as ET
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from dso_server.runtime.file_revisions import observed_revision, resolved_path
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
     active_client_instance_guid_overrides,
@@ -451,9 +452,13 @@ _signal_catalog_cache = lru_cache(maxsize=4)(_load_signal_catalog)
 
 
 def load_map_signal_catalog(static_database_path: str | Path) -> MapSignalCatalog:
-    path = Path(static_database_path).resolve()
-    stat = path.stat()
-    return _signal_catalog_cache(str(path), stat.st_mtime_ns, stat.st_size)
+    # A hot lookup (every signal, exit and reveal check): reuse the last
+    # observed static.db4 revision instead of stat()ing it each call.
+    path = resolved_path(str(static_database_path))
+    revision = observed_revision(path)
+    if revision is None:
+        raise FileNotFoundError(path)
+    return _signal_catalog_cache(str(path), *revision)
 
 
 @dataclass(frozen=True)
@@ -1419,6 +1424,9 @@ class MapEventRuntime:
     monster_level: int | None = None
     scaling_difficulty: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
+    # Serialize event transitions through publication without holding the
+    # short-lived state lock during packet construction or network delivery.
+    transition_lock: threading.RLock = field(default_factory=threading.RLock)
     running: dict[str, float] = field(default_factory=dict)
     pending: dict[str, object] = field(default_factory=dict)
     pending_start_deadlines: dict[str, float] = field(default_factory=dict)
@@ -1504,10 +1512,50 @@ class MapEventRuntime:
     def _transition(
         self, definition: MapLocalEventDefinition, active: bool,
     ) -> EventTransition:
+        enabled, disabled = self._update_event_sets((definition.key,))
+        return EventTransition(
+            event=definition,
+            active=active,
+            enabled_sets=enabled,
+            disabled_sets=disabled,
+            # Retail announces every map-local event it starts, including
+            # ones no EventSet on the map references (BOSS_death_dtu).
+            announce=True,
+        )
+
+    def replace_global_flags(
+        self, known_flags: Iterable[str], active_flags: Iterable[str],
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        """Reconcile scheduled flags without restarting local map events.
+
+        Call under ``lock``. ``known_flags`` includes inactive and removed
+        schedule entries, so a flag captured at map entry can be cleared even
+        when its deadline has already elapsed. Quest/access flags, running
+        events, pending timers and permanently suppressed sets retain ownership.
+        """
+
+        before = self.active_flags()
+        owned = frozenset(str(flag).casefold() for flag in known_flags)
+        active = frozenset(str(flag).casefold() for flag in active_flags)
+        self.initial_flags = (self.initial_flags - owned) | active
+        changed = before ^ self.active_flags()
+        if not changed:
+            return (), ()
+        self.generation += 1
+        return self._update_event_sets(changed)
+
+    def _update_event_sets(
+        self, changed_flags: Iterable[str],
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
         flags = self.active_flags()
         enabled = []
         disabled = []
-        for event_set in self.content.event_sets_for(definition.key):
+        affected = {
+            event_set.row: event_set
+            for flag in changed_flags
+            for event_set in self.content.event_sets_for(flag)
+        }
+        for event_set in affected.values():
             satisfied = event_set.satisfied(flags)
             currently = event_set.row in self.enabled_event_sets
             if satisfied and not currently:
@@ -1518,15 +1566,7 @@ class MapEventRuntime:
             elif currently and not satisfied:
                 self.enabled_event_sets.discard(event_set.row)
                 disabled.append(event_set.row)
-        return EventTransition(
-            event=definition,
-            active=active,
-            enabled_sets=tuple(enabled),
-            disabled_sets=tuple(disabled),
-            # Retail announces every map-local event it starts, including
-            # ones no EventSet on the map references (BOSS_death_dtu).
-            announce=True,
-        )
+        return tuple(sorted(enabled)), tuple(sorted(disabled))
 
     def begin_event(
         self, definition: MapLocalEventDefinition, *, now: float | None = None,

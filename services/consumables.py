@@ -15,6 +15,10 @@ from dso_server.gameplay.status_modifier_runtime import (
 )
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.player_skill_timing import (
+    apply_skill_cooldown_effect, apply_skill_cooldown_effect_locked,
+)
+from dso_server.gameplay.status_modifier_runtime import load_status_modifier_catalog
 from dso_server.services.player_progression import load_player_progression_catalog
 
 
@@ -758,6 +762,7 @@ class ConsumableService:
         if definition is None or STATUS_EFFECTS_DISABLED:
             return False
         catalog = load_consumable_catalog(database_path)
+        cooldown_catalog = load_status_modifier_catalog(database_path)
         now = time.perf_counter()
         now_epoch = time.time()
         server_tick = int(s.gameplay_chase_server_tick) & 0xFFFFFFFF
@@ -781,6 +786,9 @@ class ConsumableService:
                         return False
                     continue
                 entry, retired, timers, instance_id = installed
+                apply_skill_cooldown_effect_locked(
+                    s, entry, database_path, now=now, catalog=cooldown_catalog,
+                )
                 applied.append((entry, current, instance_id))
                 removals.extend(retired)
                 timers_to_cancel.extend(timers)
@@ -1058,6 +1066,7 @@ class ConsumableService:
 
         # Both stores are direct modifier sources. Only database-authored
         # persistent entries survive map/relog initialization.
+        apply_skill_cooldown_effect(s, entry, self.static_database_path, now=now)
         CharacterService._refresh_player_combat_vitals(s)
         recovered = CharacterService._apply_consumable_health(
             s,

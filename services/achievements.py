@@ -1,4 +1,4 @@
-"""Achievement and chapter progression, persisted per character.
+"""Earned achievements, shared account progress, and durable item rewards.
 
 Retail reports every progress change with one
 ``Achievements::AchievementInfoCommand`` record and the client raises its
@@ -9,15 +9,30 @@ replays the same records (same timestamps, no fresh popups), and
 ``AccountState.chapters_unlocked`` remembers which ``ChapterUnlocked``
 notifications the character already received.
 
+Account-scoped records additionally live in the shared account achievement
+table. Its receipt and the recipient character inventory are written in one
+SQLite transaction; historical completions retain their unlocks without
+retroactively granting items for development-era free achievements.
+
 World happenings reach the service through the same hooks the quest
 service uses: ``_on_map_entered`` (Enter_Map), ``_on_monsters_killed``
 (Kill), ``_handle_prop_interaction`` (Interact), the presence callback's
 ``item_collected`` (Pick_Up), ``_quest_turn_in`` (Quest) and
 ``_award_experience`` (Class_Level).  Points and UnlockAchievements rows
 are derived from the completed set after every completion.
+
+Kills also carry ``<template>:<difficulty>`` for the authored difficulty
+rows.  UnlockSkin counts the persisted collected-skin set
+(``gameplay/skin_collection.py``) and VeteranLevelUnlock the account's
+veteran rank (``gameplay/veteran_levels.py``); both are reconciled on map
+entry.  HighScoreRanking is fed by the high-score settlement with the final
+place; PvP_Match by battleground results.
 """
 
 from __future__ import annotations
+
+from contextlib import nullcontext
+import sqlite3
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -26,10 +41,11 @@ from dso_server.gameplay.achievement_content import (
     AchievementChange,
     AchievementProgress,
     apply_achievement_event,
-    complete_achievement,
     load_achievement_catalog,
     refresh_derived_achievements,
 )
+from dso_server.gameplay.skin_collection import held_skins, load_skin_catalog
+from dso_server.gameplay.veteran_levels import load_veteran_rules, veteran_level
 from dso_server.gameplay.quest_content import announced_chapter
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.player_init_protocol import (
@@ -43,15 +59,14 @@ from dso_server.protocol.quest_protocol import (
     CHAPTER_UNLOCKED_COMMAND,
     ChapterUnlocked,
 )
+from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
+from dso_server.protocol.commerce_protocol import load_purchase_item_definition
+from dso_server.protocol.shop_protocol import OFFER_RARITY_IDS
 
 from dso_server.services.base import CharacterService
 
 
 ACHIEVEMENT_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] achievement:"
-RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS = (
-    "item_use_item_rune_extension_stone",
-    "item_use_item_rune_extension_stone_02",
-)
 
 
 def _log(message: str) -> None:
@@ -95,6 +110,12 @@ class AchievementService:
         s.gameplay_chapters_unlocked = {
             str(chapter).casefold() for chapter in chapters if str(chapter)
         }
+        # The collected-skin set exists for the UnlockSkin rows; restored
+        # here so its first reconcile extends, never replaces, the record.
+        s.gameplay_unlocked_skins = {
+            str(skin) for skin in getattr(persisted_state, "unlocked_skins", None) or ()
+            if str(skin)
+        }
 
     @staticmethod
     def _achievement_document(s: Session) -> dict[str, dict]:
@@ -124,43 +145,102 @@ class AchievementService:
         return tuple(records)
 
     def _achievement_init_info(self, s: Session) -> AchievementInfo:
-        """The AchievementInfo aggregate of a map initialization.
-
-        The recipe-gate achievements the local server hands out (the
-        crafting recipes are unlocked by them) are completed here once; the
-        stamp is then persisted, so a relog replays the same record instead
-        of a fresh unlock.
-        """
-
+        """Replay earned progress, preserving historical unlocks and stamps."""
         catalog = self._achievement_catalog()
-        state = _achievement_state(s)
-        granted = []
-        for resource_id, _required in load_recipe_unlock_achievements(
-            self.static_database_path
-        ):
-            definition = catalog.achievement(resource_id)
-            if definition is None:
+        store = getattr(self, "account_store", None)
+        with s.gameplay_mutation_lock, getattr(store, "achievement_lock", nullcontext()):
+            shared = self._shared_achievement_snapshot(s, catalog)
+            with s.flow_lock:
+                state = _achievement_state(s)
+                state.update(shared)
+                changes = refresh_derived_achievements(catalog, state)
+                self._mark_achievement_rewards(changes)
+                s.gameplay_achievement_shared_dirty = bool(shared or changes)
+            return AchievementInfo(self._achievement_records(s))
+
+    def _shared_achievement_snapshot(self, s, catalog):
+        store = getattr(self, "account_store", None)
+        character = s.gameplay_character
+        if store is None or character is None:
+            return {}
+        return {key: AchievementProgress.from_document(document)
+                for key, document in store.achievement_snapshot(
+                    character.character_id, catalog).items()}
+
+    @staticmethod
+    def _achievement_persist_lock(s):
+        with s.flow_lock:
+            lock = getattr(s, "gameplay_persist_lock", None)
+            if lock is None:
+                lock = threading.RLock()
+                s.gameplay_persist_lock = lock
+            return lock
+
+    @staticmethod
+    def _mark_achievement_rewards(changes):
+        for change in changes:
+            if (change.completed_now and change.definition.reward_item
+                    and change.definition.reward_amount > 0):
+                change.progress.reward_status = "pending"
+
+    def _prepare_achievement_rewards(self, s, catalog):
+        """Stage each pending item with its receipt; full bags remain pending.
+
+        The caller holds the mutation and account achievement locks, persists
+        the complete snapshot, then publishes these already encoded packets.
+        """
+        with s.flow_lock:
+            pending = tuple(key for key, value in _achievement_state(s).items()
+                            if value.completed and value.reward_status == "pending")
+        packets = []
+        for key in pending:
+            definition = catalog.achievement(key)
+            if definition is None or not definition.reward_item or definition.reward_amount <= 0:
                 continue
-            if complete_achievement(state, definition):
-                granted.append(definition.achievement_id)
-        for resource_id in RUNE_TRINKET_SLOT_UNLOCK_ACHIEVEMENTS:
-            definition = catalog.achievement(resource_id)
-            if definition is not None and complete_achievement(
-                state, definition
-            ):
-                granted.append(definition.achievement_id)
-        if granted:
-            refresh_derived_achievements(catalog, state)
-            _log(f"granted initialization achievements {granted!r}")
-            CharacterService._request_account_save(
-                s, "initialization achievements granted"
-            )
-        return AchievementInfo(self._achievement_records(s))
+            try:
+                reward_item = definition.reward_item
+                if "|" in reward_item:
+                    class_name = CLASS_NAMES.get(int(getattr(s.gameplay_character, "class_id", 0)), "").casefold()
+                    choices = dict(entry.split("|", 1) for entry in reward_item.split(";") if "|" in entry)
+                    reward_item = choices.get(class_name, "")
+                    if not reward_item:
+                        raise ValueError("reward has no entry for this character class")
+                item = load_purchase_item_definition(
+                    self.static_database_path, reward_item)
+                with s.flow_lock:
+                    previous_inventory = s.gameplay_inventory
+                    previous_id = s.gameplay_next_item_id
+                    character = s.gameplay_character
+                    if previous_inventory is None or character is None:
+                        continue
+                    builder = InventoryMutationBuilder(previous_inventory, previous_id)
+                builder.add_item(item, definition.reward_amount,
+                                 item_level=max(1, int(character.level)))
+                mutation = builder.finish()
+                packet = encode_server_command_batch((
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
+                ), include_terminator=True)
+            except (OSError, ValueError) as exc:
+                _log(f"reward {key!r} pending: {exc}")
+                continue
+            with s.flow_lock:
+                progress = _achievement_state(s)[key]
+                if (s.gameplay_inventory is not previous_inventory
+                        or s.gameplay_next_item_id != previous_id
+                        or progress.reward_status != "pending"):
+                    continue
+                s.gameplay_inventory = mutation.inventory
+                s.gameplay_next_item_id = mutation.next_item_id
+                progress.reward_status = "granted"
+            packets.append(packet)
+        return tuple(packets)
 
     # ------------------------------------------------------------------
     # Sending
     # ------------------------------------------------------------------
-    def _send_achievement_changes(self, s: Session, changes, *, label: str) -> None:
+    def _send_achievement_changes(self, s: Session, changes, *, label: str,
+                                  deferred_packets=None) -> None:
         changes = tuple(changes)
         if not changes:
             return
@@ -178,44 +258,121 @@ class AchievementService:
         packet, packet_bits = encode_server_command_batch(
             commands, include_terminator=True,
         )
-        CharacterService._send_world_loot_state_batch(s, packet, packet_bits, label=label)
+        if deferred_packets is not None:
+            deferred_packets.append((packet, packet_bits, label))
+        else:
+            CharacterService._send_world_loot_state_batch(s, packet, packet_bits, label=label)
         for change in changes:
             _log(
                 f"{change.definition.achievement_id!r} "
                 f"{change.progress.progress}/{change.definition.target}"
                 + (" completed" if change.completed_now else "")
             )
-        CharacterService._request_account_save(s, label)
 
     # ------------------------------------------------------------------
     # World events
     # ------------------------------------------------------------------
     def _achievement_feed(
         self, s: Session, kind: str, values, *, count: int = 1,
+        progress: int | None = None,
+        deferred_packets: list | None = None,
     ) -> tuple[AchievementChange, ...]:
         values = tuple(str(value) for value in values if str(value))
-        if not values:
-            return ()
         try:
             catalog = self._achievement_catalog()
         except Exception as exc:
             _log(f"catalog unavailable: {type(exc).__name__}: {exc}")
             return ()
-        with s.flow_lock:
-            changes = apply_achievement_event(
-                catalog, _achievement_state(s), kind, values, count=count,
-            )
-        if changes:
-            self._send_achievement_changes(s, changes, label=f"achievement-{kind}")
-        return changes
+        store = getattr(self, "account_store", None)
+        label = f"achievement-{kind}"
+        with (s.gameplay_mutation_lock,
+              getattr(store, "achievement_lock", nullcontext()),
+              self._achievement_persist_lock(s)):
+            shared = self._shared_achievement_snapshot(s, catalog)
+            with s.flow_lock:
+                state = _achievement_state(s)
+                before_progress = copy.deepcopy(state)
+                before_inventory = s.gameplay_inventory
+                before_item_id = s.gameplay_next_item_id
+                old_shared = {key: state[key].to_document() if key in state else None
+                              for key in shared}
+                state.update(shared)
+                changes = apply_achievement_event(
+                    catalog, state, kind, values, count=count, progress=progress,
+                )
+                derived = refresh_derived_achievements(catalog, state)
+                changes = (*changes, *derived)
+                self._mark_achievement_rewards(changes)
+                shared_changed = any(old_shared[key] != value.to_document()
+                                     for key, value in shared.items())
+                shared_changed = shared_changed or getattr(s, "gameplay_achievement_shared_dirty", False)
+            packets = self._prepare_achievement_rewards(s, catalog)
+            if changes or packets or shared_changed:
+                # Shared progress, completion receipts and item grants reach
+                # SQLite in the same commit before any outbound publication.
+                try:
+                    saved = False
+                    if store is not None and s.gameplay_inventory is not None:
+                        saved = self._persist_gameplay_session(
+                            s, reason=label, flush=True, achievement_catalog=catalog)
+                    if not saved:
+                        CharacterService._request_account_save(s, label, flush=True)
+                except Exception:
+                    # A flush error can occur after the writer accepted the
+                    # atomic snapshot: retain that receipt and let it retry.
+                    # An error before publication must roll back the staged
+                    # grant, otherwise an older shared pending receipt could
+                    # grant it a second time on the next event.
+                    published = store.get(s.gameplay_character.character_id) if store is not None else None
+                    if published is None or published.achievements != self._achievement_document(s):
+                        with s.flow_lock:
+                            s.gameplay_achievements = before_progress
+                            s.gameplay_inventory = before_inventory
+                            s.gameplay_next_item_id = before_item_id
+                    s.gameplay_achievement_shared_dirty = True
+                    raise
+                s.gameplay_achievement_shared_dirty = False
+                try:
+                    for packet, packet_bits in packets:
+                        if deferred_packets is not None:
+                            deferred_packets.append((packet, packet_bits, "achievement-reward"))
+                        else:
+                            CharacterService._send_world_loot_state_batch(
+                                s, packet, packet_bits, label="achievement-reward")
+                    self._send_achievement_changes(s, changes, label=label,
+                                                   deferred_packets=deferred_packets)
+                except Exception as exc:
+                    # Transport failure must not suppress the caller's other
+                    # post-commit progression hooks. Relog replays the snapshot.
+                    _log(f"publication failed after save: {type(exc).__name__}: {exc}")
+            return tuple(changes)
 
     def _achievement_on_map_entered(self, s: Session, map_keys) -> None:
         """``map_keys``: the map id plus its access group / access id."""
 
         map_keys = tuple(dict.fromkeys(map_keys))
         self._achievement_feed(s, "enter_map", map_keys)
+        character = s.gameplay_character
+        if character is not None:
+            self._achievement_on_class_level(s, character.class_id, character.level)
+        self._achievement_on_equipment_changed(s)
+        self._achievement_on_stickerbook_changed(s)
+        # Login/map entry reconciles the snapshot rules: items gained through
+        # shops, chests or rewards since the last hook, and the account's age.
+        self._achievement_on_skins_collected(s, reconcile=True)
+        self._achievement_on_veteran_status(s)
         for map_key in map_keys:
             self._season_pass_feed(s, "EnterMap", value=str(map_key))
+
+    @staticmethod
+    def _achievement_kill_difficulty(s: Session) -> int:
+        """Difficulty id of the session's map, as daily challenges read it."""
+
+        try:
+            return max(0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+                       int(getattr(s, "gameplay_scaling_difficulty", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def _achievement_on_monsters_killed(self, s: Session, monsters) -> None:
         self._daily_challenge_monsters_killed(s, monsters)
@@ -224,8 +381,111 @@ class AchievementService:
             template = str(getattr(monster, "template_id", ""))
             if template:
                 counts[template] = counts.get(template, 0) + 1
+        # Kill rows name either the template or "<template>:<difficulty>"
+        # (pw_difficulty_08_defeatBoss "boss_grimmag:5"); "kill" is a one-hit
+        # kind, so a row naming both cannot count one kill twice.
+        difficulty = self._achievement_kill_difficulty(s)
         for template, count in counts.items():
-            self._achievement_feed(s, "kill", (template,), count=count)
+            self._achievement_feed(
+                s, "kill", (template, f"{template}:{difficulty}"), count=count,
+            )
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            character = s.gameplay_character
+            class_name = CLASS_NAMES.get(int(getattr(character, "class_id", 0)), "").lower()
+            equipped = tuple(f"{class_name}:{item.template_id}"
+                             for item in inventory.items
+                             if item.item_id in inventory.equipment_slots) if inventory else ()
+        if counts and equipped:
+            self._achievement_feed(s, "itemkill", equipped, count=sum(counts.values()))
+
+    def _achievement_on_equipment_changed(self, s: Session) -> None:
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            items = tuple(item for item in inventory.items
+                          if item.item_id in inventory.equipment_slots) if inventory else ()
+            templates = tuple(item.template_id for item in items)
+            rarities = {value: key for key, value in OFFER_RARITY_IDS.items()}
+            equipped_rarities = tuple(rarities.get(item.field_08, "") for item in items)
+        self._achievement_feed(s, "equipitem", templates)
+        self._achievement_feed(s, "equiprarity", equipped_rarities)
+        self._achievement_on_skins_collected(s)
+
+    def _achievement_on_skins_collected(self, s: Session, *, reconcile: bool = False) -> None:
+        """Add the looks of held items to the collection; feed its size.
+
+        UnlockSkin counts skins collected from equipment the character has
+        held (gameplay/skin_collection.py), as an absolute snapshot of the
+        persisted set: the same item, a re-equip or a relog adds nothing.
+        Hooks run it on equipment changes and pickups; ``reconcile`` (map
+        entry) also feeds an unchanged set, which migrates older characters
+        and items gained through shops, chests or rewards in between.
+        """
+
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            character = s.gameplay_character
+            collected = getattr(s, "gameplay_unlocked_skins", None)
+            items = tuple(inventory.items) if inventory is not None else ()
+        if inventory is None or character is None or collected is None:
+            return
+        class_name = CLASS_NAMES.get(int(getattr(character, "class_id", 0)), "")
+        try:
+            catalog = load_skin_catalog(self.static_database_path)
+        except (OSError, sqlite3.Error) as exc:
+            _log(f"skin catalog unavailable: {type(exc).__name__}: {exc}")
+            return
+        held = held_skins(catalog, items, class_name)
+        with s.flow_lock:
+            current = set(getattr(s, "gameplay_unlocked_skins", None) or ())
+            added = held - current
+            if added:
+                # Replace rather than mutate: persistence snapshots the set.
+                s.gameplay_unlocked_skins = current | added
+            total = len(current | added)
+        if not total or (not added and not reconcile):
+            return
+        changes = self._achievement_feed(s, "unlockskin", (), progress=total)
+        if added:
+            _log(f"collected {len(added)} skin(s), {total} in total")
+            if not changes:
+                CharacterService._request_account_save(s, "skins collected")
+
+    def _achievement_on_veteran_status(self, s: Session) -> None:
+        """Feed the account's veteran rank (``_Template_VeteranLevel``).
+
+        Needs the account registry: account creation time and the levels of
+        every character it owns (gameplay/veteran_levels.py).
+        """
+
+        character = s.gameplay_character
+        store = getattr(self, "account_store", None)
+        registry = getattr(self, "account_registry", None) or getattr(
+            store, "account_registry", None)
+        if character is None or registry is None:
+            return
+        character_id = int(character.character_id)
+        try:
+            owner = registry.character_owner(character_id)
+            if owner is None:
+                return
+            levels = [int(character.level)]
+            for other_id in owner.character_ids:
+                if int(other_id) == character_id or store is None:
+                    continue
+                profile = store.get_profile(int(other_id))
+                if profile is not None:
+                    levels.append(int(profile.level))
+            rank = veteran_level(
+                load_veteran_rules(self.static_database_path),
+                account_created_at=float(owner.created_at),
+                character_levels=levels,
+            )
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            _log(f"veteran rank unavailable: {type(exc).__name__}: {exc}")
+            return
+        if rank is not None:
+            self._achievement_feed(s, "veteranlevelunlock", (rank.level_id,))
 
     def _achievement_on_prop_interacted(self, s: Session, instance_id: str, template_id: str) -> None:
         if any(token in (instance_id + ' ' + template_id).casefold()
@@ -236,14 +496,23 @@ class AchievementService:
     def _achievement_on_item_collected(self, s: Session, template_id: str, amount: int = 1) -> None:
         self._daily_challenge_feed(s, "ItemCollected", value=template_id, count=amount)
         self._achievement_feed(s, "pick_up", (template_id,), count=max(1, int(amount)))
+        self._achievement_on_skins_collected(s)
 
     def _achievement_on_quest_closed(self, s: Session, quest_id: str) -> None:
-        self._daily_challenge_feed(s, "QuestsClosed")
+        operations = [lambda: self._daily_challenge_feed(s, "QuestsClosed")]
         wanted = self._wanted_catalog()
         if any(mission.quest_id.casefold() == str(quest_id).casefold()
                for mission in wanted.missions.values()):
-            self._season_pass_feed(s, "WantedThief")
-        self._achievement_feed(s, "quest", (quest_id,))
+            operations.append(lambda: self._season_pass_feed(s, "WantedThief"))
+        operations.append(lambda: self._achievement_feed(s, "quest", (quest_id,)))
+        failure = None
+        for operation in operations:
+            try:
+                operation()
+            except OSError as exc:
+                failure = failure or exc
+        if failure is not None:
+            raise failure
 
     def _achievement_on_dungeon_cleared(self, s: Session, map_id: str) -> None:
         self._achievement_feed(s, "cleardungeon", (map_id,))

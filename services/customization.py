@@ -780,6 +780,10 @@ class CustomizationService:
                 ride_effect.field_04
             ] = ride_effect
 
+        CharacterService._achievement_feed(
+            self, s, "use", (ride.definition.stickerbook_resource_id,),
+        )
+
         # Retail puts both 0x004f commands in one reliable 0x85 batch: ride
         # addition first, followed by the completed-cast removal.
         transitions = mount_transition_status_effects(
@@ -820,6 +824,23 @@ class CustomizationService:
         CharacterService._persist_gameplay_session(
             self, s, reason='mount summoned'
         )
+
+    def _achievement_on_stickerbook_changed(self, s: Session) -> None:
+        """Count owned cosmetics, independent of favorites and tier upgrades."""
+
+        with s.flow_lock:
+            owned = tuple(s.gameplay_stickerbook_entries)
+        by_kind = {}
+        for resource in owned:
+            definition = load_sticker_definition(self.static_database_path, resource)
+            if definition is not None:
+                by_kind.setdefault(definition.kind, set()).add(definition.resource_id)
+        for kind, parameter in (("costume", "Costumes"), ("mount", "Mounts"),
+                                ("pet", "Pets"), ("emote", "Emotes")):
+            CharacterService._achievement_feed(
+                self, s, "stickerbook", (parameter,),
+                progress=len(by_kind.get(kind, ())),
+            )
 
     def _handle_add_stickerbook_from_inventory(
             self, s: Session, payload: bytes) -> None:
@@ -930,6 +951,7 @@ class CustomizationService:
                 'stickerbook-unlock-stickerbook-unlock'
             ),
         )
+        CharacterService._achievement_on_stickerbook_changed(self, s)
         if definition.kind == "mercenary":
             CharacterService._ensure_mercenary_quickbar_shortcut(
                 s, definition.resource_id
@@ -1208,6 +1230,10 @@ class CustomizationService:
                     )
                 )
 
+        if current_resource != definition.resource_id:
+            CharacterService._achievement_feed(
+                self, s, "use", (definition.resource_id, *definition.source_item_ids),
+            )
         if transitions:
             packet = encode_monster_spawn_batch(
                 MonsterSpawnBatch(

@@ -124,7 +124,7 @@ def test_every_authored_type_and_delivery_is_parsed():
     barters = [b for q in catalog.quests.values() for t in q.tasks for b in t.barters]
     # Pay tasks (currency hand-ins, e.g. Cardhun's) are parsed beside the
     # item deliveries.
-    assert sum(b.event_kind == "deliver" for b in barters) == 379
+    assert sum(b.event_kind == "deliver" for b in barters) == 381
     assert sum(b.event_kind == "pay" for b in barters) == 19
     assert sum(b.only_show for b in barters) == 29
 

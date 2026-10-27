@@ -145,7 +145,9 @@ COMMAND_0173 = 0x0173
 # from packets targeting this client build.
 #
 # 0x015b reproduces the same 0x016c symptom on this build (``invalid command
-# ending in multi command 347``). This client
+# ending in multi command 347``). Persisted incubations therefore travel in
+# their own batch after PlayerReady (services/seasonal_activities.py), which
+# cannot take the initialization batch down with it. This client
 # build's 0x0083 decoder expects four maps: daily, bonus, tiered spender, and
 # comeback daily. The older checked-in capture has only three, so the reader
 # accepts that legacy form while the writer emits the current four-map form.
@@ -2318,6 +2320,7 @@ def build_local_player_init_commands(
     timed_challenges: TimedChallengesInfo | None = None,
     special_offer: SpecialOffer | None = None,
     skill_book: SkillBookInfo | None = None,
+    hatch_eggs_info: UserHatchEggsInfo | None = None,
 ) -> tuple[ServerCommand, ...]:
     """Build the complete retail initialization topology from local state.
 
@@ -2675,7 +2678,8 @@ def build_local_player_init_commands(
             ),
             ServerCommand(
                 USER_HATCH_EGGS_INFO_COMMAND,
-                UserHatchEggsInfo((), ()),
+                hatch_eggs_info if hatch_eggs_info is not None
+                else UserHatchEggsInfo((), ()),
                 actor_id,
             ),
             ServerCommand(
