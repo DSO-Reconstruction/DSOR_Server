@@ -97,10 +97,10 @@ class InventoryMapService:
             self, s: Session, action, inventory) -> None:
         """Sort the active inventory page reported by operation 0x19.
 
-        The client sends the active page index in ``field_0c`` and its slot
-        count in ``field_10`` (28 for a normal inventory page).  Item ID is
-        zero and the argument count is zero because this is a container
-        operation, not an item operation.
+        The client sends the active page's first storage slot in ``field_0c``
+        and its slot count in ``field_10`` (28 for a normal inventory page).
+        Item ID is zero and the argument count is zero because this is a
+        container operation, not an item operation.
         """
 
         try:
@@ -111,17 +111,16 @@ class InventoryMapService:
                     "sort request must target the inventory with no item "
                     "arguments"
                 )
-            page_index = int(action.field_0c)
+            page_start = int(action.field_0c)
             page_size = int(action.field_10)
             if page_size <= 0 or page_size > 224:
                 raise ValueError(
                     f"invalid inventory sort page size {page_size}"
                 )
-            if page_index < 0:
+            if page_start < 0:
                 raise ValueError(
-                    f"invalid inventory sort page index {page_index}"
+                    f"invalid inventory sort page start {page_start}"
                 )
-            page_start = page_index * page_size
             if page_start < 0 or page_start + page_size > int(
                 inventory.storage_size
             ):
