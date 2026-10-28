@@ -1247,6 +1247,9 @@ class InventoryMapService:
                 return
             if handle_recipe_item_use(self, s, action.item_id):
                 return
+            from dso_server.services.membership_items import handle_membership_item_use
+            if handle_membership_item_use(self, s, action.item_id):
+                return
             inventory_item = next(
                 (
                     candidate

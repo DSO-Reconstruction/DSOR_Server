@@ -28,7 +28,7 @@ import sqlite3
 from typing import Any
 
 from dso_server.runtime import resident_content
-from dso_server.paths import DEFAULT_CHEST_CONTENTS_MAP
+from dso_server.paths import DEFAULT_CHEST_CONTENTS_MAP, DESCRIPTION_CHEST_CONTENTS_MAP
 
 from dso_server.protocol.commerce_protocol import (
     OFFER_RARITY_IDS,
@@ -578,6 +578,13 @@ def _tooltip_entries(
     ui = record.get("ui") or {}
     guaranteed: list[_MappedReward] = []
     chance: list[_MappedReward] = []
+    # Rewards a tooltip lists without odds ("Open this package to receive one
+    # of the following items:"): kept apart, used by the caller as an
+    # even one-of draw only when the box has nothing else to give.
+    # FAILURE: every Lucky Sphere was "no resolvable rewards" and could not
+    #   be opened ("les lucky sphere ... je peux pas utiliser").
+    unweighted: list[_MappedReward] = []
+    unresolved: list[ValueError] = []
     saw_choose = False
     prose = str(ui.get("prose") or "")
     for entry in ui.get("entries") or ():
@@ -586,9 +593,26 @@ def _tooltip_entries(
             saw_choose = True
             continue
         if mode == "chance" and entry.get("chance_percent") is None:
-            # The tooltip names possible jackpot items but not their odds.
-            # The authoritative list remains server-side; never invent a
-            # probability or reject the box while resolving guaranteed loot.
+            try:
+                definition = _candidate_definition(
+                    static_database_path,
+                    entry,
+                    player_level=player_level,
+                    rarity_hint="",
+                    class_name=class_name,
+                )
+            except ValueError as exc:
+                # An even draw over names the item twice (an event copy):
+                # its first candidate. One unnamed reward does not make the
+                # whole box unusable.
+                first = next(iter(entry.get("candidates") or ()), None)
+                if first is None:
+                    unresolved.append(exc)
+                    continue
+                definition = _definition(static_database_path, str(first))
+            unweighted.append(_MappedReward(
+                definition.template_id, _positive_amount(entry.get("amount")), None
+            ))
             continue
         rarity_hint = ""
         entry_text = str(entry.get("text") or "")
@@ -607,13 +631,17 @@ def _tooltip_entries(
             )
             if tags:
                 rarity_hint = _RARITY_NAMES.get(tags[-1].casefold(), "")
-        definition = _candidate_definition(
-            static_database_path,
-            entry,
-            player_level=player_level,
-            rarity_hint=rarity_hint,
-            class_name=class_name,
-        )
+        try:
+            definition = _candidate_definition(
+                static_database_path,
+                entry,
+                player_level=player_level,
+                rarity_hint=rarity_hint,
+                class_name=class_name,
+            )
+        except ValueError as exc:
+            unresolved.append(exc)
+            continue
         amount = _positive_amount(entry.get("amount"))
         chance_percent = entry.get("chance_percent")
         if chance_percent is not None:
@@ -635,7 +663,9 @@ def _tooltip_entries(
             raise ValueError(
                 f"tooltip reward {entry.get('text')!r} has unknown mode"
             )
-    return guaranteed, chance, saw_choose
+    if not guaranteed and not chance and not unweighted and unresolved:
+        raise unresolved[0]
+    return guaranteed, chance, saw_choose, unweighted
 
 
 def _pick_weighted(
@@ -703,7 +733,11 @@ def _equipment_chest_reward(
 
     loot_list = str(record.get("loot_list") or "")
     lowered = loot_list.casefold()
-    if "equipment" not in lowered and "backitem" not in lowered:
+    # The daily challenges' chests ("Open this chest to receive random
+    # rewards."): one equipment item of the chest's rarity.
+    # UNVERIFIED: LOOTBOX_daily_challenge_* is server-side; its other
+    #   rewards are unknown.
+    if "equipment" not in lowered and "backitem" not in lowered and "daily_challenge" not in lowered:
         return None
     hints = tuple((record.get("ui") or {}).get("rarity_hints") or ())
     rarity = next(
@@ -956,7 +990,16 @@ def roll_chest_contents(
             f"item {box_template_id!r} is category "
             f"{box_definition.item_category!r}, not an inventory container"
         )
-    records = _load_index(map_path).get(box_template_id)
+    # A box whose loot list is server-side only and that chest_contents.json
+    # lacks or cannot resolve: what its description lists, or the category
+    # it names (tools/chest_contents_from_descriptions.py).
+    # FAILURE: "Daily limited chest" (emilia_daily_andermant_cost) and the
+    #   category Lucky Spheres could not be opened.
+    records = None
+    if DESCRIPTION_CHEST_CONTENTS_MAP.is_file():
+        records = _load_index(DESCRIPTION_CHEST_CONTENTS_MAP).get(box_template_id)
+    if not records:
+        records = _load_index(map_path).get(box_template_id)
     if not records:
         adventurer_contents = _adventurer_chest_contents(
             static_database_path,
@@ -1000,6 +1043,31 @@ def roll_chest_contents(
                     rewards=(nested_reward,),
                     used_tooltip_mapping=False,
                 )
+        # An unmapped equipment or daily challenge box: its loot list's
+        # rarity (_equipment_chest_reward).
+        database = sqlite3.connect(
+            f"file:{Path(static_database_path).as_posix()}?mode=ro", uri=True,
+        )
+        try:
+            row = database.execute(
+                "SELECT Loot FROM _Template_Item WHERE Id=?", (box_template_id,),
+            ).fetchone()
+        finally:
+            database.close()
+        equipment_reward = _equipment_chest_reward(
+            static_database_path,
+            {"loot_list": str(row[0] or "") if row else ""},
+            class_name=str(class_name),
+            player_level=max(1, int(player_level)),
+            rng=rng or random.SystemRandom(),
+        )
+        if equipment_reward is not None:
+            return ChestContents(
+                box_template_id=box_template_id,
+                source=str(row[0]),
+                rewards=(equipment_reward,),
+                used_tooltip_mapping=False,
+            )
         raise ValueError(
             f"inventory container {box_template_id!r} has no JSON mapping"
         )
@@ -1017,13 +1085,15 @@ def roll_chest_contents(
     )
     used_tooltip = False
     if not guaranteed and not one_of and not chance:
-        guaranteed, tooltip_chance, saw_ui_choose = _tooltip_entries(
+        guaranteed, tooltip_chance, saw_ui_choose, unweighted = _tooltip_entries(
             static_database_path,
             record,
             player_level=max(1, int(player_level)),
             class_name=str(class_name),
         )
         chance = tooltip_chance
+        if not guaranteed and not chance:
+            one_of = unweighted
         saw_choose = saw_choose or saw_ui_choose
         used_tooltip = True
     if saw_choose:
