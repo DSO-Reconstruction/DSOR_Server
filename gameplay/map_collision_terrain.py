@@ -15,6 +15,8 @@ import math
 from pathlib import Path
 import struct
 
+from dso_server.runtime import resident_content
+
 
 MAP_MAGIC = b"MOSD"
 COLLISION_BUNDLE_MAGIC = b"CPAM"
@@ -257,7 +259,7 @@ def _read_collision_mesh(blob: bytes) -> _CollisionMesh:
 
 
 def _read_collision_bundle(path: Path) -> dict[str, _CollisionMesh]:
-    data = path.read_bytes()
+    data = resident_content.read_bytes(path)
     if len(data) < 8 or data[:4] != COLLISION_BUNDLE_MAGIC:
         raise CollisionTerrainError(f"{path} is not a CPAM collision bundle")
     offset = 8
@@ -326,7 +328,7 @@ def _read_map_surface_triangles(
     path: Path,
     collision_meshes: dict[str, _CollisionMesh],
 ) -> tuple[_SurfaceTriangle, ...]:
-    data = path.read_bytes()
+    data = resident_content.read_bytes(path)
     if len(data) < 8 or data[:4] != MAP_MAGIC:
         raise CollisionTerrainError(f"{path} is not a MOSD map")
 

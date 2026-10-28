@@ -27,6 +27,7 @@ import random
 from types import MappingProxyType
 from typing import Iterable, Mapping
 import xml.etree.ElementTree as ET
+from dso_server.runtime import resident_content
 from dso_server.gameplay.status_modifier_runtime import ModifierAmounts
 from dso_server.runtime.file_revisions import observed_revision
 
@@ -672,7 +673,7 @@ class QuestCatalog:
 
 def _build_catalog(path: str, mtime_ns: int, size: int) -> QuestCatalog:
     del mtime_ns, size
-    root = ET.parse(path).getroot()
+    root = ET.fromstring(resident_content.read_bytes(path))
     quests: dict[str, QuestDefinition] = {}
     by_giver: dict[str, list] = {}
     by_goal: dict[str, list] = {}

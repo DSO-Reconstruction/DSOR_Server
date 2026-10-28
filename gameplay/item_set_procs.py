@@ -27,6 +27,7 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass, replace
 from pathlib import Path
+from types import SimpleNamespace
 
 from dso_server.persistence import readonly_db
 
@@ -71,6 +72,62 @@ class SetProcRule:
         """
 
         return ",".join((self.resource_id, "C:1.0", *self.options))
+
+
+def with_socket_overrides(evaluation, socket_rules=()):
+    """The set's ``SkillStatusEffect`` rules as the wearer's jewels leave them.
+
+    A socketed jewel can enable a set rule that is authored with zero chance:
+    Jewel of Glory's ``SkillStatusEffect:modUE,frostwind,
+    jewel_bgh2026_mage_trigger,C:1.0`` turns on Forgotten Glory's
+    ``addUE,frostwind,jewel_bgh2026_mage_trigger,C:0.0``. The skill column
+    already merges the two (``_modified_player_skill_geometry``), so the
+    effect is delivered; the set bookkeeping (program marking, Creator
+    payloads) must see the same enabled rule, or the delivered effect runs as
+    an inert shell. Only a ``mod`` of the same target, skill group and
+    resource changes a rule, exactly as it changes the skill column.
+    """
+
+    modifiers = tuple(getattr(evaluation, "skill_effect_rules", ()) or ())
+    overrides = []
+    for rule in socket_rules or ():
+        if str(getattr(rule, "kind", "")).casefold() != "skillstatuseffect":
+            continue
+        body = str(getattr(rule, "raw", "")).partition("#")[0]
+        _kind, colon, argument_text = body.partition(":")
+        arguments = tuple(part.strip() for part in argument_text.split(",")) if colon else ()
+        if len(arguments) >= 3 and arguments[0].casefold().startswith("mod"):
+            overrides.append(arguments)
+    if not modifiers or not overrides:
+        return evaluation
+    changed = []
+    for modifier in modifiers:
+        arguments = tuple(modifier.arguments)
+        merged = None
+        for override in overrides:
+            if (
+                len(arguments) < 3
+                or override[0].casefold()[3:] != arguments[0].casefold()[3:]
+                or override[1].casefold() != arguments[1].casefold()
+                or override[2].casefold() != arguments[2].casefold()
+            ):
+                continue
+            options = {
+                option.partition(":")[0].strip().casefold(): option.strip()
+                for option in (merged or arguments)[3:] if option.strip()
+            }
+            options.update(
+                (option.partition(":")[0].strip().casefold(), option.strip())
+                for option in override[3:] if option.strip()
+            )
+            merged = (*arguments[:3], *options.values())
+        changed.append(modifier if merged is None else replace(modifier, arguments=merged))
+    try:
+        return replace(evaluation, skill_effect_rules=tuple(changed))
+    except TypeError:
+        return SimpleNamespace(
+            **{**vars(evaluation), "skill_effect_rules": tuple(changed)}
+        )
 
 
 def collect_rules(evaluation) -> tuple[SetProcRule, ...]:
@@ -141,6 +198,7 @@ def build_definitions(
     loader,
     user_loader=None,
     owner_loader=None,
+    column_effects=(),
 ) -> dict[str, tuple]:
     """Turn rules into ``VictimStatusEffectDefinition``s grouped by target.
 
@@ -175,14 +233,33 @@ def build_definitions(
     programs (``CombatResolutionService._send_player_skill_status_effects``)
     and hosts ``EffectHosts:Causer`` ones on the caster.  Only the Creator
     payload, which no column carries, is resolved here.
+
+    ``column_effects`` are the cast skill's own ``UserStatusEffects``. A
+    ``modUE`` rule only changes the entry the column authors, so the shell
+    lives for the column's ``D``, and so does a payload without a duration of
+    its own: Forgotten Glory's ``modUE,TurretCombat,
+    bgh_dwarf_bonus_heredur_dmg_aura,C:1.0`` enables the turret skill's 10 s
+    shell, whose damage payload had expired with the row's 1 s default.
     """
 
     if not rules:
         return {}
     grouped: dict[str, list] = {}
     database = readonly_db.connect(database_path)
+    columns = {
+        str(effect.resource_id).casefold(): effect for effect in column_effects or ()
+    }
     for rule in rules:
         encoded = rule.encoded
+        column = columns.get(rule.resource_id.casefold())
+        if column is not None and not any(
+            option.partition(":")[0].strip().casefold() in {"d", "dp"}
+            for option in rule.options
+        ):
+            durations = [f"D:{column.duration_ticks / 25.0:g}"]
+            if getattr(column, "pvp_duration_ticks", None) is not None:
+                durations.append(f"DP:{column.pvp_duration_ticks / 25.0:g}")
+            encoded = ",".join((rule.resource_id, "C:1.0", *durations, *rule.options))
         if rule.target == "location":
             definitions = tuple(replace(d, item_set_program=True) for d in loader(database, encoded))
             if definitions:
@@ -344,6 +421,7 @@ def resolve_for_cast(
     user_loader=None,
     owner_loader=None,
     rng: random.Random | None = None,
+    column_effects=(),
 ) -> dict[str, tuple]:
     """Full path: evaluation + cast skill -> effects to apply, by target."""
 
@@ -363,4 +441,5 @@ def resolve_for_cast(
         loader=loader,
         user_loader=user_loader,
         owner_loader=owner_loader,
+        column_effects=column_effects,
     )

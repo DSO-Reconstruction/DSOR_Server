@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_economy_protocol import CraftingRecipe
 
 
@@ -66,6 +67,6 @@ def resolve_crafting_outputs(database_path, recipe: CraftingRecipe) -> tuple[Cra
         ingredients[template_id] += amount
     if ingredients != Counter({opal_id: 1, "gem_combined_dismantle_tool": 1}):
         raise ValueError("opal dismantling recipe does not consume one opal and one divider")
-    path = Path(database_path).resolve()
-    stat = path.stat()
+    path = resident_content.resolved(database_path)
+    stat = resident_content.stat(path)
     return _opal_outputs(str(path), stat.st_mtime_ns, stat.st_size, recipe.result_template_id)

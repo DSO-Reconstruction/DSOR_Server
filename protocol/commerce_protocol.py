@@ -9,6 +9,7 @@ unlocked premium ``storage_80`` bag.
 
 from __future__ import annotations
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -136,7 +137,7 @@ def decode_transaction(
 
 
 def _open_read_only(path: Path) -> sqlite3.Connection:
-    if not path.is_file():
+    if not resident_content.is_file(path):
         raise FileNotFoundError(f"static database not found: {path}")
     database = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row

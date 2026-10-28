@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.commerce_protocol import (
     PurchaseItemDefinition,
     add_purchased_item,
@@ -55,7 +56,7 @@ class PaymentPackageOpenMutation:
 
 
 def _open_read_only(path: Path) -> sqlite3.Connection:
-    if not path.is_file():
+    if not resident_content.is_file(path):
         raise FileNotFoundError(f"static database not found: {path}")
     database = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row

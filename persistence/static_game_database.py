@@ -10,6 +10,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
+from dso_server.runtime import resident_content
 from dso_server.persistence import static_schema_compat as compat
 from dso_server.protocol.inventory_codec import AMMUNITION_SLOTS
 from dso_server.protocol.character_selection import (
@@ -65,7 +66,7 @@ class StaticGameDatabase:
             self._content_cache.clear()
 
     def _connect(self) -> sqlite3.Connection:
-        if not self.path.is_file():
+        if not resident_content.is_file(self.path):
             raise FileNotFoundError(self.path)
         return sqlite3.connect(f"file:{self.path.as_posix()}?mode=ro", uri=True)
 

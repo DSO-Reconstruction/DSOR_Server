@@ -167,6 +167,21 @@ class EventAdministration:
             raise ValueError("end date must be in the future")
         return end
 
+    @staticmethod
+    def _run_settings(payload, defaults):
+        """Validated drop chance, amount and participation for a run."""
+        chance = payload.get("collectible_drop_chance", defaults["collectible_drop_chance"])
+        amount = payload.get("collectible_amount", defaults["collectible_amount"])
+        participation = payload.get("participation_default", defaults["participation_default"])
+        if type(chance) not in (int, float) or not math.isfinite(chance) or not 0 <= chance <= 1:
+            raise ValueError("collectible drop chance must be between 0 and 1")
+        if type(amount) is not int or not 1 <= amount <= 1_000_000:
+            raise ValueError("collectible amount must be a whole number from 1 to 1,000,000")
+        if type(participation) is not bool:
+            raise ValueError("default participation must be true or false")
+        return {"participation_default": participation, "collectible_drop_chance": chance,
+                "collectible_amount": amount}
+
     def templates(self):
         path = self.service.static_database_path.resolve()
         stat = path.stat()
@@ -224,15 +239,8 @@ class EventAdministration:
                 template_id = payload.get("template_id")
                 if not isinstance(template_id, str) or not any(t["template_id"] == template_id for t in self.templates()):
                     raise ValueError("choose a global game-event template")
-                chance = payload.get("collectible_drop_chance", 0.35)
-                amount = payload.get("collectible_amount", 1)
-                participation = payload.get("participation_default", True)
-                if type(chance) not in (int, float) or not math.isfinite(chance) or not 0 <= chance <= 1:
-                    raise ValueError("collectible drop chance must be between 0 and 1")
-                if type(amount) is not int or not 1 <= amount <= 1_000_000:
-                    raise ValueError("collectible amount must be a whole number from 1 to 1,000,000")
-                if type(participation) is not bool:
-                    raise ValueError("default participation must be true or false")
+                settings = self._run_settings(payload, {
+                    "collectible_drop_chance": 0.35, "collectible_amount": 1, "participation_default": True})
                 event_id = max((65535, *(event.event_id for event in previous.events))) + 1
                 if event_id > UINT32_MAX:
                     raise ValueError("event instance ID limit reached")
@@ -248,9 +256,7 @@ class EventAdministration:
                 ), None)
                 entry = {"event_id": event_id, "template_id": template_id,
                          "state": "scheduled" if end else "active", "starts_at": now.isoformat(),
-                         "ends_at": end.isoformat() if end else None,
-                         "participation_default": participation, "collectible_drop_chance": chance,
-                         "collectible_amount": amount}
+                         "ends_at": end.isoformat() if end else None, **settings}
                 if collectible_maps is not None:
                     entry["collectible_maps"] = collectible_maps
                 document["events"].append(entry)
@@ -269,6 +275,14 @@ class EventAdministration:
                 if enabled:
                     if not reschedule:
                         entry["starts_at"] = now.isoformat()
+                        # Reactivation may also adjust the run's drop settings;
+                        # omitted fields keep the instance's stored values.
+                        if any(key in payload for key in (
+                                "collectible_drop_chance", "collectible_amount", "participation_default")):
+                            entry.update(self._run_settings(payload, {
+                                "collectible_drop_chance": event.collectible_drop_chance,
+                                "collectible_amount": event.collectible_amount,
+                                "participation_default": event.participation_default}))
                     entry["ends_at"] = end.isoformat() if end else None
                 else:
                     entry["ends_at"] = now.isoformat()

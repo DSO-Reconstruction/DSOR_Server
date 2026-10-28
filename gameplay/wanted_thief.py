@@ -9,6 +9,7 @@ import random
 from types import MappingProxyType
 from typing import Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.persistence.readonly_db import connect
 
 
@@ -55,7 +56,7 @@ class WantedCatalog:
 
 def load_wanted_catalog(database_path: str | Path) -> WantedCatalog:
     path = Path(database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load_catalog(str(path), stat.st_mtime_ns, stat.st_size)
 
 

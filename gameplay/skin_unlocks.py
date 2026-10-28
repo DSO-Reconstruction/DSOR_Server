@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.player_init_protocol import ItemCustomization
 
@@ -20,7 +21,7 @@ def load_skin_unlock_customizations(
 
     class_name = str(class_name).strip().lower()
     database = sqlite3.connect(
-        Path(static_database_path).resolve().as_uri() + "?mode=ro",
+        resident_content.resolved(static_database_path).as_uri() + "?mode=ro",
         uri=True,
     )
     try:
@@ -57,7 +58,7 @@ def repair_skin_source_inventory(
 
     class_name = str(class_name).strip().lower()
     database = sqlite3.connect(
-        Path(static_database_path).resolve().as_uri() + "?mode=ro",
+        resident_content.resolved(static_database_path).as_uri() + "?mode=ro",
         uri=True,
     )
     try:

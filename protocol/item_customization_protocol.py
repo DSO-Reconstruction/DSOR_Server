@@ -7,6 +7,7 @@ import math
 import sqlite3
 import struct
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.character_selection import BitReader, CLASS_NAMES
 from dso_server.protocol.command_ids import command_id
 from dso_server.protocol.commerce_protocol import PurchasePrice, debit_currency
@@ -68,7 +69,7 @@ def apply_item_customizations(inventory, currency, changes, *, database_path,
     updated = []
     seen = {}
     price = PurchasePrice()
-    with closing(sqlite3.connect(Path(database_path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
+    with closing(sqlite3.connect(resident_content.resolved(database_path).as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
 
         def row(table, resource):

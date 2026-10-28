@@ -120,6 +120,24 @@ def test_invalid_drop_options_leave_schedule_untouched(event_cms, changes):
     assert path.read_bytes() == before
 
 
+def test_reactivation_can_change_run_settings_and_keeps_omitted_ones(event_cms):
+    change(event_cms, 42, "activate", duration_days=7, collectible_drop_chance=0.6, collectible_amount=3)
+    config = event_cms.service.events.detail(42)["config"]
+    assert (config["collectible_drop_chance"], config["collectible_amount"]) == (0.6, 3)
+    assert config["participation_default"] is True
+    change(event_cms, 42, "deactivate")
+    change(event_cms, 42, "activate", participation_default=False)
+    config = event_cms.service.events.detail(42)["config"]
+    assert (config["collectible_drop_chance"], config["collectible_amount"]) == (0.6, 3)
+    assert config["participation_default"] is False
+    change(event_cms, 42, "deactivate")
+    path = event_cms.service.events.schedule_path
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="drop chance"):
+        change(event_cms, 42, "activate", collectible_drop_chance=2)
+    assert path.read_bytes() == before
+
+
 def test_unknown_or_map_local_templates_cannot_be_added(event_cms):
     import sqlite3
     with sqlite3.connect(event_cms.service.static_database_path) as db:

@@ -43,6 +43,17 @@ def _load_attack_speed_bonus_effects(database_path: str):
     return replace(stack, consume_on_max_stack=True), buff
 
 
+@lru_cache(maxsize=256)
+def _keeps_on_death(database_path, resource_id: str) -> bool:
+    path = Path(database_path).resolve()
+    with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as database:
+        row = database.execute(
+            "SELECT COALESCE(KeepOnDeath, 0) FROM _Template_StatusEffect WHERE Id=?",
+            (str(resource_id),),
+        ).fetchone()
+    return bool(row and row[0])
+
+
 def _wire_uint32(value: int) -> int:
     """Clamp an authoritative value only at the legacy wire boundary."""
 
@@ -383,10 +394,27 @@ class CombatResolutionService:
         return tuple(batches)
 
     @staticmethod
+    def _socketed_item_set_evaluation(s: Session):
+        """The set evaluation with the zero-chance rules jewels enable.
+
+        See ``item_set_procs.with_socket_overrides``: Jewel of Glory's
+        ``mod`` rules must reach the set's program bookkeeping, not only the
+        skill column.
+        """
+
+        return with_set_socket_overrides(
+            getattr(s, "gameplay_item_set_evaluation", None),
+            getattr(
+                getattr(s, "gameplay_socket_effect_evaluation", None),
+                "cast_rules", (),
+            ),
+        )
+
+    @staticmethod
     def _item_set_procs_for_skill(s: Session, skill_index: int) -> dict:
         """Resolve this session's set procs for one cast skill, by target."""
 
-        evaluation = getattr(s, "gameplay_item_set_evaluation", None)
+        evaluation = CharacterService._socketed_item_set_evaluation(s)
         combat_state = getattr(s, "gameplay_combat_state", None)
         if evaluation is None or combat_state is None:
             return {}
@@ -411,6 +439,7 @@ class CombatResolutionService:
                 loader=LocalCombatState._load_victim_status_effects,
                 user_loader=_load_caster_status_effects,
                 owner_loader=_load_caster_aura_owner_effects,
+                column_effects=tuple(geometry.user_status_effects),
             )
         except Exception as exc:          # data-driven; never break combat
             print(
@@ -738,6 +767,10 @@ class CombatResolutionService:
                 )
                 commands = []
                 removals = []
+                # Copies authored inside one application stack: Jewel of
+                # Glory's explosion lists debuff_dot_burn three times ("3
+                # stacks of Burning"). Only later impacts of the cast wait.
+                advanced_here, stamped_here = set(), []
                 for definition in definitions:
                     instant_cooldown = int(definition.duration_ticks) <= 0 and bool(
                         definition.modifier_kinds & {"activecooldown", "actorcooldownreset"}
@@ -776,9 +809,9 @@ class CombatResolutionService:
                         )
                     if instant_cooldown:
                         cache.pop(key, None)
-                    advanced_this_batch.add(key)
+                    advanced_here.add(key)
                     if cast_id:
-                        cast_applications[cast_key] = now
+                        stamped_here.append(cast_key)
                     commands.append(
                         StatusEffectServerCommand(
                             StatusEffect(False, (created,)),
@@ -789,6 +822,9 @@ class CombatResolutionService:
                         removals.append(removed)
                     if consumed:
                         consumed_this_batch.add(key)
+                advanced_this_batch.update(advanced_here)
+                for cast_key in stamped_here:
+                    cast_applications[cast_key] = now
                 if removals:
                     commands.append(
                         StatusEffectServerCommand(
@@ -870,6 +906,134 @@ class CombatResolutionService:
                for resolution in resolutions):
             CharacterService._notify_player_death(s)
         CharacterService._apply_caster_hosted_hit_effects(s, resolutions)
+        CharacterService._apply_receiver_hosted_hit_auras(s, resolutions)
+
+    @staticmethod
+    def _apply_receiver_hosted_hit_auras(s: Session, resolutions) -> None:
+        """Explode a hit's victim-hosted aura that has no duration.
+
+        A ``D:0`` aura in a skill's victim column is never installed as a
+        status effect (``_victim_effect_command_transactions`` skips zero
+        durations): the client hosts it on the victim for one application
+        after its ``DE`` delay and applies its ``AuraEffectId`` children to
+        the actors around it. Jewel of Glory's Explosive Arrow explosion and
+        the Marked armor shred (``ranger_explosive_shot_shredarmor_aura``)
+        are such auras. Only the caster's own session resolves them, once.
+        ``KeepOnDeath`` auras still go off when the hit was lethal.
+        """
+
+        character = s.gameplay_character
+        combat = s.gameplay_combat_state
+        if character is None or combat is None or STATUS_EFFECTS_DISABLED:
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        own_ids = {LOCAL_PLAYER_ACTOR_ID, owner_actor_id}
+        summons = getattr(combat, "player_summons", {})
+        explosions = []
+        for resolution in resolutions:
+            source = (
+                resolution.source_actor_id
+                if resolution.source_actor_id is not None
+                else resolution.attacker_actor_id
+            )
+            target = int(resolution.target_actor_id)
+            if (
+                int(source) not in own_ids
+                or int(resolution.attacker_actor_id) in summons
+                or target in own_ids
+                or target not in getattr(combat, "monsters", {})
+                or bool(getattr(resolution, "damage_immune", False))
+            ):
+                continue
+            for definition in resolution.victim_status_effects:
+                if (
+                    str(getattr(definition, "effect_hosts", "")).casefold() == "causer"
+                    or int(definition.duration_ticks) > 0
+                    or float(getattr(definition, "aura_radius", 0.0)) <= 0.0
+                    or float(definition.chance) <= 0.0
+                    # Relative to the hosting monster: itself and its allies,
+                    # the caster's enemies. An Enemies aura on a monster
+                    # would strike players and is not a hit payoff.
+                    or not {
+                        value.strip().casefold()
+                        for value in str(getattr(definition, "aura_targets", "")).split(";")
+                    } & {"allies", "creator"}
+                ):
+                    continue
+                if resolution.killed and not _keeps_on_death(
+                        combat.encounter.static_database_path, definition.resource_id):
+                    continue
+                explosions.append((definition, target, resolution))
+        for definition, target, resolution in explosions:
+            delay = int(definition.delay_ticks) / float(SERVER_TICKS_PER_SECOND)
+            arguments = (s, s.gameplay_chase_generation, combat, definition, target,
+                         int(resolution.server_tick) + int(definition.delay_ticks),
+                         int(resolution.skill_index), tuple(resolution.position))
+            if delay <= 1e-6:
+                CharacterService._explode_receiver_hosted_aura(*arguments)
+                continue
+            with s.flow_lock:
+                key = ("receiver-hosted-aura", object())
+                timer = s.gameplay_deadline_timer(
+                    delay, CharacterService._explode_receiver_hosted_aura,
+                    args=(*arguments, key))
+                timer.daemon = True
+                s.gameplay_projectile_timers[key] = timer
+            timer.start()
+
+    @staticmethod
+    def _explode_receiver_hosted_aura(s: Session, generation, combat, definition,
+                                      host_actor_id, server_tick, skill_index,
+                                      fallback_position, timer_key=None) -> None:
+        with s.flow_lock:
+            if timer_key is not None and s.gameplay_projectile_timers.pop(timer_key, None) is None:
+                return
+            if (not s.connected or generation != s.gameplay_chase_generation
+                    or s.gameplay_combat_state is not combat):
+                return
+            character = s.gameplay_character
+        if character is None:
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        from dso_server.persistence import readonly_db
+        database = readonly_db.connect(combat.encounter.static_database_path)
+        receivers = LocalCombatState._load_location_aura_effects(database, ",".join((
+            definition.resource_id, "C:1.0",
+            *(f"${index}:{value}" for index, value in enumerate(definition.values)),
+        )))
+        if not receivers:
+            return
+        from dso_server.services.endless_tower_buffs import tower_damage_range
+        damage_range = tower_damage_range(
+            combat.encounter.static_database_path, s,
+            CharacterService._active_skill_modifier_sources(s),
+        )
+        with combat.lock:
+            # Hosted on the victim, it goes off where the victim now stands.
+            centre = tuple(combat.monster_positions.get(int(host_actor_id), fallback_position))
+            resolutions = combat.resolve_receiver_hosted_aura(
+                owner_actor_id, centre, definition, receivers,
+                player_damage_range=damage_range,
+                server_tick=int(server_tick), skill_index=int(skill_index),
+            )
+        # The host shows the aura for one tick so the client plays its
+        # Done sequence (ranger_explosiveshot_explosion_bgh_jewel2026, the
+        # blast itself); one tick is not zero, so it does not explode again.
+        shown = replace(definition, duration_ticks=1, delay_ticks=0)
+        resolutions = tuple(
+            replace(value, victim_status_effects=(shown, *value.victim_status_effects))
+            if int(value.target_actor_id) == int(host_actor_id) else value
+            for value in resolutions
+        )
+        if resolutions:
+            CharacterService._dispatch_player_owned_resolutions(
+                combat, {owner_actor_id: s}, resolutions)
 
     @staticmethod
     def _apply_caster_hosted_hit_effects(s: Session, resolutions) -> None:
@@ -1004,7 +1168,7 @@ class CombatResolutionService:
         set_named = {
             rule.resource_id.casefold()
             for rule in collect_set_proc_rules(
-                getattr(s, "gameplay_item_set_evaluation", None)
+                CharacterService._socketed_item_set_evaluation(s)
             )
             if rule.target in {"user", "victim"}
         }
@@ -1039,6 +1203,7 @@ class CombatResolutionService:
             periodic_effects = []
             minion_effects = []
             set_programs = []
+            instant_programs = []
             stack_transitions = []
             applied_at = time.perf_counter()
             for definition in definitions:
@@ -1055,6 +1220,10 @@ class CombatResolutionService:
                 native_permanent = (duration <= 0 and definition.item_set_program
                                     and (definition.persistent or definition.item_set_parent_effect_id is not None))
                 if duration <= 0 and not instant_cooldown and not native_permanent:
+                    if definition.item_set_program:
+                        # Nothing to install, but its Start program still
+                        # runs (Jewel of Glory's warrior trigger).
+                        instant_programs.append(definition)
                     continue
                 if int(definition.effect_id) in consumed_this_batch:
                     continue
@@ -1222,6 +1391,10 @@ class CombatResolutionService:
         if set_programs:
             from dso_server.services.item_set_programs import accepted_item_set_programs
             finish_effect_step(accepted_item_set_programs, s, set_programs, server_tick=server_tick)
+        if instant_programs:
+            from dso_server.services.item_set_programs import run_instant_item_set_programs
+            finish_effect_step(run_instant_item_set_programs, s, tuple(instant_programs),
+                               server_tick=server_tick)
         if stack_transitions:
             from dso_server.services.item_set_events import dispatch_item_set_max_stack
             for definition, before, after in stack_transitions:

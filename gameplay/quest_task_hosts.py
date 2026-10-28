@@ -27,14 +27,15 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.local_map_state import map_database_path
 from dso_server.gameplay.map_event_state import map_key
 
 
 def _signature(path):
-    path = Path(path).resolve()
+    path = resident_content.resolved(path)
     try:
-        stat = path.stat()
+        stat = resident_content.stat(path)
     except OSError:
         return None
     return str(path), stat.st_mtime_ns, stat.st_size

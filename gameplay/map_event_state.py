@@ -28,7 +28,9 @@ import xml.etree.ElementTree as ET
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
+from dso_server.gameplay.prop_loot import has_prop_loot
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
     active_client_instance_guid_overrides,
@@ -99,6 +101,9 @@ BLOODSHED_DIFFICULTY = 8
 # chance of each rarity; retail shows one chest per spot.
 CHEST_LOCATION_RADIUS = 1.5
 _CHEST_TIER_MARKERS = ("_epic_", "_rare_", "_magic_")
+# Odds of a stacked amphora spot showing each variant, by keys per use:
+# free small, one-key normal, five-key golden (not from retail data).
+_CHEST_VARIANT_WEIGHTS = {0: 50, 1: 40, 5: 10}
 
 # Authored per-difficulty reward chests in the parallel-world boss arenas.
 PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS = frozenset({
@@ -546,10 +551,27 @@ class MapPropDefinition:
     variation_group: int = 0
     variation_difficulty: int = 0
     variation_level: int = 0
+    # StateObject KeyId/KeyAmount: what one use spends (amphora keys).
+    key_id: str = ""
+    key_amount: int = 0
 
     @property
     def always_present(self) -> bool:
         return self.event_set_row < 0
+
+    @property
+    def spends_keys(self) -> bool:
+        """Whether one use costs ``key_amount`` x ``key_id``.
+
+        Charged only for chests filled from data/catalogs/prop_loot.json
+        (amphorae). Other keyed StateObjects -- lockpick chests, Balor's
+        chests, shrines, quest altars -- open as before.
+        """
+
+        return bool(
+            self.key_id and self.key_amount > 0
+            and has_prop_loot(self.loot_list_id or self.chest_id)
+        )
 
     @property
     def network_prop(self) -> bool:
@@ -568,7 +590,10 @@ class MapPropDefinition:
         if self.instance_id.casefold() == "fracturedplanes_rift":
             return True
         if self.always_present:
-            return False
+            # Retail published a scene amphora (PropInfo on approach) and
+            # answered its click with loot; chests whose list the server can
+            # fill are interactive the same way.
+            return has_prop_loot(self.loot_list_id or self.chest_id)
         return bool(self.operation or self.loot_list_id or self.chest_id)
 
     def new_prop(self, state: int) -> NewProp:
@@ -654,7 +679,7 @@ def _map_variations(path: Path) -> dict[int, tuple[int, int]]:
     """``MapVariation`` node index -> (family node, difficulty tier)."""
 
     try:
-        root = ET.parse(path.with_suffix(".mvr")).getroot()
+        root = ET.fromstring(resident_content.read_bytes(path.with_suffix(".mvr")))
     except (OSError, ET.ParseError):
         return {}
     variations: dict[int, tuple[int, int]] = {}
@@ -682,7 +707,7 @@ def map_difficulty_variations(path: Path) -> Mapping[int, tuple[int, int]]:
     """
 
     try:
-        root = ET.parse(Path(path).with_suffix(".mvr")).getroot()
+        root = ET.fromstring(resident_content.read_bytes(Path(path).with_suffix(".mvr")))
     except (OSError, ET.ParseError):
         return MappingProxyType({})
     result: dict[int, tuple[int, int]] = {}
@@ -734,7 +759,7 @@ def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
     """Level-based MapVariation node index -> (family node, level)."""
 
     try:
-        root = ET.parse(path.with_suffix(".mvr")).getroot()
+        root = ET.fromstring(resident_content.read_bytes(path.with_suffix(".mvr")))
     except (OSError, ET.ParseError):
         return {}
     variations: dict[int, tuple[int, int]] = {}
@@ -1085,6 +1110,7 @@ def _load_map_event_content(
         ))
 
         templates: dict[str, tuple[str, bool, str, str]] = {}
+        template_keys: dict[str, tuple[str, int]] = {}
         quest_controlled_templates: set[str] = set()
         chest_tier_chances: dict[int, tuple[int, int, int, int]] = {}
         try:
@@ -1107,7 +1133,8 @@ def _load_map_event_content(
                     "SELECT Id, COALESCE(InteractOperation, ''), "
                     "COALESCE(OperationId, ''), COALESCE(OneShot, 0), "
                     "COALESCE(LootListId, ''), COALESCE(ChestId, ''), "
-                    "COALESCE(IndividualUsage, 0) "
+                    "COALESCE(IndividualUsage, 0), COALESCE(KeyId, ''), "
+                    "COALESCE(KeyAmount, 0) "
                     "FROM _Template_StateObject"
                 ):
                     templates[str(row[0])] = (
@@ -1116,6 +1143,9 @@ def _load_map_event_content(
                         str(row[4]).strip(),
                         str(row[5]).strip(),
                         bool(int(row[6] or 0)),
+                    )
+                    template_keys[str(row[0])] = (
+                        str(row[7]).strip(), max(0, int(row[8] or 0)),
                     )
                 quest_controlled_templates = {
                     str(row[0]).casefold()
@@ -1126,6 +1156,7 @@ def _load_map_event_content(
                 }
         except sqlite3.Error:
             templates = {}
+            template_keys = {}
             quest_controlled_templates = set()
 
         props = []
@@ -1141,7 +1172,8 @@ def _load_map_event_content(
                    COALESCE(InteractOperation, ''), COALESCE(OperationId, ''),
                    COALESCE(OneShot, 0), COALESCE(LootListId, ''),
                    COALESCE(ChestId, ''), COALESCE(State, 'active'),
-                   COALESCE(ParentNodeIndex, 0)
+                   COALESCE(ParentNodeIndex, 0), COALESCE(KeyId, ''),
+                   COALESCE(KeyAmount, 0)
             FROM _Instance_StateObject
             ORDER BY rowid
             """
@@ -1150,6 +1182,7 @@ def _load_map_event_content(
                 row_id, guid, instance_id, template_id, transform,
                 event_set_row, interact_operation, operation_id, one_shot,
                 loot_list_id, chest_id, state, parent_node_index,
+                key_id, key_amount,
             ) = row
             try:
                 _matrix, position, rotation = _read_transform(transform)
@@ -1211,6 +1244,8 @@ def _load_map_event_content(
                 parent_node_index=int(parent_node_index or 0),
                 variation_group=(level_variation[0] if level_variation else 0),
                 variation_level=(level_variation[1] if level_variation else 0),
+                key_id=str(key_id).strip(),
+                key_amount=max(0, int(key_amount or 0)),
             ))
         try:
             spawn_point_rows = database.execute(
@@ -1267,6 +1302,8 @@ def _load_map_event_content(
                     quest_switches.get(instance_id.casefold())
                     or quest_switches.get(template_id.casefold(), "")
                 ),
+                key_id=template_keys.get(template_id, ("", 0))[0],
+                key_amount=template_keys.get(template_id, ("", 0))[1],
             ))
 
         volumes = []
@@ -1386,7 +1423,7 @@ def load_map_event_content(
         for param in rule.params
     }))
     return _map_content_cache(
-        str(Path(static_database_path).resolve()), str(map_id), signal_props
+        str(resident_content.resolved(static_database_path)), str(map_id), signal_props
     )
 
 
@@ -1474,7 +1511,9 @@ class MapEventRuntime:
         self.enabled_event_sets = set(
             self.content.enabled_event_set_rows(self.initial_flags)
         )
-        for definition in self.content.baseline_props():
+        for definition in self._select_chest_variants(
+            self.content.baseline_props()
+        ):
             self.props[definition.prop_id] = PropRuntimeState(definition)
         for definition in self.select_props(
             self.content.props_for_sets(self.enabled_event_sets)
@@ -1637,11 +1676,12 @@ class MapEventRuntime:
         ``_Template_MapDifficulty`` (epic, rare, magic, otherwise free), with a
         plain chest preferred over its treasure-goblin twin.  The roll is
         stable per instance and location so every joiner sees the same chest.
+        Stacked scene amphorae are reduced by ``_select_chest_variants``.
         """
 
         selected = []
         locations = []
-        for definition in definitions:
+        for definition in self._select_chest_variants(definitions):
             if definition.kind != "spawn":
                 selected.append(definition)
                 continue
@@ -1696,6 +1736,55 @@ class MapEventRuntime:
             tiered = [m for m in candidates if in_tier(m)] or candidates
             plain = [m for m in tiered if "goblin" not in m.template_id.casefold()]
             selected.append(min(plain or tiered, key=lambda m: m.row_id))
+        return tuple(selected)
+
+    def _select_chest_variants(
+        self, definitions: Iterable[MapPropDefinition],
+    ) -> tuple[MapPropDefinition, ...]:
+        """Keep one scene amphora per authored spot.
+
+        Event maps stack a spot's variants on one transform (normal and
+        golden; small, normal and golden) and retail showed one of them:
+        on e_dra_03_dun_01 it published only the normal amphora of a
+        normal/golden pair (2026-10-28 capture). The pick is weighted by key
+        cost and stable per instance and spot. Cursed amphorae have no loot
+        list, so they are never published and never chosen.
+        """
+
+        selected = []
+        spots = []
+        for definition in definitions:
+            if definition.kind != "scene" or not has_prop_loot(
+                definition.loot_list_id or definition.chest_id
+            ):
+                selected.append(definition)
+                continue
+            for row, anchor, members in spots:
+                if row == definition.event_set_row and all(
+                    abs(a - b) <= CHEST_LOCATION_RADIUS
+                    for a, b in zip(anchor, definition.position)
+                ):
+                    members.append(definition)
+                    break
+            else:
+                spots.append(
+                    (definition.event_set_row, definition.position, [definition])
+                )
+        for row, anchor, members in spots:
+            if len(members) == 1:
+                selected.append(members[0])
+                continue
+            members.sort(key=lambda value: value.row_id)
+            weights = [
+                _CHEST_VARIANT_WEIGHTS.get(
+                    min(int(value.key_amount), 5) if value.key_id else 0,
+                    _CHEST_VARIANT_WEIGHTS[5],
+                )
+                for value in members
+            ]
+            selected.append(random.Random(
+                f"{self.instance_key}:chest:{row}:{anchor[0]:.1f}:{anchor[2]:.1f}"
+            ).choices(members, weights=weights)[0])
         return tuple(selected)
 
     def publish_props(

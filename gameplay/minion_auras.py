@@ -64,6 +64,7 @@ from pathlib import Path
 import random
 import time
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.status_modifier_runtime import (
     parse_modifier_program, resolve_modifier_value,
 )
@@ -249,8 +250,8 @@ def _revision(path) -> tuple[str, int, int]:
     cached = _REVISIONS.get(key)
     if cached is not None and cached[0] > now:
         return cached[1]
-    resolved = Path(path).resolve()
-    stat = resolved.stat()
+    resolved = resident_content.resolved(path)
+    stat = resident_content.stat(resolved)
     revision = (str(resolved), stat.st_mtime_ns, stat.st_size)
     _REVISIONS[key] = (now + REVISION_RECHECK_SECONDS, revision)
     return revision

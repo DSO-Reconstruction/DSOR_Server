@@ -23,6 +23,7 @@ import sqlite3
 import threading
 import time
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import active_equipment_slots
 from dso_server.gameplay.item_random import deterministic_base_enchantment_rolls
 
@@ -729,7 +730,7 @@ def prime_player_combat_database(
 
 
 def _combat_database_revision(path: Path) -> tuple[int, int]:
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return int(stat.st_mtime_ns), int(stat.st_size)
 
 
@@ -766,7 +767,7 @@ def _resolved_combat_database_path(database_path: str) -> Path:
     row cache without putting path canonicalization in every hit.
     """
 
-    return Path(database_path).resolve()
+    return resident_content.resolved(database_path)
 
 
 def _clean_token(value: object) -> str:

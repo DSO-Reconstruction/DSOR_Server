@@ -19,8 +19,9 @@ import random
 import re
 import sqlite3
 from types import MappingProxyType
-from typing import Iterable, Mapping
+from typing import Iterable, Iterator, Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.persistence import static_schema_compat as compat
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
 from dso_server.protocol.player_init_protocol import (
@@ -32,10 +33,12 @@ from dso_server.protocol.player_init_protocol import (
     EventUpdateEntry,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.paths import DEFAULT_EVENT_LOOT_PATH
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
 
 
 UINT32_MAX = 0xFFFFFFFF
+_CURRENCY_COLLECTIBLE_CATEGORIES = frozenset({"Currency", "NoAutoUseCurrency"})
 _DIFFICULTY_SUFFIX = re.compile(r"_diff_\d+$", re.IGNORECASE)
 _DROP_AMOUNT = re.compile(
     r"^DropAmount:([^,]+),(absolute|relative),([^#]+)", re.IGNORECASE
@@ -100,7 +103,15 @@ class EventCollectible:
     item_category: str
     auto_pick_up: str
     base_value: int
+    # _Template_Item.Region: loot regions, matched against the map's
+    # _Template_MapTemplate.Region and the monster's _Template_Monster.Region
+    # (plus map ids for a few items whose region names a map).
     maps: frozenset[str]
+    # _Template_Item.EventId: the event family the item belongs to.
+    owner_events: frozenset[str] = frozenset()
+    # Paged bars (FixedBarCollectible, or one ``0/``, ``1/``... entry per
+    # page): the page this item is collected on; None on ordinary bars.
+    tier: int | None = None
 
 
 @dataclass(frozen=True)
@@ -112,9 +123,51 @@ class EventProgressBarDefinition:
     collectibles: tuple[EventCollectible, ...]
     item_rewards: tuple[EventReward, ...]
     currency_rewards: tuple[EventReward, ...]
+    # Bars that advance through leaderboard placement or level-ups list a
+    # collectible only as their progress unit; monsters never drop it.
+    monster_drops: bool = True
 
     def accepts(self, player_level: int) -> bool:
         return self.minimum_level <= player_level <= self.maximum_level
+
+    def current_tier(self, amount: int) -> int:
+        """The bar page a player with ``amount`` progress is collecting on.
+
+        Reward entries are ``page/threshold``; the page of the next reward
+        still ahead is the current one, the last page once all are reached.
+        """
+
+        rewards = (*self.item_rewards, *self.currency_rewards)
+        ahead = [reward.tier for reward in rewards if reward.threshold > amount]
+        if ahead:
+            return min(ahead)
+        return max((reward.tier for reward in rewards), default=0)
+
+    def droppable_collectibles(
+        self, progress: Mapping[str, object] | None,
+    ) -> tuple[EventCollectible, ...]:
+        """The collectibles a kill can drop for a player with ``progress``.
+
+        A FixedBarCollectible bar collects one item per page: the retail
+        Dragan event drops the Rise of Dragan key until its first page is
+        done, then progress items, then boss progress (2026-10-28 capture).
+        """
+
+        # Happy-hour bars count Andermant (money_rc): progress from spending
+        # it, never premium currency raining from monsters.
+        droppable = tuple(
+            value for value in self.collectibles
+            if value.item_category not in _CURRENCY_COLLECTIBLE_CATEGORIES
+        )
+        tiered = [value for value in droppable if value.tier is not None]
+        if not tiered:
+            return droppable
+        tier = self.current_tier(max(0, int((progress or {}).get("amount", 0))))
+        reached = [value for value in tiered if value.tier <= tier]
+        if not reached:
+            return ()
+        page = max(value.tier for value in reached)
+        return tuple(value for value in reached if value.tier == page)
 
 
 @dataclass(frozen=True)
@@ -131,6 +184,9 @@ class EventTemplateDefinition:
     status_effects: tuple[str, ...]
     progress_bars: tuple[EventProgressBarDefinition, ...]
     category: str = ""
+    # _Template_Events.Loot: the list every worthy opponent rolls while the
+    # event runs (christmas sugar beets). Contents: data/catalogs/event_loot.json.
+    loot_list_id: str = ""
 
     def progress_bar(self, player_level: int) -> EventProgressBarDefinition | None:
         eligible = tuple(
@@ -154,6 +210,9 @@ class ScheduledEvent:
     collectible_amount: int
     collectible_maps: frozenset[str]
     collectible_ranks: frozenset[str]
+    # Maps the event owns, derived from static data (see _event_owned_maps);
+    # ``collectible_maps`` is the explicit schedule override.
+    progress_maps: frozenset[str] = frozenset()
 
     def state_at(self, now: datetime) -> str:
         if self.forced_state in {"active", "upcoming", "expired"}:
@@ -186,6 +245,46 @@ class EventProgressAdvance:
 
 
 @dataclass(frozen=True)
+class EventLootEntry:
+    """One item of an event loot list, by monster rank class.
+
+    Rank classes are ``monster``, ``elite`` (guardian, champion, leader) and
+    ``boss`` (boss, worldboss); a class without its own values uses
+    ``monster``'s. The chance is further scaled by the monster's
+    ``_Template_Monster.EventDropChance``, unless the entry names
+    ``regions``: then it drops from every monster on maps of those regions
+    (or monsters of them), the event-map loot like christmas presents.
+    """
+
+    item_id: str
+    chances: Mapping[str, float]
+    amounts: Mapping[str, tuple[int, int]]
+    # _Template_Item.MinDropLevel/MaxDropLevel, against the monster's level.
+    minimum_monster_level: int = 1
+    maximum_monster_level: int = 0
+    regions: frozenset[str] = frozenset()
+    # Per map difficulty (``..._Diff_{difficulty:02d}``); the last one serves
+    # higher difficulties. Empty: always item_id.
+    difficulty_items: tuple[str, ...] = ()
+
+    def item_for_difficulty(self, difficulty: int) -> str:
+        if not self.difficulty_items:
+            return self.item_id
+        return self.difficulty_items[
+            max(0, min(int(difficulty), len(self.difficulty_items) - 1))
+        ]
+
+
+def _rank_class(rank_kind: str) -> str:
+    rank = str(rank_kind).casefold()
+    if rank in {"boss", "worldboss"}:
+        return "boss"
+    if rank in {"guardian", "champion", "leader"}:
+        return "elite"
+    return "monster"
+
+
+@dataclass(frozen=True)
 class DropAmountModifier:
     effect_id: int
     target_item_id: str
@@ -200,6 +299,16 @@ class EventCatalog:
     travel_items: Mapping[str, TravelItemDefinition]
     event_map_requirements: Mapping[str, frozenset[str]]
     drop_modifiers: Mapping[int, tuple[DropAmountModifier, ...]]
+    # Casefolded template id -> maps it owns (also for unscheduled templates,
+    # so a challenge event can fall back to its parent event's maps).
+    event_maps: Mapping[str, frozenset[str]] = MappingProxyType({})
+    # Map key (map template, access group or access id) -> its Region tokens.
+    map_regions: Mapping[str, frozenset[str]] = MappingProxyType({})
+    # Casefolded monster template id -> its Region tokens.
+    monster_regions: Mapping[str, frozenset[str]] = MappingProxyType({})
+    # Loot list id -> entries; casefolded monster id -> EventDropChance.
+    event_loot: Mapping[str, tuple[EventLootEntry, ...]] = MappingProxyType({})
+    monster_event_drop_chances: Mapping[str, float] = MappingProxyType({})
 
     def active_events(self, now: datetime | None = None) -> tuple[ScheduledEvent, ...]:
         moment = now or datetime.now(timezone.utc)
@@ -331,8 +440,10 @@ class EventCatalog:
         status_effects: Iterable[StatusEffectEntry],
         rng: random.Random,
         now: datetime | None = None,
+        map_aliases: Iterable[str] = (),
+        monster_template_id: str = "",
+        progress: Mapping[str, Mapping[str, object]] = MappingProxyType({}),
     ) -> tuple[tuple[str, int], ...]:
-        current_map = _map_key(map_id)
         rank = str(monster_rank).casefold()
         # The public catalog is also used by tooling and protocol tests. Be
         # defensive about the runtime store's ``(entry, expires_at)`` shape so
@@ -355,6 +466,90 @@ class EventCatalog:
             if entry is not None
         )
         result = []
+        for event, collectible in self._collectibles_here(
+            map_id=map_id,
+            map_aliases=map_aliases,
+            player_level=player_level,
+            participation=participation,
+            progress=progress,
+            now=now,
+            monster_template_id=monster_template_id,
+        ):
+            if event.collectible_ranks and rank not in event.collectible_ranks:
+                continue
+            # An event map's final boss (Big Paws, Dragan, Wendigo...) always
+            # pays out; generate_monster_loot sizes its stack.
+            if rank != "worldboss" and rng.random() > event.collectible_drop_chance:
+                continue
+            base = max(
+                1,
+                int(event.collectible_amount),
+                int(collectible.base_value),
+            )
+            amount = self._modified_drop_amount(
+                collectible.item_id, base, active_effects
+            )
+            result.append((collectible.item_id, amount))
+        return tuple(result)
+
+    def map_event_collectibles(
+        self,
+        *,
+        map_id: str,
+        player_level: int,
+        participation: Mapping[str, bool],
+        progress: Mapping[str, Mapping[str, object]] = MappingProxyType({}),
+        now: datetime | None = None,
+        map_aliases: Iterable[str] = (),
+    ) -> dict[str, tuple[str, ...]]:
+        """Events whose progress applies on this map, with what a chest drops.
+
+        Keys are casefolded event template ids, values the collectibles this
+        player is collecting there (a paged bar's current page). Map chests
+        (amphorae) drop these outright: unlike kills, no per-event drop
+        chance or monster rank applies.
+        """
+
+        result: dict[str, list[str]] = {}
+        for event, collectible in self._collectibles_here(
+            map_id=map_id,
+            map_aliases=map_aliases,
+            player_level=player_level,
+            participation=participation,
+            progress=progress,
+            now=now,
+        ):
+            items = result.setdefault(event.template.resource_id.casefold(), [])
+            if collectible.item_id not in items:
+                items.append(collectible.item_id)
+        return {key: tuple(value) for key, value in result.items()}
+
+    def _collectibles_here(
+        self,
+        *,
+        map_id: str,
+        map_aliases: Iterable[str],
+        player_level: int,
+        participation: Mapping[str, bool],
+        progress: Mapping[str, Mapping[str, object]],
+        now: datetime | None,
+        monster_template_id: str = "",
+    ) -> Iterator[tuple[ScheduledEvent, EventCollectible]]:
+        """Progress collectibles a drop on this map advances, per event."""
+
+        # An instance is known by its physical map, access group and access
+        # id; any of them can be the name static data uses for it.
+        current_maps = frozenset(
+            key
+            for key in (_map_key(map_id), *(_map_key(v) for v in map_aliases))
+            if key
+        )
+        loot_scopes = current_maps.union(
+            *(self.map_regions.get(key, ()) for key in current_maps),
+            self.monster_regions.get(
+                str(monster_template_id).casefold(), ()
+            ),
+        )
         for event in self.active_events(now):
             template = event.template
             if not bool(participation.get(
@@ -363,41 +558,132 @@ class EventCatalog:
                 continue
             if not template.minimum_level <= player_level <= template.maximum_level:
                 continue
-            if current_map in template.excluded_maps:
+            if current_maps & template.excluded_maps:
                 continue
-            if template.map_id and _map_key(template.map_id) != current_map:
-                continue
-            event_maps = event.collectible_maps
-            if event_maps and current_map not in event_maps:
-                continue
-            if event.collectible_ranks and rank not in event.collectible_ranks:
+            if template.map_id and _map_key(template.map_id) not in current_maps:
                 continue
             bar = template.progress_bar(player_level)
-            if bar is None:
+            if bar is None or not bar.monster_drops:
                 continue
-            for collectible in bar.collectibles:
-                # A scheduled map scope, whether explicit or derived from the
-                # event TravelItems, is the authoritative ownership boundary.
-                # Item Region metadata is only a legacy fallback: some events
-                # omit their first-stage map there even though their TravelItem
-                # explicitly opens that map for the event.
-                if (
-                    not event_maps
-                    and collectible.maps
-                    and current_map not in collectible.maps
+            for collectible in bar.droppable_collectibles(
+                progress.get(str(event.event_id))
+            ):
+                if self._collectible_in_scope(
+                    event, collectible, current_maps, loot_scopes
+                ):
+                    yield event, collectible
+
+    def _collectible_in_scope(
+        self,
+        event: ScheduledEvent,
+        collectible: EventCollectible,
+        current_maps: frozenset[str],
+        loot_scopes: frozenset[str],
+    ) -> bool:
+        """Whether a kill here may drop this event's progress collectible.
+
+        Progress belongs to the event's own content (the Winter Summit for
+        christmas honey cookies), while the "worthy opponents everywhere"
+        drops are the event's Loot list. In order of authority:
+        an explicit schedule ``collectible_maps``; the item's Region, matched
+        against the map's and the monster's regions (or the event's own maps,
+        which covers first-stage maps an item Region omits); the maps the
+        event owns; the maps of the event family named by the item's EventId
+        (challenge events reuse their parent's collectible); otherwise every
+        map, for global kill events.
+        """
+
+        if event.collectible_maps:
+            return bool(event.collectible_maps & current_maps)
+        own = event.progress_maps
+        if collectible.maps:
+            return bool(collectible.maps & loot_scopes or own & current_maps)
+        if own:
+            return bool(own & current_maps)
+        family = frozenset().union(*(
+            self.event_maps.get(owner, ())
+            for owner in collectible.owner_events
+        ))
+        if family:
+            return bool(family & current_maps)
+        return True
+
+    def event_loot_drops(
+        self,
+        *,
+        map_id: str,
+        player_level: int,
+        monster_template_id: str,
+        monster_rank: str,
+        monster_level: int,
+        participation: Mapping[str, bool],
+        rng: random.Random,
+        now: datetime | None = None,
+        map_aliases: Iterable[str] = (),
+        map_difficulty: int = 0,
+    ) -> tuple[tuple[str, int], ...]:
+        """Roll the Loot lists of the active events for one kill.
+
+        These are the "collect X from worthy opponents" drops (christmas
+        sugar beets): any map the event does not exclude, from monsters whose
+        authored EventDropChance is above zero, so event-dungeon monsters,
+        adds and summons drop none. Entries with ``regions`` are the event
+        maps' own loot instead (christmas presents on the e_chr maps).
+        """
+
+        worthiness = self.monster_event_drop_chances.get(
+            str(monster_template_id).casefold(), 0.0
+        )
+        current_maps = frozenset(
+            key
+            for key in (_map_key(map_id), *(_map_key(v) for v in map_aliases))
+            if key
+        )
+        loot_scopes = current_maps.union(
+            *(self.map_regions.get(key, ()) for key in current_maps),
+            self.monster_regions.get(str(monster_template_id).casefold(), ()),
+        )
+        rank = _rank_class(monster_rank)
+        result = []
+        for event in self.active_events(now):
+            template = event.template
+            entries = self.event_loot.get(template.loot_list_id.casefold(), ())
+            if not entries:
+                continue
+            if not bool(participation.get(
+                str(event.event_id), event.participation_default
+            )):
+                continue
+            if not template.minimum_level <= player_level <= template.maximum_level:
+                continue
+            if current_maps & template.excluded_maps:
+                continue
+            if template.map_id and _map_key(template.map_id) not in current_maps:
+                continue
+            for entry in entries:
+                if monster_level < entry.minimum_monster_level or (
+                    entry.maximum_monster_level
+                    and monster_level > entry.maximum_monster_level
                 ):
                     continue
-                if rng.random() > event.collectible_drop_chance:
+                if entry.regions:
+                    if not entry.regions & loot_scopes:
+                        continue
+                    scale = 1.0
+                elif worthiness <= 0.0:
                     continue
-                base = max(
-                    1,
-                    int(event.collectible_amount),
-                    int(collectible.base_value),
+                else:
+                    scale = worthiness
+                chance = entry.chances.get(rank, entry.chances.get("monster", 0.0))
+                if rng.random() >= chance * scale:
+                    continue
+                low, high = entry.amounts.get(
+                    rank, entry.amounts.get("monster", (1, 1))
                 )
-                amount = self._modified_drop_amount(
-                    collectible.item_id, base, active_effects
-                )
-                result.append((collectible.item_id, amount))
+                result.append((
+                    entry.item_for_difficulty(map_difficulty),
+                    rng.randint(low, high),
+                ))
         return tuple(result)
 
     def _modified_drop_amount(
@@ -552,6 +838,280 @@ def _parse_reward_entries(value: object, *, currency: bool) -> tuple[EventReward
     return tuple(sorted(rewards, key=lambda reward: reward.threshold))
 
 
+def _event_owned_maps(
+    templates: Mapping[str, EventTemplateDefinition],
+    item_rows: Mapping[str, Mapping[str, object]],
+    map_rows: Iterable[Mapping[str, object]],
+    access_rows: Iterable[Mapping[str, object]],
+    travel_maps: Mapping[str, set[str]],
+    scripted_maps: Mapping[str, set[str]] | None = None,
+    exit_maps: Mapping[str, frozenset[str]] | None = None,
+) -> dict[str, frozenset[str]]:
+    """Map keys each event template owns, from static data alone.
+
+    Seeds are the template's Map, its TravelItem targets, access groups that
+    require the event, and access groups entered with a key item of the
+    event (the Winter Summit takes christmas sugar beets). Event-type maps
+    sharing a Region with a seed join it: the christmas maps are all region
+    ``e_chr``, so its calendar and Kranparus dungeons count too.
+
+    An event with none of those falls back to ``scripted_maps``, the maps
+    whose ``<map>_<event>.eve`` script runs for it: Helios trademarks belong
+    to its PvP arenas. Only then, as most seasonal events script every hub.
+    """
+
+    known = {resource_id.casefold() for resource_id in templates}
+    seeds: dict[str, set[str]] = {
+        event_id: set(maps) for event_id, maps in travel_maps.items()
+    }
+    for resource_id, template in templates.items():
+        if template.map_id:
+            seeds.setdefault(resource_id.casefold(), set()).add(
+                _map_key(template.map_id)
+            )
+
+    group_maps: dict[str, set[str]] = {}
+    event_maps_by_region: dict[str, set[str]] = {}
+    map_info: dict[str, list[tuple[str, frozenset[str]]]] = {}
+    for row in map_rows:
+        key = _map_key(row.get("MapTemplate"))
+        group = _map_key(row.get("AccessGroup"))
+        map_type = str(row.get("MapType") or "")
+        regions = frozenset(value.casefold() for value in _tokens(row.get("Region")))
+        if group:
+            group_maps.setdefault(group, set()).update((key, group))
+        map_info.setdefault(key, []).append((map_type, regions))
+    for key, variants in map_info.items():
+        # Regional variants give a shared arena (the anniversary arena has
+        # one row per themed region) a row in many families; only a map of
+        # a single region belongs to that region's family.
+        regions = frozenset().union(*(
+            regions for map_type, regions in variants if map_type == "Event"
+        ))
+        if len(regions) == 1:
+            event_maps_by_region.setdefault(next(iter(regions)), set()).add(key)
+    for row in access_rows:
+        group = _map_key(row.get("AccessGroup"))
+        if group:
+            group_maps.setdefault(group, {group}).add(_map_key(row.get("Id")))
+
+    for row in access_rows:
+        group = _map_key(row.get("AccessGroup"))
+        owners = {
+            value.casefold()
+            for value in (
+                *_tokens(row.get("RequiredActiveEvent")),
+                *_tokens(row.get("EventId")),
+            )
+        }
+        for key_entry in (
+            *_tokens(row.get("KeyId")), *_tokens(row.get("TeleportKeyId")),
+        ):
+            item = item_rows.get(key_entry.split(":", 1)[0].strip())
+            if item is not None:
+                owners.update(
+                    value.casefold() for value in _tokens(item.get("EventId"))
+                )
+        for owner in owners & known:
+            seeds.setdefault(owner, set()).update(
+                group_maps.get(group, ()), (_map_key(row.get("Id")),)
+            )
+    # Region-scoped collectibles (the sewer blitz worm's progress) already
+    # say where they drop; a script map would widen them to every monster.
+    unscoped = {
+        resource_id.casefold()
+        for resource_id, template in templates.items()
+        if any(
+            not collectible.maps
+            for bar in template.progress_bars
+            for collectible in bar.collectibles
+        )
+    }
+    exits = {
+        event_id: maps for event_id, maps in (exit_maps or {}).items()
+        if event_id in known
+    }
+    for event_id, maps in (scripted_maps or {}).items():
+        if (
+            event_id in unscoped
+            and not seeds.get(event_id)
+            and not exits.get(event_id)
+        ):
+            seeds[event_id] = set(maps)
+
+    owned: dict[str, frozenset[str]] = {}
+    for event_id, maps in seeds.items():
+        expanded = set(maps)
+        for key in maps:
+            expanded.update(group_maps.get(key, ()))
+            for map_type, regions in map_info.get(key, ()):
+                if map_type != "Event":
+                    continue
+                for region in regions:
+                    expanded.update(event_maps_by_region.get(region, ()))
+        expanded.discard("")
+        if expanded:
+            owned[event_id] = frozenset(expanded)
+    # The maps an event's own exits lead to count exactly: no region
+    # widening, or the Frozen Field (region e_chr) would take in the Winter
+    # Summit that hosts its entrance.
+    for event_id, maps in exits.items():
+        exact = set(maps)
+        for key in maps:
+            exact.update(group_maps.get(key, ()))
+        exact.discard("")
+        if exact:
+            owned[event_id] = owned.get(event_id, frozenset()) | frozenset(exact)
+    return owned
+
+
+@lru_cache(maxsize=4)
+def _event_exit_destinations(
+    database_path: str, database_mtime_ns: int, database_size: int,
+) -> dict[str, frozenset[str]]:
+    """Event id -> maps behind exits that only an ``<event>=True`` EventSet opens.
+
+    A sub-event names its own map this way: the Winter Summit's exits to the
+    Frozen Field stand behind ``e_chr_2015_challenge_04=True``, and those to
+    Kranparus' lairs behind ``e_chr_2015_challenge_01..03=True``. The static
+    exit list carries each exit's map and EventSet row; the flag text lives in
+    that map's own EventSet table. Cached per static.db4 revision because it
+    opens every map with gated exits.
+    """
+
+    del database_mtime_ns, database_size
+    db_path = Path(database_path)
+    maps_directory = db_path.parent.parent / "maps"
+    with sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True) as database:
+        known = {
+            str(row[0]).casefold()
+            for row in database.execute("SELECT Id FROM _Template_Events")
+        }
+        if not compat.has_columns(
+            database, "_Template_ExitList", "_Level", "EventSetRow", "ExitURL",
+        ):
+            return {}
+        gated: dict[str, list[tuple[int, str]]] = {}
+        for level, event_set, url in database.execute(
+            "SELECT _Level, EventSetRow, ExitURL FROM _Template_ExitList "
+            "WHERE EventSetRow IS NOT NULL AND EventSetRow != -1 "
+            "AND COALESCE(ExitURL, '') != ''"
+        ):
+            gated.setdefault(str(level), []).append((int(event_set), str(url)))
+    result: dict[str, set[str]] = {}
+    for level, exits in gated.items():
+        path = maps_directory / f"{level}.db4"
+        if not path.is_file():
+            continue
+        wanted = sorted({str(event_set) for event_set, _url in exits})
+        try:
+            with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as map_database:
+                flags = dict(map_database.execute(
+                    "SELECT Id, EventFlags FROM _Instance_EventSets WHERE Id IN ({})".format(
+                        ",".join("?" * len(wanted))
+                    ),
+                    wanted,
+                ))
+        except sqlite3.Error:
+            continue
+        for event_set, url in exits:
+            for token in re.split(r"[;,]", str(flags.get(str(event_set)) or "")):
+                name, _separator, value = token.partition("=")
+                name = name.strip().casefold()
+                if name in known and value.strip().casefold() == "true":
+                    result.setdefault(name, set()).add(_map_key(url))
+    return {event_id: frozenset(maps) for event_id, maps in result.items()}
+
+
+def _event_scripted_maps(
+    maps_directory: Path, templates: Mapping[str, EventTemplateDefinition],
+) -> dict[str, set[str]]:
+    """Event id -> maps shipping a ``<map>_<event>.eve`` script for it."""
+
+    known = {resource_id.casefold() for resource_id in templates}
+    result: dict[str, set[str]] = {}
+    try:
+        names = [path.stem for path in maps_directory.glob("*.eve")]
+    except OSError:
+        return result
+    for stem in names:
+        folded = stem.casefold()
+        for index, character in enumerate(folded):
+            if character == "_" and folded[index + 1:] in known:
+                result.setdefault(folded[index + 1:], set()).add(
+                    _map_key(folded[:index])
+                )
+                break
+    return result
+
+
+def _event_loot_lists(
+    path: str, item_rows: Mapping[str, Mapping[str, object]],
+) -> dict[str, tuple[EventLootEntry, ...]]:
+    """Parse data/catalogs/event_loot.json (see docs there).
+
+    The retail server owned these loot lists and the client data only names
+    them, so their contents are authored here. A malformed file fails the
+    catalog load like a malformed schedule does.
+    """
+
+    if not path:
+        return {}
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    lists = document.get("loot_lists") if isinstance(document, dict) else None
+    if not isinstance(lists, dict):
+        raise ValueError("event loot must contain a loot_lists object")
+    result: dict[str, tuple[EventLootEntry, ...]] = {}
+    for list_id, entries in lists.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"event loot list {list_id!r} must be an array")
+        parsed = []
+        for entry in entries:
+            item_id = str(entry.get("item") or "")
+            # ``{difficulty:02d}`` picks the map difficulty's variant
+            # (e_chr_progress_box_rare_Diff_03); the variants run from 0 up
+            # to the last one the database has.
+            difficulty_items = []
+            if "{difficulty" in item_id:
+                for difficulty in range(0, 100):
+                    variant = item_id.format(difficulty=difficulty)
+                    if variant not in item_rows:
+                        break
+                    difficulty_items.append(variant)
+                if not difficulty_items:
+                    raise ValueError(f"event loot list {list_id!r} names unknown item {item_id!r}")
+                item_id = difficulty_items[0]
+            item = item_rows.get(item_id)
+            if item is None:
+                raise ValueError(f"event loot list {list_id!r} names unknown item {item_id!r}")
+            chances = {
+                str(rank): max(0.0, min(1.0, float(value)))
+                for rank, value in dict(entry.get("chance") or {}).items()
+            }
+            amounts = {}
+            for rank, value in dict(entry.get("amount") or {}).items():
+                low, high = (int(value[0]), int(value[-1])) if isinstance(
+                    value, list) else (int(value), int(value))
+                if not 1 <= low <= high:
+                    raise ValueError(f"event loot amount for {item_id!r} must be 1 <= min <= max")
+                amounts[str(rank)] = (low, high)
+            if not chances:
+                raise ValueError(f"event loot entry {item_id!r} needs a chance")
+            parsed.append(EventLootEntry(
+                item_id=item_id,
+                chances=MappingProxyType(chances),
+                amounts=MappingProxyType(amounts),
+                minimum_monster_level=max(1, int(item.get("MinDropLevel") or 1)),
+                maximum_monster_level=max(0, int(item.get("MaxDropLevel") or 0)),
+                regions=frozenset(
+                    str(value).casefold() for value in entry.get("regions") or ()
+                ),
+                difficulty_items=tuple(difficulty_items),
+            ))
+        result[str(list_id).casefold()] = tuple(parsed)
+    return result
+
+
 def _schedule_revision(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_mtime_ns, stat.st_size
@@ -565,10 +1125,14 @@ def _load_catalog(
     schedule_path: str,
     schedule_mtime_ns: int,
     schedule_size: int,
+    loot_path: str = "",
+    loot_mtime_ns: int = 0,
+    loot_size: int = 0,
 ) -> EventCatalog:
     del database_mtime_ns, database_size, schedule_mtime_ns, schedule_size
+    del loot_mtime_ns, loot_size
     db_path = Path(database_path)
-    config = json.loads(Path(schedule_path).read_text(encoding="utf-8"))
+    config = json.loads(resident_content.read_text(schedule_path, encoding="utf-8"))
     with sqlite3.connect(
         f"file:{db_path.as_posix()}?mode=ro", uri=True
     ) as database:
@@ -577,12 +1141,43 @@ def _load_catalog(
             str(row["Id"]): dict(row)
             for row in database.execute("SELECT * FROM _Template_Item")
         }
-        map_ids = frozenset(
-            _map_key(row["MapTemplate"])
-            for row in database.execute(
-                compat.map_template_query(database, ("MapTemplate",))
-            )
+        map_rows = tuple(
+            dict(row)
+            for row in database.execute(compat.map_template_query(
+                database, ("MapTemplate", "AccessGroup", "MapType", "Region"),
+            ))
         )
+        access_rows = ()
+        if compat.has_columns(
+            database, "_Template_MapAccessGroup", "Id", "AccessGroup"
+        ):
+            access_columns = compat.columns(
+                database, "_Template_MapAccessGroup"
+            )
+            access_rows = tuple(
+                dict(row)
+                for row in database.execute(
+                    "SELECT {} FROM _Template_MapAccessGroup".format(", ".join(
+                        name if name in access_columns else f"NULL AS {name}"
+                        for name in (
+                            "Id", "AccessGroup", "RequiredActiveEvent",
+                            "EventId", "KeyId", "TeleportKeyId",
+                        )
+                    ))
+                )
+            )
+        monster_region_rows = ()
+        if compat.has_columns(database, "_Template_Monster", "Region"):
+            monster_region_rows = tuple(database.execute(
+                "SELECT Id, Region FROM _Template_Monster "
+                "WHERE Region IS NOT NULL AND Region != ''"
+            ))
+        monster_event_drop_rows = ()
+        if compat.has_columns(database, "_Template_Monster", "EventDropChance"):
+            monster_event_drop_rows = tuple(database.execute(
+                "SELECT Id, EventDropChance FROM _Template_Monster "
+                "WHERE EventDropChance > 0"
+            ))
         # Event progress bars postdate the legacy client, which has no table for
         # them; an empty catalogue reads as "this build shows no progress bars".
         progress_rows = {}
@@ -616,29 +1211,60 @@ def _load_catalog(
             if bar_row is None:
                 continue
             collectibles = []
+            entries = []
             for encoded in _tokens(bar_row.get("EventCollectibles")):
                 encoded_parts = encoded.split("/", 1)
-                item_id = encoded_parts[-1].strip()
                 try:
-                    progress_value = (
-                        max(1, int(encoded_parts[0]))
-                        if len(encoded_parts) == 2 else 1
+                    prefix = (
+                        int(encoded_parts[0]) if len(encoded_parts) == 2 else None
                     )
                 except ValueError:
-                    progress_value = 1
+                    prefix = None
+                entries.append((prefix, encoded_parts[-1].strip()))
+            # Several bars list one entry per page (0/, 1/, 2/...) without the
+            # FixedBarCollectible flag: Full Moon and Stellar Gold repeat the
+            # same item per page, Lost Viscanium changes it. Read those as
+            # pages too; as progress values they rolled one item three times.
+            fixed_tiers = bool(int(bar_row.get("FixedBarCollectible") or 0)) or (
+                len(entries) > 1
+                and sorted(prefix for prefix, _ in entries if prefix is not None)
+                == list(range(len(entries)))
+            )
+            seen_items = set()
+            for prefix, item_id in entries:
                 item = item_rows.get(item_id)
                 if item is None:
                     continue
+                if not fixed_tiers:
+                    if item_id in seen_items:
+                        continue
+                    seen_items.add(item_id)
+                if fixed_tiers:
+                    # The prefix is the bar page, and one drop is worth the
+                    # bar's ProgressbarBase: retail dropped the Dragan key in
+                    # stacks of 2 on its 2.0-base bars (2026-10-28 capture).
+                    tier = prefix or 0
+                    base_value = max(1, round(float(
+                        bar_row.get("ProgressbarBase") or 1
+                    )))
+                else:
+                    # The prefix is the authored progress represented by one
+                    # drop (for example ``2/e_sca_dun_01_progress_item``).
+                    tier = None
+                    base_value = max(
+                        max(1, prefix or 1), int(item.get("BaseValue") or 1)
+                    )
                 collectibles.append(EventCollectible(
                     item_id=item_id,
                     item_category=str(item.get("ItemCategory") or "InstantConsumable"),
                     auto_pick_up=str(item.get("AutoPickUp") or "All"),
-                    # The prefix is the authored progress represented by one
-                    # drop (for example ``2/e_sca_dun_01_progress_item``).
-                    base_value=max(
-                        progress_value, int(item.get("BaseValue") or 1)
-                    ),
+                    tier=tier,
+                    base_value=base_value,
                     maps=frozenset(_map_key(value) for value in _tokens(item.get("Region"))),
+                    owner_events=frozenset(
+                        value.casefold()
+                        for value in _tokens(item.get("EventId"))
+                    ),
                 ))
             bars.append(EventProgressBarDefinition(
                 resource_id=bar_id,
@@ -651,6 +1277,14 @@ def _load_catalog(
                 ),
                 currency_rewards=_parse_reward_entries(
                     bar_row.get("EventRewardCurrency"), currency=True
+                ),
+                monster_drops=not any(
+                    int(bar_row.get(column) or 0)
+                    for column in (
+                        "ProgressByPVELeaderboardProgress",
+                        "ProgressByPVPLeaderboardProgress",
+                        "ProgressByLevelUp",
+                    )
                 ),
             ))
         templates[resource_id] = EventTemplateDefinition(
@@ -668,6 +1302,7 @@ def _load_catalog(
             status_effects=_tokens(row.get("EventStatusEffects")),
             progress_bars=tuple(bars),
             category=str(row.get("Category") or ""),
+            loot_list_id=str(row.get("Loot") or "").strip(),
         )
 
     events = []
@@ -752,24 +1387,53 @@ def _load_catalog(
         )
 
     # Several global event definitions leave _Template_Events.Map empty.
-    # Their authoritative map ownership is instead encoded on the event's
-    # TravelItems. Without carrying those targets into the loot gate, every
-    # active global event can roll its progress item in every map (for
-    # example Big Game Hunt progress inside Desert of Essences). An explicit
-    # schedule override remains authoritative for development events.
+    # Their map ownership is instead encoded on the event's TravelItems,
+    # access groups and keys. Without carrying it into the loot gate, every
+    # active global event rolls its progress item in every map (for example
+    # Big Game Hunt progress inside Desert of Essences, or Winter Solstice
+    # progress in Kingshill). An explicit schedule override stays
+    # authoritative and is kept apart, so the CMS carries only that forward.
+    database_revision = db_path.stat()
+    event_maps = _event_owned_maps(
+        templates, item_rows, map_rows, access_rows, event_collectible_maps,
+        _event_scripted_maps(db_path.parent.parent / "maps", templates),
+        _event_exit_destinations(
+            str(db_path), database_revision.st_mtime_ns, database_revision.st_size,
+        ),
+    )
     events = [
         replace(
             event,
-            collectible_maps=(
-                event.collectible_maps
-                or frozenset(event_collectible_maps.get(
-                    event.template.resource_id.casefold(),
-                    (),
-                ))
+            progress_maps=event_maps.get(
+                event.template.resource_id.casefold(), frozenset()
             ),
         )
         for event in events
     ]
+    map_regions: dict[str, set[str]] = {}
+    group_regions: dict[str, set[str]] = {}
+    for row in map_rows:
+        regions = {value.casefold() for value in _tokens(row.get("Region"))}
+        map_regions.setdefault(_map_key(row.get("MapTemplate")), set()).update(
+            regions
+        )
+        group = _map_key(row.get("AccessGroup"))
+        if group:
+            group_regions.setdefault(group, set()).update(regions)
+    for group, regions in group_regions.items():
+        map_regions.setdefault(group, set()).update(regions)
+    for row in access_rows:
+        regions = group_regions.get(_map_key(row.get("AccessGroup")))
+        if regions:
+            map_regions.setdefault(_map_key(row.get("Id")), set()).update(
+                regions
+            )
+    monster_regions = {
+        str(monster_id).casefold(): frozenset(
+            value.casefold() for value in _tokens(region)
+        )
+        for monster_id, region in monster_region_rows
+    }
 
     modifiers: dict[int, list[DropAmountModifier]] = {}
     for effect_id, _resource_id, program in status_rows:
@@ -792,26 +1456,42 @@ def _load_catalog(
         drop_modifiers=MappingProxyType({
             key: tuple(values) for key, values in modifiers.items()
         }),
+        event_maps=MappingProxyType(event_maps),
+        map_regions=MappingProxyType({
+            key: frozenset(values)
+            for key, values in map_regions.items() if values
+        }),
+        monster_regions=MappingProxyType(monster_regions),
+        event_loot=MappingProxyType(_event_loot_lists(loot_path, item_rows)),
+        monster_event_drop_chances=MappingProxyType({
+            str(monster_id).casefold(): min(1.0, float(chance))
+            for monster_id, chance in monster_event_drop_rows
+        }),
     )
 
 
 def load_event_catalog(
     database_path: str | Path,
     schedule_path: str | Path,
+    loot_path: str | Path | None = None,
 ) -> EventCatalog:
     # Looked up many times per map entry: use the last observed revisions
     # instead of stat()ing both files each time (runtime/file_revisions.py).
     # The CMS invalidates the schedule after writing it.
     database = resolved_path(str(database_path))
     schedule = resolved_path(str(schedule_path))
+    loot = resolved_path(str(loot_path or DEFAULT_EVENT_LOOT_PATH))
     database_revision = observed_revision(database)
     schedule_revision = observed_revision(schedule)
     if database_revision is None:
         raise FileNotFoundError(database)
     if schedule_revision is None:
         raise FileNotFoundError(schedule)
+    # The event loot table is optional: without it events drop no Loot list.
+    loot_revision = observed_revision(loot)
     return _load_catalog(
         str(database), *database_revision, str(schedule), *schedule_revision,
+        *((str(loot), *loot_revision) if loot_revision is not None else ()),
     )
 
 

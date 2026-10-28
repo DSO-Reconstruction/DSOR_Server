@@ -22,6 +22,8 @@ from pathlib import Path
 import sqlite3
 from typing import Iterable
 
+from dso_server.runtime import resident_content
+
 
 @dataclass(frozen=True)
 class VeteranLevel:
@@ -62,7 +64,7 @@ def _load(path: str, mtime_ns: int, size: int) -> VeteranRules:
 
 def load_veteran_rules(static_database_path: str | Path) -> VeteranRules:
     path = Path(static_database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load(str(path), stat.st_mtime_ns, stat.st_size)
 
 

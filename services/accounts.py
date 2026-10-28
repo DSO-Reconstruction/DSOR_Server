@@ -659,16 +659,22 @@ class AccountService:
             name="account-service",
         )
         self._thread.start()
-        if self.maps is not None:
+        if self.maps is not None or self.static_db is not None:
             # Hashing and packing 391 maps takes seconds: done before the
-            # first sign-in asks, not while it waits.
+            # first sign-in asks, not while it waits. Packing at start also
+            # publishes the revision the game services loaded into memory.
             threading.Thread(target=self._warm_maps, daemon=True, name="account-maps").start()
 
     def _warm_maps(self) -> None:
-        try:
-            self.maps.describe()
-        except (OSError, ValueError, RuntimeError) as exc:
-            print(f"[AccountService] map databases unavailable: {exc}")
+        for label, publisher in (
+            ("static database", self.static_db), ("map databases", self.maps),
+        ):
+            if publisher is None:
+                continue
+            try:
+                publisher.describe()
+            except (OSError, ValueError, RuntimeError) as exc:
+                print(f"[AccountService] {label} unavailable: {exc}")
 
     def stop(self) -> None:
         httpd, self._httpd = self._httpd, None

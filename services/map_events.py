@@ -20,6 +20,7 @@ from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 
+from dso_server.runtime import resident_content
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.endless_tower_buffs import start_tower_buffs, tower_kills
@@ -139,6 +140,11 @@ from dso_server.protocol.commerce_protocol import (
     load_purchase_item_definition,
 )
 from dso_server.protocol.world_loot_protocol import WorldLootDrop
+from dso_server.gameplay.prop_loot import (
+    chest_drop_positions,
+    load_prop_loot_catalog,
+    roll_prop_loot,
+)
 from dso_server.gameplay.quest_content import load_quest_catalog
 from dso_server.paths import DEFAULT_QUESTS_PATH
 from dso_server.gameplay.mortis_arena import select_spawn_rows as select_mortis_spawn_rows
@@ -687,6 +693,9 @@ EVENT_SPAWN_SNAP_DISTANCE = 4.0
 # same actor, materialized by the initial population (boss rooms bypass the
 # event gate so the boss exists on entry).
 EVENT_SPAWN_DUPLICATE_RADIUS = 1.5
+# Statue turrets this close to a defeated boss guard its arena: Big Paws'
+# two turrets stand 12 m from him, the nearest corridor statues over 60 m.
+ARENA_HAZARD_RADIUS = 25.0
 _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
@@ -801,7 +810,7 @@ def _log(message: str) -> None:
 
 @lru_cache(maxsize=4)
 def _exit_access_difficulties(database_path: str) -> dict[str, int]:
-    path = Path(database_path).resolve().as_uri()
+    path = resident_content.resolved(database_path).as_uri()
     with closing(sqlite3.connect(f"{path}?mode=ro", uri=True)) as database:
         return {
             str(access_id): int(difficulty or 0)
@@ -2510,7 +2519,7 @@ class MapEventService:
                 if not rule.maps or map_key(runtime.map_id) in rule.maps
             )
             if score_rules:
-                static_path = Path(self.static_database_path).resolve().as_uri()
+                static_path = resident_content.resolved(self.static_database_path).as_uri()
                 scored_templates = tuple(
                     (
                         str(getattr(monster, "template_id", "")).casefold(),
@@ -3117,20 +3126,45 @@ class MapEventService:
                 for _ in range(gem_count)
             )
         else:
-            _log(
-                f"no local loot table for chest {definition.instance_id!r} "
-                f"({loot_list_id!r}); no rewards spawned"
+            try:
+                entries = load_prop_loot_catalog().entries(loot_list_id)
+            except (OSError, ValueError) as exc:
+                _log(f"prop loot catalog unavailable: {type(exc).__name__}: {exc}")
+                entries = None
+            if entries is None:
+                _log(
+                    f"no local loot table for chest {definition.instance_id!r} "
+                    f"({loot_list_id!r}); no rewards spawned"
+                )
+                return 0
+            specifications = list(self._roll_map_chest_loot(s, entries))
+            if not specifications:
+                _log(f"chest {definition.instance_id!r} rolled no rewards")
+                return 0
+        # Retail drops a chest's loot around the clicking player, not the
+        # chest (see gameplay/prop_loot.py).
+        with s.flow_lock:
+            encounter = s.gameplay_monster_encounter
+            last_move = s.gameplay_last_move
+        origin = tuple(float(value) for value in definition.position)
+        if encounter is not None and last_move is not None:
+            origin = encounter.coordinate_frame.wire_to_world(
+                last_move.relative_position
             )
-            return 0
+        positions = chest_drop_positions(origin, len(specifications))
         try:
+            item_rows = prime_world_loot_cache(self.static_database_path).items_by_id
             drops = []
-            for template_id, amount in specifications:
+            for (template_id, amount), position in zip(specifications, positions):
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
                 item = _new_item(item_definition, 0, amount)
-                item.field_100 = tuple(float(value) for value in definition.position)
-                auto_pick_up = "All" if item_definition.item_category == "Currency" else "None"
+                item.field_100 = position
+                auto_pick_up = str(
+                    item_rows.get(template_id, {}).get("AutoPickUp")
+                    or ("All" if item_definition.item_category == "Currency" else "None")
+                )
                 drops.append(WorldLootDrop(
                     item, item_definition.item_category, auto_pick_up,
                 ))
@@ -3172,6 +3206,113 @@ class MapEventService:
             f"{definition.instance_id!r} for player session"
         )
         return len(drops)
+
+    def _roll_map_chest_loot(self, s: Session, entries) -> tuple[tuple[str, int], ...]:
+        """Roll a catalog chest list for the clicking player.
+
+        Event progress entries drop the page item this player is collecting
+        for each event whose progress applies on the map, the same scope
+        monster kills use.
+        """
+
+        with s.flow_lock:
+            character = s.gameplay_character
+            map_id = str(s.gameplay_map or "")
+            access_id = str(getattr(s, "gameplay_map_access_id", None) or "")
+            event_map_id = str(
+                getattr(s, "gameplay_map_access_group_id", None)
+                or access_id or map_id
+            )
+            participation = dict(s.gameplay_event_participation)
+            progress = dict(getattr(s, "gameplay_event_progress", None) or {})
+            event_catalog = s.gameplay_event_catalog
+        if event_catalog is None:
+            event_catalog = CharacterService._event_catalog(self)
+        player_level = max(1, int(getattr(character, "level", 1) or 1))
+        collectibles = event_catalog.map_event_collectibles(
+            map_id=event_map_id,
+            map_aliases=(map_id, access_id),
+            player_level=player_level,
+            participation=participation,
+            progress=progress,
+        )
+        return roll_prop_loot(
+            entries,
+            player_level=player_level,
+            rng=random.SystemRandom(),
+            event_collectibles=collectibles,
+        )
+
+    @staticmethod
+    def _prop_keys_missing(s: Session, definition) -> int:
+        """How many of the prop's KeyId the player lacks for one use."""
+
+        if not definition.spends_keys:
+            return 0
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            carried = sum(
+                int(item.amount) for item in getattr(inventory, "items", ())
+                if item.template_id == definition.key_id
+            )
+        return max(0, int(definition.key_amount) - carried)
+
+    @staticmethod
+    def _spend_prop_keys(s: Session, definition) -> bool:
+        """Take KeyAmount x KeyId for one use and publish the bag change.
+
+        Retail kept the key stack's item id and sent the reduced stack
+        (e_sar_chest_key 302 -> 301, same id) before the chest's loot.
+        """
+
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            if inventory is None:
+                return False
+            builder = InventoryMutationBuilder(inventory, s.gameplay_next_item_id)
+            try:
+                builder.consume_template(
+                    definition.key_id, int(definition.key_amount),
+                    preserve_item_ids=True,
+                )
+            except ValueError as exc:
+                _log(f"cannot spend keys for {definition.instance_id!r}: {exc}")
+                return False
+            mutation = builder.finish()
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = max(
+                int(s.gameplay_next_item_id), int(mutation.next_item_id),
+            )
+        packet, packet_bits = encode_server_command_batch(tuple(
+            ServerCommand(INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID)
+            for record in (mutation.delta, mutation.final)
+        ), include_terminator=True)
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="prop-key-inventory",
+        )
+        CharacterService._request_account_save(s, "chest key spent")
+        return True
+
+    @staticmethod
+    def _restore_prop_for_viewer(s: Session, definition, *, label: str) -> None:
+        """Put a prop the client already opened back to its active state."""
+
+        update = PropUpdate(
+            prop_id=definition.prop_id,
+            state=PROP_STATE_ACTIVE,
+            actor_id=LOCAL_PLAYER_ACTOR_ID,
+            counter=_session_game_tick(s),
+            state_changed=True,
+            operation=WIRE_PROP_OPERATION,
+            task_index=0,
+            keep_visual_state=False,
+        )
+        packet, packet_bits = encode_prop_update_batch((update,), actor_id=0)
+        s.send_reliable_ordered((packet, packet_bits), track=True, label=label)
+        _send_prop_info(
+            s, (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+            label=f"{label}-info",
+        )
 
     def _handle_staging_signal(self, s: Session, payload: bytes) -> None:
         CharacterService._handle_simple_gameplay_command(s, payload, 0x0113)
@@ -3657,31 +3798,39 @@ class MapEventService:
                 # Keep the chest visible and restore its closed state after a
                 # premature click. Do this before IndividualUsage consumes
                 # the one-shot prop.
-                update = PropUpdate(
-                    prop_id=chest_definition.prop_id,
-                    state=PROP_STATE_ACTIVE,
-                    actor_id=LOCAL_PLAYER_ACTOR_ID,
-                    counter=_session_game_tick(s),
-                    state_changed=True,
-                    operation=WIRE_PROP_OPERATION,
-                    task_index=0,
-                    keep_visual_state=False,
-                )
-                packet, packet_bits = encode_prop_update_batch(
-                    (update,), actor_id=0,
-                )
-                s.send_reliable_ordered(
-                    (packet, packet_bits), track=True,
-                    label="boss-chest-locked",
-                )
-                _send_prop_info(
-                    s,
-                    (PropRuntimeState(chest_definition, PROP_STATE_ACTIVE),),
-                    label="boss-chest-locked-info",
+                self._restore_prop_for_viewer(
+                    s, chest_definition, label="boss-chest-locked",
                 )
                 _log(
                     f"locked boss reward chest {chest_definition.instance_id!r} "
                     f"until {reward_gate[0]} dies"
+                )
+                return
+        with runtime.lock:
+            keyed = runtime.props.get(int(request.prop_id))
+            keyed_first_use = bool(
+                keyed is not None
+                and keyed.definition.spends_keys
+                and keyed.state == PROP_STATE_ACTIVE
+                and (
+                    not keyed.definition.individual_usage
+                    or (
+                        _individual_prop_player_id(s),
+                        int(keyed.definition.prop_id),
+                    ) not in runtime.individual_prop_usage
+                )
+            )
+        if keyed_first_use:
+            missing = self._prop_keys_missing(s, keyed.definition)
+            if missing:
+                # Amphorae cost KeyAmount x KeyId (e_sar_chest_key) per use.
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="prop-key-missing",
+                )
+                _log(
+                    f"prop {keyed.definition.instance_id!r} needs "
+                    f"{keyed.definition.key_amount}x {keyed.definition.key_id!r}; "
+                    f"player is {missing} short"
                 )
                 return
         with runtime.lock:
@@ -3738,6 +3887,22 @@ class MapEventService:
             return
         state, flipped = result
         definition = state.definition
+        if (
+            flipped and definition.spends_keys
+            and not self._spend_prop_keys(s, definition)
+        ):
+            # The keys left the bag between the check and the use: undo it.
+            with runtime.lock:
+                if definition.individual_usage:
+                    runtime.individual_prop_usage.discard((
+                        _individual_prop_player_id(s), int(definition.prop_id),
+                    ))
+                else:
+                    live = runtime.props.get(int(definition.prop_id))
+                    if live is not None:
+                        live.state = PROP_STATE_ACTIVE
+            self._restore_prop_for_viewer(s, definition, label="prop-key-missing")
+            return
         _log(
             f"prop {definition.instance_id!r} (id {definition.prop_id}, "
             f"operation {request.operation!r}) used; state now {state.state}"
@@ -4461,9 +4626,39 @@ class MapEventService:
                     f"published boss reward chests after boss spawn on "
                     f"{runtime.map_id} to {len(sessions)} player(s)"
                 )
+        if transition.active and transition.event.key == "boss_death":
+            self._silence_arena_hazards(runtime, sessions)
         mortis = mortis_arena(self, runtime)
         if mortis is not None:
             mortis.transition(transition)
+
+    def _silence_arena_hazards(self, runtime, sessions) -> None:
+        """Stop the statue turrets guarding a boss once it is defeated.
+
+        The Winter Summit's two turrets flank Big Paws on rows no EventSet
+        switches, so BOSS_death (which opens the arena's exits) has nothing to
+        retire them with. Silence the statue traps around each defeated boss.
+        """
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            return
+        with combat.lock:
+            arenas = tuple(
+                combat.monster_positions[actor_id]
+                for actor_id, monster in combat.monsters.items()
+                if str(monster.rank_id).casefold().startswith("rank_boss")
+                and combat.monster_health.get(actor_id, 0) <= 0
+            )
+            silenced = set()
+            for position in arenas:
+                silenced.update(combat.silence_hazards_near(
+                    position, ARENA_HAZARD_RADIUS,
+                ))
+        if silenced:
+            _log(
+                f"silenced {len(silenced)} arena turret(s) after the boss "
+                f"died on {runtime.map_id}"
+            )
 
     def _publish_entrance_bosses(self, runtime, sessions) -> None:
         """Release baseline encounter actors only after their entrance signal."""

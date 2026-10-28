@@ -16,6 +16,7 @@ from pathlib import Path
 import re
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.persistence import readonly_db
 
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
@@ -207,7 +208,7 @@ class ItemSetDatabase:
         # cached per thread. `with connection` is sqlite3's *transaction*
         # context manager -- it commits, it does not close -- so existing
         # `with self._connect() as db` callers keep working unchanged.
-        if not self.path.is_file():
+        if not resident_content.is_file(self.path):
             raise FileNotFoundError(self.path)
         return readonly_db.connect(self.path)
 

@@ -6,12 +6,15 @@ import os
 import signal
 import socket
 import threading
+import time
 import traceback
 from pathlib import Path
 
 from dso_server.services.character_server import CharacterServer
 from dso_server.runtime.context import (
     ACCOUNT_STATE_SAVE_INTERVAL_SECONDS,
+    CHEST_CONTENTS_MAP_PATH,
+    EVENT_SCHEDULE_PATH,
     HOST,
     STATUS_EFFECTS_DISABLED,
     VICTIM_STATUS_EFFECTS_DISABLED,
@@ -31,8 +34,10 @@ from dso_server.runtime.stall_watchdog import StallWatchdog
 from dso_server.runtime.gc_tuning import ManagedGarbageCollector
 from dso_server.runtime.monster_runtime_diagnostics import worker_snapshot
 from dso_server.runtime.maintenance import MaintenanceShutdown
+from dso_server.runtime import resident_content
 from dso_server.paths import (
     DEFAULT_PLAYER_DATABASE_PATH,
+    DEFAULT_QUESTS_PATH,
     DEFAULT_SOCIAL_STATE_PATH,
     DEFAULT_STATIC_DB_PATH,
 )
@@ -589,7 +594,50 @@ def start_account_state_autosave(
     return saver
 
 
+def import_server_modules() -> None:
+    """Import every server module before the first player arrives.
+
+    Many handlers import their collaborators inside the function. The first
+    such call would otherwise read and compile modules from disk while a
+    player waits on it.
+    """
+
+    import importlib
+    import pkgutil
+
+    import dso_server
+
+    started = time.perf_counter()
+    imported = 0
+    for package in ("gameplay", "persistence", "protocol", "runtime", "services"):
+        root = Path(dso_server.__file__).resolve().parent / package
+        for module in pkgutil.iter_modules([str(root)]):
+            name = f"dso_server.{package}.{module.name}"
+            try:
+                importlib.import_module(name)
+            except Exception as exc:
+                print(f"[Startup] could not preload {name}: {type(exc).__name__}: {exc}")
+            else:
+                imported += 1
+    # Standard-library modules that load on first use (datetime.strptime).
+    import _strptime  # noqa: F401
+
+    print(
+        f"[Startup] {imported} server modules imported in "
+        f"{time.perf_counter() - started:.1f}s"
+    )
+
+
 def main() -> None:
+    # Before any service reads a table: every reader then gets the copy held
+    # in memory (runtime/resident_content.py).
+    resident_content.install(
+        DEFAULT_STATIC_DB_PATH,
+        extra_files=(
+            DEFAULT_QUESTS_PATH, EVENT_SCHEDULE_PATH, CHEST_CONTENTS_MAP_PATH,
+        ),
+    )
+    import_server_modules()
     application = ServerApplication()
 
     def request_stop(_signum, _frame) -> None:

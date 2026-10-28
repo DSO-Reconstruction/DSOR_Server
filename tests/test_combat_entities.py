@@ -47,8 +47,10 @@ class EntityPlanningTests(unittest.TestCase):
         rocket = replace(single, projectile_radius=0.0)
         self.assertEqual({i.target.actor_id for i in self.plan(rocket).impacts}, {101, 202})
 
-    def test_projectile_release_uses_the_later_authored_delay_without_double_counting(self):
-        for emit_seconds, expected in ((0.0, 0.2), (0.15, 0.2), (0.3, 0.3)):
+    def test_projectile_release_is_the_draw_phase_whatever_the_emit_delay(self):
+        """Each bullet leaves LoopStartFrame after its start (0x14096719c);
+        BulletEmitDelay only spaces the extra bullets."""
+        for emit_seconds, expected in ((0.0, 0.2), (0.15, 0.2), (0.3, 0.2)):
             with self.subTest(emit=emit_seconds):
                 geometry = replace(self.geometry, loop_start_frame=5, bullet_emit_delay=emit_seconds)
                 normal, fast = self.plan(geometry), self.plan(geometry, attack_speed=2.0)
@@ -62,6 +64,19 @@ class EntityPlanningTests(unittest.TestCase):
                 timed = self.plan(replace(geometry, skill_timing_multiplier=0.5))
                 self.assertAlmostEqual(timed.emit_delay, expected * 0.5)
 
+    def test_extra_projectiles_leave_whole_ticks_apart_whatever_the_speed(self):
+        """(int)(0.15 / 0.04) = 3 ticks between Forgotten Glory's three Ice
+        Missiles (SetupAdditionalBulletCommands 0x1407f7cd8); attack speed
+        shortens the shared release, not the spacing."""
+        geometry = replace(self.geometry, bullet_count=3, loop_start_frame=5,
+                           bullet_emit_delay=0.15)
+        for speed in (1.0, 2.0):
+            with self.subTest(speed=speed):
+                delays = [p.delay for p in self.plan(geometry, attack_speed=speed).impacts]
+                self.assertEqual(len(delays), 3)
+                self.assertAlmostEqual(delays[1] - delays[0], 0.12)
+                self.assertAlmostEqual(delays[2] - delays[1], 0.12)
+
     def test_three_projectiles_share_one_collision_budget(self):
         plan = self.plan(replace(self.geometry, bullet_count=3))
         self.assertEqual([(p.target.actor_id, p.projectile_index) for p in plan.impacts],
@@ -71,6 +86,32 @@ class EntityPlanningTests(unittest.TestCase):
         plan = self.plan(replace(self.geometry, impact_count=2, bullet_count=3))
         self.assertEqual([p.target.actor_id for p in plan.impacts], [101, 202] * 3)
         self.assertLess(plan.impacts[0].delay, plan.impacts[1].delay)
+
+    def test_bullet_strikes_nothing_after_its_lifetime(self):
+        """The client sweeps a bullet only before its end tick, from its
+        StartOffset: 1 m + (12 - 1) steps of 0.4 m = 5.4 m for 0.5 s at 10 m/s,
+        whatever the 25 m AttackRange (the 6 m entity's edge is inside)."""
+        geometry = replace(self.geometry, impact_count=3, attack_range=25.0,
+                           projectile_lifetime=0.5, start_offset=(0.0, 0.0, -1.0, 0.0),
+                           projectile_radius=0.25, player_width=0.0)
+        entities = (CombatEntity(101, (0.0, 0.0, 3.0), 0.5),
+                    CombatEntity(202, (0.0, 0.0, 6.0), 0.5),
+                    CombatEntity(303, (0.0, 0.0, 9.0), 0.5))
+        plan = plan_entity_skill(geometry, entities, origin=(0.0, 0.0, 0.0),
+                                 direction=(0.0, 0.0, 1.0, 0.0), projectile=True)
+        self.assertEqual([p.target.actor_id for p in plan.impacts], [101, 202])
+
+    def test_a_bullet_strikes_one_new_entity_per_tick(self):
+        """Two entities grazing the same 0.4 m step cost two ticks; the second
+        no longer overlaps the next step, so the pierce goes to the next one."""
+        geometry = replace(self.geometry, impact_count=2,
+                           projectile_radius=0.25, player_width=0.0)
+        entities = (CombatEntity(101, (-0.44, 0.0, 5.0), 0.2),
+                    CombatEntity(202, (0.44, 0.0, 5.0), 0.2),
+                    CombatEntity(303, (0.0, 0.0, 7.0), 0.2))
+        plan = plan_entity_skill(geometry, entities, origin=(0.0, 0.0, 0.0),
+                                 direction=(0.0, 0.0, 1.0, 0.0), projectile=True)
+        self.assertEqual([p.target.actor_id for p in plan.impacts], [101, 303])
 
     def test_splash_and_direct_contact_do_not_double_hit_same_entity(self):
         plan = self.plan(replace(self.geometry, impact_count=2, impact_radius=3.0))

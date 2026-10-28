@@ -85,6 +85,7 @@ and drains the player-database writer.
 | `DSO_PUBLIC_HOST` | unset | address clients are redirected to between services and told to dial by the launcher; required with a `0.0.0.0` bind behind NAT, otherwise the bind address (or the host's primary address for a wildcard bind) is advertised |
 | `DSO_REQUIRE_LOGIN` | on for a non-loopback bind, off for loopback | login enforcement: clients must log in through the account service first, and a hello that presents no live session GUID is dropped. The address gate alone would admit everyone behind a shared NAT or VPN exit |
 | `DSO_STATIC_DB` | `dso_server\data\db\static.db4` | static game database |
+| `DSO_RESIDENT_CONTENT` | `1` | load the static database, every map database, the map geometry and navigation files, `quests.xml`, `events.json` and the chest catalog into memory at start (about 0.9 GB, 2 s warm); gameplay then never reads them from disk, and edits to them take effect at the next start. `0` reads them from disk |
 | `DSO_PUBLISH_STATIC_DB` | `1` | the account service publishes that database to dsor clients (`GET /api/content`, see below); `0` stops it |
 | `DSO_PLAYER_DATABASE` | `dso_server\data\db\players.sqlite3` | durable character profiles and gameplay state |
 | `DSO_SOCIAL_STATE_FILE` | `data/state/social-states.json` | guild/group state |
@@ -179,8 +180,10 @@ endpoints that nothing else calls:
 - It is the file the game services load (`DSO_STATIC_DB`), read whole between
   two identical `stat` calls (a download never mixes two revisions while a
   tool rewrites it). It is hashed and packed once per revision: about 0.6 s and
-  7.5 MB for the release261 database. Edits are picked up on the next request,
-  with no restart.
+  7.5 MB for the release261 database. With `DSO_RESIDENT_CONTENT` (the default)
+  the game services hold the database loaded at start, so the published copy
+  keeps that revision too and an edit takes effect at the next start; with it
+  off, edits are picked up on the next request.
 - Only a signed-in player can download it (a live session, 401 otherwise), and
   each address at most 6 times per 15 minutes (429 with `retry_after`).
 - `/api/status` and every endpoint the launcher uses are unchanged.

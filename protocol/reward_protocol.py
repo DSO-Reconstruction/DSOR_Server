@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
 from contextlib import closing
@@ -445,7 +446,7 @@ def daily_login_offers(database_path: str | Path, class_name: str):
     )
     from dso_server.protocol.shop_protocol import OFFER_CATEGORY_IDS, OFFER_RARITY_IDS
 
-    with closing(sqlite3.connect(Path(database_path).resolve().as_uri() + '?mode=ro', uri=True)) as db:
+    with closing(sqlite3.connect(resident_content.resolved(database_path).as_uri() + '?mode=ro', uri=True)) as db:
         db.row_factory = sqlite3.Row
 
         def group(resource_id):

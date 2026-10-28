@@ -17,6 +17,8 @@ import math
 from pathlib import Path
 import struct
 
+from dso_server.runtime import resident_content
+
 
 PATHENGINE_UNITS_PER_WORLD_UNIT = 100.0
 SMALL_AGENT_DIAMETER = 1.0
@@ -231,9 +233,9 @@ class PathEngineNavigationMesh:
         minimum_portal_width: float = SMALL_AGENT_DIAMETER,
     ) -> "PathEngineNavigationMesh":
         path = Path(path)
-        if not path.is_file():
+        if not resident_content.is_file(path):
             raise FileNotFoundError(path)
-        vertices, triangles = _read_mesh3d(path.read_bytes())
+        vertices, triangles = _read_mesh3d(resident_content.read_bytes(path))
         return cls(
             vertices, triangles,
             minimum_portal_width=minimum_portal_width,

@@ -189969,11 +189969,2091 @@
       },
       "resolved_via_ui": true,
       "mapping_note": "Reward options and amounts come from the Turkish client description; item IDs were matched to static.db4. The description gives no odds, so the current one-of resolver weights the seven listed outcomes equally."
+    },
+    {
+      "container": "e_chr_2012_progress_box_01",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_2012_lootbox_01",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_2012_progress_box_02",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_2012_lootbox_02",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_2012_progress_box_03",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_2012_lootbox_03",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_2012_progress_box_04",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_2012_lootbox_04",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_00",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_01",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_02",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_03",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_04",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_05",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_06",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_07",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_08",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_09",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_epic_10",
+      "name": "Golden Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_epic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 1000,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Epic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Golden Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x1000 (to strike Big Paws) or a epic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Epic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_00",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_01",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_02",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_03",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_04",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_05",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_06",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_07",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_08",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_09",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_magic_Diff_10",
+      "name": "Blue Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_magic",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 250,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Magic",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Blue Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x250 (to strike Big Paws) or a magic weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Magic"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_00",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_01",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_02",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_03",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_04",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_05",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_06",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_07",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_08",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_09",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_rare_Diff_10",
+      "name": "Violet Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_rare",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 500,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Rare",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Violet Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x500 (to strike Big Paws) or a rare weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Rare"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_00",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_01",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_02",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_03",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_04",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_05",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_06",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_07",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_08",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_09",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_chr_progress_box_uncommon_Diff_10",
+      "name": "Green Present",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_e_chr_progress_box_uncommon",
+      "yields": [
+        {
+          "item": "e_chr_2012_snow_ammunition",
+          "amount": 100,
+          "mode": "one_of"
+        },
+        {
+          "mode": "one_of_equipment",
+          "rarity": "Uncommon",
+          "slot_types": [
+            "RightHandSlot",
+            "LeftHandSlot"
+          ],
+          "appearance_region": "e_chr"
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "ui": {
+        "display_name": "Green Present",
+        "style": "bulleted",
+        "mode": "one_of",
+        "prose": "Contains one reward: Snow Essence x100 (to strike Big Paws) or a uncommon weapon or off-hand in a Winter Solstice skin.",
+        "chance_percent": null,
+        "rarity_hints": [
+          "Uncommon"
+        ],
+        "entries": []
+      },
+      "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
     }
   ],
   "summary": {
-    "total_containers": 2801,
-    "resolved_containers": 2173,
+    "total_containers": 2853,
+    "resolved_containers": 2225,
     "total_edges": 7358,
     "transitive_edges": 7075,
     "containers_with_nesting": 2085,
@@ -190136,8 +192216,6 @@
     "LOOTBOX_e_bos_bossbox_starter",
     "LOOTBOX_e_chr_2012_marketing_box",
     "LOOTBOX_e_chr_2015_pumpkin_helmet_box",
-    "LOOTBOX_e_chr_progress_box_epic",
-    "LOOTBOX_e_chr_progress_box_rare",
     "LOOTBOX_e_dra_03_box_weapon_stones",
     "LOOTBOX_e_dra_surprisebox_01",
     "LOOTBOX_e_dra_surprisebox_02",

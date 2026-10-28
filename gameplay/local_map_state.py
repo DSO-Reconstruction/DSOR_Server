@@ -12,6 +12,7 @@ import sqlite3
 import struct
 from pathlib import Path
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.gameplay_protocol import (
     ActorPlacement,
     NewNPC,
@@ -252,8 +253,13 @@ def map_database_path(static_database_path: str | Path, map_id: str) -> Path:
     return static_database_path.parent.parent / "maps" / f"{map_id}.db4"
 
 
+@lru_cache(maxsize=None)
 def _active_client_map_database_path(map_id: str) -> Path | None:
-    """Return a map DB only when the running client's TOC selects that file."""
+    """Return a map DB only when the running client's TOC selects that file.
+
+    Answered once per map: map entries looked it up thousands of times, and
+    each lookup probed the client's download cache on disk.
+    """
 
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
@@ -370,7 +376,7 @@ def load_map_coordinate_frame(
 
     static_database_path = Path(static_database_path)
     path = static_database_path.parent.parent / "maps" / f"{map_id}.map"
-    data = path.read_bytes()[:44]
+    data = resident_content.read_bytes(path)[:44]
     if len(data) < 44 or data[:4] != b"MOSD" or data[8:12] != b"IPAM":
         raise ValueError(f"map {map_id!r} has an invalid IPAM header: {path}")
     # The IPAM transform starts with scale/rotation, then its float4 world
@@ -380,7 +386,7 @@ def load_map_coordinate_frame(
 
 
 def _open_read_only(path: Path) -> sqlite3.Connection:
-    if not path.is_file():
+    if not resident_content.is_file(path):
         raise FileNotFoundError(f"map database not found: {path}")
     return sqlite3.connect(f"file:{path}?mode=ro", uri=True)
 
@@ -498,8 +504,7 @@ def _cached_event_set_rows(
 def _event_set_rows_for(
     database: sqlite3.Connection, map_id: str,
 ) -> tuple[tuple[int, frozenset[str], frozenset[str]], ...]:
-    path = next((str(row[2]) for row in database.execute("PRAGMA database_list")
-                 if row[1] == "main"), "")
+    path = resident_content.database_path(database)
     if not path:
         # An in-memory database (tests) has no file identity to cache by.
         return _parse_event_set_rows(

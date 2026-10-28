@@ -39,6 +39,8 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 import sqlite3
 
+from dso_server.runtime import resident_content
+
 
 PARALLEL_WORLD_BOARD_COUNT = 9   # PWLeaderBoardId 0..8 (enum reader -1..8).
 PVE_BOARD_TYPES = (0, 1)         # PvELeaderBoard::Type: 0 solo, 1 group.
@@ -333,7 +335,7 @@ _load_catalog_cached = lru_cache(maxsize=4)(_load_catalog)
 
 def load_leaderboard_catalog(static_database_path: str | Path) -> LeaderboardCatalog:
     path = Path(static_database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load_catalog_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 

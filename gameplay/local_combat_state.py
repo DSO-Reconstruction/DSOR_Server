@@ -24,6 +24,7 @@ from dso_server.gameplay.navigation_shapes import (
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
     ORBITING_MOTION_TYPES,
+    bullet_flight_reach,
     shape_radius,
     plan_entity_skill,
     projectile_emit_delay,
@@ -73,6 +74,9 @@ from dso_server.gameplay.fractured_planes_layout import (
     TOWER_FIRE_BURST_SHOTS,
     TOWER_FIRE_ACQUISITION_RANGE,
     is_tower_mechanism,
+)
+from dso_server.gameplay.map_hazards import (
+    fires_fixed_direction, is_map_hazard, spawned_as_hazard,
 )
 from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
@@ -656,6 +660,9 @@ class MonsterCombatant:
     # Retail marks it with ``e_mark_no_damage``/invulnerability, so no player
     # skill, damage-over-time, or summon may take its health down.
     invulnerable: bool = False
+    # NoTurnStaticStrategy statue traps (gameplay/map_hazards.py) shoot along
+    # their authored facing whenever a player is near, never at the player.
+    fixed_direction: bool = False
 
 
 def _monster_health_after_damage(
@@ -1169,9 +1176,18 @@ class MonsterAttack:
     homing_expires_at: float = 0.0
     homing_position: tuple[float, float, float] | None = None
     homing_at: float = 0.0
+    # A statue trap's missile along its fixed facing (MonsterCombatant.
+    # fixed_direction): released at lane_release_at, it flies
+    # projectile_velocity for lane_reach units (to its LifeTime or a wall) and
+    # strikes every player it passes. 0.0: not a lane shot.
+    lane_release_at: float = 0.0
+    lane_reach: float = 0.0
 
 
 HOMING_MOTION_TYPES = frozenset({"homing", "lockonhoming"})
+# A lane missile is tested against the stretch it flew during this window, so
+# a player it passed between two combat ticks is still struck (once).
+LANE_SWEEP_SECONDS = 0.25
 # A homing bullet whose target no longer resolves is dropped this long after
 # its LifeTime.
 HOMING_ORPHAN_GRACE_SECONDS = 1.0
@@ -1704,6 +1720,9 @@ class LocalCombatState:
         self.player_summon_health: dict[int, list[int]] = {}
         self.player_summon_heat_hits: dict[int, int] = {}
         self.player_summon_overheated_until: dict[int, float] = {}
+        # (summon actor, hidden skill index) -> when its CoolDown allows it.
+        self.player_summon_hidden_skill_ready_at: dict[tuple[int, int], float] = {}
+        self._hidden_skill_rows: dict[str, tuple[int, float] | None] = {}
         self.map_companion_spawns: set[tuple[int, str]] = set()
         self.map_companion_retired: set[str] = set()
         self.player_traps: dict[int, ActivePlayerTrap] = {}
@@ -1828,10 +1847,18 @@ class LocalCombatState:
                         encounter.static_database_path, encounter.map_id,
                         monster.template_id,
                     )
+                    or spawned_as_hazard(
+                        encounter.static_database_path, monster,
+                    )
                     or (
                         encounter.map_id.casefold() == "f4203_boss"
                         and monster.template_id.casefold() == "f4203_boss_06_ram"
                     )
+                ),
+                fixed_direction=spawned_as_hazard(
+                    encounter.static_database_path, monster,
+                ) and fires_fixed_direction(
+                    encounter.static_database_path, monster.template_id,
                 ),
             )
         if set(result) != set(encounter.actor_ids):
@@ -2074,10 +2101,19 @@ class LocalCombatState:
                         self.encounter.map_id,
                         monster.template_id,
                     )
+                    or spawned_as_hazard(
+                        self.encounter.static_database_path, monster,
+                    )
                     or (
                         self.encounter.map_id.casefold() == "f4203_boss"
                         and monster.template_id.casefold() == "f4203_boss_06_ram"
                     )
+                ),
+                fixed_direction=spawned_as_hazard(
+                    self.encounter.static_database_path, monster,
+                ) and fires_fixed_direction(
+                    self.encounter.static_database_path,
+                    monster.template_id,
                 ),
             )
             self.monsters[actor_id] = combatant
@@ -2171,6 +2207,27 @@ class LocalCombatState:
             ):
                 return True
         return False
+
+    def silence_hazards_near(
+        self, position: tuple[float, float, float], radius: float,
+    ) -> tuple[int, ...]:
+        """Stop the statue traps standing within ``radius`` of ``position``.
+
+        A defeated boss's arena turrets fall silent but stay standing in
+        their columns: they join the scripted-dormant actors, which are never
+        activated again, and stop being simulated now.
+        """
+
+        silenced = tuple(sorted(
+            actor_id for actor_id, monster in self.monsters.items()
+            if monster.invulnerable
+            and actor_id not in self.scripted_dormant_actor_ids
+            and is_map_hazard(self.encounter.static_database_path, monster.template_id)
+            and self._distance(self.monster_positions[actor_id], position) <= radius
+        ))
+        self.scripted_dormant_actor_ids.update(silenced)
+        self.deactivate_monsters(silenced)
+        return silenced
 
     def activate_monsters(self, actor_ids: tuple[int, ...]) -> None:
         unknown = set(actor_ids) - set(self.monsters)
@@ -4085,6 +4142,17 @@ class LocalCombatState:
                 continue
             if not visual.receiver_status_effects or radius <= 0.0:
                 continue
+            if visual.definition.aura_targets.strip().casefold() == "minion":
+                # Gives its children to the owner's own minions of the
+                # admitted templates, never to the enemies around it:
+                # Forgotten Glory's Quick Shot proc
+                # (item_pw_sigrismarr_dwarf_turret_bonus_aura_t2, 10 m,
+                # minion_combatTurret) unlocks the turrets' ice shot.
+                applications.extend(self._apply_location_minion_aura(
+                    visual, radius, inside_now,
+                    server_tick=server_tick, now=current_time,
+                ))
+                continue
             if visual.managed_aura and visual.definition.aura_targets.casefold() == "summoner":
                 position = (player_positions or {}).get(visual.owner_actor_id)
                 if position is not None and self._distance(visual.position, position) <= radius:
@@ -4183,6 +4251,87 @@ class LocalCombatState:
         self.player_location_aura_members.intersection_update(inside_now)
         self.player_location_aura_members.update(inside_now)
         return tuple(resolutions), tuple(applications)
+
+    def _apply_location_minion_aura(self, visual, radius, inside_now, *, server_tick, now):
+        """Children of an ``AuraTargets:Minion`` ground aura, once per entry."""
+        from dso_server.gameplay.minion_auras import load_minion_aura_by_id
+
+        aura = load_minion_aura_by_id(
+            self.encounter.static_database_path, int(visual.definition.effect_id))
+        applications = []
+        for actor_id, summon in tuple(self.player_summons.items()):
+            if int(summon.owner_actor_id) != int(visual.owner_actor_id):
+                continue
+            if aura is not None and not aura.admits_template(summon.definition.monster_template_id):
+                continue
+            if self.player_summon_health.get(actor_id, [0])[0] <= 0:
+                continue
+            if self._distance(visual.position, summon.position) > radius:
+                continue
+            key = (int(visual.instance_id), int(actor_id))
+            inside_now.add(key)
+            if key in self.player_location_aura_members:
+                continue
+            definitions = tuple(visual.receiver_status_effects)
+            self._record_monster_status_effects(
+                actor_id, definitions, now=now,
+                source_actor_id=int(visual.owner_actor_id),
+                player_damage_range=visual.player_damage_range,
+                skill_index=int(visual.source_skill_index),
+            )
+            applications.append(PlayerSupportApplication(
+                source_actor_id=int(visual.owner_actor_id),
+                target_actor_id=int(actor_id),
+                server_tick=int(server_tick) & 0xFFFFFFFF,
+                status_effects=definitions,
+            ))
+        return applications
+
+    def unlocked_summon_skill(self, actor_id: int, *, now: float) -> int | None:
+        """A hidden skill an effect on the minion unlocked and is ready.
+
+        ``UnlockHiddenSkills:<skill>`` (Forgotten Glory's
+        ``item_pw_sigrismarr_dwarf_turret_bonus_effect_t2``: 20 s of
+        ``dwarf_CombatTowerTurret_Ice`` on a Combat Turret) adds a skill the
+        template lists but hides. Its own ``CoolDown`` paces it.
+        """
+        unlocked = []
+        for source in self._active_monster_modifier_sources(actor_id, now=now):
+            for kind, arguments in self._status_modifier_program(source.effect_id):
+                if kind.casefold() == "unlockhiddenskills":
+                    unlocked.extend(value.strip() for value in arguments if value.strip())
+        if not unlocked:
+            return None
+        ready = self.player_summon_hidden_skill_ready_at
+        for resource_id in unlocked:
+            row = self._hidden_skill_row(resource_id)
+            if row is None:
+                continue
+            skill_index, cooldown = row
+            if ready.get((int(actor_id), skill_index), 0.0) > now:
+                continue
+            return skill_index
+        return None
+
+    def note_summon_hidden_skill_used(self, actor_id: int, skill_index: int, *, now: float) -> None:
+        row = next((value for value in self._hidden_skill_rows.values()
+                    if value is not None and value[0] == int(skill_index)), None)
+        cooldown = row[1] if row is not None else 0.0
+        self.player_summon_hidden_skill_ready_at[(int(actor_id), int(skill_index))] = now + cooldown
+
+    def _hidden_skill_row(self, resource_id: str):
+        rows = self._hidden_skill_rows
+        key = str(resource_id).casefold()
+        if key not in rows:
+            with closing(sqlite3.connect(
+                f"file:{Path(self.encounter.static_database_path).as_posix()}?mode=ro", uri=True
+            )) as database:
+                row = database.execute(
+                    "SELECT rowid - 1, COALESCE(CoolDown, 0) FROM _Template_Skill WHERE Id=?",
+                    (str(resource_id),),
+                ).fetchone()
+            rows[key] = None if row is None else (int(row[0]), max(0.0, float(row[1] or 0.0)))
+        return rows[key]
 
     def _monster_location_aura_programs(
         self, definition: VictimStatusEffectDefinition,
@@ -7759,6 +7908,12 @@ class LocalCombatState:
         )
 
     @staticmethod
+    def _player_bullet_reach(geometry) -> float:
+        flight = bullet_flight_reach(geometry)
+        return flight if flight is not None else max(
+            geometry.attack_range, geometry.projectile_range)
+
+    @staticmethod
     def _player_projectile_contact_radius(
         target_radius: float, projectile_radius: float, player_width: float = 0.0,
         projectile_velocity: float = 0.0,
@@ -7873,12 +8028,10 @@ class LocalCombatState:
 
         aim_x = direction[0] / direction_length
         aim_z = direction[2] / direction_length
-        # AttackRange is the authored cast range. Bullet lifetime controls the
-        # visual object and can extend that range through modifiers, but a
-        # shorter lifetime must not silently truncate a valid client cast.
-        maximum_range = max(
-            geometry.attack_range, geometry.projectile_range
-        )
+        # The client strikes nothing once the bullet's LifeTime has run out
+        # (combat_entities.bullet_flight_reach); AttackRange only bounds
+        # bullets without one.
+        maximum_range = self._player_bullet_reach(geometry)
         if maximum_range <= 0.0:
             return ()
         targeting = geometry.targeting_type.casefold()
@@ -9193,7 +9346,8 @@ class LocalCombatState:
         eligible = (None if eligible_actor_ids is None else
                     set(eligible_actor_ids).union(visible, explicit_target_actor_ids))
         length = math.hypot(direction[0], direction[2])
-        reach = max(geometry.attack_range, geometry.projectile_range)
+        reach = self._player_bullet_reach(geometry) if projectile else max(
+            geometry.attack_range, geometry.projectile_range)
         # Area, angle and cone skills test the path the viewer may still be
         # drawing; bullets have their own swept contact.
         spatial = not projectile
@@ -9459,11 +9613,12 @@ class LocalCombatState:
                 spawn_sweep_distance=forward_offset,
                 projectile_velocity=effective_projectile_velocity,
                 projectile_radius=max(0.25, geometry.projectile_radius, geometry.player_width / 2.0),
+                # Measured from the spawn point (origin above): a lifetime
+                # bullet's flight is LifeTime x Velocity past its muzzle.
                 maximum_range=(
-                    max(
-                        geometry.attack_range,
-                        geometry.projectile_range,
-                    )
+                    max(0.0, self._player_bullet_reach(geometry) - forward_offset)
+                    if bullet_flight_reach(geometry) is not None
+                    else self._player_bullet_reach(geometry)
                 ),
                 motion_type=(
                     geometry.motion_type
@@ -10036,6 +10191,79 @@ class LocalCombatState:
                             self.monster_status_damage.pop(other_key, None)
         return tuple(resolutions)
 
+    def resolve_receiver_hosted_aura(
+        self,
+        owner_actor_id: int,
+        centre: tuple[float, float, float],
+        aura: VictimStatusEffectDefinition,
+        receivers: tuple[VictimStatusEffectDefinition, ...],
+        *,
+        player_damage_range: tuple[float, float],
+        server_tick: int,
+        skill_index: int = 0,
+        now: float | None = None,
+    ) -> tuple[DamageResolution, ...]:
+        """Apply a victim-hosted aura with no duration once, around its host.
+
+        Jewel of Glory's ``skill_explosiveshot_explosion_aura_bgh_jewel2026``
+        is an Explosive Arrow ``addVE`` with ``D:0`` and ``DE:0.11``: hosted on
+        the victim (``AuraTargets:Allies;Creator`` -- the victim and the
+        monsters beside it) it explodes once for 100% Physical damage and three
+        Burning stacks in 4.5 m. Like the client's radius query, an actor is
+        inside when its centre is within the radius plus its ActorShape
+        radius. Status-only children still land (zero-damage resolutions are
+        effect-only transactions).
+        """
+
+        current_time = time.perf_counter() if now is None else float(now)
+        radius = max(0.0, float(aura.aura_radius))
+        if radius <= 0.0 or not receivers:
+            return ()
+        results = []
+        for actor_id in self.living_actor_ids:
+            monster = self.monsters[actor_id]
+            position = self.monster_positions[actor_id]
+            if abs(position[1] - centre[1]) > 10.0:
+                continue
+            reach = math.hypot(position[0] - centre[0], position[2] - centre[2])
+            if reach > radius + self._monster_bullet_shape_radius(monster):
+                continue
+            previous = self.monster_health.get(actor_id, 0)
+            if previous <= 0:
+                continue
+            applied = self.accepted_monster_status_effects(
+                actor_id, tuple(receivers), now=current_time
+            )
+            damage, damage_types = self.status_effect_immediate_damage(
+                actor_id, applied, player_damage_range, now=current_time,
+            )
+            current, killed = _monster_health_after_damage(
+                monster, previous, max(0, int(damage))
+            )
+            self.monster_health[actor_id] = current
+            if not killed and applied:
+                self._record_monster_status_effects(
+                    actor_id, applied, now=current_time,
+                    source_actor_id=int(owner_actor_id),
+                    player_damage_range=player_damage_range,
+                    skill_index=int(skill_index),
+                )
+            results.append(DamageResolution(
+                target_actor_id=actor_id,
+                attacker_actor_id=int(owner_actor_id),
+                current_health=current,
+                maximum_health=monster.maximum_health,
+                damage=previous - current,
+                killed=killed,
+                position=position,
+                server_tick=int(server_tick) & 0xFFFFFFFF,
+                hit_tags=damage_types or (5,),
+                skill_index=int(skill_index),
+                victim_status_effects=applied,
+                source_actor_id=int(owner_actor_id),
+            ))
+        return tuple(results)
+
     def resolve_socket_periodic_auras(
         self,
         owner_actor_id: int,
@@ -10536,6 +10764,21 @@ class LocalCombatState:
                 attack_loop_start_frame = (
                     definition.overheat_attack_loop_start_frame
                 )
+            # A ready unlocked hidden skill replaces this shot; the turret's
+            # own interval still paces its attacks.
+            hidden_skill = (
+                None if is_overheated
+                else self.unlocked_summon_skill(actor_id, now=current_time)
+            )
+            hidden_geometry = (
+                self._load_player_skill_geometry(hidden_skill)
+                if hidden_skill is not None else None
+            )
+            if hidden_geometry is not None:
+                database_skill_index = skill_index = hidden_skill
+                attack_skill_type = str(hidden_geometry.skill_type)
+            else:
+                hidden_skill = None
             summon_skill_speed = max(
                 0.01, self._summon_status_scale(
                     actor_id, "Speed", "Skills", now=current_time,
@@ -10952,6 +11195,9 @@ class LocalCombatState:
                 bullet_count=getattr(geometry, "bullet_count", 1),
             )
             self.last_player_summon_attack_at[actor_id] = current_time
+            if hidden_skill is not None:
+                self.note_summon_hidden_skill_used(
+                    actor_id, hidden_skill, now=current_time)
             if emit_playback:
                 self.last_player_summon_playback_at[actor_id] = current_time
             if skillstart_effects:
@@ -11309,6 +11555,16 @@ class LocalCombatState:
                         now=current_time,
                     )
                 )
+                # Each authored bullet of an actor-targeted volley strikes:
+                # the Combat Turret's unlocked ice shot (BulletCount 3,
+                # DamageModifier 2.5) lands three times, as its three
+                # bullets do in the client. Status effects ride the first.
+                extra_bullets = (
+                    max(0, int(getattr(pending.geometry, "bullet_count", 1)) - 1)
+                    if str(pending.geometry.targeting_type).casefold() == "actor"
+                    else 0
+                )
+                bullet_damage = damage
                 damage += immediate_damage
                 current, killed = _monster_health_after_damage(
                     target, previous, damage
@@ -11365,6 +11621,28 @@ class LocalCombatState:
                         source_actor_id=summon.owner_actor_id,
                     )
                 )
+                for _bullet in range(extra_bullets):
+                    previous = self.monster_health.get(target.actor_id, 0)
+                    if previous <= 0 or bullet_damage <= 0:
+                        break
+                    current, killed = _monster_health_after_damage(
+                        target, previous, bullet_damage
+                    )
+                    self.monster_health[target.actor_id] = current
+                    damage_resolutions.append(DamageResolution(
+                        target_actor_id=target.actor_id,
+                        attacker_actor_id=actor_id,
+                        current_health=current,
+                        maximum_health=target.maximum_health,
+                        damage=previous - current,
+                        killed=killed,
+                        position=self.monster_positions[target.actor_id],
+                        server_tick=attack.impact_tick,
+                        hit_tags=damage_type_ids(pending.geometry.damage_type),
+                        skill_index=attack.skill_index,
+                        victim_status_effects=(),
+                        source_actor_id=summon.owner_actor_id,
+                    ))
         for actor_id, summon in tuple(self.player_summons.items()):
             definition = summon.definition
             if current_time < summon.spawn_ready_at:
@@ -11890,6 +12168,8 @@ class LocalCombatState:
                     monster.template_id,
                 )
             )
+            # A statue trap's missiles fly on while it fires the next one.
+            fixed_lane = monster.fixed_direction
             pending_attack = self.pending_monster_attacks.get(actor_id)
             boss_projectile_in_flight = (
                 pending_attack is not None
@@ -11905,6 +12185,7 @@ class LocalCombatState:
                     pending_attack is not None
                     and not tower_fire_burst
                     and not boss_projectile_in_flight
+                    and not fixed_lane
                 )
                 or (
                     tower_fire_burst
@@ -12062,6 +12343,12 @@ class LocalCombatState:
             vertical_gap = abs(attack_target_world[1] - monster_position[1])
             eligible_definitions_list = []
             for definition in definitions:
+                if fixed_lane:
+                    # It shoots down its corridor whether or not anyone
+                    # stands in the line; the missile strikes who it meets.
+                    if not definition.support:
+                        eligible_definitions_list.append(definition)
+                    continue
                 if (
                     definition.command_id not in {
                         BULLET_SKILL_COMMAND,
@@ -12143,25 +12430,66 @@ class LocalCombatState:
                         continue
                 except (AttributeError, NavigationError, CollisionTerrainError, ValueError):
                     continue
-            dx = attack_target_world[0] - monster_position[0]
-            dy = attack_target_world[1] - monster_position[1]
-            dz = attack_target_world[2] - monster_position[2]
-            direction_length = math.sqrt(dx * dx + dy * dy + dz * dz)
-            direction = (
-                (
-                    dx / direction_length,
-                    dy / direction_length,
-                    dz / direction_length,
-                    0.0,
+            lane = (
+                fixed_lane
+                and definition.command_id in {
+                    BULLET_SKILL_COMMAND,
+                    TARGET_BULLET_SKILL_COMMAND,
+                    TARGET_POINT_BULLET_SKILL_COMMAND,
+                }
+                and definition.projectile_velocity > 1e-6
+            )
+            if lane:
+                # Down its authored facing (yaw 0 faces -Z), as far as the
+                # missile flies before its LifeTime ends or a wall stops it.
+                yaw = self.monster_yaws[actor_id]
+                direction = (-math.sin(yaw), 0.0, -math.cos(yaw), 0.0)
+                direction_length = max(
+                    0.5,
+                    definition.projectile_velocity
+                    * max(definition.projectile_lifetime, 0.04),
                 )
-                if direction_length > 1e-6
-                else (0.0, 0.0, -1.0, 0.0)
-            )
-            yaw = (
-                math.atan2(-dx, -dz)
-                if math.hypot(dx, dz) > 1e-6
-                else self.monster_yaws[actor_id]
-            )
+                lane_end = tuple(
+                    monster_position[index] + direction[index] * direction_length
+                    for index in range(3)
+                )
+                reach = (
+                    self._bullet_static_reach(definition.start_offset)
+                    if getattr(definition, "static_collision", False) else None
+                )
+                if reach is not None:
+                    direction_length = max(
+                        0.5, min(direction_length, reach(monster_position, lane_end))
+                    )
+                # TargetBulletSkill needs a real primary target actor (the
+                # client and our encoder reject 0), so the player that woke
+                # the statue stays the named target. The straight missile
+                # still flies the direction/point below, and the lane strikes
+                # whoever it passes (resolve_due_monster_attacks).
+                attack_target_world = tuple(
+                    monster_position[index] + direction[index] * direction_length
+                    for index in range(3)
+                )
+            else:
+                dx = attack_target_world[0] - monster_position[0]
+                dy = attack_target_world[1] - monster_position[1]
+                dz = attack_target_world[2] - monster_position[2]
+                direction_length = math.sqrt(dx * dx + dy * dy + dz * dz)
+                direction = (
+                    (
+                        dx / direction_length,
+                        dy / direction_length,
+                        dz / direction_length,
+                        0.0,
+                    )
+                    if direction_length > 1e-6
+                    else (0.0, 0.0, -1.0, 0.0)
+                )
+                yaw = (
+                    math.atan2(-dx, -dz)
+                    if math.hypot(dx, dz) > 1e-6
+                    else self.monster_yaws[actor_id]
+                )
             self.monster_yaws[actor_id] = yaw
             start_tick = int(server_tick) & 0xFFFFFFFF
             if definition.command_id in {
@@ -12283,6 +12611,14 @@ class LocalCombatState:
                 definition=definition,
                 bullet_count=definition.bullet_count,
             )
+            if lane:
+                # It strikes whoever it passes, so it is live from release.
+                attack = replace(
+                    attack,
+                    due_at=current_time + release_delay,
+                    lane_release_at=current_time + release_delay,
+                    lane_reach=direction_length,
+                )
             if (
                 attack.command_id in {
                     BULLET_SKILL_COMMAND,
@@ -12370,7 +12706,7 @@ class LocalCombatState:
             self._queue_monster_status_minions(
                 actor_id, attack, monster_position, yaw, current_time,
             )
-            if tower_fire_burst or boss_projectile_in_flight:
+            if tower_fire_burst or boss_projectile_in_flight or fixed_lane:
                 previous = self.pending_monster_attacks.get(actor_id)
                 if previous is not None:
                     self.pending_monster_projectile_attacks.setdefault(
@@ -12704,6 +13040,59 @@ class LocalCombatState:
         )
 
     @staticmethod
+    def _lane_missile_ends_at(attack: MonsterAttack) -> float:
+        """When a lane missile has flown its whole reach (plus the sweep)."""
+
+        velocity = float(getattr(attack.definition, "projectile_velocity", 0.0) or 0.0)
+        return (
+            attack.lane_release_at
+            + attack.lane_reach / max(velocity, 1e-6)
+            + LANE_SWEEP_SECONDS
+        )
+
+    @staticmethod
+    def _lane_missile_passes_player(
+        attack: MonsterAttack,
+        definition: MonsterAttackDefinition,
+        player_position: tuple[float, float, float],
+        now: float,
+    ) -> bool:
+        """Whether the missile flew through the player in the last sweep.
+
+        The missile leaves the statue at lane_release_at and flies level along
+        its facing at projectile_velocity until lane_reach; it strikes a player
+        whose capsule the stretch flown in the last LANE_SWEEP_SECONDS crossed.
+        """
+
+        velocity = float(definition.projectile_velocity)
+        if velocity <= 1e-6:
+            return False
+        elapsed = now - attack.lane_release_at
+        flown = min(attack.lane_reach, velocity * elapsed)
+        swept_from = max(0.0, velocity * (elapsed - LANE_SWEEP_SECONDS))
+        if flown < 0.0 or swept_from > attack.lane_reach:
+            return False
+        origin_x, origin_y, origin_z = attack.projectile_origin
+        direction_x, direction_z = float(attack.direction[0]), float(attack.direction[2])
+        player_dx = player_position[0] - origin_x
+        player_dz = player_position[2] - origin_z
+        along = player_dx * direction_x + player_dz * direction_z
+        radius = (
+            max(0.15, float(attack.projectile_radius))
+            + PLAYER_PROJECTILE_COLLISION_RADIUS
+        )
+        if along < swept_from - radius or along > flown + radius:
+            return False
+        if abs(player_dx * direction_z - player_dz * direction_x) > radius:
+            return False
+        missile_y = origin_y + _bullet_flight_height(definition.start_offset)
+        return (
+            player_position[1] - PROJECTILE_VERTICAL_SLACK
+            <= missile_y
+            <= player_position[1] + PLAYER_CAPSULE_HEIGHT + PROJECTILE_VERTICAL_SLACK
+        )
+
+    @staticmethod
     def _fixed_projectile_intersects_player(
         attack: MonsterAttack,
         player_position: tuple[float, float, float],
@@ -13023,12 +13412,15 @@ class LocalCombatState:
                 in MONSTER_GROUND_TARGETING_TYPES
             )
             aura_strike = attack.aura_strike
+            # A statue trap's lane missile strikes every player it passes.
+            lane_shot = attack.lane_reach > 0.0
             is_multi_target_area = (
                 (
                     (is_directional_shape or is_ground_target_area or definition.movement_skill)
                     and not definition.self_buff
                 )
                 or aura_strike is not None
+                or lane_shot
             ) and not targets_monster
             homing = (
                 attack.homing_expires_at > 0.0 and aura_strike is None
@@ -13115,6 +13507,11 @@ class LocalCombatState:
                 if (
                     self._distance(target_world, monster_position)
                     > aura_strike.radius + PLAYER_PROJECTILE_COLLISION_RADIUS
+                ):
+                    continue
+            elif lane_shot:
+                if not self._lane_missile_passes_player(
+                    attack, definition, target_world, current_time
                 ):
                     continue
             elif attack.command_id in {
@@ -13396,6 +13793,12 @@ class LocalCombatState:
                     actor_id, attack, player_actor_id
                 )
         if finalize_area_attacks:
+            # Lane missiles end where their flight does, struck or not.
+            for actor_id, attack in self.pending_monster_attack_items():
+                if attack.lane_reach > 0.0 and current_time > (
+                    self._lane_missile_ends_at(attack)
+                ):
+                    self._remove_pending_monster_attack(actor_id, attack)
             for actor_id, flights in tuple(
                 self.pending_monster_projectile_attacks.items()
             ):

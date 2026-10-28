@@ -199,6 +199,7 @@ from dso_server.gameplay.item_set_procs import (
     collect_rules as collect_set_proc_rules,
     resolve_for_cast as resolve_set_procs_for_cast,
     resolve_for_trigger as resolve_set_trigger_effects,
+    with_socket_overrides as with_set_socket_overrides,
 )
 from dso_server.protocol.gameplay_protocol import (
     ADD_STICKER_BOOK_FROM_INVENTORY_COMMAND,

@@ -10,6 +10,7 @@ import random
 from types import MappingProxyType
 from typing import Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.persistence.readonly_db import connect
 from dso_server.protocol.player_init_protocol import TimedChallenge, TimedChallengesInfo
 
@@ -139,7 +140,7 @@ class DailyChallengeCatalog:
 
 def load_daily_challenge_catalog(database_path: str | Path) -> DailyChallengeCatalog:
     path = Path(database_path)
-    stamp = path.stat()
+    stamp = resident_content.stat(path)
     return _load_catalog(str(path), stamp.st_mtime_ns, stamp.st_size)
 
 
@@ -251,7 +252,7 @@ def load_tier_spender_challenges(
 ) -> tuple[TimedChallenge, ...]:
     """Select four client-resolvable rewards for each requested RC tier."""
     path = Path(database_path)
-    stamp = path.stat()
+    stamp = resident_content.stat(path)
     definitions = _load_spender_challenge_definitions(
         str(path), stamp.st_mtime_ns, stamp.st_size
     )

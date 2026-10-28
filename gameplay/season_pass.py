@@ -10,6 +10,7 @@ import sqlite3
 from types import MappingProxyType
 from typing import Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.paths import DEFAULT_SEASON_PASS_CONFIG_PATH
 from dso_server.persistence.readonly_db import connect
 
@@ -64,7 +65,7 @@ def parse_season_pass_reward(value: str) -> tuple[str, int]:
 
 def season_pass_event_id(database_path: str | Path) -> str:
     path = Path(database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _season_pass_event_id(str(path), stat.st_mtime_ns, stat.st_size)
 
 
@@ -227,7 +228,7 @@ def load_season_pass_catalog(
     overrides_path: str | Path | None = None,
 ) -> SeasonPassCatalog:
     path = Path(database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     overrides = load_season_pass_overrides(overrides_path)
     frozen = tuple(
         (reward_set, tuple(sorted(

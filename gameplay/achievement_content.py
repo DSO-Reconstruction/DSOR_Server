@@ -28,6 +28,8 @@ import sqlite3
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from dso_server.runtime import resident_content
+
 
 TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -259,7 +261,7 @@ _load_catalog_cached = lru_cache(maxsize=4)(_load_catalog)
 
 def load_achievement_catalog(static_database_path: str | Path) -> AchievementCatalog:
     path = Path(static_database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load_catalog_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 
