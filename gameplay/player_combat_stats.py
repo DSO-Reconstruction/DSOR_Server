@@ -2187,6 +2187,19 @@ def _calculate_attack_speed(
     return max(minimum, (1.0 + item_total + actor_absolute) * max(0.0, 1.0 + actor_relative))
 
 
+@lru_cache(maxsize=4)
+def equip_item_level_offset(database_path: str) -> int:
+    """_Globals.EquipItemLevelOffset (45): a character wears items up to its
+    level plus this (a level 100 wears its level 145 gear)."""
+
+    try:
+        with sqlite3.connect(f"file:{Path(database_path).as_posix()}?mode=ro", uri=True) as database:
+            row = database.execute("SELECT EquipItemLevelOffset FROM _Globals LIMIT 1").fetchone()
+    except sqlite3.Error:
+        return 45
+    return int(row[0]) if row and row[0] is not None else 45
+
+
 def _calculate_player_combat_stats(
     database: StaticPlayerCombatDatabase,
     *,
@@ -2287,6 +2300,14 @@ def _calculate_player_combat_stats(
             else None
         )
         if item is None or definition is None:
+            continue
+        # Above level + EquipItemLevelOffset an item does not act: its
+        # ratings, converted at the wearer's low level, reached every cap.
+        # FAILURE: a level 7 in level 145 gear struck 196328 (80% critical
+        #   hits) and took 5% of a level 100's blows.
+        # UNVERIFIED: the original refuses to equip it (DSOR_Client does);
+        #   ignoring an already worn one is this server's choice.
+        if int(getattr(item, "item_level", 0) or 0) > int(level) + equip_item_level_offset(str(database.database_path)):
             continue
         allocations[item_id] = allocation
         equipped.append((item, definition))
