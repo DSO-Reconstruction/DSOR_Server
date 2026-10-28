@@ -1169,10 +1169,44 @@ def _tiered_exit_clusters(static_database_path, exits):
     return tuple(clusters)
 
 
+def _known_exit_destinations(static_database_path, destinations) -> set[str]:
+    """The destinations an access row or map template names."""
+
+    destinations = tuple(sorted(destinations))
+    if not destinations:
+        return set()
+    candidates = (*destinations, *(f"{value}_00" for value in destinations))
+    placeholders = ",".join("?" for _ in candidates)
+    with closing(_open_read_only(static_database_path)) as database:
+        known = {
+            str(row[0]) for row in database.execute(
+                "SELECT Id FROM _Template_MapAccessGroup "
+                f"WHERE Id IN ({placeholders})", candidates,
+            )
+        }
+        known.update(
+            str(row[0]) for row in database.execute(
+                "SELECT MapTemplate FROM _Template_MapTemplate "
+                f"WHERE MapTemplate IN ({placeholders})", candidates,
+            )
+        )
+    return {
+        value for value in destinations
+        if value in known or f"{value}_00" in known
+    }
+
+
 def _filter_tiered_exit_clusters(
     static_database_path, exits, selected_difficulty,
 ):
-    """Keep only the selected access tier at each shared authored gate."""
+    """Keep only the selected access tier at each shared authored gate.
+
+    Gates still author variations for tiers this release dropped: the Winter
+    Summit's Frozen Field portal also names e_b1205_dun_chr_2024_06, _08, _10
+    and _11, which have no access row. The client cannot label such a
+    destination ("LF:maps.names_report_bug"), and a cached GUID spawns that
+    variation over the selected one, so they leave with the other tiers.
+    """
     clusters = _tiered_exit_clusters(static_database_path, exits)
     if not clusters:
         return exits
@@ -1189,10 +1223,32 @@ def _filter_tiered_exit_clusters(
             clustered_guids.add(definition.instance_guid)
             if difficulty == chosen_difficulty:
                 selected_guids.add(definition.instance_guid)
-    return tuple(
+    gates = tuple(
+        definition.position for cluster in clusters for definition, _ in cluster
+    )
+    at_gate = tuple(
         definition for definition in exits
         if definition.instance_guid not in clustered_guids
-        or definition.instance_guid in selected_guids
+        and any(
+            all(abs(definition.position[axis] - gate[axis]) <= 1.0 for axis in range(3))
+            for gate in gates
+        )
+    )
+    known = _known_exit_destinations(
+        static_database_path,
+        {definition.destination_map_id for definition in at_gate},
+    )
+    dropped_guids = {
+        definition.instance_guid for definition in at_gate
+        if definition.destination_map_id not in known
+    }
+    return tuple(
+        definition for definition in exits
+        if definition.instance_guid not in dropped_guids
+        and (
+            definition.instance_guid not in clustered_guids
+            or definition.instance_guid in selected_guids
+        )
     )
 
 

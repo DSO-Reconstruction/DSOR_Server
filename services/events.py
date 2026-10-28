@@ -280,9 +280,10 @@ def _declared_map_local_event_entries(
     and aborts the whole update on the first mismatching entry, so names
     authored for other maps are excluded even though this map's sets still
     reference them. Generic events with an empty Map (BOSS_death, BOSS_spawn)
-    belong to every map: without their "not running" entry the client leaves
-    the sets they gate unresolved and shows, for example, the Winter Summit's
-    Kingshill and Bear's Den exits before Big Paws is dead.
+    belong to every map; retail declares all of them stopped on entry. The
+    client only acts on a change of state (a stopped entry stops a running
+    controller), so this is a reset, not what keeps their sets hidden: an
+    EventSet naming only Event=True stays inactive until that event starts.
     """
 
     try:

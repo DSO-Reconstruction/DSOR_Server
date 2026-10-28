@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import sqlite3
 import threading
 
 import pytest
@@ -137,6 +138,50 @@ def test_matching_state_and_profile_commit_in_one_batch(tmp_path, monkeypatch):
             reopened.close()
     finally:
         store.close()
+
+
+def test_durable_flushes_reuse_the_writer_connection(tmp_path, monkeypatch):
+    # Closing the last connection checkpoints, fsyncs and deletes the WAL;
+    # doing that per batch put two disk syncs behind every flush=True save.
+    path = tmp_path / "players.sqlite3"
+    wal = tmp_path / "players.sqlite3-wal"
+    store = AccountStateStore(path)
+    database = store._database
+    connects = []
+    original_connect, original_write = database._connect, database._write_rows
+
+    def counted_connect():
+        connects.append(1)
+        return original_connect()
+
+    def fail_once(connection, states, profiles, deletes):
+        if len(connects) == 1 and not database.warnings:
+            raise sqlite3.OperationalError("disk I/O error")
+        return original_write(connection, states, profiles, deletes)
+
+    monkeypatch.setattr(database, "_connect", counted_connect)
+    monkeypatch.setattr(database, "_write_rows", fail_once)
+    state = AccountState(
+        42, "a0200_kingscity", None, InventoryInfo(),
+        CurrencyChanged(100, 200, (3, 0, 4), 500, False), 0, 10000,
+        QuickbarInfo(2, 0), {}, (), None,
+    )
+    try:
+        for andermant in (101, 102, 103):
+            state.currency = CurrencyChanged(andermant, 200, (3, 0, 4), 500, False)
+            store.put(state, flush=True)
+        # One reconnect after the failed batch, then the same connection.
+        assert len(connects) == 2
+        assert database.warnings == ["asynchronous SQLite write failed: disk I/O error"]
+        assert wal.exists()
+    finally:
+        store.close()
+    assert not wal.exists()
+    reopened = AccountStateStore(path)
+    try:
+        assert reopened.get(42).currency.currency_type == 103
+    finally:
+        reopened.close()
 
 
 def test_social_io_does_not_hold_membership_lock_and_snapshots_stay_detached(tmp_path, monkeypatch):

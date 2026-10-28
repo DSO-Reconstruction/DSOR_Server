@@ -19,6 +19,8 @@ from typing import Any
 
 
 PLAYER_DATABASE_SCHEMA_VERSION = 1
+# Roughly SQLite's default auto-checkpoint size (1000 pages of 4 KiB).
+WAL_CHECKPOINT_BYTES = 4 * 1024 * 1024
 
 
 class AsyncPlayerDatabase:
@@ -379,35 +381,47 @@ class AsyncPlayerDatabase:
             )
 
     def _writer_loop(self) -> None:
-        while True:
-            self._wake_event.wait()
-            if self._coalesce_seconds:
-                self._stop_event.wait(self._coalesce_seconds)
-            with self._condition:
-                if (
-                    self._stop_event.is_set()
-                    and not self._pending_wallets
-                    and not self._pending_achievements
-                    and not self._pending_states
-                    and not self._pending_profiles
-                    and not self._pending_deletes
-                ):
-                    return
-                wallets = self._pending_wallets
-                self._pending_wallets = {}
-                achievements = self._pending_achievements
-                self._pending_achievements = {}
-                states = self._pending_states
-                profiles = self._pending_profiles
-                deletes = tuple(self._pending_deletes)
-                revision = self._queued_revision
-                self._pending_states = {}
-                self._pending_profiles = {}
-                self._pending_deletes = set()
-                self._wake_event.clear()
-            now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-            try:
-                with closing(self._connect()) as connection:
+        # The writer keeps one connection for its lifetime. Closing the last
+        # connection to a WAL database checkpoints the WAL into the main file,
+        # fsyncs it and deletes the WAL, so a connection per batch made every
+        # durable flush pay two disk syncs (130-260 ms on the live HDD volume,
+        # well past 0.5 s under client I/O) while an ingress worker waited.
+        connection = None
+        unchecked_bytes = 0
+        try:
+            while True:
+                self._wake_event.wait()
+                if self._coalesce_seconds:
+                    self._stop_event.wait(self._coalesce_seconds)
+                with self._condition:
+                    if (
+                        self._stop_event.is_set()
+                        and not self._pending_wallets
+                        and not self._pending_achievements
+                        and not self._pending_states
+                        and not self._pending_profiles
+                        and not self._pending_deletes
+                    ):
+                        return
+                    wallets = self._pending_wallets
+                    self._pending_wallets = {}
+                    achievements = self._pending_achievements
+                    self._pending_achievements = {}
+                    states = self._pending_states
+                    profiles = self._pending_profiles
+                    deletes = tuple(self._pending_deletes)
+                    revision = self._queued_revision
+                    self._pending_states = {}
+                    self._pending_profiles = {}
+                    self._pending_deletes = set()
+                    self._wake_event.clear()
+                now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                try:
+                    if connection is None:
+                        connection = self._connect()
+                        # Checkpoints run below, after waiters are released,
+                        # instead of inside whichever commit crosses the limit.
+                        connection.execute("PRAGMA wal_autocheckpoint=0")
                     encoded_states = [
                         (*self._encoded_state(value, self._encode_state), now)
                         for value in states.values()
@@ -435,46 +449,73 @@ class AsyncPlayerDatabase:
                          for owner, document in achievements.items()),
                     )
                     connection.commit()
-            except Exception as exc:
-                try:
-                    connection.rollback()
-                except (NameError, sqlite3.Error):
-                    pass
+                except Exception as exc:
+                    if connection is not None:
+                        # Retry on a fresh connection, not one in an unknown
+                        # transaction state.
+                        try:
+                            connection.rollback()
+                        except sqlite3.Error:
+                            pass
+                        connection.close()
+                        connection = None
+                    with self._condition:
+                        # A newer snapshot always wins over the failed one.
+                        for key, value in wallets.items():
+                            self._pending_wallets.setdefault(key, value)
+                        for key, value in achievements.items():
+                            self._pending_achievements.setdefault(key, value)
+                        for key, value in states.items():
+                            self._pending_states.setdefault(key, value)
+                        for key, value in profiles.items():
+                            self._pending_profiles.setdefault(key, value)
+                        self._pending_deletes.update(deletes)
+                        self._last_error = exc
+                        self._condition.notify_all()
+                    self.warnings.append(
+                        f"asynchronous SQLite write failed: {exc}"
+                    )
+                    if self._stop_event.wait(0.1):
+                        self._wake_event.set()
+                    else:
+                        self._wake_event.set()
+                    continue
                 with self._condition:
-                    # A newer snapshot always wins over the failed one.
-                    for key, value in wallets.items():
-                        self._pending_wallets.setdefault(key, value)
-                    for key, value in achievements.items():
-                        self._pending_achievements.setdefault(key, value)
-                    for key, value in states.items():
-                        self._pending_states.setdefault(key, value)
-                    for key, value in profiles.items():
-                        self._pending_profiles.setdefault(key, value)
-                    self._pending_deletes.update(deletes)
-                    self._last_error = exc
+                    self._written_revision = max(
+                        self._written_revision, revision
+                    )
+                    self._last_error = None
                     self._condition.notify_all()
-                self.warnings.append(
-                    f"asynchronous SQLite write failed: {exc}"
-                )
-                if self._stop_event.wait(0.1):
-                    self._wake_event.set()
-                else:
-                    self._wake_event.set()
-                continue
-            with self._condition:
-                self._written_revision = max(
-                    self._written_revision, revision
-                )
-                self._last_error = None
-                self._condition.notify_all()
-                if (
-                    self._pending_wallets
-                    or self._pending_achievements
-                    or self._pending_states
-                    or self._pending_profiles
-                    or self._pending_deletes
+                    pending = bool(
+                        self._pending_wallets
+                        or self._pending_achievements
+                        or self._pending_states
+                        or self._pending_profiles
+                        or self._pending_deletes
+                    )
+                    if pending:
+                        self._wake_event.set()
+                unchecked_bytes += sum(
+                    len(row[3]) for row in encoded_states
+                ) + sum(len(row[8]) for row in encoded_profiles)
+                # Prefer an idle moment so a flush rarely queues behind the
+                # checkpoint's fsyncs; a steady stream still gets one at 4x.
+                if unchecked_bytes >= WAL_CHECKPOINT_BYTES and (
+                    not pending
+                    or unchecked_bytes >= 4 * WAL_CHECKPOINT_BYTES
                 ):
-                    self._wake_event.set()
+                    unchecked_bytes = 0
+                    try:
+                        connection.execute(
+                            "PRAGMA wal_checkpoint(PASSIVE)"
+                        ).fetchone()
+                    except sqlite3.Error as exc:
+                        self.warnings.append(
+                            f"SQLite WAL checkpoint failed: {exc}"
+                        )
+        finally:
+            if connection is not None:
+                connection.close()
 
 
 __all__ = ["AsyncPlayerDatabase", "PLAYER_DATABASE_SCHEMA_VERSION"]
