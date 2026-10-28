@@ -416,6 +416,16 @@ class QuestService:
 
         normalized_map = map_key(map_id)
 
+        # Grimmagstone's Alliance Fortress portal is a run gate, not a
+        # durable quest/discovery unlock. The authored exit event also has a
+        # PlayerEnteredMap fallback for characters whose kill task was
+        # already completed; replaying that signal on a later map entry makes
+        # the portal appear before the ritual waves and Raazghul. Keep the
+        # exit closed on every new runtime and let the authoritative
+        # Raazghul-death handler activate it for the current instance.
+        if normalized_map == "pw001_grimmagstone_01_dun":
+            exit_destinations.pop("pw001_spawn_exit", None)
+
         def gated_by_open_quest_task(event) -> bool:
             # The exit event has an authored PlayerEnteredMap restore with a
             # completed-task gate of a quest that is still open in the log.

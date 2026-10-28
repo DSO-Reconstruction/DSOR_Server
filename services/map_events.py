@@ -2324,6 +2324,19 @@ class MapEventService:
                          signal_id: str) -> None:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
+        if (
+            map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
+            and key in {
+                "pw001_spawn_exit_signal",
+                "pw001_spawn_exit_signal_b",
+            }
+        ):
+            # Client-side kill/quest signals can otherwise activate the exit
+            # event before Raazghul is defeated. The authoritative boss-kill
+            # path starts it directly after validating the killed template.
+            _log(f"ignored non-authoritative Grimmagstone exit signal {key!r}")
+            return
+
         signal_keys = [key]
         fractured_run = CharacterService._is_fractured_planes_run(self, s)
         if (
@@ -2713,6 +2726,8 @@ class MapEventService:
             f"Parallel World gatekeeper defeated on {runtime.map_id}: "
             f"starting exit event {event_key!r}"
         )
+        if map_key(runtime.map_id) == "pw001_grimmagstone_01_dun":
+            runtime.grimmagstone_gatekeeper_defeated = True
         definition = runtime.catalog.event(event_key)
         if definition is not None:
             self._schedule_map_local_event_start(runtime, definition)
@@ -3320,6 +3335,14 @@ class MapEventService:
         signal_id = str(getattr(decoded, "signal_id", "") or "")
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None or not signal_id:
+            return
+        # Grimmagstone's scene can report the exit edge as the ritual starts.
+        # The authoritative gatekeeper-death handler opens this per-run exit;
+        # neither a client report nor its saved-quest variant proves a kill.
+        if map_key(runtime.map_id) == "pw001_grimmagstone_01_dun" and signal_id.casefold() in {
+            "pw001_spawn_exit_signal", "pw001_spawn_exit_signal_b",
+        }:
+            _log(f"ignored premature client exit signal {signal_id!r}")
             return
         rule = runtime.catalog.rule(signal_id)
         if rule is None or not rule.enabled:
@@ -4538,6 +4561,13 @@ class MapEventService:
     def _start_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        if (
+            map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
+            and definition.key == "pw001_spawn_exit"
+            and not runtime.grimmagstone_gatekeeper_defeated
+        ):
+            _log("blocked Grimmagstone exit activation before gatekeeper death")
+            return
         with runtime.lock:
             if (pending_token is not None
                     and runtime.pending_start_tokens.get(definition.key) is not pending_token):
