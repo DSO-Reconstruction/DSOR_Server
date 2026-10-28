@@ -7,6 +7,7 @@ import threading
 import time
 
 from dso_server.protocol.consumable_protocol import load_instant_consumable_definition
+from dso_server.protocol.world_loot_protocol import inventory_loot_text_type
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -1701,6 +1702,12 @@ class WorldService:
                             drop,
                             actor_id=LOCAL_PLAYER_ACTOR_ID,
                             inventory=mutation,
+                            # Retail announced auto-picked keys and Draken;
+                            # a clicked pickup stayed silent.
+                            loot_text_type=(
+                                inventory_loot_text_type(drop.item_category)
+                                if automatic else None
+                            ),
                         )
                     )
                     s.gameplay_inventory = mutation.inventory
@@ -1860,8 +1867,13 @@ class WorldService:
                 for item_id, drop in s.gameplay_world_loot.items()
                 if (
                     drop.auto_pick_up == 'All'
+                    # Keys reach world loot only as event Loot-list drops
+                    # (christmas sugar beets) and amphorae, authored to
+                    # auto-pick-up. Retail auto-picked amphora Draken
+                    # (NoAutoUseCurrency) into the bag too.
                     and drop.item_category in {
-                        'Currency', 'InstantConsumable'
+                        'Currency', 'InstantConsumable', 'Key',
+                        'NoAutoUseCurrency',
                     }
                     and math.hypot(
                         drop.item.field_100[0] - player_position[0],

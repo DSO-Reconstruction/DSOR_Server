@@ -8,6 +8,7 @@ from pathlib import Path
 import random
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.local_map_state import map_database_path
 
 MAP_ID = "pw214_mortis_boss"
@@ -59,7 +60,7 @@ def select_spawn_rows(static_path, runtime, rows):
     tier = min(9, max(0, int(runtime.scaling_difficulty)))
     allowed = {}
     for event_set in {row.event_set_row for row in rows} & {4214, 4215, 4216}:
-        groups = _parent_groups(str(Path(static_path).resolve()), event_set)
+        groups = _parent_groups(str(resident_content.resolved(static_path)), event_set)
         if event_set == 4216:
             choices = groups[tier * 8:(tier + 1) * 8]
         elif event_set == 4214:
@@ -99,7 +100,7 @@ def select_spawn_rows(static_path, runtime, rows):
 
 @lru_cache(maxsize=8)
 def freeze_effect_ids(static_path):
-    with sqlite3.connect(Path(static_path).resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with sqlite3.connect(resident_content.resolved(static_path).as_uri() + "?mode=ro", uri=True) as db:
         return frozenset(
             int(row[0]) for resource in FREEZES.values()
             for row in db.execute(

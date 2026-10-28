@@ -12,6 +12,7 @@ import struct
 import threading
 from pathlib import Path
 
+from dso_server.runtime import resident_content
 from dso_server.runtime.gc_tuning import freeze_long_lived_addition
 from dso_server.protocol.combat_protocol import (
     BULLET_SKILL_COMMAND,
@@ -55,6 +56,7 @@ from dso_server.gameplay.fractured_planes_layout import (
     is_tower_mechanism,
     tower_density_templates,
 )
+from dso_server.gameplay.map_hazards import is_map_hazard
 from dso_server.gameplay.pathengine_navigation import (
     NavigationError,
     NavigationRoute,
@@ -934,7 +936,7 @@ class LocalMonsterEncounter:
 
 
 def _open_read_only(path: Path) -> sqlite3.Connection:
-    if not path.is_file():
+    if not resident_content.is_file(path):
         raise FileNotFoundError(path)
     return sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
 
@@ -2403,17 +2405,15 @@ def _load_spawn_areas(
         ]
     difficulty_variations: Mapping[int, tuple[int, int]] = {}
     try:
-        for _seq, name, file_name in database.execute(
-            "PRAGMA database_list"
-        ):
-            if name == "main" and file_name:
-                from dso_server.gameplay.map_event_state import (
-                    map_difficulty_variations,
-                )
+        file_name = resident_content.database_path(database)
+        if file_name:
+            from dso_server.gameplay.map_event_state import (
+                map_difficulty_variations,
+            )
 
-                difficulty_variations = map_difficulty_variations(
-                    Path(file_name)
-                )
+            difficulty_variations = map_difficulty_variations(
+                Path(file_name)
+            )
     except sqlite3.Error:
         pass
     return _select_spawn_area_variants(
@@ -3079,6 +3079,7 @@ def _load_dynamic_monster_encounter(
         resolve_projected_overlap: bool = False,
         max_navigation_snap_distance: float = 2.0,
         authored_yaw: float = 0.0,
+        hazard: bool = False,
     ) -> bool:
         keep_story_boss_at_authored_position = (
             str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
@@ -3087,6 +3088,9 @@ def _load_dynamic_monster_encounter(
         if int(actor_id) in used_actor_ids:
             return False
         mounted = is_tower_mechanism(static_database_path, map_id, template_id)
+        # ``hazard``: a statue trap (gameplay/map_hazards.py) standing in a
+        # wall column on its own navigation island. Keep its authored
+        # placement and facing, and make it untargetable scenery.
         authored_boss = (
             encounter_policy.is_boss_room
             and is_boss_spawn_template(static_database_path, template_id)
@@ -3095,7 +3099,7 @@ def _load_dynamic_monster_encounter(
         # meshes own the final world Y; authored spawn transforms and spawn
         # volume centers are not reliable terrain samples.
         try:
-            position = tuple(position) if mounted or authored_boss else _grounded_spawn_position(
+            position = tuple(position) if mounted or hazard or authored_boss else _grounded_spawn_position(
                 navigation,
                 terrain,
                 position,
@@ -3106,6 +3110,7 @@ def _load_dynamic_monster_encounter(
             if (
                 not keep_story_boss_at_authored_position
                 and not mounted
+                and not hazard
                 and not authored_boss
                 and allowed_component is not None
                 and str(map_id).casefold() != "c2303_dun"
@@ -3135,7 +3140,7 @@ def _load_dynamic_monster_encounter(
                 pass
         if inside_protected_waypoint(position):
             return False
-        if not mounted and _spawn_position_is_occupied(occupied_positions, position):
+        if not mounted and not hazard and _spawn_position_is_occupied(occupied_positions, position):
             if not resolve_projected_overlap:
                 return False
             # Several density-grid points can project onto the same boundary
@@ -3201,13 +3206,13 @@ def _load_dynamic_monster_encounter(
                 monster_level=monster_level,
                 scaling_difficulty=scaling_difficulty,
                 coefficient_stats=mounted,
-                non_targetable=is_tower_hardware(
+                non_targetable=hazard or is_tower_hardware(
                     static_database_path, map_id, template_id
                 ),
             )
         except ValueError:
             return False
-        if is_tower_layout(map_id):
+        if is_tower_layout(map_id) or hazard:
             monster = replace(monster, field_a0=float(authored_yaw))
         _occupy_spawn_position(occupied_positions, position)
         used_actor_ids.add(int(actor_id))
@@ -3234,6 +3239,10 @@ def _load_dynamic_monster_encounter(
         # Inactive EventSets were removed before boss-phase resolution.
         row_sets = (tuple(fixed_rows),)
         bloodshed_spawn_positions = set()
+        # The Winter Summit authors its statue traps as four MapVariation
+        # variants over the same column positions (which guardian stands
+        # where). One statue per column; stacked variants would fire 4x.
+        hazard_spawn_positions = set()
         for rows in row_sets:
             before = len(monsters)
             for _row_id, raw_transform, raw_template_id, _event_set in rows:
@@ -3261,6 +3270,16 @@ def _load_dynamic_monster_encounter(
                     if position_key in bloodshed_spawn_positions:
                         continue
                     bloodshed_spawn_positions.add(position_key)
+                # Statues an EventSet switches (Eternal Watch's traps, the
+                # Kranparus lairs', the Big Paws Mom room turrets) leave with
+                # their set: map_events retires a disabled set's monsters by
+                # template and authored position, which a statue keeps.
+                hazard = is_map_hazard(static_database_path, template_id)
+                if hazard:
+                    position_key = (round(position[0], 1), round(position[2], 1))
+                    if position_key in hazard_spawn_positions:
+                        continue
+                    hazard_spawn_positions.add(position_key)
                 actor_id = allocate_fixed_actor_id()
                 if (
                     str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
@@ -3279,7 +3298,8 @@ def _load_dynamic_monster_encounter(
                     authored_yaw=math.atan2(
                         struct.unpack("<16f", bytes(raw_transform))[8],
                         struct.unpack("<16f", bytes(raw_transform))[0],
-                    ) if is_tower_layout(map_id) else 0.0,
+                    ) if is_tower_layout(map_id) or hazard else 0.0,
+                    hazard=hazard,
                     # Bloodshed challenges author five sludges on every
                     # eligible dungeon map. A few maps overlap one sludge's
                     # transform with an earlier actor; keep the challenge

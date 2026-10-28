@@ -27,6 +27,7 @@ import re
 import sqlite3
 from typing import Any
 
+from dso_server.runtime import resident_content
 from dso_server.paths import DEFAULT_CHEST_CONTENTS_MAP
 
 from dso_server.protocol.commerce_protocol import (
@@ -149,6 +150,8 @@ class _MappedReward:
     chance_percent: float | None = None
     equipment_rarity: str | None = None
     equipment_slot_types: tuple[str, ...] = ()
+    # An event skin region for the rolled item (christmas presents: e_chr).
+    equipment_appearance_region: str = ""
 
 
 def _positive_amount(value: Any, *, default: int = 1) -> int:
@@ -185,7 +188,7 @@ def _load_index_cached(
 ) -> dict[str, tuple[dict[str, Any], ...]]:
     del modified_ns, size
     path = Path(path_string)
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload = json.loads(resident_content.read_text(path, encoding="utf-8"))
     containers = payload.get("containers")
     if not isinstance(containers, list):
         raise ValueError("chest contents map has no containers array")
@@ -200,10 +203,10 @@ def _load_index_cached(
 
 
 def _load_index(path: str | Path) -> dict[str, tuple[dict[str, Any], ...]]:
-    resolved = Path(path).resolve()
-    if not resolved.is_file():
+    resolved = resident_content.resolved(path)
+    if not resident_content.is_file(resolved):
         raise FileNotFoundError(f"chest contents map not found: {resolved}")
-    stat = resolved.stat()
+    stat = resident_content.stat(resolved)
     return _load_index_cached(
         str(resolved), int(stat.st_mtime_ns), int(stat.st_size)
     )
@@ -471,6 +474,9 @@ def _direct_entries(
                 amount=1,
                 equipment_rarity=rarity,
                 equipment_slot_types=tuple(str(slot) for slot in raw_slots),
+                equipment_appearance_region=str(
+                    entry.get("appearance_region") or ""
+                ),
             ))
             continue
         if mode == "class_set":
@@ -1083,6 +1089,7 @@ def roll_chest_contents(
                 rarity=entry.equipment_rarity,
                 slot_types=entry.equipment_slot_types,
                 rng=rng,
+                appearance_region=entry.equipment_appearance_region,
             )
             rewards_list.append(ChestReward(
                 _definition(static_database_path, roll.template_id),

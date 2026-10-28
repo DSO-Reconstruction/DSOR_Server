@@ -16,6 +16,8 @@ from types import MappingProxyType
 from typing import Mapping
 import sqlite3
 
+from dso_server.runtime import resident_content
+
 
 @dataclass(frozen=True)
 class StatusRuntimeCatalog:
@@ -86,7 +88,7 @@ def load_status_runtime_catalog(
     database_path: str | Path,
 ) -> StatusRuntimeCatalog:
     return _load_status_runtime_catalog(
-        str(Path(database_path).resolve())
+        str(resident_content.resolved(database_path))
     )
 
 

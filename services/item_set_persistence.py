@@ -10,6 +10,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.item_set_procs import collect_trigger_rules
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.persistence import readonly_db
@@ -30,8 +31,8 @@ def persistent_item_set_entries(session):
 
 
 def _revision(path):
-    path = Path(path).resolve()
-    stat = path.stat()
+    path = resident_content.resolved(path)
+    stat = resident_content.stat(path)
     return str(path), stat.st_mtime_ns, stat.st_size
 
 

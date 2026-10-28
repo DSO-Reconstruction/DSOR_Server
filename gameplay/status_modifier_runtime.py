@@ -18,6 +18,8 @@ import time
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from dso_server.runtime import resident_content
+
 
 VIRTUAL_CURRENCY_DROP_TEMPLATES = frozenset((
     'money_vc',
@@ -238,8 +240,8 @@ def resolve_modifier_value(
 
 
 def _database_signature(path: str | Path) -> tuple[str, int, int]:
-    resolved = Path(path).resolve()
-    stat = resolved.stat()
+    resolved = resident_content.resolved(path)
+    stat = resident_content.stat(resolved)
     return str(resolved), int(stat.st_mtime_ns), int(stat.st_size)
 
 

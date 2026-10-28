@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import hashlib
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.event_system import (
     EventStatusEffectSpec,
     parse_event_status_effects,
@@ -106,7 +107,7 @@ def endless_tower_player_buffs(
     """Resolve one choice per act and grant only the reached player effects."""
 
     return _load_endless_tower_player_buffs(
-        str(Path(database_path).resolve()), str(access_id).casefold(),
+        str(resident_content.resolved(database_path)), str(access_id).casefold(),
         int(character_id),
     )
 

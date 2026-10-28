@@ -8,6 +8,7 @@ returns on refresh and its stale slot becomes an invisible occupied slot.
 
 from __future__ import annotations
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
 import copy
 from dataclasses import dataclass, replace
@@ -184,7 +185,7 @@ def decode_crafting_request(payload: bytes) -> CraftingRequest:
 
 def _open_database(path: str) -> sqlite3.Connection:
     database_path = Path(path)
-    if not database_path.is_file():
+    if not resident_content.is_file(database_path):
         raise FileNotFoundError(f"static database not found: {database_path}")
     database = sqlite3.connect(f"file:{database_path}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row

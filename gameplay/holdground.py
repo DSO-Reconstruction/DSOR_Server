@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import struct
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.local_map_state import map_database_path, npc_actor_id_for_row
 
 
@@ -119,9 +120,9 @@ def parse_wave(text):
 
 
 def _signature(path):
-    path = Path(path).resolve()
+    path = resident_content.resolved(path)
     try:
-        stat = path.stat()
+        stat = resident_content.stat(path)
     except OSError as exc:
         raise UnsupportedHoldGround(f"missing defense content: {path.name}") from exc
     return str(path), stat.st_mtime_ns, stat.st_size

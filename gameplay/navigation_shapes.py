@@ -12,12 +12,13 @@ import sqlite3
 import struct
 from types import MappingProxyType
 
+from dso_server.runtime import resident_content
 from dso_server.paths import DATA_ROOT
 
 
 @lru_cache(maxsize=4)
 def navigation_shape_radii(path=DATA_ROOT / "navigation" / "navshapes.bin"):
-    data = Path(path).read_bytes()
+    data = resident_content.read_bytes(path)
     if len(data) < 12 or data[:4] != b"HSAN":
         raise ValueError("invalid navigation shape table")
     version, count = struct.unpack_from("<II", data, 4)

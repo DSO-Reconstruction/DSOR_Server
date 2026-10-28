@@ -27,6 +27,7 @@ import math
 from pathlib import Path
 import struct
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.map_collision_terrain import (
     CollisionTerrainError,
     _transform_vertex,
@@ -89,7 +90,7 @@ def _nvx2_triangles(blob: bytes, group_index: int):
 
 def read_collision_bundle(path: str | Path) -> dict[str, bytes]:
     """Raw NVX2 blobs of a ``CPAM`` bundle, by resource name."""
-    data = Path(path).read_bytes()
+    data = resident_content.read_bytes(path)
     if len(data) < 8 or data[:4] != COLLISION_BUNDLE_MAGIC:
         raise StaticCollisionError(f"{path} is not a CPAM collision bundle")
     offset, result = 8, {}
@@ -133,7 +134,7 @@ class _Reader:
 def read_map_collision_instances(path: str | Path):
     """``(resource, group, position, rotation, scale)`` for each colliding
     instance present whatever the map's event state."""
-    reader = _Reader(Path(path).read_bytes())
+    reader = _Reader(resident_content.read_bytes(path))
     reader.tag(b"DSOM")
     reader.unpack("<I")
     reader.tag(b"MAPI")

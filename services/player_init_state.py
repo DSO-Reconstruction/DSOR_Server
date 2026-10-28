@@ -13,6 +13,7 @@ import math
 import time
 from typing import Any
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.currency_protocol import (
     GAME_CURRENCY_DEFINITIONS,
     STARTER_GOLD_UNITS,
@@ -369,10 +370,10 @@ class PlayerInitializationStateService:
                 )
             except ValueError:
                 return False
-            return map_database_path(
+            return resident_content.is_file(map_database_path(
                 self.static_database_path,
                 destination_access.physical_map_id,
-            ).is_file()
+            ))
 
         active_event_flags = frozenset({
             *CharacterService._event_catalog(

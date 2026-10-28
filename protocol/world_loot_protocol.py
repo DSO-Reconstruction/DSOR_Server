@@ -14,6 +14,7 @@ chance) and uses a small rank policy only for the missing list cardinality.
 
 from __future__ import annotations
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
 from collections.abc import Callable, Mapping
 import copy
@@ -99,6 +100,8 @@ EQUIPMENT_ITEM_CATEGORIES = frozenset((
     'Wrench',
 ))
 BASE_WISDOM_DROP_CHANCE = 0.12
+# Event progress dropped by an event map's final boss, in base drops.
+EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER = 25
 EQUIPMENT_RARITIES = (
     "Common",
     "Uncommon",
@@ -303,7 +306,7 @@ class StaticLootCache:
 
 
 def _open_read_only(path: Path) -> sqlite3.Connection:
-    if not path.is_file():
+    if not resident_content.is_file(path):
         raise FileNotFoundError(path)
     database = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)
     database.row_factory = sqlite3.Row
@@ -484,11 +487,23 @@ def _load_static_loot_cache(
                     monster["PrivilegedLootDropChance"]
                 ),
             )
+        # Region marks event skins (christmas weapons: e_chr); the legacy
+        # build has no such column.
+        appearance_region = (
+            "Region"
+            if "Region" in {
+                str(row[1]) for row in database.execute(
+                    "PRAGMA table_info(_Template_ItemAppearance)"
+                )
+            }
+            else "'' AS Region"
+        )
         appearance_rows = tuple(
             dict(row)
             for row in database.execute(
-                """
-                SELECT Id, AppearanceCollection, MinLevel, MaxLevel, Rarity
+                f"""
+                SELECT Id, AppearanceCollection, MinLevel, MaxLevel, Rarity,
+                       {appearance_region}
                 FROM _Template_ItemAppearance
                 """
             ).fetchall()
@@ -690,7 +705,7 @@ def prime_world_loot_cache(
     """Return the process cache, invalidated when the DB file changes."""
 
     path = _resolved_loot_database_path(str(static_database_path))
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load_static_loot_cache(
         str(path), int(stat.st_mtime_ns), int(stat.st_size)
     )
@@ -705,7 +720,7 @@ def _resolved_loot_database_path(database_path: str) -> Path:
     from contending with projectile and monster simulation callbacks.
     """
 
-    return Path(database_path).resolve()
+    return resident_content.resolved(database_path)
 
 
 def load_monster_loot_profile(
@@ -1013,6 +1028,7 @@ def roll_equipment_reward(
     rarity: str,
     slot_types: tuple[str, ...] = (),
     rng: random.Random | None = None,
+    appearance_region: str = "",
 ) -> EquipmentRewardRoll:
     """Roll one authored equipment template for a chest or similar reward.
 
@@ -1020,6 +1036,11 @@ def roll_equipment_reward(
     and override the concrete item's rarity. Unique/set/mythic rewards keep
     their authored templates. Optional slot filters are matched against the
     database ``SlotType`` column rather than inferred from item names.
+
+    ``appearance_region`` asks for an event skin instead of a base one: only
+    templates whose appearance collection has a skin of that Region (the
+    christmas ``*_christmas`` weapon skins are region ``e_chr``) are rolled,
+    and the item wears that skin.
     """
 
     if rarity not in EQUIPMENT_RARITIES:
@@ -1048,10 +1069,19 @@ def roll_equipment_reward(
                 slot.casefold() for slot in candidate.slot_types
             )
         )
+    region = str(appearance_region).strip().casefold()
+    if region:
+        candidates = tuple(
+            candidate for candidate in candidates
+            if _region_appearances(
+                database, candidate.appearance_collection,
+                max(1, int(item_level)), rarity, region,
+            )
+        )
     if not candidates:
         suffix = (
             f" in slots {tuple(slot_types)!r}" if wanted_slots else ""
-        )
+        ) + (f" with a {region!r} skin" if region else "")
         raise ValueError(
             f"no eligible {rarity} equipment for {class_name!r} at "
             f"level {item_level}{suffix}"
@@ -1060,18 +1090,61 @@ def roll_equipment_reward(
     resolved_level = _context_item_level(
         database, definition, max(1, int(item_level))
     )
-    return EquipmentRewardRoll(
-        definition.template_id,
-        resolved_level,
-        EQUIPMENT_RARITIES.index(rarity),
-        _appearance(
+    if region:
+        skins = _region_appearances(
+            database, definition.appearance_collection, resolved_level,
+            rarity, region,
+        ) or _region_appearances(
+            database, definition.appearance_collection,
+            max(1, int(item_level)), rarity, region,
+        )
+        appearance = generator.choice(skins)
+    else:
+        appearance = _appearance(
             database,
             definition.appearance_collection,
             resolved_level,
             generator,
             rarity=rarity,
-        ),
+        )
+    return EquipmentRewardRoll(
+        definition.template_id,
+        resolved_level,
+        EQUIPMENT_RARITIES.index(rarity),
+        appearance,
     )
+
+
+def _region_appearances(
+    database: StaticLootCache,
+    collection: str,
+    item_level: int,
+    rarity: str,
+    region: str,
+) -> tuple[str, ...]:
+    """Event skins of ``collection`` belonging to ``region``.
+
+    Base skins (``*_NN``) list the regions they drop in too, so an event skin
+    is a non-numbered one tagged with the region (``*_christmas``: e_chr).
+    """
+
+    if not collection:
+        return ()
+    return tuple(sorted(
+        str(row["Id"]) for row in database.appearance_rows
+        if str(row.get("AppearanceCollection") or "") == collection
+        and not re.fullmatch(r".*_\d{2}", str(row["Id"]))
+        and int(row.get("MinLevel") or 0) <= item_level
+        and int(row.get("MaxLevel") or 0) >= item_level
+        and (
+            not str(row.get("Rarity") or "")
+            or rarity in str(row.get("Rarity") or "")
+        )
+        and region in {
+            token.strip().casefold()
+            for token in str(row.get("Region") or "").split(";")
+        }
+    ))
 
 
 def _provided_affinities(
@@ -1674,6 +1747,7 @@ def generate_monster_loot(
         ]
         | None
     ) = None,
+    additional_event_loot: tuple[tuple[str, int], ...] = (),
 ) -> WorldLootGeneration:
     """Generate editable NewItem state for one lethal monster transition.
 
@@ -1930,8 +2004,13 @@ def generate_monster_loot(
             str(template_id)
             for template_id, _amount in additional_instant_consumables
         }
+        # An event map's final boss (rank worldboss: Big Paws, Dragan...) pays
+        # out a large stack of progress; minibosses a small one. The map
+        # difficulty curve below scales both.
         event_rank_multiplier = (
-            3 if profile.rank_kind in {"worldboss", "boss"} else 1
+            EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER
+            if profile.rank_kind == "worldboss"
+            else 3 if profile.rank_kind == "boss" else 1
         )
         for template_id, amount in additional_instant_consumables:
             row = database.items_by_id.get(str(template_id))
@@ -1939,14 +2018,12 @@ def generate_monster_loot(
                 raise ValueError(
                     f"event collectible {template_id!r} is not an item"
                 )
+            # Most collectibles are consumed on pickup; some are stored, like
+            # the Rise of Dragan key retail drops for its event's first page,
+            # which goes to the inventory and advances progress as well.
             item_category = str(
                 row.get("ItemCategory") or "InstantConsumable"
             )
-            if item_category != "InstantConsumable":
-                raise ValueError(
-                    f"event collectible {template_id!r} has unexpected "
-                    f"category {item_category!r}"
-                )
             specifications.append((
                 LootItemDefinition(
                     str(template_id),
@@ -1958,6 +2035,27 @@ def generate_monster_loot(
                 1,
                 "",
                 0,
+            ))
+
+        # Event Loot-list rolls (christmas sugar beets) are ordinary items of
+        # any category; the event already sized them per monster rank.
+        for template_id, amount in additional_event_loot:
+            row = database.items_by_id.get(str(template_id))
+            if row is None:
+                raise ValueError(f"event loot {template_id!r} is not an item")
+            rarity_name = str(row.get("DefaultRarity") or "Common")
+            specifications.append((
+                LootItemDefinition(
+                    str(template_id),
+                    str(row.get("ItemCategory") or "General"),
+                    str(row.get("AutoPickUp") or "None"),
+                    "0", "0", "",
+                ),
+                max(1, int(amount)),
+                1,
+                "",
+                EQUIPMENT_RARITIES.index(rarity_name)
+                if rarity_name in EQUIPMENT_RARITIES else 0,
             ))
 
         # Apply the database's map-difficulty stack curve in one final pass so
@@ -2052,8 +2150,10 @@ def generate_monster_loot(
                         enchantment_tier=map_difficulty,
                         rng=generator,
                     )
+                    # Lootboxes keep their authored rarity (the christmas
+                    # presents' glow) but carry no enchantments.
                     if definition.item_category
-                    not in {"Currency", "InstantConsumable"}
+                    not in {"Currency", "InstantConsumable", "LootGenItem"}
                     else []
                 ),
                 socketed_templates=[""] * socket_count,
@@ -2214,14 +2314,30 @@ def _loot_received_currency_type(drop: WorldLootDrop) -> int:
     )
 
 
-def _write_loot_received(writer: BitWriter, drop: WorldLootDrop, actor_id: int) -> None:
+def inventory_loot_text_type(item_category: str) -> int | None:
+    """Loot-received text kind for a bag item retail announced on auto pickup.
+
+    The 2026-10-28 amphora capture showed 6 for the event's progress key and
+    7 for Draken (another session: 7 for an ore ingredient). Other bag items
+    keep the silent pickup.
+    """
+
+    return {"Key": 6, "NoAutoUseCurrency": 7}.get(str(item_category))
+
+
+def _write_loot_received(
+    writer: BitWriter, drop: WorldLootDrop, actor_id: int,
+    text_type: int | None = None,
+) -> None:
     """MessageCommand 0x19: the "<amount> <currency> received" text over the player."""
 
     writer.write_bytes(MESSAGE_COMMAND.to_bytes(2, "little"))
     writer.write_uint8(LOOT_RECEIVED_MESSAGE)
     writer.write_uint32_le(4)
     writer.write_uint8(1)
-    writer.write_uint32_le(_loot_received_currency_type(drop))
+    writer.write_uint32_le(
+        _loot_received_currency_type(drop) if text_type is None else int(text_type)
+    )
     writer.write_uint8(1)
     writer.write_uint32_le(max(0, int(drop.item.amount)))
     writer.write_uint8(4)
@@ -2258,13 +2374,15 @@ def encode_world_pickup_response(
     actor_id: int,
     currency: CurrencyChanged | None = None,
     inventory: InventoryLootMutation | None = None,
+    loot_text_type: int | None = None,
 ) -> tuple[bytes, int]:
     """Serialize the retail pickup transaction as one ordered command batch.
 
     Retail does not publish the discard, pickup notification, and destination
     state as independent application messages. Currency pickup additionally
     begins with ``MessageCommand`` type ``0x19`` so the still-registered world
-    item can anchor the loot text before ``DiscardItem`` removes it.
+    item can anchor the loot text before ``DiscardItem`` removes it; a bag
+    item does too when ``loot_text_type`` names its text kind.
     """
 
     if drop.item_category == "Currency":
@@ -2280,6 +2398,8 @@ def encode_world_pickup_response(
     writer.write_uint8(0x85)
     if currency is not None:
         _write_loot_received(writer, drop, actor_id)
+    elif inventory is not None and loot_text_type is not None:
+        _write_loot_received(writer, drop, actor_id, loot_text_type)
 
     writer.write_bytes(DISCARD_ITEM_COMMAND.to_bytes(2, "little"))
     writer.write_uint32_le(int(drop.item.item_id))

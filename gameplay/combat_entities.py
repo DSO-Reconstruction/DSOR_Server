@@ -6,6 +6,7 @@ The planner owns geometry, projectile topology and timing for every actor kind.
 
 from dataclasses import dataclass
 import math
+import struct
 
 
 @dataclass(frozen=True)
@@ -109,6 +110,72 @@ def _directional_width(geometry, forward, reach):
     return (geometry.player_width + (geometry.end_width - geometry.player_width) * progress) / 2
 
 
+def bullet_flight_reach(geometry):
+    """How far a released bullet flies before its ``LifeTime`` ends.
+
+    The client sweeps a bullet only until its end tick (per-tick loop
+    0x1409d6438 stops at command +0x94; ``GameBulletSkill::SetupTiming``
+    0x1407f8e28 keeps that LifeTime span), from the ``StartOffset`` spawn
+    point: Ice Missile's 22 ticks at 0.84 m each (21 swept) plus 1.79 m reach
+    19.4 m, not its 25 m ``AttackRange``. Retail's PvP range cut is a
+    ``BulletLifeTime`` modifier for exactly this reason. ``None`` for bullets
+    without a lifetime (charges, points, orbits), which keep AttackRange.
+    """
+    lifetime = float(getattr(geometry, "projectile_lifetime", 0.0) or 0.0)
+    velocity = float(getattr(geometry, "projectile_velocity", 0.0) or 0.0)
+    if (lifetime <= 0.0 or velocity <= 0.0
+            or str(getattr(geometry, "motion_type", "Straight")).casefold()
+            in ORBITING_MOTION_TYPES):
+        return None
+    # The end tick is release + (int)(LifeTime / 0.04) (0x1409676d0), and
+    # flight is swept only before it: the last step ends one tick short.
+    # Only a wall end (UpdateBulletLifeTime 0x1407f9aec, +0x11c) adds a
+    # sweep at the end tick, and the static collision stops it there anyway.
+    steps = max(0, _client_ticks(lifetime) - 1)
+    return max(0.0, -float(geometry.start_offset[2])) + steps * velocity / 25.0
+
+
+def _swept_contacts(candidates, *, offset, step, reach, budget):
+    """The actors a straight bullet strikes, in the client's order.
+
+    Every 25 Hz tick the client sweeps the bullet's step and strikes only the
+    nearest actor it touches that this bullet has not struck yet (sweep
+    0x1409d5fbc; hit list +0xa8), one impact of its ``ImpactCount`` budget
+    each (``GameBulletSkill::OnBeforeHit`` 0x1407f6bb8); the bullet dies on
+    the hit that spends the budget. Two enemies sharing one step therefore
+    cost two ticks, and the second is struck only if it still overlaps the
+    next step. The first tick covers the muzzle, caster to spawn point. A
+    first victim whose own modifiers raise the budget (a marked target's
+    punch-through) raises it for the rest of the flight.
+    """
+    if step <= 1e-6:
+        return [row[3] for row in sorted(candidates)][:max(1, budget)]
+    spans = []
+    for forward, miss, actor_id, entity, size in candidates:
+        half = math.sqrt(max(0.0, size * size - miss * miss))
+        spans.append((forward - half, forward + half, actor_id, entity))
+    struck, order = set(), []
+    budget = max(1, int(budget))
+    start, end = 0.0, min(reach, max(0.0, offset))
+    while len(order) < budget and start <= reach and len(struck) < len(spans):
+        best = None
+        for entry, leave, actor_id, entity in spans:
+            if actor_id in struck or entry > end or leave < start:
+                continue
+            key = (max(start, entry), actor_id)
+            if best is None or key < best[0]:
+                best = (key, entity)
+        if best is not None:
+            struck.add(best[1].actor_id)
+            order.append(best[1])
+            if len(order) == 1:
+                budget = max(budget, int(best[1].impact_count))
+        if end >= reach:
+            break
+        start, end = end, min(reach, end + step)
+    return order
+
+
 def shifted_skill_phases(geometry, attack_speed=1.0):
     """Client frame counts for the cast phase and following ground impact."""
     speed = max(0.1, min(10.0, attack_speed)) if geometry.scale_skill_timing else 1.0
@@ -123,15 +190,36 @@ def shifted_skill_phases(geometry, attack_speed=1.0):
 def projectile_emit_delay(geometry, attack_speed=1.0):
     """Wait for the authored release phase before starting projectile flight.
 
-    Ranged skills commonly leave BulletEmitDelay at zero and put their draw
-    phase in LoopStartFrame (Hunting Arrow: 5 frames at 25 Hz). Both fields
-    describe release from cast start, so use the later one, as for monsters.
-    Attack speed scales this phase; it does not scale world-space velocity.
+    Every bullet of a cast is released ``LoopStartFrame`` ticks after its own
+    start (``SetupBulletSkillCommand`` 0x14096719c stores attribute 8 in each
+    command's +0x70; ``SetupTiming`` 0x1407f8e28 rescales it by attack speed).
+    ``BulletEmitDelay`` does not delay the release; it spaces the extra
+    bullets, see ``projectile_stagger``. Attack speed scales this phase; it
+    does not scale world-space velocity.
     """
     speed_scale = max(0.1, min(10.0, attack_speed)) if geometry.scale_skill_timing else 1.0
-    return max(geometry.bullet_emit_delay, geometry.loop_start_frame / 25.0) * (
+    return geometry.loop_start_frame / 25.0 * (
         geometry.skill_timing_multiplier / speed_scale
     )
+
+
+def _client_ticks(seconds) -> int:
+    """``(int)(seconds / 0.04)`` in the client's single precision."""
+    def single(value):
+        return struct.unpack("<f", struct.pack("<f", float(value)))[0]
+    return max(0, int(single(single(seconds) / single(0.04))))
+
+
+def projectile_stagger(geometry) -> float:
+    """Seconds between the starts of a cast's successive bullets.
+
+    ``GameBulletSkill::SetupAdditionalBulletCommands`` (0x1407f7cd8) starts
+    bullet i ``(int)(BulletEmitDelay / 0.04)`` ticks after bullet i-1
+    (``SkillInfo+0x58``), from the same origin and in the same direction;
+    attack speed does not shorten it. Forgotten Glory's three Ice Missiles
+    (0.15 s) leave 3 ticks apart.
+    """
+    return _client_ticks(getattr(geometry, "bullet_emit_delay", 0.0)) / 25.0
 
 
 # Bullets circling their caster or a point never travel along a line of sight.
@@ -156,6 +244,9 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     length = math.hypot(direction[0], direction[2])
     aim = (direction[0] / length, direction[2] / length) if length > 1e-6 else (0.0, 0.0)
     maximum_range = max(geometry.attack_range, geometry.projectile_range) if projectile else geometry.attack_range
+    flight = bullet_flight_reach(geometry) if projectile and point is None else None
+    if flight is not None:
+        maximum_range = flight
     # Flat, as the client clamps the aimed point (skills.rs) and the radius
     # test below measures: a meteor at full range onto ground a few metres
     # higher or lower than the caster came back with an empty plan.
@@ -305,11 +396,18 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                     continue
                 if wall is None and not in_sight(entity):
                     continue
-                candidates.append((forward, miss, entity.actor_id, entity))
-        direct = [row[3] for row in sorted(candidates)]
+                candidates.append((forward, miss, entity.actor_id, entity, size))
+        if targeting in {"angle", "cone"}:
+            direct = [row[3] for row in sorted(candidates)]
+        else:
+            direct = _swept_contacts(
+                candidates, offset=offset, step=velocity / 25.0,
+                reach=maximum_range, budget=geometry.impact_count)
     count = max(geometry.impact_count, direct[0].impact_count if direct else 1)
     direct = direct if point is not None else direct[:count]
     impacts = []
+    # Extra bullets leave BulletEmitDelay ticks apart along the same line.
+    stagger = projectile_stagger(geometry)
     for projectile_index in range(geometry.bullet_count):
         seen = set()
         for target in direct:
@@ -332,8 +430,9 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                 distance(origin, point) if point is not None else
                 contacts.get(target.actor_id, reach) if validate else reach
             ) - offset - (target.collision_radius if point is None else 0.0) - max(0.0, geometry.projectile_radius))
-            delay = emit + (travel / velocity if velocity > 1e-6 else
-                            geometry.hit_frame / 25 * geometry.skill_timing_multiplier / speed_scale)
+            delay = emit + projectile_index * stagger + (
+                travel / velocity if velocity > 1e-6 else
+                geometry.hit_frame / 25 * geometry.skill_timing_multiplier / speed_scale)
             impacts.append(EntityImpact(target, projectile_index, reach, travel, delay, validate))
             seen.add(target.actor_id)
             if point is not None or splash_radius <= 0:

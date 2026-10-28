@@ -16,6 +16,7 @@ from pathlib import Path
 import math
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
 
 
@@ -372,7 +373,7 @@ class SocketEffectDatabase:
         self.path = Path(path).resolve()
 
     def _connect(self) -> sqlite3.Connection:
-        if not self.path.is_file():
+        if not resident_content.is_file(self.path):
             raise FileNotFoundError(self.path)
         database = sqlite3.connect(
             f"file:{self.path.as_posix()}?mode=ro", uri=True

@@ -20,6 +20,7 @@ import sqlite3
 from types import MappingProxyType
 from typing import Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.character_selection import BitReader
 from dso_server.protocol.command_ids import command_id
 from dso_server.protocol.currency_protocol import resolve_game_currency_wire_id
@@ -69,4 +70,4 @@ def _load_food_recycling_catalog(path: str) -> FoodRecyclingCatalog:
 
 
 def load_food_recycling_catalog(database_path: str | Path) -> FoodRecyclingCatalog:
-    return _load_food_recycling_catalog(str(Path(database_path).resolve()))
+    return _load_food_recycling_catalog(str(resident_content.resolved(database_path)))

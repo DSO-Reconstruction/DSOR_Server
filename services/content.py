@@ -43,6 +43,7 @@ import threading
 import time
 import zlib
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.season_pass import (
     effective_season_pass_rewards, load_season_pass_overrides, write_season_pass_rewards,
 )
@@ -110,9 +111,14 @@ class StaticDatabasePublisher:
             return copy.read_bytes()
 
     def _current(self) -> bool:
-        """Bring the cache to the file on disk; False when there is no file."""
+        """Bring the cache to the file on disk; False when there is no file.
+
+        A database the game services hold in memory keeps the revision it
+        was loaded with (runtime/resident_content.py), so the copy published
+        is built once and never re-checked on disk.
+        """
         try:
-            stat = os.stat(self.path)
+            stat = resident_content.stat(self.path)
         except FileNotFoundError:
             self._revision = None
             return False
@@ -123,6 +129,8 @@ class StaticDatabasePublisher:
             self._sha256 = hashlib.sha256(data).hexdigest()
             self._size = len(data)
             self._packed = b"__ZN" + struct.pack("<I", len(data)) + zlib.compress(data, 6)
+            if resident_content.is_resident(self.path):
+                revision = (stat.st_size, stat.st_mtime_ns)
             self._revision = (revision, config)
         return True
 
@@ -168,13 +176,16 @@ class MapDatabasesPublisher:
         self._bundle = b""
 
     def _listing(self) -> tuple[tuple[str, int, int], ...]:
-        try:
-            paths = sorted(self.maps_dir.glob("*.db4"))
-        except OSError:
-            return ()
+        # The maps the game services hold in memory, as they were loaded.
+        paths = resident_content.resident_paths(self.maps_dir, ".db4")
+        if not paths:
+            try:
+                paths = sorted(self.maps_dir.glob("*.db4"))
+            except OSError:
+                return ()
         listing = []
         for path in paths:
-            stat = path.stat()
+            stat = resident_content.stat(path)
             listing.append((path.name, stat.st_size, stat.st_mtime_ns))
         return tuple(listing)
 

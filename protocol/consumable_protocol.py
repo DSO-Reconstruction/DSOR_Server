@@ -15,6 +15,7 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.local_combat_state import (
     SERVER_TICKS_PER_SECOND,
     VictimStatusEffectDefinition,
@@ -555,8 +556,8 @@ def _aura_receiver_effects(
 
 
 def _database_signature(path: str | Path) -> tuple[str, int, int]:
-    resolved = Path(path).resolve()
-    stat = resolved.stat()
+    resolved = resident_content.resolved(path)
+    stat = resident_content.stat(resolved)
     return str(resolved), int(stat.st_mtime_ns), int(stat.st_size)
 
 

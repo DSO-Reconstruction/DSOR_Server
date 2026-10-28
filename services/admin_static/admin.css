@@ -164,3 +164,15 @@ dialog p.error-text { color: var(--danger); margin: 8px 0 0; }
 .event-ending { margin-bottom: 20px; }
 
 #event-action button[value="deactivate"], #season-form button[value="deactivate"] { order: -1; margin-right: auto; }
+
+#event-batch { width: min(720px, 94vw); max-height: 92vh; overflow: auto; }
+#event-batch .form-section { padding: 16px 0; }
+.batch-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 15px; }
+.batch-heading h2 { margin-bottom: 8px; overflow-wrap: anywhere; }
+.batch-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.batch-steps { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; padding: 0; margin: 0 0 14px; }
+.batch-steps button { width: 28px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 50%; color: var(--muted); font-size: 12px; text-align: center; }
+.batch-steps .current button { border-color: var(--ink); color: var(--ink); font-weight: 600; }
+.batch-steps .activated button { background: var(--success); border-color: var(--success); color: white; }
+.batch-steps .skipped button { text-decoration: line-through; }
+.row-select { display: inline; }

@@ -23,6 +23,7 @@ from pathlib import Path
 import random
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_map_state import (
@@ -181,8 +182,8 @@ def _scheduled_event_ids_cached(path: str, mtime_ns: int, size: int) -> frozense
 def _scheduled_event_ids(static_database_path) -> frozenset[str]:
     """Ids of the global events only the event schedule may switch on."""
 
-    path = Path(static_database_path).resolve()
-    stat = path.stat()
+    path = resident_content.resolved(static_database_path)
+    stat = resident_content.stat(path)
     return _scheduled_event_ids_cached(str(path), stat.st_mtime_ns, stat.st_size)
 
 

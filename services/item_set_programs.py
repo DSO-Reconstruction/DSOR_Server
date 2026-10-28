@@ -3,6 +3,7 @@
 from functools import lru_cache
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.runtime.context import *
 from dso_server.services.base import CharacterService
 from dso_server.gameplay.status_modifier_runtime import parse_modifier_program, resolve_modifier_value
@@ -25,26 +26,70 @@ def _program(path, modified, size, effect_id):
 
 
 def program(path, effect_id):
-    path = Path(path).resolve()
-    stat = path.stat()
+    path = resident_content.resolved(path)
+    stat = resident_content.stat(path)
     return _program(str(path), stat.st_mtime_ns, stat.st_size, int(effect_id))
 
 
 def children(path, definition):
     """Resolve immediate AE children; LE visuals use the existing aura path."""
-    path = Path(path).resolve()
-    stat = path.stat()
-    return _children(str(path), stat.st_mtime_ns, stat.st_size, definition)
+    return tuple(child for child, *_rest in _program_children(path, definition, 1))
+
+
+def _active_rulesets(s):
+    return frozenset({"pvp"}) if getattr(s, "gameplay_match", None) is not None else frozenset()
+
+
+def _program_children(path, definition, column):
+    path = resident_content.resolved(path)
+    stat = resident_content.stat(path)
+    return _children(str(path), stat.st_mtime_ns, stat.st_size, definition, column)
+
+
+def wearer_children(s, definition, *, column=1):
+    """Immediate AE children with their ActorVariable parameters resolved.
+
+    ``column`` selects the program: 1 Start, 2 Stop, 3 Done. Jewel of Glory's
+    children name skill-level variables (``$0:skill_lvl_frostwind_jewel_
+    bgh2026_dmg_iceball``: +1% per Frost Wind level), which the static parser
+    can only read at their initial value.
+    """
+    rulesets = _active_rulesets(s)
+    # ``EnableOnRuleSet``/``DisableOnRuleSet`` pick one of two authored
+    # children (CNY Iron Dwarf: a PvE and a PvP health upgrade).
+    found = tuple(
+        (child, variables)
+        for child, variables, enable, disable in _program_children(
+            database_path(s), definition, column)
+        if (not enable or enable in rulesets) and (not disable or disable not in rulesets)
+    )
+    if not any(variables for _child, variables in found):
+        return tuple(child for child, _variables in found)
+    from dso_server.gameplay.minion_auras import owner_actor_variable
+    combat = s.gameplay_combat_state
+    sources = tuple(CharacterService._active_skill_modifier_sources(s))
+    result = []
+    for child, variables in found:
+        if variables and combat is not None:
+            values = list(child.values)
+            for index, name in variables:
+                while len(values) <= index:
+                    values.append(0.0)
+                values[index] = owner_actor_variable(combat, sources, name)
+            child = replace(child, values=tuple(values))
+        result.append(child)
+    return tuple(result)
 
 
 @lru_cache(maxsize=2048)
-def _children(path, _modified, _size, definition):
+def _children(path, _modified, _size, definition, column=1):
+    from dso_server.gameplay.minion_auras import _variable_parameters
     ancestry = (*definition.item_set_ancestry, int(definition.effect_id))
     if len(ancestry) >= 16:
         return ()
     result = []
-    with sqlite3.connect(f"file:{Path(path).resolve().as_posix()}?mode=ro", uri=True) as db:
-        for instruction in parse_modifier_program(program(path, definition.effect_id)[1]):
+    with sqlite3.connect(f"file:{resident_content.resolved(path).as_posix()}?mode=ro", uri=True) as db:
+        for instruction in parse_modifier_program(program(path, definition.effect_id)[column]):
             args = instruction.arguments
             if instruction.kind != "actorstatuseffect" or len(args) < 2 or args[0].casefold() != "addae":
                 continue
@@ -53,21 +98,42 @@ def _children(path, _modified, _size, definition):
             trigger = metadata.get("on", "immediate").casefold()
             if trigger not in {"immediate", "immediatemanaged"}:
                 continue
+            # A Stop/Done program outlives its parent: nothing to manage.
+            managed = trigger == "immediatemanaged" and column == 1
+            variables = _variable_parameters(db, args[2:])
             for child in LocalCombatState._load_victim_status_effects(db, ",".join(args[1:])):
                 if child.effect_id in ancestry:
                     continue
-                managed = trigger == "immediatemanaged"
                 if child.duration_ticks <= 0 and managed:
                     child = replace(child, duration_ticks=definition.duration_ticks,
                                     persistent=definition.persistent)
                 if child.duration_ticks <= 0 and not child.persistent:
                     continue
-                result.append(replace(
+                result.append((replace(
                     child, item_set_program=True, item_set_target="user",
                     item_set_parent_effect_id=int(definition.effect_id) if managed else None,
                     item_set_ancestry=ancestry,
-                ))
+                ), variables, metadata.get("enableonruleset", "").strip().casefold(),
+                    metadata.get("disableonruleset", "").strip().casefold()))
     return tuple(result)
+
+
+def run_instant_item_set_programs(s, definitions, *, server_tick):
+    """Execute set programs whose effect has no duration at all.
+
+    Jewel of Glory's ``jewel_bgh2026_warrior_trigger`` (no
+    ``StatusEffectDuration``) exists only to run its Start program: two
+    ``ON:Immediate`` children whose Done programs grant ten Battle Frenzy
+    stacks. A zero-duration effect is never installed, so it starts and is
+    done at once.
+    """
+    for definition in definitions:
+        followups = wearer_children(s, definition, column=1)
+        _terminal_programs(s, (definition,), server_tick=server_tick, reason="start")
+        if followups:
+            CharacterService._send_player_skill_status_effects(
+                s, followups, server_tick=server_tick, label="item-set-instant-program")
+        _terminal_programs(s, (definition,), server_tick=server_tick, reason="done")
 
 
 def accepted_item_set_programs(s, applied, *, server_tick):
@@ -115,7 +181,7 @@ def accepted_item_set_programs(s, applied, *, server_tick):
         except OSError as error:
             output_error = output_error or error
         followups = []
-        for child in children(path, definition):
+        for child in wearer_children(s, definition):
             if child.chance < 1 and random.random() >= child.chance:
                 continue
             if child.delay_ticks:
@@ -249,9 +315,15 @@ def _terminal_programs(s, definitions, *, server_tick, reason, _publication=None
     path = database_path(s)
     root = _publication is None
     publication = [] if root else _publication
-    stop_names, health_program = set(), []
+    stop_names, health_program, terminal_children = set(), [], []
     for definition in definitions:
-        source = program(path, definition.effect_id)[1 if reason == "start" else 3 if reason == "done" else 2]
+        column = 1 if reason == "start" else 3 if reason == "done" else 2
+        source = program(path, definition.effect_id)[column]
+        if column != 1:
+            # Start children run in accepted_item_set_programs. A Done/Stop
+            # program's ON:Immediate children follow the parent's end:
+            # Jewel of Glory's 0.3 s carriers grant Battle Frenzy here.
+            terminal_children.extend(wearer_children(s, definition, column=column))
         for instruction in parse_modifier_program(source):
             if instruction.kind == "stopstatuseffect" and instruction.arguments:
                 stop_names.add(instruction.arguments[0].split("|", 1)[0])
@@ -273,6 +345,14 @@ def _terminal_programs(s, definitions, *, server_tick, reason, _publication=None
             return
         CharacterService._refresh_player_combat_vitals(s, inventory_changed=False)
         _publish_program_changes(s, publication, generation=generation)
+    if terminal_children and s.gameplay_chase_generation == generation:
+        consequences = getattr(s, "gameplay_item_set_consequences", None)
+        if consequences is None:
+            consequences = s.gameplay_item_set_consequences = set()
+        consequences.update(int(child.effect_id) for child in terminal_children)
+        CharacterService._send_player_skill_status_effects(
+            s, tuple(terminal_children), server_tick=server_tick,
+            label=f"item-set-program-{reason}-children")
 
 
 def _apply_terminal_health(s, instructions, *, server_tick, publication, expected_generation):
@@ -346,6 +426,64 @@ def _publish_program_changes(s, publication, *, generation):
             s.gameplay_presence_callback(s, ("status_effects", (value,)))
 
 
+@lru_cache(maxsize=1024)
+def _unequip_cleanse_groups(path, template_id):
+    """Groups an item's ``ItemStatusEffectCleanse:unequip,...`` clears."""
+    with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as db:
+        row = db.execute(
+            "SELECT UniqueModifier, BaseModifier FROM _Template_Item WHERE Id=?",
+            (str(template_id),),
+        ).fetchone()
+    groups = set()
+    for raw in row or ():
+        for instruction in parse_modifier_program(str(raw or "")):
+            args = instruction.arguments
+            if (instruction.kind.casefold() == "itemstatuseffectcleanse"
+                    and len(args) >= 3 and args[0].casefold() == "unequip"):
+                groups.update(value.split("#", 1)[0].strip().casefold()
+                              for value in args[2:] if value.split("#", 1)[0].strip())
+    return frozenset(groups)
+
+
+@lru_cache(maxsize=8192)
+def _effect_groups(path, effect_id):
+    with sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True) as db:
+        row = db.execute(
+            "SELECT COALESCE(Groups, '') FROM _Template_StatusEffect WHERE rowid=?",
+            (int(effect_id) + 1,),
+        ).fetchone()
+    return frozenset(value.strip().casefold() for value in str(row[0] if row else "").split(";")
+                     if value.strip())
+
+
+def cleanse_unequipped_items(s, previous_inventory, inventory):
+    """Run ``ItemStatusEffectCleanse:unequip,<item>,<group>`` for removed items.
+
+    Forgotten Glory's ring and cloak clear every ``BghBonus`` effect when
+    taken off (the Banner of War surge, Thicket's free Explosive Arrows, the
+    turret auras), including the jewel-enabled ones the set no longer tracks.
+    The rule belongs to the item carrying it; its second argument is only the
+    authoring item's name (the intensified pieces all name the mage cloak).
+    """
+    from dso_server.protocol.item_set_protocol import ItemSetDatabase
+    if previous_inventory is None or inventory is None:
+        return
+    removed = (set(ItemSetDatabase.equipped_templates(previous_inventory))
+               - set(ItemSetDatabase.equipped_templates(inventory)))
+    path = str(resident_content.resolved(database_path(s)))
+    groups = set()
+    for template_id in removed:
+        groups.update(_unequip_cleanse_groups(path, template_id))
+    if not groups:
+        return
+    with s.flow_lock:
+        running = {int(entry.effect_id)
+                   for entry, _expires in s.gameplay_runtime_status_effects.values()}
+    stop = {effect_id for effect_id in running if _effect_groups(path, effect_id) & groups}
+    if stop:
+        stop_item_set_effects(s, stop, server_tick=s.gameplay_chase_server_tick)
+
+
 def reconcile_item_set_programs(s):
     """A removed set/tier cannot leave its triggered programs running."""
     evaluation = getattr(s, "gameplay_item_set_evaluation", None)
@@ -355,7 +493,23 @@ def reconcile_item_set_programs(s):
     evaluation = active_item_set_evaluation(s, evaluation, database_path(s))
     roots = skill_roots | {str(rule.actor_effect_id) for rule in getattr(evaluation, "actor_effect_rules", ())}
     tracked = tuple(getattr(s, "gameplay_item_set_programs", {}).values())
-    remove = {d.effect_id for d in tracked if d.item_set_parent_effect_id is None and d.resource_id not in roots}
+    # A child belongs to the rule that started its chain: Jewel of Glory's
+    # Stirring Frost stacks stay while the jewel's set rule does. What an
+    # ended program left behind (Done/Stop children: Battle Frenzy, the
+    # Sewers aftermath) is no longer held by any rule and runs out alone.
+    from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+    names = load_status_runtime_catalog(database_path(s)).effect_names
+    folded = {root.casefold() for root in roots}
+    consequences = getattr(s, "gameplay_item_set_consequences", set())
+
+    def origin(definition):
+        ancestry = tuple(definition.item_set_ancestry)
+        return (names.get(int(ancestry[0]), "") if ancestry else definition.resource_id).casefold()
+
+    remove = {d.effect_id for d in tracked
+              if d.item_set_parent_effect_id is None
+              and int(d.effect_id) not in consequences
+              and origin(d) not in folded}
     if remove:
         stop_item_set_effects(s, remove, server_tick=s.gameplay_chase_server_tick)
     # Equipping or removing a tier changes its ImmediateManaged Minion auras

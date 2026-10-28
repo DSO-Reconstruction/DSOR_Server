@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.command_ids import command_id
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -197,7 +198,7 @@ def _baseline_map_local_event_entries(
     if not resource_ids:
         return ()
     placeholders = ','.join('?' for _value in resource_ids)
-    database = Path(database_path).resolve()
+    database = resident_content.resolved(database_path)
     with sqlite3.connect(
         f'file:{database.as_posix()}?mode=ro', uri=True
     ) as connection:
@@ -224,6 +225,45 @@ def _baseline_map_local_event_entries(
     )
 
 
+def _map_gated_events(map_path, content) -> frozenset[str]:
+    """Events named by the EventSets this map's own placed objects use."""
+
+    used_rows: set[int] = set()
+    try:
+        with sqlite3.connect(
+            f'file:{map_path.as_posix()}?mode=ro', uri=True
+        ) as connection:
+            tables = [
+                str(row[0]) for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name LIKE '\\_Instance\\_%' ESCAPE '\\' "
+                    "AND name != '_Instance_EventSets'"
+                )
+            ]
+            for table in tables:
+                columns = {
+                    str(row[1])
+                    for row in connection.execute(f'PRAGMA table_info("{table}")')
+                }
+                if 'EventSetRow' not in columns:
+                    continue
+                used_rows.update(
+                    int(row[0]) for row in connection.execute(
+                        f'SELECT DISTINCT EventSetRow FROM "{table}" '
+                        'WHERE EventSetRow IS NOT NULL AND EventSetRow >= 0'
+                    )
+                )
+    except sqlite3.Error:
+        return frozenset()
+    return frozenset(
+        event
+        for row in used_rows
+        for definition in (content.event_sets.get(row),)
+        if definition is not None
+        for event in definition.events
+    )
+
+
 @lru_cache(maxsize=64)
 def _declared_map_local_event_entries(
     database_path: str | Path, map_id: str,
@@ -239,19 +279,27 @@ def _declared_map_local_event_entries(
     The client validates a map-local name against the event's template map
     and aborts the whole update on the first mismatching entry, so names
     authored for other maps are excluded even though this map's sets still
-    reference them.
+    reference them. Generic events with an empty Map (BOSS_death, BOSS_spawn)
+    belong to every map: without their "not running" entry the client leaves
+    the sets they gate unresolved and shows, for example, the Winter Summit's
+    Kingshill and Bear's Den exits before Big Paws is dead.
     """
 
     try:
-        referenced = load_map_event_content(
-            database_path, map_id
-        ).referenced_events
+        content = load_map_event_content(database_path, map_id)
     except Exception:
         return ()
+    referenced = content.referenced_events
     if not referenced:
         return ()
-    database = Path(database_path).resolve()
+    database = resident_content.resolved(database_path)
     target_map = map_key(map_id)
+    # Every map carries the same shared EventSets table, so a generic event
+    # is declared only where one of this map's own objects stands behind a
+    # set naming it; an unrelated name could abort the client's update.
+    gated_events = _map_gated_events(
+        database.parent.parent / "maps" / f"{map_id}.db4", content,
+    )
     with sqlite3.connect(
         f'file:{database.as_posix()}?mode=ro', uri=True
     ) as connection:
@@ -261,9 +309,13 @@ def _declared_map_local_event_entries(
             f'({",".join("?" for _value in referenced)})',
             tuple(sorted(referenced)),
         ).fetchall()
+    def event_maps(row) -> set[str]:
+        return {map_key(part) for part in str(row[2] or '').split(';') if part.strip()}
+
     matched_rows = [
         row for row in rows
-        if target_map in {map_key(part) for part in str(row[2] or '').split(';') if part.strip()}
+        if target_map in event_maps(row)
+        or (not event_maps(row) and str(row[1]).casefold() in gated_events)
     ]
     return tuple(
         EventUpdateEntry(

@@ -13,6 +13,10 @@ return the last observed revision at once, and at most once per
 ``RECHECK_SECONDS`` a background thread re-checks the file, so an edited file
 is still picked up within about a second. A writer that needs its change
 visible to the very next lookup calls ``invalidate(path)``.
+
+Content held in memory (runtime/resident_content.py) is never re-checked: its
+revision is the one observed when it was loaded, and ``invalidate`` re-reads
+it for the writer that changed it.
 """
 
 from __future__ import annotations
@@ -22,6 +26,8 @@ import os
 from pathlib import Path
 import threading
 import time
+
+from dso_server.runtime import resident_content
 
 RECHECK_SECONDS = 1.0
 
@@ -39,7 +45,7 @@ _lock = threading.Lock()
 def resolved_path(path: str) -> Path:
     """Resolve a content path once; resolve() also touches the filesystem."""
 
-    return Path(path).resolve()
+    return resident_content.resolved(path)
 
 
 def _stat_revision(key: str) -> tuple[int, int] | None:
@@ -54,6 +60,9 @@ def observed_revision(path: str | Path) -> tuple[int, int] | None:
     """``(st_mtime_ns, st_size)`` of ``path``, or ``None`` if it is missing."""
 
     key = str(path)
+    pinned = resident_content.revision(key)
+    if pinned is not None:
+        return pinned
     now = time.perf_counter()
     with _lock:
         known = key in _revisions
@@ -97,6 +106,8 @@ def invalidate(path: str | Path | None = None) -> None:
     """Make the next lookup of ``path`` (or of every path) stat again."""
 
     named = () if path is None else (str(path), str(resolved_path(str(path))))
+    for key in named:
+        resident_content.refresh(key)
     with _lock:
         for key in named or tuple(_revisions):
             _revisions.pop(key, None)

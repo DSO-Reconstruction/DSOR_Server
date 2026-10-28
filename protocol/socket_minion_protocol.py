@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.player_summon_lifecycle import (
     load_player_summon_aura,
     summon_startup_seconds,
@@ -87,9 +88,9 @@ def load_socket_minion_definition(
 ) -> SocketMinionDefinition | None:
     """Resolve one generated ``Minion`` instruction without hot-path I/O."""
 
-    path = Path(database_path).resolve()
+    path = resident_content.resolved(database_path)
     monster_template_id = str(monster_template_id).strip()
-    if not path.is_file() or not monster_template_id:
+    if not resident_content.is_file(path) or not monster_template_id:
         return None
     with sqlite3.connect(
         f"file:{path.as_posix()}?mode=ro", uri=True

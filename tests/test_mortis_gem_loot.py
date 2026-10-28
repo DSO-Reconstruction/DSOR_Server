@@ -52,7 +52,8 @@ def test_only_the_final_main_boss_in_mortis_exile_gets_the_bonus(map_id, templat
     server.gameplay_world_next_item_ids = {}
     session = Session(("127.0.0.1", 50114), None)
     session.gameplay_map = map_id
-    session.gameplay_event_catalog = SimpleNamespace(collectible_drops=lambda **kwargs: ())
+    session.gameplay_event_catalog = SimpleNamespace(
+        collectible_drops=lambda **kwargs: (), event_loot_drops=lambda **kwargs: ())
     generation = server._generate_world_loot_for_session(
         session, encounter=SimpleNamespace(static_database_path=STATIC, map_id=map_id),
         monster=SimpleNamespace(template_id=template, level=100),

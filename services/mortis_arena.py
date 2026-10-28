@@ -10,6 +10,7 @@ import sqlite3
 import threading
 import time
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.mortis_arena import (
     MAP_ID, DRAGON, ADD_DRAGON, MOUNTED, UNBOUND, freeze_effect_ids,
 )
@@ -22,14 +23,14 @@ from dso_server.protocol.gameplay_protocol import (
 
 @lru_cache(maxsize=128)
 def _lifetime(static_path, template):
-    with sqlite3.connect(Path(static_path).resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with sqlite3.connect(resident_content.resolved(static_path).as_uri() + "?mode=ro", uri=True) as db:
         row = db.execute("SELECT LifeTime, DespawnDuration FROM _Template_Monster WHERE Id=?", (template,)).fetchone()
     return tuple(max(0.0, float(v or 0.0)) for v in row) if row else (0.0, 0.0)
 
 
 @lru_cache(maxsize=8)
 def _healing_aura(static_path):
-    with sqlite3.connect(Path(static_path).resolve().as_uri() + "?mode=ro", uri=True) as db:
+    with sqlite3.connect(resident_content.resolved(static_path).as_uri() + "?mode=ro", uri=True) as db:
         row = db.execute(
             "SELECT AuraEffectAffectedTemplateId, AuraEffectId FROM _Template_StatusEffect "
             "WHERE Id='boss_mortis_unbound_white_mage_HealBuff_Effect_Aura'",
@@ -100,7 +101,7 @@ class MortisArena:
             self.phase = "unbound_pending"
             # The map event starts after 4 s, but the mounted actor's authored
             # Die incident delays the actual minion until its death clip ends.
-            path = Path(self.server.static_database_path).resolve().as_uri()
+            path = resident_content.resolved(self.server.static_database_path).as_uri()
             delay = 0.0
             with sqlite3.connect(path + "?mode=ro", uri=True) as db:
                 row = db.execute("SELECT IncidentActorStatusEffects FROM _Template_Monster WHERE Id=?", (MOUNTED,)).fetchone()
@@ -246,7 +247,7 @@ class MortisArena:
         sessions, combat = self._context()
         if combat is None:
             return
-        path = Path(combat.encounter.static_database_path).resolve().as_uri()
+        path = resident_content.resolved(combat.encounter.static_database_path).as_uri()
         entries = []
         with sqlite3.connect(path + "?mode=ro", uri=True) as db:
             row = db.execute("SELECT IncidentActorStatusEffects FROM _Template_Monster WHERE Id=?", (monster.template_id,)).fetchone()

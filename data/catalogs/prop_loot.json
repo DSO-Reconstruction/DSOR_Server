@@ -1,0 +1,87 @@
+{
+  "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). 'event_progress': true drops the current page collectible of every event whose progress applies on the map, for this player. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
+  "loot_lists": {
+    "CHEST_amphora_normal_MAIN": {
+      "comment": "Retail sample 2026-10-28 (Dragan, e_dra_03_dun_01): 10 Draken, gold 276/234/208, progress key x3 and x50, 1 e_dra_03_hardmode_bosskey. Chances of the second progress stack and the boss key are not known from one sample.",
+      "entries": [
+        {"item": "e_chr_2012_event_currency", "amount": [10, 10]},
+        {"item": "money_vc", "stacks": 3, "per_level": [2.8, 4.0]},
+        {"event_progress": true, "amount": [2, 4]},
+        {"event_progress": true, "chance": 0.5, "amount": [25, 50]},
+        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "chance": 0.5, "amount": [1, 1]}
+      ]
+    },
+    "CHEST_amphora_golden_MAIN": {
+      "comment": "Costs five keys; scaled from the normal amphora (no retail sample yet).",
+      "entries": [
+        {"item": "e_chr_2012_event_currency", "amount": [50, 50]},
+        {"item": "money_vc", "stacks": 5, "per_level": [2.8, 4.0]},
+        {"event_progress": true, "amount": [10, 20]},
+        {"event_progress": true, "amount": [50, 100]},
+        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "amount": [1, 3]}
+      ]
+    },
+    "CHEST_amphora_small_MAIN": {
+      "comment": "Free small amphora; a fraction of the normal one (no retail sample yet).",
+      "entries": [
+        {"item": "e_chr_2012_event_currency", "chance": 0.5, "amount": [2, 4]},
+        {"item": "money_vc", "per_level": [2.8, 4.0]},
+        {"event_progress": true, "amount": [1, 2]}
+      ]
+    }
+  },
+  "aliases": {
+    "CHEST_amphora_MAIN": "CHEST_amphora_normal_MAIN",
+    "e_ful_01_event_chest": "CHEST_amphora_normal_MAIN",
+    "e_new_01_event_chest_01_A": "CHEST_amphora_normal_MAIN",
+    "e_dra_03_event_chest_normal": "CHEST_amphora_normal_MAIN",
+    "e_dra_03_event_chest_normal_challenge": "CHEST_amphora_normal_MAIN",
+    "CHEST_fullmoon_event_chest_normal_day_main": "CHEST_amphora_normal_MAIN",
+    "CHEST_fullmoon_event_chest_normal_night_main": "CHEST_amphora_normal_MAIN",
+    "CHEST_NEWMOON_event_chest_normal_main": "CHEST_amphora_normal_MAIN",
+    "e_ks_01_amphora_normal": "CHEST_amphora_normal_MAIN",
+    "CHEST_e_hal_01_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
+    "CHEST_e_hal_01_challenge_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
+    "CHEST_dark_dwarf_normal_mine": "CHEST_amphora_normal_MAIN",
+    "CHEST_dark_dwarf_normal_mini": "CHEST_amphora_normal_MAIN",
+    "e_sar_01_eventchest_01": "CHEST_amphora_normal_MAIN",
+    "e_tow_02_eventchest_01": "CHEST_amphora_normal_MAIN",
+    "e_tow_02_eventchest_02": "CHEST_amphora_normal_MAIN",
+    "e_sar_04_event_amphorae_01": "CHEST_amphora_normal_MAIN",
+    "e_ess_01_event_chest_loot": "CHEST_amphora_normal_MAIN",
+    "e_dra_02_event_amphora_01": "CHEST_amphora_normal_MAIN",
+    "e_dra_04_event_amphora_01": "CHEST_amphora_normal_MAIN",
+    "e_time_01_event_chest_normal": "CHEST_amphora_normal_MAIN",
+    "e_time_event_chest_01": "CHEST_amphora_normal_MAIN",
+    "e_tow_03_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
+    "e_tow_04_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
+    "e_tow_04_challenge_event_chest_loot": "CHEST_amphora_normal_MAIN",
+
+    "e_dra_03_event_chest_golden": "CHEST_amphora_golden_MAIN",
+    "e_dra_03_event_chest_golden_challenge": "CHEST_amphora_golden_MAIN",
+    "CHEST_fullmoon_event_chest_golden_day_main": "CHEST_amphora_golden_MAIN",
+    "CHEST_fullmoon_event_chest_golden_night_main": "CHEST_amphora_golden_MAIN",
+    "CHEST_NEWMOON_event_chest_golden_main": "CHEST_amphora_golden_MAIN",
+    "e_ks_01_amphora_golden": "CHEST_amphora_golden_MAIN",
+    "CHEST_e_hal_01_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
+    "CHEST_e_hal_01_challenge_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
+    "CHEST_dark_dwarf_golden_mine": "CHEST_amphora_golden_MAIN",
+    "CHEST_dark_dwarf_golden_mini": "CHEST_amphora_golden_MAIN",
+    "CHEST_dark_dwarf_new_mine": "CHEST_amphora_golden_MAIN",
+    "e_ess_01_event_chest_loot_01": "CHEST_amphora_golden_MAIN",
+    "e_dra_04_event_amphora_02": "CHEST_amphora_golden_MAIN",
+    "e_time_01_event_chest_gold": "CHEST_amphora_golden_MAIN",
+    "e_time_event_chest_2": "CHEST_amphora_golden_MAIN",
+    "e_tow_03_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
+    "e_tow_04_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
+    "e_tow_04_challenge_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
+
+    "e_dra_03_event_chest_small": "CHEST_amphora_small_MAIN",
+    "CHEST_fullmoon_varholm_day_small_amphora_main": "CHEST_amphora_small_MAIN",
+    "CHEST_fullmoon_varholm_night_small_amphora_main": "CHEST_amphora_small_MAIN",
+    "CHEST_NEWMOON_event_chest_small_night": "CHEST_amphora_small_MAIN",
+    "e_ks_01_amphora_small": "CHEST_amphora_small_MAIN",
+    "e_ide_02_mine_amphora_small": "CHEST_amphora_small_MAIN",
+    "CHEST_lootlist_AMPHORA_SMALL": "CHEST_amphora_small_MAIN"
+  }
+}

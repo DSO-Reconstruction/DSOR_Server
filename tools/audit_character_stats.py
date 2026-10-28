@@ -146,7 +146,7 @@ def comparison_report(document, results):
         row(name+" drop bonus", f"+{expected}%", lambda r,k=key: f'+{(r["drop_award_from_10000"][k]/10000-1)*100:.0f}%', notes="Evaluated socket then active-status drop bonuses on 10000 units.")
     return {
         "character_id":document["character_id"], "character_name":"Example Player 2",
-        "snapshot_saved_at":"2026-09-09T00:00:00+00:00",
+        "snapshot_saved_at":"2026-09-30T00:02:04.526180+00:00",
         "method":"Offline frozen equipment/effects fixture, with selected talents, set/socket/collector effects and saved admin effects. Both pet states tested; no combat-only procs or live measurements.",
         "pet":"pet_frogman_epic / pet_jabbax: +25% critical rating and pet collection health while active",
         "comparison":rows, "raw_server_results":results,

@@ -1,0 +1,41 @@
+{
+  "note": "Contents of the loot lists named by _Template_Events.Loot. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance, scaled by EventDropChance, and an amount range [min, max]; a missing class uses monster's values. An entry with regions instead drops from every monster on maps of those regions (or monsters of them), unscaled: the event maps' own loot. An item containing {difficulty:02d} drops the map difficulty's variant.",
+  "loot_lists": {
+    "e_chr_2012_loot_gen_minions": [
+      {
+        "item": "e_chr_2012_dungeon_key_normal",
+        "comment": "Sugar beets: 10-40 open the Winter Summit, snowmen take one each, the farm quests want 50/100/150.",
+        "chance": {"monster": 0.35, "elite": 1.0, "boss": 1.0},
+        "amount": {"monster": [1, 2], "elite": [2, 4], "boss": [5, 10]}
+      },
+      {
+        "item": "e_chr_progress_box_uncommon_Diff_{difficulty:02d}",
+        "comment": "Green present (Region e_chr): Snow Essence or an uncommon christmas-skinned weapon, see chest_contents.json.",
+        "regions": ["e_chr"],
+        "chance": {"monster": 0.05, "elite": 0.3, "boss": 1.0},
+        "amount": {"monster": [1, 1]}
+      },
+      {
+        "item": "e_chr_progress_box_magic_Diff_{difficulty:02d}",
+        "comment": "Blue present.",
+        "regions": ["e_chr"],
+        "chance": {"monster": 0.02, "elite": 0.12, "boss": 0.5},
+        "amount": {"monster": [1, 1]}
+      },
+      {
+        "item": "e_chr_progress_box_rare_Diff_{difficulty:02d}",
+        "comment": "Violet present.",
+        "regions": ["e_chr"],
+        "chance": {"monster": 0.006, "elite": 0.05, "boss": 0.25},
+        "amount": {"monster": [1, 1]}
+      },
+      {
+        "item": "e_chr_progress_box_epic_{difficulty:02d}",
+        "comment": "Golden present.",
+        "regions": ["e_chr"],
+        "chance": {"monster": 0.002, "elite": 0.015, "boss": 0.1},
+        "amount": {"monster": [1, 1]}
+      }
+    ]
+  }
+}

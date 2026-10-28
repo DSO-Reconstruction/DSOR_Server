@@ -7,6 +7,8 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.gameplay.map_hazards import is_map_hazard
+
 
 # A few event maps contain only a generic portal or a removed legacy phase
 # template. Their concrete encounter actor still exists in the same static
@@ -307,11 +309,15 @@ def density_spawn_templates(
     static_database_path: str | Path,
     template_ids: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """Keep supporting monsters without copying a boss or its spawner."""
+    """Keep supporting monsters without copying a boss or its spawner.
+
+    Statue traps are fixed scenery placed by the map, never density mobs.
+    """
 
     return tuple(
         template_id for template_id in template_ids
         if not is_boss_spawn_template(static_database_path, template_id)
+        and not is_map_hazard(static_database_path, template_id)
     )
 
 

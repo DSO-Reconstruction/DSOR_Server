@@ -47,6 +47,10 @@ class LootPresenceService:
                 or getattr(session, 'gameplay_map_access_id', None)
                 or map_id
             )
+            event_map_aliases = (
+                map_id,
+                str(getattr(session, 'gameplay_map_access_id', None) or ""),
+            )
             world_instance_key = (
                 CharacterService._gameplay_instance_key(session)
             )
@@ -62,6 +66,11 @@ class LootPresenceService:
             socket_evaluation = session.gameplay_socket_effect_evaluation
             event_participation = dict(
                 session.gameplay_event_participation
+            )
+            # Copy-on-write (see player_persistence): the reference is a
+            # stable snapshot. Fixed-page bars drop by the player's page.
+            event_progress = dict(
+                getattr(session, 'gameplay_event_progress', None) or {}
             )
             status_effects = snapshot_active_status_entries(
                 session.gameplay_persistent_status_effects,
@@ -93,11 +102,29 @@ class LootPresenceService:
                 participation=event_participation,
                 status_effects=status_effects,
                 rng=generator,
+                map_aliases=event_map_aliases,
+                monster_template_id=str(monster.template_id),
+                progress=event_progress,
+            )
+            event_loot = event_catalog.event_loot_drops(
+                map_id=event_map_id,
+                map_aliases=event_map_aliases,
+                player_level=max(1, int(player_level)),
+                monster_template_id=str(monster.template_id),
+                monster_rank=(
+                    profile.rank_kind
+                    if profile is not None else "normal"
+                ),
+                monster_level=max(1, int(monster.level)),
+                participation=event_participation,
+                rng=generator,
+                map_difficulty=map_difficulty,
             )
         else:
             # Lightweight protocol tests and deliberately minimal embedded
             # hosts have no event catalog; preserve the allocation hot path.
             event_drops = ()
+            event_loot = ()
 
         # Database/cache work is pure and can take milliseconds. Generate with
         # provisional IDs, then reserve one exact map-global range in a tiny
@@ -125,6 +152,7 @@ class LootPresenceService:
             ),
             additional_instant_consumables=event_drops,
             position_projector=position_projector,
+            additional_event_loot=event_loot,
         )
         generation = apply_socket_drop_amounts(
             socket_evaluation,

@@ -32,6 +32,8 @@ import sqlite3
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
+from dso_server.runtime import resident_content
+
 
 @dataclass(frozen=True)
 class SkinCatalog:
@@ -100,7 +102,7 @@ def _load(path: str, mtime_ns: int, size: int) -> SkinCatalog:
 
 def load_skin_catalog(static_database_path: str | Path) -> SkinCatalog:
     path = Path(static_database_path)
-    stat = path.stat()
+    stat = resident_content.stat(path)
     return _load(str(path), stat.st_mtime_ns, stat.st_size)
 
 

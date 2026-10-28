@@ -4,6 +4,7 @@ from contextlib import closing
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.character_selection import CLASS_NAMES, CLIENT_SKILL_MANAGER_ROW_OFFSET
 from dso_server.protocol.player_init_protocol import (
     SKILL_BOOK_INFO_COMMAND, XP_CHANGED_COMMAND, ServerCommand, SkillBookEntry,
@@ -21,12 +22,12 @@ def _skills(path: str, mtime: int, class_id: int):
 
 
 def skill_book_snapshot(database_path, class_id, level, *, new_level=None, quick_slots=None):
-    path = Path(database_path).resolve()
+    path = resident_content.resolved(database_path)
     assigned = {slot.resource_id for bar in getattr(quick_slots, 'quickbars', ())
                 for slot in bar if slot.kind == 0}
     seen = set()
     entries = []
-    for rowid, resource, unlock, hidden, live in _skills(str(path), path.stat().st_mtime_ns, class_id):
+    for rowid, resource, unlock, hidden, live in _skills(str(path), resident_content.stat(path).st_mtime_ns, class_id):
         unlock = max(1, int(unlock or 1))
         unlocked = bool(live and unlock <= level)
         fresh = bool(unlocked and not hidden and unlock == new_level

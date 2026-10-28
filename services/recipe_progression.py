@@ -9,6 +9,7 @@ import sqlite3
 from types import MappingProxyType
 from typing import Mapping
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
@@ -89,7 +90,7 @@ def _load_recipe_progression_catalog(path: str) -> RecipeProgressionCatalog:
 
 
 def load_recipe_progression_catalog(database_path: str | Path) -> RecipeProgressionCatalog:
-    return _load_recipe_progression_catalog(str(Path(database_path).resolve()))
+    return _load_recipe_progression_catalog(str(resident_content.resolved(database_path)))
 
 
 def validate_crafting_recipe_access(session, recipe_id: str, database_path: str | Path) -> None:

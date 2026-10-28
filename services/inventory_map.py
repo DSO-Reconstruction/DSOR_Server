@@ -1111,6 +1111,7 @@ class InventoryMapService:
                 )
                 return
             with s.flow_lock:
+                previous_inventory = s.gameplay_inventory
                 s.gameplay_inventory = inventory
                 if item_set_transition is not None:
                     s.gameplay_item_set_effects = (
@@ -1153,8 +1154,11 @@ class InventoryMapService:
                 packet_bits,
                 label="equipment-snapshot",
             )
-            from dso_server.services.item_set_programs import reconcile_item_set_programs
+            from dso_server.services.item_set_programs import (
+                cleanse_unequipped_items, reconcile_item_set_programs,
+            )
             reconcile_item_set_programs(s)
+            cleanse_unequipped_items(s, previous_inventory, inventory)
             CharacterService._achievement_on_equipment_changed(self, s)
             CharacterService._refresh_player_combat_vitals(s)
             CharacterService._request_account_save(

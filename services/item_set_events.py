@@ -5,6 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
+from dso_server.runtime import resident_content
 from dso_server.gameplay.item_set_procs import collect_trigger_rules
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.status_modifier_runtime import (
@@ -93,8 +94,8 @@ def active_item_set_evaluation(session, evaluation, database_path):
     equipment_rules = ()
     templates = tuple(sorted(getattr(evaluation, "equipped_template_ids", ())))
     if modified_resources and templates:
-        path = Path(database_path).resolve()
-        stat = path.stat()
+        path = resident_content.resolved(database_path)
+        stat = resident_content.stat(path)
         # Temple's selected torso provides the C:0 guardian rule; the set's
         # low-health parent enables it. Only join equipment rules explicitly
         # targeted by an active modAE, leaving unrelated item procs untouched.

@@ -8,6 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 import sqlite3
 
+from dso_server.runtime import resident_content
 from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.inventory_codec import ItemInfo
 from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
@@ -66,7 +67,7 @@ def handle_rune_extension_use(server, session, item_id: int) -> bool:
         item = next((item for item in inventory.items if int(item.item_id) == int(item_id)), None) if inventory else None
         if item is None or item.template_id != RUNE_EXTENSION_ITEM:
             return False
-    minimum_level = _extension_minimum_level(str(Path(server.static_database_path).resolve()))
+    minimum_level = _extension_minimum_level(str(resident_content.resolved(server.static_database_path)))
     with session.flow_lock:
         inventory = session.gameplay_inventory
         item = next((item for item in inventory.items if int(item.item_id) == int(item_id)), None) if inventory else None
