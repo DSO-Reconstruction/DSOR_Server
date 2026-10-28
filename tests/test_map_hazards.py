@@ -146,9 +146,8 @@ def test_the_arena_exits_open_only_once_big_paws_is_defeated():
 
 
 def test_entry_tells_the_client_the_boss_events_are_not_running():
-    # BOSS_death has no template Map (it is generic). Without an explicit
-    # "not running" entry the client left the sets it gates unresolved and
-    # showed the arena exits before Big Paws was dead.
+    # BOSS_death has no template Map (it is generic). Like retail, entry
+    # declares it stopped, resetting a controller another map left running.
     from dso_server.services.events import _declared_map_local_event_entries
 
     entries = {
@@ -159,3 +158,28 @@ def test_entry_tells_the_client_the_boss_events_are_not_running():
     assert {"BOSS_spawn", "BOSS_start"} <= set(entries)
     # Generic events no object of this map depends on stay out.
     assert "difficulty_bloodshed_chest_01" not in entries
+
+
+def test_the_frozen_field_portal_offers_only_the_selected_tier():
+    # The portal also authors e_b1205_dun_chr_2024_06/_08/_10/_11, tiers with
+    # no access row: the client labelled them "LF:maps.names_report_bug".
+    from dso_server.gameplay.local_map_state import (
+        filter_parallel_world_exits_for_access, load_local_map_exits,
+    )
+
+    exits = load_local_map_exits(
+        DEFAULT_STATIC_DB_PATH, WINTER_SUMMIT, include_inactive_event_sets=True,
+    )
+    shown = filter_parallel_world_exits_for_access(
+        DEFAULT_STATIC_DB_PATH, WINTER_SUMMIT, exits,
+        selected_map_access_id="e_b1205_dun_chr_2012_03",
+    )
+    frozen_field = {
+        exit.destination_map_id for exit in shown
+        if exit.destination_map_id.startswith("e_b1205_dun_chr_2024")
+    }
+    assert frozen_field == {"e_b1205_dun_chr_2024_03"}
+    # Every gate keeps one tier, and the unrelated exits stay.
+    assert {"b1205_exit_to_a0200_01", "b1205_exit_to_a0200_02",
+            "b1205_exit_to_chr_2025_01"} <= {exit.name for exit in shown}
+    assert len(shown) == 9
