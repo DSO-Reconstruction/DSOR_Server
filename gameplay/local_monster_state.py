@@ -2667,6 +2667,15 @@ def _load_map_monster_templates(
             for fragment in excluded_fragments
         )
     )
+    if str(map_id).casefold() == "pw001_grimmagstone_01_dun":
+        # Prefix matching also finds seasonal burning skeletons and the
+        # boss's private adds. Neither belongs to ordinary density lists.
+        templates = tuple(
+            template for template in templates
+            if not template.endswith("_pw_event")
+            and "_boss_adds" not in template
+            and "_guardian_" not in template
+        )
     additions = _MAP_MONSTER_TEMPLATE_ADDITIONS.get(str(map_id).casefold(), ())
     return tuple(dict.fromkeys((*templates, *additions)))
 
@@ -2977,6 +2986,10 @@ def _load_dynamic_monster_encounter(
         elif (
             not fixed_rows
             and encounter_policy.map_type.casefold() != 'event'
+            # Grimmagstone has no ungated fixed mobs. Its fixed rows belong
+            # to ritual waves, Raazghul, or seasonal events; density areas
+            # provide the ordinary population. Never bypass those gates.
+            and str(map_id).casefold() != 'pw001_grimmagstone_01_dun'
         ):
             fixed_rows = all_fixed_rows
         fixed_rows = select_boss_spawn_rows(

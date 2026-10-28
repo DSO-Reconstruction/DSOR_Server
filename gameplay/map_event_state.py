@@ -1458,6 +1458,7 @@ class MapEventRuntime:
     catalog: MapSignalCatalog
     instance_key: tuple
     initial_flags: frozenset[str]
+    grimmagstone_gatekeeper_defeated: bool = False
     monster_level: int | None = None
     scaling_difficulty: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -1655,7 +1656,7 @@ class MapEventRuntime:
     def gated_spawn_rows(self, rows: Iterable[int]) -> tuple[GatedSpawnRow, ...]:
         """Gated monster rows for these sets, minus tiers this instance lacks."""
 
-        return select_variation_spawn_rows(
+        selected = select_variation_spawn_rows(
             (
                 row for row in self.content.spawn_rows_for_sets(rows)
                 if not bloodshed_only_template(row.template_id)
@@ -1663,6 +1664,21 @@ class MapEventRuntime:
             ),
             self.scaling_difficulty,
         )
+
+        if map_key(self.map_id) == "pw001_grimmagstone_01_dun":
+            # Extracted assets may omit the MVR selecting Raazghul's three
+            # overlapping tier placements. This is one encounter, not three
+            # bosses; preserve its six separately authored archer adds.
+            seen_boss = False
+            result = []
+            for row in selected:
+                if row.template_id == "pw001_01_leader_undeadmage_heroic":
+                    if seen_boss:
+                        continue
+                    seen_boss = True
+                result.append(row)
+            return tuple(result)
+        return selected
 
     def select_props(
         self, definitions: Iterable[MapPropDefinition],

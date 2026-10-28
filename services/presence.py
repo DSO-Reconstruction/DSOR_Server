@@ -734,7 +734,7 @@ class PresenceService:
             # one authoritative event so it can never outlive the state
             # transition it represents.
             packet_cache = {}
-            CharacterService._schedule_nefertari_death_despawn(
+            CharacterService._schedule_monster_death_despawn(
                 self, session, session.gameplay_combat_state,
                 dispatches, (session, *peers),
             )

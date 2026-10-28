@@ -32,6 +32,60 @@ class GrimmagstoneExitTests(unittest.TestCase):
     event_key = "pw001_spawn_exit"
     destination = "pw002_{tier:02}_alliance_fortress_01_dun"
 
+    def test_initial_population_does_not_bypass_closed_event_sets(self):
+        from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+
+        encounter = load_local_monster_encounter(
+            self.path, "pw001_grimmagstone_01_dun", include_spawn_areas=False,
+            scaling_difficulty=7,
+        )
+        # Ordinary mobs come from density areas. Closed ritual and seasonal
+        # SpawnPoints must not be used as a substitute fixed population.
+        self.assertIsNone(encounter)
+
+    def test_ordinary_pool_excludes_seasonal_and_boss_only_mobs(self):
+        from dso_server.gameplay.local_monster_state import _load_map_monster_templates
+
+        templates = _load_map_monster_templates(self.path, "pw001_grimmagstone_01_dun")
+        self.assertTrue(templates)
+        self.assertIn("pw001_01_normal_skeleton_warrior_heroic", templates)
+        self.assertFalse(any(
+            "anniversary" in template or "_boss_adds" in template
+            or "_guardian_" in template or template.endswith("_pw_event")
+            for template in templates
+        ))
+
+    def test_ritual_boss_has_one_spawn_and_preserves_archer_adds(self):
+        runtime = MapEventRuntime(
+            load_map_event_content(self.path, "pw001_grimmagstone_01_dun"),
+            load_map_signal_catalog(self.path), instance_key=("ritual",),
+            initial_flags=frozenset(), scaling_difficulty=7,
+        )
+        rows = runtime.gated_spawn_rows((3417,))
+        self.assertEqual(sum(r.template_id == "pw001_01_leader_undeadmage_heroic" for r in rows), 1)
+        self.assertEqual(sum(r.template_id.endswith("_boss_adds") for r in rows), 6)
+
+    def test_client_ritual_exit_report_cannot_open_gate(self):
+        runtime = MapEventRuntime(
+            load_map_event_content(self.path, "pw001_grimmagstone_01_dun"),
+            load_map_signal_catalog(self.path), instance_key=("ritual",),
+            initial_flags=frozenset(), scaling_difficulty=7,
+        )
+        for signal in ("pw001_spawn_exit_signal", "pw001_spawn_exit_signal_B"):
+            viewer = SimpleNamespace(
+                gameplay_map_event_runtime=runtime,
+                gameplay_client_command_state={0x0113: SimpleNamespace(signal_id=signal)},
+            )
+            with patch("dso_server.services.map_events.CharacterService._handle_simple_gameplay_command"), patch.object(
+                self.service, "_emit_map_signal",
+            ) as emit:
+                self.service._handle_staging_signal(viewer, b"")
+            emit.assert_not_called()
+            self.assertNotIn("pw001_spawn_exit", runtime.running)
+        for signal in ("pw001_spawn_exit_signal", "pw001_spawn_exit_signal_B"):
+            self.service._emit_map_signal(viewer, runtime, signal)
+        self.assertNotIn("pw001_spawn_exit", runtime.running)
+
     def setUp(self):
         self.path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
         catalog = load_map_signal_catalog(self.path)

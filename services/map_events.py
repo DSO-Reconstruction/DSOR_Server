@@ -216,20 +216,18 @@ def _monster_kill_score(static_database_path: str, template_id: str) -> int:
 
 
 @lru_cache(maxsize=128)
-def _nefertari_death_despawn_timing(
+def _monster_death_despawn_timing(
         static_database_path: str, template_id: str):
-    """Read authored death/despawn durations for Nefertari actors."""
+    """Return the authored death animation duration for a monster."""
 
-    if "nefertari" not in str(template_id).casefold():
-        return None
     try:
         with sqlite3.connect(
             f"file:{Path(static_database_path).as_posix()}?mode=ro",
             uri=True,
         ) as database:
             row = database.execute(
-                "SELECT DeathDuration, DespawnDuration, DeathSequence, "
-                "DespawnSequence FROM _Template_Monster WHERE Id=? LIMIT 1",
+                "SELECT DeathDuration FROM _Template_Monster "
+                "WHERE Id=? LIMIT 1",
                 (str(template_id),),
             ).fetchone()
     except (OSError, sqlite3.Error):
@@ -237,18 +235,9 @@ def _nefertari_death_despawn_timing(
     if row is None:
         return None
     death_duration = max(0.0, float(row[0] or 0.0))
-    despawn_duration = max(0.0, float(row[1] or 0.0))
-    death_sequence = str(row[2] or "").casefold()
-    despawn_sequence = str(row[3] or "").casefold()
     if death_duration <= 0.0:
         return None
-    if (
-        not despawn_sequence
-        or despawn_sequence == death_sequence
-        or despawn_duration <= 0.0
-    ):
-        despawn_duration = 0.0
-    return death_duration, despawn_duration
+    return death_duration
 
 
 @lru_cache(maxsize=32)
@@ -1071,9 +1060,9 @@ class MapEventService:
             for signal_id in sorted(release_signals):
                 self._emit_map_signal(s, runtime, signal_id)
 
-    def _schedule_nefertari_death_despawn(
+    def _schedule_monster_death_despawn(
             self, s: Session, combat, dispatches, viewers) -> None:
-        """Play authored Nefertari despawn sequences after their death clips."""
+        """Remove map monsters when their authored death clips finish."""
 
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         scheduler = getattr(runtime, "scheduler", None)
@@ -1095,12 +1084,12 @@ class MapEventService:
                 template_id = str(
                     getattr(monster, "template_id", "") or ""
                 )
-            timing = _nefertari_death_despawn_timing(
+            timing = _monster_death_despawn_timing(
                 str(combat.encounter.static_database_path), template_id,
             )
             if timing is None:
                 continue
-            death_duration, despawn_duration = timing
+            death_duration = timing
             interested = tuple(
                 viewer
                 for viewer in visible_viewers
@@ -1110,34 +1099,33 @@ class MapEventService:
                 continue
             with runtime.lock:
                 timers = getattr(
-                    runtime, "nefertari_despawn_timers", None,
+                    runtime, "monster_despawn_timers", None,
                 )
                 if timers is None:
                     timers = {}
-                    runtime.nefertari_despawn_timers = timers
+                    runtime.monster_despawn_timers = timers
                 if actor_id in timers:
                     continue
                 timer = scheduler.timer(
                     max(0.05, death_duration),
-                    self._begin_nefertari_despawn,
+                    self._begin_monster_despawn,
                     args=(
                         runtime, combat, actor_id,
                         tuple(float(value) for value in resolution.position),
-                        interested, despawn_duration,
+                        interested,
                     ),
                 )
                 timers[actor_id] = timer
             timer.start()
 
-    def _begin_nefertari_despawn(
-            self, runtime, combat, actor_id, position, viewers,
-            despawn_duration) -> None:
-        """Switch the dead Nefertari actor to its authored vanish sequence."""
+    def _begin_monster_despawn(
+            self, runtime, combat, actor_id, position, viewers) -> None:
+        """Finish the dead monster lifecycle after its death clip."""
 
         if not self._map_event_runtime_is_live(runtime):
             return
         with runtime.lock:
-            timers = getattr(runtime, "nefertari_despawn_timers", {})
+            timers = getattr(runtime, "monster_despawn_timers", {})
             timers.pop(int(actor_id), None)
         with combat.lock:
             if combat.monster_health.get(int(actor_id), 0) > 0:
@@ -1148,54 +1136,16 @@ class MapEventService:
                     int(actor_id), position,
                 )
             )
-        if float(despawn_duration) <= 0.0:
-            self._finish_nefertari_despawn(
-                runtime, combat, int(actor_id), viewers,
-            )
-            return
-        sessions = tuple(
-            viewer
-            for viewer in viewers
-            if viewer.connected
-            and viewer.gameplay_combat_state is combat
-            and getattr(viewer, "gameplay_map_event_runtime", None) is runtime
+        # DeathDuration already covers the death clip. A second Kill does
+        # not select DespawnSequence: its animation_time is another corpse
+        # lifetime, which leaves the finished death model visible longer.
+        self._finish_monster_despawn(
+            runtime, combat, int(actor_id), viewers,
         )
-        if not sessions:
-            return
-        tick = max(
-            int(getattr(viewer, "gameplay_chase_server_tick", 0) or 0)
-            for viewer in sessions
-        )
-        command = KillServerCommand(
-            Kill(
-                server_tick=tick,
-                hit_tags=(),
-                animation_time=max(1, int(math.ceil(despawn_duration * 25))),
-                field_4c=0,
-                killer_actor_id=0,
-                position=position,
-                skill_id=0,
-                projectile_id=0xFFFFFFFF,
-                field_78=True,
-            ),
-            int(actor_id),
-        )
-        packet, packet_bits = encode_combat_batch(CombatBatch((command,)))
-        for viewer in sessions:
-            CharacterService._send_world_loot_state_batch(
-                viewer, packet, packet_bits,
-                label="nefertari-authored-despawn",
-            )
-        timer = runtime.scheduler.timer(
-            max(0.05, float(despawn_duration)),
-            self._finish_nefertari_despawn,
-            args=(runtime, combat, int(actor_id), sessions),
-        )
-        timer.start()
 
-    def _finish_nefertari_despawn(
+    def _finish_monster_despawn(
             self, runtime, combat, actor_id, viewers) -> None:
-        """Remove actors after the authored Nefertari despawn animation."""
+        """Remove actors after the authored monster death animation."""
 
         if not self._map_event_runtime_is_live(runtime):
             return
@@ -1209,7 +1159,7 @@ class MapEventService:
             ):
                 CharacterService._send_world_loot_state_batch(
                     viewer, packet, packet_bits,
-                    label="nefertari-despawn-discard",
+                    label="monster-death-discard",
                 )
 
     def _update_fractured_planes_clear_state(self, s: Session, monsters) -> None:
@@ -2324,6 +2274,19 @@ class MapEventService:
                          signal_id: str) -> None:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
+        if (
+            map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
+            and key in {
+                "pw001_spawn_exit_signal",
+                "pw001_spawn_exit_signal_b",
+            }
+        ):
+            # Client-side kill/quest signals can otherwise activate the exit
+            # event before Raazghul is defeated. The authoritative boss-kill
+            # path starts it directly after validating the killed template.
+            _log(f"ignored non-authoritative Grimmagstone exit signal {key!r}")
+            return
+
         signal_keys = [key]
         fractured_run = CharacterService._is_fractured_planes_run(self, s)
         if (
@@ -2713,6 +2676,8 @@ class MapEventService:
             f"Parallel World gatekeeper defeated on {runtime.map_id}: "
             f"starting exit event {event_key!r}"
         )
+        if map_key(runtime.map_id) == "pw001_grimmagstone_01_dun":
+            runtime.grimmagstone_gatekeeper_defeated = True
         definition = runtime.catalog.event(event_key)
         if definition is not None:
             self._schedule_map_local_event_start(runtime, definition)
@@ -3320,6 +3285,14 @@ class MapEventService:
         signal_id = str(getattr(decoded, "signal_id", "") or "")
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None or not signal_id:
+            return
+        # Grimmagstone's scene can report the exit edge as the ritual starts.
+        # The authoritative gatekeeper-death handler opens this per-run exit;
+        # neither a client report nor its saved-quest variant proves a kill.
+        if map_key(runtime.map_id) == "pw001_grimmagstone_01_dun" and signal_id.casefold() in {
+            "pw001_spawn_exit_signal", "pw001_spawn_exit_signal_b",
+        }:
+            _log(f"ignored premature client exit signal {signal_id!r}")
             return
         rule = runtime.catalog.rule(signal_id)
         if rule is None or not rule.enabled:
@@ -4538,6 +4511,13 @@ class MapEventService:
     def _start_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        if (
+            map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
+            and definition.key == "pw001_spawn_exit"
+            and not runtime.grimmagstone_gatekeeper_defeated
+        ):
+            _log("blocked Grimmagstone exit activation before gatekeeper death")
+            return
         with runtime.lock:
             if (pending_token is not None
                     and runtime.pending_start_tokens.get(definition.key) is not pending_token):
