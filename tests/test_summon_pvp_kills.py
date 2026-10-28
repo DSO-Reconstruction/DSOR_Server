@@ -123,12 +123,13 @@ class SummonPVPKillTests(unittest.TestCase):
         self.assertEqual(match.participant(1).kills, 1)
         self.assertEqual(match.participant(1).damage_dealt, 20)
 
-    def test_nonlethal_map_keeps_one_health_floor(self):
+    def test_town_is_a_safe_zone(self):
+        # A map without death (a Hub) takes no PvP damage at all: a floor at
+        # one health point left a player shown at 0 and alive.
         self.target.gameplay_respawn_allowed = False
         self.spawn_attack()
-        resolutions = self.resolve()
-        self.assertEqual(self.combat.player_health[self.target.gameplay_remote_actor_id][0], 1)
-        self.assertFalse(any(r.killed for r in resolutions))
+        self.assertFalse(self.resolve())
+        self.assertEqual(self.combat.player_health[self.target.gameplay_remote_actor_id][0], 20)
 
     def test_countdown_blocks_an_already_queued_minion_attack(self):
         match = self.arena()

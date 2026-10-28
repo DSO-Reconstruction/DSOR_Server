@@ -39,6 +39,10 @@ class PVPCombatService:
             or source.gameplay_combat_state is None
             or target.gameplay_combat_state is not source.gameplay_combat_state
             or source.gameplay_presence_callback is None
+            # A town (Hub) is a safe zone: flagged players meet there without
+            # fighting. Damage there was floored at 1 health point, so a
+            # player "at 0" stayed alive (DSOR_Client shows no target there).
+            or not CharacterService._pvp_lethal_damage_allowed(source, target)
         ):
             return False
         decision = source.gameplay_presence_callback(
