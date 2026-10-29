@@ -900,6 +900,57 @@ class CommerceService:
                 entry is None for entry in transaction.entries
             ):
                 raise ValueError("transaction has no concrete offer entries")
+            if any(entry.offer_id.startswith("quickbar_") for entry in transaction.entries):
+                # The bar's plus button buys a direct offer without opening
+                # an NPC shop. Validate its tier and price independently.
+                import sqlite3
+                from dso_server.protocol.commerce_protocol import PurchasePrice
+                if len(transaction.entries) != 1 or transaction.field_80:
+                    raise ValueError("invalid quickbar extension transaction")
+                entry = transaction.entries[0]
+                with s.flow_lock:
+                    current = s.gameplay_quickbar_info
+                    next_count = int(current.quickbar_amount) + 1
+                    # The client encodes this single direct purchase with
+                    # amount=3; it is not a request for three extensions.
+                    expected_offer = f"quickbar_{next_count - 1}"
+                    if (entry.amount not in {1, 3} or next_count > 10
+                            or entry.offer_id not in {"quickbar_1", expected_offer}):
+                        raise ValueError(
+                            f"quickbar extension is not the next unlock: "
+                            f"offer={entry.offer_id!r}, amount={entry.amount}, "
+                            f"owned={current.quickbar_amount}, expected={expected_offer}"
+                        )
+                    with sqlite3.connect(
+                        self.static_database_path.resolve().as_uri() + "?mode=ro", uri=True
+                    ) as database:
+                        row = database.execute(
+                            "SELECT PriceRC, Item, DirectlyBuyOffer FROM _Template_Offer WHERE Id=?",
+                            (expected_offer,),
+                        ).fetchone()
+                    if (row is None or row[1] != entry.offer_id
+                            or not row[2] or int(row[0]) <= 0):
+                        raise ValueError("invalid direct quickbar offer")
+                    if s.gameplay_currency_state is None or s.gameplay_character is None:
+                        raise ValueError("player currency is not initialized")
+                    price = PurchasePrice(rc=int(row[0]))
+                    updated_currency, _, _ = debit_purchase_currency(
+                        s.gameplay_currency_state, dict(s.gameplay_game_currencies), price,
+                        shop_currency_resource=None,
+                    )
+                    updated_bar = replace(current, quickbar_amount=next_count)
+                    packet, packet_bits = encode_server_command_batch((
+                        ServerCommand(CURRENCY_CHANGED_COMMAND, updated_currency, LOCAL_PLAYER_ACTOR_ID),
+                        ServerCommand(QUICKBAR_INFO_COMMAND, updated_bar, LOCAL_PLAYER_ACTOR_ID),
+                        ServerCommand(UPDATE_PROGRESS_TIER_SPENDER_CHALLENGES_COMMAND,
+                                      UpdateProgressTierSpenderChallenges(price.rc), 0),
+                    ), include_terminator=True)
+                    s.gameplay_currency_state = updated_currency
+                    s.gameplay_quickbar_info = updated_bar
+                CharacterService._send_world_loot_state_batch(
+                    s, packet, packet_bits, label="quickbar-extension-purchase")
+                CharacterService._request_account_save(s, "quickbar extension purchase", flush=True)
+                return
             if transaction.shop_id != open_shop_id:
                 raise ValueError(
                     "transaction does not match the currently opened shop"

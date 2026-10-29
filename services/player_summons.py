@@ -34,7 +34,7 @@ class PlayerSummonService:
         if position is None:
             return
         children = tuple(
-            (instance_id, aura, receivers, delay)
+            (instance_id, aura, receivers, delay, aura == definition)
             for instance_id, definition in applied
             for aura, receivers, delay in combat.player_user_effect_location_auras((definition,))
         )
@@ -46,7 +46,26 @@ class PlayerSummonService:
             level=max(1, int(character.level)), inventory=inventory,
             modifier_sources=CharacterService._active_skill_modifier_sources(s),
         )
-        for instance_id, aura, receivers, delay in children:
+        for instance_id, aura, receivers, delay, follows_owner in children:
+            if follows_owner:
+                # The accepted actor status already renders this aura. Keep
+                # its authoritative receiver area attached to the moving
+                # caster instead of creating a second stationary VFX.
+                with combat.lock:
+                    combat.player_location_visuals = {
+                        key: visual for key, visual in combat.player_location_visuals.items()
+                        if not (visual.follows_owner
+                                and visual.owner_actor_id == int(owner_actor_id)
+                                and visual.definition.effect_id == aura.effect_id)
+                    }
+                    combat.start_player_location_visuals(
+                        (aura,), position=tuple(position[:3]), yaw=yaw,
+                        server_tick=server_tick, owner_actor_id=int(owner_actor_id),
+                        cast_id=int(instance_id), receiver_status_effects=receivers,
+                        player_damage_range=(stats.minimum_damage, stats.maximum_damage),
+                        follows_owner=True, managed_aura=True,
+                    )
+                continue
             CharacterService._schedule_player_location_visuals(
                 s, combat, (aura,), position=tuple(position[:3]), yaw=yaw,
                 server_tick=server_tick, owner_actor_id=int(owner_actor_id),

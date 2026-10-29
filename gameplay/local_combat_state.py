@@ -36,6 +36,8 @@ from dso_server.gameplay.combat_entities import (
     shifted_skill_phases,
     impact_status_effects,
     scaled_skill_damage,
+    PLANAR_MELEE_TARGET_SKILLS,
+    PLANAR_MELEE_TARGET_VERTICAL_REACH,
 )
 
 from dso_server.protocol.combat_protocol import (
@@ -283,6 +285,27 @@ def _parse_skill_radius_bonuses(raw: str) -> dict[str, float]:
 PLAYER_SKILL_PROJECTILE_RADIUS_BONUS = _parse_skill_radius_bonuses(
     os.getenv("DSO_SKILL_PROJECTILE_RADIUS_BONUS", "iceball=0.15")
 )
+# Deadly Blow's visible targeted swing reaches beyond its authored 1.75 m
+# attack range. Use a 3.2 m server hit reach (comparable to the basic melee
+# knife at 3.5 m) so the server matches the visible dagger thrust animation.
+PLAYER_SKILL_RANGE_OVERRIDES = {
+    "mightystab": 3.2,
+    "mightystab_light": 3.2,
+}
+# Override authored hit range (explosion / area damage radii) that were
+# authored with the skill's flight/dash distance instead of the actual damage radius:
+# - whirlwind: DB authored HitRange=10.0 (the dash distance); actual spin radius is 2.5m (Angle=2.0, Aura=2.0m)
+# - explosiveshot: DB authored HitRange=25.0 (the arrow flight distance); actual explosion radius is 3.5m
+PLAYER_SKILL_HIT_RANGE_OVERRIDES = {
+    "mightystab": 3.2,
+    "mightystab_light": 3.2,
+    "whirlwind": 2.5,
+    "explosiveshot": 3.5,
+}
+PLAYER_SKILL_IMPACT_COUNT_OVERRIDES = {
+    "mightystab": 5,
+    "mightystab_light": 5,
+}
 # Monster simulation follows the client's 25 Hz game clock, but retail does
 # not publish a fresh transform on every one of those ticks. The 2026-09-09
 # combat capture spaces ordinary moving-monster snapshots by 4-8 ticks while
@@ -1231,6 +1254,7 @@ class PlayerLocationVisual:
     player_damage_range: tuple[float, float] = (1.0, 1.0)
     managed_aura: bool = False
     source_actor_id: int | None = None
+    follows_owner: bool = False
 
 
 @dataclass(frozen=True)
@@ -3308,8 +3332,21 @@ class LocalCombatState:
                     .split(";")
                     if part.strip()
                 ),
-                attack_range=max(0.0, float(row[3])),
-                hit_range=max(0.0, float(row[4])),
+                attack_range=max(
+                    0.0,
+                    PLAYER_SKILL_RANGE_OVERRIDES.get(
+                        str(row[0]).casefold(), float(row[3] or 0.0)
+                    ),
+                ),
+                hit_range=max(
+                    0.0,
+                    PLAYER_SKILL_HIT_RANGE_OVERRIDES.get(
+                        str(row[0]).casefold(),
+                        PLAYER_SKILL_RANGE_OVERRIDES.get(
+                            str(row[0]).casefold(), float(row[4] or 0.0)
+                        ),
+                    ),
+                ),
                 angle_degrees=max(0.0, float(row[5])),
                 end_width=max(0.0, float(row[6])),
                 player_width=max(0.0, float(row[7])),
@@ -3334,7 +3371,11 @@ class LocalCombatState:
                 scale_skill_timing=bool(row[17]),
                 damage_modifier=max(0.0, float(row[18])),
                 projectile_lifetime=max(0.0, float(row[20])),
-                impact_count=max(1, int(row[21])),
+                impact_count=max(
+                    1,
+                    int(row[21] or 0),
+                    PLAYER_SKILL_IMPACT_COUNT_OVERRIDES.get(str(row[0]).casefold(), 0),
+                ),
                 impact_child_spawn_count=max(0, int(row[22])),
                 target_search_radius=max(0.0, float(row[23])),
                 motion_type=str(row[24] or "Straight"),
@@ -4028,6 +4069,27 @@ class LocalCombatState:
             if effect.chance > 0.0
         )
 
+    def player_skill_location_receiver_effects(
+        self,
+        skill_index: int,
+        *,
+        modifier_sources: tuple[object, ...] = (),
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """Return receiver status effects for world-hosted auras."""
+
+        geometry = self._load_player_skill_geometry(int(skill_index))
+        if geometry is None:
+            return ()
+        if modifier_sources:
+            geometry = self._modified_player_skill_geometry(
+                geometry, modifier_sources
+            )
+        return tuple(
+            effect
+            for effect in geometry.location_status_effects
+            if effect.chance > 0.0
+        )
+
     def player_skill_bullet_location_trail(
         self,
         skill_index: int,
@@ -4249,6 +4311,7 @@ class LocalCombatState:
         player_damage_range: tuple[float, float] = (1.0, 1.0),
         managed_aura: bool = False,
         source_actor_id: int | None = None,
+        follows_owner: bool = False,
         now: float | None = None,
     ) -> tuple[PlayerLocationVisual, ...]:
         """Create location visuals and return the live snapshot.
@@ -4261,27 +4324,41 @@ class LocalCombatState:
 
         current_time = time.perf_counter() if now is None else float(now)
         self.active_player_location_visuals(now=current_time)
+        aura_receivers = tuple(receiver_status_effects)
         for definition in definitions:
             if (
                 definition.chance <= 0.0
-                or definition.duration_ticks <= 0
+                or (definition.duration_ticks <= 0 and definition.aura_radius <= 0.0)
             ):
                 continue
             instance_id = self._next_player_location_visual_id
             self._next_player_location_visual_id = (
                 instance_id + 1
             ) & 0xFFFFFFFF
+            duration_ticks = max(
+                10 if definition.aura_radius > 0.0 else 1,
+                int(definition.duration_ticks),
+            )
             starts_tick = (
                 int(server_tick) + int(definition.delay_ticks)
             ) & 0xFFFFFFFF
             expires_tick = (
-                starts_tick + int(definition.duration_ticks)
+                starts_tick + duration_ticks
             ) & 0xFFFFFFFF
             # Its OX/OY/OZ turned with the aim (forward is -Z: (-sin, 0, -cos)):
             # Fury of the Dragon's crack opens 2.5 m ahead (OZ:-2.5), not under
             # the warrior ("spawn toujours sous moi", 2026-10-21).
             ox, oy, oz = definition.offset
             cos_yaw, sin_yaw = math.cos(float(yaw)), math.sin(float(yaw))
+            visual_receivers = aura_receivers
+            if not visual_receivers and definition.aura_radius > 0.0:
+                with closing(sqlite3.connect(
+                    f"file:{self.encounter.static_database_path.as_posix()}?mode=ro",
+                    uri=True,
+                )) as database:
+                    visual_receivers = self._load_location_aura_effects(
+                        database, definition.resource_id
+                    )
             self.player_location_visuals[instance_id] = (
                 PlayerLocationVisual(
                     instance_id=instance_id,
@@ -4299,14 +4376,15 @@ class LocalCombatState:
                         current_time
                         + (
                             definition.delay_ticks
-                            + definition.duration_ticks
+                            + duration_ticks
                         )
                         / SERVER_TICKS_PER_SECOND
                     ),
                     cast_id=int(cast_id),
                     managed_aura=bool(managed_aura),
+                    follows_owner=bool(follows_owner),
                     source_actor_id=source_actor_id,
-                    receiver_status_effects=tuple(receiver_status_effects),
+                    receiver_status_effects=tuple(visual_receivers),
                     source_skill_index=int(source_skill_index),
                     player_damage_range=(
                         max(0.0, float(player_damage_range[0])),
@@ -4374,6 +4452,11 @@ class LocalCombatState:
         resolutions = []
         owner_auras = {}
         for visual in visuals:
+            if visual.follows_owner:
+                position = (player_positions or {}).get(visual.owner_actor_id)
+                if position is None:
+                    continue
+                visual = replace(visual, position=position)
             radius = max(0.0, float(visual.definition.aura_radius))
             # An AuraTargets:Creator ground aura (Banner of War's arena) gives
             # its children to its creator while the creator stands inside it,
@@ -4431,7 +4514,10 @@ class LocalCombatState:
                 definitions = self.accepted_monster_status_effects(
                     actor_id,
                     tuple(
-                        replace(effect, duration_ticks=30)
+                        replace(effect, duration_ticks=(
+                            min(30, max(1, round((visual.expires_at - current_time) * SERVER_TICKS_PER_SECOND)))
+                            if visual.follows_owner else 30
+                        ))
                         if visual.managed_aura else effect
                         for effect in visual.receiver_status_effects
                     ),
@@ -4457,7 +4543,7 @@ class LocalCombatState:
                 )
                 damage, hit_tags = self.status_effect_immediate_damage(
                     actor_id,
-                    definitions,
+                    () if visual.follows_owner and key in self.player_location_aura_members else definitions,
                     visual.player_damage_range,
                     now=current_time,
                 )
@@ -4494,6 +4580,23 @@ class LocalCombatState:
             if key not in owner_auras:
                 applications.append(PlayerSupportApplication(key[0], key[0], int(server_tick), (effect,), remove=True))
         self.player_location_owner_auras = owner_auras
+        by_id = {v.instance_id: v for v in visuals}
+        for visual_id, actor_id in self.player_location_aura_members - inside_now:
+            visual = by_id.get(visual_id)
+            if visual is None or not visual.follows_owner:
+                continue
+            for effect in visual.receiver_status_effects:
+                if any(
+                    other_actor == actor_id
+                    and any(e.resource_id == effect.resource_id for e in by_id[other_id].receiver_status_effects)
+                    for other_id, other_actor in inside_now
+                ):
+                    continue
+                key = (actor_id, effect.resource_id)
+                status = self.monster_status_damage.get(key)
+                if status is not None and status.source_actor_id == visual.owner_actor_id:
+                    self.monster_status_damage.pop(key, None)
+                    self.monster_status_effects.get(actor_id, {}).pop(effect.resource_id, None)
         self.player_location_aura_refresh_at = {
             key: stamp for key, stamp in self.player_location_aura_refresh_at.items()
             if key in inside_now
@@ -6215,6 +6318,19 @@ class LocalCombatState:
             f"file:{path.as_posix()}?mode=ro", uri=True
         )) as database:
             for definition in definitions:
+                if (
+                    definition.aura_radius > 0.0
+                    and definition.duration_ticks > 0
+                    and definition.aura_targets.strip().casefold() == "enemies"
+                ):
+                    entry = ",".join((
+                        definition.resource_id, "C:1.0",
+                        f"D:{definition.duration_ticks / SERVER_TICKS_PER_SECOND}",
+                        *(f"${i}:{v}" for i, v in enumerate(definition.values)),
+                    ))
+                    receivers = self._load_location_aura_effects(database, entry)
+                    if receivers:
+                        results.append((definition, receivers, 0.0))
                 for kind, arguments in self._status_modifier_program(
                     int(definition.effect_id)
                 ):
@@ -7295,6 +7411,15 @@ class LocalCombatState:
                     continue
                 operation = arguments[0].casefold()
                 encoded = ",".join(arguments[2:])
+                if (
+                    operation == "addle"
+                    and arguments[2].split(",", 1)[0].casefold()
+                    == "jewel_bonus_xmas_aura"
+                ):
+                    # Socket impact dispatch owns the chance roll and target
+                    # position. Adding this to cast geometry also created an
+                    # unconditional meteor at the caster on every skill use.
+                    continue
                 if operation.endswith("bdle"):
                     effects = self._load_location_aura_effects(
                         database, encoded
@@ -7831,6 +7956,24 @@ class LocalCombatState:
         return self._modified_player_skill_geometry(
             geometry, tuple(modifier_sources)
         ).cleanse_groups
+
+    def player_status_tick_effects(self, effect_id: int) -> tuple:
+        """Resolve immediate child statuses authored in a player's tick program."""
+        _interval, modifiers, _start = self._status_effect_runtime_program(effect_id)
+        if "actorstatuseffect:" not in str(modifiers).casefold():
+            return ()
+        path = self.encounter.static_database_path
+        result = []
+        with closing(sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True)) as db:
+            for instruction in str(modifiers).split(";"):
+                kind, _, payload = instruction.partition(":")
+                operation, _, entry = payload.partition(",")
+                if kind.casefold() != "actorstatuseffect" or operation.casefold() != "addae":
+                    continue
+                result.extend(e for e in self._load_victim_status_effects(
+                    db, entry, default_trigger="immediate")
+                    if e.trigger in {"immediate", "immediatemanaged"})
+        return tuple(result)
 
     def player_status_resource_delta(
         self,
@@ -12339,6 +12482,7 @@ class LocalCombatState:
         critical_hit: bool = False,
         low_health: bool = False,
         frost_hit: bool = False,
+        marked_hit: bool = False,
         blocked: bool = False,
         event: str = "",
     ) -> bool:
@@ -12364,6 +12508,8 @@ class LocalCombatState:
             return False
         if trigger == "hitfrost" and not frost_hit:
             return False
+        if trigger == "hitmarked" and not marked_hit:
+            return False
         if trigger == "hitblocked" and not blocked:
             return False
         if trigger == "lowhealth" and not low_health:
@@ -12377,7 +12523,7 @@ class LocalCombatState:
         if trigger not in {
             "", "hit", "skillstart", "immediate", "immediatemanaged",
             "kill", "hitcritical", "hitlowhealth", "hitfrost",
-            "hitblocked", "lowhealth", "pickuphealthglobe", "revive120",
+            "hitblocked", "hitmarked", "lowhealth", "pickuphealthglobe", "revive120",
         } and not trigger.startswith("maxstacksize"):
             return False
         if definition.chance <= 0.0:
@@ -12528,24 +12674,50 @@ class LocalCombatState:
         if (
             pending.motion_type == "Area"
             and pending.area_radius > 0.0
-            and (
-                current is None
-                or all(
-                    self._distance(sample, pending.origin)
-                    > pending.area_radius
-                    + (
-                        monster.collision_radius
-                        if pending.area_contact_radius is None
-                        else pending.area_contact_radius
-                    )
-                    + PLAYER_PROJECTILE_HITBOX_TOLERANCE
-                    for sample in (
-                        current, *self._recent_monster_path(monster)
-                    )
-                )
-            )
         ):
-            return None
+            contact_radius = (
+                monster.collision_radius
+                if pending.area_contact_radius is None
+                else pending.area_contact_radius
+            )
+            samples = (current, *self._recent_monster_path(monster)) if current is not None else ()
+            if pending.skill_index >= 0:
+                pending_geometry = self._load_player_skill_geometry(pending.skill_index)
+            else:
+                pending_geometry = None
+            planar_melee_target = (
+                pending_geometry is not None
+                and pending_geometry.resource_id.casefold() in PLANAR_MELEE_TARGET_SKILLS
+            )
+            if planar_melee_target:
+                outside = not any(
+                    abs(sample[1] - pending.origin[1])
+                    <= PLANAR_MELEE_TARGET_VERTICAL_REACH
+                    and math.hypot(
+                        sample[0] - pending.origin[0],
+                        sample[2] - pending.origin[2],
+                    )
+                    <= pending.area_radius + contact_radius
+                    + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+                    for sample in samples
+                )
+            else:
+                outside = not any(
+                    self._distance(sample, pending.origin)
+                    <= pending.area_radius + contact_radius
+                    + PLAYER_PROJECTILE_HITBOX_TOLERANCE
+                    for sample in samples
+                )
+            if outside:
+                if planar_melee_target:
+                    print(
+                        f"[skill-trace] impact rejected cast={pending.cast_id} "
+                        f"target={pending.target_actor_id} origin={pending.origin} "
+                        f"target_position={current} radius={pending.area_radius} "
+                        f"contact_radius={contact_radius} "
+                        f"vertical_limit={PLANAR_MELEE_TARGET_VERTICAL_REACH}"
+                    )
+                return None
         if pending.damage_immune:
             return DamageResolution(
                 target_actor_id=monster.actor_id,
@@ -12627,6 +12799,10 @@ class LocalCombatState:
                 if pending.damage_modifier > 0.0
                 else 0
             )
+        # HitMarked observes the target before this hit installs its own mark.
+        marked_hit = self.monster_has_status_group(
+            monster.actor_id, ("mark",), now=current_time
+        )
         preliminary_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -12639,6 +12815,7 @@ class LocalCombatState:
                 ),
                 killed=False,
                 critical_hit=critical_hit,
+                marked_hit=marked_hit,
                 low_health=(
                     max(0, previous - damage)
                     <= max(1, round(monster.maximum_health / 3.0))
@@ -12663,6 +12840,17 @@ class LocalCombatState:
             monster, previous, damage
         )
         self.monster_health[monster.actor_id] = current
+        traced_geometry = self._load_player_skill_geometry(pending.skill_index)
+        if (
+            traced_geometry is not None
+            and traced_geometry.resource_id.casefold() in PLANAR_MELEE_TARGET_SKILLS
+        ):
+            print(
+                f"[skill-trace] damage-result cast={pending.cast_id} "
+                f"target={monster.actor_id} template={monster.template_id} "
+                f"damage={damage} hp={previous}->{current} "
+                f"invulnerable={monster.invulnerable} killed={killed}"
+            )
         applied_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -12675,6 +12863,7 @@ class LocalCombatState:
                 ),
                 killed=killed,
                 critical_hit=critical_hit,
+                marked_hit=marked_hit,
                 low_health=(
                     current
                     <= max(1, round(monster.maximum_health / 3.0))

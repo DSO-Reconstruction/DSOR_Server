@@ -99,6 +99,8 @@ SUPPORTED_EVENT_TRIGGERS = frozenset({
 # Keep the correction explicit and executable instead of silently preserving
 # a known content typo (Ghost Smoke says critical hit; the row says hit).
 SOCKET_TRIGGER_OVERRIDES = {
+    ("jewel_buff_xmas_event_ranger", "jewel_bonus_xmas_aura"):
+        "hitcritical",
     ("unique_gem_ce2023_offensive", "ce2023_jewel_offensive_effect"):
         "hitcritical",
 }

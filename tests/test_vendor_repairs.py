@@ -68,6 +68,29 @@ def trade(case, s, operation, item_id=800):
         case.server._handle_transaction(s, b"")
 
 
+@pytest.mark.parametrize("balance,offer,amount,expected", [
+    (5000, "quickbar_1", 1, 2),
+    (5000, "quickbar_1", 3, 2),
+    (2399, "quickbar_1", 1, 1),
+    (5000, "quickbar_2", 1, 1),
+    (5000, "quickbar_1", 2, 1),
+])
+def test_direct_quickbar_purchase_validates_price_and_next_tier(vendor, balance, offer, amount, expected):
+    case, s, item = vendor
+    s.gameplay_quickbar_info = QuickbarInfo(1, 0)
+    s.gameplay_currency_state = replace(s.gameplay_currency_state, currency_type=balance)
+    request = Transaction((TransactionEntry(offer, 0, 0, amount),), "", False)
+    with patch.object(commerce, "decode_transaction", return_value=request):
+        case.server._handle_transaction(s, b"")
+        assert s.gameplay_quickbar_info.quickbar_amount == expected
+        assert s.gameplay_currency_state.andermant == balance - (2400 if expected == 2 else 0)
+        if expected == 2:
+            case.server._handle_transaction(s, b"")
+            assert s.gameplay_currency_state.andermant == balance - 2400
+            assert s.gameplay_quickbar_info.quickbar_amount == 2
+    assert s.gameplay_inventory.items == [item]
+
+
 def test_sell_repurchases_exact_item_and_cannot_replay(vendor):
     case,s,item = vendor
     original = copy.deepcopy(item); before = s.gameplay_currency_state.gold

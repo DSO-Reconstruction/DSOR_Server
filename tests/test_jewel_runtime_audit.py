@@ -3,6 +3,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
 import time
+import sqlite3
 import pytest
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.socket_effect_protocol import SocketEffectDatabase
@@ -100,7 +101,7 @@ def test_triggered_healing_jewel_buff_has_two_second_proc_cooldown(wearer):
     assert CharacterService._socket_rule_cooldown_seconds(rule) == 2.0
     assert CharacterService._socket_rule_cooldown_seconds(
         replace(rule, target="location")
-    ) == 0.0
+    ) == 2.0
 
 
 def test_eternal_scorn_hit_event_reaches_location_damage_resolution():
@@ -142,3 +143,60 @@ def test_eternal_scorn_hit_event_reaches_location_damage_resolution():
     )
 
     assert [value.damage for value in resolutions] == [150]
+
+
+def test_ranger_eternal_scorn_is_cooldown_limited_and_uses_hit_position(wearer):
+    combat = location_state()
+    target_position = (8.0, 1.5, -3.0)
+    combat.monster_positions[100] = target_position
+    wearer.gameplay_combat_state = combat
+    wearer.gameplay_remote_actor_id = 1
+    wearer.gameplay_last_move = SimpleNamespace(
+        relative_position=(0.0, 0.0, 0.0), yaw=0.0
+    )
+    wearer.send_reliable_ordered = lambda *args, **kwargs: None
+    program = SocketEffectDatabase(
+        DEFAULT_STATIC_DB_PATH
+    ).programs["jewel_buff_xmas_event_ranger"]
+    rule = next(r for r in program.rules if r.target == "location")
+    assert rule.trigger == "hitcritical"
+    assert rule.chance == 0.05
+    rule = replace(
+        rule, chance=1.0, definition=replace(rule.definition, chance=1.0)
+    )
+    wearer.gameplay_socket_effect_evaluation = SimpleNamespace(
+        rules_for_event=lambda event: (rule,) if event == "hitcritical" else (),
+        cast_rules=(),
+    )
+    with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as database:
+        (multishot_index,) = database.execute(
+            "SELECT rowid - 1 FROM _Template_Skill WHERE Id=?",
+            ("multishot",),
+        ).fetchone()
+    now = [100.0]
+    with patch(
+        "dso_server.services.socket_effects.time.perf_counter",
+        side_effect=lambda: now[0],
+    ):
+        for cast_id in (10, 11):
+            pending = SimpleNamespace(
+                cast_id=cast_id, projectile_index=0, impact_index=0,
+                skill_index=multishot_index,
+                player_minimum_damage=100.0,
+                player_maximum_damage=100.0,
+            )
+            impact = SimpleNamespace(
+                server_tick=200 + cast_id, position=target_position,
+                critical_hit=True, killed=False,
+            )
+            events = PlayerProjectileService._player_impact_socket_events(
+                pending, impact, source_actor_id=1,
+                low_health=False, low_health_casts=set(),
+            )
+            CharacterService._dispatch_socket_event_batch(wearer, events)
+            now[0] += 0.1
+
+    visuals = tuple(combat.player_location_visuals.values())
+    assert len(visuals) == 1
+    assert visuals[0].position == target_position
+    assert CharacterService._socket_rule_cooldown_seconds(rule) == 2.0

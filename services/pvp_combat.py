@@ -712,6 +712,8 @@ class PVPCombatService:
                     critical_hit=critical_hit,
                     low_health=wearer_low_health,
                     frost_hit=frost_hit,
+                    marked_hit=bool(status_group_test(victim_sources, ("mark",)))
+                    if status_group_test is not None else False,
                 )
             }
             # Only the hit half of the caster column belongs to an impact.
@@ -722,7 +724,7 @@ class PVPCombatService:
                 effect
                 for effect in getattr(geometry, "user_status_effects", ())
                 if normalize_socket_trigger(effect.trigger) in {
-                    "", "hit", "hitcritical", "hitlowhealth", "hitfrost",
+                    "", "hit", "hitcritical", "hitlowhealth", "hitfrost", "hitmarked",
                 }
                 and combat._effect_applies(
                     effect,
@@ -731,6 +733,8 @@ class PVPCombatService:
                     critical_hit=critical_hit,
                     low_health=wearer_low_health,
                     frost_hit=frost_hit,
+                    marked_hit=bool(status_group_test(victim_sources, ("mark",)))
+                    if status_group_test is not None else False,
                 )
             )
             key = (

@@ -335,6 +335,7 @@ class PlayerProjectileService:
         # per target flooded RakNet's ordered stream and made Hit delivery
         # visibly stall behind duplicate status commands.
         batched_user_effects = {}
+        per_target_speed_effects = []
         batched_user_effect_tick = 0
         killed_monsters = []
         effective_pairs = tuple(
@@ -379,6 +380,7 @@ class PlayerProjectileService:
                     batched_user_effects.setdefault(
                         int(definition.effect_id), definition
                     )
+        triggered_hit_auras = set()
         for pending, resolution in resolved_pairs:
             loot_generation = None
             if resolution.killed:
@@ -538,19 +540,83 @@ class PlayerProjectileService:
                             frost_hit=frost_hit,
                         )
                     ):
-                        batched_user_effects.setdefault(
-                            int(definition.effect_id), definition
-                        )
+                        if definition.resource_id == "skill_mightystab_buff_attackspeed":
+                            per_target_speed_effects.append((definition, resolution.server_tick))
+                        else:
+                            batched_user_effects.setdefault(
+                                int(definition.effect_id), definition
+                            )
                 batched_user_effect_tick = max(
                     batched_user_effect_tick,
                     int(resolution.server_tick),
                 )
+                if pending.skill_index >= 0:
+                    skill_geometry = combat._load_player_skill_geometry(pending.skill_index)
+                    if skill_geometry is not None:
+                        active_sources = CharacterService._active_skill_modifier_sources(s)
+                        if active_sources:
+                            skill_geometry = combat._modified_player_skill_geometry(
+                                skill_geometry, active_sources
+                            )
+                        unmodified_geometry = combat._load_player_skill_geometry(pending.skill_index)
+                        unmod_chances = {
+                            v.resource_id: v.chance
+                            for v in unmodified_geometry.location_visual_effects
+                        } if unmodified_geometry is not None else {}
+                        hit_location_visuals = tuple(
+                            v for v in skill_geometry.location_visual_effects
+                            if v.chance >= 1.0
+                            and normalize_socket_trigger(v.trigger) in ("", "hit")
+                            and (pending.travel_distance <= 0.0 or v.chance > unmod_chances.get(v.resource_id, 0.0))
+                        )
+                        if hit_location_visuals:
+                            hit_location_receivers = tuple(
+                                e for e in skill_geometry.location_status_effects
+                                if e.chance >= 1.0 and normalize_socket_trigger(e.trigger) in ("", "hit")
+                            )
+                            for visual_def in hit_location_visuals:
+                                aura_key = (pending.cast_id, visual_def.resource_id)
+                                if aura_key in triggered_hit_auras:
+                                    continue
+                                triggered_hit_auras.add(aura_key)
+                                CharacterService._schedule_player_location_visuals(
+                                    s,
+                                    combat,
+                                    (visual_def,),
+                                    position=resolution.position,
+                                    yaw=0.0,
+                                    server_tick=int(resolution.server_tick),
+                                    owner_actor_id=int(source_actor_id),
+                                    cast_id=int(pending.cast_id ^ pending.impact_index),
+                                    delay_seconds=0.0,
+                                    receiver_status_effects=hit_location_receivers,
+                                    source_skill_index=int(pending.skill_index),
+                                    player_damage_range=(
+                                        pending.player_minimum_damage,
+                                        pending.player_maximum_damage,
+                                    ),
+                                )
+                                loc_resolutions, _ = combat.apply_player_location_auras(
+                                    now=time.perf_counter(),
+                                    server_tick=int(resolution.server_tick),
+                                )
+                                if loc_resolutions:
+                                    CharacterService._dispatch_player_owned_resolutions(
+                                        combat,
+                                        {int(source_actor_id): s},
+                                        loc_resolutions,
+                                    )
             dispatches.append(
                 (resolution, resolution_label, loot_generation)
             )
         if socket_events:
             CharacterService._dispatch_socket_event_batch(
                 s, tuple(socket_events)
+            )
+        for definition, tick in per_target_speed_effects:
+            CharacterService._send_player_skill_status_effects(
+                s, (definition,), server_tick=tick,
+                label="mightystab-hit-speed-stack",
             )
         if batched_user_effects:
             CharacterService._send_player_skill_status_effects(

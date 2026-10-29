@@ -10,7 +10,7 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
-TRIGGERED_JEWEL_BUFF_COOLDOWN_SECONDS = 2.0
+TRIGGERED_JEWEL_PROC_COOLDOWN_SECONDS = 2.0
 
 
 class SocketEffectService:
@@ -31,17 +31,16 @@ class SocketEffectService:
 
     @staticmethod
     def _socket_rule_cooldown_seconds(rule) -> float:
-        """Return the authored cooldown plus the temporary proc-buff limit."""
+        """Return the authored cooldown plus the temporary proc limit."""
 
         cooldown = max(0.0, float(rule.cooldown_seconds))
         if (
             str(rule.category).casefold() == "equipmentjewel"
-            and str(rule.target).casefold() == "user"
             and str(rule.kind).casefold()
             in {"actorstatuseffect", "skillstatuseffect"}
         ):
             cooldown = max(
-                cooldown, TRIGGERED_JEWEL_BUFF_COOLDOWN_SECONDS
+                cooldown, TRIGGERED_JEWEL_PROC_COOLDOWN_SECONDS
             )
         return cooldown
 

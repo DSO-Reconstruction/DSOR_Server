@@ -705,6 +705,16 @@ class PlayerInitializationWorldService:
                     UpdateProgressTierSpenderChallenges(spender_progress),
                     0,
                 ))
+        # The generic initialization builder defaults to one bar. Restore the
+        # character's purchased unlock count whenever they enter a map.
+        saved_quickbar_info = getattr(
+            s, "gameplay_quickbar_info", QuickbarInfo(1, 0)
+        )
+        commands = [
+            replace(command, value=saved_quickbar_info)
+            if command.command_id == QUICKBAR_INFO_COMMAND else command
+            for command in commands
+        ]
         quick_slots_snapshot = next(
             (
                 command.value

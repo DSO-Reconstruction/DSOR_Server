@@ -13,9 +13,9 @@ from dso_server.services import player_combat
 from dso_server.tests import test_combat_entities as combat_fixtures
 
 
-def target_packet(actor_id, derived_flag=None):
+def target_packet(actor_id, derived_flag=None, skill_index=1831):
     writer = BitWriter()
-    writer.write_bytes(b"\x8b" + struct.pack("<HHHfII", TARGET_SKILL_COMMAND, 0, 1831, 0.0, 200, 123))
+    writer.write_bytes(b"\x8b" + struct.pack("<HHHfII", TARGET_SKILL_COMMAND, 0, skill_index, 0.0, 200, 123))
     if derived_flag is not None:
         writer.write_bool(derived_flag)
     writer.write_uint32_le(actor_id)
@@ -97,3 +97,91 @@ class TargetSkillInputTests(unittest.TestCase):
             )
             self.assertGreater(resolution.damage, 0)
         self.assertLess(combat.monster_health[monster], health_before)
+
+    def test_deadly_blow_zero_target_packet_hits_forward_monsters(self):
+        fixture = combat_fixtures.MixedEntityCastTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        session, combat, monster = fixture.source, fixture.combat, fixture.monster
+        skill_index = 1894  # Ranger's mightystab / Deadly Blow
+        session.gameplay_skill_book_ids = {skill_index}
+        session.gameplay_presence_callback = None
+        caster = (25.0, 0.0, 50.0)
+        # Aimed straight ahead (-Z in world space)
+        target = (25.0, 0.0, 48.0)
+        fixture.move(session, caster)
+        combat.monster_positions[monster] = target
+        session.gameplay_delivered_monster_positions[monster] = target
+        combat.monster_health[monster] = 10000
+        stats = SimpleNamespace(
+            minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
+            critical_damage_multiplier=2.0, attack_speed=1.0, skill_modifier_sources=(),
+        )
+        with (
+            patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),
+            patch.object(CharacterServer, "_apply_player_skill_resource", return_value=True),
+            patch.object(CharacterServer, "_consume_active_essence"),
+            patch.object(CharacterServer, "_start_monster_chase"),
+            patch.object(CharacterServer, "_record_monster_targeting_result"),
+        ):
+            payload, session.current_message_bit_length = target_packet(
+                0, skill_index=skill_index,
+            )
+            CharacterServer._handle_spatial_skill(session, payload)
+
+        hits = tuple(combat.pending_runtime_player_hits.values())
+        self.assertEqual(len(hits), 1)
+        self.assertEqual(hits[0].target_actor_id, monster)
+        health_before = combat.monster_health[monster]
+        resolution = combat.resolve_runtime_player_hit(
+            hits[0].source_actor_id, hits[0].cast_id, hits[0].impact_index,
+            now=hits[0].due_at,
+        )
+        self.assertIsNotNone(resolution)
+        self.assertGreater(resolution.damage, 0)
+        self.assertLess(combat.monster_health[monster], health_before)
+
+    def test_deadly_blow_hits_multiple_monsters_in_front(self):
+        fixture = combat_fixtures.MixedEntityCastTests()
+        self.addCleanup(fixture.doCleanups)
+        fixture.setUp()
+        session, combat, monster1 = fixture.source, fixture.combat, fixture.monster
+        monster2 = monster1 + 1
+        combat.monsters[monster2] = combat.monsters[monster1]
+        session.gameplay_spawned_monster_actor_ids.add(monster2)
+
+        skill_index = 1894
+        session.gameplay_skill_book_ids = {skill_index}
+        session.gameplay_presence_callback = None
+        caster = (25.0, 0.0, 50.0)
+        pos1 = (25.0, 0.0, 48.0)
+        pos2 = (26.0, 0.0, 48.0)
+        fixture.move(session, caster)
+        combat.monster_positions[monster1] = pos1
+        session.gameplay_delivered_monster_positions[monster1] = pos1
+        combat.monster_health[monster1] = 10000
+
+        combat.monster_positions[monster2] = pos2
+        session.gameplay_delivered_monster_positions[monster2] = pos2
+        combat.monster_health[monster2] = 10000
+
+        stats = SimpleNamespace(
+            minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
+            critical_damage_multiplier=2.0, attack_speed=1.0, skill_modifier_sources=(),
+        )
+        with (
+            patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),
+            patch.object(CharacterServer, "_apply_player_skill_resource", return_value=True),
+            patch.object(CharacterServer, "_consume_active_essence"),
+            patch.object(CharacterServer, "_start_monster_chase"),
+            patch.object(CharacterServer, "_record_monster_targeting_result"),
+        ):
+            payload, session.current_message_bit_length = target_packet(
+                0, skill_index=skill_index,
+            )
+            CharacterServer._handle_spatial_skill(session, payload)
+
+        hits = tuple(combat.pending_runtime_player_hits.values())
+        self.assertEqual(len(hits), 2)
+        hit_targets = {h.target_actor_id for h in hits}
+        self.assertEqual(hit_targets, {monster1, monster2})
