@@ -61,6 +61,7 @@ from dso_server.gameplay.map_event_state import (
     CLIENT_REPORTED_SIGNAL_TYPES,
     GatedSpawnRow,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    deduplicate_parallel_world_gatekeeper_rows,
     WIRE_PROP_OPERATION,
     MapEventRuntime,
     MapLocalEventDefinition,
@@ -5452,6 +5453,11 @@ class MapEventService:
             )
             for r in selected
         )
+        # Collapse stacked variation rows only after the Mortis pack and boss
+        # difficulty selections: those pick specific rows out of the stacks
+        # (Mortis phase 2 keeps 1530 rows in EventSet 4216), so collapsing
+        # them at load time left the selections nothing to spawn.
+        rows = deduplicate_parallel_world_gatekeeper_rows(runtime.map_id, rows)
         combat = self._map_event_combat_state(sessions)
         if combat is None:
             _log(

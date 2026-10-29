@@ -1145,9 +1145,6 @@ def _load_map_event_content(
         spawn_rows = list(deduplicate_pw002_wave_three_warriors(
             map_id, spawn_rows,
         ))
-        spawn_rows = list(deduplicate_parallel_world_gatekeeper_rows(
-            map_id, spawn_rows,
-        ))
 
         templates: dict[str, tuple[str, bool, str, str]] = {}
         template_keys: dict[str, tuple[str, int]] = {}
