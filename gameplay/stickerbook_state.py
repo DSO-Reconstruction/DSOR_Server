@@ -313,6 +313,14 @@ def _load_sticker_definition_cached(
             return None
 
         status_resource = str(item["StatusEffectId"])
+        # The dwarf Guardian Angel item row incorrectly points at the Plague
+        # Doctor status effect in this client export. Resolve its own authored
+        # skin effect so the two switchable costumes remain distinct.
+        if (
+            resource_id.casefold() == "costume_dwarf_guardian_angel"
+            and status_resource.casefold() == "costume_dwarf_plaguedoctor"
+        ):
+            status_resource = resource_id
         status = database.execute(
             """
             SELECT rowid, StatusEffectDuration, ExclusiveGroup, StartModifiers

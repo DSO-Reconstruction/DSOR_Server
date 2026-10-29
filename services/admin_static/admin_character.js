@@ -277,6 +277,36 @@ function activeQuestSection(open) {
     <div class="form-actions"><button type="submit">Complete all active quests</button></div></form>`);
 }
 
+function recipeBookSection() {
+  return section("Workbench recipes", `<form id="unlock-recipes-form" class="form-page">
+    <fieldset class="form-section"><legend>Recipe book</legend>
+      <p class="help">Unlock every workbench schematic and complete its recipe-gating achievements. The character must be offline; changes appear on next login.</p>
+    </fieldset>
+    <p id="unlock-recipes-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Unlock all recipes</button></div></form>`);
+}
+
+function bindUnlockRecipes(id) {
+  $("#unlock-recipes-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = event.target.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const reason = await confirmAction("Unlock all workbench recipes?",
+        "This adds every workbench schematic to the character’s recipe book and completes achievements required to use those recipes. The character must be offline.",
+        "Unlock recipes");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/unlock-all-recipes`, {reason});
+      notice(`Unlocked ${result.newly_unlocked} recipes (${result.total_unlocked} total) and completed ${result.achievements_completed} recipe achievements.`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#unlock-recipes-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function bindActiveQuests(id) {
   $("#active-quests-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -428,7 +458,8 @@ export async function characterPage(route) {
       section("Quickbars and offers", tree({quickbar: s.quickbar, slots: s.quick_slots, offer_purchases: s.timed_offer_purchases})) + '</div>';
     const open = Object.values(s.quest_log || {}).filter(q => q.state === 0 || q.state === 1).length;
     result.html += activeQuestSection(open);
-    result.mount = () => bindActiveQuests(id);
+    result.html += recipeBookSection();
+    result.mount = () => { bindActiveQuests(id); bindUnlockRecipes(id); };
   } else if (tab === "raw") {
     result.html += '<p class="muted">Complete saved documents for diagnostics. Read only.</p>' +
       section("Character profile", `<pre>${esc(JSON.stringify(p, null, 2))}</pre>`) +

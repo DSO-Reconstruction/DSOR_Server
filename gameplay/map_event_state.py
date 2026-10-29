@@ -917,6 +917,43 @@ def deduplicate_pw002_wave_three_warriors(map_id: str, rows):
     return tuple(result)
 
 
+def deduplicate_parallel_world_gatekeeper_rows(map_id: str, rows):
+    """Collapse exact stacked variation rows in Parallel World maps.
+
+    Several Parallel World maps store the gatekeeper once per difficulty
+    variation, with each row pointing at the same event set and transform.
+    All variation rows become eligible together in the local event runtime,
+    so retain one actor for each exact template/location while preserving
+    rows at distinct locations and all non-Parallel-World content.
+    """
+
+    if not map_key(map_id).startswith("pw"):
+        return tuple(rows)
+    result = []
+    seen = set()
+    for row in rows:
+        if isinstance(row, GatedSpawnRow):
+            event_set = row.event_set_row
+            template = row.template_id
+            position = row.position
+        else:
+            row_id, transform, template, event_set = row[:4]
+            try:
+                position = _read_transform(transform)[1]
+            except (TypeError, ValueError):
+                result.append(row)
+                continue
+        key = (
+            int(event_set), str(template).casefold(),
+            tuple(round(float(axis), 5) for axis in position),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(row)
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class MapEventContent:
     map_id: str
@@ -1106,6 +1143,9 @@ def _load_map_event_content(
                         position, rotation,
                     ))
         spawn_rows = list(deduplicate_pw002_wave_three_warriors(
+            map_id, spawn_rows,
+        ))
+        spawn_rows = list(deduplicate_parallel_world_gatekeeper_rows(
             map_id, spawn_rows,
         ))
 
@@ -1459,6 +1499,7 @@ class MapEventRuntime:
     instance_key: tuple
     initial_flags: frozenset[str]
     grimmagstone_gatekeeper_defeated: bool = False
+    parallel_world_gatekeepers_defeated: set[str] = field(default_factory=set)
     monster_level: int | None = None
     scaling_difficulty: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)

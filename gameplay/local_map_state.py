@@ -481,6 +481,11 @@ def effective_event_set_declarations(
     when the player enters the high hall.
     """
 
+    if str(map_id).casefold() == "pw008_kingscrypt_01_dun" and int(row_id) == 3465:
+        # Retail authors the Heredur portal behind a negative event flag,
+        # making the scene entity visible at entry unless we require the
+        # current run's verified exit event as well.
+        return str(declarations or "") + ";pw008_spawn_exit=True;"
     if (
         str(map_id).casefold() != TUTORIAL_DUNGEON_MAP_ID
         or int(row_id) != 2
@@ -939,6 +944,15 @@ def load_local_map_exits(
     """
 
     path = map_database_path(static_database_path, map_id)
+    client_guid_overrides = active_client_instance_guid_overrides(
+        static_database_path,
+        str(map_id),
+        "_Instance_InteractExit",
+        (
+            "_ID", "Id", "Name", "ExitURL", "EntryName", "Transform",
+            "PickingRange", "State", "EventSetRow",
+        ),
+    )
     database = _open_read_only(path)
     try:
         exits = []
@@ -950,12 +964,13 @@ def load_local_map_exits(
         for row in database.execute(
             """
             SELECT Guid, Id, Name, ExitURL, EntryName, Transform,
+                   rowid,
                    PickingRange, State, EventSetRow
             FROM _Instance_InteractExit
             ORDER BY rowid
             """
         ):
-            event_set_row = int(row[8] if row[8] is not None else -1)
+            event_set_row = int(row[9] if row[9] is not None else -1)
             if (
                 event_set_row >= 0
                 and not include_inactive_event_sets
@@ -977,16 +992,32 @@ def load_local_map_exits(
                 # locked portal to the usable Yildirimdbi route.
                 row_active = True
             else:
-                row_active = str(row[7] or "").casefold() == "active"
+                row_active = str(row[8] or "").casefold() == "active"
+            # Forward chapter portals require the local completion event,
+            # even when an authored variation has no positive EventSet gate.
+            chapter = str(map_id).casefold().split("_", 1)[0]
+            if (chapter.startswith("pw") and chapter[2:].isdigit()
+                    and 1 <= int(chapter[2:]) <= 26
+                    and int(chapter[2:]) % 3 != 0
+                    and destination_map_id.casefold().startswith(
+                        f"pw{int(chapter[2:]) + 1:03d}_")):
+                unlocked = any(str(flag).casefold().startswith(chapter + "_spawn_exit")
+                               for flag in active_event_flags)
+                if not unlocked:
+                    if not include_inactive_event_sets:
+                        continue
+                    row_active = False
             exits.append(
                 LocalMapExit(
-                    instance_guid=bytes(row[0]),
+                    instance_guid=client_guid_overrides.get(
+                        int(row[6]), bytes(row[0]),
+                    ),
                     exit_id=str(row[1] or ""),
                     name=str(row[2] or row[1] or ""),
                     destination_map_id=destination_map_id,
                     destination_entry_name=destination_entry_name,
                     position=position,
-                    picking_range=max(1.0, float(row[6] or 0.0)),
+                    picking_range=max(1.0, float(row[7] or 0.0)),
                     active=(row_active and (
                         event_set_row < 0 or event_set_row in enabled_event_sets
                     )),
@@ -1424,6 +1455,26 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     # Tywyll Dail's Twisted Woods entrance is present in the exit table but
     # missing from the loaded scene. Create only the selected difficulty gate.
     "pw208_rangervillage_dun": ("pw208_lost_woods_dun_01",),
+    # Parallel World dungeon exits are in the exit catalog but missing from
+    # the loaded scene entity set. Create the selected tier by its cached GUID.
+    "pw001_grimmagstone_01_dun": ("pw002_",),
+    "pw002_alliance_fortress_01_dun": ("pw003_",),
+    "pw004_hagastove_grotto_01_dun": ("pw005_",),
+    "pw005_caverns_loxley_01_dun": ("pw006_",),
+    "pw007_stonekeep_01_dun": ("pw008_",),
+    "pw008_kingscrypt_01_dun": ("pw009_",),
+    "pw010_wildcave_01_dun": ("pw011_",),
+    "pw011_eternal_grove_01_dun": ("pw012_",),
+    "pw013_wizard_garden_01_dun": ("pw014_",),
+    "pw014_cult_tower_01_dun": ("pw015_",),
+    "pw016_teganswall_01_dun": ("pw017_",),
+    "pw017_dragonslair_01_dun": ("pw018_",),
+    "pw019_hailstone_mountains_01_dun": ("pw020_",),
+    "pw020_eternal_watch_01_dun": ("pw021_",),
+    "pw022_mount_suvius_01_dun": ("pw023_",),
+    "pw023_atlantis_above_water_01_dun": ("pw024_",),
+    "pw025_ship_graveyard_01_dun": ("pw026_",),
+    "pw026_heart_of_atlantis_01_dun": ("pw027_",),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
@@ -1476,9 +1527,7 @@ def native_scene_exit_variation_entries(
     return tuple(
         VariationInfoEntry(
             definition.instance_guid,
-            definition.event_set_row
-            if str(map_id).casefold() in {"h0001_hub", "pw000_hub"}
-            else -1,
+            definition.event_set_row,
         )
         for definition in exits
         if (
