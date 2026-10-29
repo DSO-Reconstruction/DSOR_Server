@@ -280,6 +280,9 @@ class InventoryMapService:
                     f"one destination slot, got {arguments}"
                 )
             storage_slot = int(arguments[0])
+            was_worn = int(action.item_id) in {
+                int(item_id) for item_id in inventory.equipment_slots
+            }
             builder = InventoryMutationBuilder(inventory, next_item_id)
             item = builder.move_item(
                 action.item_id,
@@ -311,6 +314,18 @@ class InventoryMapService:
         CharacterService._send_world_loot_state_batch(
             s, packet, packet_bits, label="inventory-slot-moved"
         )
+        if was_worn:
+            # Taken off into a bag cell (the client's drop on a bag sends
+            # 0x07): the same follow-ups as an equipment change, the other
+            # players' view of us included.
+            # FAILURE: "je retire mon arme l'autre me voit toujours avec
+            #   l'arme".
+            from dso_server.services.item_set_programs import reconcile_item_set_programs
+            reconcile_item_set_programs(s)
+            CharacterService._achievement_on_equipment_changed(self, s)
+            CharacterService._refresh_player_combat_vitals(s)
+            if s.gameplay_presence_callback is not None:
+                s.gameplay_presence_callback(s, "appearance")
         CharacterService._request_account_save(
             s, "inventory slot changed", flush=True
         )
