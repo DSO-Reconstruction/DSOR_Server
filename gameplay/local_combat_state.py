@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from contextlib import closing
+from contextlib import closing, contextmanager
 from functools import lru_cache
 from collections import deque
+from bisect import bisect_left
+from itertools import accumulate, chain
+from operator import is_, itemgetter
 import math
 import os
 import random
@@ -16,6 +19,8 @@ import threading
 import time
 
 from dso_server.runtime.concurrency import InstrumentedRLock, MAP_COMBAT_DOMAIN
+from dso_server.runtime import resident_content
+from dso_server.persistence import readonly_db
 from dso_server.gameplay.player_skill_timing import timing_actor_variables
 from dso_server.gameplay.status_modifier_runtime import resolve_modifier_value
 from dso_server.gameplay.navigation_shapes import (
@@ -281,8 +286,9 @@ PLAYER_SKILL_PROJECTILE_RADIUS_BONUS = _parse_skill_radius_bonuses(
 # Monster simulation follows the client's 25 Hz game clock, but retail does
 # not publish a fresh transform on every one of those ticks. The 2026-09-09
 # combat capture spaces ordinary moving-monster snapshots by 4-8 ticks while
-# giving each MoveCommand an 18-tick interpolation window. Publishing every
-# tick continually restarts that interpolation and looks like transform
+# giving each MoveCommand an 18-tick dead-reckoning horizon
+# (MONSTER_MOVEMENT_DURATION_TICKS). Publishing every tick continually
+# restarts the client's smoothing and looks like transform
 # correction/teleporting rather than locomotion.
 MONSTER_CHASE_INTERVAL_SECONDS = 1.0 / 25.0
 MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS = max(
@@ -291,6 +297,17 @@ MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS = max(
     # cannot create nearly half a second between client-visible transforms.
     1, int(os.getenv('DSO_MONSTER_MOVEMENT_PUBLISH_TICKS', '4'))
 )
+# Duration of a walking MoveCommand: how far ahead the client may dead-reckon
+# the actor before standing it still (NetworkSmoothMotionProperty walks
+# startPos + v * t for at most duration * 40 ms; v comes from the speed byte
+# and the template RunSpeed, not from the duration). Retail sends 18 on every
+# moving monster sample whatever the resend gap (3-12 ticks), so a late sample
+# never shows. A duration equal to the publish interval leaves no slack: any
+# jitter stood the monster still before each sample (stop-go walking).
+MONSTER_MOVEMENT_DURATION_TICKS = max(
+    MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS,
+    min(0xFFFF, int(os.getenv('DSO_MONSTER_MOVEMENT_DURATION_TICKS', '18'))),
+)
 # How much further than its walking speed a published step may carry an actor
 # before the client has to draw it as a jump. Slightly above 1 so ordinary
 # rounding, ground snapping and route corners do not register.
@@ -298,6 +315,216 @@ MONSTER_TELEPORT_TOLERANCE = max(
     1.0, float(os.getenv('DSO_MONSTER_TELEPORT_TOLERANCE', '1.5'))
 )
 SERVER_TICKS_PER_SECOND = 25.0
+# (database file, revision, effect column, trigger) -> frozen definitions.
+_VICTIM_EFFECT_CACHE: dict[tuple, tuple] = {}
+# id(source) -> (source, semantic key). A geared character brings ~470
+# modifier sources to every cast -- status entries, item-set, socket and
+# per-item combat modifiers, all frozen and the same objects cast after cast
+# -- and rebuilding each key cost ~1.5 ms per geometry lookup, two or three
+# lookups per cast. Holding the source keeps its id from being reused.
+_SOURCE_KEY_CACHE: dict[int, tuple[object, tuple]] = {}
+_SOURCE_KEY_CACHE_MAXIMUM = 65536
+# Instructions ``_expand_status_modifier_instructions`` scans for nested
+# ActorStatusEffect programs; later positions are never expanded.
+_STATUS_EXPANSION_WINDOW = 256
+_FROZEN_SOURCE_TYPES: dict[type, bool] = {}
+_FIRST = itemgetter(0)
+_SECOND = itemgetter(1)
+_THIRD = itemgetter(2)
+_FOURTH = itemgetter(3)
+_FIFTH = itemgetter(4)
+# Every instruction kind ``_modified_player_skill_geometry`` reads, plus
+# ``ActorVariable`` (its cooldown operands) and ``ActorStatusEffect`` (nested
+# programs). A status effect whose program has none of them changes no skill
+# geometry whatever its stack or values, so the geometry key keeps only its
+# id (which fixes its instruction count and expansion position). Without
+# that, a buff re-applied by every cast -- its stack counter keeps climbing
+# -- missed the cache each time and re-ran the ~5 ms resolver.
+_GEOMETRY_MODIFIER_KINDS = frozenset((
+    "actorstatuseffect", "actorvariable", "additionalskillcost",
+    "bulletcount", "bulletimpactcount", "bulletlifetime", "bulletvelocity",
+    "cooldown", "resourcecost", "resourcegain", "skillbulletid",
+    "skilldamage", "skilldamagetype", "skillhitdamage", "skillhitrange",
+    "skillpunchthrough", "skillrange", "skillsequence", "skillstatuseffect",
+    "skillstatuseffectcleanse", "skilltiming", "talentlevelbonus",
+    "targetadddamage", "traponhit",
+))
+
+
+# id(source) -> (source, kind, string arguments) for frozen kind/argument
+# sources; the geometry resolver rebuilt ~380 of these per cache miss.
+_SOURCE_PARTS_CACHE: dict[int, tuple[object, str, tuple[str, ...]]] = {}
+
+
+def _source_kind_arguments(source) -> tuple[str, tuple[str, ...]]:
+    cached = _SOURCE_PARTS_CACHE.get(id(source))
+    if cached is not None and cached[0] is source:
+        return cached[1], cached[2]
+    kind = str(source.kind)
+    arguments = tuple(str(value) for value in source.arguments)
+    if _frozen_source(source):
+        if len(_SOURCE_PARTS_CACHE) >= _SOURCE_KEY_CACHE_MAXIMUM:
+            _SOURCE_PARTS_CACHE.clear()
+        _SOURCE_PARTS_CACHE[id(source)] = (source, kind, arguments)
+    return kind, arguments
+
+
+@lru_cache(maxsize=8192)
+def _scope_tokens(values: tuple) -> frozenset[str]:
+    """A modifier's cleaned, case-folded skill scope tokens."""
+
+    return frozenset(
+        LocalCombatState._clean_modifier_token(value).casefold()
+        for value in values
+        if LocalCombatState._clean_modifier_token(value)
+    )
+
+
+@lru_cache(maxsize=4096)
+def _skill_scopes(resource_id: str, char_class: str, groups: tuple) -> frozenset[str]:
+    """Every scope token a skill answers to."""
+
+    return frozenset({
+        resource_id.casefold(),
+        "allplayerskills",
+        f"{char_class.casefold()}_skills",
+        *(value.casefold() for value in groups),
+    })
+
+
+def _frozen_source(source: object) -> bool:
+    """Whether ``source`` is a frozen dataclass, safe to key by identity."""
+
+    return _frozen_source_type(type(source))
+
+
+def _frozen_source_type(kind: type) -> bool:
+    frozen = _FROZEN_SOURCE_TYPES.get(kind)
+    if frozen is None:
+        parameters = getattr(kind, "__dataclass_params__", None)
+        frozen = _FROZEN_SOURCE_TYPES[kind] = bool(
+            parameters is not None and parameters.frozen
+        )
+    return frozen
+
+
+# DSO_GEOMETRY_MISS_LOG=1: say why skill geometry is recomputed. Each resolve
+# is timed into the [Latency] table by path ("skill geometry > miss", ...),
+# and each miss prints which source keys changed against the closest of that
+# skill's last four resolves (casts and impacts resolve different source
+# lists). Off by default; when off it costs one global read per resolve.
+GEOMETRY_MISS_LOG = os.getenv("DSO_GEOMETRY_MISS_LOG", "").strip() not in ("", "0")
+
+
+class _GeometryMissLog:
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.previous: dict[str, tuple] = {}
+
+    @staticmethod
+    def record(path: str, started: float) -> None:
+        from dso_server.runtime import latency_stats
+
+        latency_stats.record(
+            f"skill geometry > {path}", time.perf_counter() - started
+        )
+
+    def miss(self, geometry, keys: tuple, started: float, names, instructions: int) -> None:
+        from collections import Counter
+
+        elapsed = time.perf_counter() - started
+        self.record("miss", started)
+        skill = str(geometry.resource_id)
+        with self.lock:
+            recent = self.previous.get(skill, ())
+            self.previous[skill] = (keys, *recent[:3])
+        current = Counter(keys)
+        previous = min(
+            recent,
+            key=lambda old: sum(((Counter(old) - current) + (current - Counter(old))).values()),
+            default=None,
+        )
+        print(
+            f"[geometry-miss] {skill} {elapsed * 1000:.2f} ms full recompute, "
+            f"{len(keys)} sources, {instructions} geometry instructions: "
+            f"{self.describe(previous, keys, names)}"
+        )
+
+    def resolved(self, geometry, keys: tuple) -> None:
+        skill = str(geometry.resource_id)
+        with self.lock:
+            recent = self.previous.get(skill, ())
+            if keys not in recent:
+                self.previous[skill] = (keys, *recent[:3])
+
+    @staticmethod
+    def describe(previous, keys: tuple, names) -> str:
+        if previous is None:
+            return "first resolve of this skill"
+        if previous == keys:
+            return "same keys as the previous resolve"
+        from collections import Counter
+
+        removed = Counter(previous) - Counter(keys)
+        added = Counter(keys) - Counter(previous)
+        if not removed and not added:
+            index = next(
+                i for i, (old, new) in enumerate(zip(previous, keys))
+                if old != new
+            )
+            return (
+                f"same sources, order changed at index {index} "
+                f"(was {names(previous[index])}, now {names(keys[index])})"
+            )
+
+        def identity(key):
+            return key[:2] if key[0].endswith("effect") else key
+
+        old_by_identity: dict = {}
+        for key in removed.elements():
+            old_by_identity.setdefault(identity(key), []).append(key)
+        parts = []
+        for key in added.elements():
+            olds = old_by_identity.get(identity(key))
+            if olds:
+                old = olds.pop(0)
+                if old[0] == "effect" and key[0] == "effect" and old[2] != key[2]:
+                    change = f"stack {old[2] + 1}->{key[2] + 1}"
+                    if old[3] != key[3]:
+                        change += ", values changed"
+                elif old[0] == "effect" and key[0] == "effect":
+                    change = "values changed"
+                else:
+                    change = "changed"
+                parts.append(f"{names(key)} {change}")
+            else:
+                stack = f" (stack {key[2] + 1})" if key[0] == "effect" else ""
+                parts.append(f"+{names(key)}{stack}")
+        for olds in old_by_identity.values():
+            parts.extend(f"-{names(key)}" for key in olds)
+        return "; ".join(parts)
+
+
+_GEOMETRY_MISS_LOG = _GeometryMissLog()
+
+
+@contextmanager
+def _static_read_connection(path):
+    """Yield a read-only connection to the static database.
+
+    Resident content reuses this thread's cached connection: a fresh one
+    re-parses the ~400-object schema on its first query (about 2 ms), which
+    every skill-geometry cache miss on the cast path paid. Files read from
+    disk (tests' temporary databases) still get a connection closed here.
+    """
+
+    if resident_content.revision(path) is not None:
+        yield readonly_db.connect(path)
+        return
+    with closing(sqlite3.connect(
+        f"file:{Path(path).as_posix()}?mode=ro", uri=True
+    )) as database:
+        yield database
 
 # Khalys's flood leaves four safe circles inside its aura, (+-6, +-6) m from
 # its centre in the effect's own frame, 2.16 m across their flames' ring.
@@ -1784,10 +2011,34 @@ class LocalCombatState:
         # instead of reopening SQLite for every impact.  The key includes the
         # complete source stack/value payload; equipment, talent, and temporary
         # status changes therefore select a different entry automatically.
+        # (id(geometry), source keys) -> (geometry, modified geometry).
         self._modified_player_geometry_cache: dict[
-            tuple[PlayerSkillGeometry, tuple[tuple[object, ...], ...]],
-            PlayerSkillGeometry,
+            tuple[int, tuple[tuple[object, ...], ...]],
+            tuple[PlayerSkillGeometry, PlayerSkillGeometry],
         ] = {}
+        # (id(geometry), source ids) -> (geometry, sources, result).
+        self._modified_player_geometry_identity_cache: dict[tuple, tuple] = {}
+        # effect id -> "inert", "stack-invariant" or "stack" (see
+        # _geometry_effect_role).
+        self._geometry_effect_roles: dict[int, str] = {}
+        # id(source) -> (source, geometry key) for frozen sources.
+        self._geometry_source_keys: dict[int, tuple[object, tuple]] = {}
+        # id(source) -> (source, instructions, geometry instructions, their
+        # key form, effect id) for frozen sources (_geometry_source_part).
+        self._geometry_source_parts: dict[int, tuple] = {}
+        # ActorStatusEffect arguments -> loaded the same at every stack.
+        self._stack_invariant_status_arguments: dict[tuple, bool] = {}
+        # (id(geometry), key form of the geometry instructions) -> (geometry,
+        # result). On-hit procs come and go and re-applied buffs move to the
+        # end of the source list, so the source keys keep changing while the
+        # instructions the loop reads repeat.
+        self._geometry_instruction_cache: dict[tuple, tuple] = {}
+        # ids of the parts covering the expansion window -> (those parts,
+        # their ActorStatusEffect children, {children that are sources:
+        # (appended geometry instructions, key forms)}).
+        self._geometry_window_expansions: dict[tuple, tuple] = {}
+        # _Template_ActorVariables initial values, read on the first miss.
+        self._geometry_actor_variable_initials: dict[str, float] | None = None
         self._user_effect_location_auras_cache = {}
         runtime_catalog = load_status_runtime_catalog(
             encounter.static_database_path
@@ -5683,6 +5934,38 @@ class LocalCombatState:
         *,
         default_trigger: str = "hit",
     ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """Cached ``_load_victim_status_effects_uncached`` for resident content.
+
+        The result depends only on the static database, which never changes
+        while it is held in memory, and the definitions are frozen. A
+        geometry cache miss on every buff change re-ran these queries for
+        each effect column on the cast path.
+        """
+
+        path = resident_content.database_path(database)
+        revision = resident_content.revision(path) if path else None
+        if revision is None:
+            return LocalCombatState._load_victim_status_effects_uncached(
+                database, value, default_trigger=default_trigger,
+            )
+        key = (path, revision, str(value or ""), default_trigger)
+        cached = _VICTIM_EFFECT_CACHE.get(key)
+        if cached is None:
+            cached = LocalCombatState._load_victim_status_effects_uncached(
+                database, value, default_trigger=default_trigger,
+            )
+            if len(_VICTIM_EFFECT_CACHE) >= 8192:
+                _VICTIM_EFFECT_CACHE.pop(next(iter(_VICTIM_EFFECT_CACHE)), None)
+            _VICTIM_EFFECT_CACHE[key] = cached
+        return cached
+
+    @staticmethod
+    def _load_victim_status_effects_uncached(
+        database: sqlite3.Connection,
+        value: str,
+        *,
+        default_trigger: str = "hit",
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
         """Resolve the generated skill column into client wire definitions.
 
         ``C`` is the application probability, ``D`` is the PvE duration in
@@ -6286,7 +6569,7 @@ class LocalCombatState:
 
         seen = set()
         cursor = 0
-        while cursor < len(instructions) and cursor < 256:
+        while cursor < len(instructions) and cursor < _STATUS_EXPANSION_WINDOW:
             kind, arguments, stack_count, details = instructions[cursor]
             cursor += 1
             if kind.casefold() != "actorstatuseffect" or len(arguments) < 2:
@@ -6404,19 +6687,25 @@ class LocalCombatState:
         geometry: PlayerSkillGeometry,
         values: tuple[str, ...],
     ) -> bool:
-        wanted = {
-            cls._clean_modifier_token(value).casefold()
-            for value in values
-            if cls._clean_modifier_token(value)
-        }
+        try:
+            wanted = _scope_tokens(tuple(values))
+            scopes = _skill_scopes(
+                geometry.resource_id, geometry.char_class, tuple(geometry.groups)
+            )
+        except TypeError:           # unhashable test doubles
+            wanted = frozenset(
+                cls._clean_modifier_token(value).casefold()
+                for value in values
+                if cls._clean_modifier_token(value)
+            )
+            scopes = frozenset({
+                geometry.resource_id.casefold(),
+                "allplayerskills",
+                f"{geometry.char_class.casefold()}_skills",
+                *(value.casefold() for value in geometry.groups),
+            })
         if not wanted:
             return False
-        scopes = {
-            geometry.resource_id.casefold(),
-            "allplayerskills",
-            f"{geometry.char_class.casefold()}_skills",
-            *(value.casefold() for value in geometry.groups),
-        }
         return bool(scopes & wanted)
 
     @staticmethod
@@ -6444,6 +6733,18 @@ class LocalCombatState:
     def _modifier_source_cache_key(source: object) -> tuple[object, ...]:
         """Return an immutable semantic key for one modifier source."""
 
+        cached = _SOURCE_KEY_CACHE.get(id(source))
+        if cached is not None and cached[0] is source:
+            return cached[1]
+        key = LocalCombatState._uncached_modifier_source_cache_key(source)
+        if _frozen_source(source):
+            if len(_SOURCE_KEY_CACHE) >= _SOURCE_KEY_CACHE_MAXIMUM:
+                _SOURCE_KEY_CACHE.clear()
+            _SOURCE_KEY_CACHE[id(source)] = (source, key)
+        return key
+
+    @staticmethod
+    def _uncached_modifier_source_cache_key(source: object) -> tuple[object, ...]:
         if isinstance(source, int):
             return ("legacy", int(source))
         if hasattr(source, "effect_id"):
@@ -6477,16 +6778,39 @@ class LocalCombatState:
 
         if not modifier_sources:
             return geometry
-        cache_key = (
-            geometry,
-            tuple(
-                self._modifier_source_cache_key(source)
+        started = time.perf_counter() if GEOMETRY_MISS_LOG else 0.0
+        # A cast resolves the same geometry with the same source objects two
+        # or three times, and the next cast usually brings them again.
+        identity = (id(geometry), tuple(map(id, modifier_sources)))
+        remembered = self._modified_player_geometry_identity_cache.get(identity)
+        if remembered is not None:
+            if GEOMETRY_MISS_LOG:
+                _GEOMETRY_MISS_LOG.record("identity hit", started)
+            return remembered[2]
+        # The entry holds the geometry, so its id stays unique; hashing the
+        # whole frozen geometry on every lookup cost more than the id does.
+        # Every source is usually memoized already; reading the memo with
+        # map() costs a fifth of one method call per source.
+        memo = tuple(map(
+            self._geometry_source_keys.get, map(id, modifier_sources)
+        ))
+        if all(memo) and all(map(is_, map(_FIRST, memo), modifier_sources)):
+            source_keys = tuple(map(_SECOND, memo))
+        else:
+            source_keys = tuple(
+                self._geometry_source_key(source)
                 for source in modifier_sources
-            ),
-        )
-        cached = self._modified_player_geometry_cache.get(cache_key)
-        if cached is not None:
-            return cached
+            )
+        cache_key = (id(geometry), source_keys)
+        entry = self._modified_player_geometry_cache.get(cache_key)
+        if entry is not None and entry[0] is geometry:
+            self._remember_modified_geometry(
+                identity, geometry, modifier_sources, entry[1]
+            )
+            if GEOMETRY_MISS_LOG:
+                _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
+                _GEOMETRY_MISS_LOG.record("semantic hit", started)
+            return entry[1]
         attack_range = geometry.attack_range
         hit_range = geometry.hit_range
         bullet_count = geometry.bullet_count
@@ -6536,105 +6860,102 @@ class LocalCombatState:
         bullet_death_effects = list(geometry.bullet_death_effects)
         path = self.encounter.static_database_path
 
-        with closing(sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True
-        )) as database:
-            instructions: list[
-                tuple[str, tuple[str, ...], int, tuple[float, ...]]
-            ] = []
-            seen_legacy_ids: set[int] = set()
-            explicit_effect_ids = {
-                int(source.effect_id)
-                for source in modifier_sources
-                if hasattr(source, "effect_id")
-            }
-            for source in modifier_sources:
-                if hasattr(source, "kind") and hasattr(source, "arguments"):
-                    source_kind = str(source.kind)
-                    source_arguments = tuple(
-                        str(value) for value in source.arguments
+        with _static_read_connection(path) as database:
+            parts = tuple(map(
+                self._geometry_source_parts.get, map(id, modifier_sources)
+            ))
+            if not (
+                all(parts)
+                and all(map(is_, map(_FIRST, parts), modifier_sources))
+            ):
+                seen_legacy_ids: set[int] = set()
+                parts = tuple(
+                    self._geometry_source_part(
+                        database, source, seen_legacy_ids
                     )
-                    if source_kind.casefold() == "talentlevelbonus":
-                        if len(source_arguments) < 2:
-                            continue
-                        try:
-                            bonus_levels = max(
-                                0,
-                                int(round(float(source_arguments[0]))),
-                            )
-                        except ValueError:
-                            bonus_levels = 0
-                        talent_id = self._clean_modifier_token(
-                            source_arguments[1]
-                        )
-                        row = database.execute(
-                            "SELECT StackStatusEffectId FROM "
-                            "_Template_SkillTalent WHERE Id=? LIMIT 1",
-                            (talent_id,),
-                        ).fetchone()
-                        status_id = str(row[0] or "") if row else ""
-                        effect_row = database.execute(
-                            "SELECT StartModifiers FROM "
-                            "_Template_StatusEffect WHERE Id=? LIMIT 1",
-                            (status_id,),
-                        ).fetchone()
-                        if bonus_levels and effect_row is not None:
-                            for raw in str(effect_row[0] or "").split(";"):
-                                kind, separator, arguments = raw.partition(":")
-                                if separator:
-                                    instructions.append(
-                                        (
-                                            kind.strip(),
-                                            tuple(
-                                                value.strip()
-                                                for value in arguments.split(",")
-                                            ),
-                                            bonus_levels,
-                                            (),
-                                        )
-                                    )
-                        continue
-                    instructions.append(
-                        (
-                            source_kind,
-                            source_arguments,
-                            1,
-                            (),
-                        )
-                    )
-                    continue
-                if hasattr(source, "effect_id"):
-                    effect_id = int(source.effect_id)
-                    stack_count = max(
-                        1, int(getattr(source, "field_18", 0)) + 1
-                    )
-                    details = tuple(
-                        float(value)
-                        for value in getattr(source, "values", ())
-                    )
-                else:
-                    effect_id = int(source)
-                    if effect_id in seen_legacy_ids:
-                        continue
-                    seen_legacy_ids.add(effect_id)
-                    stack_count = 1
-                    details = ()
-                program = self._status_modifier_program(effect_id)
-                instructions.extend(
-                    (kind, arguments, stack_count, details)
-                    for kind, arguments in program
+                    for source in modifier_sources
                 )
-
-            self._expand_status_modifier_instructions(
-                instructions, frozenset(explicit_effect_ids)
+            lengths = list(accumulate(map(len, map(_SECOND, parts))))
+            base_count = lengths[-1] if lengths else 0
+            explicit_effect_ids = set(map(_FIFTH, parts))
+            explicit_effect_ids.discard(None)
+            # Only geometry kinds reach a branch below. Most of a geared
+            # character's ~1500 instructions are stat modifiers (Damage,
+            # Resistance, ...) the loop skipped one by one. Dropping them only
+            # after the expansion, whose 256-instruction window counts every
+            # one, leaves the result unchanged.
+            if base_count >= _STATUS_EXPANSION_WINDOW:
+                appended, appended_keys = self._geometry_window_expansion(
+                    database, parts, lengths, explicit_effect_ids
+                )
+            else:
+                # Here the expansion's window reaches the appended programs
+                # and a stack-invariant effect's stack still de-duplicates
+                # them, so a short list files its result under exact keys.
+                if any(
+                    key[0] == "stack-invariant-effect" for key in source_keys
+                ):
+                    cache_key = (
+                        id(geometry),
+                        "exact",
+                        tuple(
+                            self._exact_geometry_source_key(source)
+                            for source in modifier_sources
+                        ),
+                    )
+                    entry = self._modified_player_geometry_cache.get(cache_key)
+                    if entry is not None and entry[0] is geometry:
+                        self._remember_modified_geometry(
+                            identity, geometry, modifier_sources, entry[1]
+                        )
+                        if GEOMETRY_MISS_LOG:
+                            _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
+                            _GEOMETRY_MISS_LOG.record("semantic hit", started)
+                        return entry[1]
+                instructions = list(chain.from_iterable(map(_SECOND, parts)))
+                self._expand_status_modifier_instructions(
+                    instructions, frozenset(explicit_effect_ids)
+                )
+                appended = tuple(
+                    instruction for instruction in instructions[base_count:]
+                    if instruction[0].casefold() in _GEOMETRY_MODIFIER_KINDS
+                )
+                appended_keys = tuple(
+                    self._geometry_instruction_key(database, instruction)
+                    for instruction in appended
+                )
+            # The loop below reads nothing but these instructions and the
+            # geometry, so equal key forms give equal results.
+            instruction_key = (
+                id(geometry),
+                tuple(chain(
+                    chain.from_iterable(map(_FOURTH, parts)), appended_keys
+                )),
             )
-            cooldown_variables = timing_actor_variables(
-                {
+            entry = self._geometry_instruction_cache.get(instruction_key)
+            if entry is not None and entry[0] is geometry:
+                self._remember_geometry_entry(
+                    self._modified_player_geometry_cache, cache_key,
+                    geometry, entry[1],
+                )
+                self._remember_modified_geometry(
+                    identity, geometry, modifier_sources, entry[1]
+                )
+                if GEOMETRY_MISS_LOG:
+                    _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
+                    _GEOMETRY_MISS_LOG.record("instruction hit", started)
+                return entry[1]
+            instructions = list(chain.from_iterable(map(_THIRD, parts)))
+            instructions.extend(appended)
+            if self._geometry_actor_variable_initials is None:
+                self._geometry_actor_variable_initials = {
                     str(key).casefold(): float(value or 0.0)
                     for key, value in database.execute(
                         "SELECT Id, InitialValue FROM _Template_ActorVariables"
                     )
-                },
+                }
+            cooldown_variables = timing_actor_variables(
+                self._geometry_actor_variable_initials,
                 instructions,
             )
             for kind, arguments, stack_count, details in instructions:
@@ -7132,15 +7453,339 @@ class LocalCombatState:
             ),
             cleanse_groups=frozenset(cleanse_groups),
         )
+        self._remember_geometry_entry(
+            self._modified_player_geometry_cache, cache_key, geometry, result
+        )
+        self._remember_geometry_entry(
+            self._geometry_instruction_cache, instruction_key, geometry, result
+        )
+        self._remember_modified_geometry(
+            identity, geometry, modifier_sources, result
+        )
+        if GEOMETRY_MISS_LOG:
+            _GEOMETRY_MISS_LOG.miss(
+                geometry, source_keys, started,
+                self._geometry_source_name, len(instructions),
+            )
+        return result
+
+    def _geometry_source_name(self, key: tuple) -> str:
+        """A readable name for one geometry source key (miss log only)."""
+
+        if key[0] in ("effect", "inert-effect", "stack-invariant-effect"):
+            names = self.__dict__.get("_geometry_effect_names")
+            if names is None:
+                names = self._geometry_effect_names = {
+                    int(effect_id): str(name)
+                    for name, effect_id in self._status_effect_ids.items()
+                }
+            name = names.get(int(key[1]), f"effect {key[1]}")
+            if key[0] == "effect":
+                return name
+            return f"{name} ({key[0].partition('-effect')[0]})"
+        if key[0] == "modifier":
+            return f"{key[1]}:{','.join(key[2])[:60]}"
+        return f"{key[0]} {key[1]}"
+
+    def _geometry_source_key(self, source: object) -> tuple[object, ...]:
+        """A source's key as far as skill geometry can observe it."""
+
+        memo = self._geometry_source_keys.get(id(source))
+        if memo is not None and memo[0] is source:
+            return memo[1]
+        key = self._exact_geometry_source_key(source)
+        if key[0] == "effect" and self._geometry_effect_role(key[1]) == "stack-invariant":
+            # Valid only for a long instruction list; the resolver files a
+            # short one's result under the exact keys instead.
+            key = ("stack-invariant-effect", key[1], key[3])
+        if _frozen_source(source):
+            if len(self._geometry_source_keys) >= _SOURCE_KEY_CACHE_MAXIMUM:
+                self._geometry_source_keys.clear()
+            self._geometry_source_keys[id(source)] = (source, key)
+        return key
+
+    def _exact_geometry_source_key(self, source: object) -> tuple[object, ...]:
+        """The source key with only an inert effect's stack and values dropped.
+
+        An inert effect's instruction count, and so every position the
+        expansion window sees, is fixed by its id alone.
+        """
+
+        key = self._modifier_source_cache_key(source)
+        if key[0] == "effect" and self._geometry_effect_role(key[1]) == "inert":
+            return ("inert-effect", key[1])
+        return key
+
+    def _geometry_effect_role(self, effect_id: int, visiting=frozenset()) -> str:
+        """How one status effect's stack can reach skill geometry.
+
+        "inert": its program has no geometry instruction at all.
+        "stack-invariant": its only geometry instructions are ActorStatusEffect
+        whose loaded effects come out equal at every stack -- chance 0 or 1
+        (``min(1, chance * stack)``) and all-zero values (``value * stack``)
+        -- and whose nested programs are inert or stack-invariant too. The
+        attack-speed stack (AttacksPerSecondBonus_stack, re-applied with five
+        more stacks by every accepted cast at 12.5 attacks per second) is one:
+        its buff and remover load with chance 1.0 and zero values.
+        "stack": anything else; its stack and values stay in the key.
+        """
+
+        effect_id = int(effect_id)
+        role = self._geometry_effect_roles.get(effect_id)
+        if role is not None:
+            return role
+        if effect_id in visiting:
+            return "stack"
+        visiting = visiting | {effect_id}
+        instructions = [
+            (kind.casefold(), arguments)
+            for kind, arguments in self._status_modifier_program(effect_id)
+            if kind.casefold() in _GEOMETRY_MODIFIER_KINDS
+        ]
+        if not instructions:
+            role = "inert"
+        elif any(kind != "actorstatuseffect" for kind, _arguments in instructions):
+            role = "stack"
+        else:
+            role = "stack-invariant"
+            with _static_read_connection(self.encounter.static_database_path) as database:
+                for _kind, arguments in instructions:
+                    if len(arguments) < 2:
+                        continue        # neither branch reads it
+                    if not self._stack_invariant_status(database, arguments):
+                        role = "stack"
+                        break
+                    child = self._status_effect_ids.get(
+                        self._clean_modifier_token(arguments[1])
+                    )
+                    if child is not None and self._geometry_effect_role(
+                        child, visiting
+                    ) == "stack":
+                        role = "stack"
+                        break
+        self._geometry_effect_roles[effect_id] = role
+        return role
+
+    @staticmethod
+    def _remember_geometry_entry(cache, key, geometry, result) -> None:
         # Bound memory even when development sessions repeatedly alter socket
         # and talent loadouts.  Dicts preserve insertion order, so this is a
         # constant-time FIFO eviction with no maintenance in the battle loop.
-        if len(self._modified_player_geometry_cache) >= 2048:
-            self._modified_player_geometry_cache.pop(
-                next(iter(self._modified_player_geometry_cache))
+        # Casts and impact timers share these caches; a concurrent eviction
+        # only means one entry more or less.
+        if len(cache) >= 2048:
+            try:
+                cache.pop(next(iter(cache)), None)
+            except (RuntimeError, StopIteration):
+                pass
+        cache[key] = (geometry, result)
+
+    def _geometry_source_part(
+        self, database, source: object, seen_legacy_ids: set[int],
+    ) -> tuple:
+        """One source's share of the geometry resolver's instruction list.
+
+        (source, instructions, the geometry-kind ones, their key form, effect
+        id or None). A frozen source keeps its part by identity; a legacy
+        integer id, dropped when an earlier source brought it, never does.
+        """
+
+        memo = self._geometry_source_parts.get(id(source))
+        if memo is not None and memo[0] is source:
+            return memo
+        effect_id = (
+            int(source.effect_id) if hasattr(source, "effect_id") else None
+        )
+        if hasattr(source, "kind") and hasattr(source, "arguments"):
+            source_kind, source_arguments = _source_kind_arguments(source)
+            if source_kind.casefold() == "talentlevelbonus":
+                instructions = self._talent_level_bonus_instructions(
+                    database, source_arguments
+                )
+            else:
+                instructions = ((source_kind, source_arguments, 1, ()),)
+        elif effect_id is not None:
+            stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+            details = tuple(
+                float(value) for value in getattr(source, "values", ())
             )
-        self._modified_player_geometry_cache[cache_key] = result
-        return result
+            instructions = tuple(
+                (kind, arguments, stack_count, details)
+                for kind, arguments in self._status_modifier_program(effect_id)
+            )
+        else:
+            legacy_id = int(source)
+            if legacy_id in seen_legacy_ids:
+                instructions = ()
+            else:
+                seen_legacy_ids.add(legacy_id)
+                instructions = tuple(
+                    (kind, arguments, 1, ())
+                    for kind, arguments in self._status_modifier_program(legacy_id)
+                )
+        geometry_instructions = tuple(
+            instruction for instruction in instructions
+            if instruction[0].casefold() in _GEOMETRY_MODIFIER_KINDS
+        )
+        part = (
+            source,
+            instructions,
+            geometry_instructions,
+            tuple(
+                self._geometry_instruction_key(database, instruction)
+                for instruction in geometry_instructions
+            ),
+            effect_id,
+        )
+        if _frozen_source(source):
+            if len(self._geometry_source_parts) >= _SOURCE_KEY_CACHE_MAXIMUM:
+                self._geometry_source_parts.clear()
+            self._geometry_source_parts[id(source)] = part
+        return part
+
+    def _geometry_window_expansion(
+        self, database, parts: tuple, lengths: list, explicit_effect_ids: set,
+    ) -> tuple[tuple, tuple]:
+        """The geometry instructions the expansion appends to a long list.
+
+        With at least a window of instructions the expansion scans only the
+        window and lands every appended program past it, so what it appends
+        depends on the parts covering the window and on which of their
+        ActorStatusEffect children are sources too -- not on the ~400 parts
+        after it, where on-hit procs come and go.
+        Returns (appended geometry-kind instructions, their key forms).
+        """
+
+        covering = parts[:bisect_left(lengths, _STATUS_EXPANSION_WINDOW) + 1]
+        identity = tuple(map(id, covering))
+        memo = self._geometry_window_expansions.get(identity)
+        if memo is None or not all(map(is_, memo[0], covering)):
+            window = list(chain.from_iterable(map(_SECOND, covering)))
+            children = frozenset(
+                effect_id
+                for kind, arguments, _stack_count, _details
+                in window[:_STATUS_EXPANSION_WINDOW]
+                if len(arguments) >= 2 and kind.casefold() == "actorstatuseffect"
+                for effect_id in (
+                    self._status_effect_ids.get(
+                        self._clean_modifier_token(arguments[1])
+                    ),
+                )
+                if effect_id is not None
+            )
+            memo = (covering, children, {})
+            # Only memoized parts keep their ids; a mutable source's part is
+            # rebuilt by every resolve.
+            if all(map(_frozen_source, map(_FIRST, covering))):
+                if len(self._geometry_window_expansions) >= 256:
+                    self._geometry_window_expansions.clear()
+                self._geometry_window_expansions[identity] = memo
+        covering, children, expansions = memo
+        blocked = children.intersection(explicit_effect_ids)
+        expansion = expansions.get(blocked)
+        if expansion is None:
+            window = list(chain.from_iterable(map(_SECOND, covering)))
+            del window[_STATUS_EXPANSION_WINDOW:]
+            self._expand_status_modifier_instructions(window, blocked)
+            appended = tuple(
+                instruction for instruction in window[_STATUS_EXPANSION_WINDOW:]
+                if instruction[0].casefold() in _GEOMETRY_MODIFIER_KINDS
+            )
+            expansion = expansions[blocked] = (
+                appended,
+                tuple(
+                    self._geometry_instruction_key(database, instruction)
+                    for instruction in appended
+                ),
+            )
+        return expansion
+
+    def _talent_level_bonus_instructions(
+        self, database, arguments: tuple[str, ...],
+    ) -> tuple:
+        """TalentLevelBonus:<levels>,<talent>: the talent's StartModifiers."""
+
+        if len(arguments) < 2:
+            return ()
+        try:
+            bonus_levels = max(0, int(round(float(arguments[0]))))
+        except ValueError:
+            bonus_levels = 0
+        talent_id = self._clean_modifier_token(arguments[1])
+        row = database.execute(
+            "SELECT StackStatusEffectId FROM "
+            "_Template_SkillTalent WHERE Id=? LIMIT 1",
+            (talent_id,),
+        ).fetchone()
+        status_id = str(row[0] or "") if row else ""
+        effect_row = database.execute(
+            "SELECT StartModifiers FROM "
+            "_Template_StatusEffect WHERE Id=? LIMIT 1",
+            (status_id,),
+        ).fetchone()
+        if not bonus_levels or effect_row is None:
+            return ()
+        return tuple(
+            (
+                kind.strip(),
+                tuple(value.strip() for value in arguments.split(",")),
+                bonus_levels,
+                (),
+            )
+            for raw in str(effect_row[0] or "").split(";")
+            for kind, separator, arguments in (raw.partition(":"),)
+            if separator
+        )
+
+    def _geometry_instruction_key(self, database, instruction: tuple) -> tuple:
+        """An instruction as far as the geometry loop can observe it.
+
+        The loop reads an ActorStatusEffect's arguments and stack only, and
+        the stack only through ``min(1, chance * stack)`` and
+        ``value * stack`` on the effects it loads (none for an ``...le``
+        location aura). Effects loaded at chance 0 or 1 with zero values --
+        the attack-speed stack's buff and remover, most on-hit procs -- are
+        equal at every stack.
+        """
+
+        kind, arguments, _stack_count, _details = instruction
+        if (
+            len(arguments) >= 2
+            and kind.casefold() == "actorstatuseffect"
+            and self._stack_invariant_status(database, arguments)
+        ):
+            return (kind, arguments, 1, ())
+        return instruction
+
+    def _stack_invariant_status(self, database, arguments: tuple) -> bool:
+        invariant = self._stack_invariant_status_arguments.get(arguments)
+        if invariant is None:
+            invariant = arguments[0].casefold().endswith("le") or all(
+                effect.chance in (0.0, 1.0)
+                and all(value == 0.0 for value in effect.values)
+                for effect in self._load_victim_status_effects(
+                    database, ",".join(arguments[1:]),
+                    default_trigger="skillstart",
+                )
+            )
+            self._stack_invariant_status_arguments[arguments] = invariant
+        return invariant
+
+    def _remember_modified_geometry(
+        self, identity, geometry, modifier_sources, result,
+    ) -> None:
+        """Key ``result`` by object identity when every input is frozen.
+
+        The entry holds the geometry and sources, so their ids stay unique
+        while it lives; a mutable source (tests' namespaces) is never keyed.
+        """
+
+        if not all(map(_frozen_source_type, set(map(type, modifier_sources)))):
+            return
+        cache = self._modified_player_geometry_identity_cache
+        if len(cache) >= 256:
+            cache.clear()
+        cache[identity] = (geometry, tuple(modifier_sources), result)
 
     def player_skill_resource_fractions(
         self,

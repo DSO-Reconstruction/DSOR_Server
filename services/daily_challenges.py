@@ -432,13 +432,17 @@ class DailyChallengeService:
             s.gameplay_daily_challenges = state
             if state == before and not commands:
                 return
+            # Reward commands (items, currency) must stay ordered with every
+            # other inventory change on channel 0; pure progress may not.
+            rewarded = bool(commands)
             old_entries = {e.challenge_id: e for e in (*before.daily, *before.bonuses)}
             commands.extend(ServerCommand(DAILY_CHALLENGE_PROGRESS_COMMAND, entry, LOCAL_PLAYER_ACTOR_ID)
                             for entry in (*state.daily, *state.bonuses)
                             if entry.challenge_id in old_entries and entry != old_entries[entry.challenge_id])
             commands.append(ServerCommand(TIMED_CHALLENGES_INFO_COMMAND, state.info(), LOCAL_PLAYER_ACTOR_ID))
         s.send_reliable_ordered(encode_server_command_batch(tuple(commands), include_terminator=True),
-                                track=True, label='daily-challenge-progress')
+                                track=True,
+                                label='daily-challenge-rewards' if rewarded else 'daily-challenge-progress')
         if s.gameplay_honor_points != initial_honor:
             from dso_server.protocol.pvp_match_protocol import HonorPointsChanged, encode_honor_points_changed
             s.send_reliable_ordered(encode_honor_points_changed(HonorPointsChanged(

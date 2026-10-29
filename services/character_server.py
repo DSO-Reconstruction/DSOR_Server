@@ -45,6 +45,7 @@ from dso_server.services.map_unlocks import MapUnlockService
 from dso_server.services.player_respawn import PlayerRespawnService
 from dso_server.services.loot_presence import LootPresenceService
 from dso_server.services.presence import PresenceService
+from dso_server.services.presence_movement import PresenceMovementService
 from dso_server.services.presence_socket_effects import PresenceSocketEffectService
 from dso_server.services.presence_identity import PresenceIdentityService
 from dso_server.services.presence_visuals import PresenceVisualService
@@ -98,6 +99,7 @@ class CharacterServer(
         PresenceIdentityService,
         PresenceSocketEffectService,
         PresenceService,
+        PresenceMovementService,
         SocialService,
         CommerceService,
         TradeService,

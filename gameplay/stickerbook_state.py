@@ -230,37 +230,48 @@ def load_inventory_mount_definition(
     )
 
 
+@lru_cache(maxsize=8)
+def _sticker_rows_by_identifier(static_database_path: Path) -> dict:
+    """Map every base item, rarity tier and sticker id to its book row.
+
+    Built once per database: scanning all 807 live rows for each lookup cost
+    ~3 ms, so resolving a large collection on map entry took over half a
+    second. The first row naming an identifier wins, as the scan did.
+    """
+
+    index: dict[str, sqlite3.Row] = {}
+    with _open_read_only(static_database_path) as database:
+        for row in database.execute(
+            "SELECT s.Id, s.Items, s.RarityUpgradeItems, b.StickerbookCategoryId "
+            "FROM _Template_StickerbookItem AS s "
+            "LEFT JOIN _Template_Stickerbook AS b ON b.Id=s.StickerbookId "
+            "WHERE s.IsLive<>0"
+        ):
+            for identifier in (
+                *_split(row["Items"]),
+                *(
+                    resource_id
+                    for resource_id, _cost in _rarity_upgrade_stages(
+                        row["Items"], row["RarityUpgradeItems"]
+                    )
+                ),
+                str(row["Id"]),
+            ):
+                index.setdefault(identifier, row)
+    return index
+
+
 @lru_cache(maxsize=1024)
 def _load_sticker_definition_cached(
     static_database_path: Path,
     resource_or_item_id: str,
 ) -> StickerDefinition | None:
+    sticker_row = _sticker_rows_by_identifier(static_database_path).get(
+        resource_or_item_id
+    )
+    if sticker_row is None:
+        return None
     with _open_read_only(static_database_path) as database:
-        rows = database.execute(
-            "SELECT s.Id, s.Items, s.RarityUpgradeItems, b.StickerbookCategoryId "
-            "FROM _Template_StickerbookItem AS s "
-            "LEFT JOIN _Template_Stickerbook AS b ON b.Id=s.StickerbookId "
-            "WHERE s.IsLive<>0"
-        ).fetchall()
-        sticker_row = next(
-            (
-                row
-                for row in rows
-                if (
-                    resource_or_item_id in _split(row["Items"])
-                    or resource_or_item_id in {
-                        resource_id
-                        for resource_id, _cost in _rarity_upgrade_stages(
-                            row["Items"], row["RarityUpgradeItems"]
-                        )
-                    }
-                    or resource_or_item_id == str(row["Id"])
-                )
-            ),
-            None,
-        )
-        if sticker_row is None:
-            return None
         stages = _rarity_upgrade_stages(
             sticker_row["Items"], sticker_row["RarityUpgradeItems"]
         )

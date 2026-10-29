@@ -6,6 +6,7 @@ import math
 import os
 
 from dso_server.runtime.context import *
+from dso_server.runtime import latency_stats
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
 from dso_server.services import movement_validation
@@ -263,6 +264,7 @@ class PlayerCombatService(PlayerCastTimingService):
         ):
             return
         now = time.perf_counter()
+        phase = latency_stats.PhaseTimer("bullet-skill")
         timers = []
         old_timers = []
         position = None
@@ -336,6 +338,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 inventory = s.gameplay_inventory
 
         modifier_effect_ids = CharacterService._active_skill_modifier_sources(s)
+        phase.mark("lock and sources")
         if rejection is None:
             if character is not None:
                 player_stats = calculate_player_combat_stats(
@@ -385,10 +388,12 @@ class PlayerCombatService(PlayerCastTimingService):
                         player_stats=player_stats,
                     )
                 )
+            phase.mark("stats")
             trail_specs = combat.player_skill_bullet_location_trail(
                 skill.skill_index,
                 modifier_sources=tuple(modifier_effect_ids),
             )
+            phase.mark("geometry")
             if isinstance(client_skill, TargetPointBulletSkill):
                 target_position_wire = (
                     encounter.coordinate_frame.world_to_wire(
@@ -428,6 +433,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 s, combat, skill_index=skill.skill_index
             )
 
+        phase.mark("timing and essence")
         # Never wait for the shared map-combat lock while owning the session
         # lock. Autosave, presence, and map retirement need flow_lock and can
         # independently be waiting for a combat snapshot.
@@ -543,6 +549,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 pending = None
                 pending_hits = ()
                 rejection = 'the gameplay combat state changed during cast'
+        phase.mark("plan hits")
         # Presence discovery re-enters the originating session while taking
         # its own snapshot.  Never invoke it under ``flow_lock``: doing so
         # deadlocked every PvP-enabled spatial summon (most visibly Tesla).
@@ -607,6 +614,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     float(skill_speed_multiplier),
                 ),
             )
+        phase.mark("pvp and presence")
         if runtime_cast and combat is not None and position is not None and source_actor_id is not None:
             CharacterService._send_player_skill_status_effects(
                 s,
@@ -629,6 +637,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     server_tick=skill.server_tick,
                     label="player-attack-speed-bonus-stack",
                 )
+        phase.mark("skill-start effects")
         if all((runtime_cast, combat, encounter, position, source_actor_id)):
             CharacterService._schedule_player_bullet_trail(
                 s, combat, encounter, skill, client_skill, position,
@@ -636,6 +645,7 @@ class PlayerCombatService(PlayerCastTimingService):
                 attack_speed_multiplier=skill_speed_multiplier,
                 modifier_sources=modifier_effect_ids, cast_started_at=now,
             )
+        phase.mark("trail")
         for timer in timers:
             timer.start()
         # A cast is authoritative map activity, so re-arm the simulation owner
@@ -654,6 +664,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     skill_index=skill.skill_index,
                     modifier_sources=modifier_effect_ids,
                 )
+        phase.mark("timers and chase")
         if pending is None:
             if VERBOSE_PACKET_LOGGING:
                 print(

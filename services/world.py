@@ -10,6 +10,7 @@ from dso_server.protocol.consumable_protocol import load_instant_consumable_defi
 from dso_server.protocol.world_loot_protocol import inventory_loot_text_type
 
 from dso_server.runtime.context import *
+from dso_server.runtime import progression_queue
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.fractured_planes_layout import is_tower_hardware
 from dso_server.gameplay.boss_encounter_policy import (
@@ -750,10 +751,17 @@ class WorldService:
                     track=True,
                     label="player-invalid-movement-correction",
                 )
+                if s.gameplay_presence_callback is not None:
+                    s.gameplay_presence_callback(
+                        s, ("move_correction", stopped)
+                    )
             return
         CharacterService._accept_gameplay_state_command(s, 0x005F)
-        update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
-        s.send_unreliable_sequenced(update)
+        if not s.gameplay_move_echo_deferred:
+            # Once the movement tick covers this session the echo travels in
+            # its per-tick batch (services/presence_movement.py).
+            update = encode_move(move, actor_id=LOCAL_PLAYER_ACTOR_ID)
+            s.send_unreliable_sequenced(update)
         # Resolve player-contact hazards as soon as the validated position is
         # accepted. Vicinity discovery and monster culling can do substantial
         # work on this movement path, so running collision after those steps
@@ -1452,17 +1460,31 @@ class WorldService:
             # presence callback like kills do (services/presence.py).
             callback = getattr(s, "gameplay_presence_callback", None)
             if callback is not None:
-                try:
-                    event = ("item_collected", template_id, max(1, int(drop.item.amount)))
-                    if drop.quest_id:
-                        event += (drop.quest_id, drop.quest_collect_id or template_id)
-                    callback(s, event)
-                except Exception as exc:
-                    print(
-                        f"[{GAMEPLAY_SERVICE_NAME}] quest collect notification "
-                        f"failed: {type(exc).__name__}: {exc}"
-                    )
+                event = ("item_collected", template_id, max(1, int(drop.item.amount)))
+                if drop.quest_id:
+                    event += (drop.quest_id, drop.quest_collect_id or template_id)
+                # Quest/achievement credit runs off the movement path: this is
+                # usually an auto-pickup inside the player's MoveCommand.
+                if not progression_queue.defer(
+                    CharacterService._raise_item_collected, s, event,
+                    label="item collected",
+                    guard=progression_queue.same_character(s),
+                ):
+                    CharacterService._raise_item_collected(s, event)
         return picked
+
+    @staticmethod
+    def _raise_item_collected(s: Session, event) -> None:
+        callback = getattr(s, "gameplay_presence_callback", None)
+        if callback is None:
+            return
+        try:
+            callback(s, event)
+        except Exception as exc:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] quest collect notification "
+                f"failed: {type(exc).__name__}: {exc}"
+            )
 
     @staticmethod
     def _pickup_world_item_serialized(
@@ -1554,9 +1576,15 @@ class WorldService:
                     instant_definition.values
                     if instant_definition is not None else ()
                 )
+                # Server policy: a sphere restores at least
+                # HEALTH_GLOBE_MINIMUM_RESTORE_FRACTION of the maximum (the
+                # authored 0.2 barely registered); HealthGlobeBonus adds on top.
                 health_fraction, resource_fraction = (
                     globe_modifiers.health_globe_fractions(
-                        float(values[0]) if len(values) > 0 else 0.0,
+                        max(
+                            HEALTH_GLOBE_MINIMUM_RESTORE_FRACTION,
+                            float(values[0]) if len(values) > 0 else 0.0,
+                        ),
                         float(values[1]) if len(values) > 1 else 0.0,
                     )
                 )

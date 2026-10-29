@@ -6,6 +6,7 @@ from dataclasses import replace
 import sqlite3
 
 from dso_server.runtime.context import *
+from dso_server.runtime import progression_queue
 from dso_server.runtime.transport import Session
 from dso_server.protocol.item_customization_protocol import (
     APPLY_ITEM_CUSTOMIZATION_COMMAND, CUSTOMIZATION_SLOTS,
@@ -951,7 +952,12 @@ class CustomizationService:
                 'stickerbook-unlock-stickerbook-unlock'
             ),
         )
-        CharacterService._achievement_on_stickerbook_changed(self, s)
+        if not progression_queue.defer(
+            CharacterService._achievement_on_stickerbook_changed, self, s,
+            label="sticker-book achievements",
+            guard=progression_queue.same_character(s),
+        ):
+            CharacterService._achievement_on_stickerbook_changed(self, s)
         if definition.kind == "mercenary":
             CharacterService._ensure_mercenary_quickbar_shortcut(
                 s, definition.resource_id

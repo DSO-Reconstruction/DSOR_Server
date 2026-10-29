@@ -128,6 +128,11 @@ class PlayerOwnedResolutionDispatchService:
                 owner_resolutions,
                 label="player-owned-life-leech",
             )
+            CharacterService._apply_player_kill_healing(
+                owner_session,
+                owner_resolutions,
+                label="player-owned-kill-heal",
+            )
 
             dispatches = []
             killed_monsters = []

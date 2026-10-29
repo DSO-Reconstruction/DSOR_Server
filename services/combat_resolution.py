@@ -15,7 +15,9 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.player_skill_timing import apply_skill_cooldown_effect_locked
-from dso_server.gameplay.status_modifier_runtime import load_status_modifier_catalog
+from dso_server.gameplay.status_modifier_runtime import (
+    load_status_modifier_catalog, parse_modifier_program, resolve_modifier_value,
+)
 
 
 COMBAT_BATCH_COMMAND_BUDGET = 16
@@ -52,6 +54,75 @@ def _keeps_on_death(database_path, resource_id: str) -> bool:
             (str(resource_id),),
         ).fetchone()
     return bool(row and row[0])
+
+
+@lru_cache(maxsize=4)
+def _kill_heal_programs(database_path: str):
+    """Hosted effects whose ``On:Kill`` child restores absolute health.
+
+    Hangman's Pride (``trait_wisdom_all_hpPerKill_trigger``) authors
+    ``ActorStatusEffect:addAE,trait_wisdom_all_hpPerKill_effect,C:1.0,
+    $0:trait_wisdom_all_hpPerKill,On:Kill`` and the child restores
+    ``CurrHealthPoints:$0,absolute``. Item sets and sockets have their own
+    event dispatchers; nothing fired these talent rules, so the talent never
+    healed. Maps the host's wire id to ``(chance, amount operands,
+    parameter bindings)``.
+    """
+
+    path = Path(database_path)
+    with sqlite3.connect(
+        f"file:{path.as_posix()}?mode=ro", uri=True
+    ) as database:
+        rows = database.execute(
+            "SELECT rowid - 1, Id, COALESCE(StartModifiers, '') "
+            "FROM _Template_StatusEffect"
+        ).fetchall()
+    programs = {str(resource).casefold(): program for _wire, resource, program in rows}
+    result = {}
+    for wire_id, _resource, program in rows:
+        if "on:kill" not in program.casefold():
+            continue
+        for instruction in parse_modifier_program(program):
+            arguments = instruction.arguments
+            if (
+                instruction.kind != "actorstatuseffect"
+                or len(arguments) < 2
+                or not arguments[0].casefold().startswith("add")
+            ):
+                continue
+            options = {
+                key.strip().casefold(): value.strip()
+                for key, separator, value in (
+                    argument.partition(":") for argument in arguments[2:]
+                )
+                if separator
+            }
+            if options.get("on", "").casefold() != "kill":
+                continue
+            amounts = tuple(
+                child.arguments[0]
+                for child in parse_modifier_program(
+                    programs.get(arguments[1].strip().casefold(), "")
+                )
+                if child.kind == "currhealthpoints"
+                and len(child.arguments) >= 2
+                and child.arguments[1].strip().casefold() == "absolute"
+            )
+            if not amounts:
+                continue
+            try:
+                chance = max(0.0, min(1.0, float(options.get("c", "1"))))
+            except ValueError:
+                chance = 0.0
+            bindings = tuple(
+                (int(key[1:]), value)
+                for key, value in options.items()
+                if key[:1] == "$" and key[1:].isdigit()
+            )
+            result.setdefault(int(wire_id), []).append(
+                (chance, amounts, bindings)
+            )
+    return {wire_id: tuple(rules) for wire_id, rules in result.items()}
 
 
 def _wire_uint32(value: int) -> int:
@@ -236,6 +307,85 @@ class CombatResolutionService:
             recovered_request += max(
                 0, int(round(int(resolution.damage) * fraction))
             )
+        if recovered_request <= 0:
+            return 0
+        actor_id = (
+            (
+                s.gameplay_remote_actor_id
+                or CharacterService._remote_actor_id(character.character_id)
+            )
+            if s.gameplay_presence_callback is not None
+            else combat.player_actor_id
+        )
+        with combat.lock:
+            current, maximum, recovered = combat.heal_player_amount(
+                actor_id, recovered_request
+            )
+        if recovered <= 0:
+            return 0
+        with s.flow_lock:
+            inventory.health_points = float(current)
+            server_tick = max(
+                int(s.gameplay_chase_server_tick),
+                int(s.gameplay_last_heal_server_tick) + 1,
+            ) & 0xFFFFFFFF
+            s.gameplay_last_heal_server_tick = server_tick
+        CharacterService._send_player_heal_transition(
+            s,
+            current_health=current,
+            maximum_health=maximum,
+            recovered=recovered,
+            server_tick=server_tick,
+            label=label,
+        )
+        return recovered
+
+    @staticmethod
+    def _apply_player_kill_healing(
+            s: Session, resolutions, *, label: str) -> int:
+        """Restore the health that ``On:Kill`` talents grant per final blow."""
+
+        kills = sum(
+            1 for resolution in tuple(resolutions)
+            if bool(getattr(resolution, "killed", False))
+        )
+        combat = getattr(s, "gameplay_combat_state", None)
+        character = getattr(s, "gameplay_character", None)
+        inventory = getattr(s, "gameplay_inventory", None)
+        if kills <= 0 or combat is None or character is None or inventory is None:
+            return 0
+        path = combat.encounter.static_database_path
+        programs = _kill_heal_programs(str(path))
+        if not programs:
+            return 0
+        sources = CharacterService._active_skill_modifier_sources(s)
+        hosted = [
+            rule
+            for source in sources
+            for rule in programs.get(int(getattr(source, "effect_id", -1)), ())
+        ]
+        if not hosted:
+            return 0
+        from dso_server.gameplay.minion_auras import owner_actor_variable
+
+        catalog = load_status_modifier_catalog(path)
+        per_kill = 0.0
+        for chance, amounts, bindings in hosted:
+            if chance < 1.0:
+                continue        # every authored kill heal is C:1.0
+            values = [0.0] * (max((index for index, _ in bindings), default=-1) + 1)
+            for index, binding in bindings:
+                literal = resolve_modifier_value(binding)
+                values[index] = (
+                    literal if literal is not None
+                    else owner_actor_variable(combat, sources, binding)
+                )
+            for amount in amounts:
+                resolved = resolve_modifier_value(
+                    amount, values=values, actor_variables=catalog.actor_variables,
+                )
+                per_kill += max(0.0, float(resolved or 0.0))
+        recovered_request = int(round(per_kill * kills))
         if recovered_request <= 0:
             return 0
         actor_id = (

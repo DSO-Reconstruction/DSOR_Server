@@ -30,6 +30,11 @@ from dso_server.services.player_owned_resolution_dispatch import (
 
 
 POST_COMMIT_FAILURE_LOG_SECONDS = 5.0
+# id(source) -> (source, normalized ``ON:`` trigger) for the frozen modifier
+# sources every cast filters (~470 on a geared character, ~3 ms unmemoized).
+_SOURCE_TRIGGER_CACHE: dict[int, tuple[object, str]] = {}
+# (low health, source ids) -> (sources, filtered tuple) when all are frozen.
+_CONDITIONAL_SOURCES_CACHE: dict[tuple, tuple] = {}
 _post_commit_failure_logged_at: dict[str, float] = {}
 
 
@@ -1486,22 +1491,44 @@ class MonsterCombatService(
         """
 
         low_health = CharacterService._player_is_low_health(s)
+        sources = tuple(sources)
+        identity = (low_health, tuple(map(id, sources)))
+        remembered = _CONDITIONAL_SOURCES_CACHE.get(identity)
+        if remembered is not None:
+            return remembered[1]
+        frozen = True
         result = []
-        for source in tuple(sources):
-            arguments = tuple(
-                str(value) for value in getattr(source, "arguments", ())
-            )
-            trigger = next(
-                (
-                    normalize_socket_trigger(value.partition(":")[2])
-                    for value in arguments
-                    if value.partition(":")[0].strip().casefold() == "on"
-                ),
-                "",
-            )
+        for source in sources:
+            cached = _SOURCE_TRIGGER_CACHE.get(id(source))
+            if cached is not None and cached[0] is source:
+                trigger = cached[1]
+            else:
+                arguments = tuple(
+                    str(value) for value in getattr(source, "arguments", ())
+                )
+                trigger = next(
+                    (
+                        normalize_socket_trigger(value.partition(":")[2])
+                        for value in arguments
+                        if value.partition(":")[0].strip().casefold() == "on"
+                    ),
+                    "",
+                )
+                parameters = getattr(type(source), "__dataclass_params__", None)
+                if parameters is not None and parameters.frozen:
+                    if len(_SOURCE_TRIGGER_CACHE) >= 65536:
+                        _SOURCE_TRIGGER_CACHE.clear()
+                    _SOURCE_TRIGGER_CACHE[id(source)] = (source, trigger)
+                else:
+                    frozen = False
             if trigger in DISABLED_TRIGGERS:
                 continue
             if trigger == "hitlowhealth" and not low_health:
                 continue
             result.append(source)
-        return tuple(result)
+        result = tuple(result)
+        if frozen:
+            if len(_CONDITIONAL_SOURCES_CACHE) >= 256:
+                _CONDITIONAL_SOURCES_CACHE.clear()
+            _CONDITIONAL_SOURCES_CACHE[identity] = (sources, result)
+        return result

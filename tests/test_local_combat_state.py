@@ -35,6 +35,7 @@ from dso_server.gameplay.local_combat_state import (
     ATTACK_SPEED_BREAKPOINTS,
     MONSTER_ACQUISITION_RADIUS,
     MONSTER_CHASE_GRACE_DISTANCE,
+    MONSTER_MOVEMENT_DURATION_TICKS,
     MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS,
     MONSTER_RESET_GRACE_DISTANCE,
     MONSTER_RETURN_HOME_EFFECT_ID,
@@ -2523,7 +2524,10 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertTrue(all(not value for value in publications[1:-1]))
         self.assertEqual(len(publications[-1]), 1)
 
-    def test_monster_activity_encodes_the_shared_publish_cadence(self):
+    def test_monster_activity_encodes_a_horizon_beyond_the_publish_cadence(self):
+        # The client dead-reckons a walking sample for at most its duration;
+        # a duration equal to the cadence stood monsters still before every
+        # late sample. Retail sends 18 whatever the resend gap.
         from dso_server.runtime.transport import Session
 
         class _Session(Session):
@@ -2569,6 +2573,10 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(batch.commands[0].actor_id, actor_id)
         self.assertEqual(
             batch.commands[0].value.duration_ticks,
+            MONSTER_MOVEMENT_DURATION_TICKS,
+        )
+        self.assertGreater(
+            MONSTER_MOVEMENT_DURATION_TICKS,
             MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS,
         )
 

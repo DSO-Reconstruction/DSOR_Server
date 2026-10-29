@@ -20,7 +20,7 @@ from contextlib import closing
 from functools import lru_cache
 from pathlib import Path
 
-from dso_server.runtime import resident_content
+from dso_server.runtime import progression_queue, resident_content
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.endless_tower_buffs import start_tower_buffs, tower_kills
@@ -2684,10 +2684,29 @@ class MapEventService:
 
     @staticmethod
     def _notify_monsters_killed(s: Session, monsters) -> None:
-        """Raise the kill toward the server from static combat code."""
+        """Raise the kill toward the server from static combat code.
+
+        The kill's consequences (quests, achievements, daily challenges,
+        rankings, map-event kill signals, companions) run on the progression
+        queue, so the hit that killed the monster -- and the loot it drops --
+        does not wait for them.
+        """
 
         callback = getattr(s, "gameplay_presence_callback", None)
         if callback is None or not monsters:
+            return
+        monsters = tuple(monsters)
+        if progression_queue.defer(
+            CharacterService._raise_monsters_killed, s, monsters,
+            label="monster kills", guard=progression_queue.same_map_instance(s),
+        ):
+            return
+        CharacterService._raise_monsters_killed(s, monsters)
+
+    @staticmethod
+    def _raise_monsters_killed(s: Session, monsters) -> None:
+        callback = getattr(s, "gameplay_presence_callback", None)
+        if callback is None:
             return
         try:
             callback(s, ("monsters_killed", tuple(monsters)))
@@ -2876,9 +2895,16 @@ class MapEventService:
         self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
         self._ensure_pw209_slade_throne_room(s, runtime)
         self._ensure_pw000_senbu_boss(s, runtime)
-        CharacterService._achievement_on_map_entered(
-            self, s, (runtime.map_id, access_group, access_id),
-        )
+        # Achievements and the season pass recount the whole collection,
+        # equipment and skins on entry; the player's first inputs on the map
+        # must not wait behind them.
+        map_keys = (runtime.map_id, access_group, access_id)
+        if not progression_queue.defer(
+            CharacterService._achievement_on_map_entered, self, s, map_keys,
+            label="map-entry achievements",
+            guard=progression_queue.same_character(s),
+        ):
+            CharacterService._achievement_on_map_entered(self, s, map_keys)
         CharacterService._restore_map_companion_handoffs(self, s)
         if s.gameplay_last_move is not None:
             CharacterService._check_map_companions(s, s.gameplay_last_move.relative_position)

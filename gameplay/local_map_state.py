@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import closing
-from functools import lru_cache
+from functools import lru_cache, wraps
 import hashlib
 import math
 import os
@@ -251,6 +251,52 @@ class MapCoordinateFrame:
 def map_database_path(static_database_path: str | Path, map_id: str) -> Path:
     static_database_path = Path(static_database_path)
     return static_database_path.parent.parent / "maps" / f"{map_id}.db4"
+
+
+_STATIC_MAP_LOADER_CACHE: dict = {}
+_STATIC_MAP_LOADER_CACHE_MAXIMUM = 1024
+_MISSING = object()
+
+
+def _memoized_map_loader(function):
+    """Memoize a map loader whose answer depends only on resident content.
+
+    NPC requests, actor requests and quest reveal checks re-loaded a map's
+    exits, NPC definitions and event sets on every call (about 4 ms each,
+    many calls per request), so map entry and NPC interaction took hundreds
+    of milliseconds. The map database is immutable while resident, and the
+    remaining inputs -- the arguments, the debug-vendor setting and any
+    client map file that overrides instance GUIDs -- are part of the key.
+    Files read from disk (tests) are not cached.
+    """
+
+    @wraps(function)
+    def cached(static_database_path, map_id, **options):
+        path = map_database_path(static_database_path, map_id)
+        revision = resident_content.revision(path)
+        if revision is None:
+            return function(static_database_path, map_id, **options)
+        client_path = _active_client_map_database_path(str(map_id))
+        client_revision = None
+        if client_path is not None:
+            try:
+                client_revision = (str(client_path), client_path.stat().st_mtime_ns)
+            except OSError:
+                client_revision = (str(client_path), None)
+        key = (
+            function.__name__, str(path), revision, str(map_id),
+            tuple(sorted(options.items())), debug_vendor_enabled(), client_revision,
+        )
+        result = _STATIC_MAP_LOADER_CACHE.get(key, _MISSING)
+        if result is _MISSING:
+            result = function(static_database_path, map_id, **options)
+            if len(_STATIC_MAP_LOADER_CACHE) >= _STATIC_MAP_LOADER_CACHE_MAXIMUM:
+                _STATIC_MAP_LOADER_CACHE.pop(next(iter(_STATIC_MAP_LOADER_CACHE)), None)
+            _STATIC_MAP_LOADER_CACHE[key] = result
+        # Mappings are handed out as copies; tuples of frozen rows are shared.
+        return dict(result) if isinstance(result, dict) else result
+
+    return cached
 
 
 @lru_cache(maxsize=None)
@@ -514,6 +560,7 @@ def _event_set_rows_for(
     return _cached_event_set_rows(path, map_id)
 
 
+@_memoized_map_loader
 def load_local_event_set_flags(
     static_database_path: str | Path,
     map_id: str,
@@ -554,6 +601,7 @@ def _transform(value: bytes) -> tuple[tuple[float, float, float], float]:
     return position, rotation
 
 
+@_memoized_map_loader
 def load_local_npc_definitions(
     static_database_path: str | Path,
     map_id: str,
@@ -873,6 +921,7 @@ def load_local_crafting_props(
         database.close()
 
 
+@_memoized_map_loader
 def load_local_map_exits(
     static_database_path: str | Path,
     map_id: str,

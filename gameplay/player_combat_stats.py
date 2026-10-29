@@ -779,25 +779,21 @@ def _clean_token(value: object) -> str:
     )
 
 
-def _numeric_range(
-    token: object,
-    *,
-    details: tuple[float, ...],
-    variables: dict[str, float],
-) -> tuple[float, float] | None:
+@lru_cache(maxsize=16384)
+def _parsed_numeric_token(token: str):
+    """Parse one modifier argument once: None, ("detail", i), ("variable",
+    name) or ("range", low, high). A stat calculation resolves the same
+    authored text hundreds of times, so tokenizing it on every resolution was
+    most of a recalculation's cost."""
+
     value = _clean_token(token)
     if not value:
         return None
     if value.startswith("$"):
         reference = value[1:]
         if reference.isdigit():
-            index = int(reference)
-            number = float(details[index]) if index < len(details) else 0.0
-        else:
-            number = float(variables.get(reference.casefold(), 0.0))
-            # Named collection variables and numeric effect parameters are
-            # separate operands. Zero must not fall back to the pet's $0.
-        return (number, number)
+            return ("detail", int(reference))
+        return ("variable", reference.casefold())
     numbers = []
     for part in value.split("|"):
         try:
@@ -806,7 +802,29 @@ def _numeric_range(
             continue
     if not numbers:
         return None
-    return (min(numbers), max(numbers))
+    return ("range", min(numbers), max(numbers))
+
+
+def _numeric_range(
+    token: object,
+    *,
+    details: tuple[float, ...],
+    variables: dict[str, float],
+) -> tuple[float, float] | None:
+    parsed = _parsed_numeric_token(str(token or ""))
+    if parsed is None:
+        return None
+    kind = parsed[0]
+    if kind == "range":
+        return (parsed[1], parsed[2])
+    if kind == "detail":
+        index = parsed[1]
+        number = float(details[index]) if index < len(details) else 0.0
+    else:
+        # Named collection variables and numeric effect parameters are
+        # separate operands. Zero must not fall back to the pet's $0.
+        number = float(variables.get(parsed[1], 0.0))
+    return (number, number)
 
 
 def _resolved_range(
@@ -844,6 +862,20 @@ def _resolved_range(
 
 
 def _scopes(arguments: tuple[str, ...]) -> frozenset[str]:
+    try:
+        return _cached_scopes(tuple(arguments))
+    except TypeError:  # an unhashable argument: compute directly
+        return _uncached_scopes(arguments)
+
+
+@lru_cache(maxsize=16384)
+def _cached_scopes(arguments: tuple[str, ...]) -> frozenset[str]:
+    # Every stat aggregator asks for the same authored modifier's scopes;
+    # cleaning the text each time was a quarter of a recalculation.
+    return _uncached_scopes(arguments)
+
+
+def _uncached_scopes(arguments) -> frozenset[str]:
     return frozenset(
         _clean_token(value).casefold()
         for value in arguments[2:]
@@ -1162,10 +1194,23 @@ def _materialized_skill_source(
     # as the existing local item bootstrap. Concrete instance rolls resolve
     # to an exact one-element range before reaching this point.
     literal = format(float(amount[1]), ".17g")
-    return CombatModifier(
+    materialized = CombatModifier(
         kind=modifier.kind,
         arguments=(literal, *modifier.arguments[1:]),
     )
+    # Every stats miss materializes the ~380 equipped-item programs again.
+    # Handing back the equal frozen object from the previous calculation keeps
+    # the identity memos downstream (skill geometry, conditional sources,
+    # signatures) hitting after each buff change.
+    interned = _MATERIALIZED_SOURCES.get(materialized)
+    if interned is None:
+        if len(_MATERIALIZED_SOURCES) >= 65536:
+            _MATERIALIZED_SOURCES.clear()
+        interned = _MATERIALIZED_SOURCES[materialized] = materialized
+    return interned
+
+
+_MATERIALIZED_SOURCES: dict[CombatModifier, CombatModifier] = {}
 
 
 _SCALED_ITEM_ATTRIBUTES = frozenset({
@@ -1329,6 +1374,56 @@ def _item_instructions(
                 for modifier in enchantment.modifiers
             )
     return tuple(result)
+
+
+# id(database) -> (database, {item signature without id/slots: instructions}).
+# Keyed by the database object, not its path: a replaced or derived database
+# with the same path and revision must not see another's instructions. The
+# stored reference keeps the id from being reused while the entry exists.
+_ITEM_INSTRUCTION_CACHE: OrderedDict = OrderedDict()
+_ITEM_INSTRUCTION_CACHE_LOCK = threading.Lock()
+_ITEM_INSTRUCTION_CACHE_MAXIMUM = 4096
+_ITEM_INSTRUCTION_DATABASES_MAXIMUM = 4
+
+
+def _cached_item_instructions(
+    database: StaticPlayerCombatDatabase,
+    item,
+) -> tuple[_Instruction, ...]:
+    """``_item_instructions`` for an item, computed once per item state.
+
+    The equipment half of a stat calculation: scaled attributes, rolled base
+    enchantments, enchantments and sockets depend only on the item and the
+    static database, while buffs change several times a second in a fight.
+    A buff change used to re-parse every equipped item. The key is the
+    combat signature minus the item id and slots, so identical items share.
+    """
+
+    database_key = id(database)
+    item_key = _combat_item_signature(item, ())[2:]
+
+    def entries_locked():
+        stored = _ITEM_INSTRUCTION_CACHE.get(database_key)
+        if stored is None or stored[0] is not database:
+            stored = _ITEM_INSTRUCTION_CACHE[database_key] = (database, OrderedDict())
+            while len(_ITEM_INSTRUCTION_CACHE) > _ITEM_INSTRUCTION_DATABASES_MAXIMUM:
+                _ITEM_INSTRUCTION_CACHE.popitem(last=False)
+        _ITEM_INSTRUCTION_CACHE.move_to_end(database_key)
+        return stored[1]
+
+    with _ITEM_INSTRUCTION_CACHE_LOCK:
+        entries = entries_locked()
+        cached = entries.get(item_key)
+        if cached is not None:
+            entries.move_to_end(item_key)
+            return cached
+    instructions = _item_instructions(database, item)
+    with _ITEM_INSTRUCTION_CACHE_LOCK:
+        entries = entries_locked()
+        entries[item_key] = instructions
+        while len(entries) > _ITEM_INSTRUCTION_CACHE_MAXIMUM:
+            entries.popitem(last=False)
+    return instructions
 
 
 def _relative_total(
@@ -1768,7 +1863,9 @@ class _OwnerCombatStatsCache:
 
 _UNOBSERVED_INVENTORY = object()
 _OWNER_COMBAT_STATS_CACHE_ATTRIBUTE = "_gameplay_combat_stats_cache"
-_OWNER_COMBAT_STATS_CACHE_MAXIMUM = 16
+# Several stacking buffs multiply the distinct modifier states a player
+# cycles through; at 16 entries they evicted each other mid-fight.
+_OWNER_COMBAT_STATS_CACHE_MAXIMUM = 64
 _OWNER_COMBAT_DATABASE_CHECK_SECONDS = 1.0
 _owner_combat_stats_cache_install_lock = threading.Lock()
 
@@ -1871,7 +1968,29 @@ def _combat_inventory_signature(inventory) -> tuple:
     )
 
 
+# (id(source), id(database)) -> (source, database, signature) for frozen
+# sources: every cast and impact re-keyed the same ~85 live entries.
+_COMBAT_SIGNATURE_CACHE: dict[tuple[int, int], tuple[object, object, tuple]] = {}
+
+
 def _combat_modifier_signature(
+    source,
+    database: StaticPlayerCombatDatabase | None = None,
+) -> tuple:
+    identity = (id(source), id(database))
+    cached = _COMBAT_SIGNATURE_CACHE.get(identity)
+    if cached is not None and cached[0] is source and cached[1] is database:
+        return cached[2]
+    signature = _uncached_combat_modifier_signature(source, database)
+    parameters = getattr(type(source), "__dataclass_params__", None)
+    if parameters is not None and parameters.frozen:
+        if len(_COMBAT_SIGNATURE_CACHE) >= 65536:
+            _COMBAT_SIGNATURE_CACHE.clear()
+        _COMBAT_SIGNATURE_CACHE[identity] = (source, database, signature)
+    return signature
+
+
+def _uncached_combat_modifier_signature(
     source,
     database: StaticPlayerCombatDatabase | None = None,
 ) -> tuple:
@@ -2315,7 +2434,7 @@ def _calculate_player_combat_stats(
     all_item_instructions = []
     item_instruction_groups = []
     for item, definition in equipped:
-        instructions = _item_instructions(database, item)
+        instructions = _cached_item_instructions(database, item)
         item_instruction_groups.append((item, definition, instructions))
         all_item_instructions.extend(instructions)
 

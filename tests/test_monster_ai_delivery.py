@@ -42,24 +42,27 @@ class MonsterDeliveryTests(unittest.TestCase):
     def frames(self):
         return [RakNetServer._parse_frames(packet)[0] for packet, _addr in self.socket.sent]
 
-    def test_disjoint_stop_batches_are_reliable_and_lost_batch_is_retransmittable(self):
+    def test_disjoint_stop_batches_are_sequenced_and_a_lost_batch_is_repeated(self):
         count = MONSTER_MOVEMENT_PACKET_BUDGET + 1
-        self.send(tuple(self.command(actor=101 + i, moving=False) for i in range(count)))
+        stops = tuple(self.command(actor=101 + i, moving=False) for i in range(count))
+        self.session.gameplay_spawned_monster_actor_ids.update(
+            command.actor_id for command in stops
+        )
+        self.send(stops)
         frames = self.frames()
         self.assertEqual(len(frames), 2)
-        self.assertTrue(all(f["reliability"] == 3 for f in frames))
-        self.assertEqual(len(self.session.pending_reliable), 2)
-        sequence = next(iter(self.session.pending_reliable))
-        retries, dropped = self.session.retransmit((sequence,), interval=0)
-        self.assertFalse(dropped)
-        retried = RakNetServer._parse_frames(retries[0][1])[0]
-        self.assertEqual(retried["payload"], frames[0]["payload"])
-        self.assertEqual(retried["order_idx"], frames[0]["order_idx"])
-        receiver = Session(("127.0.0.1", 40001), FakeSocket())
-        # Deliver the later datagram first, then recover the lost first one.
-        self.assertFalse(RakNetServer._queue_or_deliver_inbound_order_locked(receiver, frames[1]))
-        delivered = RakNetServer._queue_or_deliver_inbound_order_locked(receiver, retried)
-        self.assertEqual([payload for payload, _bits in delivered], [f["payload"] for f in frames])
+        # Retail-style: stops never enter the reliable-ordered stream.
+        self.assertTrue(all(f["reliability"] == 1 for f in frames))
+        self.assertFalse(self.session.pending_reliable)
+        self.assertEqual(len(self.session.gameplay_monster_stop_repeats), count)
+        # The first datagram is lost; its stops come again once due.
+        for _command, deadlines in self.session.gameplay_monster_stop_repeats.values():
+            deadlines[0] = 0.0
+        self.session.gameplay_monster_stop_repeat_next_at = 0.0
+        self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), count)
+        repeated = self.frames()[2:]
+        self.assertEqual([f["payload"] for f in repeated], [f["payload"] for f in frames])
+        self.assertTrue(all(f["reliability"] == 1 for f in repeated))
         self.assertTrue(all(len(packet) < 1200 for packet, _addr in self.socket.sent))
 
     def test_busy_socket_retains_latest_stop_without_waiting_or_allocating_frames(self):

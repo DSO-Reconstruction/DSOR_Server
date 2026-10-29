@@ -267,6 +267,14 @@ TOWER_MONSTER_ACTOR_BASE = LOCAL_MONSTER_ACTOR_BASE + 0x1000
 MONSTER_GROUP_SIZE = 8
 MONSTER_GROUP_RADIUS = 24.0
 MONSTER_SPAWN_MINIMUM_SPACING = 0.75
+# A collision layer this far below the nearest walkable (PathEngine) layer is
+# scenery under the floor, not ground: tall spawn volumes put their centre
+# near pit bottoms and sub-floor geometry, and grounding against that centre
+# left two thirds of Grimmag's Stone's difficulty population 4-24 m under the
+# playable level. Such a spawn moves to the collision surface within
+# WALKABLE_LAYER_SNAP of the walkable layer when one exists.
+SUNKEN_SPAWN_TOLERANCE = 1.5
+WALKABLE_LAYER_SNAP = 1.0
 TUTORIAL_GRIMMAG_MAP_ID = "a0005_start_fortress_dun"
 TUTORIAL_GRIMMAG_TEMPLATE_ID = (
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
@@ -2421,6 +2429,34 @@ def _load_spawn_areas(
     )
 
 
+def _lift_sunken_spawn(
+    navigation: PathEngineNavigationMesh | _DirectNavigationMesh,
+    terrain: MapCollisionTerrain | None,
+    position: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    """Move a spawn grounded under the walkable layer up onto that layer."""
+
+    if terrain is None or not isinstance(navigation, PathEngineNavigationMesh):
+        return position
+    try:
+        walkable = navigation.project_position(
+            position, max_horizontal_distance=0.10,
+        )[1]
+    except NavigationError:
+        return position
+    if position[1] >= walkable - SUNKEN_SPAWN_TOLERANCE:
+        return position
+    try:
+        return terrain.project_position(
+            position,
+            reference_height=walkable,
+            minimum_height=walkable - WALKABLE_LAYER_SNAP,
+            maximum_height=walkable + WALKABLE_LAYER_SNAP,
+        )
+    except CollisionTerrainError:
+        return position
+
+
 def _grounded_spawn_position(
     navigation: PathEngineNavigationMesh | _DirectNavigationMesh,
     terrain: MapCollisionTerrain | None,
@@ -2440,12 +2476,12 @@ def _grounded_spawn_position(
         )
     if terrain is not None:
         try:
-            return terrain.project_position(
+            return _lift_sunken_spawn(navigation, terrain, terrain.project_position(
                 projected,
                 reference_height=(
                     projected[1] if prefer_navigation_height else reference[1]
                 ),
-            )
+            ))
         except CollisionTerrainError:
             pass
     if isinstance(navigation, PathEngineNavigationMesh):
@@ -2552,6 +2588,7 @@ def _grounded_spawn_area_candidates(
                     minimum_height=minimum_height,
                     maximum_height=maximum_height,
                 )
+                projected = _lift_sunken_spawn(navigation, terrain, projected)
         except NavigationError:
             continue
         except CollisionTerrainError:
@@ -2591,6 +2628,7 @@ def _grounded_spawn_area_candidates(
                 )
             except CollisionTerrainError:
                 continue
+            position = _lift_sunken_spawn(navigation, terrain, position)
         walkable.append(position)
     walkable.sort(key=lambda value: (value[0], value[2], value[1]))
     needed = target_count - len(positions)

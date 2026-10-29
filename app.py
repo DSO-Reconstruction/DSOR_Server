@@ -32,6 +32,7 @@ from dso_server.services.gateway import GatewayLoginServer
 from dso_server.services.login_game import LoginGameServer
 from dso_server.runtime.stall_watchdog import StallWatchdog
 from dso_server.runtime.gc_tuning import ManagedGarbageCollector
+from dso_server.runtime.timer_resolution import raise_timer_resolution
 from dso_server.runtime.monster_runtime_diagnostics import worker_snapshot
 from dso_server.runtime.maintenance import MaintenanceShutdown
 from dso_server.runtime import resident_content
@@ -629,6 +630,9 @@ def import_server_modules() -> None:
 
 
 def main() -> None:
+    # Before any worker starts waiting: on Windows every timed wait otherwise
+    # rounds up to 15.6 ms, which made the 25 Hz map tick uneven.
+    raise_timer_resolution()
     # Before any service reads a table: every reader then gets the copy held
     # in memory (runtime/resident_content.py).
     resident_content.install(
