@@ -95,9 +95,6 @@ SUPPORTED_EVENT_TRIGGERS = frozenset({
     "pickuphealthglobe",
     "revive120",
 })
-GENERIC_SKILL_EVENT_GROUPS = frozenset({
-    "allplayerskills", "player_skills",
-})
 # Two shipped rows disagree with their localized, player-visible contracts.
 # Keep the correction explicit and executable instead of silently preserving
 # a known content typo (Ghost Smoke says critical hit; the row says hit).
@@ -196,6 +193,10 @@ class SocketStatusDefinition:
     aura_radius: float = 0.0
     aura_height: float = 0.0
     aura_shape: str = ""
+    aura_targets: str = ""
+    # Location effects use the same authored OX/OY/OZ offset as skill
+    # location effects when the server places their visuals in the world.
+    offset: tuple[float, float, float] = (0.0, 0.0, 0.0)
     stop_effect_ids: tuple[int, ...] = ()
     modifier_kinds: frozenset[str] = frozenset()
     # Item-set program markers read by _send_player_skill_status_effects.
@@ -470,6 +471,11 @@ class SocketEffectDatabase:
             aura_radius=max(0.0, float(row["AuraRadius"] or 0.0)),
             aura_height=max(0.0, float(row["AuraHeight"] or 0.0)),
             aura_shape=str(row["AuraShape"] or ""),
+            aura_targets=str(row["AuraTargets"] or ""),
+            offset=tuple(
+                self._metadata_float(metadata, key)
+                for key in ("ox", "oy", "oz")
+            ),
             stop_effect_ids=tuple(
                 int(self._status_rows[item]["EffectId"])
                 for item in stopped_resources
@@ -486,6 +492,16 @@ class SocketEffectDatabase:
                 if separator and kind.strip()
             ),
         )
+
+    @staticmethod
+    def _metadata_float(metadata: dict[str, str], key: str) -> float:
+        """Read a finite numeric modifier value, ignoring annotations."""
+
+        try:
+            value = float(metadata.get(key, "0").split("<", 1)[0].strip())
+        except (TypeError, ValueError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
 
     def _consumes_on_max_stack(
         self, resource_id: str, row: sqlite3.Row
@@ -559,14 +575,12 @@ class SocketEffectDatabase:
         nested_user_definitions, event_auras, generated_cooldown = (
             self._nested_runtime_effects(definition)
         )
-        cooldown_seconds = 0.0
-        if str(category).casefold() != "equipmentjewel":
-            cooldown_seconds = max(
-                generated_cooldown,
-                SOCKET_COOLDOWN_OVERRIDES.get(
-                    (str(template_id), str(resource_id)), 0.0
-                ),
-            )
+        cooldown_seconds = max(
+            generated_cooldown,
+            SOCKET_COOLDOWN_OVERRIDES.get(
+                (str(template_id), str(resource_id)), 0.0
+            ),
+        )
         return SocketEffectRule(
             socket_template_id=str(template_id),
             category=str(category),
@@ -928,12 +942,18 @@ class SocketEffectDatabase:
                         periodic_auras.append(periodic)
                 elif (
                     rule.kind.casefold() == "skillstatuseffect"
-                    and rule.target == "user"
-                    and rule.skill_group.casefold()
-                    in GENERIC_SKILL_EVENT_GROUPS
                     and rule.trigger not in IMMEDIATE_TRIGGERS
                 ):
+                    # Keep the authored skill scope alongside event rules.
+                    # The impact dispatcher has the resolved skill index and
+                    # can then enforce groups such as Iceball before rolling
+                    # a critical-hit proc.
                     event_index.setdefault(rule.trigger, []).append(rule)
+                    if rule.operation.casefold().startswith("mod"):
+                        # A mod rule still edits the matching skill's authored
+                        # status column; retain it as a cast modifier as well
+                        # as indexing its event scope.
+                        cast_rules.append(rule)
                 elif rule.kind.casefold() == "skillstatuseffect":
                     cast_rules.append(rule)
                 else:

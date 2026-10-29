@@ -715,14 +715,11 @@ _PARALLEL_WORLD_EXIT_BOSSES = {
     "pw007_stonekeep_01_dun": (
         "pw007_01_leader_undead_mage_heroic", "pw007_spawn_exit",
     ),
-    "pw008_kingscrypt_01_dun": (
-        "pw008_01_leader_ranger_heroic", "pw008_spawn_exit",
-    ),
     "pw010_wildcave_01_dun": (
         "pw010_01_leader_stag_heroic", "pw010_spawn_exit",
     ),
     "pw011_eternal_grove_01_dun": (
-        "pw011_01_leader_boar_heroic", "pw011_spawn_exit",
+        "pw011_01_leader_boar_heroic_02", "pw011_spawn_exit",
     ),
     "pw013_wizard_garden_01_dun": (
         "pw013_01_leader_jabbax_priest_heroic",
@@ -757,6 +754,23 @@ _PARALLEL_WORLD_EXIT_BOSSES = {
         "", "pw026_spawn_exit",
     ),
 }
+
+# Exit events that stay closed for the current run and must not be restored
+# from a previously discovered destination. Kingscrypt is included here even
+# though its boss entrance is opened by the authored key-and-lock quest, not
+# by killing a map gatekeeper.
+_PARALLEL_WORLD_EXIT_EVENT_KEYS = {
+    map_id: event_key
+    for map_id, (_boss_template, event_key)
+    in _PARALLEL_WORLD_EXIT_BOSSES.items()
+}
+_PARALLEL_WORLD_EXIT_EVENT_KEYS[
+    "pw008_kingscrypt_01_dun"
+] = "pw008_spawn_exit"
+
+# Several map exit tables contain one scene exit per selected tier. Kingscrypt
+# still needs this filtering even though its exit is quest-prop-gated.
+_PARALLEL_WORLD_TIERED_EXIT_MAPS = frozenset(_PARALLEL_WORLD_EXIT_EVENT_KEYS)
 _PARALLEL_WORLD_BOSS_REWARD_CHESTS = {
     "pw003_grimmag_01_boss": (
         "boss_grimmag", "pw003_spawn_chest",
@@ -1564,6 +1578,10 @@ class MapEventService:
             s.gameplay_fractured_planes_run = True
             key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
+        gate = _PARALLEL_WORLD_EXIT_BOSSES.get(map_key(map_id))
+        if gate is not None:
+            flags = flags - {gate[1]}
+
         with self.gameplay_world_lock:
             registry = self._map_event_registry()
             runtime = registry.get(key)
@@ -2662,16 +2680,22 @@ class MapEventService:
             if alive:
                 return
         with runtime.lock:
+            if event_key in runtime.parallel_world_gatekeepers_defeated:
+                return
+            runtime.parallel_world_gatekeepers_defeated.add(event_key)
             already_started = (
                 event_key in runtime.running
                 or event_key in runtime.pending
+                or event_key in runtime.initial_flags
             )
+            runtime.initial_flags = runtime.initial_flags - {event_key}
         if already_started:
-            # The authored kill/quest signal already ran the transition,
-            # including the staged ExitInfo -> EventUpdate -> active ExitInfo
-            # sequence. Replaying an active edge here does not create a new
-            # entity and can make the scene gate disappear without a portal.
-            return
+            # A quest/client signal may have started the event before the
+            # boss died, possibly before any ready viewer received its exit.
+            # Publish a real inactive edge before rebuilding the portal.
+            definition = runtime.catalog.event(event_key)
+            if definition is not None:
+                self._stop_map_local_event(runtime, definition)
         _log(
             f"Parallel World gatekeeper defeated on {runtime.map_id}: "
             f"starting exit event {event_key!r}"
@@ -3942,6 +3966,7 @@ class MapEventService:
         if flipped and (definition.loot_list_id or definition.chest_id):
             self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
+            self._grant_stonekeep_miller_ammunition(s, runtime, definition)
             CharacterService._quest_on_prop_interacted(
                 self, s, definition.instance_id,
                 # A prop can be reused by several quest tasks. Its definition
@@ -3957,6 +3982,124 @@ class MapEventService:
             CharacterService._achievement_on_prop_interacted(
                 self, s, definition.instance_id, definition.template_id,
             )
+
+    def _grant_stonekeep_miller_ammunition(self, s, runtime, definition) -> None:
+        """Apply the mill's authored AmmoType06 buff to its user.
+
+        The client grants this state-object status when the player uses the
+        mill, but the server also needs the status entry so combat's
+        ammunition-vulnerability check can accept hits on the Miller.
+        """
+
+        if (
+            map_key(runtime.map_id) != "pw007_stonekeep_01_dun"
+            or str(definition.template_id or "").casefold() != "pw007_mill"
+        ):
+            return
+        try:
+            database_uri = Path(self.static_database_path).resolve().as_uri()
+            with closing(sqlite3.connect(
+                f"{database_uri}?mode=ro", uri=True,
+            )) as database:
+                state = database.execute(
+                    "SELECT COALESCE(StatusEffects, '') "
+                    "FROM _Template_StateObject WHERE Id=? LIMIT 1",
+                    (definition.template_id,),
+                ).fetchone()
+                if state is None:
+                    return
+                effect_names = tuple(
+                    token.strip().split(",", 1)[0]
+                    for token in str(state[0] or "").replace(";", ",").split(",")
+                    if token.strip()
+                )
+                # The mill has one authored status. Keep the server bridge
+                # narrow so unrelated state-object effects aren't granted
+                # without their own interaction semantics being verified.
+                if "pw007_miller_attack_buff" not in {
+                    name.casefold() for name in effect_names
+                }:
+                    return
+                effect = database.execute(
+                    "SELECT rowid - 1, COALESCE(StatusEffectDuration, 0) "
+                    "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                    ("pw007_miller_attack_buff",),
+                ).fetchone()
+            if effect is None:
+                return
+            effect_id, duration_seconds = int(effect[0]), max(
+                0.0, float(effect[1] or 0.0),
+            )
+            from dso_server.gameplay.status_modifier_runtime import (
+                load_status_modifier_catalog,
+            )
+            modifiers = load_status_modifier_catalog(
+                self.static_database_path,
+            ).definitions.get(effect_id)
+            if modifiers is None or not any(
+                str(instruction.kind).casefold() == "ammunitiontype"
+                and any(
+                    str(argument).casefold() == "ammotype06"
+                    for argument in instruction.arguments
+                )
+                for instruction in modifiers.start_modifiers
+            ):
+                _log("Stonekeep mill buff has no AmmoType06 start modifier")
+                return
+            with s.flow_lock:
+                active_entries = [
+                    entry
+                    for entry in s.gameplay_persistent_status_effects.values()
+                ]
+                active_entries.extend(
+                    entry for entry, expires_at
+                    in s.gameplay_runtime_status_effects.values()
+                    if expires_at is None or float(expires_at) > time.perf_counter()
+                )
+                if any(int(entry.effect_id) == effect_id for entry in active_entries):
+                    return
+                duration_ticks = max(
+                    1, int(math.ceil(duration_seconds * SERVER_TICKS_PER_SECOND)),
+                )
+                start_tick = _session_game_tick(s) & 0xFFFFFFFF
+                instance_id = int(s.gameplay_next_status_effect_instance_id)
+                s.gameplay_next_status_effect_instance_id += 1
+                entry = StatusEffectEntry(
+                    effect_id=effect_id,
+                    field_04=instance_id,
+                    field_0c=(start_tick + duration_ticks) & 0xFFFFFFFF,
+                    field_14=SERVER_TICKS_PER_SECOND,
+                    field_08=start_tick,
+                    field_18=0,
+                    field_10=duration_ticks,
+                    field_1c=100,
+                    field_20=LOCAL_PLAYER_ACTOR_ID,
+                    field_25=False,
+                    field_26=False,
+                    field_39=False,
+                    has_details=True,
+                )
+                expires_at = time.perf_counter() + duration_ticks / float(
+                    SERVER_TICKS_PER_SECOND
+                )
+                s.gameplay_runtime_status_effects[instance_id] = (
+                    entry, expires_at,
+                )
+            value = StatusEffect(False, (entry,))
+            s.send_reliable_ordered(
+                encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),
+                track=True,
+                label="stonekeep-miller-ammunition",
+            )
+            callback = getattr(s, "gameplay_presence_callback", None)
+            if callback is not None:
+                callback(s, ("status_effects", (value,)))
+            _log(
+                f"granted Stonekeep Miller vulnerability ammo to player "
+                f"(effect {effect_id}, {duration_ticks} ticks)"
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
+            _log(f"could not grant Stonekeep Miller ammunition: {exc}")
 
     def _spawn_pw022_gorgon_from_bust(self, s, runtime, definition) -> None:
         """Spawn the guardian linked to a one-shot Mount Suvius bust prop."""
@@ -4537,6 +4680,14 @@ class MapEventService:
     def _start_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        gate = _PARALLEL_WORLD_EXIT_BOSSES.get(map_key(runtime.map_id))
+        if (
+            gate is not None
+            and definition.key == gate[1]
+            and definition.key not in runtime.parallel_world_gatekeepers_defeated
+        ):
+            _log(f"blocked Parallel World exit {definition.key!r} before verified gate clear")
+            return
         if (
             map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
             and definition.key == "pw001_spawn_exit"
@@ -4804,14 +4955,19 @@ class MapEventService:
         except Exception as exc:
             _log(f"exit refresh failed: {type(exc).__name__}: {exc}")
             return
-        parallel_world_boss_map = map_key(runtime.map_id) in _PARALLEL_WORLD_EXIT_BOSSES
-        tiers = _exit_access_difficulties(str(self.static_database_path)) if parallel_world_boss_map else {}
+        parallel_world_tiered_exit_map = (
+            map_key(runtime.map_id) in _PARALLEL_WORLD_TIERED_EXIT_MAPS
+        )
+        tiers = (
+            _exit_access_difficulties(str(self.static_database_path))
+            if parallel_world_tiered_exit_map else {}
+        )
         available = (
             {
                 tiers[d.destination_map_id] for d in definitions
                 if d.destination_map_id in tiers
             }
-            if parallel_world_boss_map else set()
+            if parallel_world_tiered_exit_map else set()
         )
         if event_sets is not None:
             wanted_event_sets = {int(value) for value in event_sets}
@@ -4847,7 +5003,7 @@ class MapEventService:
                         runtime.scaling_difficulty,
                     ),
                 ))
-                if parallel_world_boss_map else 0
+                if parallel_world_tiered_exit_map else 0
             )
             if available and selected_tier not in available:
                 _log(
@@ -4924,8 +5080,10 @@ class MapEventService:
                 if is_active:
                     active_viewer_definitions.append(definition)
                 exit_entries.append((definition, entry_active))
-            if parallel_world_boss_map:
-                # Boss rooms have a separate staged exit flow. Keep its
+            if parallel_world_tiered_exit_map:
+                # Parallel World exits have one selected variation per tier.
+                # Keep the staged scene-creation flow for every such map.
+                # Boss rooms also have a separate staged exit flow; keep its
                 # explicit per-entry active override unchanged.
                 exit_info_entries = tuple(
                     ExitInfoEntry(
@@ -4994,9 +5152,9 @@ class MapEventService:
                             and getattr(viewer, "gameplay_chase_generation", None) == generation
                             and not getattr(viewer, "gameplay_exit_transition_started", False)):
                         viewer.gameplay_map_exits = tuple(active_viewer_definitions)
-            if parallel_world_boss_map:
+            if parallel_world_tiered_exit_map:
                 _log(
-                    f"boss exits for {getattr(viewer, 'addr', '?')}: access="
+                    f"tiered Parallel World exits for {getattr(viewer, 'addr', '?')}: access="
                     f"{getattr(viewer, 'gameplay_map_access_id', '')!r} "
                     f"difficulty={selected_tier}; wire_guids={len(exit_entries)}; "
                     f"stage={'closed' if active_override is False else 'open'}; active="

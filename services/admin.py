@@ -21,6 +21,9 @@ from dso_server.gameplay.quest_content import (
     QUEST_STATE_ACCEPTED, QUEST_STATE_CLOSED, QUEST_STATE_FINISHED,
     QuestProgress, load_quest_catalog,
 )
+from dso_server.gameplay.achievement_content import (
+    AchievementProgress, complete_achievement, load_achievement_catalog,
+)
 from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
 from dso_server.protocol.character_selection import CLASS_NAMES
@@ -774,6 +777,70 @@ class AdminService:
         return {"ok": True, "quest_count": len(quests),
                 "newly_completed": completed, "online": target is not None}
 
+    def unlock_character_all_recipes(self, cid, actor, reason):
+        if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
+            raise ValueError("owned character not found")
+        state = self.store.get(cid)
+        if state is None:
+            raise ValueError("character must enter the game once before recipes can be changed")
+        if cid in self.online_characters():
+            raise ValueError("character must be offline; recipes will appear at next login")
+        # The normal gameplay catalogue deliberately contains live recipes
+        # only. CMS "all" must also include the legacy jewel crafting
+        # schematic, which is retained in the recipe table with IsLive=0.
+        with closing(sqlite3.connect(
+            f"file:{self.static_database_path.as_posix()}?mode=ro", uri=True,
+        )) as database:
+            all_resources = {
+                str(row[0]) for row in database.execute(
+                    "SELECT DISTINCT RecipeItemReference "
+                    "FROM _Template_CraftingRecipes "
+                    "WHERE RecipeItemReference IS NOT NULL "
+                    "AND RecipeItemReference<>''"
+                )
+            }
+            recipe_achievement_ids = {
+                str(row[0]).casefold() for row in database.execute(
+                    "SELECT DISTINCT AchievementReference "
+                    "FROM _Template_CraftingRecipes "
+                    "WHERE AchievementReference IS NOT NULL "
+                    "AND AchievementReference<>''"
+                )
+            }
+        previous = set(state.recipe_book_resources)
+        resources = tuple(sorted(previous | all_resources))
+        achievements = {
+            str(key).casefold(): AchievementProgress.from_document(value)
+            for key, value in state.achievements.items()
+            if isinstance(value, dict)
+        }
+        achievement_catalog = load_achievement_catalog(self.static_database_path)
+        completed_achievements = 0
+        for achievement_id in recipe_achievement_ids:
+            definition = achievement_catalog.achievement(achievement_id)
+            if definition is None:
+                continue
+            if complete_achievement(achievements, definition):
+                completed_achievements += 1
+        achievement_documents = {
+            key: value.to_document() for key, value in achievements.items()
+        }
+        self.store.put(replace(
+            state,
+            recipe_book_resources=resources,
+            achievements=achievement_documents,
+        ), flush=True)
+        newly_unlocked = len(set(resources) - previous)
+        self.repository.audit(actor.username, "character.recipes.unlock_all", cid, {
+            "newly_unlocked": newly_unlocked,
+            "total_unlocked": len(resources),
+            "achievements_completed": completed_achievements,
+            "reason": reason,
+        })
+        return {"ok": True, "newly_unlocked": newly_unlocked,
+                "total_unlocked": len(resources),
+                "achievements_completed": completed_achievements}
+
     def complete_character_ammon_parallel_world_quests(self, cid, actor, reason):
         from dso_server.gameplay.map_unlocks import (
             map_unlock_catalog, quest_map_unlocks,
@@ -1348,6 +1415,8 @@ class AdminService:
                 return self.complete_character_ammon_parallel_world_quests(cid, account, reason)
             if parts[3] == "complete-active-quests":
                 return self.complete_character_active_quests(cid, account, reason)
+            if parts[3] == "unlock-all-recipes":
+                return self.unlock_character_all_recipes(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

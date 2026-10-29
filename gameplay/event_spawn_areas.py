@@ -31,7 +31,10 @@ _ORSHA_MACHINE_BABY_TEMPLATES = (
 )
 
 _EVENT_AREA_TEMPLATE_OVERRIDES = {
-    ("pw007_stonekeep_01_dun", 3460): (
+    # Only area 21 is the final Demonic Miller encounter. Event set 3460 also
+    # contains the five overlapping mill-wave areas; applying this override
+    # to the event set as a whole spawned one boss in every wave location.
+    ("pw007_stonekeep_01_dun", 3460, 21): (
         "pw007_01_leader_undead_mage_heroic",
     ),
     # The PW017 seal's main wave is authored as ``group_seal_01_wave_main``.
@@ -128,8 +131,13 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
     if not areas:
         return ()
     overrides = {
-        area.row_id: _EVENT_AREA_TEMPLATE_OVERRIDES.get(
-            (map_key(runtime.map_id), area.event_set_row),
+        area.row_id: (
+            _EVENT_AREA_TEMPLATE_OVERRIDES.get(
+                (map_key(runtime.map_id), area.event_set_row, area.row_id),
+            )
+            or _EVENT_AREA_TEMPLATE_OVERRIDES.get(
+                (map_key(runtime.map_id), area.event_set_row),
+            )
         )
         for area in areas
     }

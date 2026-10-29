@@ -11,6 +11,7 @@ from unittest.mock import patch
 from dso_server.gameplay.local_map_state import (
     load_local_map_exits,
     load_local_map_initialization,
+    _active_client_map_database_path,
 )
 from dso_server.protocol.gameplay_protocol import UnlockMapRequest, encode_unlock_map_request
 from dso_server.services.character_server import CharacterServer
@@ -127,7 +128,9 @@ class CryptExitVisibilityTests(unittest.TestCase):
             with self.subTest(map=map_id):
                 commands, _ = load_local_map_initialization(self.path, map_id)
                 create, = (c for c in commands if c.command_id == VARIATION_INFO_COMMAND)
-                map_path = self.path.parent.parent / "maps" / (map_id + ".db4")
+                map_path = _active_client_map_database_path(map_id) or (
+                    self.path.parent.parent / "maps" / (map_id + ".db4")
+                )
                 with sqlite3.connect(f"file:{map_path.as_posix()}?mode=ro", uri=True) as db:
                     for entry in create.value.entries:
                         row = db.execute(

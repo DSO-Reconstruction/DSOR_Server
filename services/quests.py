@@ -423,8 +423,12 @@ class QuestService:
         # the portal appear before the ritual waves and Raazghul. Keep the
         # exit closed on every new runtime and let the authoritative
         # Raazghul-death handler activate it for the current instance.
-        if normalized_map == "pw001_grimmagstone_01_dun":
-            exit_destinations.pop("pw001_spawn_exit", None)
+        from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_EVENT_KEYS
+        run_gate_event = _PARALLEL_WORLD_EXIT_EVENT_KEYS.get(normalized_map)
+        if run_gate_event is not None:
+            # Visiting a boss arena or completing a quest on an earlier run
+            # does not unlock this instance's progression portal.
+            exit_destinations.pop(run_gate_event, None)
 
         def gated_by_open_quest_task(event) -> bool:
             # The exit event has an authored PlayerEnteredMap restore with a

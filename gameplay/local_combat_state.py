@@ -6708,13 +6708,20 @@ class LocalCombatState:
             return False
         return bool(scopes & wanted)
 
-    @staticmethod
     def _active_ammunition_types(
-        modifier_sources: tuple[object, ...],
+        self, modifier_sources: tuple[object, ...],
     ) -> frozenset[str]:
+        from types import SimpleNamespace
+        expanded = list(modifier_sources)
+        for source in modifier_sources:
+            if hasattr(source, "effect_id"):
+                expanded.extend(
+                    SimpleNamespace(kind=kind, arguments=arguments)
+                    for kind, arguments in self._status_modifier_program(int(source.effect_id))
+                )
         return frozenset(
             LocalCombatState._clean_modifier_token(argument).casefold()
-            for source in modifier_sources
+            for source in expanded
             if str(getattr(source, "kind", "")).casefold()
             == "ammunitiontype"
             for argument in tuple(getattr(source, "arguments", ()))

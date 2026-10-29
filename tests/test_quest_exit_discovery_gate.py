@@ -104,13 +104,12 @@ class QuestExitDiscoveryGateTests(test_quests.QuestServiceTests):
                                  state=QUEST_STATE_CLOSED, port=51804)
         self.assertEqual(self._exit_open(s, runtime), (True, True))
 
-    def test_exit_without_entry_restore_keeps_discovery_proof(self):
-        # pw008_spawn_exit opens on an interact task and has no
-        # PlayerEnteredMap restore: a relog mid-quest after reaching the boss
-        # map must still find the route open.
+    def test_parallel_world_exit_ignores_previous_boss_discovery(self):
+        # Discovering Heredur on an earlier run must not bypass Kingscrypt's
+        # current map-instance completion condition.
         quest_id, map_id = "pw007-pw008-pw009-n-re", "pw008_kingscrypt_01_dun"
         s = self._session(map_id, 51805, class_id=2)
         s.gameplay_character.level = 60
         s.gameplay_quest_log[quest_id] = QuestProgress(quest_id)
         s.gameplay_unlocked_maps.add("pw009_05_heredur_01_boss")
-        self.assertIn("pw008_spawn_exit", self.server._quest_exit_reveal_flags(s, map_id))
+        self.assertNotIn("pw008_spawn_exit", self.server._quest_exit_reveal_flags(s, map_id))

@@ -14,6 +14,7 @@ import pytest
 
 from dso_server.gameplay.local_combat_state import LocalCombatState, MonsterCombatant
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
+from dso_server.protocol.socket_effect_protocol import SocketEffectDatabase
 
 
 def _state():
@@ -103,6 +104,30 @@ def test_monster_ground_aura_ignores_its_late_entry_backlog():
     )
     assert len(hits) == 1
     assert hits[0].damage == pytest.approx(1000)
+
+
+def test_eternal_scorn_meteor_deals_150_percent_ice_damage_on_landing():
+    state = _state()
+    program = SocketEffectDatabase(
+        DEFAULT_STATIC_DB_PATH
+    ).programs["jewel_buff_xmas_event_mage"]
+    rule = next(value for value in program.rules if value.target == "location")
+    assert rule.skill_group == "iceball"
+    assert rule.definition.aura_radius == pytest.approx(5.0)
+    assert len(rule.receiver_definitions) == 1
+
+    state.start_player_location_visuals(
+        (rule.definition,), position=(0.0, 0.0, 0.0), yaw=0.0,
+        server_tick=100, owner_actor_id=1,
+        receiver_status_effects=rule.receiver_definitions,
+        player_damage_range=(100.0, 100.0), now=0.0,
+    )
+    resolutions, _applications = state.apply_player_location_auras(
+        now=0.01, server_tick=101,
+    )
+
+    assert [value.damage for value in resolutions] == [150]
+    assert state.monster_health[100] == 99_850
 
 
 def test_flood_spares_players_in_its_four_safe_circles():

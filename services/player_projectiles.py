@@ -9,13 +9,13 @@ class PlayerProjectileService:
     @staticmethod
     def _player_impact_socket_events(
             pending, resolution, *, source_actor_id: int,
-            frost_hit: bool, low_health: bool,
-            low_health_casts: set) -> tuple:
+            low_health: bool, low_health_casts: set) -> tuple:
         """Describe proc events for one impact without sending packets.
 
-        Hit/critical/frost/kill remain target events. HitLowHealth is a cast
-        event and is therefore emitted only for the first resolved target of
-        a cast.
+        Hit/critical/kill describe the attacker's impact on a target.
+        HitFrost is wearer-side (the wearer was hit while frozen), so it is
+        dispatched from the incoming-damage path instead. HitLowHealth is a
+        cast event and is emitted only for the first resolved target of a cast.
         """
 
         event_seed = (
@@ -23,23 +23,39 @@ class PlayerProjectileService:
             + int(pending.projectile_index) * 257
             + int(pending.impact_index)
         )
-        events = [("hit", resolution.server_tick, event_seed)]
+        skill_index = int(pending.skill_index)
+        hit_position = tuple(float(value) for value in resolution.position)
+        damage_range = (
+            max(0.0, float(pending.player_minimum_damage)),
+            max(0.0, float(pending.player_maximum_damage)),
+        )
+        if not any(damage_range):
+            damage_range = None
+        events = [(
+            "hit", resolution.server_tick, event_seed, skill_index,
+            hit_position, damage_range,
+        )]
         cast_key = (int(source_actor_id), int(pending.cast_id))
         if low_health and cast_key not in low_health_casts:
             low_health_casts.add(cast_key)
             events.append(
-                ("hitlowhealth", resolution.server_tick, event_seed)
+                (
+                    "hitlowhealth", resolution.server_tick, event_seed,
+                    skill_index, hit_position, damage_range,
+                )
             )
         if resolution.critical_hit:
             events.append(
-                ("hitcritical", resolution.server_tick, event_seed)
-            )
-        if frost_hit:
-            events.append(
-                ("hitfrost", resolution.server_tick, event_seed)
+                (
+                    "hitcritical", resolution.server_tick, event_seed,
+                    skill_index, hit_position, damage_range,
+                )
             )
         if resolution.killed:
-            events.append(("kill", resolution.server_tick, event_seed))
+            events.append((
+                "kill", resolution.server_tick, event_seed, skill_index,
+                hit_position, damage_range,
+            ))
         return tuple(events)
 
     @staticmethod
@@ -491,7 +507,6 @@ class PlayerProjectileService:
                         pending,
                         resolution,
                         source_actor_id=int(source_actor_id),
-                        frost_hit=frost_hit,
                         low_health=socket_low_health,
                         low_health_casts=low_health_socket_casts,
                     )

@@ -16,14 +16,147 @@ from dso_server.gameplay.local_map_state import (
     filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_map_initialization,
+    native_scene_exit_variation_entries,
 )
 from dso_server.protocol.player_init_protocol import (
     EXIT_INFO_COMMAND, decode_event_update, decode_server_command_batch,
 )
 from dso_server.services.character_server import CharacterServer
-from dso_server.services.map_events import MapEventService
+from dso_server.services.map_events import (
+    MapEventService, _PARALLEL_WORLD_EXIT_BOSSES,
+)
 from dso_server.services.map_transition import MapTransitionService
 from dso_server.protocol.gameplay_protocol import UnlockMapRequest, encode_unlock_map_request
+
+
+class ParallelWorldExitCatalogTests(unittest.TestCase):
+    def test_exit_uses_the_active_clients_guid_for_matching_map_row(self):
+        path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
+        client_guid = bytes.fromhex("00112233445566778899aabbccddeeff")
+        with patch(
+            "dso_server.gameplay.local_map_state.active_client_instance_guid_overrides",
+            return_value={3: client_guid},
+        ) as guid_overrides:
+            exits = load_local_map_exits(
+                path, "pw001_grimmagstone_01_dun",
+                include_inactive_event_sets=True,
+            )
+        gate = next(
+            exit_definition for exit_definition in exits
+            if exit_definition.exit_id == "pw001_09_exit_to_pw002_09"
+        )
+        self.assertEqual(gate.instance_guid, client_guid)
+        self.assertEqual(
+            guid_overrides.call_args.args[2], "_Instance_InteractExit",
+        )
+
+    def test_each_parallel_world_exit_has_a_native_scene_creation_entry(self):
+        path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
+        for map_id, (_boss_template, event_key) in _PARALLEL_WORLD_EXIT_BOSSES.items():
+            with self.subTest(map_id=map_id):
+                with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
+                    row = db.execute(
+                        "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
+                        "WHERE AccessGroup=? ORDER BY Difficulty DESC LIMIT 1",
+                        (map_id,),
+                    ).fetchone()
+                self.assertIsNotNone(row)
+                access_id, difficulty = row
+                exits = load_local_map_exits(
+                    path, map_id, include_inactive_event_sets=True,
+                    active_event_flags=frozenset({event_key}),
+                )
+                exits = filter_parallel_world_exits_for_access(
+                    path, map_id, exits,
+                    selected_map_access_id=access_id,
+                    selected_map_difficulty=difficulty,
+                )
+                entries = native_scene_exit_variation_entries(map_id, exits)
+                self.assertEqual(
+                    len(entries), 1,
+                    f"{map_id} did not produce exactly one selected exit scene entry",
+                )
+                expected_exit = next(
+                    exit_definition for exit_definition in exits
+                    if exit_definition.instance_guid == entries[0].instance_guid
+                )
+                self.assertEqual(
+                    entries[0].event_set_row,
+                    expected_exit.event_set_row,
+                    f"{map_id} native scene entry lost its EventSet gate",
+                )
+
+    def test_each_configured_gatekeeper_activates_its_exit_event(self):
+        path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
+        catalog = load_map_signal_catalog(path)
+        service = MapEventService()
+
+        for map_id, (boss_template, event_key) in _PARALLEL_WORLD_EXIT_BOSSES.items():
+            if not boss_template:
+                continue
+            with self.subTest(map_id=map_id):
+                runtime = MapEventRuntime(
+                    load_map_event_content(path, map_id), catalog,
+                    instance_key=("parallel-world-gatekeeper", map_id),
+                    initial_flags=frozenset(),
+                )
+                viewer = SimpleNamespace(
+                    flow_lock=Lock(), gameplay_exit_transition_started=False,
+                )
+                with patch.object(
+                    service, "_apply_map_event_transition",
+                ):
+                    service._schedule_map_local_event_start(
+                        runtime, catalog.event(event_key),
+                    )
+                    self.assertNotIn(event_key, runtime.running)
+                    service._open_parallel_world_exit_after_boss_kill(
+                        viewer, runtime, (boss_template,),
+                    )
+                self.assertIn(event_key, runtime.running)
+
+    def test_every_boss_gate_matches_its_authored_kill_rule(self):
+        path = Path(__file__).resolve().parents[1] / "data/db/static.db4"
+        catalog = load_map_signal_catalog(path)
+        kill_rules = catalog.rules_by_event_type["playerkilledmonster"]
+
+        for map_id, (boss_template, event_key) in _PARALLEL_WORLD_EXIT_BOSSES.items():
+            with self.subTest(map_id=map_id):
+                definition = catalog.event(event_key)
+                self.assertIsNotNone(definition)
+                self.assertTrue(definition.applies_to(map_id))
+                runtime = MapEventRuntime(
+                    load_map_event_content(path, map_id), catalog,
+                    instance_key=("all-parallel-world-exit-catalog", map_id),
+                    initial_flags=frozenset(),
+                )
+                transition = runtime.begin_event(definition)
+                self.assertIsNotNone(transition)
+                exits = load_local_map_exits(
+                    path, map_id, include_inactive_event_sets=True,
+                )
+                self.assertTrue(
+                    any(
+                        exit_definition.event_set_row in transition.enabled_sets
+                        and exit_definition.destination_map_id
+                        for exit_definition in exits
+                    ),
+                    f"{map_id} event {event_key} does not enable a map exit",
+                )
+                if not boss_template:
+                    continue
+                matching_rules = [
+                    rule for rule in kill_rules
+                    if map_id.casefold() in rule.maps
+                    and boss_template.casefold() in {
+                        param.casefold() for param in rule.params
+                    }
+                ]
+                self.assertTrue(
+                    matching_rules,
+                    f"{map_id} exit gate expects {boss_template}, but no "
+                    "PlayerKilledMonster rule reports that boss",
+                )
 
 
 class GrimmagstoneExitTests(unittest.TestCase):
@@ -149,10 +282,18 @@ class GrimmagstoneExitTests(unittest.TestCase):
         expected = self.viewer.gameplay_map_exits[0].instance_guid
         cached_guids = set()
         active, created = initially_active, False
-        for _label, packet, bits in packets:
+        for label, packet, bits in packets:
             if packet[0] == 0x85:
                 command, = decode_server_command_batch(packet, bits)
-                cached_guids.update(e.instance_guid for e in command.value.exits)
+                if label == "map-event-native-exit-variation-info":
+                    variation_guids = {
+                        entry.instance_guid for entry in command.value.entries
+                    }
+                    cached_guids.update(variation_guids)
+                    if active and expected in variation_guids:
+                        created = True
+                else:
+                    cached_guids.update(e.instance_guid for e in command.value.exits)
             else:
                 for event in decode_event_update(packet, bits).events:
                     if event.event_name != self.event_key:
@@ -208,10 +349,17 @@ class GrimmagstoneExitTests(unittest.TestCase):
                 self.packets.clear()
                 self.kill_gatekeeper()
                 saw_activation = False
-                for _, packet, bits in self.packets:
+                for label, packet, bits in self.packets:
                     if packet[0] == 0x85:
                         command, = decode_server_command_batch(packet, bits)
-                        cache.update({entry.exit_id: entry.instance_guid for entry in command.value.exits})
+                        if label == "map-event-native-exit-variation-info":
+                            self.assertEqual(
+                                {entry.instance_guid for entry in command.value.entries}
+                                & tier_guids,
+                                {expected.instance_guid},
+                            )
+                        else:
+                            cache.update({entry.exit_id: entry.instance_guid for entry in command.value.exits})
                         self.assertEqual(set(cache.values()) & tier_guids, {expected.instance_guid})
                     else:
                         update = decode_event_update(packet, bits)
@@ -249,6 +397,7 @@ class GrimmagstoneExitTests(unittest.TestCase):
         self.assertIn(self.event_key, self.runtime.running)
         self.assertEqual([label for label, _, _ in self.packets], [
             "map-event-exit-info", "map-event-update",
+            "map-event-native-exit-variation-info",
             "map-event-exit-info",
         ])
         command, = decode_server_command_batch(
@@ -265,14 +414,14 @@ class GrimmagstoneExitTests(unittest.TestCase):
         self.assertEqual(exit_event.event_id, 0)
         self.assertTrue(exit_event.flags[0])
         command, = decode_server_command_batch(
-            self.packets[2][1], self.packets[2][2],
+            self.packets[-1][1], self.packets[-1][2],
         )
         active_exits = [e for e in command.value.exits if e.field_10 == 1]
         self.assertEqual(len(active_exits), 1)
         self.assertEqual(active_exits[0].map_id, self.destination.format(tier=7))
         self.assertTrue(self.client_creates_portal(self.packets))
 
-    def test_running_server_event_is_not_replayed_after_gatekeeper_kill(self):
+    def test_premature_running_event_is_rebuilt_once_after_gatekeeper_kill(self):
         transition = self.runtime.begin_event(self.runtime.catalog.event(self.event_key))
         with patch.multiple(
             self.service,
@@ -283,6 +432,9 @@ class GrimmagstoneExitTests(unittest.TestCase):
             _spawn_event_npcs=lambda *args: None,
         ):
             self.service._apply_map_event_transition(self.runtime, transition)
+        self.packets.clear()
+        self.kill_gatekeeper()
+        self.assertTrue(self.client_creates_portal(self.packets, initially_active=True))
         self.packets.clear()
         self.kill_gatekeeper()
         self.assertFalse(self.packets)
@@ -308,7 +460,7 @@ class GrimmagstoneExitTests(unittest.TestCase):
         command, = decode_server_command_batch(
             self.packets[0][1], self.packets[0][2],
         )
-        self.assertEqual(command.value.exits[0].field_10, 0)
+        self.assertFalse(command.value.exits)
         event_update = next(
             decode_event_update(packet, bits)
             for label, packet, bits in self.packets

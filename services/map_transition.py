@@ -26,7 +26,7 @@ from dso_server.gameplay.map_difficulty_state import (
     map_teleport_access_group_override,
 )
 from dso_server.gameplay.quest_content import QUEST_STATE_ACCEPTED, active_tasks
-from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
+from dso_server.services.map_events import _PARALLEL_WORLD_TIERED_EXIT_MAPS
 
 
 LOGOUT_COUNTDOWN_SECONDS = 10.0
@@ -1032,7 +1032,7 @@ class MapTransitionService:
                     )
                 if (
                     request.exit_id != definition.exit_id
-                    and map_key(gameplay_map) in _PARALLEL_WORLD_EXIT_BOSSES
+                    and map_key(gameplay_map) in _PARALLEL_WORLD_TIERED_EXIT_MAPS
                 ):
                     destination_access_id = authored_exit_url
                 else:

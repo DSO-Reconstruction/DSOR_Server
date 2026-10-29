@@ -1291,6 +1291,19 @@ class MonsterCombatService(
             if target_session is None:
                 continue
             with _post_commit_step("socket-status-updates"):
+                if (
+                    int(getattr(resolution, "damage", 0)) > 0
+                    and CharacterService._player_is_frozen(target_session)
+                ):
+                    CharacterService._dispatch_socket_event(
+                        target_session,
+                        "hitfrost",
+                        server_tick=int(resolution.server_tick),
+                        event_seed=(
+                            int(resolution.attacker_actor_id)
+                            ^ int(resolution.skill_index)
+                        ),
+                    )
                 if bool(getattr(resolution, "blocked", False)):
                     CharacterService._dispatch_socket_event(
                         target_session,

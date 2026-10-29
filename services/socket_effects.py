@@ -10,9 +10,40 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
+TRIGGERED_JEWEL_BUFF_COOLDOWN_SECONDS = 2.0
+
 
 class SocketEffectService:
     """Dispatch cached socket procs and conditional transitions."""
+
+    @staticmethod
+    def _player_is_frozen(s: Session) -> bool:
+        """Whether this player's active status effects include a freeze."""
+
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return False
+        has_group = getattr(combat, "status_sources_have_group", None)
+        if has_group is None:
+            return False
+        sources = CharacterService._active_skill_modifier_sources(s)
+        return bool(has_group(sources, ("frost", "freeze")))
+
+    @staticmethod
+    def _socket_rule_cooldown_seconds(rule) -> float:
+        """Return the authored cooldown plus the temporary proc-buff limit."""
+
+        cooldown = max(0.0, float(rule.cooldown_seconds))
+        if (
+            str(rule.category).casefold() == "equipmentjewel"
+            and str(rule.target).casefold() == "user"
+            and str(rule.kind).casefold()
+            in {"actorstatuseffect", "skillstatuseffect"}
+        ):
+            cooldown = max(
+                cooldown, TRIGGERED_JEWEL_BUFF_COOLDOWN_SECONDS
+            )
+        return cooldown
 
     @staticmethod
     def _stop_socket_event_effects(
@@ -122,6 +153,10 @@ class SocketEffectService:
             float(definition.aura_radius),
             float(definition.aura_height),
             str(definition.aura_shape),
+            str(getattr(definition, "aura_targets", "")),
+            tuple(float(value) for value in getattr(
+                definition, "offset", (0.0, 0.0, 0.0)
+            )),
             tuple(int(value) for value in definition.stop_effect_ids),
             tuple(sorted(str(value) for value in definition.modifier_kinds)),
         )
@@ -268,11 +303,20 @@ class SocketEffectService:
 
         occurrences = tuple(
             (
-                normalize_socket_trigger(event),
-                int(server_tick) & 0xFFFFFFFF,
-                int(event_seed),
+                normalize_socket_trigger(value[0]),
+                int(value[1]) & 0xFFFFFFFF,
+                int(value[2]),
+                (int(value[3]) if len(value) > 3 and value[3] is not None else None),
+                (
+                    tuple(float(coordinate) for coordinate in value[4])
+                    if len(value) > 4 and value[4] is not None else None
+                ),
+                (
+                    tuple(max(0.0, float(part)) for part in value[5][:2])
+                    if len(value) > 5 and value[5] is not None else None
+                ),
             )
-            for event, server_tick, event_seed in events
+            for value in events
         )
         if not occurrences:
             return ()
@@ -284,7 +328,10 @@ class SocketEffectService:
         from dso_server.services.item_set_events import (
             BRIDGED_EVENTS, dispatch_item_set_event,
         )
-        for trigger, server_tick, event_seed in occurrences:
+        for (
+            trigger, server_tick, event_seed, _skill_index,
+            _event_position, _damage_range
+        ) in occurrences:
             if trigger in BRIDGED_EVENTS:
                 dispatch_item_set_event(
                     s, trigger, server_tick=server_tick, event_seed=event_seed,
@@ -295,11 +342,51 @@ class SocketEffectService:
         if evaluation is None:
             return empty_results
 
+        # Resolve the skill scopes once per event batch. SkillStatusEffect
+        # rules can share an event (for example HitCritical) while applying
+        # to different skills; event type alone must not make an Ice Missile
+        # jewel proc on Frost Nova.
+        combat_state = getattr(s, "gameplay_combat_state", None)
+        skill_geometries = {}
+        if combat_state is not None:
+            for skill_index in {
+                skill_index
+                for (
+                    _trigger, _tick, _seed, skill_index, _position,
+                    _damage_range
+                ) in occurrences
+                if skill_index is not None
+            }:
+                geometry = combat_state._load_player_skill_geometry(
+                    int(skill_index)
+                )
+                if geometry is not None:
+                    skill_geometries[int(skill_index)] = geometry
+
         active_occurrences = []
         results = []
         with s.flow_lock:
-            for trigger, server_tick, event_seed in occurrences:
+            for (
+                trigger, server_tick, event_seed, skill_index,
+                event_position, event_damage_range
+            ) in occurrences:
                 rules = tuple(evaluation.rules_for_event(trigger))
+                geometry = (
+                    skill_geometries.get(int(skill_index))
+                    if skill_index is not None else None
+                )
+                rules = tuple(
+                    rule for rule in rules
+                    if (
+                        not rule.skill_group
+                        or (
+                            geometry is not None
+                            and combat_state._skill_scope_matches(
+                                geometry, (rule.skill_group,)
+                            )
+                        )
+                    )
+                )
                 if not rules:
                     if VERBOSE_PACKET_LOGGING:
                         print(
@@ -328,7 +415,7 @@ class SocketEffectService:
                         )
                     )
                     for rule in rules
-                    if float(rule.cooldown_seconds) > 0.0
+                    if CharacterService._socket_rule_cooldown_seconds(rule) > 0.0
                 }
                 event_now = time.perf_counter()
                 passed = []
@@ -396,14 +483,17 @@ class SocketEffectService:
                             f"effect={rule.definition.resource_id!r}: "
                             "passed; applying status effect"
                         )
-                    if float(rule.cooldown_seconds) > 0.0:
+                    cooldown_seconds = (
+                        CharacterService._socket_rule_cooldown_seconds(rule)
+                    )
+                    if cooldown_seconds > 0.0:
                         s.gameplay_socket_event_state[
                             (
                                 "cooldown",
                                 rule.socket_template_id,
                                 int(rule.definition.effect_id),
                             )
-                        ] = event_now + float(rule.cooldown_seconds)
+                        ] = event_now + cooldown_seconds
                 passed_result = tuple(passed)
                 results.append(passed_result)
                 if passed_result:
@@ -414,6 +504,8 @@ class SocketEffectService:
                             event_seed,
                             event_now,
                             passed_result,
+                            event_position,
+                            event_damage_range,
                         )
                     )
         if not active_occurrences:
@@ -430,6 +522,8 @@ class SocketEffectService:
             event_seed,
             _event_now,
             passed,
+            event_position,
+            event_damage_range,
         ) in active_occurrences:
             for ordinal, rule in enumerate(passed):
                 if rule.target == "user":
@@ -437,7 +531,10 @@ class SocketEffectService:
                         rule.definition, *rule.nested_user_definitions
                     ):
                         normalized = replace(definition, chance=1.0)
-                        if rule.category.casefold() == "equipmentjewel":
+                        if (
+                            rule.category.casefold() == "equipmentjewel"
+                            and int(normalized.max_stack_size) <= 1
+                        ):
                             jewel_user_effect_ids.add(
                                 int(normalized.effect_id)
                             )
@@ -529,6 +626,8 @@ class SocketEffectService:
                             server_tick,
                             event_seed,
                             ordinal,
+                            event_position,
+                            event_damage_range,
                         ),
                     )
 
@@ -640,25 +739,39 @@ class SocketEffectService:
                         max(value[1] for value in active_occurrences),
                     ),
                 )
+            if location_applications and any(
+                values[-1] is None
+                for values in location_applications.values()
+            ):
+                # Location procs need the wearer's real damage range to
+                # resolve their receiver effects.  The item-set evaluation
+                # is optional and is unrelated to whether the wearer has
+                # player stats; gating this on it left socket-only users at
+                # the (1, 1) fallback, making meteor and other location
+                # procs effectively deal no damage.
+                from dso_server.services.endless_tower_buffs import tower_damage_range
+
+                location_damage_range = tower_damage_range(
+                    combat.encounter.static_database_path, s,
+                    CharacterService._active_skill_modifier_sources(s),
+                )
             for (
                 definition,
                 receivers,
                 server_tick,
                 event_seed,
                 ordinal,
+                event_position,
+                event_damage_range,
             ) in location_applications.values():
-                location_damage_range = (1.0, 1.0)
-                if _evaluation is not None:
-                    from dso_server.services.endless_tower_buffs import tower_damage_range
-                    location_damage_range = tower_damage_range(
-                        combat.encounter.static_database_path, s,
-                        CharacterService._active_skill_modifier_sources(s),
-                    )
                 CharacterService._schedule_player_location_visuals(
                     s,
                     combat,
                     (definition,),
-                    position=position,
+                    position=(
+                        event_position
+                        if event_position is not None else position
+                    ),
                     yaw=float(getattr(last_move, "yaw", 0.0)),
                     server_tick=int(server_tick) & 0xFFFFFFFF,
                     owner_actor_id=int(owner_actor_id),
@@ -671,7 +784,11 @@ class SocketEffectService:
                         definition.delay_ticks / SERVER_TICKS_PER_SECOND
                     ),
                     receiver_status_effects=receivers,
-                    player_damage_range=location_damage_range,
+                    player_damage_range=(
+                        event_damage_range
+                        if event_damage_range is not None
+                        else location_damage_range
+                    ),
                 )
 
         chained_events = {}
@@ -720,12 +837,13 @@ class SocketEffectService:
     @staticmethod
     def _dispatch_socket_event(
             s: Session, event: str, *, server_tick: int,
-            event_seed: int = 0, _depth: int = 0) -> tuple:
+            event_seed: int = 0, _depth: int = 0,
+            skill_index: int | None = None) -> tuple:
         """Compatibility wrapper for PvP and other single-event callers."""
 
         return CharacterService._dispatch_socket_event_batch(
             s,
-            ((event, server_tick, event_seed),),
+            ((event, server_tick, event_seed, skill_index),),
             _depth=_depth,
         )[0]
 
