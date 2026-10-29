@@ -1315,6 +1315,19 @@ class CombatResolutionService:
         if getattr(s, "gameplay_item_set_programs", None):
             CharacterService._expire_runtime_status_effects(s)
         definitions = list(definitions)
+        # Heavy Blow's localized contract is 10% per hit for five seconds.
+        # The shipped victim column still supplies 5%; skill modifiers can
+        # further change that parameter before this causer-hosted buff lands.
+        definitions = [
+            replace(
+                definition, values=(0.10, *definition.values[1:]),
+                duration_ticks=round(5.0 * SERVER_TICKS_PER_SECOND),
+                max_stack_size=5,
+            )
+            if definition.resource_id == "skill_mightystab_buff_attackspeed"
+            else definition
+            for definition in definitions
+        ]
         set_named = {
             rule.resource_id.casefold()
             for rule in collect_set_proc_rules(
@@ -1402,7 +1415,8 @@ class CombatResolutionService:
                         if previous is not None else 0
                     )
                 )
-                if definition.item_set_program:
+                if (definition.item_set_program
+                        or definition.resource_id == "skill_mightystab_buff_attackspeed"):
                     stack_index = min(stack_index, max(0, definition.max_stack_size - 1))
                 start_tick = int(server_tick) & 0xFFFFFFFF
                 entry = StatusEffectEntry(
@@ -1433,6 +1447,7 @@ class CombatResolutionService:
                     and definition.resource_id in {
                         "skill_frostwind_buff_iceball_damage",
                         "skill_frostwind_buff_frostnova_damage",
+                        "skill_mightystab_buff_attackspeed",
                     }
                     and previous.field_18 >= definition.max_stack_size - 1
                 )
@@ -1687,7 +1702,7 @@ class CombatResolutionService:
                 raw.partition(":")[0].strip().casefold()
                 for raw in tick_modifiers.split(";")
             }
-            if not kinds & {"activecooldown", "actorcooldownreset"}:
+            if not kinds & {"activecooldown", "actorcooldownreset", "actorstatuseffect"}:
                 return
             interval = max(1.0 / SERVER_TICKS_PER_SECOND, cooldown_interval)
             duration = max(0, definition.duration_ticks) / SERVER_TICKS_PER_SECOND
@@ -1827,6 +1842,13 @@ class CombatResolutionService:
                 s.gameplay_projectile_timers.pop(timer_key, None)
         if replacement is not None:
             replacement.start()
+        if not getattr(runtime[0], "item_set_program", False):
+            children = combat.player_status_tick_effects(int(runtime[0].effect_id))
+            if children:
+                CharacterService._send_player_skill_status_effects(
+                    s, children, server_tick=int(s.gameplay_chase_server_tick),
+                    label="player-status-tick-children",
+                )
         if healing_transition is not None:
             current, maximum, recovered, tick = healing_transition
             CharacterService._send_player_heal_transition(

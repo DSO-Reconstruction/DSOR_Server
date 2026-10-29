@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+from dso_server.gameplay.combat_entities import PLANAR_MELEE_TARGET_SKILLS
 
 from dso_server.runtime.context import *
 from dso_server.runtime import latency_stats
@@ -88,7 +89,13 @@ class PlayerCombatService(PlayerCastTimingService):
         visible_actor_positions,
     ) -> None:
         try:
-            geometry = combat._load_player_skill_geometry(skill_index)
+            # Report the same modified geometry the planner actually used;
+            # the base DB row may have a server-side range override or a
+            # talent/item modifier and would make this diagnostic misleading.
+            geometry = (
+                plan.geometry if plan is not None
+                else combat._load_player_skill_geometry(skill_index)
+            )
             origin = combat.encounter.coordinate_frame.wire_to_world(position)
             hit_ids = {
                 impact.target.actor_id
@@ -110,6 +117,18 @@ class PlayerCombatService(PlayerCastTimingService):
                     f"{' not-sent' if eligible_actor_ids is not None and actor_id not in eligible_actor_ids else ''}"
                     f"{' home' if actor_id in combat.returning_home_actor_ids else ''}"
                 )
+                actor = combat.monsters[actor_id]
+                if geometry is not None and geometry.targeting_type.casefold() == "actor":
+                    target_radius = (
+                        actor.target_radius
+                        if actor.target_radius is not None
+                        else actor.collision_radius
+                    )
+                    allowed = geometry.attack_range + target_radius + 0.525
+                    entry += (
+                        f" center={math.dist(at, origin):.1f}m"
+                        f" reach={allowed:.1f}m"
+                    )
                 if seen is not None:
                     entry += (
                         " seen@"
@@ -118,10 +137,12 @@ class PlayerCombatService(PlayerCastTimingService):
                 nearby.append(entry)
             resource_id = geometry.resource_id if geometry else str(skill_index)
             targeting = geometry.targeting_type if geometry else "?"
+            attack_range = geometry.attack_range if geometry else 0.0
             hit_range = geometry.hit_range if geometry else 0.0
             print(
-                f"[skill-trace] {resource_id} ({targeting}, hit range "
-                f"{hit_range:.2f}) at {tuple(round(v, 1) for v in origin)}: "
+                f"[skill-trace] {resource_id} ({targeting}, attack range "
+                f"{attack_range:.2f}, hit range {hit_range:.2f}) at "
+                f"{tuple(round(v, 1) for v in origin)}: "
                 f"{len(hit_ids)} hit; " + ", ".join(nearby)
             )
         except Exception as exc:
@@ -707,7 +728,9 @@ class PlayerCombatService(PlayerCastTimingService):
             )
             target_position = None
             explicit_target_actor_ids = (
-                client_skill.target_actor_id,
+                (client_skill.target_actor_id,)
+                if client_skill.target_actor_id != 0
+                else ()
             )
         elif command_id == SHIFTED_SKILL_COMMAND:
             client_skill = decode_shifted_skill(
@@ -730,7 +753,16 @@ class PlayerCombatService(PlayerCastTimingService):
             )
             return
         CharacterService._accept_gameplay_state_command(s, command_id)
-        if command_id == TARGET_SKILL_COMMAND and client_skill.target_actor_id == 0:
+        combat_state = getattr(s, 'gameplay_combat_state', None)
+        geometry = (
+            combat_state._load_player_skill_geometry(client_skill.skill_index)
+            if combat_state is not None else None
+        )
+        is_planar_melee = (
+            geometry is not None
+            and geometry.resource_id.casefold() in PLANAR_MELEE_TARGET_SKILLS
+        )
+        if command_id == TARGET_SKILL_COMMAND and client_skill.target_actor_id == 0 and not is_planar_melee:
             # Target loss is a no-op before mount, resource, cooldown, or hit
             # side effects. Never turn it into an untargeted area attack.
             with s.flow_lock:
@@ -977,7 +1009,16 @@ class PlayerCombatService(PlayerCastTimingService):
                         visible_actor_positions=visible_actor_positions, additional_entities=pvp_snapshot[1],
                         attack_speed_multiplier=skill_speed_multiplier, now=now,
                     )
-                    if SKILL_TRACE:
+                    if SKILL_TRACE or (
+                        entity_plan is not None
+                        and entity_plan.geometry.resource_id.casefold()
+                        in {"mightystab", "mightystab_light"}
+                    ):
+                        print(
+                            f"[skill-trace] command={type(client_skill).__name__} "
+                            f"skill={client_skill.skill_index} cast={client_skill.cast_id} "
+                            f"explicit_targets={explicit_target_actor_ids}"
+                        )
                         CharacterService._trace_spatial_skill(
                             combat,
                             client_skill.skill_index,
@@ -1217,18 +1258,29 @@ class PlayerCombatService(PlayerCastTimingService):
             and source_actor_id is not None
             and location_visual_definitions
         ):
-            CharacterService._schedule_player_location_visuals(
-                s,
-                combat,
-                location_visual_definitions,
-                position=location_position_world,
-                yaw=float(client_skill.aim_angle),
-                server_tick=int(client_skill.server_tick),
-                owner_actor_id=int(source_actor_id),
-                cast_id=int(client_skill.cast_id),
-                delay_seconds=location_visual_delay,
-                source_skill_index=int(client_skill.skill_index),
+            cast_visual_definitions = tuple(
+                v for v in location_visual_definitions
+                if normalize_socket_trigger(v.trigger) not in ('hit', 'kill', 'hitcritical')
             )
+            if cast_visual_definitions:
+                location_receivers = combat.player_skill_location_receiver_effects(
+                    client_skill.skill_index,
+                    modifier_sources=modifier_effect_ids,
+                )
+                CharacterService._schedule_player_location_visuals(
+                    s,
+                    combat,
+                    cast_visual_definitions,
+                    position=location_position_world,
+                    yaw=float(client_skill.aim_angle),
+                    server_tick=int(client_skill.server_tick),
+                    owner_actor_id=int(source_actor_id),
+                    cast_id=int(client_skill.cast_id),
+                    delay_seconds=location_visual_delay,
+                    receiver_status_effects=location_receivers,
+                    source_skill_index=int(client_skill.skill_index),
+                    player_damage_range=player_damage_range,
+                )
         for timer in timers:
             timer.start()
         for timer in pvp_timers:

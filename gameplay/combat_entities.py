@@ -62,6 +62,8 @@ def distance(a, b):
 # SkillUpdateTask's radius query (0x140a3d020) skips actors more than this far
 # above or below its centre (0x140e31624).
 CLIENT_AREA_HEIGHT_TOLERANCE = 10.0
+PLANAR_MELEE_TARGET_SKILLS = frozenset({"mightystab", "mightystab_light"})
+PLANAR_MELEE_TARGET_VERTICAL_REACH = CLIENT_AREA_HEIGHT_TOLERANCE
 
 
 def shape_radius(entity):
@@ -240,7 +242,7 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     client's actor-targeted test subtracts as well as the target's.
     """
     entities = tuple({e.actor_id: e for e in entities}.values())
-    explicit = tuple(dict.fromkeys(int(v) for v in explicit_targets))
+    explicit = tuple(dict.fromkeys(int(v) for v in explicit_targets if int(v) != 0))
     length = math.hypot(direction[0], direction[2])
     aim = (direction[0] / length, direction[2] / length) if length > 1e-6 else (0.0, 0.0)
     maximum_range = max(geometry.attack_range, geometry.projectile_range) if projectile else geometry.attack_range
@@ -255,6 +257,38 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
         return EntitySkillPlan(geometry, ())
     radius = max(0.25, geometry.hit_range, geometry.impact_radius, area_radius)
     targeting = geometry.targeting_type.casefold()
+    if (
+        not projectile
+        and targeting == "actor"
+        and geometry.resource_id.casefold() in PLANAR_MELEE_TARGET_SKILLS
+    ):
+        candidates = []
+        for entity in entities:
+            if explicit and entity.actor_id not in explicit:
+                continue
+            reach = None
+            size = shape_radius(entity) + caster_radius
+            for sample in (entity.observed_position, entity.position, *entity.recent_positions):
+                if abs(sample[1] - origin[1]) > PLANAR_MELEE_TARGET_VERTICAL_REACH:
+                    continue
+                dx, dz = sample[0] - origin[0], sample[2] - origin[2]
+                sample_reach = math.hypot(dx, dz)
+                if sample_reach > geometry.attack_range + size:
+                    continue
+                if entity.actor_id not in explicit and length > 1e-6:
+                    forward = dx * aim[0] + dz * aim[1]
+                    if forward <= 0 or (sample_reach > 1e-6 and forward / sample_reach < math.cos(math.radians(45.0))):
+                        continue
+                reach = sample_reach if reach is None else min(reach, sample_reach)
+            if reach is not None:
+                priority = (0 if entity.actor_id in explicit else 1, reach)
+                candidates.append((priority, reach, entity))
+        candidates.sort(key=lambda c: c[0])
+        impacts = [
+            EntityImpact(entity, 0, reach, reach, impact_delay)
+            for _, reach, entity in candidates[:geometry.impact_count]
+        ]
+        return EntitySkillPlan(geometry, tuple(impacts))
     if not projectile:
         candidates = []
         for entity in entities:
@@ -364,10 +398,11 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
         <= maximum_range + by_id[v].collision_radius) and in_sight(by_id[v])]
     contacts = {}
     if point is not None:
-        # A point bullet (Frozen Orb, Grenade) explodes through the same
-        # radius query as a ground skill.
+        # A point bullet (Frozen Orb, Grenade, Explosive Arrow) explodes
+        # through its splash/impact radius query at the point.
+        point_reach = splash_radius if splash_radius > 0 else (geometry.impact_radius if geometry.impact_radius > 0 else radius)
         direct = sorted((e for e in entities
-                         if _area_reach(e, point, max(radius, splash_radius)) is not None),
+                         if _area_reach(e, point, point_reach) is not None),
                         key=lambda e: (distance(point, e.observed_position), e.actor_id))
     elif not direct and not require_explicit_target:
         candidates = []

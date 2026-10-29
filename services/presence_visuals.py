@@ -119,7 +119,9 @@ class PresenceVisualService:
     def _send_player_location_visuals_to(session: Session, visuals) -> None:
         """Reconcile native world effects with one client's registrations."""
 
-        visuals = tuple(visuals)
+        # Actor-hosted auras already render through StatusEffect. Their
+        # internal receiver areas must not create duplicate ground VFX.
+        visuals = tuple(v for v in visuals if not getattr(v, "follows_owner", False))
         current_by_id = {int(visual.instance_id): visual for visual in visuals}
         with session.flow_lock:
             known = set(session.gameplay_location_effect_ids)

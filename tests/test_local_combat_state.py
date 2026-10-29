@@ -1,4 +1,5 @@
 import math
+from dso_server.tests.test_ranger_projectile_hits import skill_id as ranger_skill_id
 import sqlite3
 import time
 import unittest
@@ -1305,12 +1306,13 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertTrue(all(value.motion_type == "Area" for value in pending))
 
     def test_explosive_arrow_uses_location_aura_explosion_radius(self):
+        self.state._bullet_static_reach = lambda _offset: None
         player_world = (0.0, 2.0, 0.0)
         direct_actor, splash_actor = self.encounter.actor_ids
         self.state.monster_positions[direct_actor] = (0.0, 2.0, -8.0)
         self.state.monster_positions[splash_actor] = (3.0, 2.0, -8.0)
         cast = BulletSkill(
-            0, 1871, 0.0, 2000, 3401,
+            0, ranger_skill_id("explosiveshot"), 0.0, 2000, 3401,
             (0.0, 0.0, -1.0, 0.0), 1,
         )
 
@@ -1330,7 +1332,7 @@ class LocalCombatStateTests(unittest.TestCase):
         )
 
     def test_wild_pack_spawns_three_separated_wolves(self):
-        definition = self.state.player_summon_definition(1877)
+        definition = self.state.player_summon_definition(ranger_skill_id("packofwolves"))
         self.assertEqual(definition.amount, 3)
         spawn = self.state.spawn_player_summon(
             definition,
@@ -1362,7 +1364,7 @@ class LocalCombatStateTests(unittest.TestCase):
             velocity,
             visuals,
             receiver_effects,
-        ) = self.state.player_skill_bullet_location_trail(1879)
+        ) = self.state.player_skill_bullet_location_trail(ranger_skill_id("thorntrail"))
         self.assertAlmostEqual(rate, 0.267, places=3)
         self.assertAlmostEqual(start_delay, 0.24, places=2)
         self.assertGreaterEqual(maximum_range, 18.0)
@@ -1385,15 +1387,15 @@ class LocalCombatStateTests(unittest.TestCase):
             owner_actor_id=98305,
             cast_id=4401,
             receiver_status_effects=receiver_effects,
-            source_skill_index=1879,
+            source_skill_index=ranger_skill_id("thorntrail"),
             player_damage_range=(100.0, 100.0),
             now=100.0,
         )
 
-        first = self.state.apply_player_location_auras(
+        _, first = self.state.apply_player_location_auras(
             now=100.0, server_tick=500
         )
-        repeated = self.state.apply_player_location_auras(
+        _, repeated = self.state.apply_player_location_auras(
             now=100.04, server_tick=501
         )
 
@@ -1422,7 +1424,7 @@ class LocalCombatStateTests(unittest.TestCase):
         self.state.monster_positions[target_actor] = (1.2, 2.0, 0.0)
 
         pending = self.state.start_spatial_skill_hits(
-            skill_index=1878,  # ranger mightystab: MeleeTarget + Actor
+            skill_index=ranger_skill_id("mightystab"),  # ranger mightystab: MeleeTarget + Actor
             cast_id=3303,
             server_tick=2000,
             player_position=self._wire(player_world),
@@ -1988,11 +1990,12 @@ class LocalCombatStateTests(unittest.TestCase):
         )
 
     def test_victim_mark_modifies_followup_damage_and_punch_through(self):
+        self.state._bullet_static_reach = lambda _offset: None
         player_world = (0.0, 2.0, 0.0)
         marked_actor, rear_actor = self.encounter.actor_ids
         self.state.monster_positions[marked_actor] = (4.0, 2.0, 0.0)
         self.state.monster_positions[rear_actor] = (7.0, 2.0, 0.0)
-        markshot = self.state._load_player_skill_geometry(1867)
+        markshot = self.state._load_player_skill_geometry(ranger_skill_id("markshot"))
         mark = next(
             effect
             for effect in markshot.victim_status_effects
@@ -2003,7 +2006,7 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         mightyshot = BulletSkill(
             0,
-            1870,
+            ranger_skill_id("mightyshot"),
             0.0,
             2000,
             3304,
@@ -2030,19 +2033,19 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertAlmostEqual(marked_hit.damage_modifier, 3.5)
 
     def test_ranger_mark_bonuses_cover_every_authored_skill(self):
-        markshot = self.state._load_player_skill_geometry(1867)
+        markshot = self.state._load_player_skill_geometry(ranger_skill_id("markshot"))
         mark = next(
             effect
             for effect in markshot.victim_status_effects
             if effect.resource_id == 'debuff_cc_mark'
         )
         affected_skill_indexes = (
-            1871,  # explosive arrow
-            1878,  # deadly blow
-            1870,  # precise shot
-            1868,  # blade dance
-            1875,  # bird of prey
-            1876,  # scatter shot
+            ranger_skill_id("explosiveshot"),  # explosive arrow
+            ranger_skill_id("mightystab"),  # deadly blow
+            ranger_skill_id("mightyshot"),  # precise shot
+            ranger_skill_id("whirlwind"),  # blade dance
+            ranger_skill_id("birdofprey"),  # bird of prey
+            ranger_skill_id("multishot"),  # scatter shot
         )
 
         for skill_index in affected_skill_indexes:
@@ -3328,7 +3331,7 @@ class LocalCombatStateTests(unittest.TestCase):
         )
 
     def test_wild_pack_wolves_move_and_attack_nearby_monsters(self):
-        definition = self.state.player_summon_definition(1877)
+        definition = self.state.player_summon_definition(ranger_skill_id("packofwolves"))
         self.assertEqual(definition.amount, 3)
         self.assertEqual(definition.attack_skill_type, 'MeleeTarget')
         self.assertAlmostEqual(definition.move_speed, 6.5)
@@ -3550,7 +3553,7 @@ class LocalCombatStateTests(unittest.TestCase):
             )
 
     def test_tree_of_life_heals_owner_and_taunts_nearby_monsters(self):
-        definition = self.state.player_summon_definition(1881)
+        definition = self.state.player_summon_definition(ranger_skill_id("summontree"))
         self.assertAlmostEqual(definition.heal_fraction, 0.05)
         self.assertAlmostEqual(definition.heal_radius, 10.0)
         self.assertAlmostEqual(definition.taunt_radius, 20.0)
