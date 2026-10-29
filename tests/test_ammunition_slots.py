@@ -117,23 +117,26 @@ class CombatStatsTests(unittest.TestCase):
             snow_active.maximum_damage, baseline.maximum_damage * 2.0, places=3
         )
 
+    @staticmethod
+    def active_ammunition_types(sources):
+        # Essences supply AmmunitionType through their item modifiers; only
+        # status entries would need a combat state's StartModifiers catalog.
+        no_programs = SimpleNamespace(_status_modifier_program=lambda _effect_id: ())
+        return LocalCombatState._active_ammunition_types(no_programs, sources)
+
     def test_only_the_active_essence_supplies_its_ammunition_type(self):
         snow_active = self.stats(
             [essence(1, BGH), essence(2, SNOW)], {1: (36,), 2: (35,)}
         )
         self.assertEqual(
-            LocalCombatState._active_ammunition_types(
-                snow_active.skill_modifier_sources
-            ),
+            self.active_ammunition_types(snow_active.skill_modifier_sources),
             frozenset({"ammotype02"}),
         )
         snow_parked = self.stats(
             [essence(1, BGH), essence(2, SNOW)], {1: (35,), 2: (36,)}
         )
         self.assertEqual(
-            LocalCombatState._active_ammunition_types(
-                snow_parked.skill_modifier_sources
-            ),
+            self.active_ammunition_types(snow_parked.skill_modifier_sources),
             frozenset(),
         )
 

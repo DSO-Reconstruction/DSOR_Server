@@ -36,9 +36,10 @@ class BossExitDiscoveryTests(test_quests.QuestServiceTests):
         flags = self._flags("pw102_mortis_01_boss", {"pw000_hub"}, 51812)
         self.assertNotIn("pw102_spawn_exit_to_pw000", {flag.casefold() for flag in flags})
 
-    def test_quest_route_keeps_its_discovery_proof(self):
-        # pw008_spawn_exit opens on an interact task, not a fight.
+    def test_known_heredur_does_not_open_kingscrypt_portal(self):
+        # PR #54: pw008_spawn_exit opens on this run's key-and-lock task, so
+        # an earlier run's discovered boss map is no proof for this instance.
         flags = self._flags(
             "pw008_kingscrypt_01_dun", {"pw009_05_heredur_01_boss"}, 51813,
         )
-        self.assertIn("pw008_spawn_exit", flags)
+        self.assertNotIn("pw008_spawn_exit", flags)
