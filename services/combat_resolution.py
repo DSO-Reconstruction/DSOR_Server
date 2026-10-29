@@ -1428,9 +1428,28 @@ class CombatResolutionService:
                         has_details=True,
                         values=definition.values,
                 )
+                capped_refresh = (
+                    previous is not None
+                    and definition.resource_id in {
+                        "skill_frostwind_buff_iceball_damage",
+                        "skill_frostwind_buff_frostnova_damage",
+                    }
+                    and previous.field_18 >= definition.max_stack_size - 1
+                )
+                if capped_refresh:
+                    # At the cap the client rejects another counted ADD with
+                    # the same index. Removing the old occurrence afterwards
+                    # then erases the visible buff. Refresh its existing id.
+                    instance_id = int(previous_id)
+                    entry = replace(entry, field_04=instance_id,
+                                    field_18=previous.field_18)
+                wire_entry = (
+                    replace(entry, field_25=True, has_details=False, values=())
+                    if capped_refresh else entry
+                )
                 commands.append(
                     StatusEffectServerCommand(
-                        StatusEffect(False, (entry,)),
+                        StatusEffect(False, (wire_entry,)),
                         LOCAL_PLAYER_ACTOR_ID,
                     )
                 )
@@ -1454,7 +1473,7 @@ class CombatResolutionService:
                         # Remove the still-active buff before adding its fresh
                         # 30-second instance at the max-stack boundary.
                         pre_removals.append(previous_removal)
-                    else:
+                    elif not capped_refresh:
                         removals.append(previous_removal)
                     s.gameplay_runtime_status_effects.pop(
                         int(previous_id), None

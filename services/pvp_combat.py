@@ -918,6 +918,7 @@ class PVPCombatService:
             "hit",
             server_tick=int(pending.server_tick),
             event_seed=socket_seed,
+                skill_index=int(pending.skill_index),
         )
         if CharacterService._player_is_low_health(s):
             CharacterService._dispatch_socket_event(
@@ -925,6 +926,7 @@ class PVPCombatService:
                 "hitlowhealth",
                 server_tick=int(pending.server_tick),
                 event_seed=socket_seed,
+                skill_index=int(pending.skill_index),
             )
         if bool(pending.critical_hit):
             CharacterService._dispatch_socket_event(
@@ -932,10 +934,15 @@ class PVPCombatService:
                 "hitcritical",
                 server_tick=int(pending.server_tick),
                 event_seed=socket_seed,
+                skill_index=int(pending.skill_index),
             )
-        if bool(pending.frost_hit):
+        if (
+            not target_is_summon
+            and damage > 0
+            and CharacterService._player_is_frozen(target)
+        ):
             CharacterService._dispatch_socket_event(
-                s,
+                target,
                 "hitfrost",
                 server_tick=int(pending.server_tick),
                 event_seed=socket_seed,
