@@ -1978,6 +1978,9 @@ class LocalCombatStateTests(unittest.TestCase):
         for index, (threshold, actual) in enumerate(
             ATTACK_SPEED_BREAKPOINTS
         ):
+            # SkillExecutionSpeed stops at 4.0: the 6-frame row (4.1667).
+            if threshold > 4.0:
+                actual = 4.1667
             self.assertAlmostEqual(
                 effective_attack_speed(threshold), actual
             )
@@ -1987,7 +1990,7 @@ class LocalCombatStateTests(unittest.TestCase):
                 self.assertAlmostEqual(
                     effective_attack_speed(midpoint), actual
                 )
-        self.assertAlmostEqual(effective_attack_speed(99.0), 25.0)
+        self.assertAlmostEqual(effective_attack_speed(99.0), 4.1667)
 
     def test_unscaled_jump_hit_frame_ignores_equipment_speed(self):
         actor_id = self.encounter.actor_ids[0]

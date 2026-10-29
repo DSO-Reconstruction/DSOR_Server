@@ -829,6 +829,7 @@ def deterministic_combat_roll(*components: int) -> float:
 # a smoothed interpolation between them. The supplied rows describe the
 # 25-frame through 6-frame portion of the curve; the same whole-frame sequence
 # continues through the one-frame floor rather than capping at 4.1667 APS.
+SKILL_EXECUTION_SPEED_LIMIT = 4.0
 ATTACK_SPEED_BREAKPOINTS = (
     (1.0256, 1.2500),
     (1.0811, 1.3158),
@@ -856,7 +857,11 @@ ATTACK_SPEED_BREAKPOINTS = (
 def effective_attack_speed(raw_attack_speed: float) -> float:
     """Quantize a character-sheet speed to retail sequence breakpoints."""
 
-    raw = max(0.01, float(raw_attack_speed))
+    # _Template_ActorAttributes caps SkillExecutionSpeed at 4.0: past it the
+    # original attacks no faster (the 6-frame row, 4.1667 per second), whatever
+    # the character sheet adds up to. Uncapped, a 6.0 sheet swung Smash every
+    # 0.13 s instead of 0.19 s.
+    raw = min(SKILL_EXECUTION_SPEED_LIMIT, max(0.01, float(raw_attack_speed)))
     if raw < 1.0:
         # Slows below baseline remain meaningful even though the supplied
         # positive-speed table begins above 1.0.
