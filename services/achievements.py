@@ -33,8 +33,10 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 import sqlite3
+import traceback
 
 from dso_server.runtime.context import *
+from dso_server.runtime import progression_queue
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.achievement_content import (
     AchievementCatalog,
@@ -308,15 +310,23 @@ class AchievementService:
                 shared_changed = shared_changed or getattr(s, "gameplay_achievement_shared_dirty", False)
             packets = self._prepare_achievement_rewards(s, catalog)
             if changes or packets or shared_changed:
-                # Shared progress, completion receipts and item grants reach
-                # SQLite in the same commit before any outbound publication.
+                # Shared (account-wide) progress, completion receipts and item
+                # grants reach SQLite in the same commit before any outbound
+                # publication. A character's own progress alone (an ordinary
+                # kill counter moving) publishes the same atomic snapshot to
+                # the writer without waiting for the disk: it used to wait for
+                # SQLite on every kill while holding this player's input gate.
+                # Only 4 of 923 achievements are account-wide kill counters.
+                durable = bool(packets) or shared_changed or any(
+                    getattr(change, "completed_now", False) for change in changes
+                )
                 try:
                     saved = False
                     if store is not None and s.gameplay_inventory is not None:
                         saved = self._persist_gameplay_session(
-                            s, reason=label, flush=True, achievement_catalog=catalog)
+                            s, reason=label, flush=durable, achievement_catalog=catalog)
                     if not saved:
-                        CharacterService._request_account_save(s, label, flush=True)
+                        CharacterService._request_account_save(s, label, flush=durable)
                 except Exception:
                     # A flush error can occur after the writer accepted the
                     # atomic snapshot: retain that receipt and let it retry.
@@ -375,17 +385,81 @@ class AchievementService:
             return 0
 
     def _achievement_on_monsters_killed(self, s: Session, monsters) -> None:
+        """Queue kills for achievements and daily challenges, applied in batches.
+
+        Each application takes the player's mutation gate (which their casts
+        and moves hold too), deep-copies the achievement state, re-derives
+        derived achievements and, since kill counters change on every kill,
+        saves synchronously. Done per kill, area fights spent most of the
+        hit workers' time here and casts queued behind it. Kills within
+        KILL_PROGRESS_BATCH_SECONDS are applied together instead.
+        """
+
+        entries = tuple(
+            (monster, self._achievement_kill_difficulty(s)) for monster in monsters
+        )
+        if not entries:
+            return
+        # Composed test servers never call start() and apply kills at once.
+        if KILL_PROGRESS_BATCH_SECONDS <= 0 or not getattr(
+                self, "_kill_progress_batching", False):
+            self._apply_monster_kill_progress(s, entries)
+            return
+        with s.flow_lock:
+            s.gameplay_pending_kill_progress.extend(entries)
+            schedule = not s.gameplay_kill_progress_flush_scheduled
+            s.gameplay_kill_progress_flush_scheduled = True
+        if not schedule:
+            return
+        try:
+            timer = s.gameplay_deadline_timer(
+                KILL_PROGRESS_BATCH_SECONDS,
+                CharacterService._queue_monster_kill_progress_flush,
+                args=(self, s),
+            )
+            timer.daemon = True
+            timer.start()
+        except Exception as exc:
+            _log(f"kill progress timer unavailable: {type(exc).__name__}: {exc}")
+            CharacterService._flush_monster_kill_progress(self, s)
+
+    def _queue_monster_kill_progress_flush(self, s: Session) -> None:
+        # The timer runs on the hit/impact pool; the work itself belongs on
+        # the progression queue with the rest of the kill's consequences.
+        if not progression_queue.defer(
+            CharacterService._flush_monster_kill_progress, self, s,
+            label="kill progress",
+        ):
+            CharacterService._flush_monster_kill_progress(self, s)
+
+    def _flush_monster_kill_progress(self, s: Session) -> None:
+        with s.flow_lock:
+            entries = tuple(s.gameplay_pending_kill_progress)
+            s.gameplay_pending_kill_progress.clear()
+            s.gameplay_kill_progress_flush_scheduled = False
+        if entries and s.gameplay_character is not None:
+            try:
+                self._apply_monster_kill_progress(s, entries)
+            except Exception as exc:
+                _log(f"kill progress for {len(entries)} kill(s) failed: "
+                     f"{type(exc).__name__}: {exc}")
+                traceback.print_exc()
+
+    def _apply_monster_kill_progress(self, s: Session, entries) -> None:
+        """Apply (monster, map difficulty at the kill) pairs in one pass."""
+
+        monsters = tuple(monster for monster, _difficulty in entries)
         self._daily_challenge_monsters_killed(s, monsters)
-        counts: dict[str, int] = {}
-        for monster in monsters:
+        counts: dict[tuple[str, int], int] = {}
+        for monster, difficulty in entries:
             template = str(getattr(monster, "template_id", ""))
             if template:
-                counts[template] = counts.get(template, 0) + 1
+                key = (template, int(difficulty))
+                counts[key] = counts.get(key, 0) + 1
         # Kill rows name either the template or "<template>:<difficulty>"
         # (pw_difficulty_08_defeatBoss "boss_grimmag:5"); "kill" is a one-hit
         # kind, so a row naming both cannot count one kill twice.
-        difficulty = self._achievement_kill_difficulty(s)
-        for template, count in counts.items():
+        for (template, difficulty), count in counts.items():
             self._achievement_feed(
                 s, "kill", (template, f"{template}:{difficulty}"), count=count,
             )
@@ -524,8 +598,23 @@ class AchievementService:
         callback = getattr(s, "gameplay_presence_callback", None)
         if callback is None:
             return
+        event = ("level_up", int(class_id), int(level))
+        # Level-up signals, quest introductions and achievements follow the
+        # kill that caused them on the progression queue.
+        if progression_queue.defer(
+            AchievementService._raise_level_up, s, event, label="level up",
+            guard=progression_queue.same_character(s),
+        ):
+            return
+        AchievementService._raise_level_up(s, event)
+
+    @staticmethod
+    def _raise_level_up(s: Session, event) -> None:
+        callback = getattr(s, "gameplay_presence_callback", None)
+        if callback is None:
+            return
         try:
-            callback(s, ("level_up", int(class_id), int(level)))
+            callback(s, event)
         except Exception as exc:
             _log(f"level notification failed: {type(exc).__name__}: {exc}")
 

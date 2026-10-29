@@ -843,6 +843,12 @@ def apply_quest_event(
     inventory_drops: list[Drop] = []
     rng = rng or random.Random()
     for _ in range(max(1, int(count))):
+        # A pass that matches nothing changes nothing, so every later pass
+        # would repeat it. Collecting gold passes its amount as ``count``:
+        # without this, one pile of a few thousand gold re-scanned every
+        # active quest thousands of times on the player's input queue (about
+        # a second per pickup, during which casts and moves waited).
+        any_matched = False
         for task in active_tasks(quest, progress):
             before = task.counter(progress.tokens)
             implicit_explore_match = (
@@ -892,6 +898,7 @@ def apply_quest_event(
                         inventory_drops.extend(inner.inventory_drops)
             if not matched:
                 continue
+            any_matched = True
             after = task.counter(progress.tokens)
             finished = task.is_done(progress.tokens) or implicit_explore_match
             if finished and not progress.task_finished(task.index):
@@ -901,6 +908,8 @@ def apply_quest_event(
                 changes.append(TaskChange(task, max(after, task.target), task.target, True))
             elif after != before:
                 changes.append(TaskChange(task, after, task.target, False))
+        if not any_matched:
+            break
     quest_finished = False
     if progress.state == QUEST_STATE_ACCEPTED and quest.tasks and all(
         progress.task_finished(task.index) for task in quest.tasks

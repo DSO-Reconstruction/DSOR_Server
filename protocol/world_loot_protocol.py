@@ -22,6 +22,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
 import math
+import os
 from pathlib import Path
 import random
 import re
@@ -56,6 +57,20 @@ GOLD_ITEM_TEMPLATES = frozenset(("money_vc", "money_vc_gold"))
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
+# Healing spheres: the authored rank lists drop them at 1% (monster), 5%
+# (add), 20% (guardian), 35% (champion) and 50% (leader), so a fight almost
+# never produced one. Server policy floors every globe roll: a normal monster
+# drops one at least this often, any higher rank always does. Ranks without
+# a health list (minions, companions, group chests) still drop none.
+HEALTH_GLOBE_MINIMUM_DROP_CHANCE = max(0.0, min(1.0, float(
+    os.getenv("DSO_HEALTH_GLOBE_DROP_CHANCE", "0.6")
+)))
+HEALTH_GLOBE_ELITE_DROP_CHANCE = max(0.0, min(1.0, float(
+    os.getenv("DSO_HEALTH_GLOBE_ELITE_DROP_CHANCE", "1.0")
+)))
+HEALTH_GLOBE_ELITE_RANKS = frozenset(
+    ("guardian", "champion", "leader", "boss", "worldboss")
+)
 ENCHANTMENT_FREE_TRINKET_CATEGORIES = frozenset((
     'JewelTrinket',
     'RuneTrinket',
@@ -1665,6 +1680,11 @@ def _health_drops(
         if not separator or not loot_list_id:
             continue
         template_id, chance = _health_template_chance(loot_list_id.strip())
+        chance = max(chance, (
+            HEALTH_GLOBE_ELITE_DROP_CHANCE
+            if profile.rank_kind in HEALTH_GLOBE_ELITE_RANKS
+            else HEALTH_GLOBE_MINIMUM_DROP_CHANCE
+        ))
         if force_drops or rng.random() <= chance:
             result.append(template_id)
     return result

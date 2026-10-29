@@ -225,14 +225,19 @@ class MonsterTickContextService:
             # Silence while there is genuinely nothing to simulate; a run of
             # zeroes is only meaningful against a populated map.
             if active or combat.published_movements:
+                rate = combat.simulation_ticks / elapsed
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] simulation heartbeat: "
-                    f"{combat.simulation_ticks / elapsed:.1f} ticks/s, "
+                    f"{rate:.1f} ticks/s, "
                     f"{combat.published_movements / elapsed:.1f} movements/s, "
                     f"{combat.published_attacks / elapsed:.1f} attacks/s, "
                     f"{active} active actor(s), "
                     f"{len(combat.disabled_monster_actor_ids())} locked"
                 )
+                if active and rate < 0.8 * SERVER_TICKS_PER_SECOND:
+                    from dso_server.runtime import hotspot_sampler
+
+                    hotspot_sampler.trigger(f"monster tick at {rate:.1f}/s")
             if (
                 active
                 and not combat.published_movements

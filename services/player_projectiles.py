@@ -549,6 +549,11 @@ class PlayerProjectileService:
             tuple(item[0] for item in dispatches),
             label="player-life-leech",
         )
+        CharacterService._apply_player_kill_healing(
+            s,
+            tuple(item[0] for item in dispatches),
+            label="player-kill-heal",
+        )
         if (
             source_actor_id is not None
             and s.gameplay_presence_callback is not None

@@ -289,6 +289,7 @@ from dso_server.gameplay.local_map_state import (
 from dso_server.gameplay.local_combat_state import (
     DamageResolution,
     MONSTER_CHASE_INTERVAL_SECONDS,
+    MONSTER_MOVEMENT_DURATION_TICKS,
     MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS,
     MONSTER_SIMULATION_RADIUS,
     MONSTER_VISIBILITY_ENTER_RADIUS,
@@ -699,19 +700,77 @@ ACCOUNT_STATE_SAVE_INTERVAL_SECONDS = float(
 # session lock without improving orderly disconnect/map-transfer durability.
 COALESCED_ACCOUNT_SAVE_REASONS = frozenset({
     'skill resource changed',
+    # Kill XP is saved under its award label. The old spelling here never
+    # matched it, so every kill snapshotted the whole account twice (with
+    # daily-challenge progress), several times a second in area fights.
+    'monster-kill-xp',
     'monster kill XP',
+    'Daily challenge progress and rewards',
     'essence consumed',
 })
+# Kills credited to achievements and daily challenges within this window are
+# applied in one pass (services/achievements.py); 0 applies each at once.
+KILL_PROGRESS_BATCH_SECONDS = max(
+    0.0, float(os.getenv('DSO_KILL_PROGRESS_BATCH_SECONDS', '0.25'))
+)
+# A healing sphere restores at least this fraction of maximum health (the
+# authored plain sphere restores 0.2; the _full variant stays a full heal).
+HEALTH_GLOBE_MINIMUM_RESTORE_FRACTION = max(
+    0.0, min(1.0, float(os.getenv('DSO_HEALTH_GLOBE_RESTORE_FRACTION', '0.8')))
+)
 COALESCED_ACCOUNT_SAVE_INTERVAL_SECONDS = max(
     0.0,
     float(os.getenv('DSO_COALESCED_ACCOUNT_SAVE_SECONDS', '2.0')),
 )
 # A NAK can race the send of a replacement datagram when several gameplay
 # threads are producing packets at once.  Do not immediately re-key a packet
-# that was only just sent: its ACK may already be in flight.  The timed retry
-# loop remains the fallback for a genuinely lost packet.
+# that was only just sent: its ACK may already be in flight.  A NAK inside
+# this grace is remembered, and the repair loop re-sends the datagram as soon
+# as the grace has passed. The client NAKs a hole about one round trip after
+# the loss, and every later move waits behind that hole, so the grace must
+# stay far below the timed retry (it was 100 ms, which meant every NAK was
+# ignored and each loss froze movement for the full 250 ms timeout).
 NAK_RETRANSMIT_GRACE_SECONDS = max(
-    0.0, float(os.getenv('DSO_NAK_RETRANSMIT_GRACE_SECONDS', '0.10'))
+    0.0, float(os.getenv('DSO_NAK_RETRANSMIT_GRACE_SECONDS', '0.015'))
+)
+# Timed retransmission follows the measured round trip (RFC 6298 smoothing:
+# srtt + 4 * rttvar) instead of one fixed interval, clamped to these bounds.
+# The floor covers the client's own ACK coalescing (0-23 ms in retail
+# captures); the initial value applies until the first ACK is measured.
+RELIABLE_RTO_MIN_SECONDS = max(
+    0.02, float(os.getenv('DSO_RELIABLE_RTO_MIN_SECONDS', '0.06'))
+)
+RELIABLE_RTO_MAX_SECONDS = max(
+    RELIABLE_RTO_MIN_SECONDS,
+    float(os.getenv('DSO_RELIABLE_RTO_MAX_SECONDS', '1.0')),
+)
+RELIABLE_RTO_INITIAL_SECONDS = min(
+    RELIABLE_RTO_MAX_SECONDS,
+    max(
+        RELIABLE_RTO_MIN_SECONDS,
+        float(os.getenv('DSO_RELIABLE_RTO_INITIAL_SECONDS', '0.25')),
+    ),
+)
+# How often the repair loop checks every session for NAKed and overdue
+# reliable datagrams. It was 50 ms, which on its own added up to a tick and a
+# half to every repair.
+RELIABLE_REPAIR_POLL_SECONDS = min(
+    0.05,
+    max(0.002, float(os.getenv('DSO_RELIABLE_REPAIR_POLL_SECONDS', '0.01'))),
+)
+# The client sends ``1b <client ms> 83 <its server-ms estimate>`` every 2 s
+# after connecting, then every 20 s. Retail never answers. Echoing it makes
+# the client re-sync its server clock from its own timestamp, which pushes
+# its game tick ahead whenever the server clock is ahead of the client's
+# RakNet clock. Set DSO_ECHO_CLIENT_TIME_SYNC=1 only to reproduce old builds.
+ECHO_CLIENT_TIME_SYNC = os.getenv(
+    'DSO_ECHO_CLIENT_TIME_SYNC', '0'
+).strip().lower() in {'1', 'true', 'yes', 'on'}
+# Report a client whose reported server-clock estimate is this far ahead of
+# server_time() (or this far behind, times four).  A healthy client trails by
+# about its one-way latency.
+CLIENT_CLOCK_LEAD_WARNING_MS = max(
+    40, int(os.getenv('DSO_CLIENT_CLOCK_LEAD_WARNING_MS', '250'))
 )
 RELIABLE_MAX_ATTEMPTS = max(
     1, int(os.getenv('DSO_RELIABLE_MAX_ATTEMPTS', '5'))
@@ -773,6 +832,24 @@ MONSTER_MOVEMENT_PACKET_BUDGET = min(
         int(os.getenv('DSO_MONSTER_MOVES_PER_PACKET', '40')),
     ),
 )
+# Retail sends a monster's stop (speed 0, duration 0) in the same unreliable
+# move batch as walking samples and keeps refreshing standing actors, instead
+# of putting it in the reliable-ordered stream where one lost copy holds every
+# later command and move. A stop is re-sent after each of these delays unless
+# a newer transform for that monster supersedes it; a lost copy otherwise
+# leaves the client walking it on for its 18-tick horizon.
+MONSTER_STOPS_UNRELIABLE = os.getenv(
+    'DSO_MONSTER_STOPS_UNRELIABLE', '1'
+).strip().lower() not in {'0', 'false', 'no', 'off'}
+MONSTER_STOP_REPEAT_SECONDS = tuple(
+    sorted(
+        max(0.0, float(value))
+        for value in os.getenv(
+            'DSO_MONSTER_STOP_REPEAT_SECONDS', '0.08,0.2,0.48'
+        ).split(',')
+        if value.strip()
+    )
+)
 # Spend the active essence's AmmoCost on every accepted cast. Off leaves
 # essences as permanent damage buffs, the behaviour before consumption landed.
 ESSENCE_CONSUMPTION_ENABLED = (
@@ -814,9 +891,14 @@ EMPTY_OCP_OFFERS, EMPTY_OCP_OFFERS_BITS = encode_ocp_offer_response((), actor_id
 EMPTY_OCP_METHODS, EMPTY_OCP_METHODS_BITS = encode_ocp_methods((), actor_id=0)
 
 START_MS = int(time.time() * 1000)
+# Every client derives its game tick from this clock (server ms / 40, synced
+# once at map entry), so it must never step with wall-clock adjustments.
+# time.monotonic() is GetTickCount64 on Windows (15.6 ms steps); the
+# performance counter is both monotonic and precise.
+_SERVER_CLOCK_ORIGIN_NS = time.perf_counter_ns()
 
 def server_time():
-    return int(time.time() * 1000) - START_MS
+    return (time.perf_counter_ns() - _SERVER_CLOCK_ORIGIN_NS) // 1_000_000
 
 def pack_addr(ip: str, port: int) -> bytes:
     raw_ip = socket.inet_aton(ip)

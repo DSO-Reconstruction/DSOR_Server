@@ -12,6 +12,7 @@ from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catal
 from dso_server.gameplay.player_skill_timing import snapshot_player_skill_timing
 
 from dso_server.runtime.context import *
+from dso_server.runtime import progression_queue
 from dso_server.runtime.transport import Session
 
 
@@ -706,7 +707,36 @@ class PlayerPersistenceService:
                     s.gameplay_coalesced_saves_skipped += 1
                     return False
                 s.gameplay_last_coalesced_save_at = now
+        if not flush and progression_queue.active() is not None:
+            # A loose save only has to capture the latest state soon, not on
+            # the packet handler's thread: one queued capture per session
+            # absorbs every request made before it runs.
+            with s.flow_lock:
+                already_queued = getattr(s, "gameplay_deferred_save_reason", None) is not None
+                s.gameplay_deferred_save_reason = reason
+            if already_queued:
+                return True
+            if progression_queue.defer(
+                CharacterService._run_deferred_account_save, s,
+                label="account save",
+            ):
+                return True
+            with s.flow_lock:
+                s.gameplay_deferred_save_reason = None
         return bool(callback(s, reason, flush))
+
+    @staticmethod
+    def _run_deferred_account_save(s: Session) -> None:
+        with s.flow_lock:
+            reason = getattr(s, "gameplay_deferred_save_reason", None)
+            s.gameplay_deferred_save_reason = None
+            transfer_started = getattr(s, "gameplay_exit_transition_started", False)
+        callback = s.gameplay_persist_callback
+        # A map exit flushes its own snapshot first; a capture taken after it
+        # would put the player back on the source map.
+        if reason is None or callback is None or transfer_started or not s.connected:
+            return
+        callback(s, reason, False)
 
     def _player_xp_state(self, character) -> dict:
         """Resolve the normal-XP fields consumed during local actor creation."""

@@ -58,7 +58,43 @@ HANDSHAKE_TIMEOUT_SECONDS = max(1.0, float(os.getenv("DSO_HANDSHAKE_TIMEOUT_SECO
 RELIABLE_PENDING_LIMIT = max(64, int(os.getenv("DSO_RELIABLE_PENDING_LIMIT", "4096")))
 RELIABLE_PENDING_BYTES = max(65536, int(os.getenv("DSO_RELIABLE_PENDING_BYTES", str(8 << 20))))
 RELIABLE_ACK_TIMEOUT_SECONDS = max(2.0, float(os.getenv("DSO_RELIABLE_ACK_TIMEOUT_SECONDS", "30")))
+# The burst limit was sized for a 50 ms repair pass. Scale it to the faster
+# pass so the worst-case re-send rate per session stays where it was.
+_REPAIR_BURST_PER_PASS = max(
+    2,
+    int(RELIABLE_RETRANSMIT_BURST_LIMIT * RELIABLE_REPAIR_POLL_SECONDS / 0.05 + 0.999),
+)
 _ACK_SEQUENCE_LIMIT = 8192
+# NAK lost client datagrams at once (RakNet peers do; the client resends on
+# receipt). A larger jump than this is not loss and is left alone.
+INBOUND_NAKS_ENABLED = os.getenv("DSO_INBOUND_NAKS", "1").strip().lower() not in {
+    "0", "false", "no", "off",
+}
+_INBOUND_NAK_RANGE_LIMIT = 64
+# Reliable-ordered progress/UI notifications travel on their own ordering
+# channel, so losing one never holds back combat, movement or world state on
+# channel 0 (the client orders each channel independently and never checks
+# which one a command came on; client RE 2026-10-29). Only self-contained
+# messages qualify: anything that creates or changes something another
+# command refers to -- actors, items, inventory deltas, rewards -- stays on 0.
+# DSO_META_CHANNEL=0 keeps everything on channel 0.
+META_RELIABLE_CHANNEL = min(31, max(0, int(os.getenv("DSO_META_CHANNEL", "1"))))
+_META_LABELS = frozenset({"daily-challenge-progress", "daily-challenges"})
+_META_LABEL_PREFIXES = ("achievement-",)
+_META_LABEL_EXCLUDED_PREFIXES = ("achievement-reward",)
+
+
+def reliable_channel_for(label: str) -> int:
+    """Ordering channel for a reliable-ordered send with ``label``."""
+
+    if not META_RELIABLE_CHANNEL or not label:
+        return 0
+    label = str(label)
+    base = label.split("-split-", 1)[0]
+    if base in _META_LABELS or any(base.startswith(prefix) for prefix in _META_LABEL_PREFIXES):
+        if not any(base.startswith(prefix) for prefix in _META_LABEL_EXCLUDED_PREFIXES):
+            return META_RELIABLE_CHANNEL
+    return 0
 
 
 class SessionRegistry(MutableMapping[tuple, _SessionValue]):
@@ -177,6 +213,10 @@ class FrameBuilder:
         self.reliable_idx = 0
         self.sequence_idx = 0
         self.order_idx    = 0
+        # Ordering indexes of channels 1..31. The client keeps a separate
+        # ordered read index and heap per channel (ReliabilityLayer), so a
+        # missing message on one channel never holds another channel back.
+        self.channel_order_idx = [0] * 32
         self.compound_id  = 0
         self.lock = threading.Lock()
 
@@ -186,7 +226,13 @@ class FrameBuilder:
     def _rel(self):
         r = self.reliable_idx; self.reliable_idx += 1; return r
 
-    def _ord(self):
+    def _ord(self, channel: int = 0):
+        if channel:
+            # Only channel 0 carries sequenced frames; another channel's
+            # ordered index must not restart channel 0's sequencing.
+            o = self.channel_order_idx[channel]
+            self.channel_order_idx[channel] = o + 1
+            return o
         o = self.order_idx; self.order_idx += 1
         # RakNet restarts the sequencing index whenever it assigns an ordering
         # index, and the official server's captures follow it: (order 8, seq
@@ -225,23 +271,23 @@ class FrameBuilder:
     @staticmethod
     def _frame_reliable_ordered_with_indices(
             payload: bytes, reliable_idx: int, order_idx: int,
-            bit_length: int | None = None) -> bytes:
+            bit_length: int | None = None, channel: int = 0) -> bytes:
         if bit_length is None:
             bit_length = len(payload) * 8
         return (b'\x60'
                 + struct.pack('>H', bit_length)
                 + struct.pack('<I', reliable_idx)[:3]
                 + struct.pack('<I', order_idx)[:3]
-                + b'\x00'
+                + bytes((channel,))
                 + payload)
 
-    def _frame_reliable_ordered(self, payload) -> bytes:
+    def _frame_reliable_ordered(self, payload, channel: int = 0) -> bytes:
         payload, bit_length = self._payload_spec(payload)
         with self.lock:
             reliable_idx = self._rel()
-            order_idx = self._ord()
+            order_idx = self._ord(channel)
         return self._frame_reliable_ordered_with_indices(
-            payload, reliable_idx, order_idx, bit_length)
+            payload, reliable_idx, order_idx, bit_length, channel)
 
     def _frameset(self, *frames: bytes) -> bytes:
         with self.lock:
@@ -274,8 +320,8 @@ class FrameBuilder:
         )
         return b'\x84' + struct.pack('<I', frame_seq)[:3] + frame
 
-    def reliable_ordered(self, payload) -> bytes:
-        return self._frameset(self._frame_reliable_ordered(payload))
+    def reliable_ordered(self, payload, channel: int = 0) -> bytes:
+        return self._frameset(self._frame_reliable_ordered(payload, channel))
 
     def retransmit_frameset(self, packet: bytes) -> tuple[bytes, int]:
         """Put reliable frames in a fresh RakNet datagram.
@@ -299,8 +345,10 @@ class FrameBuilder:
             sequence,
         )
 
-    def multi_reliable_ordered(self, *payloads) -> bytes:
-        return self._frameset(*[self._frame_reliable_ordered(p) for p in payloads])
+    def multi_reliable_ordered(self, *payloads, channel: int = 0) -> bytes:
+        return self._frameset(
+            *[self._frame_reliable_ordered(p, channel) for p in payloads]
+        )
 
     def wire_first_delivery_second(self, wire_first, delivery_first) -> bytes:
         """Reproduce the login server's deliberately reversed order indexes.
@@ -327,7 +375,7 @@ class FrameBuilder:
     def send_split(
             self, big_payload: bytes, sock, addr, trailing_payloads=(),
             pace_seconds=0, send_callback=None, label_prefix='split',
-            total_bit_length=None):
+            total_bit_length=None, channel: int = 0):
         chunks = [big_payload[i:i+FRAG_SIZE] for i in range(0, len(big_payload), FRAG_SIZE)]
         self.send_split_parts(
             chunks,
@@ -338,11 +386,13 @@ class FrameBuilder:
             send_callback,
             label_prefix,
             total_bit_length,
+            channel=channel,
         )
 
     def send_split_parts(
             self, chunks, sock, addr, trailing_payloads=(), pace_seconds=0,
-            send_callback=None, label_prefix='split', total_bit_length=None):
+            send_callback=None, label_prefix='split', total_bit_length=None,
+            channel: int = 0):
         chunks = list(chunks)
         # Validate before allocating: once the fragments are on the wire, a
         # trailer that fails to frame leaves the message incomplete, and its
@@ -373,7 +423,7 @@ class FrameBuilder:
         with self.lock:
             cid     = self.compound_id
             self.compound_id = (self.compound_id + 1) & 0xffff
-            ord_idx = struct.pack('<I', self._ord())[:3]
+            ord_idx = struct.pack('<I', self._ord(channel))[:3]
 
         preceding_bytes = 0
         for idx, chunk in enumerate(chunks):
@@ -389,7 +439,7 @@ class FrameBuilder:
                      + struct.pack('>H', chunk_bits)
                      + rel_idx
                      + ord_idx
-                     + b'\x00'
+                     + bytes((channel,))
                      + struct.pack('>I', total)         # compound_size
                      + struct.pack('>H', cid)           # compound_id
                      + struct.pack('>I', idx)           # fragment index
@@ -406,10 +456,10 @@ class FrameBuilder:
                 for trailing_payload, trailing_bits in trailing_specs:
                     with self.lock:
                         trailing_rel = self._rel()
-                        trailing_order = self._ord()
+                        trailing_order = self._ord(channel)
                     trailing_frame = self._frame_reliable_ordered_with_indices(
                         trailing_payload, trailing_rel, trailing_order,
-                        trailing_bits)
+                        trailing_bits, channel)
                     if (
                         len(datagrams[-1]) + len(trailing_frame)
                         > RELIABLE_DATAGRAM_LIMIT
@@ -626,6 +676,9 @@ class Session:
         # command has arrived.
         self.inbound_lock = threading.Lock()
         self.inbound_datagram_seen = set()
+        # Highest client datagram number seen, for NAKing gaps at once.
+        self.inbound_datagram_highest = None
+        self.inbound_naks_sent = 0
         self.inbound_datagram_history = deque()
         self.inbound_reliable_base = 0
         self.inbound_reliable_out_of_order = set()
@@ -691,6 +744,26 @@ class Session:
         self.reliable_backpressure_started_at = 0.0
         self.last_reliable_ack_latency_seconds = 0.0
         self.maximum_reliable_ack_latency_seconds = 0.0
+        # Smoothed round trip (RFC 6298) from first-attempt ACKs only, so a
+        # retried datagram's ACK cannot be matched to the wrong send (Karn).
+        self.reliable_srtt_seconds = None
+        self.reliable_rttvar_seconds = None
+        self.nak_repairs = 0
+        self.timed_repairs = 0
+        # Last server-clock lead reported by the client's own time sync.
+        self.client_clock_lead_ms = None
+        self.client_clock_lead_logged_at = 0.0
+        # Tick-driven movement relay (services/presence_movement.py). Only the
+        # movement thread writes these.
+        self.gameplay_remote_move_relay = None
+        self.gameplay_move_echo_deferred = False
+        self.gameplay_move_echo_sent = None
+        # (monster, map difficulty) kills awaiting one batched achievement and
+        # daily-challenge pass (services/achievements.py).
+        self.gameplay_pending_kill_progress = []
+        self.gameplay_kill_progress_flush_scheduled = False
+        # Reason of a loose account save waiting on the progression queue.
+        self.gameplay_deferred_save_reason = None
         self.last_slow_socket_send_log_at = 0.0
         self.last_stuck_reliable_log_at = 0.0
         self.oversized_reliable_logged_at = {}
@@ -767,6 +840,11 @@ class Session:
         self.gameplay_skill_book_ids = frozenset()
         self.gameplay_vicinity_announced = False
         self.gameplay_pending_monster_movements = {}
+        # actor id -> (stop MoveServerCommand, remaining re-send deadlines).
+        self.gameplay_monster_stop_repeats = {}
+        self.gameplay_monster_stop_repeat_combat = None
+        # Earliest re-send deadline, read without the lock on every tick.
+        self.gameplay_monster_stop_repeat_next_at = float("inf")
         self.gameplay_pending_monster_movement_combat = None
         self.gameplay_announced_monster_actor_ids = set()
         self.gameplay_announced_npc_actor_ids = set()
@@ -1116,7 +1194,8 @@ class Session:
 
     def send_reliable_ordered(
             self, payload, *, track: bool = True,
-            label: str = 'reliable', skip_if_busy: bool = False) -> bytes | None:
+            label: str = 'reliable', skip_if_busy: bool = False,
+            channel: int | None = None) -> bytes | None:
         """Allocate and transmit one reliable-ordered frame atomically.
 
         Concurrent producers must use this method instead of separately
@@ -1127,18 +1206,20 @@ class Session:
         """
 
         assert_no_state_locks_held("Session.send_reliable_ordered")
+        if channel is None:
+            channel = reliable_channel_for(label)
         # Decide before allocating: an order index taken for an unsplit frame
         # and then abandoned would itself stall the ordered stream.
         body, bit_length = FrameBuilder._payload_spec(payload)
         if len(body) + _UNSPLIT_RELIABLE_FRAMING_BYTES > RELIABLE_DATAGRAM_LIMIT:
             return self._send_oversized_reliable_ordered(
                 ((body, bit_length),), track=track, label=label,
-                skip_if_busy=skip_if_busy,
+                skip_if_busy=skip_if_busy, channel=channel,
             )
         if not self.outbound_lock.acquire(blocking=not skip_if_busy):
             return None
         try:
-            data = self.fb.reliable_ordered(payload)
+            data = self.fb.reliable_ordered(payload, channel)
             backpressure_began, socket_seconds = self._send_locked(
                 data, track=track, label=label
             )
@@ -1153,7 +1234,7 @@ class Session:
 
     def _send_oversized_reliable_ordered(
             self, specs, *, track: bool, label: str,
-            skip_if_busy: bool = False) -> bytes | None:
+            skip_if_busy: bool = False, channel: int = 0) -> bytes | None:
         """Send reliable-ordered messages too large for one datagram.
 
         The client drops an oversized datagram without acknowledging it, so
@@ -1188,7 +1269,9 @@ class Session:
             for body, bit_length in specs:
                 frame_bytes = _RELIABLE_ORDERED_HEADER_BYTES + len(body)
                 if batch and batch_bytes + frame_bytes > RELIABLE_DATAGRAM_LIMIT:
-                    send_fragment(self.fb.multi_reliable_ordered(*batch), label)
+                    send_fragment(
+                        self.fb.multi_reliable_ordered(*batch, channel=channel), label
+                    )
                     batch, batch_bytes = [], _FRAMESET_HEADER_BYTES
                 if (
                     _FRAMESET_HEADER_BYTES + frame_bytes
@@ -1201,12 +1284,15 @@ class Session:
                         send_callback=send_fragment,
                         label_prefix=label,
                         total_bit_length=bit_length,
+                        channel=channel,
                     )
                     continue
                 batch.append((body, bit_length))
                 batch_bytes += frame_bytes
             if batch:
-                send_fragment(self.fb.multi_reliable_ordered(*batch), label)
+                send_fragment(
+                    self.fb.multi_reliable_ordered(*batch, channel=channel), label
+                )
         finally:
             self.outbound_lock.release()
         for _data, fragment_label, backpressure_began, socket_seconds in (
@@ -1317,7 +1403,7 @@ class Session:
             self, payload_or_parts, *, trailing_payloads=(),
             pace_seconds: float = 0, label_prefix: str = 'split',
             total_bit_length: int | None = None,
-            track: bool = True) -> None:
+            track: bool = True, channel: int | None = None) -> None:
         '''Allocate and transmit one fragmented ordered message atomically.
 
         payload_or_parts accepts either a complete bytes payload or an
@@ -1334,6 +1420,8 @@ class Session:
         '''
 
         assert_no_state_locks_held('Session.send_reliable_ordered_split')
+        if channel is None:
+            channel = reliable_channel_for(label_prefix)
         send_health = []
 
         def send_fragment(data: bytes, label: str) -> None:
@@ -1373,6 +1461,7 @@ class Session:
                     send_callback=send_fragment,
                     label_prefix=label_prefix,
                     total_bit_length=total_bit_length,
+                    channel=channel,
                 )
             else:
                 self.fb.send_split_parts(
@@ -1384,6 +1473,7 @@ class Session:
                     send_callback=send_fragment,
                     label_prefix=label_prefix,
                     total_bit_length=total_bit_length,
+                    channel=channel,
                 )
 
         for label, backpressure_began, socket_seconds in send_health:
@@ -1413,6 +1503,10 @@ class Session:
                         float(self.maximum_reliable_ack_latency_seconds),
                         latency,
                     )
+                    if item.get('attempts') == 1 and item.get('first_sent_at') is not None:
+                        self._sample_round_trip_locked(
+                            max(0.0, now - float(item['first_sent_at']))
+                        )
             backlog = len(self.pending_reliable)
             if not backlog:
                 self.reliable_pending_started_at = None
@@ -1438,6 +1532,37 @@ class Session:
                 f"max_ack={maximum_ack * 1000.0:.1f}ms"
             )
         return acknowledged
+
+    def _sample_round_trip_locked(self, sample: float) -> None:
+        """Fold one ACK round trip into the RFC 6298 estimator.
+
+        The caller owns ``pending_lock``.
+        """
+
+        if self.reliable_srtt_seconds is None:
+            self.reliable_srtt_seconds = sample
+            self.reliable_rttvar_seconds = sample / 2.0
+            return
+        srtt = float(self.reliable_srtt_seconds)
+        self.reliable_rttvar_seconds = (
+            0.75 * float(self.reliable_rttvar_seconds) + 0.25 * abs(srtt - sample)
+        )
+        self.reliable_srtt_seconds = 0.875 * srtt + 0.125 * sample
+
+    def retransmission_timeout(self) -> float:
+        """Seconds after which an unacknowledged reliable datagram is resent.
+
+        A lost reliable frame holds every later ordered command and every
+        sequenced move on the client until it is repaired, so the timeout is
+        a freeze length players see. It tracks the measured round trip,
+        within RELIABLE_RTO_MIN/MAX_SECONDS, instead of one fixed 250 ms.
+        """
+
+        srtt = self.reliable_srtt_seconds
+        if srtt is None:
+            return RELIABLE_RTO_INITIAL_SECONDS
+        rto = float(srtt) + 4.0 * float(self.reliable_rttvar_seconds or 0.0)
+        return min(RELIABLE_RTO_MAX_SECONDS, max(RELIABLE_RTO_MIN_SECONDS, rto))
 
     def reliable_backlog_size(self) -> int:
         with self.pending_lock:
@@ -1492,7 +1617,13 @@ class Session:
                 # A NAK for a freshly transmitted replacement can be received
                 # before that replacement reaches the socket.  Keep its
                 # sequence mapping intact so a late ACK can still retire it.
-                if item['sent_at'] is None or now - item['sent_at'] < interval:
+                if item['sent_at'] is None:
+                    continue
+                if now - item['sent_at'] < interval:
+                    # Remembered rather than dropped: the repair loop re-sends
+                    # it once the grace has passed, instead of waiting for
+                    # the full retransmission timeout.
+                    item['nak_at'] = now
                     continue
                 del self.pending_reliable[sequence]
                 packet, retry_sequence = self.fb.retransmit_frameset(
@@ -1501,6 +1632,8 @@ class Session:
                 item['data'] = packet
                 item['sent_at'] = None if self.outbound_sender is not None else now
                 item['attempts'] += 1
+                item['nak_at'] = None
+                self.nak_repairs += 1
                 self.pending_reliable[retry_sequence] = item
                 retransmissions.append(
                     (
@@ -1513,7 +1646,7 @@ class Session:
         return retransmissions, dropped
 
     def due_retransmissions(
-            self, interval=0.25, max_attempts=RELIABLE_MAX_ATTEMPTS,
+            self, interval=None, max_attempts=RELIABLE_MAX_ATTEMPTS,
             burst_limit=RELIABLE_RETRANSMIT_BURST_LIMIT):
         '''Retry overdue reliable frames until ACK or session retirement.
 
@@ -1524,16 +1657,41 @@ class Session:
         after it can be consumed however many times it is re-sent. Emptying
         the whole backlog in one pass therefore recovers no sooner, and floods
         the same receive window that dropped the traffic to begin with.
+
+        ``interval`` defaults to the measured retransmission timeout, doubled
+        for each earlier attempt of the same frame (capped), so a client that
+        stops acknowledging while it loads is not re-flooded every few ticks.
+        A frame the client NAKed inside the grace is due once the grace ends.
         '''
 
         retransmissions = []
         dropped = []
         now = time.perf_counter()
+        adaptive = interval is None
+        base_interval = self.retransmission_timeout() if adaptive else float(interval)
+
+        def is_due(item) -> bool:
+            sent_at = item['sent_at']
+            if sent_at is None:
+                return False
+            waited = now - sent_at
+            nak_at = item.get('nak_at')
+            if (
+                nak_at is not None
+                and nak_at >= sent_at
+                and waited >= NAK_RETRANSMIT_GRACE_SECONDS
+            ):
+                return True
+            if not adaptive:
+                return waited >= base_interval
+            backoff = 2 ** min(max(0, int(item.get('attempts', 1)) - 1), 5)
+            return waited >= min(RELIABLE_RTO_MAX_SECONDS, base_interval * backoff)
+
         with self.pending_lock:
             candidates = (
                     (item['queued_at'], sequence)
                     for sequence, item in self.pending_reliable.items()
-                    if item['sent_at'] is not None and now - item['sent_at'] >= interval
+                    if is_due(item)
             )
             overdue = (
                 heapq.nsmallest(burst_limit, candidates)
@@ -1550,6 +1708,11 @@ class Session:
                 item['data'] = packet
                 item['sent_at'] = None if self.outbound_sender is not None else now
                 item['attempts'] += 1
+                if item.get('nak_at') is not None:
+                    self.nak_repairs += 1
+                else:
+                    self.timed_repairs += 1
+                item['nak_at'] = None
                 self.pending_reliable[retry_sequence] = item
                 retransmissions.append(
                     (
@@ -1567,6 +1730,25 @@ class Session:
         self._send_control(
             b'\xc0' + b'\x00\x01' + b'\x01' + struct.pack('<I', seq)[:3]
         )
+
+    def nak(self, first: int, last: int) -> None:
+        """Ask the client to resend datagrams ``first..last`` now.
+
+        The client resends a NAKed datagram's reliable messages at once;
+        without a NAK it waits for its own timeout (3 x RTT, at least 100 ms),
+        and every later move and cast it sent waits behind the gap here.
+        """
+
+        first &= _U24_MASK
+        last &= _U24_MASK
+        if first == last:
+            record = b'\x01' + struct.pack('<I', first)[:3]
+        else:
+            record = (
+                b'\x00' + struct.pack('<I', first)[:3] + struct.pack('<I', last)[:3]
+            )
+        self.inbound_naks_sent += 1
+        self._send_control(b'\xa0' + b'\x00\x01' + record)
 
     def _send_control(self, data: bytes) -> None:
         """Send unqueued control traffic using the bounded socket timeout."""
@@ -1966,7 +2148,7 @@ class RakNetServer:
                         )
                     continue
                 failures.pop(session_id, None)
-            self._stop_event.wait(0.05)
+            self._stop_event.wait(RELIABLE_REPAIR_POLL_SECONDS)
 
     def _process_retransmit_session(
         self,
@@ -1984,7 +2166,9 @@ class RakNetServer:
                 remove=True,
             )
             return
-        retransmissions, dropped = session.due_retransmissions()
+        retransmissions, dropped = session.due_retransmissions(
+            burst_limit=_REPAIR_BURST_PER_PASS
+        )
         for sequence, packet, label, attempt in retransmissions:
             session.send(packet)
             if attempt == RELIABLE_MAX_ATTEMPTS + 1:
@@ -2439,6 +2623,35 @@ class RakNetServer:
             s.inbound_datagram_seen.discard(expired)
         return True
 
+    @staticmethod
+    def _inbound_datagram_gap_locked(s: Session, sequence: int):
+        """Return the (first, last) datagram numbers skipped before ``sequence``.
+
+        The caller owns ``inbound_lock`` and sends the NAK after releasing it.
+        A late (reordered) datagram never produces a gap, and a jump too large
+        to be loss (a reset or garbage) is not NAKed.
+        """
+
+        sequence &= _U24_MASK
+        highest = s.inbound_datagram_highest
+        if highest is None:
+            s.inbound_datagram_highest = sequence
+            return None
+        distance = (sequence - highest) & _U24_MASK
+        if distance == 0 or distance >= _U24_HALF_RANGE:
+            return None
+        s.inbound_datagram_highest = sequence
+        if distance == 1 or distance - 1 > _INBOUND_NAK_RANGE_LIMIT:
+            return None
+        first = (highest + 1) & _U24_MASK
+        last = (sequence - 1) & _U24_MASK
+        if all(
+            ((first + offset) & _U24_MASK) in s.inbound_datagram_seen
+            for offset in range(distance - 1)
+        ):
+            return None
+        return first, last
+
     @classmethod
     def _accept_inbound_reliable_locked(
             cls, s: Session, reliable_index: int | None) -> bool:
@@ -2639,13 +2852,18 @@ class RakNetServer:
         # make a retransmission execute the same application command again.
         s.ack(seq)
         deliveries = []
+        gap = None
         with s.inbound_lock:
             if not self._accept_inbound_datagram_locked(s, seq):
                 return
+            if INBOUND_NAKS_ENABLED:
+                gap = self._inbound_datagram_gap_locked(s, seq)
             for frame in self._parse_frames(data):
                 deliveries.extend(
                     self._prepare_inbound_frame_locked(s, frame)
                 )
+        if gap is not None:
+            s.nak(*gap)
         # No application callback is allowed to run under inbound_lock.  The
         # callback may acquire gameplay locks, schedule work, or send replies.
         for payload, bit_length in deliveries:
@@ -2767,10 +2985,46 @@ class RakNetServer:
         s.send(s.fb.unreliable(pong))
 
     def _on_timestamp(self, s: Session, payload: bytes):
-        # ID_TIMESTAMP wraps the application packet after its 64-bit clock.
-        # The working server echoes its 0x83 keepalive wrapper unchanged.
-        if len(payload) >= 10 and payload[9] == 0x83:
+        # ID_TIMESTAMP wraps the application packet after its 64-bit clock:
+        # ``1b <u64 BE client ms> 83 <u64 LE client's server-ms estimate>``.
+        # Retail never answers it. An echo was taken by the client as a time
+        # sync from the server (RakNetClient::HandleTimeSync) and re-set its
+        # server clock from its own timestamp, which moved its game tick
+        # ahead by the server/client clock difference on every echo.
+        if len(payload) < 10 or payload[9] != 0x83:
+            return
+        if ECHO_CLIENT_TIME_SYNC:
             s.send(s.fb.unreliable(payload))
+        if len(payload) >= 18:
+            estimate = int.from_bytes(payload[10:18], 'little')
+            self._note_client_clock_lead(s, estimate - server_time())
+
+    def _note_client_clock_lead(self, s: Session, lead_ms: int) -> None:
+        """Record how far the client's server clock is from ours.
+
+        A healthy client trails by about its one-way latency. A client whose
+        clock runs ahead sends moves the other clients will not apply until
+        their own clocks catch up (more than 10 ticks ahead), which is a
+        freeze-then-jump for everyone watching that player.
+        """
+
+        previous = s.client_clock_lead_ms
+        s.client_clock_lead_ms = int(lead_ms)
+        now = time.perf_counter()
+        unhealthy = (
+            lead_ms > CLIENT_CLOCK_LEAD_WARNING_MS
+            or lead_ms < -4 * CLIENT_CLOCK_LEAD_WARNING_MS
+        )
+        if previous is None or (
+            unhealthy and now - s.client_clock_lead_logged_at >= 10.0
+        ):
+            s.client_clock_lead_logged_at = now
+            print(
+                f"[{self.service_name}] {s.addr[0]}:{s.addr[1]} client clock "
+                f"{'ahead of' if lead_ms >= 0 else 'behind'} server by "
+                f"{abs(int(lead_ms))} ms ({int(lead_ms) / 40.0:+.1f} ticks)"
+                + ("; its moves will freeze for other players" if lead_ms > 400 else "")
+            )
 
     def _on_connected(self, s: Session):
         svc = self.service_name.encode()

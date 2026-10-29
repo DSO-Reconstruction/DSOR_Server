@@ -13,6 +13,8 @@ the immutable player-stat cache and never rebuild an item random stream.
 
 from __future__ import annotations
 
+from functools import lru_cache
+from itertools import islice
 import struct
 
 
@@ -26,6 +28,8 @@ _FIX_1 = 0x90014964B32F4329
 _PARITY_1 = 0x3D84E1AC0DC82880
 _STATE_UINT32_COUNT = 768
 _OUTPUT_COUNT = 382
+# Item materialization consumes a handful of rolls per modifier phase.
+_CACHED_ROLL_PREFIX = 64
 
 
 def _uint64(value: int) -> int:
@@ -128,8 +132,29 @@ def _refresh(state: list[int]) -> None:
 
 
 def deterministic_item_rolls(seed: int):
-    """Yield the client's inclusive [0, 1] item-quality sequence."""
+    """Yield the client's inclusive [0, 1] item-quality sequence.
 
+    An item's seed never changes, and every player-stat recalculation used
+    to rebuild each equipped item's dSFMT state (a 768-step init plus a
+    refresh, in Python) on the combat hit path. The first rolls of a seed
+    are cached; the rare consumer that needs more continues from a fresh
+    stream, so the sequence is unchanged.
+    """
+
+    prefix = _cached_roll_prefix(int(seed) & _UINT32_MASK)
+    yield from prefix
+    stream = _generate_item_rolls(seed)
+    for _ in range(len(prefix)):
+        next(stream)
+    yield from stream
+
+
+@lru_cache(maxsize=8192)
+def _cached_roll_prefix(seed: int) -> tuple[float, ...]:
+    return tuple(islice(_generate_item_rolls(seed), _CACHED_ROLL_PREFIX))
+
+
+def _generate_item_rolls(seed: int):
     state = _initial_state(seed)
     cursor = _OUTPUT_COUNT
     while True:

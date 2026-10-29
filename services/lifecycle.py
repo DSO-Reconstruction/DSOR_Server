@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.runtime import progression_queue
 from dso_server.runtime.gameplay_scheduler import (
     DEFAULT_GAMEPLAY_DEADLINE_WORKERS,
     DEFAULT_GAMEPLAY_INGRESS_WORKERS,
@@ -21,6 +22,31 @@ class LifecycleService:
             target=self._warm_static_catalogs,
             name=f"{self.service_name}-catalog-warmup", daemon=True,
         ).start()
+        self._start_presence_movement_publisher()
+        self._kill_progress_batching = KILL_PROGRESS_BATCH_SECONDS > 0
+        if progression_queue.ENABLED and progression_queue.active() is None:
+            # Quests, achievements, kill XP and loose saves run here, off the
+            # real-time movement/cast/hit path (runtime/progression_queue.py).
+            queue = progression_queue.ProgressionQueue(
+                name=f"{self.service_name}-progression"
+            )
+            queue.start()
+            progression_queue.install(queue)
+            self._progression_queue = queue
+            print(
+                f"[{self.service_name}] progression side effects run off the "
+                f"real-time loop ({progression_queue.BUDGET_SECONDS * 1000:.0f} ms "
+                f"per {progression_queue.WINDOW_SECONDS * 1000:.0f} ms budget)"
+            )
+
+    def stop(self):
+        queue = getattr(self, "_progression_queue", None)
+        if queue is not None:
+            # Finish queued credit and saves before sessions are retired.
+            queue.stop(timeout=3.0)
+            if progression_queue.active() is queue:
+                progression_queue.install(None)
+        super().stop()
 
     def _warm_static_catalogs(self) -> None:
         """Build the large lazily-loaded catalogs before the first map entry.
@@ -35,6 +61,7 @@ class LifecycleService:
         from dso_server.gameplay.map_event_state import load_map_signal_catalog
         from dso_server.gameplay.map_unlocks import map_unlock_catalog
         from dso_server.gameplay.skin_collection import load_skin_catalog
+        from dso_server.gameplay.stickerbook_state import load_sticker_definition
         from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
         from dso_server.protocol.consumable_protocol import load_consumable_catalog
 
@@ -49,6 +76,7 @@ class LifecycleService:
             ("events", self._event_catalog),
             ("skins", lambda: load_skin_catalog(path)),
             ("status runtime", lambda: load_status_runtime_catalog(path)),
+            ("sticker book", lambda: load_sticker_definition(path, "")),
         ):
             try:
                 load()

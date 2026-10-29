@@ -4,6 +4,10 @@ from dataclasses import replace
 import struct
 
 
+# Highest MoveCommand speed ratio the client can put on the wire (255/64 is
+# 3.984375), less a margin for float rounding.
+CLIENT_MAX_SENT_SPEED_RATIO = 3.98
+
 ADMIN_EFFECTS = {
     "speed": {
         "label": "Movement speed +100%",
@@ -70,7 +74,11 @@ def limited_admin_speed_entries(entries, catalog, stats):
         return ()
     other_bonus = max(0.0, min(50.0, stats.movement_bonus_speed
                               - sum(entry.values[0] for entry in current)))
-    headroom = 4.0 * stats.base_movement_speed - stats.movement_speed - other_bonus
+    # The client clamps its MoveCommand speed ratio to 4.0 and then encodes
+    # (ratio * 64) & 0xFF, so exactly 4.0 wraps to 0 and other players see a
+    # runner standing still. 255/64 = 3.984375 is the fastest it can send.
+    headroom = (CLIENT_MAX_SENT_SPEED_RATIO * stats.base_movement_speed
+                - stats.movement_speed - other_bonus)
     bonus = max(0.0, min(preset["values"][0], headroom))
     # Round down to a wire-representable float without exceeding the cap.
     # A small fixed grid also prevents repeated updates from float noise.

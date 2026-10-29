@@ -8,6 +8,7 @@ import sys
 import threading
 
 from dso_server.runtime.context import *
+from dso_server.runtime import hotspot_sampler, latency_stats
 from dso_server.protocol.trade_protocol import TRADE_CLIENT_COMMANDS
 from dso_server.protocol.food_recycling_protocol import SALVAGE_COOK_ITEM_COMMAND
 from dso_server.protocol.prop_protocol import (
@@ -51,6 +52,7 @@ _GAMEPLAY_SPATIAL_SKILL_COMMANDS = frozenset({
     SHIFTED_SKILL_COMMAND,
 })
 _GAMEPLAY_MOVE_COMMAND = 0x005F
+_GAMEPLAY_ACTOR_REQUEST_COMMAND = 0x001C
 _GAMEPLAY_SKILL_DISPATCH_BATCH_LIMIT = 8
 _GAMEPLAY_SKILL_DISPATCH_QUEUE_LIMIT = 512
 _GAMEPLAY_SKILL_DISPATCH_STALL_SECONDS = 0.500
@@ -195,16 +197,33 @@ class DispatchService:
                 int(bit_length),
                 now,
             )
+            queue = s.gameplay_skill_dispatch_queue
+            move_slot = None
+            if int(command_id) == _GAMEPLAY_MOVE_COMMAND:
+                # Moves may overtake a trailing run of ActorRequests: those only
+                # ask for actor data and commute with a position update. At map
+                # entry the client requests a hundred or more actors at once,
+                # and every move queued behind them reached the server (and
+                # the other players) late and then in a burst.
+                move_slot = len(queue)
+                while (
+                    move_slot > 0
+                    and queue[move_slot - 1][0] == generation
+                    and queue[move_slot - 1][1] == context
+                    and queue[move_slot - 1][2] == _GAMEPLAY_ACTOR_REQUEST_COMMAND
+                ):
+                    move_slot -= 1
             coalesced_move = bool(
-                int(command_id) == _GAMEPLAY_MOVE_COMMAND
-                and s.gameplay_skill_dispatch_queue
-                and s.gameplay_skill_dispatch_queue[-1][0] == generation
-                and s.gameplay_skill_dispatch_queue[-1][1] == context
-                and s.gameplay_skill_dispatch_queue[-1][2]
-                == _GAMEPLAY_MOVE_COMMAND
+                move_slot
+                and queue[move_slot - 1][0] == generation
+                and queue[move_slot - 1][1] == context
+                and queue[move_slot - 1][2] == _GAMEPLAY_MOVE_COMMAND
             )
             if coalesced_move:
-                s.gameplay_skill_dispatch_queue[-1] = queued_entry
+                queue[move_slot - 1] = queued_entry
+            elif move_slot is not None and move_slot < len(queue) and len(queue) < (
+                    _GAMEPLAY_SKILL_DISPATCH_QUEUE_LIMIT):
+                queue.insert(move_slot, queued_entry)
             elif len(s.gameplay_skill_dispatch_queue) >= (
                     _GAMEPLAY_SKILL_DISPATCH_QUEUE_LIMIT):
                 dropped = True
@@ -270,6 +289,10 @@ class DispatchService:
                     f"[{GAMEPLAY_SERVICE_NAME}] stalled ingress worker stack:\n"
                     + "".join(traceback.format_stack(frame))
                 )
+            # Name the work burning CPU elsewhere while this queue waits.
+            hotspot_sampler.trigger(
+                f"ingress stall (command {active_command!r})"
+            )
         return not dropped
 
     def _dispatch_gameplay_skill_command_now(
@@ -369,6 +392,8 @@ class DispatchService:
                         s.gameplay_skill_dispatch_current_command = None
                     runtime = finished_at - started_at
                     queue_age = started_at - queued_at
+                    latency_stats.record(latency_stats.command_kind(command_id), runtime)
+                    latency_stats.record("input queue wait", queue_age)
                     log_slow_command = False
                     if runtime >= _GAMEPLAY_SKILL_DISPATCH_SLOW_COMMAND_SECONDS:
                         with s.gameplay_skill_dispatch_lock:
@@ -388,6 +413,10 @@ class DispatchService:
                             f"after {queue_age:.3f}s queued for "
                             f"{getattr(s, 'addr', '<unknown>')}"
                         )
+                        if runtime >= 0.15:
+                            hotspot_sampler.trigger(
+                                f"slow input 0x{command_id:04x} ({runtime:.3f}s)"
+                            )
                 processed += 1
         finally:
             self._finish_gameplay_skill_dispatch_slice(s, token)

@@ -187,10 +187,11 @@ def test_sphere_pickup_heals_with_the_set_bonus(globe_world):
     s.gameplay_item_set_evaluation = _set("warrior", *AMMON_WARRIOR)
     combat, actor = _player(s)
     maximum = combat.player_maximum_health
-    globes.set_health(s, maximum // 4)
+    globes.set_health(s, maximum // 25)
     item_id = globes.place_globe(s)
     assert globe_world.server._pickup_world_item(s, item_id, automatic=True)
-    assert globes.current_health(s) == maximum // 4 + round(maximum * 0.35)
+    # The set's +15 points add to the 80% sphere floor.
+    assert globes.current_health(s) == maximum // 25 + round(maximum * 0.95)
 
 
 def test_upgraded_spheres_publish_the_restored_resource(globe_world):
@@ -201,7 +202,7 @@ def test_upgraded_spheres_publish_the_restored_resource(globe_world):
     s.gameplay_inventory = InventoryInfo()
     combat, actor = _player(s)
     combat.player_resource[actor] = [50.0, 200.0]
-    globes.set_health(s, combat.player_maximum_health // 2)
+    globes.set_health(s, combat.player_maximum_health // 10)
     item_id = globes.place_globe(s)
     assert globe_world.server._pickup_world_item(s, item_id, automatic=True)
     assert combat.player_resource[actor][0] == pytest.approx(54.0)

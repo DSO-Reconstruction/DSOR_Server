@@ -43,31 +43,47 @@ class MonsterMovementLossTests(unittest.TestCase):
         retries, _ = self.session.due_retransmissions(interval=0)
         self.assertFalse(retries)
 
-    def test_lost_stop_remains_retransmittable_without_reliable_walk_history(self):
+    def test_lost_stop_is_repeated_without_any_reliable_backlog(self):
+        self.session.gameplay_spawned_monster_actor_ids.add(101)
         for tick in range(100, 140, 4):
             self.publish((self.move(tick=tick),))
         self.publish((self.move(tick=140, moving=False),))
-        self.assertEqual(len(self.session.pending_reliable), 1)
+        self.assertFalse(self.session.pending_reliable)
         stop = self.frames()[-1]
-        sequence = next(iter(self.session.pending_reliable))
-        retries, _ = self.session.retransmit((sequence,), interval=0)
-        retried = RakNetServer._parse_frames(retries[0][1])[0]
-        self.assertEqual(retried["payload"], stop["payload"])
-        self.assertEqual(retried["order_idx"], stop["order_idx"])
-        delivered = RakNetServer._queue_or_deliver_inbound_order_locked(self.receiver, retried)
-        self.assertEqual(len(delivered), 1)
+        self.assertEqual(stop["reliability"], 1)
+        # The stop is lost; each scheduled re-send carries it again.
+        _command, deadlines = self.session.gameplay_monster_stop_repeats[101]
+        self.assertEqual(len(deadlines), 3)
+        # Nothing is due yet, so nothing goes out.
+        self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), 0)
+        for _ in range(3):
+            self.session.gameplay_monster_stop_repeats[101][1][0] = 0.0
+            self.session.gameplay_monster_stop_repeat_next_at = 0.0
+            self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), 1)
+            repeated = self.frames()[-1]
+            self.assertEqual(repeated["payload"], stop["payload"])
+        self.assertNotIn(101, self.session.gameplay_monster_stop_repeats)
+        delivered = RakNetServer._queue_or_deliver_inbound_order_locked(self.receiver, repeated)
         commands = decode_move_batch(*delivered[0]).commands
         self.assertEqual(commands[0].value.scalar_byte, 0)
 
-    def test_mixed_batch_only_tracks_stopped_actors(self):
+    def test_newer_movement_cancels_a_pending_stop_repeat(self):
+        self.session.gameplay_spawned_monster_actor_ids.add(101)
+        self.publish((self.move(tick=140, moving=False),))
+        self.publish((self.move(tick=141),))
+        self.assertNotIn(101, self.session.gameplay_monster_stop_repeats)
+        self.session.gameplay_monster_stop_repeat_next_at = 0.0
+        self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), 0)
+
+    def test_mixed_batch_travels_as_one_sequenced_datagram(self):
         self.publish((self.move(101), self.move(202, moving=False)))
-        frames = self.frames()
-        reliable = [f for f in frames if f["reliability"] == 3]
-        walking = [f for f in frames if f["reliability"] == 1]
-        self.assertEqual(len(reliable), 1)
-        self.assertEqual(len(walking), 1)
-        self.assertEqual(decode_move_batch(reliable[0]["payload"], reliable[0]["bit_length"]).commands[0].actor_id, 202)
-        self.assertEqual(decode_move_batch(walking[0]["payload"], walking[0]["bit_length"]).commands[0].actor_id, 101)
+        (frame,) = self.frames()
+        self.assertEqual(frame["reliability"], 1)
+        self.assertFalse(self.session.pending_reliable)
+        actors = [command.actor_id for command in
+                  decode_move_batch(frame["payload"], frame["bit_length"]).commands]
+        self.assertEqual(sorted(actors), [101, 202])
+        self.assertEqual(set(self.session.gameplay_monster_stop_repeats), {202})
 
     def test_next_snapshot_repairs_loss_and_late_motion_cannot_undo_stop(self):
         self.publish((self.move(tick=100),))

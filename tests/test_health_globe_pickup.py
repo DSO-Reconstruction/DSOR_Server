@@ -73,12 +73,13 @@ def test_full_health_leaves_the_globe_on_the_ground(world, template_id):
 def test_wounded_character_takes_the_globe_and_heals(world):
     s = world.session
     maximum = s.gameplay_combat_state.player_maximum_health
-    set_health(s, maximum // 2)
+    set_health(s, maximum // 10)
     item_id = place_globe(s)
 
     assert world.server._pickup_world_item(s, item_id, automatic=True)
     assert item_id not in s.gameplay_world_loot
-    assert current_health(s) == min(maximum, maximum // 2 + round(maximum * 0.20))
+    # Server policy floors the authored 0.2 at 80% of maximum health.
+    assert current_health(s) == min(maximum, maximum // 10 + round(maximum * 0.80))
 
 
 def test_globe_left_at_full_health_is_collected_after_damage(world):

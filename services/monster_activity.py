@@ -9,8 +9,13 @@ from dso_server.runtime.transport import Session
 class MonsterActivityService:
     @staticmethod
     def _record_delivered_monster_movements(
-            s: Session, combat, commands) -> None:
-        """Remember transforms whose datagram was submitted for this viewer."""
+            s: Session, combat, commands, *, repeat_stops: bool = False) -> None:
+        """Remember transforms whose datagram was submitted for this viewer.
+
+        With ``repeat_stops`` the stops among them (sent unreliable) are armed
+        for re-sending, in this same lock section: the map worker's per-viewer
+        session-lock count is a measured budget (PERFORMANCE.md section 11.5).
+        """
 
         delivered = {
             int(command.actor_id): (
@@ -21,10 +26,31 @@ class MonsterActivityService:
             for command in commands
             if combat is not None and int(command.actor_id) in combat.monsters
         }
+        now = time.perf_counter()
         with s.flow_lock:
             if combat is not None and s.gameplay_combat_state is not combat:
                 return
+            repeats = s.gameplay_monster_stop_repeats
+            if repeat_stops and s.gameplay_monster_stop_repeat_combat is not combat:
+                repeats.clear()
+                s.gameplay_monster_stop_repeat_combat = combat
             for command in commands:
+                # Any newer transform (walking sample, attack frame, resync)
+                # supersedes a stop still being repeated.
+                repeats.pop(int(command.actor_id), None)
+                if (
+                    repeat_stops
+                    and MONSTER_STOP_REPEAT_SECONDS
+                    and command.value.scalar_byte == 0
+                ):
+                    repeats[int(command.actor_id)] = (
+                        command,
+                        [now + delay for delay in MONSTER_STOP_REPEAT_SECONDS],
+                    )
+                    s.gameplay_monster_stop_repeat_next_at = min(
+                        s.gameplay_monster_stop_repeat_next_at,
+                        now + MONSTER_STOP_REPEAT_SECONDS[0],
+                    )
                 queued = s.gameplay_pending_monster_movements.get(int(command.actor_id))
                 if queued is not None and (
                     (int(command.value.start_tick) - int(queued.value.start_tick)) & 0xFFFFFFFF
@@ -42,11 +68,15 @@ class MonsterActivityService:
     @staticmethod
     def _send_monster_movement_batches(
             s: Session, commands, *, combat=None) -> None:
-        """Send replaceable walking samples without adding reliable backlog.
+        """Send replaceable monster transforms without adding reliable backlog.
 
-        Final stops use ordered reliability because there may be no later
-        movement to repair a lost stop. Unsent state is coalesced per actor;
-        submitted walking samples never consume attack order slots or retries.
+        Stops travel in the same sequenced batch as walking samples, as in
+        retail, and are re-sent on MONSTER_STOP_REPEAT_SECONDS because there
+        may be no later movement to repair a lost one. A reliable stop held
+        every later ordered command and move behind it whenever its datagram
+        was lost. ``DSO_MONSTER_STOPS_UNRELIABLE=0`` restores reliable stops.
+        Unsent state is coalesced per actor; submitted samples never consume
+        attack order slots or retries.
         """
         with s.flow_lock:
             if combat is not None and s.gameplay_combat_state is not combat:
@@ -69,12 +99,18 @@ class MonsterActivityService:
                         # afterwards and replace the attack animation.
                         pending.pop(actor_id, None)
             queued = tuple(pending.values())
-        # Submit final positions first, so subsequent sequenced movement is
-        # stamped after these essential boundaries. Never promote an entire
-        # mixed batch to reliable just because one actor stopped.
-        for reliable in (True, False):
-            selected = tuple(command for command in queued
-                             if (command.value.scalar_byte == 0) == reliable)
+        # Reliable stops (legacy) are submitted first, so subsequent sequenced
+        # movement is stamped after these essential boundaries. Never promote
+        # an entire mixed batch to reliable just because one actor stopped.
+        if MONSTER_STOPS_UNRELIABLE:
+            lanes = ((False, queued),)
+        else:
+            lanes = tuple(
+                (reliable, tuple(command for command in queued
+                                 if (command.value.scalar_byte == 0) == reliable))
+                for reliable in (True, False)
+            )
+        for reliable, selected in lanes:
             for offset in range(0, len(selected), MONSTER_MOVEMENT_PACKET_BUDGET):
                 if s.reliable_backlog_size() >= RELIABLE_BACKLOG_SOFT_LIMIT:
                     return
@@ -88,7 +124,67 @@ class MonsterActivityService:
                         packet, label="monster-movement", skip_if_busy=True)
                 if sent is None:
                     return
-                CharacterService._record_delivered_monster_movements(s, combat, batch)
+                CharacterService._record_delivered_monster_movements(
+                    s, combat, batch, repeat_stops=not reliable
+                )
+
+    @staticmethod
+    def _send_monster_stop_repeats(s: Session, combat) -> int:
+        """Re-send due stops; return how many commands went out.
+
+        A repeat is dropped once the monster is no longer visible to this
+        viewer, while its attack animation must not be overwritten, or when a
+        newer transform for it is already queued. Nothing is locked until a
+        deadline is due, and a due deadline is spent even if the outbound
+        lock is busy: repeats are redundancy, and the next one follows.
+        """
+
+        repeats = s.gameplay_monster_stop_repeats
+        now = time.perf_counter()
+        if not repeats or now < s.gameplay_monster_stop_repeat_next_at:
+            return 0
+        with s.flow_lock:
+            if (
+                s.gameplay_monster_stop_repeat_combat is not combat
+                or (combat is not None and s.gameplay_combat_state is not combat)
+            ):
+                repeats.clear()
+                s.gameplay_monster_stop_repeat_next_at = math.inf
+                return 0
+            visible = s.gameplay_spawned_monster_actor_ids | s.gameplay_summon_actor_ids
+            unblock_at = (
+                combat.monster_motion_unblock_at if combat is not None else {}
+            )
+            due = []
+            next_at = math.inf
+            for actor_id, (command, deadlines) in tuple(repeats.items()):
+                if (
+                    actor_id not in visible
+                    or now < unblock_at.get(actor_id, 0.0)
+                    or actor_id in s.gameplay_pending_monster_movements
+                ):
+                    del repeats[actor_id]
+                    continue
+                if now >= deadlines[0]:
+                    due.append(command)
+                    while deadlines and now >= deadlines[0]:
+                        deadlines.pop(0)
+                    if not deadlines:
+                        del repeats[actor_id]
+                        continue
+                next_at = min(next_at, deadlines[0])
+            s.gameplay_monster_stop_repeat_next_at = next_at
+        sent = 0
+        for offset in range(0, len(due), MONSTER_MOVEMENT_PACKET_BUDGET):
+            batch = tuple(due[offset:offset + MONSTER_MOVEMENT_PACKET_BUDGET])
+            if s.send_unreliable_sequenced(
+                encode_move_batch(MoveBatch(batch)),
+                label="monster-stop-repeat",
+                skip_if_busy=True,
+            ) is None:
+                break
+            sent += len(batch)
+        return sent
 
     @staticmethod
     def _resync_visible_monster_transforms(
@@ -179,17 +275,14 @@ class MonsterActivityService:
                     s, transition
                 )
 
-        # The declared duration is how long the client animates toward this
-        # position, so it has to match how often a replacement arrives. The
-        # publisher samples an actor every
-        # MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS, and the server's own reach
-        # model (`_bounded_published_monster_position`) treats exactly that
-        # span as one publish worth of travel. The previous fixed 18 had no
-        # recorded origin and was 4.5x that span, so the client animated at
-        # roughly a fifth of the real speed and fell steadily behind the
-        # authoritative position; the stop frame that ends an approach carries
-        # duration 0, and closing that accumulated gap in one frame is the
-        # jump players see instead of a monster walking the last stretch.
+        # The position is where the monster is at server_tick. The client
+        # walks it on from there at (speed byte x template RunSpeed) for at
+        # most the declared duration, then stands it still until the next
+        # sample (client RE, NetworkSmoothMotionProperty). The duration is
+        # that dead-reckoning horizon, not an interpolation time, so it must
+        # comfortably exceed the publish interval. It equalled the interval
+        # (4 ticks) for a while, which stopped every monster briefly before
+        # each sample whenever a tick or datagram ran late. Retail uses 18.
         move_commands = tuple(
             MoveServerCommand(
                 Move.from_values(
@@ -199,7 +292,7 @@ class MonsterActivityService:
                     movement.yaw,
                     movement.server_tick,
                     (
-                        MONSTER_MOVEMENT_PUBLISH_INTERVAL_TICKS
+                        MONSTER_MOVEMENT_DURATION_TICKS
                         if movement.moving
                         else 0
                     ),
@@ -716,6 +809,8 @@ class MonsterActivityService:
         # movement. Stops must survive congestion without another cast/move.
         if s.gameplay_pending_monster_movements:
             CharacterService._send_monster_movement_batches(s, (), combat=combat)
+        if s.gameplay_monster_stop_repeats:
+            CharacterService._send_monster_stop_repeats(s, combat)
         for transition in return_home_transitions:
             if not transition.active:
                 CharacterService._send_monster_return_home_transition(

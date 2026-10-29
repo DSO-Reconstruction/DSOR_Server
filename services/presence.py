@@ -4,6 +4,7 @@ from __future__ import annotations
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.player_summon_lifecycle import player_summon_preparation_batch
+from dso_server.services.presence_movement import relayed_player_move
 
 class PresenceService:
     """Remote-player presence, equipment, status, and world synchronization."""
@@ -686,6 +687,11 @@ class PresenceService:
                     or viewer_transitions
                     or viewer_resolutions
                     or viewer.gameplay_pending_monster_movements
+                    or (
+                        viewer.gameplay_monster_stop_repeats
+                        and time.perf_counter()
+                        >= viewer.gameplay_monster_stop_repeat_next_at
+                    )
                 ):
                     CharacterService._send_monster_activity_to(
                         viewer,
@@ -916,11 +922,25 @@ class PresenceService:
                 )
             return
         if event == "move":
+            if getattr(self, "_presence_movement_publisher_running", False):
+                # The 25 Hz movement thread relays it in each viewer's batch.
+                return
             with session.flow_lock:
                 move = session.gameplay_last_move
             if move is None:
                 return
+            # Standing players get duration 0, the client's hard stop; moving
+            # ones the retail 18-tick dead-reckoning horizon.
+            move = relayed_player_move(move)
             packet = encode_move(move, actor_id=actor_id)
+            for peer in vicinity_peers:
+                peer.send_unreliable_sequenced(packet)
+            return
+        if isinstance(event, tuple) and event[0] == "move_correction":
+            # A refused move is never relayed, so peers would keep walking the
+            # player along its last accepted segment and then snap. Give them
+            # the same stop at the server position that the owner receives.
+            packet = encode_move(event[1], actor_id=actor_id)
             for peer in vicinity_peers:
                 peer.send_unreliable_sequenced(packet)
             return

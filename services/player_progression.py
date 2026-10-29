@@ -11,7 +11,7 @@ import sqlite3
 from types import MappingProxyType
 from typing import Iterable, Mapping
 
-from dso_server.runtime import resident_content
+from dso_server.runtime import progression_queue, resident_content
 from dso_server.protocol.player_init_protocol import (
     XP_CHANGED_COMMAND,
     ServerCommand,
@@ -298,6 +298,32 @@ class PlayerProgressionService:
         *,
         database_path: str | Path,
     ) -> int:
+        """Grant kill XP on the progression queue (0 when deferred).
+
+        It reads the map difficulty and generation, so it only runs while the
+        player is still in the instance where the kill happened.
+        """
+
+        monsters = tuple(monsters)
+        if not monsters:
+            return 0
+        if progression_queue.defer(
+            CharacterService._award_monster_kill_xp_now, s, monsters,
+            database_path=database_path, label="kill XP",
+            guard=progression_queue.same_map_instance(s),
+        ):
+            return 0
+        return CharacterService._award_monster_kill_xp_now(
+            s, monsters, database_path=database_path,
+        )
+
+    @staticmethod
+    def _award_monster_kill_xp_now(
+        s: Session,
+        monsters: Iterable[object],
+        *,
+        database_path: str | Path,
+    ) -> int:
         monsters = tuple(monsters)
         if not monsters:
             return 0
@@ -409,7 +435,10 @@ class PlayerProgressionService:
             CharacterService._achievement_on_level_up(
                 s, int(character.class_id), int(transition.level),
             )
-        CharacterService._request_account_save(s, label)
+        # Kill XP is coalesced; a level gained is saved at once.
+        CharacterService._request_account_save(
+            s, label, flush=bool(transition.level_up)
+        )
         return transition.awarded
 
 
