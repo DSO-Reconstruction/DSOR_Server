@@ -715,9 +715,6 @@ _PARALLEL_WORLD_EXIT_BOSSES = {
     "pw007_stonekeep_01_dun": (
         "pw007_01_leader_undead_mage_heroic", "pw007_spawn_exit",
     ),
-    "pw008_kingscrypt_01_dun": (
-        "pw008_01_leader_ranger_heroic", "pw008_spawn_exit",
-    ),
     "pw010_wildcave_01_dun": (
         "pw010_01_leader_stag_heroic", "pw010_spawn_exit",
     ),
@@ -757,6 +754,23 @@ _PARALLEL_WORLD_EXIT_BOSSES = {
         "", "pw026_spawn_exit",
     ),
 }
+
+# Exit events that stay closed for the current run and must not be restored
+# from a previously discovered destination. Kingscrypt is included here even
+# though its boss entrance is opened by the authored key-and-lock quest, not
+# by killing a map gatekeeper.
+_PARALLEL_WORLD_EXIT_EVENT_KEYS = {
+    map_id: event_key
+    for map_id, (_boss_template, event_key)
+    in _PARALLEL_WORLD_EXIT_BOSSES.items()
+}
+_PARALLEL_WORLD_EXIT_EVENT_KEYS[
+    "pw008_kingscrypt_01_dun"
+] = "pw008_spawn_exit"
+
+# Several map exit tables contain one scene exit per selected tier. Kingscrypt
+# still needs this filtering even though its exit is quest-prop-gated.
+_PARALLEL_WORLD_TIERED_EXIT_MAPS = frozenset(_PARALLEL_WORLD_EXIT_EVENT_KEYS)
 _PARALLEL_WORLD_BOSS_REWARD_CHESTS = {
     "pw003_grimmag_01_boss": (
         "boss_grimmag", "pw003_spawn_chest",
@@ -4941,14 +4955,19 @@ class MapEventService:
         except Exception as exc:
             _log(f"exit refresh failed: {type(exc).__name__}: {exc}")
             return
-        parallel_world_boss_map = map_key(runtime.map_id) in _PARALLEL_WORLD_EXIT_BOSSES
-        tiers = _exit_access_difficulties(str(self.static_database_path)) if parallel_world_boss_map else {}
+        parallel_world_tiered_exit_map = (
+            map_key(runtime.map_id) in _PARALLEL_WORLD_TIERED_EXIT_MAPS
+        )
+        tiers = (
+            _exit_access_difficulties(str(self.static_database_path))
+            if parallel_world_tiered_exit_map else {}
+        )
         available = (
             {
                 tiers[d.destination_map_id] for d in definitions
                 if d.destination_map_id in tiers
             }
-            if parallel_world_boss_map else set()
+            if parallel_world_tiered_exit_map else set()
         )
         if event_sets is not None:
             wanted_event_sets = {int(value) for value in event_sets}
@@ -4984,7 +5003,7 @@ class MapEventService:
                         runtime.scaling_difficulty,
                     ),
                 ))
-                if parallel_world_boss_map else 0
+                if parallel_world_tiered_exit_map else 0
             )
             if available and selected_tier not in available:
                 _log(
@@ -5061,8 +5080,10 @@ class MapEventService:
                 if is_active:
                     active_viewer_definitions.append(definition)
                 exit_entries.append((definition, entry_active))
-            if parallel_world_boss_map:
-                # Boss rooms have a separate staged exit flow. Keep its
+            if parallel_world_tiered_exit_map:
+                # Parallel World exits have one selected variation per tier.
+                # Keep the staged scene-creation flow for every such map.
+                # Boss rooms also have a separate staged exit flow; keep its
                 # explicit per-entry active override unchanged.
                 exit_info_entries = tuple(
                     ExitInfoEntry(
@@ -5131,9 +5152,9 @@ class MapEventService:
                             and getattr(viewer, "gameplay_chase_generation", None) == generation
                             and not getattr(viewer, "gameplay_exit_transition_started", False)):
                         viewer.gameplay_map_exits = tuple(active_viewer_definitions)
-            if parallel_world_boss_map:
+            if parallel_world_tiered_exit_map:
                 _log(
-                    f"boss exits for {getattr(viewer, 'addr', '?')}: access="
+                    f"tiered Parallel World exits for {getattr(viewer, 'addr', '?')}: access="
                     f"{getattr(viewer, 'gameplay_map_access_id', '')!r} "
                     f"difficulty={selected_tier}; wire_guids={len(exit_entries)}; "
                     f"stage={'closed' if active_override is False else 'open'}; active="

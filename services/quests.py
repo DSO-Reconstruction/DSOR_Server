@@ -423,12 +423,12 @@ class QuestService:
         # the portal appear before the ritual waves and Raazghul. Keep the
         # exit closed on every new runtime and let the authoritative
         # Raazghul-death handler activate it for the current instance.
-        from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_BOSSES
-        run_gate = _PARALLEL_WORLD_EXIT_BOSSES.get(normalized_map)
-        if run_gate is not None:
+        from dso_server.services.map_events import _PARALLEL_WORLD_EXIT_EVENT_KEYS
+        run_gate_event = _PARALLEL_WORLD_EXIT_EVENT_KEYS.get(normalized_map)
+        if run_gate_event is not None:
             # Visiting a boss arena or completing a quest on an earlier run
             # does not unlock this instance's progression portal.
-            exit_destinations.pop(run_gate[1], None)
+            exit_destinations.pop(run_gate_event, None)
 
         def gated_by_open_quest_task(event) -> bool:
             # The exit event has an authored PlayerEnteredMap restore with a
