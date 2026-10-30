@@ -808,3 +808,28 @@ def test_equal_item_programs_stay_one_object_across_stats_misses():
     equal = [a for a, b in pairs if a == b]
     assert len(equal) > 100
     assert all(a is b for a, b in pairs if a == b)
+
+
+def test_resident_revision_keys_are_memoized_but_the_revision_is_read_live(tmp_path, monkeypatch):
+    from dso_server.runtime import resident_content
+
+    path = str(tmp_path / "static.db4")
+    key = resident_content._key(path)
+    monkeypatch.setitem(resident_content._stats, key, SimpleNamespace(st_mtime_ns=1, st_size=5))
+    first = resident_content.revision(path)
+    assert resident_content._REVISION_KEYS[path] == key
+    # A reload replaces the stat; the memo holds only the normalised key.
+    monkeypatch.setitem(resident_content._stats, key, SimpleNamespace(st_mtime_ns=2, st_size=5))
+    assert resident_content.revision(path) != first
+    monkeypatch.delitem(resident_content._stats, key)
+    assert resident_content.revision(path) is None
+
+
+def test_skills_reading_the_same_actor_variables_share_their_resolution(geometry_state):
+    state, geometry, entry = geometry_state.state, geometry_state.geometry, geometry_state.entry
+    state._modified_player_skill_geometry(geometry, (entry("skill_enragingleap_lvl", 0),))
+    computed = dict(state._geometry_actor_variables)
+    # A different stack recomputes the geometry but not its (absent) variables.
+    state._modified_player_skill_geometry(geometry, (entry("skill_enragingleap_lvl", 4),))
+    assert state._geometry_actor_variables.keys() == computed.keys()
+    assert all(state._geometry_actor_variables[key] is value for key, value in computed.items())

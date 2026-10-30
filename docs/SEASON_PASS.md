@@ -36,6 +36,26 @@ each) and `GetSeasonPassAward` (claim; reward ID = lane × 100 + level, lanes
   before seasons were tracked (no `season_id`) joins the first season it meets.
 - Resuming an ended run (same instance ID) keeps the progress made in it.
   Starting a new run starts a new season.
+- A season opens on level 1 (`SEASON_PASS_START_LEVEL`). The client locks a row
+  on every track, the free one too, until the pass level reaches it, and stock
+  data would start at level 0 with everything locked. The first row is
+  therefore free of experience; level 2 still takes its full total.
+
+## Tickets
+
+`gold_pass`, `gold_pass_2`, `red_pass` and `red_pass_2` are used from the
+inventory and consumed only when they apply. They follow the client's shop
+filter (`gameplay/season_pass.py`, `season_pass_ticket_types`):
+
+| Ticket | Adds | Refused when |
+| --- | --- | --- |
+| Standard | type 1 (red 2); the second use adds type 3 (red 4) | the double type is active |
+| Double | types 1 and 3 (red 2 and 4) | either type of its track is active |
+
+While no season runs the ticket stays in the bag, because the client has no
+Season Pass to show it on, and the player gets a System chat message saying so.
+The on-screen message widget only takes keys from the client's language files,
+none of which says this, so free text has to go through chat.
 
 ## Rewards
 

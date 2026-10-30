@@ -1522,6 +1522,10 @@ class MapEventRuntime:
     props: dict[int, PropRuntimeState] = field(default_factory=dict)
     # StateObject IndividualUsage is scoped to a player and this map instance.
     individual_prop_usage: set[tuple[int, int]] = field(default_factory=set)
+    # Quest placements used in this map instance: (player, switch id, prop id).
+    # Retail refreshes props with the map, so a new run offers them again; a
+    # later task's own switch may also reuse the same placement.
+    quest_prop_usage: set[tuple[int, str, int]] = field(default_factory=set)
     # Parallel-world arena reward chest props are visible on entry but must
     # reject interaction until the arena boss dies.
     boss_reward_chests_unlocked: set[str] = field(default_factory=set)

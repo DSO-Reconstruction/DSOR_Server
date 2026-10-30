@@ -631,8 +631,8 @@ class QuestServiceTests(unittest.TestCase):
         self.assertEqual(task.counter(progress.tokens), task.target)
         self.assertTrue(progress.task_finished(task.index))
 
-    def test_consumed_quest_prop_survives_reload_and_fresh_map_instance(self):
-        session, _runtime, bags, task = self._garden_quest_props()
+    def test_consumed_quest_prop_refreshes_with_the_map_like_retail(self):
+        session, used_runtime, bags, task = self._garden_quest_props()
         self._click_prop(session, bags[0], BAG_SWITCH)
         document = json.loads(json.dumps(QuestService._quest_log_document(session)))
         restored, runtime, restored_bags, _task = self._garden_quest_props(50181)
@@ -640,12 +640,17 @@ class QuestServiceTests(unittest.TestCase):
         self.server._quest_sync_props(restored)
         self._click_prop(restored, restored_bags[0], BAG_SWITCH)
         progress = restored.gameplay_quest_log[GRIMMAGSTONE_02]
-        self.assertEqual(task.counter(progress.tokens), 1)
-        # Rejected clicks cannot consume a fresh runtime's shared prop.
-        self.assertEqual(runtime.props[restored_bags[0].prop_id].state, PROP_STATE_ACTIVE)
-        self._click_prop(restored, restored_bags[1], BAG_SWITCH)
+        # The new map instance offers the placement again and it counts.
         self.assertEqual(task.counter(progress.tokens), 2)
-        self.assertEqual(QuestProgress.from_document("legacy", {}).used_props, {})
+        self.assertEqual(runtime.props[restored_bags[0].prop_id].state, PROP_STATE_ACTIVE)
+        # Within one map instance a reconnect does not refresh it.
+        session.gameplay_map_event_runtime = used_runtime
+        self.assertIsNone(CharacterServer._quest_prop_operation(session, bags[0]))
+        # Saves from before props refreshed may still carry the old field.
+        self.assertEqual(
+            QuestProgress.from_document("legacy", {"used_props": {"s": ["p"]}}),
+            QuestProgress("legacy"),
+        )
 
     def test_shared_quest_props_allow_each_player_one_use_without_resync(self):
         session, runtime, bags, task = self._garden_quest_props()
@@ -677,9 +682,28 @@ class QuestServiceTests(unittest.TestCase):
         session, _runtime, bags, task = self._garden_quest_props()
         self._click_prop(session, bags[0], BAG_SWITCH)
         session.gameplay_quest_log[GRIMMAGSTONE_02] = QuestProgress(GRIMMAGSTONE_02)
+        CharacterServer._quest_forget_prop_usage(
+            session, self.server._quest_catalog().quest(GRIMMAGSTONE_02),
+        )
         self.server._quest_sync_props(session)
         self._click_prop(session, bags[0], BAG_SWITCH)
         self.assertEqual(task.counter(session.gameplay_quest_log[GRIMMAGSTONE_02].tokens), 1)
+
+    def test_one_click_on_a_repeated_event_is_one_step(self):
+        # Evil Influence repeats one <Switch>+<Event> pair per corpse pile,
+        # all on one switch id. A click used to fire all of them.
+        quest = self.server._quest_catalog().quest("a0007-InfestedThreat-02-n")
+        task = next(task for task in quest.tasks if task.task_type == "InteractTask")
+        event = next(event for event in task.events if event.kind == "interact")
+        self.assertEqual(sum(row.kind == "interact" for row in task.events), 1)
+        self.assertEqual(len({switch.prop for switch in task.switch_definitions}), 12)
+        progress = QuestProgress(quest.quest_id)
+        for step in range(1, task.target):
+            apply_quest_event(quest, progress, "interact", event.value)
+            self.assertEqual(task.counter(progress.tokens), step)
+            self.assertFalse(progress.task_finished(task.index))
+        apply_quest_event(quest, progress, "interact", event.value)
+        self.assertTrue(progress.task_finished(task.index))
 
     def test_inactive_quest_click_does_not_consume_shared_prop(self):
         session, runtime, bags, task = self._garden_quest_props()

@@ -109,6 +109,7 @@ class LifecycleService:
             os.getenv('DSO_SOCIAL_STATE_FILE', str(DEFAULT_SOCIAL_STATE_PATH))
         )
         self.social_chat_callback = None
+        self.system_chat_callback = None
         # Production resolves the same game hostname to a different backend
         # after character selection.  On localhost both backends have to share
         # UDP/2192, so the next connection from the selected client is routed

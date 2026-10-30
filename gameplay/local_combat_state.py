@@ -2063,6 +2063,9 @@ class LocalCombatState:
         self._geometry_window_expansions: dict[tuple, tuple] = {}
         # _Template_ActorVariables initial values, read on the first miss.
         self._geometry_actor_variable_initials: dict[str, float] | None = None
+        # ActorVariable instructions -> timing_actor_variables result (read
+        # only by resolve_modifier_value).
+        self._geometry_actor_variables: dict[tuple, dict[str, float]] = {}
         self._user_effect_location_auras_cache = {}
         runtime_catalog = load_status_runtime_catalog(
             encounter.static_database_path
@@ -7077,10 +7080,26 @@ class LocalCombatState:
                         "SELECT Id, InitialValue FROM _Template_ActorVariables"
                     )
                 }
-            cooldown_variables = timing_actor_variables(
-                self._geometry_actor_variable_initials,
-                instructions,
+            # Only ActorVariable instructions feed the cooldown operands, and
+            # they come from talents: resolving them again (and copying the
+            # ~2000 initial values) was a third of every miss.
+            variable_instructions = tuple(
+                instruction for instruction in instructions
+                if instruction[0].casefold() == "actorvariable"
             )
+            cooldown_variables = self._geometry_actor_variables.get(
+                variable_instructions
+            )
+            if cooldown_variables is None:
+                cooldown_variables = timing_actor_variables(
+                    self._geometry_actor_variable_initials,
+                    variable_instructions,
+                )
+                if len(self._geometry_actor_variables) >= 256:
+                    self._geometry_actor_variables.clear()
+                self._geometry_actor_variables[variable_instructions] = (
+                    cooldown_variables
+                )
             for kind, arguments, stack_count, details in instructions:
                 normalized_kind = kind.casefold()
                 if normalized_kind == "cooldown":
@@ -7146,7 +7165,10 @@ class LocalCombatState:
                             encoded,
                             default_trigger="skillstart",
                         )
-                        if stack_count > 1:
+                        # Scaling a stack-invariant load copies equal effects.
+                        if stack_count > 1 and not self._stack_invariant_status(
+                            database, arguments
+                        ):
                             nested = tuple(
                                 replace(
                                     effect,

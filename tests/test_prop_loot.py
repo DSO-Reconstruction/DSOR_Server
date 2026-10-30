@@ -62,9 +62,10 @@ CHEST_KEY = "e_sar_chest_key"
 class PropLootCatalogTests(unittest.TestCase):
     def test_retail_amphora_spot_is_a_one_key_normal_amphora(self):
         content = load_map_event_content(DEFAULT_STATIC_DB_PATH, DRAGAN_MAP)
+        # Client builds regenerate instance GUIDs; the row is the stable key.
         amphora = next(
             prop for prop in content.props
-            if prop.instance_guid.hex() == "63da7adf40ed464abb999599605c12e6"
+            if prop.template_id == "chest_amphora_normal" and prop.row_id == 26
         )
         self.assertEqual(
             (amphora.template_id, amphora.loot_list_id, amphora.key_id,

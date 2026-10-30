@@ -116,6 +116,28 @@ class PresenceVisualService:
         return tuple(commands)
 
     @staticmethod
+    def _discard_client_location_effects(session: Session) -> None:
+        """Empty the client's effect table before it leaves a map.
+
+        The client keeps a location effect until it is told to discard it,
+        map changes included, in a table indexed by the low 16 bits of the
+        id (LocationEffectManager::RegisterLocationEffect 0x140a1e694). Each
+        map instance numbers its effects from 0x10000 again, so one left
+        behind is hit by a later NewLocationEffect, which fails to register
+        and aborts the client in ~LocationEffect ("!this->IsValid()").
+        """
+
+        with session.flow_lock:
+            instance_ids = tuple(sorted(session.gameplay_location_effect_ids))
+            session.gameplay_location_effect_ids = set()
+        if instance_ids:
+            session.send_reliable_ordered(
+                encode_discard_location_effect_batch(instance_ids, actor_id=0),
+                track=True,
+                label="map-exit-location-effect-discard",
+            )
+
+    @staticmethod
     def _send_player_location_visuals_to(session: Session, visuals) -> None:
         """Reconcile native world effects with one client's registrations."""
 
@@ -124,6 +146,10 @@ class PresenceVisualService:
         visuals = tuple(v for v in visuals if not getattr(v, "follows_owner", False))
         current_by_id = {int(visual.instance_id): visual for visual in visuals}
         with session.flow_lock:
+            # Leaving: its table was emptied, and a new effect would outlive
+            # the map it belongs to.
+            if session.gameplay_exit_transition_started:
+                return
             known = set(session.gameplay_location_effect_ids)
             current = set(current_by_id)
             created_ids = tuple(sorted(current - known))
