@@ -550,11 +550,24 @@ class PlayerResourceService:
             target_session = target_sessions.get(actor_id)
             if target_session is None:
                 continue
+            # The health beside it is the combat's own: monster blows do not
+            # write inventory.health_points, so that mirror still held the
+            # health from before them and every tick refilled the HUD.
+            # FAILURE: "la barre de vie ... le client la met a 100% alors que
+            #   je prends des degats".
+            combat = target_session.gameplay_combat_state
+            live = None
+            if combat is not None:
+                with combat.lock:
+                    live = combat.player_health.get(actor_id)
+                    live = None if live is None else int(live[0])
             with target_session.flow_lock:
                 inventory = target_session.gameplay_inventory
                 if inventory is None:
                     continue
                 inventory.secondary_resource = current_resource
+                if live is not None:
+                    inventory.health_points = float(live)
                 # A resource tick must not republish the pre-Kill inventory
                 # snapshot as a heal while the client is showing a corpse.
                 current_health = (

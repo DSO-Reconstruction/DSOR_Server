@@ -311,11 +311,22 @@ class MonsterCombatService(
             target_session = target_sessions.get(int(actor_id))
             if target_session is None:
                 continue
+            # The resource beside it is the combat's own, not the inventory's
+            # mirror, which lags the pool (the same stale snapshot refilled
+            # the resource globe: "idem pour le mana").
+            combat = target_session.gameplay_combat_state
+            live = None
+            if combat is not None:
+                with combat.lock:
+                    live = combat.player_resource.get(int(actor_id))
+                    live = None if live is None else float(live[0])
             with target_session.flow_lock:
                 inventory = target_session.gameplay_inventory
                 if inventory is None or target_session.gameplay_death_pending:
                     continue
                 inventory.health_points = float(current_health)
+                if live is not None:
+                    inventory.secondary_resource = live
                 current_resource = float(inventory.secondary_resource)
                 server_tick = max(
                     int(target_session.gameplay_chase_server_tick),
