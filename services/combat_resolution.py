@@ -1019,6 +1019,20 @@ class CombatResolutionService:
         )
         if not resolutions:
             return
+        # Every InventoryInfo (delta and final) carries
+        # inventory.health_points; a blow that left it at its old value made
+        # the next loot, sale or potion put the HUD back to that health.
+        # FAILURE: "le client la met a 100% alors que je prends des degats",
+        #   "je suis full hp le client me dit que je suis mid hp".
+        # SEE: protocol/inventory_codec.py clone_inventory_info.
+        own = [
+            int(resolution.current_health) for resolution in resolutions
+            if int(resolution.target_actor_id) == LOCAL_PLAYER_ACTOR_ID
+        ]
+        if own:
+            with s.flow_lock:
+                if s.gameplay_inventory is not None:
+                    s.gameplay_inventory.health_points = float(max(0, own[-1]))
         status_command_groups = (
             CharacterService._victim_effect_command_transactions(
                 s, resolutions, include_item_set_procs=include_item_set_procs

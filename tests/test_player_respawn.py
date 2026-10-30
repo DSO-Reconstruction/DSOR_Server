@@ -633,6 +633,21 @@ class RespawnServiceTests(unittest.TestCase):
         update, _ = decode_actor_stats_update_batch(*s.recorder.find(0x7B))
         self.assertEqual((update.health_points, update.resource_points), (310, 25))
 
+    def test_a_blow_on_us_updates_the_health_inventory_info_carries(self):
+        # FAILURE: "je suis full hp le client me dit que je suis mid hp":
+        #   InventoryInfo republished the health from before the blows.
+        from dso_server.gameplay.local_combat_state import DamageResolution
+        from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
+        s = self.session
+        s.gameplay_death_pending = False
+        s.gameplay_inventory.health_points = 4200
+        self.server._send_combat_resolution(s, DamageResolution(
+            target_actor_id=LOCAL_PLAYER_ACTOR_ID, attacker_actor_id=0x20001,
+            current_health=1234, maximum_health=4200, damage=2966, killed=False,
+            position=(0.0, 0.0, 0.0), server_tick=1, hit_tags=(0,), skill_index=0,
+        ), label="test")
+        self.assertEqual(s.gameplay_inventory.health_points, 1234)
+
     def test_arena_death_has_no_normal_death_dialog(self):
         s = self.session
         s.gameplay_death_pending = False
