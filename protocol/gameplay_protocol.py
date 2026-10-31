@@ -36,6 +36,9 @@ STAGING_SIGNAL_COMMAND = command_id("Commands::StagingSignalCommand", 0x0113)
 USE_STICKER_BOOK_ITEM_COMMAND = command_id("Commands::UseStickerBookItemCommand", 0x0135)
 ADD_STICKER_BOOK_FROM_INVENTORY_COMMAND = command_id("Commands::AddStickerbookFromInventoryCommand", 0x0133)
 SET_STICKER_BOOK_FAVORITE_COMMAND = command_id("Commands::UpdateStickerbookFavoriteCommand", 0x0131)
+SET_STICKER_BOOK_FAVORITE_POS_COMMAND = command_id(
+    "Commands::UpdateStickerbookFavoritePosCommand", 0x0132
+)
 UPGRADE_STICKER_BOOK_ITEM_COMMAND = command_id("Commands::UpgradeStickerbookItemCommand", 0x0134)
 QUICK_SLOTS_COMMAND = command_id("Commands::QuickSlotsCommand", 0x0051)
 INVENTORY_ITEM_ACTION_COMMAND = command_id("Commands::InventoryCommand", 0x0055)
@@ -1058,6 +1061,46 @@ def encode_set_stickerbook_favorite(
     )
     writer.write_string(value.resource_id)
     writer.write_bool(value.favorite)
+    return writer.finish()
+
+
+@dataclass(frozen=True)
+class SetStickerbookFavoritePositionRequest:
+    resource_id: str
+    position: int
+
+
+def decode_set_stickerbook_favorite_position(
+    payload: bytes, bit_length: int | None = None
+) -> SetStickerbookFavoritePositionRequest:
+    reader = _reader(
+        payload, SET_STICKER_BOOK_FAVORITE_POS_COMMAND, bit_length
+    )
+    result = SetStickerbookFavoritePositionRequest(
+        reader.read_string(), reader.read_uint32_le()
+    )
+    if bit_length is not None:
+        if reader.remaining:
+            raise ValueError(
+                "SetStickerbookFavoritePositionRequest has unread bits"
+            )
+    elif reader.remaining and reader.read_bits(reader.remaining) != 0:
+        raise ValueError(
+            "SetStickerbookFavoritePositionRequest has non-zero padding"
+        )
+    return result
+
+
+def encode_set_stickerbook_favorite_position(
+    value: SetStickerbookFavoritePositionRequest,
+) -> tuple[bytes, int]:
+    writer = BitWriter()
+    writer.write_uint8(0x8B)
+    writer.write_bytes(
+        SET_STICKER_BOOK_FAVORITE_POS_COMMAND.to_bytes(2, "little")
+    )
+    writer.write_string(value.resource_id)
+    writer.write_uint32_le(value.position)
     return writer.finish()
 
 
@@ -3282,6 +3325,8 @@ def decode_simple_gameplay_command(payload: bytes):
         return decode_string_command(payload, command_id)
     if command_id == SET_STICKER_BOOK_FAVORITE_COMMAND:
         return decode_set_stickerbook_favorite(payload)
+    if command_id == SET_STICKER_BOOK_FAVORITE_POS_COMMAND:
+        return decode_set_stickerbook_favorite_position(payload)
     if command_id == ADD_STICKER_BOOK_FROM_INVENTORY_COMMAND:
         return decode_add_stickerbook_from_inventory(payload)
     if command_id == UPGRADE_STICKER_BOOK_ITEM_COMMAND:

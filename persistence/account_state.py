@@ -211,6 +211,7 @@ class AccountState:
     map_difficulty: int = 0
     scaling_difficulty: int = 0
     stickerbook_entries: tuple[StickerbookEntry, ...] = ()
+    stickerbook_favorite_slots: tuple[str | None, ...] = ()
     # Collector's Bag item rewards already paid, "subgroup:threshold:item".
     stickerbook_rewards: tuple[str, ...] = ()
     active_costume: str = ""
@@ -694,6 +695,7 @@ def _state_to_document(state: AccountState) -> dict:
         "stickerbook_entries": [
             asdict(entry) for entry in state.stickerbook_entries
         ],
+        "stickerbook_favorite_slots": list(state.stickerbook_favorite_slots),
         "active_costume": str(state.active_costume),
         "hidden_equipment_skins": {
             str(int(slot)): str(skin)
@@ -962,6 +964,10 @@ def _state_from_document(document: dict) -> AccountState:
             )
             for entry in document.get("stickerbook_entries", ())
             if str(entry.get("resource_id", ""))
+        ),
+        stickerbook_favorite_slots=tuple(
+            str(value) if value else None
+            for value in document.get("stickerbook_favorite_slots", ())
         ),
         active_costume=str(document.get("active_costume", "")),
         hidden_equipment_skins={
@@ -1430,10 +1436,9 @@ class AccountStateStore:
 
         character_id = int(character_id)
         with self.lock:
-            existed = (
-                self.states.pop(character_id, None) is not None
-                or self.character_profiles.pop(character_id, None) is not None
-            )
+            had_state = self.states.pop(character_id, None) is not None
+            had_profile = self.character_profiles.pop(character_id, None) is not None
+            existed = had_state or had_profile
             self._database.queue_delete(character_id)
         if flush:
             self.flush()

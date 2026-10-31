@@ -155,17 +155,25 @@ def encode_character_generation(
 
 
 def character_generation_editor_response(
-    *, locale: str, preview_id: int
+    *, locale: str, preview_id: int, character=None, operation: int = 2
 ) -> CharacterGeneration:
-    """Build retail operation 2, which opens and initializes the editor."""
+    """Build a server editor response (op 2 create, op 9 alter).
+
+    When ``character`` is supplied the same editor is preloaded for a
+    character-alteration booking instead of a new character preview.
+    """
 
     return CharacterGeneration(
-        operation=2,
-        class_id=0,
-        gender=0,
+        operation=operation,
+        class_id=int(getattr(character, "class_id", 0)),
+        gender=int(getattr(character, "gender", 0)),
+        character_id=int(getattr(character, "character_id", 0)),
         field_7c=max(1, int(preview_id)),
-        hair_style=18,
-        beard_style=8,
+        hair_style=int(getattr(character, "hair_style", 18)),
+        beard_style=int(getattr(character, "beard_style", 8)),
+        body_style=int(getattr(character, "body_style", 0)),
+        body_stature=int(getattr(character, "body_stature", 0)),
+        name=str(getattr(character, "name", "")),
         fields_84=(0, 0, 0, DEFAULT_GENERATION_REVISION),
         transform=IDENTITY_CAPTURE_TRANSFORM,
         locale=str(locale),
@@ -180,10 +188,12 @@ def character_generation_result(
     character_id: int = 0,
     deny_reason: int = 0,
 ) -> CharacterGeneration:
-    """Return an operation 4 denial or operation 5 success from a request."""
+    """Return an editor denial or a create/edit success response."""
 
-    if operation not in (4, 5):
-        raise ValueError("character generation result must be operation 4 or 5")
+    if operation not in (4, 5, 11):
+        raise ValueError(
+            "character generation result must be operation 4, 5 or 11"
+        )
     return replace(
         request,
         operation=operation,

@@ -24,6 +24,7 @@ export async function listPage(route) {
   let searchHint = "Search " + names[name].toLowerCase();
   if (name === "accounts") {
     result.description = "Open an account to manage access and inspect its characters.";
+    result.actions = link("Create account", "accounts/new", {}, "button");
     rows = table(["Account", "ID", "Access", "State", "Characters", "Last login", "Created"], data.rows.map(a => [
       link(a.username, `accounts/${a.account_id}`), a.account_id, a.admin ? "Administrator" : "Player",
       status(a.disabled ? "Disabled" : "Active", a.disabled ? "bad" : "good"), a.character_ids.length,
@@ -73,6 +74,7 @@ function sessionTable(rows) {
 
 export async function accountPage(route) {
   const id = route.parts[1], tab = route.parts[2] || "characters";
+  if (id === "new") return newAccountPage();
   const data = await api(`/api/accounts/${id}`), a = data.account;
   const result = {
     title: a.username, description: `Account ${a.account_id} · ${a.admin ? "Administrator" : "Player"} · ${a.disabled ? "Disabled" : "Active"}`,
@@ -82,8 +84,58 @@ export async function accountPage(route) {
   };
   if (tab === "characters") {
     result.html += stats([["Characters", data.characters.length], ["Online", data.characters.filter(c => c.online).length], ["Created", date(a.created_at)], ["Last login", date(a.last_login_at)]]) +
-      section("Characters", characterTable(data.characters));
+      section("Characters", characterTable(data.characters)) +
+      section("Launch game", `<div class="form-grid"><label>Client language<select id="launch-language"><option value="en">English</option><option value="tr">Turkish</option></select></label><div class="form-actions"><button id="launch-account" type="button">Start game as ${esc(a.username)}</button></div></div><p class="help">Starts the game client on this computer using a fresh session for this account. The account must be enabled, and the client must be installed here. Existing sessions for this account are revoked.</p><p id="launch-error" class="error-text" role="alert"></p>`);
+    const copyAccounts = await api("/api/accounts?limit=100");
+    result.html += section("Copy characters to an account", `<form id="copy-characters-form" class="form-page">
+      <fieldset class="form-section"><legend>Select characters</legend><div class="form-stack">${data.characters.map(c => `<label class="check"><input type="checkbox" name="copy-character" value="${c.character_id}"><span>${esc(c.name)} · Level ${c.level} · ID ${c.character_id}</span></label><label>Copied character name<input name="copy-name-${c.character_id}" value="${esc(c.name.slice(0, 26) + "_copy")}" maxlength="32" required></label>`).join("") || '<p class="empty">This account has no characters with saved profiles.</p>'}</div></fieldset>
+      <fieldset class="form-section"><legend>Destination account</legend><div class="form-grid"><label>Destination<select id="copy-destination"><option value="new">Create a new account</option>${copyAccounts.rows.map(row => `<option value="${row.account_id}">${esc(row.username)} · ${row.account_id}</option>`).join("")}</select></label>
+        <label id="copy-username-label">New username<input id="copy-username" minlength="3" maxlength="24" autocomplete="off"></label><label id="copy-password-label">Initial password<input id="copy-password" type="password" minlength="6" maxlength="256" autocomplete="new-password"></label>
+      </div><p class="help">Copies saved profile and gameplay data. Selected characters must be offline. Shared account currency uses the destination account's wallet.</p></fieldset>
+      <p id="copy-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Copy selected characters</button></div></form>`);
     if (data.missing_character_ids.length) result.html += `<p class="muted">Missing character profiles: ${esc(data.missing_character_ids.join(", "))}</p>`;
+    result.mount = () => {
+      $("#launch-account").addEventListener("click", async event => {
+      const button = event.currentTarget; button.disabled = true;
+      try {
+        const reason = await confirmAction("Start game as this account?", `Open the local game client as ${a.username}.`, "Start game");
+        if (reason === null) return;
+        await api(`/api/accounts/${id}/launch`, {reason, language: $("#launch-language").value});
+        notice(`Starting the game as ${a.username}.`);
+      } catch (error) { const target = $("#launch-error"); if (target) target.textContent = error.message; }
+      finally { button.disabled = false; }
+      });
+      const destination = $("#copy-destination"), username = $("#copy-username"), password = $("#copy-password");
+      const syncDestination = () => {
+        const creating = destination.value === "new";
+        username.required = password.required = creating;
+        username.disabled = password.disabled = !creating;
+        $("#copy-username-label").hidden = $("#copy-password-label").hidden = !creating;
+      };
+      destination.addEventListener("change", syncDestination); syncDestination();
+      $("#copy-characters-form").addEventListener("submit", async event => {
+        event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
+        try {
+          const selected = [...form.querySelectorAll('input[name="copy-character"]:checked')];
+          if (!selected.length) throw new Error("Select at least one character to copy.");
+          const characters = selected.map(input => {
+            const characterId = Number(input.value);
+            return {character_id: characterId, name: form.elements[`copy-name-${characterId}`].value};
+          });
+          const isNew = destination.value === "new";
+          const targetName = isNew ? username.value : destination.selectedOptions[0].textContent;
+          const reason = await confirmAction("Copy selected characters?", `Copy ${characters.length} character(s) from ${a.username} to ${targetName}.`, "Copy characters");
+          if (reason === null) return;
+          const payload = {characters, reason};
+          if (isNew) { payload.username = username.value; payload.password = password.value; }
+          else payload.destination_account_id = Number(destination.value);
+          const copied = await api(`/api/accounts/${id}/copy-characters`, payload);
+          notice(`Copied ${copied.copied} character(s) to ${copied.account.username}.`);
+          navigate(`accounts/${copied.account.account_id}`);
+        } catch (error) { const target = $("#copy-error"); if (target) target.textContent = error.message; }
+        finally { button.disabled = false; }
+      });
+    };
   } else if (tab === "settings") {
     result.html += `<form id="account-form" class="form-page">
       <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
@@ -96,8 +148,10 @@ export async function accountPage(route) {
         <p class="help">Changes revoke issued login sessions. An already connected game client remains connected until it leaves.</p>
       </div></fieldset>
       <p id="form-error" class="error-text" role="alert"></p>
-      <div class="form-actions"><button type="submit">Save changes</button></div></form>`;
-    result.mount = () => $("#account-form").addEventListener("submit", async event => {
+      <div class="form-actions"><button type="submit">Save changes</button></div></form>` +
+      `<form id="delete-account-form" class="form-page"><h2>Delete account</h2><p class="help">Permanently removes this account, its character records and saved character data. Characters must be offline. This cannot be undone.</p><p id="delete-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="danger">Delete account</button></div></form>`;
+    result.mount = () => {
+      $("#account-form").addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]");
       const values = new FormData(form), changes = {};
       if (values.get("username") !== a.username) changes.username = values.get("username");
@@ -112,7 +166,19 @@ export async function accountPage(route) {
         await api(`/api/accounts/${id}`, {changes, reason});
         notice("Account updated. Issued login sessions have been revoked."); navigate(`accounts/${id}`);
       } catch (error) { formError(error); } finally { button.disabled = false; }
-    });
+      });
+      $("#delete-account-form").addEventListener("submit", async event => {
+        event.preventDefault(); const button = event.target.querySelector("button"); button.disabled = true;
+        try {
+          const reason = await confirmAction("Delete account permanently?", `${a.username} and all ${a.character_ids.length} owned character(s) and their saved data will be removed.`, "Delete account");
+          if (reason === null) return;
+          await api(`/api/accounts/${id}/delete`, {reason});
+          notice(`Deleted ${a.username} and its characters.`); navigate("accounts");
+        } catch (error) {
+          const target = $("#delete-error"); if (target) target.textContent = error.message;
+        } finally { button.disabled = false; }
+      });
+    };
   } else if (tab === "sessions") {
     const sessions = await api(`/api/sessions?${query({...route.params, account_id: id})}`);
     result.html += section("Game login sessions", sessionTable(sessions.rows)) + pager(sessions, route) +
@@ -132,6 +198,27 @@ export async function accountPage(route) {
     result.mount = () => bindSearch(route);
   } else throw new Error("Account page not found.");
   return result;
+}
+
+function newAccountPage() {
+  return {
+    title: "Create account", description: "Add a game account with a username and initial password.",
+    breadcrumbs: [["Accounts", "accounts"], ["Create account"]],
+    html: `<form id="create-account-form" class="form-page"><fieldset class="form-section"><legend>Account credentials</legend><div class="form-grid">
+      <label>Username<input name="username" required minlength="3" maxlength="24" autocomplete="off" pattern="[A-Za-z0-9][A-Za-z0-9_.-]{2,23}"></label>
+      <label>Initial password<input name="password" type="password" required minlength="6" maxlength="256" autocomplete="new-password"></label>
+    </div></fieldset><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Create account</button></div></form>`,
+    mount: () => $("#create-account-form").addEventListener("submit", async event => {
+      event.preventDefault(); const form = event.target, button = form.querySelector("button"); button.disabled = true;
+      try {
+        const values = new FormData(form), username = String(values.get("username")), password = String(values.get("password"));
+        const reason = await confirmAction("Create game account?", `Create ${username} with the entered initial password.`, "Create account");
+        if (reason === null) return;
+        const created = await api("/api/accounts", {username, password, reason});
+        notice(`Account ${created.account.username} created.`); navigate(`accounts/${created.account.account_id}`);
+      } catch (error) { formError(error); } finally { button.disabled = false; }
+    })
+  };
 }
 
 export async function itemPage(route) {
