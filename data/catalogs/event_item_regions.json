@@ -1,0 +1,48 @@
+{
+  "note": "Where event progress items drop when the client leaves their Region empty and no table ties their event to a place. The retail server knew, so these follow the client's own event text. Each item lists maps, regions or monster ids, matched like a client Region against the map and the killed monster. Heroes Assemble opens its lands week by week through steam_welcome_drop_* silent events that carry no data, so here all of them are open at once.",
+  "item_regions": {
+    "e_dra_mini_progress_item": [
+      "e_dra_03_dun_grave_01",
+      "e_dra_03_dun_wildforestnight_01",
+      "e_dra_03_dun_mystranight_01"
+    ],
+    "e_anniversary_challenge_progress_01": [
+      "e_anniversary_dds_leader_iron_dwarf_duria",
+      "e_anniversary_dds_leader_iron_dwarf_ellonidos",
+      "e_anniversary_dds_leader_iron_dwarf_lortac",
+      "e_anniversary_dds_leader_iron_dwarf_myrdosch",
+      "e_anniversary_dds_leader_iron_dwarf_norselands",
+      "e_anniversary_dds_leader_iron_dwarf_pw",
+      "e_anniversary_dds_leader_iron_dwarf_qaizah",
+      "e_anniversary_dds_leader_iron_dwarf_soul_frenzy",
+      "e_anniversary_dds_normal_buzzsaw_duria",
+      "e_anniversary_dds_normal_buzzsaw_ellonidos",
+      "e_anniversary_dds_normal_buzzsaw_lortac",
+      "e_anniversary_dds_normal_buzzsaw_myrdosch",
+      "e_anniversary_dds_normal_buzzsaw_norselands",
+      "e_anniversary_dds_normal_buzzsaw_pw",
+      "e_anniversary_dds_normal_buzzsaw_qaizah",
+      "e_anniversary_dds_normal_dark_dwarf_duria",
+      "e_anniversary_dds_normal_dark_dwarf_ellonidos",
+      "e_anniversary_dds_normal_dark_dwarf_lortac",
+      "e_anniversary_dds_normal_dark_dwarf_myrdosch",
+      "e_anniversary_dds_normal_dark_dwarf_norselands",
+      "e_anniversary_dds_normal_dark_dwarf_pw",
+      "e_anniversary_dds_normal_dark_dwarf_qaizah",
+      "e_anniversary_dds_normal_mechgunner_duria",
+      "e_anniversary_dds_normal_mechgunner_ellonidos",
+      "e_anniversary_dds_normal_mechgunner_lortac",
+      "e_anniversary_dds_normal_mechgunner_myrdosch",
+      "e_anniversary_dds_normal_mechgunner_norselands",
+      "e_anniversary_dds_normal_mechgunner_pw",
+      "e_anniversary_dds_normal_mechgunner_qaizah"
+    ],
+    "e_steam_welcome_progress": [
+      "Duria", "Duria_01", "Duria_02", "Teganswall",
+      "Norselands", "Myrdosch",
+      "Atlantis", "Atlantis_Vulcano",
+      "lortac", "lortac_01", "lortac_fire", "lortac_ice", "lortac_water",
+      "qaizah"
+    ]
+  }
+}
