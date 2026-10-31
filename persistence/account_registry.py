@@ -652,6 +652,26 @@ class AccountRegistry:
                 account, client_ip=client_ip, ttl_seconds=ttl
             )
 
+    def issue_admin_session(
+        self, account_id: int, *, client_ip: str = ""
+    ) -> SessionRecord:
+        """Issue a game session for an administrator-authorized account launch."""
+        with self._lock:
+            account = self.account_by_id(account_id)
+            if account.disabled:
+                raise AccountDisabledError(
+                    f"account {account.username!r} is disabled"
+                )
+            # Match the normal login rule: only the latest issued session stays valid.
+            self._connection.execute(
+                "UPDATE sessions SET revoked=1 WHERE account_id=? AND revoked=0",
+                (account.account_id,),
+            )
+            return self._issue_locked(
+                account, client_ip=client_ip,
+                ttl_seconds=self.session_ttl_seconds,
+            )
+
     def refresh(
         self,
         session_id: str | bytes,

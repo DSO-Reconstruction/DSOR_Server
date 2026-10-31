@@ -1,6 +1,7 @@
 """Admin CMS domain operations and lifecycle; HTTP transport lives in admin_http."""
 
 import argparse
+import copy
 from contextlib import closing
 from dataclasses import asdict, replace
 import hmac
@@ -8,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
 from urllib.parse import unquote
 import secrets
 import threading
@@ -27,6 +29,7 @@ from dso_server.gameplay.achievement_content import (
 from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
 from dso_server.protocol.character_selection import CLASS_NAMES
+from dso_server.protocol.character_selection import CharacterRecord
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND, clone_inventory_info, clone_item_info,
     free_inventory_location, owned_inventory_items,
@@ -51,7 +54,7 @@ from dso_server.services.player_progression import player_level_range, player_le
 DEFAULT_ADMIN_PORT = 8081
 # The NewPlayer administrator flags stored on a character profile.
 GAME_PRIVILEGES = frozenset({"admin_privileges", "admin_name_color"})
-IDENTITY_FIELDS = frozenset({"name", "level"})
+IDENTITY_FIELDS = frozenset({"name", "level", "gender"})
 # CharacterGeneration rejects exactly these names, so a CMS rename must not
 # produce one the client would refuse the next time the character is created.
 CHARACTER_NAME_MAX_BYTES = 32
@@ -225,6 +228,195 @@ class AdminService:
                         if not session.gameplay_presence_departed:
                             result[int(character.character_id)] = session.gameplay_map
         return result
+
+    def create_account(self, username, password, actor, reason):
+        if not isinstance(username, str) or not isinstance(password, str):
+            raise ValueError("username and password are required")
+        created = self.registry.register(username, password)
+        self.repository.audit(actor.username, "account.create", created.account_id, {
+            "username": created.username, "reason": reason,
+        })
+        return {"ok": True, "account": self.account_document(created)}
+
+    def delete_account(self, account_id, actor, reason):
+        target = self.registry.account_by_id(account_id)
+        if target.account_id == actor.account_id:
+            raise ValueError("you cannot delete your own account")
+        online = self.online_characters()
+        active = [cid for cid in target.character_ids if cid in online]
+        if active:
+            raise ValueError("account has characters online; sign them out before deletion")
+        self.repository.audit(actor.username, "account.delete", target.account_id, {
+            "username": target.username, "character_ids": list(target.character_ids),
+            "reason": reason,
+        })
+        app = self.application
+        if app is not None:
+            service = app.characters
+            with service.character_roster_lock:
+                before = len(service.character_selection.characters)
+                service.character_selection.characters[:] = [
+                    character for character in service.character_selection.characters
+                    if int(character.character_id) not in target.character_ids
+                ]
+                for cid in target.character_ids:
+                    service.character_equipment.pop(int(cid), None)
+                if len(service.character_selection.characters) != before:
+                    service.character_roster_revision += 1
+            if len(service.character_selection.characters) != before:
+                service._reencode_character_selection()
+        for cid in target.character_ids:
+            self.store.delete(cid)
+            self.registry.release_character(cid)
+        self.store.flush()
+        self.registry.delete_account(target.username)
+        self.invalidate(target.account_id)
+        return {"ok": True, "deleted_account_id": target.account_id,
+                "deleted_characters": len(target.character_ids)}
+
+    def launch_account(self, account_id, actor, reason, client_ip="127.0.0.1", language="en"):
+        """Start the local Windows client with a fresh session for the account."""
+        if os.name != "nt":
+            raise ValueError("local game launch is available on Windows only")
+        app = self.application
+        accounts = getattr(app, "accounts", None) if app is not None else None
+        if accounts is None:
+            raise ValueError("the account login service is unavailable")
+        target = self.registry.account_by_id(account_id)
+        if target.disabled:
+            raise ValueError("disabled accounts cannot enter the game")
+        if language not in {"en", "tr"}:
+            raise ValueError("choose English or Turkish for the game client")
+        client_exe, working_dir = self._local_client_exe()
+        if client_exe is None or working_dir is None:
+            raise ValueError("could not find dro_client64.exe on this computer")
+        session = self.registry.issue_admin_session(
+            account_id, client_ip=client_ip
+        )
+        host = accounts.resolved_public_host()
+        address_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        cmd = [
+            str(client_exe), "-ip", f"{address_host}:{accounts.gateway_port}",
+            "-uid", str(session.account_id), "-accid", str(session.account_id),
+            "-sid", session.session_id, "-w", "1024", "-h", "768",
+            "-language", language, "-serverlanguage", language,
+            "-instanceid", str(accounts.chat_instance_id), "-bica", str(host),
+            "-bicp", str(accounts.chat_port), "-useDeltaDNA", "-standalone",
+        ]
+        try:
+            subprocess.Popen(cmd, cwd=str(working_dir))
+        except OSError as exc:
+            self.registry.revoke(session.session_id)
+            raise ValueError(f"could not start the local game client: {exc}") from exc
+        self.repository.audit(actor.username, "account.launch", account_id, {
+            "username": target.username, "reason": reason,
+        })
+        return {"ok": True, "username": target.username}
+
+    def copy_account_characters(self, source_account_id, payload, actor, reason):
+        source = self.registry.account_by_id(source_account_id)
+        selected = payload.get("characters")
+        if not isinstance(selected, list) or not selected:
+            raise ValueError("select at least one character to copy")
+        if len(selected) > 32:
+            raise ValueError("copy at most 32 characters at a time")
+        normalized = []
+        seen = set()
+        for row in selected:
+            if not isinstance(row, dict) or type(row.get("character_id")) is not int:
+                raise ValueError("each selected character needs a valid ID and name")
+            cid = row["character_id"]
+            if cid not in source.character_ids or cid in seen:
+                raise ValueError("a selected character does not belong to the source account")
+            seen.add(cid)
+            profile = self.store.get_profile(cid)
+            if profile is None:
+                raise ValueError(f"character {cid} has no saved profile")
+            name = character_name(row.get("name"))
+            normalized.append((cid, profile, name, self.store.get(cid)))
+        online = self.online_characters()
+        if any(cid in online for cid, *_ in normalized):
+            raise ValueError("selected characters must be offline before they can be copied")
+        existing_id = payload.get("destination_account_id")
+        username = password = None
+        if existing_id is not None:
+            if type(existing_id) is not int or existing_id <= 0:
+                raise ValueError("choose a valid destination account")
+            destination = self.registry.account_by_id(existing_id)
+        else:
+            username, password = payload.get("username"), payload.get("password")
+            if not isinstance(username, str) or not isinstance(password, str):
+                raise ValueError("enter credentials for the new destination account")
+        all_names = {p.name.casefold() for p in self.store.profiles()}
+        for _, _, name, _ in normalized:
+            if name.casefold() in all_names:
+                raise ValueError(f"character name {name!r} is already in use")
+            all_names.add(name.casefold())
+        if existing_id is None:
+            destination = self.registry.register(username, password)
+        service = self.application.characters if self.application is not None else None
+        with (service.character_roster_lock if service is not None else self.registry._lock):
+            used = {int(p.character_id) for p in self.store.profiles()}
+            if service is not None:
+                used.update(int(c.character_id) for c in service.character_selection.characters)
+            next_id = max(used, default=200_000_000) + 1
+            if next_id + len(normalized) > 0xFFFFFFFF:
+                raise ValueError("no free character IDs remain")
+            additions = []
+            for offset, (old_id, profile, name, state) in enumerate(normalized):
+                new_id = next_id + offset
+                clone = replace(profile, character_id=new_id, name=name)
+                self.registry.claim_character(destination.username, new_id)
+                if state is not None:
+                    state.character_id = new_id
+                    state.currency = self.store.currency_for_character(new_id, state.currency)
+                    self.store.put(state, profile=clone, flush=False)
+                else:
+                    self.store.put_profile(clone, flush=False)
+                if service is not None:
+                    record = CharacterRecord(**{
+                        key: getattr(clone, key) for key in CharacterRecord.__dataclass_fields__
+                        if hasattr(clone, key)
+                    })
+                    service.character_selection.characters.append(record)
+                    if old_id in service.character_equipment:
+                        service.character_equipment[new_id] = copy.deepcopy(service.character_equipment[old_id])
+                    additions.append(record)
+            if service is not None and additions:
+                service.character_roster_revision += 1
+        self.store.flush()
+        if service is not None and additions:
+            service._reencode_character_selection()
+        self.repository.audit(actor.username, "account.characters.copy", destination.account_id, {
+            "source_account_id": source.account_id,
+            "character_map": {str(old): new for (old, _, _, _), new in zip(normalized, range(next_id, next_id + len(normalized)))},
+            "destination_created": existing_id is None, "reason": reason,
+        })
+        return {"ok": True, "account": self.account_document(self.registry.account_by_id(destination.account_id)),
+                "copied": len(normalized)}
+
+    @staticmethod
+    def _local_client_exe():
+        local_app_data = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        client_dir_file = local_app_data / "TESTCLIENT" / "client-folder.txt"
+        candidates = []
+        try:
+            selected = Path(client_dir_file.read_text(encoding="utf-8").strip())
+            candidates.extend((selected / "dlcache", selected))
+        except OSError:
+            pass
+        package_root = Path(__file__).resolve().parents[1]
+        candidates.extend((
+            package_root / "DSOClient" / "dlcache",
+            package_root / "Client" / "dlcache",
+            package_root / "cloud" / "DSOClient" / "dlcache",
+            local_app_data / "Temp" / "DSOClient" / "dlcache",
+        ))
+        for directory in candidates:
+            executable = directory / "dro_client64.exe"
+            if executable.is_file():
+                return executable, directory
+        return None, None
 
     def status(self):
         services = []
@@ -430,7 +622,7 @@ class AdminService:
         the live copies all have to change together.
         """
         if not isinstance(changes, dict) or not changes or set(changes) - IDENTITY_FIELDS:
-            raise ValueError("choose a new name, a new level, or both")
+            raise ValueError("choose a new name, level, or gender")
         profile = self.store.get_profile(cid)
         class_name = CLASS_NAMES.get(profile.class_id, "")
         values = {}
@@ -446,6 +638,10 @@ class AdminService:
             if not lowest <= changes["level"] <= highest:
                 raise ValueError(f"level must be between {lowest} and {highest} for this class")
             values["level"] = changes["level"]
+        if "gender" in changes:
+            if type(changes["gender"]) is not int or changes["gender"] not in (0, 1):
+                raise ValueError("gender must be 0 or 1")
+            values["gender"] = changes["gender"]
         saved = dict(values)
         if "level" in values:
             saved["progression_u32"] = player_level_xp(self.static_database_path,
@@ -1286,6 +1482,8 @@ class AdminService:
                 self._sessions.pop(token, None)
             return {"ok": True}
         reason = reason_from(payload)
+        if path == "/api/accounts":
+            return self.create_account(payload.get("username"), payload.get("password"), account, reason)
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")
             if len(parts) < 3 or parts[0:2] != ["api", "npc-shops"]:
@@ -1372,6 +1570,13 @@ class AdminService:
             account_id = int(parts[2])
             if len(parts) == 4 and parts[3] == "revoke":
                 self.repository.revoke_sessions(account.username, account_id, reason)
+            elif len(parts) == 4 and parts[3] == "delete":
+                return self.delete_account(account_id, account, reason)
+            elif len(parts) == 4 and parts[3] == "launch":
+                return self.launch_account(account_id, account, reason,
+                    language=payload.get("language", "en"))
+            elif len(parts) == 4 and parts[3] == "copy-characters":
+                return self.copy_account_characters(account_id, payload, account, reason)
             elif len(parts) == 3:
                 changes = payload.get("changes")
                 if not isinstance(changes, dict):

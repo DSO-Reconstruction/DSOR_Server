@@ -620,7 +620,7 @@ class CommerceService:
     def _handle_notification_action(
             self, s: Session, payload: bytes) -> None:
         action = decode_notification_action(payload)
-        if action.kind == OCP_BOOKING_NOTIFICATION_KIND:
+        if action.kind in (OCP_BOOKING_NOTIFICATION_KIND, 12):
             # CMS grants are already applied. Their receipt-only acknowledgement
             # must never enter the premium-store reward settlement path.
             from dso_server.services.admin_live import BOOKING_GUID_PREFIX
