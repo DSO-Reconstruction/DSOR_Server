@@ -3151,6 +3151,61 @@ class MapEventService:
                 (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
                 for _ in range(gem_count)
             )
+        elif loot_list_id in {
+            "chest_lootlist_magic", "chest_lootlist_rare",
+            "chest_lootlist_epic",
+        }:
+            # The item database exposes these chests' possible contents but
+            # not the retail server's loot-list rows. Use the documented
+            # guaranteed equipment/essence rewards, roll a gem bag, and keep
+            # the tier's Andermant jackpot as a rare bonus.
+            from dso_server.protocol.chest_loot_protocol import roll_chest_contents
+
+            tier = {
+                "chest_lootlist_magic": ("magic", 1_000, "ammunition_damage_common"),
+                "chest_lootlist_rare": ("rare", 10_000, "ammunition_damage_rare"),
+                "chest_lootlist_epic": ("epic", 100_000, "ammunition_damage_epic"),
+            }[loot_list_id]
+            rarity, jackpot_amount, essence_id = tier
+            rng = random.SystemRandom()
+            with s.flow_lock:
+                character = s.gameplay_character
+            class_name = CLASS_NAMES[int(getattr(character, "class_id", 0))].lower()
+            equipment = roll_chest_contents(
+                self.static_database_path,
+                f"all_class_all_equip_{rarity}_01",
+                player_level=max(1, int(getattr(character, "level", 1))),
+                class_name=class_name,
+                rng=rng,
+            )
+            specifications = [
+                (reward.definition.template_id, int(reward.amount))
+                for reward in equipment.rewards
+            ]
+            specifications.append((essence_id, 100))
+            if rng.random() < 0.25:
+                gem_bag = roll_chest_contents(
+                    self.static_database_path,
+                    "lootbox_gems_d",
+                    player_level=max(1, int(getattr(character, "level", 1))),
+                    class_name=class_name,
+                    rng=rng,
+                )
+                specifications.extend(
+                    (reward.definition.template_id, int(reward.amount))
+                    for reward in gem_bag.rewards
+                )
+            if rng.random() < 0.25:
+                specifications.append(("money_vc_gold", 1))
+            # The regular return is 20% of the 50 RC-per-lockpick baseline
+            # (five lockpicks cost 250 RC, so the normal return is 50 RC).
+            # A jackpot replaces that regular return.
+            andermant_reward = (
+                jackpot_amount if rng.random() < 0.01
+                else round(0.20 * 50 * max(0, int(definition.key_amount)))
+            )
+            if andermant_reward:
+                specifications.append(("money_rc", andermant_reward))
         else:
             try:
                 entries = load_prop_loot_catalog().entries(loot_list_id)
@@ -3189,6 +3244,8 @@ class MapEventService:
         with s.flow_lock:
             encounter = s.gameplay_monster_encounter
             last_move = s.gameplay_last_move
+            character = s.gameplay_character
+        player_level = max(1, int(getattr(character, "level", 1)))
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
             origin = encounter.coordinate_frame.wire_to_world(
@@ -3202,7 +3259,7 @@ class MapEventService:
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
-                item = _new_item(item_definition, 0, amount)
+                item = _new_item(item_definition, 0, amount, player_level)
                 item.field_100 = position
                 auto_pick_up = str(
                     item_rows.get(template_id, {}).get("AutoPickUp")
