@@ -560,16 +560,25 @@ def _reached_collection_rewards(
 
     The client counts owned items per subgroup and compares that with each
     threshold, so a parent row such as ``sb_mercenary``, which has no items of
-    its own, is never reached.
+    its own, is never reached. An upgraded pet is owned under its rarity tier
+    and still counts as its one book row.
     """
 
     owned = set(owned_resource_ids)
     subgroup_counts: dict[str, int] = {}
     for row in database.execute(
-        "SELECT Id, Items, StickerbookId "
+        "SELECT Id, Items, RarityUpgradeItems, StickerbookId "
         "FROM _Template_StickerbookItem WHERE IsLive<>0"
     ):
-        resources = {str(row["Id"]), *_split(row["Items"])}
+        resources = {
+            str(row["Id"]), *_split(row["Items"]),
+            *(
+                resource_id
+                for resource_id, _cost in _rarity_upgrade_stages(
+                    row["Items"], row["RarityUpgradeItems"]
+                )
+            ),
+        }
         if not resources.intersection(owned):
             continue
         subgroup = str(row["StickerbookId"] or "")
@@ -611,9 +620,9 @@ def _collector_effect_definitions_cached(
     with _open_read_only(static_database_path) as database:
         definitions = []
         # One entry per reward: two subgroups earning the same +3% HP bonus
-        # add up to +6%. The client takes field_18 as the effect's level, which
-        # these flat ActorVariable modifiers ignore. Retail numbers the entries
-        # of one effect 0..n-1; here they stay 0, because the server reads
+        # add up to +6%. The client keeps each as its own instance and, with
+        # field_26 clear, never reads field_18. Retail numbers the entries of
+        # one effect 0..n-1; here they stay 0, because the server reads
         # field_18 as a stack count.
         for reward_id in sorted(
             reward_id for _subgroup, _threshold, reward_id, _amount

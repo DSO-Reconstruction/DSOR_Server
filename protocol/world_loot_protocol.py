@@ -129,6 +129,14 @@ EQUIPMENT_RARITIES = (
 )
 ROLLED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[:5]
 FIXED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[5:]
+# The last step of each difficulty ladder: Bloodshed and Parallel World
+# Bloodshed. Their equipment starts at Extraordinary, the client's name for
+# Rare, and only they can drop the best gem a monster may carry.
+TOP_MAP_DIFFICULTIES = frozenset((8, 9))
+# Monster gems sit this many ranks below their level band, and no monster drops
+# a rank closer than this to the end of the gem ladder.
+MONSTER_GEM_RANK_REDUCTION = 5
+BEST_MONSTER_GEM_CHANCE = 0.05
 
 
 @dataclass(frozen=True)
@@ -642,11 +650,9 @@ def _load_static_loot_cache(
             epic = max(0.0, float(row["Epic"] or 0.0))
             common = max(0.0, 100.0 - uncommon - magic - rare - epic)
             rarity_weights_by_difficulty[int(row["Id"])] = (
-                common,
-                uncommon,
-                magic,
-                rare,
-                epic,
+                (0.0, 0.0, 0.0, rare, epic)
+                if int(row["Id"]) in TOP_MAP_DIFFICULTIES
+                else (common, uncommon, magic, rare, epic)
             )
         enchantment_tiers = frozenset(
             int(row["Tier"])
@@ -1033,6 +1039,32 @@ def _roll_equipment_rarity(
     if sum(weights) <= 0.0:
         return 0
     return int(rng.choices(range(len(weights)), weights=weights, k=1)[0])
+
+
+def _monster_gem_rank(
+    database: StaticLootCache,
+    monster_level: int,
+    map_difficulty: int,
+    rng: random.Random,
+) -> str:
+    """Roll one monster gem's rank on the authored a..s upgrade ladder.
+
+    Ten monster levels are worth one rank. The best rank a monster may carry
+    is a 5% roll on the top difficulties and drops nowhere else, so the level
+    band stops one rank short of it.
+    """
+
+    ranks = sorted(database.standard_gems_by_rank)
+    if not ranks:
+        return "a"
+    best = max(0, len(ranks) - 1 - MONSTER_GEM_RANK_REDUCTION)
+    if (
+        int(map_difficulty) in TOP_MAP_DIFFICULTIES
+        and rng.random() < BEST_MONSTER_GEM_CHANCE
+    ):
+        return ranks[best]
+    band = (max(1, int(monster_level)) - 1) // 10 - MONSTER_GEM_RANK_REDUCTION
+    return ranks[max(0, min(band, best - 1))]
 
 
 def roll_equipment_reward(
@@ -1990,17 +2022,18 @@ def generate_monster_loot(
             profile.rank_kind in {"worldboss", "boss"}
             and int(extra_boss_gems) > 0
         ):
-            # Gem ranks a..s are the authored upgrade ladder. Select a
-            # deterministic level band, then let the loot RNG choose among
-            # the five ordinary families at that rank. High-level monsters
-            # land past the ladder's released end, so the request is clamped
-            # to the best rank that actually grants a stat.
-            gem_rank = chr(
-                ord("a") + min(18, max(0, (profile.monster_level - 1) // 10))
-            )
-            gem_pool = database.gems_for_rank(gem_rank)
-            if gem_pool:
-                for _ in range(max(0, int(extra_boss_gems))):
+            # Roll each gem's rank, then let the loot RNG choose among the
+            # five ordinary families at that rank.
+            for _ in range(max(0, int(extra_boss_gems))):
+                gem_pool = database.gems_for_rank(
+                    _monster_gem_rank(
+                        database,
+                        profile.monster_level,
+                        map_difficulty,
+                        generator,
+                    )
+                )
+                if gem_pool:
                     specifications.append(
                         (generator.choice(gem_pool), 1, 1, "", 0)
                     )

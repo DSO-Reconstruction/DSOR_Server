@@ -7,7 +7,7 @@ import pytest
 
 from dso_server.gameplay.player_combat_stats import calculate_player_combat_stats
 from dso_server.gameplay.stickerbook_state import (
-    collector_effect_definitions, collector_item_rewards,
+    collector_effect_definitions, collector_item_rewards, reconcile_collector_effects,
 )
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.persistence.account_state import _state_from_document, _state_to_document
@@ -228,6 +228,78 @@ def test_the_pet_damage_bonus_needs_a_pet_and_counts_once():
     assert _damage("sb_pets_increased_damage_01") == base
     assert _damage("pet_dragon") == base
     assert _damage("pet_dragon", "sb_pets_increased_damage_01") == pytest.approx(base * 1.02)
+
+
+# Domestic Animals reaches 3 with plain pets. Water and Fairy Beings reach it only
+# through an upgraded pet, owned under its rarity tier: a real character's pets.
+COLLECTED_PETS = (
+    "pet_rabbit", "pet_dog_01", "pet_chicken_white", "pet_jindo_uncommon",
+    "pet_turtle_uncommon", "e_sar_pet_kraken", "pet_frogman_epic",
+    "pet_pixie_uncommon", "pet_redhair_harpy_uncommon", "pet_harpy_black_10_percent_armor",
+)
+HEALTH_REWARD = "sb_pets_increased_hitpoints_01"
+
+
+def test_an_upgraded_pet_counts_for_its_collection():
+    assert [effect.resource_id for effect in collector_effect_definitions(
+        DEFAULT_STATIC_DB_PATH, COLLECTED_PETS,
+    )] == [HEALTH_REWARD] * 3
+
+
+def test_a_pet_counts_once_whichever_tiers_are_owned():
+    assert collector_effect_definitions(
+        DEFAULT_STATIC_DB_PATH, ("pet_turtle_uncommon", "pet_frogman", "pet_frogman_epic"),
+    ) == ()
+
+
+def test_an_upgraded_pet_counts_for_item_rewards_too():
+    rows = _database().execute(
+        "SELECT StickerbookId, Items, RarityUpgradeItems FROM _Template_StickerbookItem "
+        "WHERE IsLive<>0 AND COALESCE(RarityUpgradeItems, '') != ''"
+    ).fetchall()
+    by_subgroup = {}
+    for row in rows:
+        by_subgroup.setdefault(row["StickerbookId"], []).append(row)
+    subgroup, books = next(
+        (subgroup, books) for subgroup, books in by_subgroup.items()
+        if collector_item_rewards(DEFAULT_STATIC_DB_PATH, _live_items(subgroup))
+    )
+    tiers = [row["RarityUpgradeItems"].split(":")[0] for row in books]
+    bases = [row["Items"].split(";")[0] for row in books]
+    assert {reward.key for reward in collector_item_rewards(DEFAULT_STATIC_DB_PATH, tiers)} == {
+        reward.key for reward in collector_item_rewards(DEFAULT_STATIC_DB_PATH, bases)}
+
+
+def _health(*resources):
+    return calculate_player_combat_stats(
+        DEFAULT_STATIC_DB_PATH, class_name="mage", level=100, inventory=InventoryInfo(),
+        modifier_sources=tuple(_effect(resource, index + 1)
+                               for index, resource in enumerate(resources)),
+    ).maximum_health
+
+
+def test_three_health_rewards_add_up_to_nine_percent():
+    frogman = "pet_jabbax"  # the effect of pet_frogman_epic
+    base = _health(frogman)
+    assert _health(frogman, HEALTH_REWARD) == pytest.approx(base * 1.03)
+    assert _health(frogman, HEALTH_REWARD, HEALTH_REWARD, HEALTH_REWARD) == pytest.approx(base * 1.09)
+
+
+def test_a_saved_character_gains_the_rewards_it_was_missing():
+    def reconcile(owned, effects, instance):
+        return reconcile_collector_effects(
+            DEFAULT_STATIC_DB_PATH, owned, effects,
+            actor_id=1, next_instance_id=instance, server_tick=0,
+        )
+
+    saved = reconcile(COLLECTED_PETS[:3], {}, 1)
+    assert len(saved.effects) == 1
+    entered = reconcile(COLLECTED_PETS, saved.effects, saved.next_instance_id)
+    assert len(entered.effects) == 3
+    assert len(entered.status_effect.entries) == 2
+    assert len({entry.field_04 for entry in entered.effects.values()}) == 3
+    # The client keeps each as its own instance and, with this bit clear, ignores field_18.
+    assert not any(entry.field_26 for entry in entered.effects.values())
 
 
 def test_collection_effects_carry_the_retail_duration():
