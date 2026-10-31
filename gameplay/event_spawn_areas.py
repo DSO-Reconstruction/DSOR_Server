@@ -1,6 +1,7 @@
 """Materialize newly enabled density areas using map-script monster selectors."""
 from __future__ import annotations
 
+import math
 import random
 import sqlite3
 
@@ -113,7 +114,13 @@ def _orsha_machine_baby_position(runtime, encounter, area):
     return (position,)
 
 
-def event_area_spawn_rows(runtime, encounter, event_sets):
+def event_area_spawn_rows(
+        runtime, encounter, event_sets, *,
+        a_mighty_threat_event_sets=(),
+        a_mighty_threat_position=None,
+        a_mighty_threat_max_adds=5,
+):
+    a_mighty_sets = frozenset(int(value) for value in a_mighty_threat_event_sets)
     wanted = frozenset(event_set for event_set in event_sets
                        if not runtime.event_set_actor_ids.get(event_set))
     already_populated = frozenset(
@@ -127,6 +134,43 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
             )
             if area.event_set_row in wanted
             and area.row_id not in already_populated
+        )
+    if not areas:
+        return ()
+    a_mighty_add_area_ids = set()
+    if a_mighty_sets and a_mighty_threat_position is not None:
+        target_x = float(a_mighty_threat_position[0])
+        target_z = float(a_mighty_threat_position[2])
+        for event_set in a_mighty_sets:
+            candidates = tuple(
+                area for area in areas
+                if area.event_set_row == event_set
+                and "adds" in area.spawn_list_id.casefold()
+            )
+            if not candidates:
+                continue
+            nearest = min(
+                candidates,
+                key=lambda area: math.hypot(
+                    area.center[0] - target_x,
+                    area.center[2] - target_z,
+                ),
+            )
+            # Some authored add volumes are large; keep the area only when it
+            # is plausibly part of this Sentinel encounter.
+            if math.hypot(
+                nearest.center[0] - target_x,
+                nearest.center[2] - target_z,
+            ) <= 45.0:
+                a_mighty_add_area_ids.add(nearest.row_id)
+        areas = tuple(
+            area for area in areas
+            if area.event_set_row not in a_mighty_sets
+            or area.row_id in a_mighty_add_area_ids
+        )
+    elif a_mighty_sets:
+        areas = tuple(
+            area for area in areas if area.event_set_row not in a_mighty_sets
         )
     if not areas:
         return ()
@@ -226,6 +270,14 @@ def event_area_spawn_rows(runtime, encounter, event_sets):
                 encounter.navigation, encounter.terrain, area,
                 area.candidate_positions(),
             )
+        if area.row_id in a_mighty_add_area_ids:
+            positions = tuple(sorted(
+                positions,
+                key=lambda position: math.hypot(
+                    position[0] - float(a_mighty_threat_position[0]),
+                    position[2] - float(a_mighty_threat_position[2]),
+                ),
+            )[:max(0, int(a_mighty_threat_max_adds))])
         if override:
             positions = positions[:1]
         for position in positions:

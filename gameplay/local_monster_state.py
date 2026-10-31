@@ -2961,6 +2961,22 @@ def _load_dynamic_monster_encounter(
             load_map_event_content,
             load_map_signal_catalog,
         )
+        # Leave A Mighty Threat's map-clear EventSets to the map-event
+        # service. These sets can also contain the add packs for every
+        # alternate Sentinel position, so loading their regular rows here
+        # would materialize the whole encounter before the map-clear signal.
+        a_mighty_content = load_map_event_content(static_database_path, map_id)
+        a_mighty_catalog = load_map_signal_catalog(static_database_path)
+        a_mighty_event_sets = (
+            a_mighty_content.a_mighty_threat_spawn_event_set_rows(
+                a_mighty_catalog,
+            )
+        )
+        if a_mighty_event_sets:
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if int(row[3]) not in a_mighty_event_sets
+            )
         if int(scaling_difficulty) < BLOODSHED_DIFFICULTY:
             all_fixed_rows = tuple(
                 row for row in all_fixed_rows

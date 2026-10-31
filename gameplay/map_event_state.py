@@ -94,6 +94,46 @@ WIRE_PROP_OPERATION = ""
 # gates them by tier.
 BLOODSHED_DIFFICULTY = 8
 
+# A Mighty Threat actors are authored as several location and treasure-monster
+# rows in the map-clear EventSet. The server selects exactly one per map run.
+A_MIGHTY_THREAT_MAPS = frozenset({
+    "a0402_culttower01", "a0403_culttower02", "a0405_swampcave",
+    "a0406_dun", "a0503_dun", "a0504_dun", "a0505_dun",
+    "a0600_dragonfortress", "a0601_defiledsanctum",
+    "a0602_dragonslair01", "a0603_dragonslair02", "b1202_dun",
+    "b1204_dun", "c2102_dun", "c2301_dun", "c2203_dun",
+    "c2302_dun", "c2303_dun", "f4102_dun", "f4202_dun",
+    "g0001_beach_01_dun", "g0002_jungle_01_dun",
+    "g0005_temple_ice_03_dun", "g0006_temple_water_01_dun",
+    "g0007_temple_fire_01_dun", "g0010_temple_life_01_dun",
+    "g0011_temple_death_01_dun", "h0003_oasis_dun",
+    "h0004_temple_dun", "h0006_valley_dun",
+    "h0007_treasure_cave_dun", "a0202_kingscrypt01",
+    "a0203_kingscrypt02", "a0301_witchhole", "a0303_wildcave",
+    "ce202504", "ce202503", "ce202502",
+})
+A_MIGHTY_THREAT_SENTINELS = frozenset({
+    "a0202_sentinel_skeleton_archer_scale",
+    "a0203_sentinel_undead_mage_scale",
+    "a0301_sentinel_meanie_summoner_scale",
+    "a0303_sentinel_beastman_stag_scale",
+    "ce202504_sentinel_eye_demon_scale",
+    "ce202503_sentinel_mindless_fiends_scale",
+    "ce202502_sentinel_shijieshouwei_scale",
+})
+A_MIGHTY_THREAT_TREASURE_MONSTERS = frozenset({
+    "a0000_duria_dungeons_treasure_monster_01",
+    "a0000_teganswall_dungeons_treasure_monster_01",
+    "b0000_norselands_dungeons_treasure_monster_01",
+    "c0000_helios_dungeons_treasure_monster_01",
+    "f0000_myrdosh_dungeons_treasure_monster_01",
+    "g0000_lortac_dungeons_treasure_monster_01",
+    "h0000_qaizah_dungeons_treasure_monster_01",
+})
+A_MIGHTY_THREAT_TEMPLATES = (
+    A_MIGHTY_THREAT_SENTINELS | A_MIGHTY_THREAT_TREASURE_MONSTERS
+)
+
 # Spawn-point chest variants are authored on top of each other: one location
 # holds a ``normal_*`` free chest (map-level loot, tier 0), one ``scaling_*``
 # free chest per scaling tier, and the ``scaling_magic/rare/epic`` chests plus
@@ -967,6 +1007,88 @@ class MapEventContent:
         default_factory=dict
     )
 
+    def a_mighty_threat_candidate_templates(self, catalog) -> frozenset[str]:
+        """Templates that can end the map's Sentinel/Goblin encounter.
+
+        The map-local event names differ between the main scaling dungeons
+        and Qaizah maps. Their shared fast-travelpoint event lists the actual
+        Sentinel and regional treasure-monster templates in kill signals.
+        """
+
+        if not any(
+            "sentinel_lootchest_" in (
+                f"{prop.instance_id} {prop.template_id}"
+            ).casefold()
+            for prop in self.props
+        ):
+            return frozenset()
+        templates = set()
+        for event in catalog.events.values():
+            if (
+                not event.applies_to(self.map_id)
+                or "scaling_map_fast_travelpoint_start" not in event.key
+            ):
+                continue
+            for signal_id in event.start_signals:
+                rule = catalog.rule(signal_id)
+                if rule is not None and rule.event_type == "playerkilledmonster":
+                    templates.update(
+                        str(template).casefold() for template in rule.params
+                        if str(template).strip()
+                    )
+        return frozenset(templates)
+
+    def a_mighty_threat_spawn_event_set_rows(
+            self, catalog=None) -> frozenset[int]:
+        """EventSets containing a selected Sentinel/Goblin spawn candidate."""
+
+        candidate_templates = (
+            self.a_mighty_threat_candidate_templates(catalog)
+            if catalog is not None else frozenset()
+        )
+        if not candidate_templates:
+            # Fallback for callers without the signal catalog. Keep the legacy
+            # convention narrow and still require a real candidate spawn row.
+            map_clear_sets = {
+                int(row)
+                for row, definition in self.event_sets.items()
+                if any(
+                    str(event).casefold().endswith(
+                        "_scaling_dungeons_map_leader_spawn"
+                    )
+                    for event in definition.events
+                )
+            }
+            candidate_templates = (
+                A_MIGHTY_THREAT_SENTINELS
+                | A_MIGHTY_THREAT_TREASURE_MONSTERS
+                | frozenset(
+                    row.template_id.casefold() for row in self.spawn_rows
+                    if "_sentinel_" in row.template_id.casefold()
+                    or "_map_leader_" in row.template_id.casefold()
+                )
+            )
+        else:
+            map_clear_sets = set(self.event_sets)
+        return frozenset(
+            int(row) for row in map_clear_sets
+            if any(
+                spawn.event_set_row == int(row)
+                and spawn.template_id.casefold() in candidate_templates
+                for spawn in self.spawn_rows
+            )
+        )
+
+    def a_mighty_threat_spawn_event_keys(self, catalog) -> frozenset[str]:
+        """Client event flags that would locally instantiate candidate rows."""
+
+        rows = self.a_mighty_threat_spawn_event_set_rows(catalog)
+        return frozenset(
+            str(event).casefold()
+            for row in rows
+            for event in self.event_sets[row].events
+        )
+
     def server_driven_event_sets(self, catalog) -> frozenset[int]:
         """EventSet rows whose flags a server-evaluated map-local event flips.
 
@@ -1510,6 +1632,12 @@ class MapEventRuntime:
     fractured_planes_limit_timer: object | None = None
     fractured_planes_tower_timer: object | None = None
     fractured_planes_floor_completed: bool = False
+    # A Mighty Threat's sentinel points are authored as a stack of possible
+    # locations. Keep the one selected actor for this map run so a replay of
+    # the event publication cannot choose a second point (or reroll goblin).
+    scaling_dungeon_sentinel_spawn: tuple[int, str] | None = None
+    a_mighty_threat_position: tuple[float, float, float] | None = None
+    a_mighty_threat_chest_revealed: bool = False
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
     wave_countdown_digits: dict[str, int] = field(default_factory=dict)
     instance_id: str = field(default_factory=lambda: uuid.uuid4().hex)
@@ -1554,9 +1682,7 @@ class MapEventRuntime:
         self.enabled_event_sets = set(
             self.content.enabled_event_set_rows(self.initial_flags)
         )
-        for definition in self._select_chest_variants(
-            self.content.baseline_props()
-        ):
+        for definition in self.select_props(self.content.baseline_props()):
             self.props[definition.prop_id] = PropRuntimeState(definition)
         for definition in self.select_props(
             self.content.props_for_sets(self.enabled_event_sets)
@@ -1727,7 +1853,8 @@ class MapEventRuntime:
     ) -> tuple[MapPropDefinition, ...]:
         """Reduce overlapping spawn-point props to the one this instance shows.
 
-        Scene objects pass through untouched.  Spawn-point props within
+        Scene objects and non-chest spawn props pass through untouched.
+        Spawn-point chests within
         ``CHEST_LOCATION_RADIUS`` of each other in the same EventSet form one
         location; ``normal_*`` templates are kept only on tier 0 and
         ``scaling_*`` ones only above it, then one rarity is rolled from
@@ -1740,7 +1867,13 @@ class MapEventRuntime:
         selected = []
         locations = []
         for definition in self._select_chest_variants(definitions):
-            if definition.kind != "spawn":
+            is_chest_spawn = (
+                definition.kind == "spawn"
+                and "chest" in (
+                    f"{definition.instance_id} {definition.template_id}"
+                ).casefold()
+            )
+            if not is_chest_spawn:
                 selected.append(definition)
                 continue
             for row, anchor, members in locations:
@@ -1794,7 +1927,134 @@ class MapEventRuntime:
             tiered = [m for m in candidates if in_tier(m)] or candidates
             plain = [m for m in tiered if "goblin" not in m.template_id.casefold()]
             selected.append(min(plain or tiered, key=lambda m: m.row_id))
+        selected = self._space_close_bloodshed_chests(selected)
+        sentinel_chests = tuple(
+            definition for definition in selected
+            if "sentinel_lootchest_" in (
+                f"{definition.instance_id} {definition.template_id}"
+            ).casefold()
+        )
+        if sentinel_chests:
+            selected_spawn = self.scaling_dungeon_sentinel_spawn
+            selected_row = next((
+                row for row in self.content.spawn_rows
+                if selected_spawn is not None
+                and int(row.row_id) == int(selected_spawn[0])
+            ), None)
+            selected_position = (
+                self.a_mighty_threat_position
+                or (selected_row.position if selected_row is not None else None)
+            )
+            if selected_row is not None:
+                chosen = min(
+                    sentinel_chests,
+                    key=lambda prop: sum(
+                        (float(axis) - float(target)) ** 2
+                        for axis, target in zip(
+                            prop.position, selected_position or selected_row.position,
+                        )
+                    ),
+                )
+            else:
+                chosen = random.Random(
+                    f"{self.instance_id}:a-mighty-threat-sentinel-chest"
+                ).choice(sentinel_chests)
+            selected = [
+                definition for definition in selected
+                if "sentinel_lootchest_" not in (
+                    f"{definition.instance_id} {definition.template_id}"
+                ).casefold()
+            ]
+            selected.append(
+                replace(chosen, position=selected_position)
+                if selected_position is not None else chosen
+            )
         return tuple(selected)
+
+    def _space_close_bloodshed_chests(
+            self, definitions: Iterable[MapPropDefinition],
+    ) -> list[MapPropDefinition]:
+        """Keep nearby Bloodshed reward chests from rendering on top of each other.
+
+        Some maps author one Bloodshed chest per EventSet, with neighboring
+        locations only three metres apart. Since those EventSets activate in
+        separate transitions, ordinary per-EventSet chest selection cannot
+        see the adjacent chests. Spread only tightly clustered Bloodshed
+        chests while preserving their count and the cluster's center.
+        """
+
+        anchors: dict[int, list[tuple[float, float, float]]] = {}
+        for prop in self.content.props:
+            if (
+                prop.kind != "spawn"
+                or prop.event_set_row < 0
+                or "bloodshed_chest" not in (
+                    f"{prop.instance_id} {prop.template_id}"
+                ).casefold()
+            ):
+                continue
+            anchors.setdefault(int(prop.event_set_row), []).append(
+                tuple(float(axis) for axis in prop.position)
+            )
+        centers = {
+            row: tuple(
+                sum(position[axis] for position in positions) / len(positions)
+                for axis in range(3)
+            )
+            for row, positions in anchors.items()
+        }
+        remaining = set(centers)
+        adjusted: dict[int, tuple[float, float, float]] = {}
+        while remaining:
+            seed = remaining.pop()
+            cluster = {seed}
+            frontier = [seed]
+            while frontier:
+                current = frontier.pop()
+                neighbors = {
+                    row for row in remaining
+                    if abs(centers[row][1] - centers[current][1]) <= 5.0
+                    and math.hypot(
+                        centers[row][0] - centers[current][0],
+                        centers[row][2] - centers[current][2],
+                    ) <= 20.0
+                }
+                remaining.difference_update(neighbors)
+                cluster.update(neighbors)
+                frontier.extend(neighbors)
+            if len(cluster) < 2:
+                continue
+            values = [centers[row] for row in cluster]
+            x_span = max(pos[0] for pos in values) - min(pos[0] for pos in values)
+            z_span = max(pos[2] for pos in values) - min(pos[2] for pos in values)
+            axis = 0 if x_span >= z_span else 2
+            ordered = sorted(cluster, key=lambda row: (centers[row][axis], row))
+            coordinates = [centers[row][axis] for row in ordered]
+            if all(
+                second - first >= 5.0
+                for first, second in zip(coordinates, coordinates[1:])
+            ):
+                continue
+            packed = [coordinates[0]]
+            for coordinate in coordinates[1:]:
+                packed.append(max(coordinate, packed[-1] + 5.0))
+            shift = (
+                coordinates[0] + coordinates[-1]
+                - packed[0] - packed[-1]
+            ) / 2.0
+            for row, coordinate in zip(ordered, packed, strict=True):
+                position = list(centers[row])
+                position[axis] = coordinate + shift
+                adjusted[row] = tuple(position)
+        return [
+            replace(prop, position=adjusted[int(prop.event_set_row)])
+            if int(prop.event_set_row) in adjusted
+            and "bloodshed_chest" in (
+                f"{prop.instance_id} {prop.template_id}"
+            ).casefold()
+            else prop
+            for prop in definitions
+        ]
 
     def _select_chest_variants(
         self, definitions: Iterable[MapPropDefinition],
