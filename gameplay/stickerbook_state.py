@@ -10,10 +10,44 @@ import sqlite3
 
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
+from dso_server.protocol.player_init_protocol import StickerbookEntry
 from dso_server.gameplay.local_mount_state import MountDefinition
 
 
 SERVER_TICKS_PER_SECOND = 25
+STICKERBOOK_FAVORITE_SLOTS = 30
+
+
+def stickerbook_info_entries(
+    entries: dict[str, StickerbookEntry], favorite_slots: tuple[str | None, ...]
+) -> tuple[StickerbookEntry, ...]:
+    """Serialize favorite entries at their requested array positions.
+
+    The native client dereferences every StickerbookInfo entry as a non-null
+    StickerbookItem, even though the wire collection has a nullable marker.
+    Fill empty favorite positions with distinct, already-owned nonfavorites so
+    the favorite entries retain their absolute indices without null pointers.
+    """
+
+    remaining = dict(entries)
+    nonfavorites = [
+        resource_id for resource_id in sorted(remaining)
+        if int(remaining[resource_id].field_14) < 3
+    ]
+    ordered: list[StickerbookEntry] = []
+    for resource_id in favorite_slots[:STICKERBOOK_FAVORITE_SLOTS]:
+        entry = remaining.get(resource_id) if resource_id else None
+        if entry is not None and int(entry.field_14) >= 3:
+            ordered.append(entry)
+            remaining.pop(resource_id, None)
+            continue
+        while nonfavorites and nonfavorites[0] not in remaining:
+            nonfavorites.pop(0)
+        if nonfavorites:
+            filler_id = nonfavorites.pop(0)
+            ordered.append(remaining.pop(filler_id))
+    ordered.extend(remaining[key] for key in sorted(remaining))
+    return tuple(ordered)
 
 
 @dataclass(frozen=True)

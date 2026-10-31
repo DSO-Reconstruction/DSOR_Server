@@ -548,6 +548,9 @@ class PlayerPersistenceService:
             map_difficulty=map_difficulty,
             scaling_difficulty=scaling_difficulty,
             stickerbook_entries=stickerbook_entries,
+            stickerbook_favorite_slots=tuple(
+                getattr(s, "gameplay_stickerbook_favorite_slots", ())
+            ),
             stickerbook_rewards=stickerbook_rewards,
             active_costume=active_costume,
             hidden_equipment_skins=hidden_equipment_skins,

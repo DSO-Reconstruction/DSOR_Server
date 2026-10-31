@@ -13,7 +13,10 @@ from dso_server.protocol.item_customization_protocol import (
     decode_item_customization_changes, apply_item_customizations,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
-from dso_server.gameplay.stickerbook_state import collector_item_rewards
+from dso_server.gameplay.stickerbook_state import (
+    STICKERBOOK_FAVORITE_SLOTS, collector_item_rewards,
+    stickerbook_info_entries,
+)
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
 from dso_server.protocol.inventory_economy_protocol import (
     InventoryMutationBuilder, credit_currency_template,
@@ -1184,10 +1187,39 @@ class CustomizationService:
                 field_18=0,
             )
             owned[request.resource_id] = updated
+            favorite_slots = list(
+                getattr(s, "gameplay_stickerbook_favorite_slots", ())
+            )
+            favorite_slots = (favorite_slots + [None] * STICKERBOOK_FAVORITE_SLOTS)[
+                :STICKERBOOK_FAVORITE_SLOTS
+            ]
+            if request.favorite:
+                if request.resource_id not in favorite_slots:
+                    try:
+                        favorite_slots[favorite_slots.index(None)] = request.resource_id
+                    except ValueError as exc:
+                        raise ValueError(
+                            "sticker-book favorite slots are full"
+                        ) from exc
+            else:
+                favorite_slots = [
+                    None if resource_id == request.resource_id else resource_id
+                    for resource_id in favorite_slots
+                ]
             s.gameplay_stickerbook_entries = owned
+            s.gameplay_stickerbook_favorite_slots = tuple(favorite_slots)
             s.gameplay_client_command_state[
                 SET_STICKER_BOOK_FAVORITE_COMMAND
             ] = request
+        # A full StickerbookInfo rebuild compacts the visible favorites unless
+        # each remaining favorite carries its actual one-based cell position.
+        positioned_owned = dict(owned)
+        for position, resource_id in enumerate(favorite_slots):
+            if resource_id in positioned_owned:
+                positioned_owned[resource_id] = replace(
+                    positioned_owned[resource_id],
+                    field_18=position + 1,
+                )
         CharacterService._send_stickerbook_commands(
             s,
             (
@@ -1195,7 +1227,9 @@ class CustomizationService:
                     STICKERBOOK_INFO_COMMAND,
                     StickerbookInfo(
                         2,
-                        tuple(owned[key] for key in sorted(owned)),
+                        stickerbook_info_entries(
+                            positioned_owned, tuple(favorite_slots)
+                        ),
                     ),
                     LOCAL_PLAYER_ACTOR_ID,
                 ),
@@ -1208,6 +1242,92 @@ class CustomizationService:
             reason=(
                 f"sticker favorite {'added' if request.favorite else 'removed'}: "
                 f"{request.resource_id}"
+            ),
+            flush=True,
+        )
+
+    def _handle_stickerbook_favorite_position(
+            self, s: Session, payload: bytes) -> None:
+        """Move a favorite to a front-page slot and persist the layout."""
+
+        request = decode_set_stickerbook_favorite_position(payload)
+        CharacterService._accept_gameplay_state_command(
+            s, SET_STICKER_BOOK_FAVORITE_POS_COMMAND
+        )
+        # The client numbers the 30 visible cells from 1 through 30.
+        if not 1 <= request.position <= STICKERBOOK_FAVORITE_SLOTS:
+            raise ValueError(
+                f"sticker-book favorite position {request.position} is out of range"
+            )
+        target_position = request.position - 1
+        with s.flow_lock:
+            owned = dict(s.gameplay_stickerbook_entries)
+            entry = owned.get(request.resource_id)
+            if entry is None or int(entry.field_14) < 3:
+                raise ValueError(
+                    f"sticker-book item {request.resource_id!r} is not a favorite"
+                )
+            favorite_slots = list(
+                getattr(s, "gameplay_stickerbook_favorite_slots", ())
+            )
+            favorite_slots = (favorite_slots + [None] * STICKERBOOK_FAVORITE_SLOTS)[
+                :STICKERBOOK_FAVORITE_SLOTS
+            ]
+            try:
+                old_position = favorite_slots.index(request.resource_id)
+            except ValueError:
+                old_position = next(
+                    (
+                        index for index, value in enumerate(favorite_slots)
+                        if value is None
+                    ),
+                    None,
+                )
+                if old_position is None:
+                    raise ValueError(
+                        "favorite slot state has no room for the owned favorite"
+                    )
+            displaced = favorite_slots[target_position]
+            if old_position != target_position:
+                favorite_slots[target_position] = request.resource_id
+                favorite_slots[old_position] = displaced
+            s.gameplay_stickerbook_favorite_slots = tuple(favorite_slots)
+            s.gameplay_client_command_state[
+                SET_STICKER_BOOK_FAVORITE_POS_COMMAND
+            ] = request
+        # StickerbookItemInfo updates the item model but does not redraw the
+        # open favorites grid. Rebuild that grid with each favorite's current
+        # one-based cell position embedded in the snapshot; the list is still
+        # sent in slot order so gaps are not compacted.
+        positioned_owned = dict(owned)
+        for position, resource_id in enumerate(favorite_slots):
+            if resource_id in positioned_owned:
+                positioned_owned[resource_id] = replace(
+                    positioned_owned[resource_id],
+                    field_18=position + 1,
+                )
+        CharacterService._send_stickerbook_commands(
+            s,
+            (
+                ServerCommand(
+                    STICKERBOOK_INFO_COMMAND,
+                    StickerbookInfo(
+                        2,
+                        stickerbook_info_entries(
+                            positioned_owned, tuple(favorite_slots)
+                        ),
+                    ),
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ),
+            label="stickerbook-favorite-position-refresh",
+        )
+        CharacterService._persist_gameplay_session(
+            self,
+            s,
+            reason=(
+                f"sticker favorite moved: {request.resource_id} "
+                f"to slot {request.position}"
             ),
             flush=True,
         )

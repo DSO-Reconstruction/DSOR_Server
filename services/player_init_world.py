@@ -10,7 +10,7 @@ request on its own are sent.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from dso_server.runtime.context import *
@@ -33,6 +33,7 @@ from dso_server.protocol.gameplay_protocol import (
 )
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
 from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
+from dso_server.gameplay.stickerbook_state import stickerbook_info_entries
 
 
 @dataclass
@@ -627,9 +628,9 @@ class PlayerInitializationWorldService:
             )
             else (),
             quick_slots_info=quick_slots_info,
-            stickerbook_entries=tuple(
-                s.gameplay_stickerbook_entries[key]
-                for key in sorted(s.gameplay_stickerbook_entries)
+            stickerbook_entries=stickerbook_info_entries(
+                s.gameplay_stickerbook_entries,
+                tuple(getattr(s, "gameplay_stickerbook_favorite_slots", ())),
             ),
             recipe_book=RecipeBookInfo(tuple(
                 RecipeBookEntry(resource_id, resource_id)
@@ -790,9 +791,13 @@ class PlayerInitializationWorldService:
         # the default catalog. Publish the owned entries again after readiness
         # using the same UI refresh operation as a favorite change.
         with s.flow_lock:
-            stickerbook_entries = tuple(
-                s.gameplay_stickerbook_entries[key]
-                for key in sorted(s.gameplay_stickerbook_entries)
+            favorite_slots = tuple(
+                getattr(s, "gameplay_stickerbook_favorite_slots", ())
+            )
+            stickerbook_owned = dict(s.gameplay_stickerbook_entries)
+            stickerbook_entries = stickerbook_info_entries(
+                stickerbook_owned,
+                favorite_slots,
             )
             quick_slots = copy.deepcopy(s.gameplay_quick_slots)
         # InventoryInfo arrives inside the split PlayerReady initialization
@@ -821,6 +826,21 @@ class PlayerInitializationWorldService:
             StickerbookInfo(2, stickerbook_entries),
             LOCAL_PLAYER_ACTOR_ID,
         ))
+        followup_commands.extend(
+            ServerCommand(
+                STICKERBOOK_ITEM_INFO_COMMAND,
+                StickerbookItemInfo(
+                    2,
+                    replace(
+                        stickerbook_owned[resource_id],
+                        field_18=position + 1,
+                    ),
+                ),
+                LOCAL_PLAYER_ACTOR_ID,
+            )
+            for position, resource_id in enumerate(favorite_slots)
+            if resource_id in stickerbook_owned
+        )
         CharacterService._send_stickerbook_commands(
             s,
             tuple(followup_commands),
