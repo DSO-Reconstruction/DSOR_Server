@@ -17,7 +17,7 @@ ADD_DRAGON = "boss_mortis_add_bone_dragon"
 MOUNTED = "boss_mortis_mounted"
 UNBOUND = "boss_mortis_unbound"
 FINAL_GEM_REWARDS = tuple(
-    f"gem_{family}_n" for family in (
+    f"gem_{family}_i" for family in (
         "ruby", "onyx", "amethyst", "cyanit", "diamond",
         "attackspeed", "block", "faster_run",
         "diamond_fire", "diamond_ice", "diamond_lightning",

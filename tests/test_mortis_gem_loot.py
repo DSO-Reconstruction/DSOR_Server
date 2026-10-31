@@ -1,4 +1,4 @@
-"""The final Mortis awards one exact Imperial gem from every normal family."""
+"""The final Mortis awards one exact Royal gem from every normal family."""
 
 from collections import Counter
 import random
@@ -18,7 +18,7 @@ from dso_server.services.character_server import CharacterServer
 
 
 @pytest.mark.parametrize("difficulty", [0, 7, 9])
-def test_exact_imperial_rewards_include_all_elemental_resistances(difficulty):
+def test_exact_royal_rewards_include_all_elemental_resistances(difficulty):
     generation = generate_monster_loot(
         STATIC, UNBOUND, class_name="mage", player_level=100, monster_level=100,
         position=(42.0, 0.0, 14.0), next_item_id=1000,
@@ -29,7 +29,7 @@ def test_exact_imperial_rewards_include_all_elemental_resistances(difficulty):
     assert len(FINAL_GEM_REWARDS) == 13
     assert Counter(d.item.template_id for d in gems) == Counter(FINAL_GEM_REWARDS)
     assert all(d.item.amount == 1 for d in gems)
-    assert {f"gem_diamond_{element}_n" for element in (
+    assert {f"gem_diamond_{element}_i" for element in (
         "fire", "ice", "lightning", "poison", "andermagic",
     )} <= {d.item.template_id for d in gems}
     assert len({d.item.item_id for d in generation.drops}) == len(generation.drops)

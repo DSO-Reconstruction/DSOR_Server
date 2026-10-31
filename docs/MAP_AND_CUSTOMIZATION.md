@@ -128,6 +128,17 @@ physical map ID is used for map assets and routing; the requested access ID,
 map difficulty, and scaling difficulty are retained in account state and on
 the armed route.
 
+Equipment rarity rolls from `_Template_MapDifficulty`'s percentages. The two
+top difficulties, Bloodshed and Parallel World Bloodshed, keep only their
+`Rare` and `Epic` shares, so nothing below Extraordinary (the client's name for
+`Rare`) drops there.
+
+Monster gems come from Jewel of Gem Fortune on bosses, at one rank per ten
+monster levels minus five. The best rank a monster may drop is five below the
+ladder's released end: `l`, Brilliant Trapezoid, under `q`, Exquisite Imperial.
+It is a 5% roll per gem on the top difficulties and drops nowhere else. The
+final Mortis pays rank `i`, Royal.
+
 `MapLoadPacket` keeps those two identities separate, matching the retail
 capture: its first string is the physical map and its second string is the
 selected access ID. A selected access variant uses ruleset `0`; repeating the
@@ -168,7 +179,8 @@ Source items for already-owned stickers are removed from NPC offer lists.
 
 `_Template_Stickerbook.StickerbookRewardItems` lists each subcategory's rewards
 as `threshold:reward:amount`, reached by the number of owned items in that
-subcategory. A status effect reward applies for as long as the threshold holds
+subcategory, where an upgraded pet counts as its one row under any rarity tier.
+A status effect reward applies for as long as the threshold holds
 (`reconcile_collector_effects`). It only raises an actor variable; the bonus
 comes from the pet, mount or Shadow Soul effect that reads it, so it needs one
 of those active. An item reward is paid once, without a claim, when the
