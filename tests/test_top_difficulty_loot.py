@@ -1,4 +1,4 @@
-"""The top difficulties pay Extraordinary or better; monster gems stop short of the ladder's end."""
+"""Top-tier rarity odds and monster-gem caps follow the authored difficulty rows."""
 
 import random
 from collections import Counter
@@ -15,6 +15,8 @@ from dso_server.protocol.world_loot_protocol import (
 
 RARE = EQUIPMENT_RARITIES.index("Rare")  # the client calls it Extraordinary
 EPIC = EQUIPMENT_RARITIES.index("Epic")
+UNCOMMON = EQUIPMENT_RARITIES.index("Uncommon")
+MAGIC = EQUIPMENT_RARITIES.index("Magic")
 BLOODSHED = 8
 PARALLEL_WORLD_BLOODSHED = 9
 ROLLS = 20_000
@@ -42,13 +44,22 @@ def _best_monster_rank(cache):
     return chr(ord(max(cache.standard_gems_by_rank)) - 5)
 
 
-@pytest.mark.parametrize("difficulty", (BLOODSHED, PARALLEL_WORLD_BLOODSHED))
-def test_the_top_difficulties_drop_extraordinary_or_better(cache, difficulty):
+@pytest.mark.parametrize(
+    "difficulty, expected_weights",
+    (
+        (BLOODSHED, (0.0, 0.0, 30.0, 45.0, 8.0)),
+        (PARALLEL_WORLD_BLOODSHED, (0.0, 0.0, 14.0, 54.0, 10.0)),
+    ),
+)
+def test_top_difficulties_keep_their_authored_rarity_odds(
+    cache, difficulty, expected_weights,
+):
+    assert cache.rarity_weights_by_difficulty[difficulty] == expected_weights
     rolled = Counter(
         _roll_equipment_rarity(cache, difficulty, random.Random(seed)) for seed in range(2000)
     )
-    assert set(rolled) == {RARE, EPIC}
-    assert rolled[RARE] > rolled[EPIC]
+    assert UNCOMMON not in rolled
+    assert {MAGIC, RARE, EPIC}.issubset(rolled)
 
 
 def test_other_difficulties_keep_their_authored_odds(cache):
@@ -56,7 +67,7 @@ def test_other_difficulties_keep_their_authored_odds(cache):
     assert cache.rarity_weights_by_difficulty[0] == (39.0, 38.0, 19.0, 4.0, 0.0)
 
 
-def test_a_bloodshed_kill_drops_no_equipment_below_extraordinary(boss):
+def test_a_bloodshed_kill_drops_equipment_using_bloodshed_odds(boss):
     rarities = set()
     for seed in range(60):
         generation = generate_monster_loot(
@@ -68,7 +79,9 @@ def test_a_bloodshed_kill_drops_no_equipment_below_extraordinary(boss):
             drop.item.field_08 for drop in generation.drops if drop.item.field_38 or drop.item.socket_count
             or drop.item_category not in {"Currency", "InstantConsumable", "EquipmentGem"}
         )
-    assert rarities and min(rarities) >= RARE
+    assert rarities
+    assert UNCOMMON not in rarities
+    assert MAGIC in rarities
 
 
 def test_the_ladder_still_ends_where_this_was_measured(cache):
