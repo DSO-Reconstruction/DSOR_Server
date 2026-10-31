@@ -1489,13 +1489,13 @@ class AdminService:
                 self._sessions.pop(token, None)
             return {"ok": True}
         reason = reason_from(payload)
+        if path == "/api/accounts":
+            return self.create_account(payload.get("username"), payload.get("password"), account, reason)
         if path == "/api/loot-rates":
             try:
                 return self.loot_rates.update(account.username, reason, payload)
             except LootRateConflict as exc:
                 raise AdminError(409, str(exc)) from exc
-        if path == "/api/accounts":
-            return self.create_account(payload.get("username"), payload.get("password"), account, reason)
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")
             if len(parts) < 3 or parts[0:2] != ["api", "npc-shops"]:
