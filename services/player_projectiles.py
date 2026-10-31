@@ -459,6 +459,13 @@ class PlayerProjectileService:
                         with s.flow_lock:
                             next_item_id = s.gameplay_next_item_id
                             map_difficulty = s.gameplay_map_difficulty
+                            map_access_id = str(
+                                getattr(s, 'gameplay_map_access_id', None)
+                                or getattr(
+                                    s, 'gameplay_map_access_group_id', None
+                                )
+                                or ''
+                            )
                             scaling_difficulty = (
                                 s.gameplay_scaling_difficulty
                             )
@@ -480,6 +487,7 @@ class PlayerProjectileService:
                                 int(map_difficulty),
                                 int(scaling_difficulty),
                             ),
+                            map_access_id=map_access_id,
                             extra_boss_gems=int(
                                 getattr(
                                     socket_evaluation,

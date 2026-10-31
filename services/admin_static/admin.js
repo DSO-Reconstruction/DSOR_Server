@@ -5,6 +5,7 @@ import { newBookingPage, batchBookingPage } from "./admin_booking.js";
 import { eventsPage, eventPage, newEventPage } from "./admin_events.js";
 import { npcShopsPage, npcShopPage } from "./admin_shops.js";
 import { seasonPassPage } from "./admin_season_pass.js";
+import { lootRatesPage } from "./admin_loot.js";
 
 let generation = 0;
 const THEME_STORAGE_KEY = "dso-admin-theme";
@@ -57,6 +58,7 @@ async function render() {
     if (name === "npc-shops") result = id ? await npcShopPage(route) : await npcShopsPage(route);
     else if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
     else if (name === "season-pass") result = await seasonPassPage(route);
+    else if (name === "loot-rates") result = await lootRatesPage(route);
     else if (name === "bookings" && id === "new") result = await newBookingPage(route);
     else if (name === "bookings" && id === "batch") result = await batchBookingPage(route);
     else if (name === "accounts" && id) result = await accountPage(route);

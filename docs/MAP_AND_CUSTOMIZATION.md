@@ -128,10 +128,12 @@ physical map ID is used for map assets and routing; the requested access ID,
 map difficulty, and scaling difficulty are retained in account state and on
 the armed route.
 
-Equipment rarity rolls from `_Template_MapDifficulty`'s percentages. The two
-top difficulties, Bloodshed and Parallel World Bloodshed, keep only their
-`Rare` and `Epic` shares, so nothing below Extraordinary (the client's name for
-`Rare`) drops there.
+Equipment rarity rolls from each `_Template_MapDifficulty` row's authored
+`Uncommon`, `Magic`, `Rare`, and `Epic` percentages. Common uses the remaining
+share only when Improved/Uncommon has a non-zero chance; when Improved is 0%,
+Common is also disabled. Bloodshed therefore uses 0% Uncommon, 30% Magic, 45%
+Rare, 8% Epic, and 0% Common. Parallel World Bloodshed uses its own row. The
+two top difficulties still gate the separate 5% best-monster-gem roll below.
 
 Monster gems come from Jewel of Gem Fortune on bosses, at one rank per ten
 monster levels minus five. The best rank a monster may drop is five below the
@@ -159,6 +161,43 @@ request's slider field remains zero. Bloodshed therefore uses database factor
 8 (`MonsterHP = 21`) rather than factor 0; the final available tier has at
 least ten times the same-level baseline health without hard-coding individual
 maps.
+
+The selected map-access row's `_Template_MapAccessGroup.RewardItems` now drives
+map rewards for every monster rank. Directly listed items use a configurable
+3% base chance (`DSO_MAP_REWARD_DROP_CHANCE`); Unique/Set items use
+`DSO_PARALLEL_WORLD_UNIQUE_DROP_CHANCE` (also 3% by default) and include items
+whose `_Template_Item.Region` matches the selected map's
+`_Template_MapTemplate.Region`. Class alternatives resolve to the current
+player's class. Both rolls are scaled by the selected difficulty's
+`ChanceMultiplier` and `PrivilegedLootDrop`.
+
+The `dungeonaccess_*` entries are category markers rather than item drops. The
+server resolves their tier into real pools: the `gems_a_to_f` range selects a
+standard gem rank; `ingredients_01`–`ingredients_05` select matching herb, ore,
+yarn, and elite extract templates; and the rune markers cap elite rune quality
+at Common, Uncommon, or Magic. Regular ingredients and gems can drop from any
+mob; runes and extract ingredients are restricted to Guardians, Champions,
+Leaders, and bosses. The `dungeonaccess_jewels` marker adds a normal-rarity
+random Jewel chance to Parallel World reward chests.
+
+The client rows provide reward categories and tiers but no server drop odds.
+The 3% defaults above are configurable fallback rates, not recovered retail
+odds. `DropChanceTier1`–`DropChanceTier10` are tier selectors, not percentages.
+The static client DB does not include the server-owned `MAIN_*` loot-list
+contents, so hidden retail weights cannot be reproduced.
+
+Administrators can edit these seven reward chances in the CMS under **Loot
+rates**, either globally or for one map-access difficulty. Per-difficulty
+fields left blank inherit the global rate. Changes are stored in
+`data/loot_rates.json` (or `DSO_LOOT_RATES_CONFIG`) and apply to new drops
+immediately; the database difficulty modifiers continue to scale them.
+
+Monster `SpawnArea` rows also author `MinChampionSpawn` and
+`MaxChampionSpawn`. The difficulty-selected spawn-area variation now promotes
+up to the authored maximum number of its generated monsters to Champion rank;
+those fields were previously read but ignored except for one special map.
+Consequently, higher tiers use their authored larger champion counts while
+the total generated monster population remains within the existing map cap.
 
 ## Sticker-book ownership
 

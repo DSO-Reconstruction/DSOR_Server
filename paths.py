@@ -31,3 +31,7 @@ DEFAULT_QUESTS_PATH = Path(os.getenv("DSO_QUESTS_FILE") or DATA_ROOT / "quests.x
 DEFAULT_SEASON_PASS_CONFIG_PATH = Path(
     os.getenv("DSO_SEASON_PASS_CONFIG") or DATA_ROOT / "season_pass.json"
 )
+# CMS-edited Possible Rewards drop rates, consumed by world loot generation.
+DEFAULT_LOOT_RATES_CONFIG_PATH = Path(
+    os.getenv("DSO_LOOT_RATES_CONFIG") or DATA_ROOT / "loot_rates.json"
+)

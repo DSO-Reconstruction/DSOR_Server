@@ -140,7 +140,10 @@ from dso_server.protocol.commerce_protocol import (
     _new_item,
     load_purchase_item_definition,
 )
-from dso_server.protocol.world_loot_protocol import WorldLootDrop
+from dso_server.protocol.world_loot_protocol import (
+    WorldLootDrop,
+    roll_possible_reward_jewel,
+)
 from dso_server.gameplay.prop_loot import (
     chest_drop_positions,
     load_prop_loot_catalog,
@@ -3159,11 +3162,28 @@ class MapEventService:
                     f"no local loot table for chest {definition.instance_id!r} "
                     f"({loot_list_id!r}); no rewards spawned"
                 )
-                return 0
-            specifications = list(self._roll_map_chest_loot(s, entries))
-            if not specifications:
-                _log(f"chest {definition.instance_id!r} rolled no rewards")
-                return 0
+                specifications = []
+            else:
+                specifications = list(self._roll_map_chest_loot(s, entries))
+        if str(definition.instance_id).casefold() in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS:
+            with s.flow_lock:
+                access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+                difficulty = int(getattr(s, "gameplay_map_difficulty", 0) or 0)
+            try:
+                jewel = roll_possible_reward_jewel(
+                    self.static_database_path,
+                    access_id,
+                    difficulty,
+                    random.SystemRandom(),
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(f"cannot roll map jewel reward: {type(exc).__name__}: {exc}")
+                jewel = None
+            if jewel:
+                specifications.append((jewel, 1))
+        if not specifications:
+            _log(f"chest {definition.instance_id!r} rolled no rewards")
+            return 0
         # Retail drops a chest's loot around the clicking player, not the
         # chest (see gameplay/prop_loot.py).
         with s.flow_lock:

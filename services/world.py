@@ -1901,7 +1901,7 @@ class WorldService:
                     # (NoAutoUseCurrency) into the bag too.
                     and drop.item_category in {
                         'Currency', 'InstantConsumable', 'Key',
-                        'NoAutoUseCurrency',
+                        'NoAutoUseCurrency', 'IngredientItem',
                     }
                     and math.hypot(
                         drop.item.field_100[0] - player_position[0],
