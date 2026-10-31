@@ -638,6 +638,8 @@ class DispatchService:
                 self._handle_add_stickerbook_from_inventory(s, payload)
             elif command_id == SET_STICKER_BOOK_FAVORITE_COMMAND:
                 self._handle_stickerbook_favorite(s, payload)
+            elif command_id == SET_STICKER_BOOK_FAVORITE_POS_COMMAND:
+                self._handle_stickerbook_favorite_position(s, payload)
             elif command_id == UPGRADE_STICKER_BOOK_ITEM_COMMAND:
                 self._handle_upgrade_stickerbook_item(s, payload)
             elif command_id == SELECT_TALENT_COMMAND:

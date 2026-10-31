@@ -1,6 +1,7 @@
 """Character-selection flow and character creation."""
 
 from __future__ import annotations
+from dataclasses import replace
 from dso_server.protocol.item_customization_protocol import item_tint
 from dso_server.protocol.currency_protocol import STARTER_GOLD_UNITS
 
@@ -417,11 +418,17 @@ class CharacterSelectionService:
     @staticmethod
     def _send_character_generation_packet(
             s: Session, value: CharacterGeneration, *, label: str) -> None:
-        packet = encode_character_generation(value, server_to_client=True)
+        packet, bit_length = encode_character_generation(
+            value, server_to_client=True
+        )
         s.send_reliable_ordered(
-            packet,
+            (packet, bit_length),
             track=True,
             label=label,
+        )
+        print(
+            "[DrasaCharacterService] sent CharacterGeneration "
+            f"operation {value.operation} ({bit_length} bits; {label})"
         )
 
     def _send_character_generation_ocp(self, s: Session) -> None:
@@ -487,7 +494,8 @@ class CharacterSelectionService:
         )
 
     def _open_character_generation_editor(
-            self, s: Session, *, reason: str, force: bool = False) -> bool:
+            self, s: Session, *, reason: str, force: bool = False,
+            character=None) -> bool:
         """Send operation 2, which opens and initializes the client editor.
 
         The client asks for this when the player clicks "create character".
@@ -507,20 +515,159 @@ class CharacterSelectionService:
                 return False
             s.character_generation_active = True
             s.character_generation_ocp_sent = False
-        with self.character_roster_lock:
-            preview_id = self._next_character_id()
+            s.character_generation_editing_id = int(
+                getattr(character, "character_id", 0)
+            )
+        if character is not None:
+            preview_id = int(character.character_id)
+        else:
+            with self.character_roster_lock:
+                preview_id = self._next_character_id()
         response = character_generation_editor_response(
             locale=self.character_selection.locale,
             preview_id=preview_id,
+            character=character,
+            operation=9 if character is not None else 2,
         )
         self._send_character_generation_packet(
             s, response, label="character-generation-editor"
         )
+        # Existing characters enter the editor after the selection screen's
+        # readiness handshake has already completed. Refresh the editor's
+        # OCP offer/method tail here as well; otherwise the client can leave
+        # the selection view without receiving the editor-ready tail.
+        self._send_character_generation_ocp(s)
         print(
-            "[DrasaCharacterService] opened typed character-generation "
-            f"editor (preview id {preview_id}; {reason})"
+            "[DrasaCharacterService] opened typed "
+            f"{'character-alteration' if character is not None else 'character-generation'} "
+            f"editor (id {preview_id}; {reason})"
         )
         return True
+
+    def _handle_character_alteration(
+            self, s: Session, request: CharacterGeneration,
+            character_id: int) -> None:
+        """Commit a paid name/appearance/gender edit from character select."""
+        registry = getattr(self, "account_registry", None)
+        account_id = int(getattr(s, "account_id", 0) or 0)
+        if registry is None or account_id <= 0:
+            self._character_generation_denial(
+                s, request, "character changes require an authenticated account"
+            )
+            return
+        if not self._require_character_ownership(
+            s, character_id, action="character alteration", drop=False
+        ):
+            return
+
+        encoded_name = request.name.encode("utf-8", errors="strict")
+        if not request.name:
+            self._character_generation_denial(
+                s, request, "empty character name",
+                deny_reason=self.DENY_NAME_EMPTY,
+            )
+            return
+        if (
+            request.name != request.name.strip()
+            or len(encoded_name) > 32
+            or any(ord(character) < 0x20 for character in request.name)
+        ):
+            self._character_generation_denial(
+                s, request, "invalid character name",
+                deny_reason=self.DENY_NAME_INVALID,
+            )
+            return
+        if not 0 <= request.gender <= 1:
+            self._character_generation_denial(
+                s, request, f"unknown gender id {request.gender}"
+            )
+            return
+
+        denial_reason = None
+        denial_code = self.DENY_UNKNOWN
+        updated = None
+        with self.character_roster_lock:
+            current = next(
+                (value for value in self.character_selection.characters
+                 if int(value.character_id) == int(character_id)),
+                None,
+            )
+            if current is None:
+                denial_reason = "character no longer exists"
+            elif int(request.class_id) != int(current.class_id):
+                denial_reason = "character alteration cannot change class"
+            elif any(
+                value.character_id != int(character_id)
+                and value.name.casefold() == request.name.casefold()
+                for value in self.character_selection.characters
+            ):
+                denial_reason = "character name already exists"
+                denial_code = self.DENY_NAME_EXISTS
+            elif registry.character_alteration_bookings(account_id) <= 0:
+                denial_reason = "account has no character alteration bookings"
+                denial_code = self.DENY_ALREADY_GENERATED
+            else:
+                profile = (
+                    self.account_store.get_profile(character_id)
+                    if self.account_store is not None else None
+                )
+                saved_profile = replace(
+                    profile or CharacterProfile.from_character_record(current),
+                    name=request.name,
+                    gender=request.gender,
+                    hair_style=request.hair_style,
+                    beard_style=request.beard_style,
+                    body_style=request.body_style,
+                    body_stature=request.body_stature,
+                )
+                if not registry.consume_character_alteration_booking(
+                    account_id
+                ):
+                    denial_reason = "character alteration booking was already used"
+                    denial_code = self.DENY_ALREADY_GENERATED
+                else:
+                    try:
+                        if self.account_store is not None:
+                            self.account_store.put_profile(
+                                saved_profile, flush=True
+                            )
+                        current.name = request.name
+                        current.gender = request.gender
+                        current.hair_style = request.hair_style
+                        current.beard_style = request.beard_style
+                        current.body_style = request.body_style
+                        current.body_stature = request.body_stature
+                        self.character_roster_revision += 1
+                        updated = copy.deepcopy(current)
+                    except Exception:
+                        registry.grant_character_alteration_booking(
+                            account_id
+                        )
+                        raise
+
+        if denial_reason is not None:
+            self._character_generation_denial(
+                s, request, denial_reason, deny_reason=denial_code
+            )
+            return
+
+        with s.flow_lock:
+            s.character_generation_active = False
+            s.character_generation_editing_id = 0
+        self._reencode_character_selection()
+        self._send_character_generation_packet(
+            s,
+            character_generation_result(
+                request, operation=11, character_id=int(character_id)
+            ),
+            label="character-alteration-saved",
+        )
+        self._send_character_selection(s, force=True)
+        print(
+            "[DrasaCharacterService] applied character alteration for "
+            f"{updated.name!r} ({character_id}); "
+            f"{registry.character_alteration_bookings(account_id)} booking(s) remain"
+        )
 
     def _handle_character_generation(
             self, s: Session, payload: bytes) -> None:
@@ -533,16 +680,103 @@ class CharacterSelectionService:
             )
             return
 
-        if request.operation == 1:
+        if request.operation in (1, 8):
+            requested_character_id = int(request.character_id)
+            if requested_character_id:
+                if not self._require_character_ownership(
+                    s, requested_character_id,
+                    action="character alteration", drop=False,
+                ):
+                    return
+                registry = getattr(self, "account_registry", None)
+                account_id = int(getattr(s, "account_id", 0) or 0)
+                if (
+                    registry is None or account_id <= 0
+                    or registry.character_alteration_bookings(account_id) <= 0
+                ):
+                    self._character_generation_denial(
+                        s, request,
+                        "account has no character alteration bookings",
+                        deny_reason=self.DENY_ALREADY_GENERATED,
+                    )
+                    return
+                with self.character_roster_lock:
+                    target = next(
+                        (value for value in self.character_selection.characters
+                         if int(value.character_id) == requested_character_id),
+                        None,
+                    )
+                    target = copy.deepcopy(target)
+                if target is None:
+                    return
+                self._open_character_generation_editor(
+                    s,
+                    reason=(
+                        "paid character alteration button"
+                        if request.operation == 8
+                        else "paid character alteration"
+                    ),
+                    force=True,
+                    character=target,
+                )
+                return
+            if request.operation == 8:
+                self._character_generation_denial(
+                    s, request,
+                    "character alteration request did not name a character",
+                )
+                return
             self._open_character_generation_editor(
                 s, reason="client request", force=True
             )
+            return
+
+        if request.operation == 10:
+            with s.flow_lock:
+                editing_id = int(s.character_generation_editing_id or 0)
+            requested_id = int(request.character_id)
+            existing_id = requested_id or editing_id
+            if existing_id and any(
+                int(character.character_id) == existing_id
+                for character in self.character_selection.characters
+            ):
+                if editing_id and requested_id and editing_id != requested_id:
+                    self._character_generation_denial(
+                        s, request, "character alteration target changed"
+                    )
+                    return
+                self._handle_character_alteration(
+                    s, request, existing_id
+                )
+            else:
+                self._character_generation_denial(
+                    s, request,
+                    "character alteration save did not name an existing character",
+                )
             return
 
         if request.operation != 3:
             print(
                 "[DrasaCharacterService] ignored unsupported "
                 f"CharacterGeneration operation {request.operation}"
+            )
+            return
+
+        with s.flow_lock:
+            editing_id = int(s.character_generation_editing_id or 0)
+        requested_id = int(request.character_id)
+        existing_id = requested_id or editing_id
+        if existing_id and any(
+            int(character.character_id) == existing_id
+            for character in self.character_selection.characters
+        ):
+            if editing_id and requested_id and editing_id != requested_id:
+                self._character_generation_denial(
+                    s, request, "character alteration target changed"
+                )
+                return
+            self._handle_character_alteration(
+                s, request, existing_id
             )
             return
 

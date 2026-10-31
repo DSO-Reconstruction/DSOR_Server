@@ -1527,6 +1527,27 @@ class PlayerInitializationStateService:
                 )
             }
             s.gameplay_stickerbook_entries = stickerbook_entries
+            saved_favorite_slots = tuple(
+                getattr(persisted_state, "stickerbook_favorite_slots", ())
+                if persisted_state is not None else ()
+            )
+            favorites = {
+                key for key, entry in stickerbook_entries.items()
+                if int(entry.field_14) >= 3
+            }
+            favorite_slots = [
+                resource_id if resource_id in favorites else None
+                for resource_id in saved_favorite_slots[:30]
+            ]
+            favorite_slots.extend([None] * (30 - len(favorite_slots)))
+            placed = {resource_id for resource_id in favorite_slots if resource_id}
+            for resource_id in sorted(favorites - placed):
+                try:
+                    empty_position = favorite_slots.index(None)
+                except ValueError:
+                    break
+                favorite_slots[empty_position] = resource_id
+            s.gameplay_stickerbook_favorite_slots = tuple(favorite_slots)
             s.gameplay_stickerbook_rewards = tuple(
                 persisted_state.stickerbook_rewards
                 if persisted_state is not None else ()
