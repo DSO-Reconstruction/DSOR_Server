@@ -370,7 +370,7 @@ class CommerceService:
     @staticmethod
     def _ocp_booking_notification(instance_guid, reward):
         return make_notification_entry(
-            OCP_BOOKING_NOTIFICATION_KIND,
+            ocp_booking_notification_kind(reward),
             instance_guid,
             OCP_BOOKING_NOTIFICATION_VALUES,
             ocp_booking_notification_payload(reward, instance_guid),
@@ -401,6 +401,11 @@ class CommerceService:
                 'ocp-booking-notification-'
                 'ocp-booking-notification'
             ),
+        )
+        print(
+            f'[{GAMEPLAY_SERVICE_NAME}] sent OCP booking notification '
+            f'kind {ocp_booking_notification_kind(reward)} for '
+            f'{instance_guid.hex()} ({reward.item_id})'
         )
 
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
@@ -527,6 +532,9 @@ class CommerceService:
             claims = dict(s.gameplay_timed_offer_purchases)
             if not claims.get(pending_key, 0):
                 return
+            parsed = parse_ocp_booking_pending_key(pending_key)
+            if parsed is None:
+                raise ValueError('invalid pending OCP booking key')
             inventory = copy.deepcopy(s.gameplay_inventory)
             currency = s.gameplay_currency_state
             next_item_id = int(s.gameplay_next_item_id)
@@ -560,6 +568,16 @@ class CommerceService:
                     CURRENCY_CHANGED_COMMAND, currency,
                     LOCAL_PLAYER_ACTOR_ID,
                 ))
+            elif reward.item_id == 'characterStyleEdit':
+                registry = getattr(self, 'account_registry', None)
+                account_id = int(getattr(s, 'account_id', 0) or 0)
+                if registry is None or account_id <= 0:
+                    raise ValueError(
+                        'character change purchases require an authenticated account'
+                    )
+                registry.grant_character_alteration_booking(
+                    account_id, booking_guid=parsed[0]
+                )
             else:
                 if inventory is None:
                     raise ValueError('player inventory is not initialized')
@@ -588,13 +606,13 @@ class CommerceService:
                         LOCAL_PLAYER_ACTOR_ID,
                     ),
                 ))
-            parsed = parse_ocp_booking_pending_key(pending_key)
-            if parsed is None:
-                raise ValueError('invalid pending OCP booking key')
             claims.pop(pending_key, None)
             claims[ocp_booking_completed_key(parsed[0])] = 1
-            packet, packet_bits = encode_server_command_batch(
-                tuple(commands), include_terminator=True
+            packet, packet_bits = (
+                encode_server_command_batch(
+                    tuple(commands), include_terminator=True
+                )
+                if commands else (b'', 0)
             )
             s.gameplay_currency_state = currency
             s.gameplay_inventory = inventory
@@ -603,15 +621,16 @@ class CommerceService:
         CharacterService._request_account_save(
             s, 'OCP booking settled', flush=True
         )
-        s.send_reliable_ordered_split(
-            packet,
-            total_bit_length=packet_bits,
-            track=True,
-            label_prefix=(
-                'ocp-booking-settlement-'
-                'ocp-booking-settlement'
-            ),
-        )
+        if packet:
+            s.send_reliable_ordered_split(
+                packet,
+                total_bit_length=packet_bits,
+                track=True,
+                label_prefix=(
+                    'ocp-booking-settlement-'
+                    'ocp-booking-settlement'
+                ),
+            )
         print(
             f'[{GAMEPLAY_SERVICE_NAME}] settled OCP booking: '
             f'{reward.amount}x {reward.item_id}'
@@ -662,6 +681,12 @@ class CommerceService:
                 raise ValueError('unknown OCP booking notification')
             pending_key, offer_id = pending
             reward = resolve_ocp_booking_reward(offer_id, 'external')
+            expected_kind = ocp_booking_notification_kind(reward)
+            if action.kind != expected_kind:
+                raise ValueError(
+                    f'OCP booking notification kind {action.kind} does not '
+                    f'match expected kind {expected_kind}'
+                )
             expected_payload = ocp_booking_notification_payload(
                 reward, action.instance_guid
             )

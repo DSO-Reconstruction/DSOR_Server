@@ -504,7 +504,7 @@ class PlayerInitializationWorldService:
                 continue
             pending_booking_notifications.append(
                 make_notification_entry(
-                    OCP_BOOKING_NOTIFICATION_KIND,
+                    ocp_booking_notification_kind(booking_reward),
                     booking_guid,
                     OCP_BOOKING_NOTIFICATION_VALUES,
                     ocp_booking_notification_payload(

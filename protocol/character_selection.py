@@ -386,6 +386,15 @@ class CharacterSelection:
     characters: list[CharacterRecord] = field(default_factory=list)
     equipment: list[EquipmentRecord] = field(default_factory=list)
 
+    @property
+    def character_alteration_bookings(self) -> int:
+        """Account change orders carried in the selection header field."""
+        return self.header_field_d
+
+    @character_alteration_bookings.setter
+    def character_alteration_bookings(self, value: int) -> None:
+        self.header_field_d = int(value)
+
     def validate(self) -> None:
         _unsigned(self.operation, 8, "operation")
         _unsigned(self.deny_reason, 8, "deny_reason")

@@ -153,6 +153,8 @@ def resolve_ocp_booking_reward(
         raise ValueError(f'unsupported OCP payment method {payment_method!r}')
     if offer_id not in {offer.product_key for offer in LOCAL_OCP_OFFERS}:
         raise ValueError(f'unknown OCP offer {offer_id!r}')
+    if offer_id == CHARACTER_ALTERATION_PRODUCT_KEY:
+        return OCPBookingReward(offer_id, 'characterStyleEdit', 1)
     match = re.fullmatch(
         r'1_realCurrency_(\d+)(?:\.\d+)?_0_NONE', offer_id
     )
@@ -214,10 +216,24 @@ def ocp_booking_notification_payload(
         'ingameTransactionId': transaction_id or 1,
         'templates': reward.item_id,
         'amounts': str(reward.amount),
-        'rarities': reward.rarity,
+        'rarities': (
+            'None' if reward.item_id == 'characterStyleEdit'
+            else reward.rarity
+        ),
+        # The client routes this authored package id to its special
+        # CharacterStyleEdit booking UI. addItems must remain true: false is
+        # the negative/cancelled-order branch, even though this is not a normal
+        # inventory item.
         'addItems': True,
         'playerCanRejectItem': False,
     }
+
+
+def ocp_booking_notification_kind(reward: OCPBookingReward) -> int:
+    """Select the client notification branch for this OCP booking reward."""
+    # The live client session ignored kind 12 for this OCP purchase. Keep the
+    # OCP notification kind that the client previously rendered interactively.
+    return OCP_BOOKING_NOTIFICATION_KIND
 
 
 def decode_activity_signin_request(payload: bytes) -> int:
@@ -501,7 +517,16 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(87_052, 24.99, False, "€", "1_realCurrency_24000.0000_0_NONE", "", ""),
     OCPOffer(123_835, 49.99, False, "€", "1_realCurrency_48000.0000_0_NONE", "", ""),
     OCPOffer(123_880, 99.99, False, "€", "1_realCurrency_114000.0000_0_NONE", "", ""),
+    # Authored PaymentPackages row 7_characterStyleEdit_1.0000_0_NONE.
+    # The client classifies it as CharacterAlteration and displays the
+    # Character Change card in the cash shop.
+    OCPOffer(
+        7, 99.90, False, "€",
+        "7_characterStyleEdit_1.0000_0_NONE", "", "",
+    ),
 )
+
+CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"
 
 LOCAL_OCP_METHODS = (
     OCPMethod("external", "Local development payment provider", 0.0, 0.0),

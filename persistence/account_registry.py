@@ -249,6 +249,18 @@ class AccountRegistry:
                         REFERENCES accounts(account_id) ON DELETE CASCADE,
                     claimed_at REAL NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS account_character_alterations (
+                    account_id INTEGER PRIMARY KEY
+                        REFERENCES accounts(account_id) ON DELETE CASCADE,
+                    bookings INTEGER NOT NULL DEFAULT 0 CHECK(bookings >= 0)
+                );
+                CREATE TABLE IF NOT EXISTS account_character_alteration_grants (
+                    account_id INTEGER NOT NULL
+                        REFERENCES accounts(account_id) ON DELETE CASCADE,
+                    booking_guid BLOB NOT NULL CHECK(length(booking_guid)=16),
+                    granted_at REAL NOT NULL,
+                    PRIMARY KEY(account_id, booking_guid)
+                );
                 CREATE INDEX IF NOT EXISTS account_characters_by_account
                     ON account_characters(account_id);
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -545,6 +557,74 @@ class AccountRegistry:
             if account_id is None:
                 return None
             return account_id, tuple(sorted(self._owned_characters[account_id]))
+
+    def character_alteration_bookings(self, account_id: int) -> int:
+        """Return the remaining account-wide character-change orders."""
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT bookings FROM account_character_alterations "
+                "WHERE account_id=?",
+                (int(account_id),),
+            ).fetchone()
+            return int(row["bookings"]) if row is not None else 0
+
+    def grant_character_alteration_booking(
+        self, account_id: int, booking_guid: bytes | None = None
+    ) -> int:
+        """Add an order, optionally idempotently by its purchase GUID."""
+        account_id = int(account_id)
+        with self._lock:
+            guid = None if booking_guid is None else bytes(booking_guid)
+            if guid is not None and len(guid) != 16:
+                raise ValueError("character alteration booking GUID must be 16 bytes")
+            self._connection.execute("BEGIN IMMEDIATE")
+            try:
+                if account_id not in self._owned_characters and self._connection.execute(
+                    "SELECT 1 FROM accounts WHERE account_id=?", (account_id,)
+                ).fetchone() is None:
+                    raise UnknownAccountError(f"unknown account id {account_id}")
+                if guid is not None:
+                    inserted = self._connection.execute(
+                        "INSERT OR IGNORE INTO account_character_alteration_grants"
+                        "(account_id, booking_guid, granted_at) VALUES (?, ?, ?)",
+                        (account_id, guid, time.time()),
+                    ).rowcount
+                    if inserted:
+                        self._connection.execute(
+                            "INSERT INTO account_character_alterations"
+                            "(account_id, bookings) VALUES (?, 1) "
+                            "ON CONFLICT(account_id) DO UPDATE SET "
+                            "bookings=bookings+1",
+                            (account_id,),
+                        )
+                else:
+                    self._connection.execute(
+                        "INSERT INTO account_character_alterations"
+                        "(account_id, bookings) VALUES (?, 1) "
+                        "ON CONFLICT(account_id) DO UPDATE SET "
+                        "bookings=bookings+1",
+                        (account_id,),
+                    )
+                row = self._connection.execute(
+                    "SELECT bookings FROM account_character_alterations "
+                    "WHERE account_id=?",
+                    (account_id,),
+                ).fetchone()
+                self._connection.execute("COMMIT")
+                return int(row["bookings"]) if row is not None else 0
+            except Exception:
+                self._connection.execute("ROLLBACK")
+                raise
+
+    def consume_character_alteration_booking(self, account_id: int) -> bool:
+        """Atomically consume one order, returning false when none remain."""
+        with self._lock:
+            cursor = self._connection.execute(
+                "UPDATE account_character_alterations "
+                "SET bookings=bookings-1 WHERE account_id=? AND bookings>0",
+                (int(account_id),),
+            )
+            return cursor.rowcount == 1
 
     def character_owner(self, character_id: int) -> AccountRecord | None:
         with self._lock:

@@ -489,6 +489,7 @@ from dso_server.protocol.reward_protocol import (
     load_spender_rewards,
     ocp_booking_completed_key,
     ocp_booking_notification_payload,
+    ocp_booking_notification_kind,
     ocp_booking_pending_key,
     parse_ocp_booking_pending_key,
     pending_daily_login_day,

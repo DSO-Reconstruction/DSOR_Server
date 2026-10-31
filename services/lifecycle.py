@@ -657,6 +657,12 @@ class LifecycleService:
             )
         )
         selection.active_character_id = active
+        registry = getattr(self, "account_registry", None)
+        account_id = int(getattr(s, "account_id", 0) or 0)
+        if registry is not None and account_id > 0:
+            selection.character_alteration_bookings = (
+                registry.character_alteration_bookings(account_id)
+            )
         # The payload carries one equipment list: the active character's.
         # Build it from the account store on every selection request. Gameplay
         # customization changes the inventory without changing the character

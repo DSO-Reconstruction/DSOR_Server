@@ -776,6 +776,7 @@ class Session:
         self.selected_character_id = None
         self.character_generation_active = False
         self.character_generation_ocp_sent = False
+        self.character_generation_editing_id = 0
         self.gameplay_mode = False
         self._gameplay_map = None
         self.gameplay_map_access_id = None
