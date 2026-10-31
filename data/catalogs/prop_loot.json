@@ -1,6 +1,18 @@
 {
   "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). 'event_progress': true drops the current page collectible of every event whose progress applies on the map, for this player. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
+    "CHEST_lootlist_MAGIC": {
+      "comment": "Locked scaling magic chests spend five lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
+      "entries": []
+    },
+    "CHEST_lootlist_RARE": {
+      "comment": "Locked scaling rare chests spend 25 lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
+      "entries": []
+    },
+    "CHEST_lootlist_EPIC": {
+      "comment": "Locked scaling epic chests spend 100 lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
+      "entries": []
+    },
     "CHEST_amphora_normal_MAIN": {
       "comment": "Retail sample 2026-10-28 (Dragan, e_dra_03_dun_01): 10 Draken, gold 276/234/208, progress key x3 and x50, 1 e_dra_03_hardmode_bosskey. Chances of the second progress stack and the boss key are not known from one sample.",
       "entries": [

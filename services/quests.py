@@ -20,6 +20,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
+import math
 import random
 import sqlite3
 
@@ -195,6 +196,7 @@ _COMBAT_SIGNAL_EVENTS = frozenset({
     "monsterseliminated",
     "monsterseliminatedpercentage",
 })
+_MAX_QUEST_MONSTER_INDICATIONS = 32
 
 
 def _started_only_by_combat(event, signals) -> bool:
@@ -2434,6 +2436,18 @@ class QuestService:
                 for monsters_in_region in task.clear_regions.values()
                 for template in monsters_in_region.split(";") if template.strip()
             )
+        with s.pending_lock:
+            reliable_backpressure = bool(s.reliable_backpressure_active)
+            reliable_pending = len(s.pending_reliable)
+        if reliable_backpressure:
+            # Quest markers are optional presentation state. Avoid turning a
+            # saturated map-entry/spawn burst into a fatal reliable-send
+            # overflow; the client can ask for this list again later.
+            _log(
+                f"deferred quest monster indication for {quest_id!r} "
+                f"while reliable backlog is {reliable_pending}"
+            )
+            return
         monsters = []
         combat = getattr(s, "gameplay_combat_state", None)
         if combat is not None and templates:
@@ -2450,6 +2464,34 @@ class QuestService:
                         int(actor_id), template,
                         tuple(float(v) for v in position[:3]),
                     ))
+        if len(monsters) > _MAX_QUEST_MONSTER_INDICATIONS:
+            with s.flow_lock:
+                encounter = s.gameplay_monster_encounter
+                move = s.gameplay_last_move
+                spawn_position = s.gameplay_spawn_position
+            target_position = None
+            if encounter is not None and move is not None:
+                try:
+                    target_position = encounter.coordinate_frame.wire_to_world(
+                        move.relative_position,
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    target_position = None
+            if target_position is None and spawn_position is not None:
+                target_position = tuple(float(v) for v in spawn_position)
+            if target_position is not None:
+                monsters.sort(key=lambda monster: math.dist(
+                    monster.position, target_position,
+                ))
+            else:
+                monsters.sort(key=lambda monster: monster.actor_id)
+            omitted = len(monsters) - _MAX_QUEST_MONSTER_INDICATIONS
+            monsters = monsters[:_MAX_QUEST_MONSTER_INDICATIONS]
+            _log(
+                f"limited quest monster indication for {quest_id!r} to "
+                f"the nearest {_MAX_QUEST_MONSTER_INDICATIONS} actors "
+                f"(omitted {omitted})"
+            )
         if "pw011" in str(getattr(s, "gameplay_map", "")).casefold():
             summary = [
                 (
@@ -3185,11 +3227,63 @@ class QuestService:
         monsters = tuple(monsters)
         from dso_server.services.quest_holdgrounds import advance_holdgrounds
         advance_holdgrounds(self, s, killed_actor_ids=tuple(getattr(monster, "actor_id", 0) for monster in monsters))
+        from dso_server.gameplay.map_event_state import (
+            A_MIGHTY_THREAT_TREASURE_MONSTERS,
+        )
         counts: dict[str, int] = {}
         for monster in monsters:
             template = str(getattr(monster, "template_id", ""))
             if template:
                 counts[template] = counts.get(template, 0) + 1
+                folded_template = template.casefold()
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                selected_special = getattr(
+                    runtime, "scaling_dungeon_sentinel_spawn", None,
+                )
+                selected_template = (
+                    str(selected_special[1]).casefold()
+                    if selected_special else ""
+                )
+                is_selected_special = folded_template == selected_template
+                is_a_mighty_goblin = (
+                    is_selected_special
+                    and folded_template in A_MIGHTY_THREAT_TREASURE_MONSTERS
+                )
+                if is_a_mighty_goblin:
+                    # Key of Prowess scales in small steps across the authored
+                    # difficulty tiers: Normal/Painful 1, then one additional
+                    # key every two tiers, up to 5 on Bloodshed+.
+                    try:
+                        difficulty = int(getattr(
+                            s, "gameplay_map_difficulty", 0,
+                        ) or getattr(
+                            getattr(s, "gameplay_map_event_runtime", None),
+                            "scaling_difficulty", 0,
+                        ) or 0)
+                    except (TypeError, ValueError):
+                        difficulty = 0
+                    key_count = 1 + max(0, min(9, difficulty)) // 2
+                    try:
+                        self._deliver_rewards(
+                            s,
+                            (RewardDefinition(
+                                f"monster:{template}:scaling_dungeon_key",
+                                "scaling_dungeon_boss_key_01",
+                                key_count,
+                            ),),
+                            claim_keys=None,
+                            label="a-mighty-threat-goblin-key",
+                        )
+                        CharacterService._request_account_save(
+                            s,
+                            "A Mighty Threat key drop",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        _log(
+                            f"A Mighty Threat key reward failed for "
+                            f"{template!r}: {type(exc).__name__}: {exc}"
+                        )
                 if template.casefold() in {
                     "g0010_leader_guardian_life_01",
                     "g0010_leader_guardian_life_01_scale",

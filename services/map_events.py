@@ -703,6 +703,17 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "fp_boss_01_lythira",
 })
 _TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
+
+
+def _a_mighty_threat_goblin_template(map_id: object) -> str:
+    """Fallback treasure-monster template when no map row identifies one."""
+
+    map_key_value = str(map_id or "").casefold()
+    if map_key_value.startswith("c"):
+        return "c0000_helios_dungeons_treasure_monster_01"
+    return "a0000_duria_dungeons_treasure_monster_01"
+
+
 _PARALLEL_WORLD_EXIT_BOSSES = {
     "pw001_grimmagstone_01_dun": (
         "pw001_01_leader_undeadmage_heroic", "pw001_spawn_exit",
@@ -1877,6 +1888,10 @@ class MapEventService:
             tasks_done=tasks_done,
             unlocked_maps=unlocked_maps,
         )
+        if kind == "playerkilledmonster":
+            self._reveal_a_mighty_threat_chest_on_kill(
+                s, runtime, context.params,
+            )
         rules = runtime.catalog.evaluate(kind, context)
         if map_key(runtime.map_id) == "pw214_mortis_boss":
             # The legacy selector names obsolete starter variants and can
@@ -1969,6 +1984,70 @@ class MapEventService:
             self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
             self._ensure_pw209_slade_throne_room(s, runtime)
             self._ensure_pw000_senbu_boss(s, runtime)
+
+    def _reveal_a_mighty_threat_chest_on_kill(
+            self, s: Session, runtime: MapEventRuntime,
+            killed_templates: frozenset[str],
+    ) -> None:
+        """Publish the selected Sentinel/Goblin chest when its actor dies.
+
+        Retail's map-local fast-travel event also reveals this prop, but the
+        exported event signal is not consistent across all regional Sentinel
+        and treasure-monster templates. Publish the authored chest directly
+        from the authoritative kill callback as a reliable fallback.
+        """
+
+        if not runtime.content.a_mighty_threat_candidate_templates(
+            runtime.catalog,
+        ):
+            return
+        with runtime.lock:
+            selected = runtime.scaling_dungeon_sentinel_spawn
+            if (
+                selected is None
+                or str(selected[1]).casefold() not in killed_templates
+                or runtime.a_mighty_threat_chest_revealed
+            ):
+                return
+            chest_sets = frozenset(
+                int(prop.event_set_row)
+                for prop in runtime.content.props
+                if "sentinel_lootchest_" in (
+                    f"{prop.instance_id} {prop.template_id}"
+                ).casefold()
+                and int(prop.event_set_row) >= 0
+            )
+            if not chest_sets:
+                return
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        combat = self._map_event_combat_state(sessions)
+        death_position = None
+        if combat is not None:
+            with combat.lock:
+                dead_sentinels = tuple(
+                    combat.monster_positions.get(int(actor_id), monster.position)
+                    for actor_id, monster in combat.monsters.items()
+                    if str(monster.template_id).casefold()
+                    == str(selected[1]).casefold()
+                    and int(combat.monster_health.get(actor_id, 0)) <= 0
+                )
+            if dead_sentinels:
+                death_position = tuple(float(axis) for axis in dead_sentinels[0])
+        with runtime.lock:
+            if runtime.a_mighty_threat_chest_revealed:
+                return
+            runtime.a_mighty_threat_chest_revealed = True
+            if death_position is not None:
+                runtime.a_mighty_threat_position = death_position
+        self._publish_event_props(runtime, sessions, chest_sets)
+        _log(
+            f"A Mighty Threat revealed its chest on {runtime.map_id} after "
+            f"{selected[1]!r} died at "
+            f"{death_position if death_position is not None else 'authored spawn'}; "
+            f"event sets={tuple(sorted(chest_sets))}"
+        )
 
     def _ensure_pw209_kinza_leader(self, s: Session, runtime) -> None:
         """Keep the Kinza route leader visible for its active kill objective."""
@@ -3133,7 +3212,24 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
-        if loot_list_id in {"chest_umbra_stone_01", "chest_umbra_stone_02"}:
+        is_a_mighty_sentinel_chest = (
+            "sentinel_lootchest_" in (
+                f"{definition.instance_id} {definition.template_id}"
+            ).casefold()
+        )
+        if is_a_mighty_sentinel_chest:
+            try:
+                difficulty = int(getattr(
+                    s, "gameplay_map_difficulty", 0,
+                ) or getattr(
+                    getattr(s, "gameplay_map_event_runtime", None),
+                    "scaling_difficulty", 0,
+                ) or 0)
+            except (TypeError, ValueError):
+                difficulty = 0
+            key_count = 1 + max(0, min(9, difficulty)) // 2
+            specifications = [("scaling_dungeon_boss_key_01", key_count)]
+        elif loot_list_id in {"chest_umbra_stone_01", "chest_umbra_stone_02"}:
             specifications = [(
                 "ingredient_elemental_essence_crafting_light", 5,
             )]
@@ -3151,6 +3247,61 @@ class MapEventService:
                 (random.SystemRandom().choice(_BLOOD_CHEST_GEM_TEMPLATES), 1)
                 for _ in range(gem_count)
             )
+        elif loot_list_id in {
+            "chest_lootlist_magic", "chest_lootlist_rare",
+            "chest_lootlist_epic",
+        }:
+            # The item database exposes these chests' possible contents but
+            # not the retail server's loot-list rows. Use the documented
+            # guaranteed equipment/essence rewards, roll a gem bag, and keep
+            # the tier's Andermant jackpot as a rare bonus.
+            from dso_server.protocol.chest_loot_protocol import roll_chest_contents
+
+            tier = {
+                "chest_lootlist_magic": ("magic", 1_000, "ammunition_damage_common"),
+                "chest_lootlist_rare": ("rare", 10_000, "ammunition_damage_rare"),
+                "chest_lootlist_epic": ("epic", 100_000, "ammunition_damage_epic"),
+            }[loot_list_id]
+            rarity, jackpot_amount, essence_id = tier
+            rng = random.SystemRandom()
+            with s.flow_lock:
+                character = s.gameplay_character
+            class_name = CLASS_NAMES[int(getattr(character, "class_id", 0))].lower()
+            equipment = roll_chest_contents(
+                self.static_database_path,
+                f"all_class_all_equip_{rarity}_01",
+                player_level=max(1, int(getattr(character, "level", 1))),
+                class_name=class_name,
+                rng=rng,
+            )
+            specifications = [
+                (reward.definition.template_id, int(reward.amount))
+                for reward in equipment.rewards
+            ]
+            specifications.append((essence_id, 100))
+            if rng.random() < 0.25:
+                gem_bag = roll_chest_contents(
+                    self.static_database_path,
+                    "lootbox_gems_d",
+                    player_level=max(1, int(getattr(character, "level", 1))),
+                    class_name=class_name,
+                    rng=rng,
+                )
+                specifications.extend(
+                    (reward.definition.template_id, int(reward.amount))
+                    for reward in gem_bag.rewards
+                )
+            if rng.random() < 0.25:
+                specifications.append(("money_vc_gold", 1))
+            # The regular return is 20% of the 50 RC-per-lockpick baseline
+            # (five lockpicks cost 250 RC, so the normal return is 50 RC).
+            # A jackpot replaces that regular return.
+            andermant_reward = (
+                jackpot_amount if rng.random() < 0.01
+                else round(0.20 * 50 * max(0, int(definition.key_amount)))
+            )
+            if andermant_reward:
+                specifications.append(("money_rc", andermant_reward))
         else:
             try:
                 entries = load_prop_loot_catalog().entries(loot_list_id)
@@ -3189,6 +3340,8 @@ class MapEventService:
         with s.flow_lock:
             encounter = s.gameplay_monster_encounter
             last_move = s.gameplay_last_move
+            character = s.gameplay_character
+        player_level = max(1, int(getattr(character, "level", 1)))
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
             origin = encounter.coordinate_frame.wire_to_world(
@@ -3202,11 +3355,23 @@ class MapEventService:
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
-                item = _new_item(item_definition, 0, amount)
+                item = _new_item(item_definition, 0, amount, player_level)
                 item.field_100 = position
-                auto_pick_up = str(
-                    item_rows.get(template_id, {}).get("AutoPickUp")
-                    or ("All" if item_definition.item_category == "Currency" else "None")
+                # The Key of Prowess is authored as AutoPickUp=Privileged in
+                # static.db4, which the server's proximity collector does not
+                # treat as an unconditional pickup. A Mighty Threat chest keys
+                # should go straight into the bag once the chest is opened.
+                auto_pick_up = (
+                    "All"
+                    if template_id.casefold() == "scaling_dungeon_boss_key_01"
+                    else str(
+                        item_rows.get(template_id, {}).get("AutoPickUp")
+                        or (
+                            "All"
+                            if item_definition.item_category == "Currency"
+                            else "None"
+                        )
+                    )
                 )
                 drops.append(WorldLootDrop(
                     item, item_definition.item_category, auto_pick_up,
@@ -3244,6 +3409,14 @@ class MapEventService:
         CharacterService._reconcile_world_loot_visibility(
             s, label="map-chest-loot",
         )
+        # Chest drops are placed around the player. Run the server-side
+        # proximity pickup immediately so AutoPickUp=All rewards (including
+        # this chest's key stack) are collected without requiring another
+        # movement packet from the client.
+        if last_move is not None:
+            CharacterService._pickup_nearby_auto_loot(
+                s, last_move.relative_position,
+            )
         _log(
             f"spawned {len(drops)} reward item(s) from "
             f"{definition.instance_id!r} for player session"
@@ -4884,6 +5057,19 @@ class MapEventService:
             referenced.add(definition.key)
         definitions = {}
         target_map = map_key(runtime.map_id)
+        # A Mighty Threat's map-clear EventSet contains alternative
+        # Sentinel/Goblin positions. The server selects and publishes one
+        # actor; activating the same flag in the client makes it instantiate
+        # every authored candidate locally. Keep the flag active in the
+        # server runtime for quest and prop handling, but suppress it on the
+        # client for these maps on every snapshot.
+        candidate_spawn_events = (
+            runtime.content.a_mighty_threat_spawn_event_keys(catalog)
+        )
+        suppressed_client_spawn_events = active_flags & set(
+            candidate_spawn_events
+        )
+        client_active_flags = active_flags - suppressed_client_spawn_events
         for event_key in referenced:
             event = catalog.event(event_key)
             if event is not None and (
@@ -4904,7 +5090,7 @@ class MapEventService:
                 # targeted portal update and can leave gated exits unsynced.
                 event_id=0,
                 event_name=event.event_id,
-                flags=(event_key in active_flags, True, False, False),
+                flags=(event_key in client_active_flags, True, False, False),
                 starts_at=None,
                 ends_at=None,
                 tags=(),
@@ -4921,7 +5107,8 @@ class MapEventService:
             f"published map-event state update on {runtime.map_id}: "
             f"changed={definition.event_id} active={transition.active}, "
             f"snapshot_events={len(entries)}, active_events="
-            f"{tuple(sorted(key for key in definitions if key in active_flags))}, "
+            f"{tuple(sorted(key for key in definitions if key in client_active_flags))}, "
+            f"client_spawn_suppressed={tuple(sorted(suppressed_client_spawn_events))}, "
             f"sessions={len(sessions)}"
         )
 
@@ -4942,6 +5129,20 @@ class MapEventService:
                 state.definition.template_id for state in published
             })[:6])
         )
+        sentinel_chests = tuple(
+            state for state in published
+            if "sentinel_lootchest_" in (
+                f"{state.definition.instance_id} {state.definition.template_id}"
+            ).casefold()
+        )
+        if sentinel_chests:
+            _log(
+                f"A Mighty Threat chest placement on {runtime.map_id}: "
+                + "; ".join(
+                    f"{state.definition.template_id}@{tuple(round(axis, 2) for axis in state.definition.position)}"
+                    for state in sentinel_chests
+                )
+            )
         for viewer in sessions:
             _send_prop_info(viewer, published, label="map-event-prop-info")
 
@@ -4979,6 +5180,9 @@ class MapEventService:
                     active_event_flags=flags,
                 )
                 if definition.active and definition.destination_map_id
+            )
+            definitions = self._select_a_mighty_threat_waypoint_exits(
+                runtime, definitions,
             )
         except Exception as exc:
             _log(f"exit refresh failed: {type(exc).__name__}: {exc}")
@@ -5192,6 +5396,78 @@ class MapEventService:
             f"refreshed exits on {runtime.map_id} for "
             f"{len(sessions)} session(s)"
         )
+
+    @staticmethod
+    def _select_a_mighty_threat_waypoint_exits(runtime, definitions):
+        """Keep the fast-travel waypoint at the selected Sentinel location.
+
+        Scaling maps author one fast-travel exit at each possible Sentinel
+        point. The map event activates their shared EventSet, so forwarding all
+        active exits can place the waypoint at an unrelated authored point.
+        Keep the exit cluster closest to the single Sentinel selected for this
+        map run, while leaving the other exits and difficulty variants alone.
+        """
+
+        content = runtime.content
+        catalog = runtime.catalog
+        if not content.a_mighty_threat_candidate_templates(catalog):
+            return tuple(definitions)
+        with runtime.lock:
+            selected = runtime.scaling_dungeon_sentinel_spawn
+            enabled_sets = frozenset(runtime.enabled_event_sets)
+        if selected is None:
+            return tuple(definitions)
+        spawn = next((
+            row for row in content.spawn_rows
+            if int(row.row_id) == int(selected[0])
+        ), None)
+        if spawn is None:
+            return tuple(definitions)
+        with runtime.lock:
+            target_position = runtime.a_mighty_threat_position or spawn.position
+        fast_travel_sets = frozenset(
+            int(row)
+            for row, event_set in content.event_sets.items()
+            if any(
+                "scaling_map_fast_travelpoint_start" in str(event).casefold()
+                for event in event_set.events
+            )
+        )
+        fast_travel_sets &= enabled_sets
+        candidates = tuple(
+            definition for definition in definitions
+            if int(definition.event_set_row) in fast_travel_sets
+        )
+        if not candidates:
+            return tuple(definitions)
+        nearest = min(
+            math.hypot(
+                float(definition.position[0]) - float(target_position[0]),
+                float(definition.position[2]) - float(target_position[2]),
+            )
+            for definition in candidates
+        )
+        selected_candidates = tuple(
+            definition for definition in candidates
+            if math.hypot(
+                float(definition.position[0]) - float(target_position[0]),
+                float(definition.position[2]) - float(target_position[2]),
+            ) <= nearest + 1.0
+        )
+        selected_guids = {
+            definition.instance_guid for definition in selected_candidates
+        }
+        result = tuple(
+            definition for definition in definitions
+            if int(definition.event_set_row) not in fast_travel_sets
+            or definition.instance_guid in selected_guids
+        )
+        _log(
+            f"A Mighty Threat selected waypoint on {runtime.map_id} at "
+            f"{target_position!r}; kept {len(selected_candidates)} exit "
+            f"variant(s) from {len(candidates)} authored candidate(s)"
+        )
+        return result
 
     def _map_event_combat_state(self, sessions):
         for session in sessions:
@@ -5458,6 +5734,96 @@ class MapEventService:
                 self.static_database_path, runtime.map_id, row.template_id
             )
         )
+        # Resolve this map's actor templates from its fast-travelpoint kill
+        # rules. Standard scaling maps and Qaizah use different EventSet
+        # names, but both signals list the one Sentinel and regional Goblin.
+        a_mighty_candidates = runtime.content.a_mighty_threat_candidate_templates(
+            runtime.catalog,
+        )
+        a_mighty_spawn_sets = (
+            runtime.content.a_mighty_threat_spawn_event_set_rows(
+                runtime.catalog,
+            )
+        )
+        special_rows = tuple(
+            row for row in rows
+            if int(row.event_set_row) in a_mighty_spawn_sets
+            and str(row.template_id).casefold() in a_mighty_candidates
+        )
+        sentinel_rows = tuple(
+            row for row in special_rows
+            if "treasure_monster" not in str(row.template_id).casefold()
+        )
+        if special_rows:
+            with runtime.lock:
+                selected_sentinel = runtime.scaling_dungeon_sentinel_spawn
+                if selected_sentinel is None:
+                    goblin_rows = tuple(
+                        row for row in special_rows
+                        if "treasure_monster" in str(row.template_id).casefold()
+                    )
+                    goblin_templates = tuple(sorted(
+                        template for template in a_mighty_candidates
+                        if "treasure_monster" in template
+                    ))
+                    if sentinel_rows:
+                        point = random.choice(sentinel_rows)
+                        template_id = point.template_id
+                        if goblin_templates and random.random() < 0.15:
+                            # The treasure monster replaces the Sentinel at
+                            # the chosen Sentinel location. Its separate
+                            # authored rows are alternate map positions, not
+                            # a second location to use for the replacement.
+                            template_id = random.choice(goblin_templates)
+                    else:
+                        point = random.choice(goblin_rows or special_rows)
+                        template_id = point.template_id
+                    selected_sentinel = (int(point.row_id), str(template_id))
+                    runtime.scaling_dungeon_sentinel_spawn = selected_sentinel
+            selected_row_id, selected_template_id = selected_sentinel
+            selected_row = next(
+                (row for row in special_rows if int(row.row_id) == selected_row_id),
+                special_rows[0],
+            )
+            a_mighty_selected_position = selected_row.position
+            # These map-clear EventSets also contain regular rows and broad
+            # density areas at every possible Sentinel location. Keep only
+            # the selected actor and the small companion pack physically
+            # around it; otherwise a single map-clear signal can repopulate
+            # the whole map, sometimes hundreds of actors on Qaizah maps.
+            companion_rows = []
+            companion_keys = set()
+            for row in rows:
+                if int(row.event_set_row) not in a_mighty_spawn_sets:
+                    continue
+                if row.template_id.casefold() in a_mighty_candidates:
+                    continue
+                distance = math.hypot(
+                    float(row.position[0]) - float(a_mighty_selected_position[0]),
+                    float(row.position[2]) - float(a_mighty_selected_position[2]),
+                )
+                if distance > 15.0:
+                    continue
+                key = (
+                    int(row.event_set_row), row.template_id.casefold(),
+                    tuple(round(float(value), 2) for value in row.position),
+                )
+                if key in companion_keys:
+                    continue
+                companion_keys.add(key)
+                companion_rows.append(row)
+            rows = tuple(
+                row for row in rows
+                if int(row.event_set_row) not in a_mighty_spawn_sets
+            ) + tuple(companion_rows) + (
+                replace(selected_row, template_id=selected_template_id),
+            )
+            _log(
+                f"A Mighty Threat on {runtime.map_id} selected one actor "
+                f"{selected_template_id!r} at spawn row {selected_row_id}; "
+                f"kept {len(companion_rows)} nearby companion row(s) and "
+                f"suppressed {len(special_rows) - 1} alternate fixed row(s)"
+            )
         authored_rotations = {row.row_id: row.rotation for row in rows}
         # An EventSet keeps one row per difficulty variant of its boss (the
         # Heredur arena's BOSS_spawn set holds ten ``boss_heredur_scaling``
@@ -5494,7 +5860,15 @@ class MapEventService:
             return
         encounter = combat.encounter
         database_path = encounter.static_database_path
-        rows += event_area_spawn_rows(runtime, encounter, event_sets)
+        area_rows = event_area_spawn_rows(
+            runtime, encounter, event_sets,
+            a_mighty_threat_event_sets=a_mighty_spawn_sets,
+            a_mighty_threat_position=(
+                a_mighty_selected_position if special_rows else None
+            ),
+            a_mighty_threat_max_adds=5,
+        )
+        rows += area_rows
         # The authored cultist animset maps Death to cultist_steal_staff.
         # Its idle is start_idle; the staff theft uses its scripted despawn
         # transition, not with an extra Grimmag/China scene carrier.
