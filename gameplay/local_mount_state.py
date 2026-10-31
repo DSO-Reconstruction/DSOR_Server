@@ -42,17 +42,16 @@ class MountEffectState:
 # rowids are one-based. These ids are an older database's (cast row 4101, ride
 # 4100); they move with each client build, so find_mount takes them from the
 # active static.db4 and this entry only serves when that database lacks the
-# mount. Its timings are the retail capture's and always apply
-# (with_captured_timing): the item says 3.5 s, the client casts it in 2.4 s.
+# mount. Its timings are the item's and the ride effect's, before
+# with_duration_scale.
 BLACK_BEAR_MOUNT = MountDefinition(
     stickerbook_resource_id="epicmount_black_bear_01",
     mount_resource_id="mount_black_bear_01",
     cast_effect_id=4100,
     ride_effect_id=4099,
-    # Captured movement/status ticks advance at 25 Hz: 60 ticks = 2.4 s.
-    cast_duration_seconds=2.4,
-    cast_duration_ticks=60,
-    ride_duration_ticks=621_000,
+    cast_duration_seconds=3.5,
+    cast_duration_ticks=88,
+    ride_duration_ticks=900_000,
     stickerbook_state=3,
     # The 2026-09-09 retail capture proves favorite state is encoded by
     # stickerbook_state (2=owned, 3=favorite).  The following wire field is
@@ -65,17 +64,22 @@ LOCAL_MOUNTS = {
 }
 
 
-def with_captured_timing(definition: MountDefinition) -> MountDefinition:
-    """Put the retail-captured cast and ride timings on a database mount."""
+def with_duration_scale(definition: MountDefinition, scale: float) -> MountDefinition:
+    """Apply the rider's StatusEffectGroupDuration on the Mount group.
 
-    captured = LOCAL_MOUNTS.get(definition.stickerbook_resource_id)
-    if captured is None:
-        return definition
+    Cast and ride are both in that group. EVIDENCE: in the 2026-10-28 and
+    2026-10-29 retail captures, players with Wisdom's mount talent at 15
+    (-31%) cast in 60 ticks (3.5 s x 0.69) and ride for 621000 (900000 x 0.69);
+    players without it ride for 900000.
+    """
+
+    scale = max(0.0, float(scale))
+    cast_seconds = definition.cast_duration_seconds * scale
     return replace(
         definition,
-        cast_duration_seconds=captured.cast_duration_seconds,
-        cast_duration_ticks=captured.cast_duration_ticks,
-        ride_duration_ticks=captured.ride_duration_ticks,
+        cast_duration_seconds=cast_seconds,
+        cast_duration_ticks=max(1, round(cast_seconds * 25)),
+        ride_duration_ticks=max(1, round(definition.ride_duration_ticks * scale)),
     )
 
 

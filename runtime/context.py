@@ -326,6 +326,7 @@ from dso_server.gameplay.local_mount_state import (
     find_mount,
     mount_status_effect,
     mount_transition_status_effects,
+    with_duration_scale,
 )
 from dso_server.gameplay.local_monster_state import (
     load_local_monster_encounter,

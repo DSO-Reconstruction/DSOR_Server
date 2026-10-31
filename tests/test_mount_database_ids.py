@@ -1,5 +1,5 @@
-"""Mount effect ids come from the active static database, whatever its build;
-the retail-captured timings stay on top (gameplay/local_mount_state.py)."""
+"""Mount effect ids and timings come from the active static database, whatever
+its build (gameplay/local_mount_state.py)."""
 
 import sqlite3
 
@@ -15,7 +15,7 @@ def _wire_id(effect: str) -> int:
         ).fetchone()[0] - 1
 
 
-def test_black_bear_ids_follow_the_database_and_keep_the_captured_timing():
+def test_black_bear_ids_and_timing_follow_the_database():
     bear = find_mount(BLACK_BEAR_MOUNT.stickerbook_resource_id)
     assert bear.cast_effect_id == _wire_id("cast_mount_black_bear_01")
     assert bear.ride_effect_id == _wire_id("ride_mount_black_bear_01")
@@ -24,7 +24,7 @@ def test_black_bear_ids_follow_the_database_and_keep_the_captured_timing():
     assert bear.stickerbook_state == BLACK_BEAR_MOUNT.stickerbook_state
 
 
-def test_sticker_book_bear_carries_the_captured_timing():
+def test_sticker_book_bear_carries_the_database_timing():
     sticker = load_sticker_definition(
         DEFAULT_STATIC_DB_PATH, BLACK_BEAR_MOUNT.stickerbook_resource_id
     )

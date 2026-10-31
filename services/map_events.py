@@ -2930,6 +2930,13 @@ class MapEventService:
             guard=progression_queue.same_character(s),
         ):
             CharacterService._achievement_on_map_entered(self, s, map_keys)
+        # Pays what was reached before rewards existed or did not fit the bags.
+        if not progression_queue.defer(
+            CharacterService._grant_stickerbook_rewards, self, s,
+            label="sticker-book rewards",
+            guard=progression_queue.same_character(s),
+        ):
+            CharacterService._grant_stickerbook_rewards(self, s)
         CharacterService._restore_map_companion_handoffs(self, s)
         if s.gameplay_last_move is not None:
             CharacterService._check_map_companions(s, s.gameplay_last_move.relative_position)

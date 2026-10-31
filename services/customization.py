@@ -13,6 +13,18 @@ from dso_server.protocol.item_customization_protocol import (
     decode_item_customization_changes, apply_item_customizations,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.stickerbook_state import collector_item_rewards
+from dso_server.protocol.commerce_protocol import load_purchase_item_definition
+from dso_server.protocol.inventory_economy_protocol import (
+    InventoryMutationBuilder, credit_currency_template,
+)
+from dso_server.protocol.item_receipt_protocol import (
+    ITEM_RECEIVED_TEMPLATE_CATEGORIES, ItemReceiptGrant, build_item_receipts,
+    item_received_message,
+)
+from dso_server.protocol.player_init_protocol import (
+    CURRENCY_CHANGED_COMMAND, MESSAGE_COMMAND,
+)
 from dso_server.services.admin_effects import (
     ADMIN_EFFECTS, matching_admin_effects, limited_admin_speed_entries,
 )
@@ -843,6 +855,159 @@ class CustomizationService:
                 progress=len(by_kind.get(kind, ())),
             )
 
+    def _grant_stickerbook_rewards(self, s: Session) -> None:
+        """Pay the item rewards the collection has reached, each one once.
+
+        The client has no claim command: its window only compares the owned
+        count with each threshold, so reaching one is the claim. A reward the
+        bags cannot hold stays pending for the next sticker or map entry.
+        """
+
+        for _attempt in range(3):
+            with s.flow_lock:
+                if (s.gameplay_exit_transition_started or not s.connected
+                        or s.gameplay_character is None):
+                    return
+                inventory = original_inventory = s.gameplay_inventory
+                currency = original_currency = s.gameplay_currency_state
+                wallet = dict(s.gameplay_game_currencies)
+                original_wallet = dict(wallet)
+                next_item_id = int(s.gameplay_next_item_id)
+                original_next_item_id = next_item_id
+                paid = tuple(s.gameplay_stickerbook_rewards)
+                owned = tuple(s.gameplay_stickerbook_entries)
+                level = max(1, int(s.gameplay_character.level))
+            if not owned or inventory is None or currency is None:
+                return
+            pending = tuple(
+                reward for reward in collector_item_rewards(
+                    self.static_database_path, owned,
+                )
+                if reward.key not in paid
+            )
+            if not pending:
+                return
+            commands = []
+            granted = []
+            for reward in pending:
+                try:
+                    credit = credit_currency_template(
+                        self.static_database_path, currency, wallet,
+                        reward.template_id, reward.amount,
+                        scale_by_item_value=False,
+                    )
+                    if credit is not None:
+                        receipts, next_item_id = build_item_receipts(
+                            inventory, inventory, (), {},
+                            (ItemReceiptGrant(
+                                reward.template_id, reward.amount,
+                                materialized=False,
+                            ),),
+                            next_item_id=next_item_id,
+                        )
+                        if credit.currency != currency:
+                            commands.append(ServerCommand(
+                                CURRENCY_CHANGED_COMMAND, credit.currency,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ))
+                        if credit.game_currency_update is not None:
+                            commands.append(ServerCommand(
+                                GAME_CURRENCY_CHANGED_COMMAND,
+                                credit.game_currency_update,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ))
+                        currency = credit.currency
+                        wallet = dict(credit.game_currencies)
+                        final_commands = ()
+                    else:
+                        definition = load_purchase_item_definition(
+                            self.static_database_path, reward.template_id,
+                        )
+                        builder = InventoryMutationBuilder(inventory, next_item_id)
+                        builder.add_item(definition, reward.amount, item_level=level)
+                        mutation = builder.finish()
+                        receipts, next_item_id = build_item_receipts(
+                            inventory, mutation.inventory,
+                            (item.item_id for item in mutation.changed_items),
+                            mutation.replacements,
+                            (ItemReceiptGrant(
+                                definition.template_id, reward.amount,
+                                include_template_id=(
+                                    definition.item_category
+                                    in ITEM_RECEIVED_TEMPLATE_CATEGORIES
+                                ),
+                            ),),
+                            next_item_id=mutation.next_item_id,
+                        )
+                        inventory = mutation.inventory
+                        # The client asserts on an ingredient-bag stack in a
+                        # delta (see the Season Pass claim): send the full view.
+                        if set(item.item_id for item in mutation.changed_items
+                               ).intersection(inventory.field_180):
+                            commands.append(ServerCommand(
+                                INVENTORY_INFO_COMMAND, inventory,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ))
+                            final_commands = ()
+                        else:
+                            commands.append(ServerCommand(
+                                INVENTORY_INFO_COMMAND, mutation.delta,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ))
+                            final_commands = (ServerCommand(
+                                INVENTORY_INFO_COMMAND, mutation.final,
+                                LOCAL_PLAYER_ACTOR_ID,
+                            ),)
+                except (OSError, ValueError, KeyError) as exc:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] sticker-book reward "
+                        f"{reward.key!r} pending: {exc}"
+                    )
+                    continue
+                commands.extend(ServerCommand(
+                    MESSAGE_COMMAND, item_received_message(receipt),
+                    LOCAL_PLAYER_ACTOR_ID,
+                ) for receipt in receipts)
+                commands.extend(final_commands)
+                granted.append(reward.key)
+            if not granted:
+                return
+            packet, packet_bits = encode_server_command_batch(
+                tuple(commands), include_terminator=True,
+            )
+            with s.flow_lock:
+                if (s.gameplay_inventory is not original_inventory
+                        or s.gameplay_currency_state != original_currency
+                        or dict(s.gameplay_game_currencies) != original_wallet
+                        or int(s.gameplay_next_item_id) != original_next_item_id
+                        or tuple(s.gameplay_stickerbook_rewards) != paid):
+                    continue
+                s.gameplay_inventory = inventory
+                s.gameplay_currency_state = currency
+                s.gameplay_game_currencies = wallet
+                s.gameplay_next_item_id = next_item_id
+                s.gameplay_stickerbook_rewards = (*paid, *granted)
+            break
+        else:
+            return
+        CharacterService._request_account_save(
+            s, "Collector's Bag rewards granted", flush=True,
+        )
+        s.send_reliable_ordered_split(
+            packet, total_bit_length=packet_bits, track=True,
+            label_prefix="stickerbook-rewards",
+        )
+        for currency_id, balance in wallet.items():
+            gained = int(balance) - int(original_wallet.get(currency_id, 0))
+            if gained > 0:
+                CharacterService._achievement_feed(
+                    self, s, "collectedgamecurrency", (currency_id,), count=gained,
+                )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] granted {len(granted)} sticker-book "
+            f"reward(s) to {s.addr}: {granted}"
+        )
+
     def _handle_add_stickerbook_from_inventory(
             self, s: Session, payload: bytes) -> None:
         """Consume one inventory item and permanently unlock its cosmetic."""
@@ -958,6 +1123,12 @@ class CustomizationService:
             guard=progression_queue.same_character(s),
         ):
             CharacterService._achievement_on_stickerbook_changed(self, s)
+        if not progression_queue.defer(
+            CharacterService._grant_stickerbook_rewards, self, s,
+            label="sticker-book rewards",
+            guard=progression_queue.same_character(s),
+        ):
+            CharacterService._grant_stickerbook_rewards(self, s)
         if definition.kind == "mercenary":
             CharacterService._ensure_mercenary_quickbar_shortcut(
                 s, definition.resource_id
@@ -1274,6 +1445,21 @@ class CustomizationService:
             f"{definition.kind} {definition.resource_id!r}"
         )
 
+    def _mount_duration_scale(self, s: Session) -> float:
+        """The Mount group's duration factor from gear and talents."""
+
+        character = s.gameplay_character
+        if character is None:
+            return 1.0
+        return calculate_player_combat_stats(
+            self.static_database_path,
+            cache_owner=s,
+            class_name=CLASS_NAMES.get(int(character.class_id), "mage"),
+            level=max(1, int(character.level)),
+            inventory=s.gameplay_inventory,
+            modifier_sources=CharacterService._active_skill_modifier_sources(s),
+        ).mount_duration_scale
+
     def _toggle_mount_definition(
             self, s: Session, definition, *, source: str) -> None:
         """Run the shared timed cast/ride flow for any authored mount source."""
@@ -1299,6 +1485,9 @@ class CustomizationService:
             reason="replaced by a new mount",
             label="mount-ride-replaced",
             persist=False,
+        )
+        definition = with_duration_scale(
+            definition, CharacterService._mount_duration_scale(self, s)
         )
 
         with s.flow_lock:
@@ -1399,7 +1588,7 @@ class CustomizationService:
             return
 
         # The database's own definition first: its effect ids are its rows'
-        # (gameplay/local_mount_state.py find_mount, with the captured timing).
+        # (gameplay/local_mount_state.py find_mount).
         definition = (
             database_definition.mount
             if database_definition is not None

@@ -1071,6 +1071,7 @@ class CombatResolutionService:
             CharacterService._notify_player_death(s)
         CharacterService._apply_caster_hosted_hit_effects(s, resolutions)
         CharacterService._apply_receiver_hosted_hit_auras(s, resolutions)
+        CharacterService._apply_victim_location_effects(s, resolutions)
 
     @staticmethod
     def _apply_receiver_hosted_hit_auras(s: Session, resolutions) -> None:
@@ -1147,6 +1148,98 @@ class CombatResolutionService:
                 timer.daemon = True
                 s.gameplay_projectile_timers[key] = timer
             timer.start()
+
+    @staticmethod
+    def _apply_victim_location_effects(s: Session, resolutions) -> None:
+        """Start the location effects of a hit's victim-hosted effects.
+
+        With Frozen Master, Frost Wind arms ``skill_frostwind_frost_explosion_
+        trigger`` on its victims: after its ``DE`` (2 s) it places a 3 m aura
+        around the victim for Ice damage. The status alone never explodes, the
+        client gets its LocationEffect from the server. Only the caster's own
+        session places them.
+        """
+
+        character = s.gameplay_character
+        combat = s.gameplay_combat_state
+        if character is None or combat is None or STATUS_EFFECTS_DISABLED:
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        own_ids = {LOCAL_PLAYER_ACTOR_ID, owner_actor_id}
+        summons = getattr(combat, "player_summons", {})
+        for resolution in resolutions:
+            source = (
+                resolution.source_actor_id
+                if resolution.source_actor_id is not None
+                else resolution.attacker_actor_id
+            )
+            target = int(resolution.target_actor_id)
+            if (
+                int(source) not in own_ids
+                or int(resolution.attacker_actor_id) in summons
+                or target not in getattr(combat, "monsters", {})
+                or bool(getattr(resolution, "damage_immune", False))
+            ):
+                continue
+            for definition in resolution.victim_status_effects:
+                if float(definition.chance) <= 0.0:
+                    continue
+                children = combat.victim_effect_location_children(definition)
+                if not children or (resolution.killed and not _keeps_on_death(
+                        combat.encounter.static_database_path, definition.resource_id)):
+                    continue
+                delay = int(definition.delay_ticks) / float(SERVER_TICKS_PER_SECOND)
+                arguments = (s, s.gameplay_chase_generation, combat, children, target,
+                             int(resolution.server_tick) + int(definition.delay_ticks),
+                             int(resolution.skill_index), tuple(resolution.position))
+                if delay <= 1e-6:
+                    CharacterService._place_victim_location_effects(*arguments)
+                    continue
+                with s.flow_lock:
+                    key = ("victim-location-effects", object())
+                    timer = s.gameplay_deadline_timer(
+                        delay, CharacterService._place_victim_location_effects,
+                        args=(*arguments, key))
+                    timer.daemon = True
+                    s.gameplay_projectile_timers[key] = timer
+                timer.start()
+
+    @staticmethod
+    def _place_victim_location_effects(s: Session, generation, combat, children,
+                                       host_actor_id, server_tick, skill_index,
+                                       fallback_position, timer_key=None) -> None:
+        with s.flow_lock:
+            if timer_key is not None and s.gameplay_projectile_timers.pop(timer_key, None) is None:
+                return
+            if (not s.connected or generation != s.gameplay_chase_generation
+                    or s.gameplay_combat_state is not combat):
+                return
+            character = s.gameplay_character
+        if character is None:
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        from dso_server.services.endless_tower_buffs import tower_damage_range
+        damage_range = tower_damage_range(
+            combat.encounter.static_database_path, s,
+            CharacterService._active_skill_modifier_sources(s),
+        )
+        with combat.lock:
+            # Hosted on the victim, it goes off where the victim now stands.
+            position = tuple(combat.monster_positions.get(int(host_actor_id), fallback_position))
+        for index, (visual, receivers) in enumerate(children):
+            CharacterService._schedule_player_location_visuals(
+                s, combat, (visual,), position=position, yaw=0.0,
+                server_tick=int(server_tick), owner_actor_id=owner_actor_id,
+                cast_id=(int(server_tick) ^ (int(host_actor_id) << 3) ^ index) & 0xFFFFFFFF,
+                delay_seconds=0.0, receiver_status_effects=receivers,
+                source_skill_index=int(skill_index), player_damage_range=damage_range,
+            )
 
     @staticmethod
     def _explode_receiver_hosted_aura(s: Session, generation, combat, definition,

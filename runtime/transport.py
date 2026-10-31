@@ -893,6 +893,7 @@ class Session:
         self.gameplay_mount_cast_timer = None
         self.gameplay_mount_generation = 0
         self.gameplay_stickerbook_entries = {}
+        self.gameplay_stickerbook_rewards = ()
         self.gameplay_recipe_book_resources = ()
         self.gameplay_rune_trinket_unlocked_slots = set()
         self.gameplay_active_costume = ""

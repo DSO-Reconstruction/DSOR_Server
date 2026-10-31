@@ -166,6 +166,15 @@ item and replies with two `InventoryInfo` transitions followed by
 `StickerbookItemInfo` (`0x0130`, operation `1`). Ownership is persisted.
 Source items for already-owned stickers are removed from NPC offer lists.
 
+`_Template_Stickerbook.StickerbookRewardItems` lists each subcategory's rewards
+as `threshold:reward:amount`, reached by the number of owned items in that
+subcategory. A status effect reward applies for as long as the threshold holds
+(`reconcile_collector_effects`). It only raises an actor variable; the bonus
+comes from the pet, mount or Shadow Soul effect that reads it, so it needs one
+of those active. An item reward is paid once, without a claim, when the
+threshold is reached, and on map entry for anything reached earlier or that did
+not fit the bags (`_grant_stickerbook_rewards`, saved as `stickerbook_rewards`).
+
 `StickerbookItemInfo` also serializes its generated trailing resource string,
 even when that value is empty for operation `1`. This two-byte empty-string
 length precedes the actor context; omitting it shifts the rest of the batch
@@ -201,7 +210,11 @@ requests, and separation from pet upgrade tiers.
 `UseStickerBookItemCommand` (`0x0135`) is accepted only for an owned resource.
 
 - Mounts use their database cast duration, transition from cast to ride, and
-  persist across map handoffs.
+  persist across map handoffs. Cast and ride are both in the `Mount` status
+  group, so `StatusEffectGroupDuration:...,relative,Mount` shortens them: the
+  Undefeatables and Gwenfara cloaks (-50%) and Wisdom's mount talent (-3% to
+  -31%). The amounts add up, as the client's own modifier does, from the
+  item's 3.5 s and the ride's 36000 s.
 - Costumes use the `Skin` exclusive group. Selecting the active costume again
   removes it.
 - Pets use the `Pet` exclusive group. Selecting another pet adds the new

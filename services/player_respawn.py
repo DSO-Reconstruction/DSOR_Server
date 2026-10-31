@@ -240,6 +240,36 @@ class PlayerRespawnService:
             CharacterService._refresh_player_combat_vitals(s)
 
     @staticmethod
+    def _expire_summons_with_owner(s: Session) -> None:
+        """A Guardian or wolf ends with the summoner it fights for.
+
+        Its ``Minion`` effect on the owner has no KeepOnDeath. Turrets and
+        other constructions keep their own leash, and a Shadow Soul its own
+        rules.
+        """
+
+        combat = s.gameplay_combat_state
+        character = s.gameplay_character
+        if character is None or not getattr(combat, "player_summons", None):
+            return
+        owner_actor_id = int(
+            getattr(s, "gameplay_remote_actor_id", 0)
+            or CharacterService._remote_actor_id(character.character_id)
+        )
+        with combat.lock:
+            actor_ids = tuple(
+                actor_id for actor_id, summon in combat.player_summons.items()
+                if summon.owner_actor_id == owner_actor_id
+                and not summon.definition.stationary
+                and str(summon.definition.category).casefold() != "mercenary"
+            )
+        for actor_id in actor_ids:
+            CharacterService._expire_player_summon(
+                s, s.gameplay_chase_generation,
+                ("player-summon-owner-death", int(actor_id)), int(actor_id),
+            )
+
+    @staticmethod
     def _notify_player_death(s: Session, *, expected_generation=None) -> None:
         with s.flow_lock:
             if expected_generation is not None and expected_generation != s.gameplay_chase_generation:
@@ -252,6 +282,7 @@ class PlayerRespawnService:
             s.gameplay_respawn_protection_instance_id = None
             allowed = getattr(s, "gameplay_respawn_allowed", False)
         CharacterService._clear_player_death_effects(s)
+        CharacterService._expire_summons_with_owner(s)
         if allowed and getattr(s, "gameplay_match", None) is None:
             with s.flow_lock:
                 if not s.gameplay_death_pending or s.gameplay_respawn_in_progress:
