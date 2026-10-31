@@ -1527,6 +1527,10 @@ class PlayerInitializationStateService:
                 )
             }
             s.gameplay_stickerbook_entries = stickerbook_entries
+            s.gameplay_stickerbook_rewards = tuple(
+                persisted_state.stickerbook_rewards
+                if persisted_state is not None else ()
+            )
             s.gameplay_recipe_book_resources = tuple(
                 persisted_state.recipe_book_resources
                 if persisted_state is not None else ()

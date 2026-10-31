@@ -5,6 +5,41 @@ from __future__ import annotations
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
+def location_effect_waits_for_hit(visual, geometry) -> bool:
+    """Is this location effect left out of the cast, for a hit to place?
+
+    No skill authors ON:Hit on a location effect, but one with no ON loads as
+    "hit". It still belongs to the skill's own spot: where Singularity or a
+    turret was aimed, or around an Earthquake's caster, monster or no monster.
+    Only an actor-targeted skill has no spot but the actor it strikes, which
+    is where Deadly Blow's talent explosion goes off.
+    """
+
+    trigger = normalize_socket_trigger(visual.trigger)
+    if trigger in ("kill", "hitcritical"):
+        return True
+    return (
+        trigger == "hit"
+        and geometry is not None
+        and geometry.targeting_type.casefold() == "actor"
+    )
+
+
+def _location_effect_follows_hit(
+    visual, geometry, travel_distance, authored_chance,
+) -> bool:
+    """Does a skill's location effect start at the monster it just hit?
+
+    A bullet lands only the effect a talent switched on at its impact.
+    """
+
+    if visual.chance < 1.0 or normalize_socket_trigger(visual.trigger) != "hit":
+        return False
+    if travel_distance > 0.0:
+        return visual.chance > authored_chance
+    return location_effect_waits_for_hit(visual, geometry)
+
+
 class PlayerProjectileService:
     @staticmethod
     def _player_impact_socket_events(
@@ -343,23 +378,30 @@ class PlayerProjectileService:
             for pending, resolution in resolved_pairs
             if not bool(getattr(resolution, "damage_immune", False))
         )
-        if source_actor_id is not None and effective_pairs:
+        # A status-only impact (Mind Control, Singularity, Frost Wind) lands
+        # effects, it does not strike: damage-dealing on-hit procs stay out.
+        striking_pairs = tuple(
+            (pending, resolution)
+            for pending, resolution in effective_pairs
+            if int(resolution.damage) > 0
+        )
+        if source_actor_id is not None and striking_pairs:
             # Caster-targeted set rules carry their own authored trigger.
             # `ON:SkillStart` ones were already sent when the cast went out;
             # only the target events this batch actually satisfied belong here.
             impact_triggers = ["hit"]
             if any(
                 resolution.critical_hit
-                for _pending, resolution in effective_pairs
+                for _pending, resolution in striking_pairs
             ):
                 impact_triggers.append("hitcritical")
             if any(
-                resolution.killed for _pending, resolution in effective_pairs
+                resolution.killed for _pending, resolution in striking_pairs
             ):
                 impact_triggers.append("kill")
             for skill_index in dict.fromkeys(
                 int(pending.skill_index)
-                for pending, _resolution in effective_pairs
+                for pending, _resolution in striking_pairs
             ):
                 for definition in CharacterService._item_set_user_proc_effects(
                     s, skill_index, triggers=tuple(impact_triggers)
@@ -373,7 +415,7 @@ class PlayerProjectileService:
                 batched_user_effects.setdefault(
                     int(definition.effect_id), definition
                 )
-            if any(resolution.killed for _pending, resolution in effective_pairs):
+            if any(resolution.killed for _pending, resolution in striking_pairs):
                 for definition in CharacterService._item_set_trigger_effects(
                     s, "kill"
                 ):
@@ -504,15 +546,16 @@ class PlayerProjectileService:
                     ("frost", "freeze"),
                     now=time.perf_counter(),
                 )
-                socket_events.extend(
-                    CharacterService._player_impact_socket_events(
-                        pending,
-                        resolution,
-                        source_actor_id=int(source_actor_id),
-                        low_health=socket_low_health,
-                        low_health_casts=low_health_socket_casts,
+                if int(resolution.damage) > 0:
+                    socket_events.extend(
+                        CharacterService._player_impact_socket_events(
+                            pending,
+                            resolution,
+                            source_actor_id=int(source_actor_id),
+                            low_health=socket_low_health,
+                            low_health_casts=low_health_socket_casts,
+                        )
                     )
-                )
                 for definition in pending.user_status_effects:
                     if (
                         normalize_socket_trigger(definition.trigger)
@@ -565,9 +608,10 @@ class PlayerProjectileService:
                         } if unmodified_geometry is not None else {}
                         hit_location_visuals = tuple(
                             v for v in skill_geometry.location_visual_effects
-                            if v.chance >= 1.0
-                            and normalize_socket_trigger(v.trigger) in ("", "hit")
-                            and (pending.travel_distance <= 0.0 or v.chance > unmod_chances.get(v.resource_id, 0.0))
+                            if _location_effect_follows_hit(
+                                v, skill_geometry, pending.travel_distance,
+                                unmod_chances.get(v.resource_id, 0.0),
+                            )
                         )
                         if hit_location_visuals:
                             hit_location_receivers = tuple(

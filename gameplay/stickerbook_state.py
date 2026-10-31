@@ -10,10 +10,7 @@ import sqlite3
 
 from dso_server.protocol.gameplay_protocol import StatusEffect, StatusEffectEntry
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
-from dso_server.gameplay.local_mount_state import (
-    MountDefinition,
-    with_captured_timing,
-)
+from dso_server.gameplay.local_mount_state import MountDefinition
 
 
 SERVER_TICKS_PER_SECOND = 25
@@ -63,6 +60,13 @@ class CollectorEffectDefinition:
     wire_id: int
     stack_count: int
     duration_ticks: int
+
+
+@dataclass(frozen=True)
+class CollectorItemReward:
+    key: str
+    template_id: str
+    amount: int
 
 
 @dataclass(frozen=True)
@@ -174,7 +178,7 @@ def _mount_definition_from_item(
     item_duration = float(item["StatusEffectDuration"] or 0.0)
     cast_duration = float(cast["StatusEffectDuration"] or 0.0)
     cast_seconds = max(0.1, item_duration or cast_duration)
-    return with_captured_timing(MountDefinition(
+    return MountDefinition(
         stickerbook_resource_id=str(resource_id),
         mount_resource_id=mount_resource,
         cast_effect_id=int(cast["rowid"]) - 1,
@@ -192,7 +196,7 @@ def _mount_definition_from_item(
         ),
         stickerbook_state=int(stickerbook_state),
         stickerbook_favorite_position=int(stickerbook_favorite_position),
-    ))
+    )
 
 
 @lru_cache(maxsize=1024)
@@ -362,7 +366,7 @@ def _load_sticker_definition_cached(
                     "#", 1
                 )[0].split(";", 1)[0]
             cast_seconds = max(0.1, duration_seconds)
-            mount = with_captured_timing(MountDefinition(
+            mount = MountDefinition(
                 stickerbook_resource_id=resource_id,
                 mount_resource_id=mount_resource,
                 cast_effect_id=int(status["rowid"]) - 1,
@@ -380,7 +384,7 @@ def _load_sticker_definition_cached(
                 ),
                 stickerbook_state=2,
                 stickerbook_favorite_position=0,
-            ))
+            )
 
         return StickerDefinition(
             resource_id=resource_id,
@@ -548,6 +552,55 @@ def owned_source_item_ids(
     return frozenset(result)
 
 
+def _reached_collection_rewards(
+    database: sqlite3.Connection,
+    owned_resource_ids: tuple[str, ...],
+) -> list[tuple[str, int, str, str]]:
+    """(subgroup, threshold, reward id, amount text) of every reached reward.
+
+    The client counts owned items per subgroup and compares that with each
+    threshold, so a parent row such as ``sb_mercenary``, which has no items of
+    its own, is never reached.
+    """
+
+    owned = set(owned_resource_ids)
+    subgroup_counts: dict[str, int] = {}
+    for row in database.execute(
+        "SELECT Id, Items, StickerbookId "
+        "FROM _Template_StickerbookItem WHERE IsLive<>0"
+    ):
+        resources = {str(row["Id"]), *_split(row["Items"])}
+        if not resources.intersection(owned):
+            continue
+        subgroup = str(row["StickerbookId"] or "")
+        if subgroup:
+            subgroup_counts[subgroup] = subgroup_counts.get(subgroup, 0) + 1
+
+    reached = []
+    for subgroup, count in subgroup_counts.items():
+        row = database.execute(
+            "SELECT StickerbookRewardItems FROM _Template_Stickerbook "
+            "WHERE Id=? LIMIT 1",
+            (subgroup,),
+        ).fetchone()
+        if row is None:
+            continue
+        for encoded in _split(row["StickerbookRewardItems"]):
+            parts = tuple(part.strip() for part in encoded.split(":"))
+            if len(parts) < 2:
+                continue
+            try:
+                threshold = int(parts[0])
+            except ValueError:
+                continue
+            if count >= threshold:
+                reached.append((
+                    subgroup, threshold, parts[1],
+                    parts[2] if len(parts) > 2 else "",
+                ))
+    return reached
+
+
 @lru_cache(maxsize=256)
 def _collector_effect_definitions_cached(
     static_database_path: Path,
@@ -555,58 +608,19 @@ def _collector_effect_definitions_cached(
 ) -> tuple[CollectorEffectDefinition, ...]:
     """Resolve all earned collector-bag status effects by subgroup count."""
 
-    owned = set(owned_resource_ids)
     with _open_read_only(static_database_path) as database:
-        subgroup_counts: dict[str, int] = {}
-        for row in database.execute(
-            "SELECT Id, Items, StickerbookId "
-            "FROM _Template_StickerbookItem WHERE IsLive<>0"
-        ):
-            resources = {str(row["Id"]), *_split(row["Items"])}
-            if not resources.intersection(owned):
-                continue
-            subgroup = str(row["StickerbookId"] or "")
-            if subgroup:
-                subgroup_counts[subgroup] = subgroup_counts.get(subgroup, 0) + 1
-
-        earned: list[str] = []
-        for subgroup, count in subgroup_counts.items():
-            row = database.execute(
-                "SELECT StickerbookRewardItems FROM _Template_Stickerbook "
-                "WHERE Id=? LIMIT 1",
-                (subgroup,),
-            ).fetchone()
-            if row is None:
-                continue
-            for encoded in _split(row["StickerbookRewardItems"]):
-                parts = tuple(part.strip() for part in encoded.split(":"))
-                if len(parts) < 2:
-                    continue
-                try:
-                    threshold = int(parts[0])
-                except ValueError:
-                    continue
-                reward_id = parts[1]
-                if count < threshold:
-                    continue
-                status = database.execute(
-                    "SELECT rowid, StatusEffectDuration, MaxStackSize "
-                    "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
-                    (reward_id,),
-                ).fetchone()
-                if status is None:
-                    continue
-                # The client interprets StatusEffectEntry.field_18 as the
-                # effect's authored rank, not a generic stack counter.  Two
-                # sticker subgroups earning the same +3% HP reward therefore
-                # need two rank-zero instances; encoding one rank-one effect
-                # makes it display as +30%.
-                earned.append(reward_id)
-
         definitions = []
-        for reward_id in sorted(earned):
+        # One entry per reward: two subgroups earning the same +3% HP bonus
+        # add up to +6%. The client takes field_18 as the effect's level, which
+        # these flat ActorVariable modifiers ignore. Retail numbers the entries
+        # of one effect 0..n-1; here they stay 0, because the server reads
+        # field_18 as a stack count.
+        for reward_id in sorted(
+            reward_id for _subgroup, _threshold, reward_id, _amount
+            in _reached_collection_rewards(database, owned_resource_ids)
+        ):
             status = database.execute(
-                "SELECT rowid, StatusEffectDuration, MaxStackSize "
+                "SELECT rowid, StatusEffectDuration "
                 "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
                 (reward_id,),
             ).fetchone()
@@ -617,16 +631,47 @@ def _collector_effect_definitions_cached(
                     reward_id,
                     int(status["rowid"]) - 1,
                     1,
-                    # Stickerbook rewards are derived from permanent
-                    # collection progress. The database's one-second
-                    # duration is only a template default. These entries use
-                    # field_0c=0, which the client reserves for permanent
-                    # effects, so they must also carry a zero duration rather
-                    # than an inconsistent one-second timer.
-                    0,
+                    # field_0c=0 makes the entry permanent; retail still sends
+                    # the template's duration alongside it.
+                    round(float(status["StatusEffectDuration"] or 0.0)
+                          * SERVER_TICKS_PER_SECOND),
                 )
             )
         return tuple(definitions)
+
+
+@lru_cache(maxsize=256)
+def _collector_item_rewards_cached(
+    static_database_path: Path,
+    owned_resource_ids: tuple[str, ...],
+) -> tuple[CollectorItemReward, ...]:
+    with _open_read_only(static_database_path) as database:
+        rewards = []
+        for subgroup, threshold, reward_id, amount in sorted(
+            _reached_collection_rewards(database, owned_resource_ids)
+        ):
+            is_status = database.execute(
+                "SELECT 1 FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                (reward_id,),
+            ).fetchone()
+            if is_status is None:
+                rewards.append(CollectorItemReward(
+                    f"{subgroup}:{threshold}:{reward_id}", reward_id,
+                    int(amount or 1),
+                ))
+        return tuple(rewards)
+
+
+def collector_item_rewards(
+    static_database_path: str | Path,
+    owned_resource_ids: tuple[str, ...] | set[str],
+) -> tuple[CollectorItemReward, ...]:
+    """The item rewards a collection has reached, granted or not."""
+
+    return _collector_item_rewards_cached(
+        Path(static_database_path),
+        tuple(sorted(str(value) for value in owned_resource_ids)),
+    )
 
 
 def collector_effect_definitions(

@@ -1276,6 +1276,19 @@ class _PendingPlayerSummonAttack:
 
 
 @dataclass(frozen=True)
+class _PendingPlayerSummonStrike:
+    """A delayed aura of a summon's swing. SEE: player_summon_aura_strikes."""
+
+    actor_id: int
+    skill_index: int
+    due_at: float
+    impact_tick: int
+    radius: float
+    receivers: tuple[VictimStatusEffectDefinition, ...]
+    player_damage_range: tuple[float, float]
+
+
+@dataclass(frozen=True)
 class PendingPlayerHit:
     cast_id: int
     target_actor_id: int
@@ -2004,6 +2017,11 @@ class LocalCombatState:
         self.orphaned_player_summon_attacks: dict[
             int, tuple[PlayerSummonActor, _PendingPlayerSummonAttack]
         ] = {}
+        self.pending_player_summon_strikes: list[
+            _PendingPlayerSummonStrike
+        ] = []
+        # Soul actor -> (next turn, skill index -> cooldown end).
+        self.player_summon_rotations: dict[int, tuple[int, dict[int, float]]] = {}
         self.last_player_summon_attack_at: dict[int, float] = {}
         self.last_player_summon_playback_at: dict[int, float] = {}
         self.last_player_summon_support_at: dict[int, float] = {}
@@ -2067,6 +2085,8 @@ class LocalCombatState:
         # only by resolve_modifier_value).
         self._geometry_actor_variables: dict[tuple, dict[str, float]] = {}
         self._user_effect_location_auras_cache = {}
+        self._victim_location_children_cache = {}
+        self._summon_aura_strike_cache = {}
         runtime_catalog = load_status_runtime_catalog(
             encounter.static_database_path
         )
@@ -3599,7 +3619,8 @@ class LocalCombatState:
                                    COALESCE(HitFrame, 0),
                                    COALESCE(LoopStartFrame, 0),
                                    COALESCE(MotionUnblockFrame, 0),
-                                   COALESCE(ExecuteSequenceMapping, '')
+                                   COALESCE(ExecuteSequenceMapping, ''),
+                                   COALESCE(CoolDown, 0)
                             FROM _Template_Skill AS skill
                             WHERE skill.Id=? LIMIT 1
                             """,
@@ -3645,10 +3666,16 @@ class LocalCombatState:
                             attack_interval = 4.0
                             attack_playback_interval = attack_interval
                         else:
+                            # The cooldown paces the shots (Guardian: 1 s). The
+                            # unblock frames alone gave it 0.64 s, and a bullet
+                            # still flying held the next shot back, so near
+                            # targets were hit faster than far ones.
                             attack_interval = max(
                                 0.2,
                                 int(attack_row[2])
                                 / SERVER_TICKS_PER_SECOND,
+                                0.0 if str(row[5]).casefold() == "mercenary"
+                                else float(attack_row[7]),
                             )
                             attack_playback_interval = attack_interval
                         break
@@ -5532,6 +5559,7 @@ class LocalCombatState:
             }
         ):
             self.orphaned_player_summon_attacks[actor_id] = (removed, pending)
+        self.player_summon_rotations.pop(actor_id, None)
         self.last_player_summon_attack_at.pop(actor_id, None)
         self.last_player_summon_playback_at.pop(actor_id, None)
         self.last_player_summon_support_at.pop(actor_id, None)
@@ -6408,6 +6436,77 @@ class LocalCombatState:
         self._user_effect_location_auras_cache[definitions] = tuple(results)
         return tuple(results)
 
+    def victim_effect_location_children(self, definition) -> tuple:
+        """(visual, receivers) of what a monster-hosted effect places on start.
+
+        ``skill_frostwind_frost_explosion_trigger`` is hosted on the victim,
+        waits out its ``DE`` and only then ``addLE``s the explosion around it.
+        """
+
+        resource_id = definition.resource_id
+        cached = self._victim_location_children_cache.get(resource_id)
+        if cached is not None:
+            return cached
+        children = []
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)) as database:
+            for kind, arguments in self._status_modifier_program(int(definition.effect_id)):
+                if (kind.casefold() != "actorstatuseffect" or len(arguments) < 2
+                        or arguments[0].casefold() != "addle"):
+                    continue
+                encoded = ",".join(arguments[1:])
+                visuals = self._load_victim_status_effects(
+                    database, encoded, default_trigger="immediate",
+                )
+                if visuals:
+                    children.append((
+                        visuals[0], self._load_location_aura_effects(database, encoded),
+                    ))
+        result = tuple(children)
+        self._victim_location_children_cache[resource_id] = result
+        return result
+
+    def player_summon_aura_strikes(
+        self, geometry: PlayerSkillGeometry,
+    ) -> tuple[tuple[
+        VictimStatusEffectDefinition,
+        tuple[VictimStatusEffectDefinition, ...],
+    ], ...]:
+        """A summon skill's instant damaging user auras, with their receivers.
+
+        Twilight Wraith swings twice but its skill has one HitFrame. The second
+        swing is a user effect, shadow_stalker_attack_dmg2_aura (D:0, DE:0.6,
+        $0:-0.03): 0.6 s into the attack, every enemy within 3 m of the wraith
+        takes CurrHealthPointsDmg:$0,relative. Relative is a share of the
+        damage (Desolation Impact's -2 is the 200% of its tooltip), so 3%.
+        """
+
+        cached = self._summon_aura_strike_cache.get(geometry.resource_id)
+        if cached is not None:
+            return cached
+        strikes = []
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)) as database:
+            for effect in geometry.user_status_effects:
+                if (effect.chance < 1.0 or effect.duration_ticks > 0
+                        or effect.aura_radius <= 0.0
+                        or effect.aura_targets.strip().casefold() != "enemies"):
+                    continue
+                entry = ",".join((
+                    effect.resource_id, "C:1.0",
+                    *(f"${index}:{value}" for index, value in enumerate(effect.values)),
+                ))
+                receivers = tuple(
+                    receiver
+                    for receiver in self._load_location_aura_effects(database, entry)
+                    if self._status_damage_programs(receiver, ticks=False)
+                )
+                if receivers:
+                    strikes.append((effect, receivers))
+        result = tuple(strikes)
+        self._summon_aura_strike_cache[geometry.resource_id] = result
+        return result
+
     @classmethod
     def _load_aura_owner_effects(
         cls,
@@ -7214,8 +7313,10 @@ class LocalCombatState:
                     # Fractured Planes elemental damage blessings are
                     # authored as TargetAddDamage on the persistent status.
                     # Treat the element as a scope and apply its absolute or
-                    # relative amount to matching outgoing skill damage.
-                    if len(arguments) < 3:
+                    # relative amount to matching outgoing skill damage. A
+                    # skill authored with no damage (Mind Control, Singularity,
+                    # Frost Wind) has none to raise, so it stays status-only.
+                    if len(arguments) < 3 or geometry.damage_modifier <= 0.0:
                         continue
                     target_elements = {
                         self._clean_modifier_token(value).casefold()
@@ -11619,29 +11720,16 @@ class LocalCombatState:
                 )
             ):
                 continue
-            geometry = self._load_player_skill_geometry(
-                database_skill_index
+            geometry = self._summon_attack_geometry(
+                actor_id, summon, database_skill_index, current_time
             )
             if geometry is None:
                 continue
-            # Effects the minion hosts (owner Minion auras, Black Dwarf
-            # overheat: gameplay/minion_auras.py) modify its own skill.
-            from dso_server.gameplay.minion_auras import (
-                minion_geometry_overrides, minion_modifier_sources,
-            )
-            hosted_sources = minion_modifier_sources(
-                self, actor_id, now=current_time
-            )
-            geometry = self._modified_player_skill_geometry(
-                geometry, tuple(summon.modifier_sources) + hosted_sources
-            )
-            geometry = minion_geometry_overrides(
-                self, geometry, hosted_sources, summon.modifier_sources
-            )
             is_covering_fire = (
                 geometry.resource_id == "minionskill_coveringfireturret"
             )
             idle_start = False
+            rotation_turn = None
             is_stationary_sustained = (
                 attack_skill_type == "Sustained"
                 and geometry.targeting_type.casefold()
@@ -11832,6 +11920,21 @@ class LocalCombatState:
                 if not candidates:
                     continue
                 distance, target_actor_id = min(candidates)
+                attack_rotation = getattr(definition, "attack_rotation", ())
+                if attack_rotation:
+                    rotation_turn = self._summon_rotation_turn(
+                        actor_id, attack_rotation, distance, current_time
+                    )
+                    if rotation_turn is None:
+                        continue
+                    database_skill_index = skill_index = attack_rotation[rotation_turn]
+                    geometry = self._summon_attack_geometry(
+                        actor_id, summon, skill_index, current_time
+                    )
+                    attack_skill_type = str(geometry.skill_type)
+                    attack_skill_unblock_frame = geometry.skill_unblock_frame
+                    attack_motion_unblock_frame = geometry.motion_unblock_frame
+                    attack_loop_start_frame = geometry.loop_start_frame
                 if distance > max(
                     geometry.attack_range,
                     geometry.hit_range,
@@ -11859,6 +11962,21 @@ class LocalCombatState:
                     if math.hypot(dx, dz) > 1e-6
                     else summon.yaw
                 )
+                if attack_skill_type == "Ranged" and geometry.start_offset[0]:
+                    # The bullet leaves from StartOffset, beside the model for
+                    # the Guardian (-0.5, 0.33, -1). Aimed along the centre
+                    # line it flies past its target while the hit still lands.
+                    sine, cosine = math.sin(yaw), math.cos(yaw)
+                    side, _height, ahead = geometry.start_offset[:3]
+                    aim_x = dx - (side * cosine + ahead * sine)
+                    aim_z = dz - (ahead * cosine - side * sine)
+                    aim_length = math.sqrt(aim_x * aim_x + dy * dy + aim_z * aim_z)
+                    # A target closer than the muzzle keeps the centre line.
+                    if aim_x * dx + aim_z * dz > 0.0:
+                        length = aim_length
+                        direction = (
+                            aim_x / length, dy / length, aim_z / length, 0.0,
+                        )
                 if (
                     attack_skill_type == "Melee"
                     and geometry.targeting_type.casefold()
@@ -12012,6 +12130,12 @@ class LocalCombatState:
                 bullet_count=getattr(geometry, "bullet_count", 1),
             )
             self.last_player_summon_attack_at[actor_id] = current_time
+            if rotation_turn is not None:
+                _next_turn, ready_at = self.player_summon_rotations.get(actor_id, (0, {}))
+                ready_at[skill_index] = current_time + geometry.cooldown_seconds
+                self.player_summon_rotations[actor_id] = (
+                    (rotation_turn + 1) % len(attack_rotation), ready_at,
+                )
             if hidden_skill is not None:
                 self.note_summon_hidden_skill_used(
                     actor_id, hidden_skill, now=current_time)
@@ -12054,9 +12178,64 @@ class LocalCombatState:
                         target_due_times,
                     )
                 )
+                self.pending_player_summon_strikes.extend(
+                    _PendingPlayerSummonStrike(
+                        actor_id, skill_index,
+                        current_time + aura.delay_ticks / SERVER_TICKS_PER_SECOND,
+                        (start_tick + aura.delay_ticks) & 0xFFFFFFFF,
+                        aura.aura_radius, receivers, summon.player_damage_range,
+                    )
+                    for aura, receivers in self.player_summon_aura_strikes(geometry)
+                )
             if emit_playback or skillstart_effects:
                 started.append(attack)
         return tuple(started)
+
+    def _summon_attack_geometry(self, actor_id, summon, skill_index, now):
+        """A summon's attack skill, shaped by what it and its owner carry."""
+
+        geometry = self._load_player_skill_geometry(skill_index)
+        if geometry is None:
+            return None
+        # Effects the minion hosts (owner Minion auras, Black Dwarf
+        # overheat: gameplay/minion_auras.py) modify its own skill.
+        from dso_server.gameplay.minion_auras import (
+            minion_geometry_overrides, minion_modifier_sources,
+        )
+        hosted_sources = minion_modifier_sources(self, actor_id, now=now)
+        geometry = self._modified_player_skill_geometry(
+            geometry, tuple(summon.modifier_sources) + hosted_sources
+        )
+        return minion_geometry_overrides(
+            self, geometry, hosted_sources, summon.modifier_sources
+        )
+
+    def _summon_rotation_turn(
+        self,
+        actor_id: int,
+        attack_rotation: tuple[int, ...],
+        distance: float,
+        now: float,
+    ) -> int | None:
+        """Which of a soul's attacks is next: off cooldown and within reach.
+
+        Ancient Watcher alternates its two strikes. Viridis keeps shooting and
+        stabs only an enemy already inside the stab's 1.75 m: she stops at her
+        shot's range, so nothing walks her in. UNVERIFIED: no retail capture
+        has a soul cast. This is the monsters' cursor (_monster_skill_choice).
+        """
+
+        turn, ready_at = self.player_summon_rotations.get(actor_id, (0, {}))
+        for offset in range(len(attack_rotation)):
+            index = (turn + offset) % len(attack_rotation)
+            geometry = self._load_player_skill_geometry(attack_rotation[index])
+            if (
+                geometry is not None
+                and now + 1e-9 >= ready_at.get(attack_rotation[index], 0.0)
+                and distance <= max(geometry.attack_range, geometry.hit_range)
+            ):
+                return index
+        return None
 
     def _summon_owner_aura_enabled(self, summon, resource_id: str) -> bool:
         effect_id = self._status_effect_ids.get(resource_id)
@@ -12460,6 +12639,7 @@ class LocalCombatState:
                         victim_status_effects=(),
                         source_actor_id=summon.owner_actor_id,
                     ))
+        damage_resolutions.extend(self._resolve_due_summon_strikes(current_time))
         for actor_id, summon in tuple(self.player_summons.items()):
             definition = summon.definition
             if current_time < summon.spawn_ready_at:
@@ -12494,6 +12674,68 @@ class LocalCombatState:
                     )
                 )
         return tuple(damage_resolutions), tuple(support_applications)
+
+    def _resolve_due_summon_strikes(self, now: float) -> list[DamageResolution]:
+        """Land each due summon aura on the monsters around the summon."""
+
+        resolutions = []
+        waiting = []
+        for strike in self.pending_player_summon_strikes:
+            if now < strike.due_at:
+                waiting.append(strike)
+                continue
+            actor_id = strike.actor_id
+            summon = self.player_summons.get(actor_id)
+            if (
+                summon is None
+                or self.player_summon_health.get(actor_id, [0])[0] <= 0
+                or self._monster_actions_disabled(actor_id, now=now)
+            ):
+                continue
+            scale = (
+                self._summon_status_scale(actor_id, "Damage", "Min", now=now)
+                + self._summon_status_scale(actor_id, "Damage", "Max", now=now)
+            ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=now)
+            damage_range = tuple(value * scale for value in strike.player_damage_range)
+            for target_actor_id in tuple(self.living_actor_ids):
+                target = self.monsters[target_actor_id]
+                previous = self.monster_health.get(target_actor_id, 0)
+                if (
+                    previous <= 0
+                    or target_actor_id in self.returning_home_actor_ids
+                    or self._distance(
+                        summon.position, self.monster_positions[target_actor_id],
+                    ) > strike.radius + max(0.0, target.collision_radius)
+                    or not self.monster_hostile_to_player(
+                        target_actor_id, summon.owner_actor_id,
+                    )
+                ):
+                    continue
+                damage, hit_tags = self.status_effect_immediate_damage(
+                    target_actor_id, strike.receivers, damage_range, now=now,
+                )
+                if damage <= 0:
+                    continue
+                current, killed = _monster_health_after_damage(
+                    target, previous, damage
+                )
+                self.monster_health[target_actor_id] = current
+                resolutions.append(DamageResolution(
+                    target_actor_id=target_actor_id,
+                    attacker_actor_id=actor_id,
+                    current_health=current,
+                    maximum_health=target.maximum_health,
+                    damage=previous - current,
+                    killed=killed,
+                    position=self.monster_positions[target_actor_id],
+                    server_tick=strike.impact_tick,
+                    hit_tags=hit_tags,
+                    skill_index=strike.skill_index,
+                    victim_status_effects=(),
+                    source_actor_id=summon.owner_actor_id,
+                ))
+        self.pending_player_summon_strikes = waiting
+        return resolutions
 
     @staticmethod
     def _effect_applies(

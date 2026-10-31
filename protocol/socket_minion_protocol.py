@@ -69,6 +69,9 @@ class SocketMinionDefinition:
     overheat_attack_motion_unblock_frame: int = 0
     overheat_attack_loop_start_frame: int = 0
     overheat_attack_skill_effect_id: int | None = None
+    # A Shadow Soul's listed attacks when it has several, taken in turn:
+    # LocalCombatState._summon_rotation_turn.
+    attack_rotation: tuple[int, ...] = ()
 
 
 def _skill_ids(encoded: str) -> tuple[str, ...]:
@@ -125,6 +128,20 @@ def load_socket_minion_definition(
             if attack_row is not None:
                 break
         aura = load_player_summon_aura(database, monster_template_id)
+        listed_attacks = ()
+        if monster_template_id.casefold().startswith("mercenary_"):
+            # Hidden: Kain's second skill waits for his overheat below.
+            listed_attacks = tuple(
+                listed for listed in (
+                    database.execute(
+                        "SELECT rowid - 1, COALESCE(SkillUnblockFrame, 0) "
+                        "FROM _Template_Skill "
+                        "WHERE Id=? AND COALESCE(Hidden, 0)=0 LIMIT 1",
+                        (skill_id,),
+                    ).fetchone()
+                    for skill_id in _skill_ids(row[1])
+                ) if listed is not None
+            )
         overheat_attack_row = None
         overheat_effect_row = None
         if monster_template_id.casefold() == "mercenary_ember_knight_kain":
@@ -160,11 +177,18 @@ def load_socket_minion_definition(
     loop_start = max(0, int(attack_row[4])) if attack_row else 0
     motion_unblock = max(0, int(attack_row[5])) if attack_row else 0
     sequence = str(attack_row[6]).strip() if attack_row else ""
+    attack_rotation = (
+        tuple(int(listed[0]) for listed in listed_attacks)
+        if len(listed_attacks) > 1 else ()
+    )
     attack_interval = max(
         0.2,
         (
             hit_frame if attack_type == "Sustained" else skill_unblock
         ) / SERVER_TICKS_PER_SECOND,
+        # One pace for the whole rotation: no swing cuts the longest one off.
+        *(int(listed[1]) / SERVER_TICKS_PER_SECOND
+          for listed in listed_attacks if attack_rotation),
     )
     if fixed_direction:
         # These short-lived emitters fire once. Keep their server source
@@ -205,6 +229,7 @@ def load_socket_minion_definition(
         attack_motion_unblock_frame=motion_unblock,
         attack_skill_unblock_frame=skill_unblock,
         aura=aura,
+        attack_rotation=attack_rotation,
         fixed_direction=fixed_direction,
         stationary=fixed_direction,
         move_speed=(0.0 if monster_template_id.startswith("minion_holysoul_") else max(0.0, float(row[3] or 0.0))),

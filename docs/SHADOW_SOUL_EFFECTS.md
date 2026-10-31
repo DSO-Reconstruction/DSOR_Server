@@ -101,7 +101,43 @@ all cast/impact paths. It also works before the player's first movement packet
 by falling back to the spawn position. Delayed children have distinct timer
 keys so one child cannot replace another child's timer.
 
+## Twilight Wraith's second swing
+
+`mercenary_shadow_stalker` is the Twilight Wraith. Its only attack,
+`mercenaryskill_shadow_stalker_attack`, has one `HitFrame` (frame 9, 0.36s) and
+a `DamageModifier` of 1.5. The second swing of its animation is the user effect
+`shadow_stalker_attack_dmg2_aura` (`D:0`, `DE:0.6`, `$0:-0.03`): 0.6s into the
+attack, every enemy within 3m of the wraith takes
+`CurrHealthPointsDmg:$0,relative,Physical`. `relative` is a share of the
+attacker's damage, as Desolation Impact's `-2` is the 200% of its tooltip, so
+the second swing deals 3% of the soul's damage where the first deals 150%.
+
+`player_summon_aura_strikes` reads any summon skill's instant damaging user
+aura, and each attack queues one strike that lands at the summon's position.
+It hits monsters only: a hostile player inside the aura takes no second hit.
+It ends with the summon. No other Shadow Soul skill authors a user effect.
+
+## Listed attacks
+
+A soul with several open skills in `Skills` takes them in turn
+(`attack_rotation`, `_summon_rotation_turn`), skipping one on cooldown or out of
+reach, as monsters step through theirs. The rotation runs at the pace of its
+longest `SkillUnblockFrame`, so no swing cuts the one before it short.
+
+- Ancient Watcher alternates `attack_01` (150%) and `attack_02` (300%) every 3s.
+- Viridis shoots `markshot`, and adds `mightystab` (1.75m) only for an enemy
+  already that close. She stops at her shot's range, so nothing walks her in.
+- Kain's second skill is `Hidden` and stays with his overheat. Twilight Wraith
+  and Divine Wanderer list one skill.
+
+No retail capture contains a soul cast, so this order follows the data and the
+monster rule, not an observed sequence.
+
 ## Verification
+
+`tests/test_shadow_soul_strikes.py` covers the Wraith's two hits, the aura's
+reach and its end with the summon, and each soul's attack order, against the
+live database rows.
 
 `tests/test_shadow_soul_effects.py` covers actual summon impact resolution,
 lethal-hit stacking, expiry, maximum stacks, item-set gating, native stack

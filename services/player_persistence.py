@@ -322,6 +322,7 @@ class PlayerPersistenceService:
             )
             from dso_server.services.rune_progression import unlocked_rune_slots
             rune_trinket_unlocked_slots = tuple(sorted(unlocked_rune_slots(s)))
+            stickerbook_rewards = tuple(s.gameplay_stickerbook_rewards)
             talent_category_points = tuple(
                 int(value) for value in s.gameplay_talent_category_points
             )
@@ -547,6 +548,7 @@ class PlayerPersistenceService:
             map_difficulty=map_difficulty,
             scaling_difficulty=scaling_difficulty,
             stickerbook_entries=stickerbook_entries,
+            stickerbook_rewards=stickerbook_rewards,
             active_costume=active_costume,
             hidden_equipment_skins=hidden_equipment_skins,
             unlocked_skins=unlocked_skins,

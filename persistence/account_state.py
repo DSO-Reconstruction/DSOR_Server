@@ -211,6 +211,8 @@ class AccountState:
     map_difficulty: int = 0
     scaling_difficulty: int = 0
     stickerbook_entries: tuple[StickerbookEntry, ...] = ()
+    # Collector's Bag item rewards already paid, "subgroup:threshold:item".
+    stickerbook_rewards: tuple[str, ...] = ()
     active_costume: str = ""
     # EquipmentSlotType -> skin resource hidden by the client's transmog UI.
     hidden_equipment_skins: dict[int, str] = field(default_factory=dict)
@@ -688,6 +690,7 @@ def _state_to_document(state: AccountState) -> dict:
             state.category_talent_presets
         ),
         "mount_ride": mount,
+        "stickerbook_rewards": list(state.stickerbook_rewards),
         "stickerbook_entries": [
             asdict(entry) for entry in state.stickerbook_entries
         ],
@@ -947,6 +950,9 @@ def _state_from_document(document: dict) -> AccountState:
         map_difficulty=int(document.get("map_difficulty", 0)),
         scaling_difficulty=int(
             document.get("scaling_difficulty", 0)
+        ),
+        stickerbook_rewards=tuple(
+            str(value) for value in document.get("stickerbook_rewards", ())
         ),
         stickerbook_entries=tuple(
             StickerbookEntry(

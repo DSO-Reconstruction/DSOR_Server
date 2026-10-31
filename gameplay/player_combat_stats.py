@@ -113,6 +113,7 @@ class PlayerCombatStats:
     base_movement_speed: float = 5.0
     movement_speed: float = 5.0
     movement_bonus_speed: float = 0.0
+    mount_duration_scale: float = 1.0
 
     def incoming_damage_multiplier(self, damage_type: str) -> float:
         """Return the level-scaled mitigation multiplier for one element."""
@@ -859,6 +860,34 @@ def _resolved_range(
     if operation == "absolute" or instruction.scale_relative:
         scale *= max(0.0, float(instruction.absolute_scale))
     return (result[0] * scale, result[1] * scale)
+
+
+def _status_group_duration_scale(
+    instructions: tuple[_Instruction, ...],
+    variables: dict[str, float],
+    group: str,
+) -> float:
+    """``1 + relative`` of every StatusEffectGroupDuration on a status group.
+
+    The amounts add up: the client's StatusEffectGroupDuration::Apply sums them
+    per group (0x1409f0b77), so a -50% cloak and a -31% talent make -81%.
+    """
+
+    total = 0.0
+    for instruction in instructions:
+        modifier = instruction.modifier
+        arguments = modifier.arguments
+        if (
+            modifier.kind.casefold() != "statuseffectgroupduration"
+            or len(arguments) < 3
+            or arguments[1].casefold() != "relative"
+            or _clean_token(arguments[2]).casefold() != group
+        ):
+            continue
+        amount = _resolved_range(instruction, variables)
+        if amount is not None:
+            total += sum(amount) / 2.0
+    return max(0.0, 1.0 + total)
 
 
 def _scopes(arguments: tuple[str, ...]) -> frozenset[str]:
@@ -2640,10 +2669,7 @@ def _calculate_player_combat_stats(
     )
 
     damage_absolute = (0.0, 0.0)
-    collector_pet_damage = max(
-        0.0, float(variables.get("pet_damage_01", 0.0))
-    )
-    damage_relative = (collector_pet_damage, collector_pet_damage)
+    damage_relative = (0.0, 0.0)
     weapon_bonus = 0.0
     weapon_factor_relative = 0.0
     pve_factor_absolute = 0.0
@@ -2849,6 +2875,9 @@ def _calculate_player_combat_stats(
         damage_reflection_fraction=damage_reflection_fraction,
         block_chance=block_chance,
         block_damage_reduction=block_damage_reduction,
+        mount_duration_scale=_status_group_duration_scale(
+            combined, variables, "mount"
+        ),
     )
 
 

@@ -10,6 +10,7 @@ from dso_server.runtime.context import *
 from dso_server.runtime import latency_stats
 from dso_server.runtime.transport import Session
 from dso_server.services.player_cast_timing import PlayerCastTimingService
+from dso_server.services.player_projectiles import location_effect_waits_for_hit
 from dso_server.services import movement_validation
 from dso_server.gameplay.player_skill_timing import (
     reserve_player_skill_timing, rollback_player_skill_timing,
@@ -1260,7 +1261,10 @@ class PlayerCombatService(PlayerCastTimingService):
         ):
             cast_visual_definitions = tuple(
                 v for v in location_visual_definitions
-                if normalize_socket_trigger(v.trigger) not in ('hit', 'kill', 'hitcritical')
+                if not location_effect_waits_for_hit(v, geometry)
+                and (v.chance >= 1.0 or combat._effect_applies(
+                    v, cast_id=client_skill.cast_id, killed=False,
+                ))
             )
             if cast_visual_definitions:
                 location_receivers = combat.player_skill_location_receiver_effects(
