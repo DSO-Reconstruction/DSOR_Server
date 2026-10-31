@@ -11,7 +11,9 @@ import pytest
 from dso_server.gameplay.achievement_content import AchievementCatalog, AchievementProgress
 from dso_server.persistence.account_state import _state_from_document, _state_to_document
 from dso_server.protocol.gameplay_protocol import InventoryItemAction, encode_inventory_item_action
-from dso_server.protocol.inventory_codec import ItemInfo
+from dso_server.protocol.inventory_codec import (
+    InventoryInfo, ItemInfo, release_locked_rune_trinkets,
+)
 from dso_server.protocol.player_init_protocol import decode_server_command_batch
 from dso_server.services import rune_progression
 from dso_server.services.character_server import CharacterServer
@@ -59,11 +61,17 @@ def saved_state(server, session):
     return server.account_store.get(session.gameplay_character.character_id)
 
 
-def test_new_character_has_five_rune_trinkets_and_no_extra_entitlements(player):
+def test_new_character_has_two_stones_and_no_trinkets_or_entitlements(player):
     _, session, _ = player
-    rune_slots = {slot for slots in session.gameplay_inventory.equipment_slots.values()
-                  for slot in slots if 13 <= slot <= 19}
-    assert rune_slots == {13, 14, 15, 16, 17}
+    inventory = session.gameplay_inventory
+    trinket_slots = {slot for slots in inventory.equipment_slots.values()
+                     for slot in slots if 13 <= slot <= 22}
+    assert trinket_slots == set()
+    assert not any("trinket" in item.template_id for item in inventory.items)
+    stones = [item for item in inventory.items if item.template_id == RUNE_EXTENSION_ITEM]
+    assert [item.amount for item in stones] == [2]
+    assert stones[0].item_id in inventory.storage_58
+    assert stones[0].item_id not in inventory.equipment_slots
     assert unlocked_rune_slots(session) == frozenset()
     assert not any(key in session.gameplay_achievements for key in RUNE_SLOT_ACHIEVEMENTS)
 
@@ -77,7 +85,7 @@ def test_two_stones_unlock_in_order_advance_use_and_persist_once_each(player):
         assert next(item for item in session.gameplay_inventory.items if item.item_id == item_id).amount == 3 - expected_count
         assert session.gameplay_achievements[RUNE_SLOT_ACHIEVEMENTS[expected_count - 1]].completed
         saved = saved_state(server, session)
-        assert saved.rune_trinket_unlocked_slots == EXTRA_RUNE_SLOTS[:expected_count]
+        assert saved.rune_trinket_unlocked_slots == tuple(sorted(EXTRA_RUNE_SLOTS[:expected_count]))
         assert saved.achievements[RUNE_SLOT_ACHIEVEMENTS[expected_count - 1]]["completed_at"]
     before = copy.deepcopy(session.gameplay_inventory)
     sent.reset_mock()
@@ -87,22 +95,50 @@ def test_two_stones_unlock_in_order_advance_use_and_persist_once_each(player):
     assert session.gameplay_achievements[RUNE_SLOT_ACHIEVEMENTS[1]].progress == 2
 
 
-def test_unlock_packet_creates_equipped_base_trinket_even_with_full_bags(player):
+def test_unlocked_slot_stays_empty(player):
     server, session, sent = player
+    before = len(session.gameplay_inventory.items)
     item_id = add_item(session, amount=2)
-    session.gameplay_inventory.storage_size = len(session.gameplay_inventory.storage_58)
-    session.gameplay_inventory.extra_storage_size = 0
     act(server, session, item_id)
+    inventory = session.gameplay_inventory
+    assert unlocked_rune_slots(session) == frozenset({EXTRA_RUNE_SLOTS[0]})
+    assert EXTRA_RUNE_SLOTS[0] not in {
+        slot for slots in inventory.equipment_slots.values() for slot in slots
+    }
+    assert not any("trinket" in item.template_id for item in inventory.items)
+    # Only the stone stack changed: one left, nothing added.
+    assert len(inventory.items) == before + 1
+    stack = next(item for item in inventory.items if item.item_id == item_id)
+    assert stack.amount == 1
     call = next(call for call in sent.call_args_list if call.kwargs.get("label") == "rune-trinket-unlocked")
     commands = decode_server_command_batch(*call.args[1:])
-    trinket = next(item for item in commands[0].value.items if item.template_id == "all_base_trinket_rune_01")
-    assert trinket.socket_count == 5 and trinket.socketed_templates == [""] * 5
-    assert commands[0].value.equipment_slots[trinket.item_id] == (18,)
-    assert commands[1].value.equipment_slots[trinket.item_id] == (18,)
+    assert not any("trinket" in item.template_id for item in commands[1].value.items)
 
 
-def test_stone_requires_authored_level_100(player):
+def test_saved_unlock_completes_its_achievement_and_leaves_the_slot_empty(player):
+    server, session, _ = player
+    act(server, session, add_item(session))
+    state = server.account_store.states[session.gameplay_character.character_id]
+    assert state.rune_trinket_unlocked_slots == (14,)
+    state.achievements.pop(RUNE_SLOT_ACHIEVEMENTS[0], None)
+    occupied = dict(state.inventory.equipment_slots)
+    server.account_store._complete_rune_slot_achievements(server.static_database_path)
+    assert state.achievements[RUNE_SLOT_ACHIEVEMENTS[0]]["completed_at"]
+    assert state.inventory.equipment_slots == occupied
+
+
+def test_new_character_can_use_a_stone_at_level_1(player, monkeypatch):
+    server, session, _ = player
+    # tools/install_admin_effects.py lowers the stock RequiredLevel 100.
+    monkeypatch.setattr(rune_progression, "_extension_minimum_level", lambda _path: 1)
+    session.gameplay_character.level = 1
+    act(server, session, add_item(session))
+    assert unlocked_rune_slots(session) == frozenset({EXTRA_RUNE_SLOTS[0]})
+
+
+def test_stone_respects_the_required_level_in_the_database(player, monkeypatch):
     server, session, sent = player
+    monkeypatch.setattr(rune_progression, "_extension_minimum_level", lambda _path: 100)
     session.gameplay_character.level = 99
     item_id = add_item(session)
     before = copy.deepcopy(session.gameplay_inventory)
@@ -119,12 +155,12 @@ def test_outbound_failure_keeps_stone_consumption_slot_and_achievement_durable(p
     with pytest.raises(OSError, match="output unavailable"):
         act(server, session, item_id)
     saved = saved_state(server, session)
-    assert saved.rune_trinket_unlocked_slots == (18,)
+    assert saved.rune_trinket_unlocked_slots == (14,)
     assert item_id not in {item.item_id for item in saved.inventory.items}
     assert saved.achievements[RUNE_SLOT_ACHIEVEMENTS[0]]["completed_at"]
 
 
-def test_use_reward_packets_follow_unlock_inventory_without_reverting_allocations(player, monkeypatch):
+def test_slot_unlock_update_precedes_the_stone_and_rewards_follow_it(player, monkeypatch):
     server, session, sent = player
     definition = replace(
         server._achievement_catalog().achievement(RUNE_SLOT_ACHIEVEMENTS[0]),
@@ -135,13 +171,12 @@ def test_use_reward_packets_follow_unlock_inventory_without_reverting_allocation
     item_id = add_item(session)
     act(server, session, item_id)
     assert [call.kwargs["label"] for call in sent.call_args_list] == [
-        "rune-trinket-unlocked", "achievement-reward", "achievement-use",
+        "achievement-use", "rune-trinket-unlocked", "achievement-reward",
     ]
-    rewards = decode_server_command_batch(*sent.call_args_list[1].args[1:])
+    rewards = decode_server_command_batch(*sent.call_args_list[2].args[1:])
     reward_id = next(item.item_id for item in rewards[0].value.items
                      if item.template_id == "ingredient_gem_dust")
     assert reward_id in rewards[1].value.field_180
-    assert (18,) in rewards[1].value.equipment_slots.values()
     saved = saved_state(server, session)
     assert saved.achievements[definition.key]["reward_status"] == "granted"
     assert reward_id in {item.item_id for item in saved.inventory.items}
@@ -190,34 +225,76 @@ def test_explicit_equip_cannot_bypass_locked_slot_and_automatic_equip_uses_base_
     for slot in EXTRA_RUNE_SLOTS:
         act(server, session, item_id, 0x01, slot)
         assert item_id not in session.gameplay_inventory.equipment_slots
+    # An automatic equip never reaches a locked slot.
     act(server, session, item_id, 0x01)
-    assert session.gameplay_inventory.equipment_slots[item_id] == (13,)
+    assert session.gameplay_inventory.equipment_slots[item_id] == (19,)
     assert not unlocked_rune_slots(session)
 
 
-def test_legacy_occupied_slot_stays_authorized_after_unequip_save_and_relog(player):
+def test_saved_entitlement_stays_authorized_after_unequip_save_and_relog(player):
     server, session, _ = player
-    legacy_id = add_item(session, "all_base_trinket_rune_01", equipped=18)
-    act(server, session, legacy_id, 0x02)
-    assert legacy_id not in session.gameplay_inventory.equipment_slots
+    session.gameplay_rune_trinket_unlocked_slots = {14}
+    extra_id = add_item(session, "all_base_trinket_rune_01", equipped=14)
+    act(server, session, extra_id, 0x02)
+    assert extra_id not in session.gameplay_inventory.equipment_slots
     saved = _state_from_document(_state_to_document(saved_state(server, session)))
-    assert saved.rune_trinket_unlocked_slots == (18,)
-    assert not saved.achievements.get(RUNE_SLOT_ACHIEVEMENTS[0], {}).get("completed_at")
+    assert saved.rune_trinket_unlocked_slots == (14,)
     server.account_store.put(saved, flush=True)
     restored = initialize(server, 47942)
-    assert unlocked_rune_slots(restored) == frozenset({18})
+    assert unlocked_rune_slots(restored) == frozenset({14})
     # Map initialization intentionally rekeys every inventory item.
     restored_id = next(item.item_id for item in restored.gameplay_inventory.items
                        if item.template_id == "all_base_trinket_rune_01"
                        and item.item_id in restored.gameplay_inventory.storage_58)
-    act(server, restored, restored_id, 0x01, 18)
-    assert restored.gameplay_inventory.equipment_slots[restored_id] == (18,)
+    act(server, restored, restored_id, 0x01, 14)
+    assert restored.gameplay_inventory.equipment_slots[restored_id] == (14,)
+
+
+def test_automatic_equip_picks_the_highest_free_slot_like_the_client(player):
+    server, session, _ = player
+    inventory = session.gameplay_inventory
+    for item_id in tuple(inventory.equipment_slots):
+        if inventory.equipment_slots[item_id][0] in range(13, 20):
+            del inventory.equipment_slots[item_id]
+    session.gameplay_rune_trinket_unlocked_slots = {13, 14}
+    filled = []
+    for _ in range(7):
+        item_id = add_item(session, "all_base_trinket_rune_01")
+        act(server, session, item_id, 0x01)
+        filled.append(session.gameplay_inventory.equipment_slots[item_id][0])
+    assert filled == [19, 18, 17, 16, 15, 14, 13]
+
+
+@pytest.mark.parametrize("legacy_slots,entitled,expected", [
+    # Starting trinkets from before the numbering matched the client.
+    ((13, 14, 15, 16, 17), (), (15, 16, 17, 18, 19)),
+    # One stone: old slot 18 is the client's 14; the old 13 is still locked.
+    ((13, 14, 15, 16, 17, 18), (18,), (14, 15, 16, 17, 18, 19)),
+    # Both stones: everything is usable where it is.
+    ((13, 14, 15, 16, 17, 18, 19), (18, 19), (13, 14, 15, 16, 17, 18, 19)),
+    # A save in the client's numbering is left alone.
+    ((14, 15, 16, 17, 18, 19), (14,), (14, 15, 16, 17, 18, 19)),
+])
+def test_saved_rune_trinkets_move_out_of_locked_slots(legacy_slots, entitled, expected):
+    inventory = InventoryInfo(
+        items=[ItemInfo(item_id=100 + slot, template_id="all_base_trinket_rune_01")
+               for slot in legacy_slots],
+        equipment_slots={100 + slot: (slot,) for slot in legacy_slots},
+    )
+    release_locked_rune_trinkets(inventory, {
+        {18: 14, 19: 13, 14: 14}[slot] for slot in entitled
+    })
+    assert sorted(slot for slots in inventory.equipment_slots.values()
+                  for slot in slots) == list(expected)
+    assert len(inventory.equipment_slots) == len(legacy_slots)
 
 
 @pytest.mark.parametrize("slot,key", zip(EXTRA_RUNE_SLOTS, RUNE_SLOT_ACHIEVEMENTS))
 def test_saved_completion_authorizes_its_slot_without_consuming_stone(player, slot, key):
     server, session, _ = player
-    session.gameplay_achievements[key] = AchievementProgress(progress=slot - 17, completed_at="2026-10-20 12:00:00")
+    session.gameplay_achievements[key] = AchievementProgress(
+        progress=RUNE_SLOT_ACHIEVEMENTS.index(key) + 1, completed_at="2026-10-20 12:00:00",
+    )
     item_id = add_item(session, "all_base_trinket_rune_01")
     act(server, session, item_id, 0x01, slot)
     assert session.gameplay_inventory.equipment_slots[item_id] == (slot,)

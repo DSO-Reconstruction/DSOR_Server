@@ -179,6 +179,11 @@ class ChatServer(RakNetServer):
             label="chat-admin-system",
         )
 
+    def send_system_message_to_user(self, user_id: int, text: str) -> None:
+        session = self._chat_session_for_user_id(user_id)
+        if session is not None:
+            self._send_system_message(session, text)
+
     def _handle_admin_command(self, s: Session, text: str) -> None:
         if not s.chat_is_admin:
             self._send_system_message(

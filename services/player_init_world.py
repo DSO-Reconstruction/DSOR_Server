@@ -421,6 +421,7 @@ class PlayerInitializationWorldService:
             s.gameplay_chase_server_tick = 0
             s.gameplay_chase_clock_anchor = None
             s.gameplay_monster_encounter = monster_encounter
+            previous_combat_state = s.gameplay_combat_state
             s.gameplay_combat_state = combat_state
             # A session can survive map transfers. Never validate the first
             # move on a new map against its previous map's coordinates.
@@ -440,8 +441,11 @@ class PlayerInitializationWorldService:
             s.gameplay_last_monster_resync_at = 0.0
             s.gameplay_tower_beam_started_at = {}
             s.gameplay_summon_actor_ids.clear()
-            s.gameplay_location_effect_ids.clear()
             s.gameplay_remote_visual_status_effects.clear()
+        # Re-initializing on the same map instance keeps the client's table;
+        # a transfer on one connection must not carry it to the next map.
+        if previous_combat_state is not combat_state:
+            CharacterService._discard_client_location_effects(s)
         if old_chase_timer is not None:
             old_chase_timer.cancel()
         for projectile_timer in old_projectile_timers:

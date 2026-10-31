@@ -22,7 +22,17 @@ from dso_server.protocol.character_selection import BitReader, BitWriter
 INVENTORY_INFO_COMMAND = command_id("Commands::InventoryInfoCommand", 0x0054)
 BOOTSTRAP_ITEM_ID = 0x00F00001
 BOOTSTRAP_ITEM_TEMPLATE = "all_base_trinket_rune_01"
-BOOTSTRAP_EQUIPMENT_SLOT = 14
+# The client's EquipmentSlotId (EquipmentSlotIdToString 0x1409a8d00) numbers
+# RuneTrinket1-5 as 15-19, RuneTrinket6 as 14 and RuneTrinket7 as 13. Both
+# tuples run in the client's fill order, highest free id first (see
+# StaticGameDatabase.item_equipment_slots). The inventory widget (0x14047eb2c)
+# keeps 14 and 13 locked until the first and second Divination Stone
+# achievements complete.
+RUNE_TRINKET_BASE_SLOTS = (19, 18, 17, 16, 15)
+RUNE_TRINKET_EXTRA_SLOTS = (14, 13)
+RUNE_SLOT_ACHIEVEMENTS = (
+    "item_use_item_rune_extension_stone", "item_use_item_rune_extension_stone_02",
+)
 # The client's essence pair.  Slot 35 holds the active essence: its damage
 # factor and ammunition type apply to every cast.  Slot 36 parks the essence
 # the player switches to; it must stay equipped but must not act.  An earlier
@@ -37,13 +47,13 @@ BOOTSTRAP_CONSUMABLE_ID = 0x00F00003
 BOOTSTRAP_CONSUMABLE_TEMPLATE = "potion_combined_health_rarity_05"
 BOOTSTRAP_TRAVEL_ITEM_ID = 0x00F00004
 BOOTSTRAP_TRAVEL_ITEM_TEMPLATE = "misc_travelmap"
-BOOTSTRAP_STARTER_RUNE_ID_START = 0x00F00200
-BOOTSTRAP_STARTER_JEWEL_ID_START = 0x00F00210
 BOOTSTRAP_STARTER_RING_DEATH_ID = 0x00F00220
 BOOTSTRAP_STARTER_RING_LIFE_ID = 0x00F00221
 BOOTSTRAP_STARTER_MOUNT_ID = 0x00F00222
 BOOTSTRAP_STARTER_MORTIS_PET_ID = 0x00F00223
 BOOTSTRAP_STARTER_SEASON_PASS_IDS = range(0x00F00224, 0x00F00228)
+BOOTSTRAP_STARTER_DIVINATION_STONE_ID = 0x00F00228
+BOOTSTRAP_DIVINATION_STONE_TEMPLATE = "item_rune_extension_stone"
 
 # UI::TransmogWidget::UpdateEquipmentSlots iterates its eight UI slots and,
 # in normal mode, asks Game::Inventory for equipment slot ids 0 through 7.
@@ -566,6 +576,28 @@ def decode_inventory_info(payload: bytes, bit_length: int) -> InventoryInfo:
     return result
 
 
+def release_locked_rune_trinkets(
+    info: InventoryInfo, unlocked_slots,
+) -> None:
+    """Move equipped runes out of extra slots the client keeps locked.
+
+    Saves from before the slot numbering matched the client hold the starting
+    trinkets in 13-17. The client refuses to show an item in a locked slot.
+    """
+
+    occupied = {
+        int(slot) for slots in info.equipment_slots.values() for slot in slots
+    }
+    free = [slot for slot in RUNE_TRINKET_BASE_SLOTS if slot not in occupied]
+    for item_id, slots in tuple(info.equipment_slots.items()):
+        locked = tuple(
+            slot for slot in slots
+            if slot in RUNE_TRINKET_EXTRA_SLOTS and slot not in unlocked_slots
+        )
+        if locked and free:
+            info.equipment_slots[item_id] = (free.pop(0),)
+
+
 def equip_inventory_item(
     info: InventoryInfo,
     item_id: int,
@@ -978,42 +1010,6 @@ def encode_bootstrap_inventory_info(
         )
         core_allocations[item_id] = slots
 
-    starter_trinkets: list[ItemInfo] = []
-    trinket_allocations: dict[int, tuple[int, ...]] = {}
-    for index in range(5):
-        item_id = BOOTSTRAP_STARTER_RUNE_ID_START + index
-        starter_trinkets.append(
-            ItemInfo(
-                item_id=item_id,
-                template_id="all_base_trinket_rune_01",
-                socket_count=5,
-                socketed_templates=["", "", "", "", ""],
-                item_level=1,
-                field_08=0,
-                field_18=0x2100 + index,
-                field_30=1,
-                field_38=0,
-                created_at=created_at,
-            )
-        )
-        trinket_allocations[item_id] = (13 + index,)
-    for index in range(3):
-        item_id = BOOTSTRAP_STARTER_JEWEL_ID_START + index
-        starter_trinkets.append(
-            ItemInfo(
-                item_id=item_id,
-                template_id="all_base_trinket_jewel_01",
-                socket_count=5,
-                socketed_templates=["", "", "", "", ""],
-                item_level=1,
-                field_08=0,
-                field_18=0x2110 + index,
-                field_30=1,
-                field_38=0,
-                created_at=created_at,
-            )
-        )
-        trinket_allocations[item_id] = (20 + index,)
     ring_death = ItemInfo(
         item_id=BOOTSTRAP_STARTER_RING_DEATH_ID,
         template_id="all_mythic_ring_death",
@@ -1106,21 +1102,33 @@ def encode_bootstrap_inventory_info(
             (5, 5, 7, 7),
         ))
     ]
-    equipment_slots = {**core_allocations, **trinket_allocations}
+    # New characters start without trinkets. The stack of two Divination Stones
+    # earns the two additional rune slots, each with its own rune trinket.
+    divination_stones = ItemInfo(
+        item_id=BOOTSTRAP_STARTER_DIVINATION_STONE_ID,
+        template_id=BOOTSTRAP_DIVINATION_STONE_TEMPLATE,
+        amount=2,
+        socket_count=0,
+        socketed_templates=[],
+        item_level=1,
+        field_18=0x2128,
+        field_30=1,
+        field_38=0,
+        created_at=created_at,
+    )
+    equipment_slots = dict(core_allocations)
     equipment_slots[ring_death.item_id] = (8,)
     equipment_slots[ring_life.item_id] = (9,)
-    # Five rune and three jewel trinkets are available initially. Divination
-    # Stones earn the two additional rune slots; each base item has five sockets.
     return encode_inventory_info(
         InventoryInfo(
-            items=core_items + starter_trinkets + [
+            items=core_items + [
                 ring_death,
                 ring_life,
                 manticore,
                 mortis_pet,
                 health_potion,
                 travel_map,
-            ] + season_pass_tickets,
+            ] + season_pass_tickets + [divination_stones],
             equipment_slots=equipment_slots,
             # Retail places TravelMapItem in ordinary inventory storage. It
             # must never enter equipment_slots: AddItemAtEquipmentSlot calls
@@ -1134,6 +1142,7 @@ def encode_bootstrap_inventory_info(
                     item.item_id: 4 + index
                     for index, item in enumerate(season_pass_tickets)
                 },
+                divination_stones.item_id: 4 + len(season_pass_tickets),
             },
             actor_id=actor_id,
         )

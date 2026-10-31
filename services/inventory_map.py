@@ -11,17 +11,30 @@ class InventoryMapService:
 
     def _activate_season_pass_item(
             self, s: Session, item_id: int, template_id: str) -> bool:
-        pass_unlocks = {
-            "gold_pass": (1,),
-            "gold_pass_2": (1, 3),
-            "red_pass": (2,),
-            "red_pass_2": (2, 4),
-        }
-        unlocks = pass_unlocks.get(str(template_id).casefold())
-        if unlocks is None:
+        from dso_server.gameplay.season_pass import (
+            SEASON_PASS_NO_SEASON_MESSAGE,
+            SEASON_PASS_TICKETS,
+            season_pass_state_for_season,
+            season_pass_ticket_types,
+        )
+        if str(template_id).casefold() not in SEASON_PASS_TICKETS:
             return False
+        # A ticket opens "the current season pass". Between seasons the client
+        # has no Season Pass to show it on, so the ticket waits for the next.
+        season = CharacterService._season_pass_season(self)
+        if season is None:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] kept Season Pass ticket "
+                f"{template_id!r}: no season is running"
+            )
+            callback = getattr(self, "system_chat_callback", None)
+            if callback is not None and s.gameplay_character is not None:
+                callback(
+                    s.gameplay_character.character_id,
+                    SEASON_PASS_NO_SEASON_MESSAGE,
+                )
+            return True
 
-        from dso_server.gameplay.season_pass import normalize_season_pass_state
         from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
         from dso_server.protocol.player_init_protocol import (
             INVENTORY_INFO_COMMAND,
@@ -39,15 +52,16 @@ class InventoryMapService:
                          if int(entry.item_id) == int(item_id)), None)
             if item is None or str(item.template_id).casefold() != str(template_id).casefold():
                 raise ValueError("Season Pass ticket is no longer in inventory")
-            state = normalize_season_pass_state(
-                getattr(s, "gameplay_season_pass", None) or {}
+            state = season_pass_state_for_season(
+                getattr(s, "gameplay_season_pass", None) or {}, season,
             )
             current_types = set(state["pass_types"])
-            newly_unlocked = set(unlocks) - current_types
-            if not newly_unlocked:
+            unlocks = season_pass_ticket_types(template_id, current_types)
+            if not unlocks:
                 print(
-                    f"[{GAMEPLAY_SERVICE_NAME}] retained duplicate Season Pass "
-                    f"ticket {template_id!r}; its reward track is already active"
+                    f"[{GAMEPLAY_SERVICE_NAME}] kept Season Pass ticket "
+                    f"{template_id!r}: not usable with pass types "
+                    f"{tuple(sorted(current_types))}"
                 )
                 return True
 
@@ -440,13 +454,14 @@ class InventoryMapService:
 
     def _handle_inventory_item_action_locked(
             self, s: Session, payload: bytes) -> None:
-        from dso_server.services.rune_progression import unlocked_rune_slots
+        from dso_server.services.rune_progression import (
+            EXTRA_RUNE_SLOTS, unlocked_rune_slots,
+        )
 
         action = decode_inventory_item_action(payload)
         with s.flow_lock:
             s.gameplay_client_command_state[0x0055] = action
             inventory = s.gameplay_inventory
-            # Preserve occupied legacy extra slots before an unequip/swap.
             s.gameplay_rune_trinket_unlocked_slots = set(unlocked_rune_slots(s))
             currency = s.gameplay_currency_state
             next_item_id = s.gameplay_next_item_id
@@ -962,7 +977,7 @@ class InventoryMapService:
                         preferred_slots=preferred_slots,
                         occupied_slots=occupied_slots,
                         unavailable_slots=tuple(
-                            slot for slot in (18, 19)
+                            slot for slot in EXTRA_RUNE_SLOTS
                             if slot not in s.gameplay_rune_trinket_unlocked_slots
                         ),
                     )

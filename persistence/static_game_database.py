@@ -12,7 +12,9 @@ import threading
 
 from dso_server.runtime import resident_content
 from dso_server.persistence import static_schema_compat as compat
-from dso_server.protocol.inventory_codec import AMMUNITION_SLOTS
+from dso_server.protocol.inventory_codec import (
+    AMMUNITION_SLOTS, RUNE_TRINKET_BASE_SLOTS, RUNE_TRINKET_EXTRA_SLOTS,
+)
 from dso_server.protocol.character_selection import (
     CLASS_NAMES,
     CLIENT_SKILL_MANAGER_ROW_OFFSET,
@@ -217,7 +219,11 @@ class StaticGameDatabase:
         """Resolve an item's generated SlotType to Inventory slot ids.
 
         Equivalent physical slots choose the explicitly replaced slot first,
-        then the first unoccupied slot. The numeric mapping is recovered from
+        then the first unoccupied slot of their list. Each list runs from the
+        highest id down: the client's own double-click equip
+        (Inventory::FindFreeEquipmentSlots 0x140947034) walks its free slots
+        from the end, and any other order makes the item visibly jump when
+        the server's answer arrives. The numeric mapping is recovered from
         retail InventoryInfo equipment records: rings are 8/9, amulet 10,
         belt 11, weapon modifier/banner 12, and the hand pair is 5/6. The
         essence pair is 35 (active) and 36 (secondary), confirmed on the
@@ -261,11 +267,13 @@ class StaticGameDatabase:
         if slot_type in fixed_slots:
             return fixed_slots[slot_type]
         equivalent_slots = {
-            "RingSlot": (8, 9),
-            "RuneTrinketSlot": (13, 14, 15, 16, 17, 18, 19),
-            "JewelTrinketSlot": (20, 21, 22),
+            "RingSlot": (9, 8),
+            "RuneTrinketSlot": (
+                *RUNE_TRINKET_BASE_SLOTS, *RUNE_TRINKET_EXTRA_SLOTS,
+            ),
+            "JewelTrinketSlot": (22, 21, 20),
             "AmmoSlot": AMMUNITION_SLOTS,
-            "ConsumableSlot": (37, 38, 39, 40),
+            "ConsumableSlot": (40, 39, 38, 37),
         }
         try:
             candidates = tuple(slot for slot in equivalent_slots[slot_type]

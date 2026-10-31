@@ -60,6 +60,7 @@ class LoginGameServer(DispatchService, LoginServer):
             os.getenv('DSO_SOCIAL_STATE_FILE', str(DEFAULT_SOCIAL_STATE_PATH))
         )
         self.social_chat_callback = None
+        self.system_chat_callback = None
         self.gameplay_routes = GameplayRouteTable(
             GAMEPLAY_ROUTE_TTL_SECONDS
         )

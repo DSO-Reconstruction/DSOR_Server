@@ -24,6 +24,11 @@ from dso_server.services.admin_effects import ADMIN_EFFECTS
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 
 TABLE = "_Template_StatusEffect"
+ITEM_TABLE = "_Template_Item"
+# Server rules the client has to share. It refuses an item below RequiredLevel
+# by itself (GameItem::IsUsableByPlayersLevel), so a server-side change alone
+# would never reach the server: new characters start with these stones.
+ITEM_PATCHES = {"item_rune_extension_stone": {"RequiredLevel": 1}}
 
 
 def readonly(path):
@@ -45,10 +50,19 @@ def check_client_content(server, client):
                                   "WHERE type='table'")) for db in (source, target)]
         if schemas[0] != schemas[1]:
             raise ValueError("client/server schemas differ; reconcile content before installing")
+        # A stock client still holds the rows this tool patches on the server.
+        patched_items = {
+            row[0] for row in source.execute(
+                f"SELECT rowid FROM {quoted(ITEM_TABLE)} WHERE Id IN ("
+                + ",".join("?" for _ in ITEM_PATCHES) + ")", tuple(ITEM_PATCHES),
+            )
+        } if ITEM_TABLE in schemas[0] else set()
         for table in schemas[0]:
             sql = f"SELECT rowid, * FROM {quoted(table)} ORDER BY rowid"
             rows = {row[0]: row for row in source.execute(sql)}
             for row in target.execute(sql):
+                if table == ITEM_TABLE and row[0] in patched_items:
+                    continue
                 if rows.get(row[0]) != row:
                     raise ValueError(f"client content differs: {table} row {row[0]}; "
                                      "reconcile content before installing")
@@ -82,8 +96,24 @@ def desired_effects(db):
     return rows
 
 
+def patched_rows(db):
+    """Everything ``patch_database`` writes, to tell whether it changes anything."""
+    rows = list(db.execute(f"SELECT rowid, * FROM {TABLE} ORDER BY rowid"))
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (ITEM_TABLE,)).fetchone():
+        rows += db.execute(
+            f"SELECT Id, RequiredLevel FROM {quoted(ITEM_TABLE)} WHERE Id IN ("
+            + ",".join("?" for _ in ITEM_PATCHES) + ") ORDER BY Id", tuple(ITEM_PATCHES),
+        ).fetchall()
+    return rows
+
+
 def patch_database(db):
     """Apply to the supplied transaction, preserving all existing rowids."""
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name=?", (ITEM_TABLE,)).fetchone():
+        for item_id, values in ITEM_PATCHES.items():
+            db.execute(f"UPDATE {quoted(ITEM_TABLE)} SET "
+                       + ",".join(f"{quoted(name)}=?" for name in values) + " WHERE Id=?",
+                       [*values.values(), item_id])
     installed = {}
     for row in desired_effects(db):
         existing = db.execute(f"SELECT rowid FROM {TABLE} WHERE Id=?", (row["Id"],)).fetchone()
@@ -138,9 +168,9 @@ def install_content(server, client, language_root, *, apply=False):
     locales = locale_changes(language_root)
     with closing(readonly(server)) as source, closing(sqlite3.connect(":memory:")) as preview:
         source.backup(preview)
-        before = list(preview.execute(f"SELECT rowid, * FROM {TABLE} ORDER BY rowid"))
+        before = patched_rows(preview)
         installed = patch_database(preview)
-        changed = before != list(preview.execute(f"SELECT rowid, * FROM {TABLE} ORDER BY rowid"))
+        changed = before != patched_rows(preview)
     report = {"effects": installed, "database_changed": changed,
               "client_sync": changed or original_hashes[0] != original_hashes[1],
               "locales_changed": len(locales), "applied": apply, "backups": []}

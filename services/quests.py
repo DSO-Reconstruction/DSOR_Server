@@ -152,6 +152,7 @@ from dso_server.gameplay.status_modifier_runtime import (
 )
 from dso_server.services.map_events import (
     _PARALLEL_WORLD_BOSS_REWARD_CHESTS,
+    _individual_prop_player_id,
     _send_prop_info_entries,
 )
 
@@ -243,14 +244,8 @@ def _quest_prop_bindings(catalog: QuestCatalog, definition) -> tuple:
     )
 
 
-def _quest_prop_usage_key(s: Session, definition) -> str:
-    # Many placements share an instance/template label. The authored row is
-    # stable across reconnects and fresh runtimes, unlike the network actor id.
-    runtime = getattr(s, "gameplay_map_event_runtime", None)
-    map_id = map_key(
-        getattr(runtime, "map_id", None) or getattr(s, "gameplay_map", "")
-    )
-    return f"{map_id}:{definition.kind}:{definition.row_id}"
+def _quest_prop_usage_key(s: Session, definition, switch_id: str) -> tuple:
+    return (_individual_prop_player_id(s), str(switch_id), int(definition.prop_id))
 
 
 def _dormant_quests(s: Session) -> dict[str, QuestProgress]:
@@ -1515,10 +1510,12 @@ class QuestService:
                 continue
             for task, switch in active_prop_switches(quest, progress):
                 if task.index == binding.task_index and switch == binding.switch:
+                    runtime = getattr(s, "gameplay_map_event_runtime", None)
                     if (
-                        (definition.one_shot or definition.individual_usage)
-                        and _quest_prop_usage_key(s, definition)
-                        in progress.used_props.get(switch.switch_id, ())
+                        runtime is not None
+                        and (definition.one_shot or definition.individual_usage)
+                        and _quest_prop_usage_key(s, definition, switch.switch_id)
+                        in runtime.quest_prop_usage
                     ):
                         continue
                     return switch.switch_id
@@ -1540,10 +1537,32 @@ class QuestService:
         return None
 
     @staticmethod
+    def _quest_forget_prop_usage(s: Session, quest) -> None:
+        """A new attempt starts clean: the map may outlive a repeated quest."""
+
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if runtime is None:
+            return
+        switches = {
+            switch.switch_id
+            for task in quest.tasks for switch in task.switch_definitions
+        }
+        player = _individual_prop_player_id(s)
+        with runtime.lock:
+            runtime.quest_prop_usage = {
+                key for key in runtime.quest_prop_usage
+                if key[0] != player or key[1] not in switches
+            }
+
+    @staticmethod
     def _quest_record_prop_usage(s: Session, definition, operation: str) -> None:
         """Consume this placement for the resolved switch before quest sync."""
 
-        if not operation or not (definition.one_shot or definition.individual_usage):
+        runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if (
+            runtime is None or not operation
+            or not (definition.one_shot or definition.individual_usage)
+        ):
             return
         catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
         log = _quest_log(s)
@@ -1560,8 +1579,8 @@ class QuestService:
                     for task, switch in active_prop_switches(quest, progress)
                 )
             ):
-                progress.used_props.setdefault(operation, set()).add(
-                    _quest_prop_usage_key(s, definition)
+                runtime.quest_prop_usage.add(
+                    _quest_prop_usage_key(s, definition, operation)
                 )
 
     @staticmethod
@@ -2516,6 +2535,7 @@ class QuestService:
             if commit_accept is not None and not commit_accept():
                 return False
             log[quest.quest_id] = progress
+        CharacterService._quest_forget_prop_usage(s, quest)
         _log(f"accepted {quest.quest_id!r} ({'offered' if offered else 'auto-start'})")
         commands = list(self._quest_state_commands(
             s, quest.quest_id, QUEST_STATE_ACCEPTED, NO_TIMESTAMP,

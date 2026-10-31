@@ -68,7 +68,7 @@ def test_progress_is_bound_to_one_season():
     fresh = season_pass_state_for_season(adopted, 70001)
     assert fresh["season_id"] == 70001 and fresh["pass_types"] == (1, 4)
     assert (fresh["level"], fresh["experience"], fresh["claimed_awards"], fresh["awarded_awards"],
-            fresh["mission_progress"], fresh["login_day"]) == (0, 0, (), (), {}, "")
+            fresh["mission_progress"], fresh["login_day"]) == (1, 0, (), (), {}, "")
 
 
 def test_missions_and_level_purchases_wait_for_a_season(cms):

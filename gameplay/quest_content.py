@@ -352,9 +352,6 @@ class QuestProgress:
     completed_at: str = NO_TIMESTAMP
     map_instance: str = ""
     continue_on_map: str = ""
-    # Authored prop placements already consumed by each switch in this quest
-    # attempt. Network actor ids and map runtime instances are not persistent.
-    used_props: dict[str, set[str]] = field(default_factory=dict)
 
     def to_document(self) -> dict:
         document = {
@@ -365,16 +362,11 @@ class QuestProgress:
             "map_instance": self.map_instance,
             "continue_on_map": self.continue_on_map,
         }
-        if self.used_props:
-            document["used_props"] = {
-                key: sorted(values) for key, values in self.used_props.items()
-            }
         return document
 
     @classmethod
     def from_document(cls, quest_id: str, document: Mapping) -> "QuestProgress":
         tokens = document.get("tokens", {})
-        used_props = document.get("used_props", {})
         return cls(
             quest_id=str(quest_id),
             state=int(document.get("state", QUEST_STATE_ACCEPTED)),
@@ -385,11 +377,6 @@ class QuestProgress:
             completed_at=str(document.get("completed_at", NO_TIMESTAMP)),
             map_instance=str(document.get("map_instance", "")),
             continue_on_map=str(document.get("continue_on_map", "")),
-            used_props={
-                str(key): {str(value) for value in values}
-                for key, values in used_props.items()
-                if isinstance(values, (list, tuple, set))
-            } if isinstance(used_props, Mapping) else {},
         )
 
     def task_finished(self, index: int) -> bool:
@@ -496,6 +483,14 @@ def _parse_task(
         str(c.get("id")): str(c.get("monster", ""))
         for c in element.findall("ClearRegion") if c.get("id")
     }
+    # Client data repeats a task's event row: one <Switch>+<Event> pair per
+    # prop (Evil Influence's corpse piles all share one switch id), or the
+    # same kill row twice. One world event is one step of the task, so exact
+    # copies fire once; rows that differ in anything still all apply.
+    unique_events = []
+    for event in events:
+        if event not in unique_events:
+            unique_events.append(event)
     return TaskDefinition(
         index=index,
         title=str(element.get("title", "")),
@@ -510,7 +505,7 @@ def _parse_task(
             for r in element.findall("Return") if r.get("value")
         }),
         done_guards=_parse_guards(element),
-        events=tuple(events),
+        events=tuple(unique_events),
         switches=MappingProxyType(switches),
         dialogs=MappingProxyType(dialogs),
         clear_regions=MappingProxyType(clear_regions),

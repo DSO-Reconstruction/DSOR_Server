@@ -305,6 +305,10 @@ class ServerApplication:
         self.characters.social_chat_callback = (
             self.chat.refresh_social_memberships
         )
+        self.login.system_chat_callback = self.chat.send_system_message_to_user
+        self.characters.system_chat_callback = (
+            self.chat.send_system_message_to_user
+        )
         self.services: tuple[RakNetServer, ...] = (
             self.gateway,
             self.login,

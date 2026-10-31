@@ -303,6 +303,7 @@ class MapTransitionService:
             s.gameplay_exit_transition_started = True
             s.gameplay_logout_timer = None
             s.gameplay_client_command_state[0x0063] = request
+        CharacterService._discard_client_location_effects(s)
         CharacterService._accept_gameplay_state_command(s, 0x0063)
         CharacterService._quest_leave_map(self, s)
         if s.gameplay_presence_callback is not None:
@@ -415,6 +416,7 @@ class MapTransitionService:
                 s.gameplay_projectile_timers.values()
             )
             s.gameplay_projectile_timers.clear()
+        CharacterService._discard_client_location_effects(s)
         CharacterService._quest_leave_map(self, s, physical_map_id)
         if chase_timer is not None:
             chase_timer.cancel()

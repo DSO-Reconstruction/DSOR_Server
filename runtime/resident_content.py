@@ -54,6 +54,8 @@ _resolved: dict[str, Path] = {}
 # lives only while at least one connection to it is open.
 _anchors: list[sqlite3.Connection] = []
 _installed = False
+# Absolute path strings -> their normalised key (see revision()).
+_REVISION_KEYS: dict[str, str] = {}
 
 # Files of a map, beside its .db4, that gameplay reads.
 MAP_FILE_SUFFIXES = (".map", ".col", ".mvr")
@@ -232,7 +234,17 @@ def stat(path: str | os.PathLike[str]) -> os.stat_result:
 def revision(path: str | os.PathLike[str]) -> tuple[int, int] | None:
     """``(st_mtime_ns, st_size)`` of a resident file, else ``None``."""
 
-    stat_result = _stats.get(_key(path))
+    # Skill-geometry misses ask ~40 times per resolve; abspath + normcase
+    # cost ~5 us each on Windows. A drive-absolute string always maps to
+    # the same key, and the revision itself is still read live.
+    key = _REVISION_KEYS.get(path) if isinstance(path, str) else None
+    if key is None:
+        key = _key(path)
+        if isinstance(path, str) and os.path.splitdrive(path)[0] and os.path.isabs(path):
+            if len(_REVISION_KEYS) >= 1024:
+                _REVISION_KEYS.clear()
+            _REVISION_KEYS[path] = key
+    stat_result = _stats.get(key)
     if stat_result is None:
         return None
     return int(stat_result.st_mtime_ns), int(stat_result.st_size)
