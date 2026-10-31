@@ -2746,6 +2746,35 @@ def _area_template_pool(
     )
 
 
+def _promote_monsters_to_champions(static_database_path, monsters, indices):
+    """Apply the authored champion rank factors to selected runtime actors."""
+    indices = tuple(dict.fromkeys(
+        int(index) for index in indices
+        if 0 <= int(index) < len(monsters)
+        and monsters[int(index)].rank == 'Rank_monster'
+    ))
+    if not indices:
+        return tuple(monsters)
+    with _open_read_only(static_database_path) as database:
+        factors = {str(r[0]): tuple(float(v) for v in r[1:]) for r in database.execute(
+            'SELECT Id, HealthPointsFactor, MinDamageFactor, MaxDamageFactor, ResistanceFactor '
+            'FROM _Template_MonsterRanks')}
+    result = list(monsters)
+    from dataclasses import replace
+    for index in indices:
+        original = result[index]
+        rank = 'Rank_champion'
+        old, new = factors[original.rank], factors[rank]
+        ratios = {2: new[0]/old[0], 8: new[0]/old[0], 11: new[1]/old[1], 12: new[2]/old[2]}
+        ratios.update({i: new[3]/old[3] for i in range(20, 26)})
+        stats = tuple(replace(stat, value=stat.value * ratios.get(stat.kind, 1))
+                      for stat in original.stats)
+        result[index] = replace(original, stats=stats, rank=rank,
+                                field_88=round(original.field_88 * new[0]/old[0]),
+                                field_90=round(original.field_90 * new[0]/old[0]))
+    return tuple(result)
+
+
 def _ensure_dungeon_elites(static_database_path, monsters, *, fixed_monster_count=0):
     """Distribute at least ten ranked enemies through a scaling dungeon."""
     elite_ranks = {'Rank_champion', 'Rank_leader', 'Rank_leader_no_entchantments'}
@@ -2760,24 +2789,9 @@ def _ensure_dungeon_elites(static_database_path, monsters, *, fixed_monster_coun
         return monsters
     count = min(needed, len(candidates))
     selected = [candidates[int((n + .5) * len(candidates) / count)] for n in range(count)]
-    with _open_read_only(static_database_path) as database:
-        factors = {str(r[0]): tuple(float(v) for v in r[1:]) for r in database.execute(
-            'SELECT Id, HealthPointsFactor, MinDamageFactor, MaxDamageFactor, ResistanceFactor '
-            'FROM _Template_MonsterRanks')}
-    result = list(monsters)
-    from dataclasses import replace
-    for index in selected:
-        original = result[index]
-        rank = 'Rank_champion'
-        old, new = factors[original.rank], factors[rank]
-        ratios = {2: new[0]/old[0], 8: new[0]/old[0], 11: new[1]/old[1], 12: new[2]/old[2]}
-        ratios.update({i: new[3]/old[3] for i in range(20, 26)})
-        stats = tuple(replace(stat, value=stat.value * ratios.get(stat.kind, 1))
-                      for stat in original.stats)
-        result[index] = replace(original, stats=stats, rank=rank,
-                                field_88=round(original.field_88 * new[0]/old[0]),
-                                field_90=round(original.field_90 * new[0]/old[0]))
-    return tuple(result)
+    return _promote_monsters_to_champions(
+        static_database_path, monsters, selected
+    )
 
 
 def _navigation_for_map(
@@ -3581,6 +3595,7 @@ def _load_dynamic_monster_encounter(
                 quotas[index] += 1
 
     spawn_area_monster_count = 0
+    area_spawned_monster_indices: dict[int, list[int]] = {}
     for (area, candidates), quota in zip(
         area_candidates, quotas, strict=True
     ):
@@ -3618,7 +3633,53 @@ def _load_dynamic_monster_encounter(
                     authored_yaw=math.atan2(area.matrix[8], area.matrix[0]),
                 ):
                     spawn_area_monster_count += 1
+                    area_spawned_monster_indices.setdefault(
+                        area.row_id, []
+                    ).append(len(monsters) - 1)
                     break
+
+    # SpawnArea authors a champion range per difficulty-selected area. The
+    # range was loaded above, but the density allocator previously spawned
+    # every generated actor as Rank_monster and ignored it. Promote up to each
+    # selected area's authored maximum so higher-tier variations actually
+    # carry their larger champion populations without increasing total mob
+    # density beyond the map cap.
+    area_champion_indices = []
+    for area, _candidates in area_candidates:
+        if (
+            str(map_id).casefold() == "f4201_pve"
+            and area.spawn_list_id.casefold() == "tank_dwarf_dragon"
+        ):
+            # This list has a dedicated dragon champion replacement below;
+            # promoting generic density monsters here would duplicate it.
+            continue
+        target_count = max(
+            int(area.min_champion_spawn), int(area.max_champion_spawn)
+        )
+        if target_count <= 0:
+            continue
+        spawned_indices = area_spawned_monster_indices.get(area.row_id, [])
+        already_champions = sum(
+            monsters[index].rank in {
+                'Rank_champion', 'Rank_leader',
+                'Rank_leader_no_entchantments',
+            }
+            for index in spawned_indices
+        )
+        needed = max(0, target_count - already_champions)
+        candidates = [
+            index for index in spawned_indices
+            if monsters[index].rank == 'Rank_monster'
+        ]
+        count = min(needed, len(candidates))
+        area_champion_indices.extend(
+            candidates[int((ordinal + 0.5) * len(candidates) / count)]
+            for ordinal in range(count)
+        )
+    if area_champion_indices:
+        monsters = list(_promote_monsters_to_champions(
+            static_database_path, tuple(monsters), area_champion_indices
+        ))
 
     if str(map_id).casefold() == "f4201_pve":
         # The authored tank_dwarf_dragon SpawnArea requests one or two

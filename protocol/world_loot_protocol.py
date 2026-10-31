@@ -21,6 +21,7 @@ import copy
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from functools import lru_cache
+import json
 import math
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ import re
 import sqlite3
 
 from dso_server.persistence import static_schema_compat as compat
+from dso_server.paths import DEFAULT_LOOT_RATES_CONFIG_PATH
 from dso_server.protocol.character_selection import BitReader, BitWriter
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND,
@@ -130,8 +132,7 @@ EQUIPMENT_RARITIES = (
 ROLLED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[:5]
 FIXED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[5:]
 # The last step of each difficulty ladder: Bloodshed and Parallel World
-# Bloodshed. Their equipment starts at Extraordinary, the client's name for
-# Rare, and only they can drop the best gem a monster may carry.
+# Bloodshed. Only these tiers can drop the best gem a monster may carry.
 TOP_MAP_DIFFICULTIES = frozenset((8, 9))
 # Monster gems sit this many ranks below their level band, and no monster drops
 # a rank closer than this to the end of the gem ladder.
@@ -294,10 +295,15 @@ class StaticLootCache:
     database_revision: tuple[int, int]
     item_rows: tuple[dict[str, object], ...]
     items_by_id: dict[str, dict[str, object]]
+    item_rows_by_category: dict[str, tuple[dict[str, object], ...]]
+    unique_set_item_rows: tuple[dict[str, object], ...]
     monster_profiles: dict[str, MonsterLootProfile]
     appearance_rows: tuple[dict[str, object], ...]
     currency_factors: dict[int, float]
     difficulty_stack_factors: dict[int, tuple[float, float]]
+    difficulty_drop_factors: dict[int, tuple[float, float]]
+    map_reward_items_by_access: dict[str, tuple[str, ...]]
+    map_region_by_access: dict[str, str]
     enchantments_by_id: dict[str, LootEnchantmentDefinition]
     random_enchantments: tuple[LootEnchantmentDefinition, ...]
     rarity_weights_by_difficulty: dict[
@@ -476,6 +482,18 @@ def _load_static_loot_cache(
                 "SELECT * FROM _Template_Item"
             ).fetchall()
         )
+        item_rows_by_category_lists: dict[str, list[dict[str, object]]] = {}
+        unique_set_item_rows = []
+        for row in item_rows:
+            item_rows_by_category_lists.setdefault(
+                str(row.get("ItemCategory") or "").casefold(), []
+            ).append(row)
+            if (
+                str(row.get("ItemCategory") or "") in EQUIPMENT_ITEM_CATEGORIES
+                and str(row.get("DefaultRarity") or "").casefold()
+                in {"unique", "set"}
+            ):
+                unique_set_item_rows.append(row)
         ranks = _load_monster_ranks(database)
         monster_profiles: dict[str, MonsterLootProfile] = {}
         monsters = database.execute(
@@ -562,6 +580,68 @@ def _load_static_loot_cache(
                 """
             ).fetchall()
         }
+        difficulty_drop_factors = {}
+        if compat.has_columns(
+            database,
+            "_Template_DifficultyFactors",
+            "ChanceMultiplier",
+            "PrivilegedLootDrop",
+        ):
+            difficulty_drop_factors = {
+                int(row["Id"]): (
+                    max(
+                        0.0,
+                        float(
+                            row["ChanceMultiplier"]
+                            if row["ChanceMultiplier"] is not None
+                            else 1.0
+                        ),
+                    ),
+                    max(
+                        0.0,
+                        float(
+                            row["PrivilegedLootDrop"]
+                            if row["PrivilegedLootDrop"] is not None
+                            else 1.0
+                        ),
+                    ),
+                )
+                for row in database.execute(
+                    "SELECT Id, ChanceMultiplier, PrivilegedLootDrop "
+                    "FROM _Template_DifficultyFactors"
+                ).fetchall()
+            }
+        map_reward_items_by_access = {}
+        map_region_by_access = {}
+        if compat.has_columns(
+            database, "_Template_MapAccessGroup", "Id", "RewardItems"
+        ):
+            map_reward_items_by_access = {
+                str(row["Id"]): tuple(
+                    token.strip()
+                    for token in str(row["RewardItems"] or "").split(";")
+                    if token.strip()
+                )
+                for row in database.execute(
+                    "SELECT Id, RewardItems FROM _Template_MapAccessGroup"
+                ).fetchall()
+            }
+        if (
+            compat.has_columns(database, "_Template_MapAccessGroup", "Id", "AccessGroup")
+            and compat.has_columns(database, "_Template_MapTemplate", "AccessGroup", "Region")
+        ):
+            map_region_by_access = {
+                str(row["Id"]): str(row["Region"] or "")
+                for row in database.execute(
+                    """
+                    SELECT access.Id, map.Region
+                    FROM _Template_MapAccessGroup AS access
+                    LEFT JOIN _Template_MapTemplate AS map
+                      ON map.AccessGroup=access.AccessGroup
+                    GROUP BY access.Id
+                    """
+                ).fetchall()
+            }
         enchantments = {}
         # The legacy build has no enchantment-affinity columns; the helpers
         # below already read an absent value as "no affinity".
@@ -648,11 +728,17 @@ def _load_static_loot_cache(
             magic = max(0.0, float(row["Magic"] or 0.0))
             rare = max(0.0, float(row["Rare"] or 0.0))
             epic = max(0.0, float(row["Epic"] or 0.0))
-            common = max(0.0, 100.0 - uncommon - magic - rare - epic)
+            common = (
+                max(0.0, 100.0 - uncommon - magic - rare - epic)
+                if uncommon > 0.0
+                else 0.0
+            )
+            # These are the authored percentages shown by the client's
+            # difficulty panel. Common is the unassigned remainder only when
+            # Improved/Uncommon is enabled. Do not suppress Magic at
+            # Bloodshed: R261 authors it at 30% there.
             rarity_weights_by_difficulty[int(row["Id"])] = (
-                (0.0, 0.0, 0.0, rare, epic)
-                if int(row["Id"]) in TOP_MAP_DIFFICULTIES
-                else (common, uncommon, magic, rare, epic)
+                common, uncommon, magic, rare, epic
             )
         enchantment_tiers = frozenset(
             int(row["Tier"])
@@ -705,10 +791,18 @@ def _load_static_loot_cache(
         database_revision=(int(modified_ns), int(file_size)),
         item_rows=item_rows,
         items_by_id={str(row["Id"]): row for row in item_rows},
+        item_rows_by_category={
+            category: tuple(rows)
+            for category, rows in item_rows_by_category_lists.items()
+        },
+        unique_set_item_rows=tuple(unique_set_item_rows),
         monster_profiles=monster_profiles,
         appearance_rows=appearance_rows,
         currency_factors=currency_factors,
         difficulty_stack_factors=difficulty_stack_factors,
+        difficulty_drop_factors=difficulty_drop_factors,
+        map_reward_items_by_access=map_reward_items_by_access,
+        map_region_by_access=map_region_by_access,
         enchantments_by_id=enchantments,
         random_enchantments=random_enchantments,
         rarity_weights_by_difficulty=rarity_weights_by_difficulty,
@@ -1039,6 +1133,361 @@ def _roll_equipment_rarity(
     if sum(weights) <= 0.0:
         return 0
     return int(rng.choices(range(len(weights)), weights=weights, k=1)[0])
+
+
+def _difficulty_drop_chances(
+    database: StaticLootCache,
+    map_difficulty: int,
+    *,
+    monster_drop: float,
+    privileged_drop: float,
+) -> tuple[float, float]:
+    """Apply the selected difficulty row's authored drop-rate factors."""
+
+    chance_multiplier, privileged_multiplier = database.difficulty_drop_factors.get(
+        int(map_difficulty), (1.0, 1.0)
+    )
+    return (
+        _probability(float(monster_drop) * chance_multiplier),
+        _probability(
+            float(privileged_drop)
+            * chance_multiplier
+            * privileged_multiplier
+        ),
+    )
+
+
+MAP_REWARD_BASE_CHANCE = max(
+    0.0,
+    min(1.0, float(os.getenv("DSO_MAP_REWARD_DROP_CHANCE", "0.03"))),
+)
+PARALLEL_WORLD_UNIQUE_BASE_CHANCE = max(
+    0.0,
+    min(
+        1.0,
+        float(os.getenv("DSO_PARALLEL_WORLD_UNIQUE_DROP_CHANCE", "0.03")),
+    ),
+)
+POSSIBLE_REWARD_RATE_KEYS = (
+    "map_reward",
+    "unique_set",
+    "gem",
+    "rune",
+    "ingredient",
+    "elite_ingredient",
+    "jewel",
+)
+DEFAULT_POSSIBLE_REWARD_RATES = {
+    "map_reward": MAP_REWARD_BASE_CHANCE * 100.0,
+    "unique_set": PARALLEL_WORLD_UNIQUE_BASE_CHANCE * 100.0,
+    **{
+        key: MAP_REWARD_BASE_CHANCE * 100.0
+        for key in (
+            "gem", "rune", "ingredient", "elite_ingredient", "jewel"
+        )
+    },
+}
+
+
+@lru_cache(maxsize=8)
+def _read_possible_reward_config(
+    config_path: str, modified_ns: int, file_size: int
+) -> dict[str, object]:
+    try:
+        document = json.loads(Path(config_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    return document if isinstance(document, dict) else {}
+
+
+def possible_reward_rates(map_access_id: str = "") -> dict[str, float]:
+    """Return CMS rates as probabilities, with per-access overrides applied."""
+
+    rates = dict(DEFAULT_POSSIBLE_REWARD_RATES)
+    path = Path(DEFAULT_LOOT_RATES_CONFIG_PATH)
+    try:
+        stat = path.stat()
+        document = _read_possible_reward_config(
+            str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size)
+        )
+    except OSError:
+        document = {}
+    defaults = document.get("defaults", {})
+    overrides = document.get("overrides", {})
+    selected = (
+        overrides.get(str(map_access_id), {})
+        if isinstance(overrides, dict) else {}
+    )
+    for source in (defaults, selected):
+        if not isinstance(source, dict):
+            continue
+        for key in POSSIBLE_REWARD_RATE_KEYS:
+            value = source.get(key)
+            if isinstance(value, (int, float)) and math.isfinite(value):
+                rates[key] = max(0.0, min(100.0, float(value)))
+    return {key: value / 100.0 for key, value in rates.items()}
+
+
+def _map_reward_definitions(
+    database: StaticLootCache,
+    map_access_id: str,
+    class_name: str,
+    item_level: int,
+) -> tuple[LootItemDefinition, ...]:
+    """Resolve concrete, class-appropriate items listed for this map access.
+
+    Access-window placeholder items (``TrashLoot`` and ``dungeonaccess_*``)
+    describe a reward category to the client; they are not loot templates.
+    Class alternatives are authored as comma-separated ``Class|item`` pairs.
+    """
+
+    raw_entries = database.map_reward_items_by_access.get(
+        str(map_access_id), ()
+    )
+    resolved_ids: list[str] = []
+    for entry in raw_entries:
+        alternatives = [part.strip() for part in entry.split(",") if part.strip()]
+        class_specific = []
+        unqualified = []
+        for alternative in alternatives:
+            if "|" in alternative:
+                owner, template_id = alternative.split("|", 1)
+                if owner.strip().casefold() == str(class_name).casefold():
+                    class_specific.append(template_id.strip())
+            else:
+                unqualified.append(alternative)
+        resolved_ids.extend(class_specific or unqualified)
+
+    definitions = []
+    seen: set[str] = set()
+    for template_id in resolved_ids:
+        if not template_id or template_id in seen:
+            continue
+        seen.add(template_id)
+        row = database.items_by_id.get(template_id)
+        if row is None:
+            continue
+        category = str(row.get("ItemCategory") or "")
+        item_classes = {
+            value.casefold() for value in _tokens(row.get("CharClass"))
+        }
+        if (
+            not category
+            or category == "TrashLoot"
+            or template_id.casefold().startswith("dungeonaccess_")
+            or int(row.get("Obsolete") or 0) != 0
+            or (item_classes and str(class_name).casefold() not in item_classes)
+            or item_level < int(row.get("MinDropLevel") or 1)
+            or item_level > int(row.get("MaxDropLevel") or 10_000)
+        ):
+            continue
+        definitions.append(_loot_definition_from_row(row))
+    return tuple(definitions)
+
+
+def _loot_definition_from_row(row: Mapping[str, object]) -> LootItemDefinition:
+    return LootItemDefinition(
+        template_id=str(row.get("Id") or ""),
+        item_category=str(row.get("ItemCategory") or ""),
+        auto_pick_up=str(row.get("AutoPickUp") or "None"),
+        min_socket_count=str(row.get("MinSocketCount") or "0"),
+        max_socket_count=str(row.get("MaxSocketCount") or "0"),
+        appearance_collection=str(row.get("AppearanceCollection") or ""),
+        slot_types=_tokens(row.get("SlotType")),
+        char_classes=_tokens(row.get("CharClass")),
+        base_enchantments=_resource_ids(row.get("BaseEnchantments")),
+        enchantment_specification=str(row.get("Enchantments") or ""),
+    )
+
+
+def _possible_reward_descriptors(
+    database: StaticLootCache, map_access_id: str
+) -> tuple[str, ...]:
+    return tuple(
+        token.casefold()
+        for token in database.map_reward_items_by_access.get(
+            str(map_access_id), ()
+        )
+    )
+
+
+def _possible_reward_item_pool(
+    database: StaticLootCache,
+    map_access_id: str,
+    class_name: str,
+    item_level: int,
+    *,
+    categories: frozenset[str] = frozenset(),
+    rarities: frozenset[str] = frozenset(),
+    prefixes: tuple[str, ...] = (),
+    region_only: bool = False,
+    check_level: bool = True,
+) -> tuple[LootItemDefinition, ...]:
+    normalized_categories = {category.casefold() for category in categories}
+
+    def region_tokens(value: object) -> set[str]:
+        result = {token.casefold() for token in _tokens(value)}
+        for token in tuple(result):
+            if token.startswith("parallel_world_"):
+                result.add("pw_" + token.removeprefix("parallel_world_"))
+            elif token.startswith("pw_"):
+                result.add("parallel_world_" + token.removeprefix("pw_"))
+        return result
+
+    map_regions = region_tokens(
+        database.map_region_by_access.get(map_access_id, "")
+    )
+    if region_only:
+        candidate_rows = database.unique_set_item_rows
+    elif categories:
+        candidate_rows = tuple(
+            row
+            for category in categories
+            for row in database.item_rows_by_category.get(category, ())
+        )
+    else:
+        candidate_rows = database.item_rows
+    result = []
+    for row in candidate_rows:
+        template_id = str(row.get("Id") or "")
+        category = str(row.get("ItemCategory") or "")
+        rarity = str(row.get("DefaultRarity") or "").casefold()
+        item_regions = region_tokens(row.get("Region"))
+        if (
+            not template_id
+            or int(row.get("Obsolete") or 0) != 0
+            or int(row.get("OnlyActiveDuringEvent") or 0) != 0
+            or bool(str(row.get("ActiveEvents") or ""))
+            or (
+                normalized_categories
+                and category.casefold() not in normalized_categories
+            )
+            or (rarities and rarity not in rarities)
+            or (prefixes and not template_id.casefold().startswith(prefixes))
+            or (region_only and not (map_regions & item_regions))
+            or (
+                check_level
+                and item_level < int(row.get("MinDropLevel") or 1)
+            )
+            or (
+                check_level
+                and item_level > int(row.get("MaxDropLevel") or 10_000)
+            )
+        ):
+            continue
+        item_classes = {
+            token.casefold() for token in _tokens(row.get("CharClass"))
+        }
+        if item_classes and str(class_name).casefold() not in item_classes:
+            continue
+        result.append(_loot_definition_from_row(row))
+    return tuple(result)
+
+
+def _region_unique_definitions(
+    database: StaticLootCache,
+    map_access_id: str,
+    class_name: str,
+    item_level: int,
+) -> tuple[LootItemDefinition, ...]:
+    return _possible_reward_item_pool(
+        database,
+        map_access_id,
+        class_name,
+        item_level,
+        categories=frozenset(EQUIPMENT_ITEM_CATEGORIES),
+        rarities=frozenset(("unique", "set")),
+        region_only=True,
+    )
+
+
+def _descriptor_tier(descriptors: tuple[str, ...], prefix: str) -> int:
+    for descriptor in descriptors:
+        match = re.fullmatch(rf"{re.escape(prefix)}_0?([1-5])", descriptor)
+        if match:
+            return int(match.group(1))
+    return 0
+
+
+def _possible_reward_materials(
+    database: StaticLootCache,
+    descriptors: tuple[str, ...],
+    *,
+    elite: bool,
+) -> tuple[LootItemDefinition, ...]:
+    tier = _descriptor_tier(descriptors, "dungeonaccess_ingredients")
+    if not tier:
+        return ()
+    families = ("extract_ingredient_",) if elite else (
+        "herb_ingredient_", "ore_ingredient_", "yarn_ingredient_",
+    )
+    suffix = f"_rarity_0{tier}"
+    return tuple(
+        _loot_definition_from_row(row)
+        for row in database.item_rows_by_category.get("ingredientitem", ())
+        if str(row.get("Id") or "").casefold().startswith(families)
+        and str(row.get("Id") or "").casefold().endswith(suffix)
+        and str(row.get("ItemCategory") or "").casefold() == "ingredientitem"
+        and int(row.get("Obsolete") or 0) == 0
+    )
+
+
+def _possible_reward_runes(
+    database: StaticLootCache,
+    descriptors: tuple[str, ...],
+) -> tuple[LootItemDefinition, ...]:
+    if "dungeonaccess_runes_magic" in descriptors:
+        maximum_rarity = "magic"
+    elif "dungeonaccess_runes_uncommon" in descriptors:
+        maximum_rarity = "uncommon"
+    elif "dungeonaccess_runes" in descriptors:
+        maximum_rarity = "common"
+    else:
+        return ()
+    rarity_order = {name.casefold(): index for index, name in enumerate(EQUIPMENT_RARITIES)}
+    maximum_index = rarity_order[maximum_rarity]
+    return tuple(
+        _loot_definition_from_row(row)
+        for row in database.item_rows_by_category.get("equipmentrune", ())
+        if str(row.get("ItemCategory") or "").casefold() == "equipmentrune"
+        and int(row.get("Obsolete") or 0) == 0
+        and rarity_order.get(str(row.get("DefaultRarity") or "").casefold(), 99)
+        <= maximum_index
+    )
+
+
+def roll_possible_reward_jewel(
+    static_database_path: str | Path,
+    map_access_id: str,
+    map_difficulty: int,
+    rng: random.Random | None = None,
+) -> str | None:
+    """Roll the normal-jewel reward shown for maps with jewel chest rewards."""
+
+    generator = rng if rng is not None else random.SystemRandom()
+    database = prime_world_loot_cache(static_database_path)
+    rates = possible_reward_rates(map_access_id)
+    descriptors = _possible_reward_descriptors(database, map_access_id)
+    if "dungeonaccess_jewels" not in descriptors:
+        return None
+    _ordinary_chance, jewel_chance = _difficulty_drop_chances(
+        database,
+        map_difficulty,
+        monster_drop=rates["jewel"],
+        privileged_drop=rates["jewel"],
+    )
+    if generator.random() > jewel_chance:
+        return None
+    candidates = _possible_reward_item_pool(
+        database,
+        map_access_id,
+        "",
+        1,
+        categories=frozenset(("equipmentjewel",)),
+        rarities=frozenset(("common",)),
+        check_level=False,
+    )
+    return generator.choice(candidates).template_id if candidates else None
 
 
 def _monster_gem_rank(
@@ -1789,6 +2238,7 @@ def generate_monster_loot(
     force_drops: bool = False,
     wisdom_eligible: bool = False,
     map_difficulty: int = 0,
+    map_access_id: str = "",
     extra_boss_gems: int = 0,
     guaranteed_gem_templates: tuple[str, ...] = (),
     additional_instant_consumables: tuple[tuple[str, int], ...] = (),
@@ -1863,8 +2313,14 @@ def generate_monster_loot(
         main_enabled = bool(profile.loot_list_id) and not profile.loot_list_id.endswith(
             "_empty"
         )
+        main_drop_chance, andermant_drop_chance = _difficulty_drop_chances(
+            database,
+            map_difficulty,
+            monster_drop=profile.drop_chance,
+            privileged_drop=profile.andermant_drop_chance,
+        )
         if force_drops or (
-            main_enabled and generator.random() <= profile.drop_chance
+            main_enabled and generator.random() <= main_drop_chance
         ):
             gold_amount = max(
                 1,
@@ -1966,7 +2422,171 @@ def generate_monster_loot(
                         )
                     )
 
-        if force_drops or generator.random() <= profile.andermant_drop_chance:
+        # Possible Rewards is authored per map-access difficulty. Its direct
+        # Unique/Set entries and the map's Region items share a 3% base roll;
+        # the selected difficulty's drop modifiers scale that chance.
+        possible_rates = (
+            possible_reward_rates(map_access_id) if map_access_id else {}
+        )
+        if map_access_id:
+            listed_rewards = _map_reward_definitions(
+                database,
+                map_access_id,
+                class_name,
+                equipment_item_level,
+            )
+            region_uniques = _region_unique_definitions(
+                database,
+                map_access_id,
+                class_name,
+                equipment_item_level,
+            )
+            unique_by_id = {
+                definition.template_id: definition
+                for definition in (*listed_rewards, *region_uniques)
+                if str(
+                    database.items_by_id[definition.template_id].get(
+                        "DefaultRarity"
+                    ) or ""
+                ).casefold() in {"unique", "set"}
+            }
+            _main_unique_chance, unique_chance = (
+                _difficulty_drop_chances(
+                    database,
+                    map_difficulty,
+                    monster_drop=possible_rates["unique_set"],
+                    privileged_drop=possible_rates["unique_set"],
+                )
+            )
+            if unique_by_id and (
+                force_drops or generator.random() <= unique_chance
+            ):
+                reward = generator.choice(tuple(unique_by_id.values()))
+                reward_row = database.items_by_id[reward.template_id]
+                specifications.append((
+                    reward,
+                    1,
+                    equipment_item_level,
+                    "",
+                    _rarity_index(reward_row.get("DefaultRarity"), 0),
+                ))
+
+        # Materialize the category markers from the same Possible Rewards row
+        # into their real item pools. The client data provides category/tier,
+        # but no server drop odds, so each enabled category uses the
+        # configurable 3% base chance.
+        if map_access_id:
+            descriptors = _possible_reward_descriptors(
+                database, map_access_id
+            )
+            _main_reward_chance, possible_reward_chance = _difficulty_drop_chances(
+                database,
+                map_difficulty,
+                monster_drop=possible_rates["map_reward"],
+                privileged_drop=possible_rates["map_reward"],
+            )
+            direct_candidates = tuple(
+                definition
+                for definition in listed_rewards
+                if str(
+                    database.items_by_id[definition.template_id].get(
+                        "DefaultRarity"
+                    ) or ""
+                ).casefold() not in {"unique", "set"}
+            )
+            if direct_candidates and (
+                force_drops
+                or generator.random() <= possible_reward_chance
+            ):
+                reward = generator.choice(direct_candidates)
+                row = database.items_by_id[reward.template_id]
+                specifications.append((
+                    reward,
+                    1,
+                    equipment_item_level,
+                    "",
+                    _rarity_index(row.get("DefaultRarity"), 0),
+                ))
+
+            gem_bounds = next((
+                match
+                for descriptor in descriptors
+                if (match := re.fullmatch(
+                    r"dungeonaccess_gems_([a-s])_to_([a-s])", descriptor
+                ))
+            ), None)
+            if gem_bounds is not None and (
+                force_drops
+                or generator.random() <= _difficulty_drop_chances(
+                    database,
+                    map_difficulty,
+                    monster_drop=possible_rates["gem"],
+                    privileged_drop=possible_rates["gem"],
+                )[1]
+            ):
+                first, last = gem_bounds.groups()
+                low, high = sorted((first.casefold(), last.casefold()))
+                gem_ranks = [
+                    rank for rank in sorted(database.standard_gems_by_rank)
+                    if low <= rank <= high
+                ]
+                if gem_ranks:
+                    gem_pool = database.gems_for_rank(generator.choice(gem_ranks))
+                    if gem_pool:
+                        specifications.append((generator.choice(gem_pool), 1, 1, "", 0))
+
+            elite_ranks = {"guardian", "champion", "leader", "boss", "worldboss"}
+            if profile.rank_kind in elite_ranks:
+                rune_pool = _possible_reward_runes(database, descriptors)
+                if rune_pool and (
+                    force_drops
+                    or generator.random() <= _difficulty_drop_chances(
+                        database,
+                        map_difficulty,
+                        monster_drop=possible_rates["rune"],
+                        privileged_drop=possible_rates["rune"],
+                    )[1]
+                ):
+                    rune = generator.choice(rune_pool)
+                    row = database.items_by_id[rune.template_id]
+                    specifications.append((
+                        rune, 1, 1, "", _rarity_index(row.get("DefaultRarity"), 0)
+                    ))
+
+            material_pool = _possible_reward_materials(
+                database, descriptors, elite=False
+            )
+            if material_pool and (
+                force_drops
+                or generator.random() <= _difficulty_drop_chances(
+                    database,
+                    map_difficulty,
+                    monster_drop=possible_rates["ingredient"],
+                    privileged_drop=possible_rates["ingredient"],
+                )[1]
+            ):
+                material = generator.choice(material_pool)
+                specifications.append((material, 1, 1, "", 0))
+            if profile.rank_kind in elite_ranks:
+                elite_material_pool = _possible_reward_materials(
+                    database, descriptors, elite=True
+                )
+                if (
+                    elite_material_pool
+                    and (
+                        force_drops
+                        or generator.random() <= _difficulty_drop_chances(
+                            database,
+                            map_difficulty,
+                            monster_drop=possible_rates["elite_ingredient"],
+                            privileged_drop=possible_rates["elite_ingredient"],
+                        )[1]
+                    )
+                ):
+                    material = generator.choice(elite_material_pool)
+                    specifications.append((material, 1, 1, "", 0))
+
+        if force_drops or generator.random() <= andermant_drop_chance:
             factor = _currency_factor(
                 database, profile.monster_level, int(player_level)
             )

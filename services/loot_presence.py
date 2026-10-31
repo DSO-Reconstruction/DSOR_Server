@@ -47,6 +47,10 @@ class LootPresenceService:
                 or getattr(session, 'gameplay_map_access_id', None)
                 or map_id
             )
+            map_access_id = str(
+                getattr(session, 'gameplay_map_access_id', None)
+                or event_map_id
+            )
             event_map_aliases = (
                 map_id,
                 str(getattr(session, 'gameplay_map_access_id', None) or ""),
@@ -141,6 +145,7 @@ class LootPresenceService:
             force_drops=FORCE_LOOT_DROPS_FOR_TESTING,
             wisdom_eligible=wisdom_eligible,
             map_difficulty=map_difficulty,
+            map_access_id=map_access_id,
             extra_boss_gems=int(
                 getattr(socket_evaluation, "boss_bonus_gems", 0)
             ),

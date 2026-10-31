@@ -44,6 +44,7 @@ from dso_server.services.admin_live import (
 )
 from dso_server.services.admin_events import EventAdministration, EventScheduleConflict
 from dso_server.services.admin_season_pass import SeasonPassAdministration, SeasonPassConflict
+from dso_server.services.admin_loot import LootRateAdministration, LootRateConflict
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
@@ -109,6 +110,7 @@ class AdminService:
         self.live = LiveAdministration(self)
         self.events = EventAdministration(self)
         self.season_pass = SeasonPassAdministration(self)
+        self.loot_rates = LootRateAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
         self.started_at = time.time()
@@ -1231,6 +1233,11 @@ class AdminService:
             return self.season_pass.rewards()
         if path == "/api/season-pass/missions":
             return self.season_pass.missions()
+        if path == "/api/loot-rates":
+            return self.loot_rates.overview(
+                query=query.get("q", ""),
+                access_id=query.get("access_id", ""),
+            )
         if path == "/api/currencies":
             return {"currencies": list(CURRENCIES)}
         if path.startswith("/api/items/"):
@@ -1286,6 +1293,11 @@ class AdminService:
                 self._sessions.pop(token, None)
             return {"ok": True}
         reason = reason_from(payload)
+        if path == "/api/loot-rates":
+            try:
+                return self.loot_rates.update(account.username, reason, payload)
+            except LootRateConflict as exc:
+                raise AdminError(409, str(exc)) from exc
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")
             if len(parts) < 3 or parts[0:2] != ["api", "npc-shops"]:
