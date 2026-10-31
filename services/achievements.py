@@ -52,6 +52,7 @@ from dso_server.gameplay.quest_content import announced_chapter
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.player_init_protocol import (
     ACHIEVEMENT_INFO_COMMAND,
+    MESSAGE_COMMAND,
     Achievement,
     AchievementInfo,
     ServerCommand,
@@ -63,6 +64,12 @@ from dso_server.protocol.quest_protocol import (
 )
 from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
+from dso_server.protocol.item_receipt_protocol import (
+    ITEM_RECEIVED_TEMPLATE_CATEGORIES,
+    ItemReceiptGrant,
+    build_item_receipts,
+    item_received_message,
+)
 from dso_server.protocol.shop_protocol import OFFER_RARITY_IDS
 
 from dso_server.services.base import CharacterService
@@ -219,8 +226,22 @@ class AchievementService:
                 builder.add_item(item, definition.reward_amount,
                                  item_level=max(1, int(character.level)))
                 mutation = builder.finish()
+                receipts, _ = build_item_receipts(
+                    previous_inventory, mutation.inventory,
+                    (entry.item_id for entry in mutation.changed_items),
+                    mutation.replacements,
+                    (ItemReceiptGrant(
+                        item.template_id, definition.reward_amount,
+                        include_template_id=(
+                            item.item_category in ITEM_RECEIVED_TEMPLATE_CATEGORIES
+                        ),
+                    ),),
+                    next_item_id=mutation.next_item_id,
+                )
                 packet = encode_server_command_batch((
                     ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    *(ServerCommand(MESSAGE_COMMAND, item_received_message(receipt),
+                                    LOCAL_PLAYER_ACTOR_ID) for receipt in receipts),
                     ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
                 ), include_terminator=True)
             except (OSError, ValueError) as exc:

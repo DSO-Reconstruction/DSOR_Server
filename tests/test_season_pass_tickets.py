@@ -6,9 +6,10 @@ from unittest.mock import Mock, patch
 import pytest
 
 from dso_server.gameplay.season_pass import (
-    SEASON_PASS_NO_SEASON_MESSAGE, SEASON_PASS_TICKETS, load_season_pass_catalog,
-    season_pass_state_for_season, season_pass_ticket_types,
+    SEASON_PASS_NO_SEASON_MESSAGE, SEASON_PASS_TICKETS, SeasonPassCatalog,
+    load_season_pass_catalog, season_pass_state_for_season, season_pass_ticket_types,
 )
+from dso_server.protocol.gameplay_protocol import Message
 from dso_server.protocol.player_init_protocol import decode_server_command_batch
 from dso_server.protocol.season_pass_protocol import (
     GET_SEASON_PASS_AWARD_COMMAND, SeasonPassQuery,
@@ -28,18 +29,19 @@ SEASON = 70001
     ("gold_pass", (1,), (3,)),
     ("gold_pass", (1, 3), ()),
     ("gold_pass_2", (), (1, 3)),
-    ("gold_pass_2", (1,), ()),
+    # A double ticket in the bag upgrades a track that has the standard pass.
+    ("gold_pass_2", (1,), (3,)),
     ("gold_pass_2", (1, 3), ()),
     ("red_pass", (), (2,)),
     ("red_pass", (2,), (4,)),
     ("red_pass", (2, 4), ()),
     ("red_pass_2", (), (2, 4)),
-    ("red_pass_2", (2,), ()),
+    ("red_pass_2", (2,), (4,)),
     # The two tracks do not affect each other.
     ("red_pass_2", (1, 3), (2, 4)),
     ("gold_pass", (2, 4), (1,)),
 ])
-def test_ticket_rules_match_the_client_shop_filter(template, active, expected):
+def test_ticket_rules(template, active, expected):
     assert season_pass_ticket_types(template, active) == expected
 
 
@@ -149,12 +151,108 @@ def test_a_system_message_goes_to_the_players_chat_session():
 
 def test_a_refused_ticket_stays_in_the_bag(player):
     server, session, _ = player
-    standard = add_item(session, "gold_pass")
     double = add_item(session, "gold_pass_2")
-    _use(server, session, standard)
+    standard = add_item(session, "gold_pass")
     _use(server, session, double)
-    assert session.gameplay_season_pass["pass_types"] == (1,)
-    assert _stack(session, "gold_pass_2").amount == 1
+    _use(server, session, standard)
+    assert session.gameplay_season_pass["pass_types"] == (1, 3)
+    assert _stack(session, "gold_pass").amount == 1
+
+
+def _claim(server, session, *award_ids):
+    """The money_cc a claim adds: level 1 pays 10 free and 30 gold."""
+    catalog = SeasonPassCatalog({}, ((1, 0),), {1: ("Loot:money_cc,10", "Loot:money_cc,30", "")})
+    before = session.gameplay_game_currencies["money_cc"]
+    server._handle_season_pass_awards(session, SeasonPassQuery(
+        GET_SEASON_PASS_AWARD_COMMAND, award_ids=award_ids,
+    ), session.gameplay_season_pass, catalog)
+    return session.gameplay_game_currencies["money_cc"] - before
+
+
+def test_a_double_track_pays_every_level_twice(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass_2"))
+    # The client claims one ID per entitlement, all at once.
+    assert _claim(server, session, 1, 101, 301) == 70
+    assert _claim(server, session, 101, 301) == 0
+
+
+def test_a_standard_track_pays_once(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass"))
+    assert _claim(server, session, 1, 101) == 40
+
+
+def test_the_upgrade_pays_the_second_copy_of_claimed_levels(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass"))
+    assert _claim(server, session, 101) == 30
+    _use(server, session, add_item(session, "gold_pass_2"))
+    assert session.gameplay_season_pass["pass_types"] == (1, 3)
+    assert _claim(server, session, 301) == 30
+    assert _claim(server, session, 301) == 0
+
+
+def _notifications(server, session, *award_ids):
+    """(amount, item id, template name or None) of each item-received message."""
+    catalog = SeasonPassCatalog({}, ((1, 0),), {
+        1: ("Loot:money_cc,10", "Loot:item_rune_extension_stone,2", ""),
+    })
+    session.send_reliable_ordered_split = Mock()
+    server._handle_season_pass_awards(session, SeasonPassQuery(
+        GET_SEASON_PASS_AWARD_COMMAND, award_ids=award_ids,
+    ), session.gameplay_season_pass, catalog)
+    (call,) = session.send_reliable_ordered_split.call_args_list
+    commands = decode_server_command_batch(call.args[0], call.kwargs["total_bit_length"])
+    messages = [command.value for command in commands if isinstance(command.value, Message)]
+    assert all(message.message_type == 2 for message in messages)
+    return [
+        (message.arguments[1].uint32_value, message.arguments[2].uint32_value,
+         message.arguments[3].string_value if len(message.arguments) > 3 else None)
+        for message in messages
+    ]
+
+
+def test_a_claim_shows_what_was_received(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass"))
+    (money, stones) = _notifications(server, session, 1, 101)
+    assert money[0] == 10 and money[2] == "money_cc"
+    stack = _stack(session, "item_rune_extension_stone")
+    assert stones == (2, stack.item_id, None)
+    # A virtual currency has no item, so it gets a fresh id of its own.
+    assert money[1] < session.gameplay_next_item_id
+    assert money[1] not in {item.item_id for item in session.gameplay_inventory.items}
+
+
+def test_the_copies_of_a_reward_share_a_notification(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass_2"))
+    held = _stack(session, "item_rune_extension_stone").amount
+    (stones,) = _notifications(server, session, 101, 301)
+    assert stones[0] == 4
+    assert _stack(session, "item_rune_extension_stone").amount == held + 4
+
+
+def test_a_replayed_claim_shows_nothing(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass"))
+    assert _notifications(server, session, 1)
+    assert _notifications(server, session, 1) == []
+
+
+def test_the_second_copy_needs_the_double_ticket(player):
+    server, session, _ = player
+    session.gameplay_game_currencies = {"money_cc": 1000}
+    _use(server, session, add_item(session, "gold_pass"))
+    assert _claim(server, session, 301) == 0
+    assert 301 not in session.gameplay_season_pass["claimed_awards"]
 
 
 def test_two_standard_tickets_make_the_track_double(player):

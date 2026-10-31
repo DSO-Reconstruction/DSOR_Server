@@ -176,7 +176,7 @@ def test_slot_unlock_update_precedes_the_stone_and_rewards_follow_it(player, mon
     rewards = decode_server_command_batch(*sent.call_args_list[2].args[1:])
     reward_id = next(item.item_id for item in rewards[0].value.items
                      if item.template_id == "ingredient_gem_dust")
-    assert reward_id in rewards[1].value.field_180
+    assert reward_id in rewards[-1].value.field_180
     saved = saved_state(server, session)
     assert saved.achievements[definition.key]["reward_status"] == "granted"
     assert reward_id in {item.item_id for item in saved.inventory.items}

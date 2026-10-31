@@ -12,7 +12,9 @@ import pytest
 
 from dso_server.gameplay.achievement_content import AchievementProgress
 from dso_server.persistence.account_state import AccountStateStore
+from dso_server.protocol.gameplay_protocol import Message
 from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
+from dso_server.protocol.player_init_protocol import decode_server_command_batch
 from dso_server.runtime.transport import Session
 from dso_server.services.character_server import CharacterServer
 from dso_server.tests.fixtures.characters import character_profile, character_server
@@ -77,6 +79,19 @@ def test_authored_crafting_reward_is_durable_before_send_and_never_repeats(playe
     server._achievement_feed(restored, "crafting", ("rarity_uncommon_to_magic_rule",), count=10)
     assert amount(restored, BOOK) == 1
     assert restored.gameplay_achievements[CRAFT].completed_at == first_stamp
+
+
+def test_a_reward_shows_the_item_received_notification(player):
+    server, s, sent = player
+    server._achievement_feed(s, "crafting", ("rarity_uncommon_to_magic_rule",), count=10)
+    (call,) = [call for call in sent.call_args_list
+               if call.kwargs.get("label") == "achievement-reward"]
+    (toast,) = [command.value for command in decode_server_command_batch(*call.args[1:3])
+                if isinstance(command.value, Message)]
+    book = next(item for item in s.gameplay_inventory.items if item.template_id == BOOK)
+    assert toast.message_type == 2
+    assert toast.arguments[1].uint32_value == 1
+    assert toast.arguments[2].uint32_value == book.item_id
 
 
 def test_full_inventory_keeps_pending_reward_for_relog_retry(player, monkeypatch):
@@ -184,7 +199,7 @@ def test_failed_encoding_keeps_item_and_claim_unmodified(player, monkeypatch):
     server, s, _ = player
     original = achievements.encode_server_command_batch
     def fail_reward(commands, **kwargs):
-        if len(commands) == 2:
+        if len(commands) == 3:  # inventory delta, notification, final inventory
             raise ValueError("cannot encode reward")
         return original(commands, **kwargs)
     monkeypatch.setattr(achievements, "encode_server_command_batch", fail_reward)

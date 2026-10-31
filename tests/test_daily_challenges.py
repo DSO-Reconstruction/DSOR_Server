@@ -369,6 +369,28 @@ def test_full_inventory_keeps_reward_pending_then_retries_once(daily_service):
     assert sum(i.amount for i in session.gameplay_inventory.items if i.template_id == 'gem_ruby_a') == 2
 
 
+def test_an_item_reward_shows_the_item_received_notification(daily_service):
+    from dso_server.protocol.gameplay_protocol import Message
+    from dso_server.protocol.inventory_codec import InventoryInfo
+    server, session, _, _ = daily_service
+    task, _ = set_task(server, session, reward='Loot:gem_ruby_a,2;VC:100')
+    session.gameplay_inventory = InventoryInfo(storage_size=21)
+    commands, _ = server._daily_challenge_reward(session, task, None)
+    (toast,) = [command.value for command in commands if isinstance(command.value, Message)]
+    gem = next(item for item in session.gameplay_inventory.items if item.template_id == 'gem_ruby_a')
+    assert toast.message_type == 2
+    assert toast.arguments[1].uint32_value == 2
+    assert toast.arguments[2].uint32_value == gem.item_id
+
+
+def test_a_currency_reward_shows_no_item_notification(daily_service):
+    from dso_server.protocol.gameplay_protocol import Message
+    server, session, _, _ = daily_service
+    task, _ = set_task(server, session, reward='VC:100')
+    commands, _ = server._daily_challenge_reward(session, task, None)
+    assert not any(isinstance(command.value, Message) for command in commands)
+
+
 def test_honor_and_authored_buff_are_awarded(daily_service, monkeypatch):
     server, session, _, dispatch = daily_service
     catalog, _, _ = server._daily_challenge_context(session)

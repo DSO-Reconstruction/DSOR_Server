@@ -472,12 +472,17 @@ class DailyChallengeService:
         """Stage inventory/currency before committing a completed task's payout."""
         from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
         from dso_server.protocol.commerce_protocol import load_purchase_item_definition
-        from dso_server.protocol.player_init_protocol import INVENTORY_INFO_COMMAND
+        from dso_server.protocol.item_receipt_protocol import (
+            ITEM_RECEIVED_TEMPLATE_CATEGORIES, ItemReceiptGrant, build_item_receipts,
+            item_received_message,
+        )
+        from dso_server.protocol.player_init_protocol import INVENTORY_INFO_COMMAND, MESSAGE_COMMAND
         from dso_server.protocol.gameplay_protocol import STATUS_EFFECT_COMMAND, StatusEffect
         import time
         currency = s.gameplay_currency_state
         honor = int(s.gameplay_honor_points)
         builder = None
+        receipt_grants = []
         effect_definition = None
         if definition.reward_effect:
             resource = definition.reward_effect.split(',', 1)[0]
@@ -495,8 +500,12 @@ class DailyChallengeService:
                     raise ValueError('inventory not initialized')
                 builder = builder or InventoryMutationBuilder(s.gameplay_inventory, s.gameplay_next_item_id)
                 item = load_purchase_item_definition(self.static_database_path, fields[0])
-                builder.add_item(item, int(fields[1]) if len(fields) > 1 else 1,
-                                 item_level=s.gameplay_character.level)
+                amount = int(fields[1]) if len(fields) > 1 else 1
+                builder.add_item(item, amount, item_level=s.gameplay_character.level)
+                receipt_grants.append(ItemReceiptGrant(
+                    item.template_id, amount,
+                    include_template_id=item.item_category in ITEM_RECEIVED_TEMPLATE_CATEGORIES,
+                ))
             else:
                 amount = int(fields[0])
                 if 'CharacterLevel' in fields[1:]:
@@ -510,6 +519,15 @@ class DailyChallengeService:
                 else:
                     raise ValueError('unknown reward kind ' + kind)
         mutation = builder.finish() if builder else None
+        receipts = ()
+        if mutation:
+            # Before anything is committed: a failure leaves the reward pending.
+            receipts, _ = build_item_receipts(
+                s.gameplay_inventory, mutation.inventory,
+                (entry.item_id for entry in mutation.changed_items),
+                mutation.replacements, receipt_grants,
+                next_item_id=mutation.next_item_id,
+            )
         commands = []
         applied = None
         if effect_definition:
@@ -530,6 +548,8 @@ class DailyChallengeService:
             s.gameplay_inventory = mutation.inventory
             s.gameplay_next_item_id = mutation.next_item_id
             commands.extend((ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                             *(ServerCommand(MESSAGE_COMMAND, item_received_message(receipt),
+                                             LOCAL_PLAYER_ACTOR_ID) for receipt in receipts),
                              ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID)))
         return commands, applied
 
