@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 import random
+import sqlite3
 
 import pytest
 
@@ -90,6 +91,55 @@ def test_global_kill_events_drop_everywhere_but_excluded_maps(catalog):
     events = catalog("mini_kill_event_1d_mantis")
     assert drops(events, map_id="a0302_wildforest") == {"mini_kill_progress_item"}
     assert drops(events, map_id="a0002_start_hub", level=60) == set()
+
+
+def test_glimpse_of_the_past_drops_only_on_the_maps_its_text_names(catalog):
+    # "Head to Ghastly Grave, Wild Forest at night or Mystra at night": the
+    # client's text is the only thing tying this event to a place.
+    events = catalog("dragan_event_03_mini")
+    soul = {"e_dra_mini_progress_item"}
+    for map_id in ("e_dra_03_dun_grave_01", "e_dra_03_dun_wildforestnight_01",
+                   "e_dra_03_dun_mystranight_01"):
+        assert drops(events, map_id=map_id) == soul
+    # A higher difficulty comes as the access group, with the access id aside.
+    assert drops(events, map_id="e_dra_03_dun_grave_01",
+                 map_aliases=("e_dra_03_dun_grave_01", "e_dra_03_dun_grave_07")) == soul
+    for elsewhere in ("a0302_wildforest", "c2101_pve", "e_dra_03_dun_01",
+                      "e_dra_03_dun_gloomypastures_01", "e_dra_03_dun_ironforestnight_01"):
+        assert drops(events, map_id=elsewhere) == set()
+
+
+def test_dark_dwarf_progress_comes_from_the_dark_dwarves(catalog):
+    events = catalog("anniversary_event_challenge")
+    dwarf = "e_anniversary_dds_normal_dark_dwarf_duria"
+    assert drops(events, map_id="a0600_dragonfortress", level=60, monster=dwarf) == {
+        "e_anniversary_challenge_progress_01"}
+    assert drops(events, map_id="a0600_dragonfortress", level=60,
+                 monster="a0008_normal_defender_gravedigger") == set()
+
+
+def test_heroes_assemble_drops_in_the_lands_it_names(catalog):
+    events = catalog("steam_welcome")
+    proof = {"e_steam_welcome_progress"}
+    assert drops(events, map_id="a0302_wildforest", level=40) == proof
+    assert drops(events, map_id="c2101_pve", level=40) == proof  # Helios
+    assert drops(events, map_id="e_dra_03_dun_01", level=40) == set()
+
+
+def test_live_stream_progress_is_not_a_kill_drop(catalog):
+    # Its text: "Receive special bonus codes that grant Coin Blanks".
+    assert drops(catalog("stream_event_01"), map_id="a0302_wildforest", level=60) == set()
+
+
+def test_a_map_no_event_names_drops_only_monster_hunt_badges(catalog):
+    with sqlite3.connect(f"file:{DEFAULT_STATIC_DB_PATH}?mode=ro", uri=True) as database:
+        templates = [row[0] for row in database.execute(
+            "SELECT Id FROM _Template_Events WHERE COALESCE(EventProgressBars, '') != ''"
+        )]
+    events = catalog(*templates)
+    for level in (40, 60, 120):
+        assert drops(events, map_id="a_map_no_event_names", level=level) == {
+            "mini_kill_progress_item"}
 
 
 def test_explicit_schedule_maps_stay_authoritative(catalog):

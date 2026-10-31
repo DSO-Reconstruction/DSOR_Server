@@ -18,6 +18,8 @@ DEFAULT_CHEST_CONTENTS_MAP = DATA_ROOT / "catalogs" / "chest_contents.json"
 DEFAULT_EVENT_LOOT_PATH = Path(
     os.getenv("DSO_EVENT_LOOT") or DATA_ROOT / "catalogs" / "event_loot.json"
 )
+# Server-authored drop places of event progress items the client leaves without a Region.
+DEFAULT_EVENT_ITEM_REGIONS_PATH = DATA_ROOT / "catalogs" / "event_item_regions.json"
 # Server-authored contents of map chest loot lists (_Template_StateObject.LootListId).
 DEFAULT_PROP_LOOT_PATH = Path(
     os.getenv("DSO_PROP_LOOT") or DATA_ROOT / "catalogs" / "prop_loot.json"

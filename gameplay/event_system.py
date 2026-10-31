@@ -33,7 +33,7 @@ from dso_server.protocol.player_init_protocol import (
     EventUpdateEntry,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
-from dso_server.paths import DEFAULT_EVENT_LOOT_PATH
+from dso_server.paths import DEFAULT_EVENT_ITEM_REGIONS_PATH, DEFAULT_EVENT_LOOT_PATH
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
 
 
@@ -549,6 +549,7 @@ class EventCatalog:
             self.monster_regions.get(
                 str(monster_template_id).casefold(), ()
             ),
+            (_map_key(monster_template_id),),
         )
         for event in self.active_events(now):
             template = event.template
@@ -585,12 +586,15 @@ class EventCatalog:
         Progress belongs to the event's own content (the Winter Summit for
         christmas honey cookies), while the "worthy opponents everywhere"
         drops are the event's Loot list. In order of authority:
-        an explicit schedule ``collectible_maps``; the item's Region, matched
-        against the map's and the monster's regions (or the event's own maps,
-        which covers first-stage maps an item Region omits); the maps the
-        event owns; the maps of the event family named by the item's EventId
-        (challenge events reuse their parent's collectible); otherwise every
-        map, for global kill events.
+        an explicit schedule ``collectible_maps``; the item's Region, or the
+        one data/catalogs/event_item_regions.json authors for it, matched
+        against the map, its regions, the monster and the monster's regions
+        (or the event's own maps, which covers first-stage maps an item
+        Region omits); the maps the event owns; the maps of the event family
+        named by the item's EventId (challenge events reuse their parent's
+        collectible). With none of those, only an event naming a Loot list
+        hunts worthy opponents everywhere (Monster Hunt); any other event's
+        progress does not come from kills (Live Stream's bonus codes).
         """
 
         if event.collectible_maps:
@@ -606,7 +610,7 @@ class EventCatalog:
         ))
         if family:
             return bool(family & current_maps)
-        return True
+        return bool(event.template.loot_list_id)
 
     def event_loot_drops(
         self,
@@ -1112,6 +1116,26 @@ def _event_loot_lists(
     return result
 
 
+def _authored_item_regions() -> dict[str, frozenset[str]]:
+    """Parse data/catalogs/event_item_regions.json (see the note there).
+
+    The retail server knew where these items drop; the client leaves their
+    Region empty and no table ties their event to a place. Optional, like
+    the loot table.
+    """
+
+    try:
+        document = json.loads(
+            DEFAULT_EVENT_ITEM_REGIONS_PATH.read_text(encoding="utf-8")
+        )
+    except FileNotFoundError:
+        return {}
+    return {
+        str(item_id): frozenset(_map_key(value) for value in regions)
+        for item_id, regions in document["item_regions"].items()
+    }
+
+
 def _schedule_revision(path: Path) -> tuple[int, int]:
     stat = path.stat()
     return stat.st_mtime_ns, stat.st_size
@@ -1203,6 +1227,7 @@ def _load_catalog(
             )
         }
 
+    item_regions = _authored_item_regions()
     templates: dict[str, EventTemplateDefinition] = {}
     for resource_id, row in event_rows.items():
         bars = []
@@ -1260,7 +1285,9 @@ def _load_catalog(
                     auto_pick_up=str(item.get("AutoPickUp") or "All"),
                     tier=tier,
                     base_value=base_value,
-                    maps=frozenset(_map_key(value) for value in _tokens(item.get("Region"))),
+                    maps=frozenset(
+                        _map_key(value) for value in _tokens(item.get("Region"))
+                    ) | item_regions.get(item_id, frozenset()),
                     owner_events=frozenset(
                         value.casefold()
                         for value in _tokens(item.get("EventId"))

@@ -39,6 +39,14 @@ single drop. Monster drops also apply every active authored
 parameters supplied by the concrete status-effect instance. Event collectibles
 remain character-bound because they use the existing per-session loot allocator.
 
+A collectible drops where its event lives: a schedule's `collectible_maps`,
+then the item's `Region` matched against the map and the killed monster, then
+the maps the event owns. `data/catalogs/event_item_regions.json` authors that
+`Region` for items the client leaves blank (Glimpse of the Past, the Larcenous
+Dark Dwarves, Heroes Assemble). An event with none of these drops everywhere
+only if it names a `Loot` list, as Monster Hunt's worthy opponents do; otherwise
+its progress does not come from kills (Live Stream's bonus codes).
+
 Crossing a reward threshold is atomic in character state. Item rewards use the
 normal inventory delivery and item-received notifications; class-conditioned
 rewards select the current class. `EventRewardCurrency` credits Draken. Claimed
