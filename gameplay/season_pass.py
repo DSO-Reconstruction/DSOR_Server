@@ -69,11 +69,11 @@ class SeasonPassCatalog:
 def season_pass_ticket_types(template_id: str, pass_types) -> tuple[int, ...] | None:
     """The pass types a ticket adds, () if it is refused, None if no ticket.
 
-    These are the client's own rules (the shop filter at 0x140254adc): the
-    double offer goes away with either type of its track, the standard offer
-    only with the double type. So a standard ticket may be used twice ("can be
-    purchased 2 times"), the second use making the track double, and a double
-    ticket only on a track that has nothing yet.
+    A standard ticket opens its track and a second one makes it double ("can be
+    purchased 2 times"). A double ticket does both at once, or upgrades a track
+    that has the standard pass: the client's shop (0x140254adc) stops selling it
+    then, but a ticket already in the bag is paid for. Either kind is refused
+    only once the track is double.
     """
 
     ticket = SEASON_PASS_TICKETS.get(str(template_id).casefold())
@@ -81,11 +81,11 @@ def season_pass_ticket_types(template_id: str, pass_types) -> tuple[int, ...] | 
         return None
     standard, double, is_double = ticket
     active = set(pass_types)
-    if is_double:
-        return () if active & {standard, double} else (standard, double)
     if double in active:
         return ()
-    return (double,) if standard in active else (standard,)
+    if standard in active:
+        return (double,)
+    return (standard, double) if is_double else (standard,)
 
 
 def parse_season_pass_reward(value: str) -> tuple[str, int]:

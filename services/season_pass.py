@@ -14,6 +14,7 @@ from dso_server.gameplay.season_pass import (
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
     INVENTORY_INFO_COMMAND,
+    MESSAGE_COMMAND,
     SEASON_PASS_MISSIONS_INFO_RESULT_COMMAND,
     SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
     SeasonPassMissionsInfoResult,
@@ -37,6 +38,12 @@ from dso_server.protocol.inventory_economy_protocol import (
     credit_currency_template,
 )
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
+from dso_server.protocol.item_receipt_protocol import (
+    ITEM_RECEIVED_TEMPLATE_CATEGORIES,
+    ItemReceiptGrant,
+    build_item_receipts,
+    item_received_message,
+)
 
 
 SEASON_PASS_AWARD_ID_STRIDE = 100
@@ -159,15 +166,10 @@ class SeasonPassService:
         changed_currency = False
         changed_game_currencies = {}
         accepted_ids = []
+        # (template, materialized, names its template) -> amount: the copies of
+        # one reward share a notification, so a big claim does not flood them.
+        receipt_amounts = {}
         skipped = {"already_delivered": 0, "locked": 0, "pass_required": 0, "unknown_lane": 0}
-        granted_tracks = set()
-        for claimed_id in awarded:
-            claimed_lane = (claimed_id - 1) // SEASON_PASS_AWARD_ID_STRIDE
-            claimed_level = (claimed_id - 1) % SEASON_PASS_AWARD_ID_STRIDE + 1
-            if claimed_lane in (0, 1, 2, 3, 4):
-                granted_tracks.add((
-                    claimed_level, {3: 1, 4: 2}.get(claimed_lane, claimed_lane),
-                ))
         try:
             for award_id in requested_ids:
                 if award_id in awarded:
@@ -190,57 +192,68 @@ class SeasonPassService:
                 if lane in (2, 4) and not pass_types.intersection({2, 4}):
                     skipped["pass_required"] += 1
                     continue
-                # The client emits separate IDs for each ticket entitlement:
-                # lanes 1/3 are the gold track and lanes 2/4 the red track.
-                # Static rewards define one reward per visible paid track.
+                # Lanes 3 and 4 are the second copy of the gold and red rewards:
+                # they need the double types, which share their numbers.
+                if lane in (3, 4) and lane not in pass_types:
+                    skipped["pass_required"] += 1
+                    continue
+                # The client sends one ID per entitlement (0x140264414), and
+                # each pays its track's reward once. So a double track pays
+                # twice, also for levels claimed before it became double.
                 reward_lane = {3: 1, 4: 2}.get(lane, lane)
-                track_key = (level, reward_lane)
                 row = catalog.reward_levels.get(level)
-                if track_key not in granted_tracks:
-                    reward = row[reward_lane] if row is not None else ""
-                    item_id, amount = parse_season_pass_reward(reward)
-                    # Pass types 3 and 4 are the double gold/red tickets.
-                    # They share a visible reward track with types 1 and 2,
-                    # so the extra award IDs must double the amount instead
-                    # of being collapsed into a second copy of the same item.
-                    double_pass_active = (
-                        (reward_lane == 1 and 3 in pass_types)
-                        or (reward_lane == 2 and 4 in pass_types)
+                reward = row[reward_lane] if row is not None else ""
+                item_id, amount = parse_season_pass_reward(reward)
+                credit = credit_currency_template(
+                    self.static_database_path, currency, game_currencies,
+                    item_id, amount, scale_by_item_value=False,
+                )
+                if credit is not None:
+                    currency = credit.currency
+                    game_currencies = dict(credit.game_currencies)
+                    changed_currency = changed_currency or (
+                        currency != s.gameplay_currency_state
                     )
-                    if double_pass_active:
-                        amount *= 2
-                    credit = credit_currency_template(
-                        self.static_database_path, currency, game_currencies,
-                        item_id, amount, scale_by_item_value=False,
+                    if credit.game_currency_update is not None:
+                        changed_game_currencies[
+                            credit.game_currency_update.resource_id
+                        ] = credit.game_currency_update
+                    receipt_key = (item_id, False, True)
+                else:
+                    definition = load_purchase_item_definition(
+                        self.static_database_path, item_id,
                     )
-                    if credit is not None:
-                        currency = credit.currency
-                        game_currencies = dict(credit.game_currencies)
-                        changed_currency = changed_currency or (
-                            currency != s.gameplay_currency_state
-                        )
-                        if credit.game_currency_update is not None:
-                            changed_game_currencies[
-                                credit.game_currency_update.resource_id
-                            ] = credit.game_currency_update
-                    else:
-                        definition = load_purchase_item_definition(
-                            self.static_database_path, item_id,
-                        )
-                        character = s.gameplay_character
-                        builder.add_item(
-                            definition, amount,
-                            item_level=max(1, int(getattr(character, "level", 1))),
-                        )
-                    granted_tracks.add(track_key)
+                    character = s.gameplay_character
+                    builder.add_item(
+                        definition, amount,
+                        item_level=max(1, int(getattr(character, "level", 1))),
+                    )
+                    receipt_key = (
+                        item_id, True,
+                        definition.item_category in ITEM_RECEIVED_TEMPLATE_CATEGORIES,
+                    )
+                receipt_amounts[receipt_key] = (
+                    receipt_amounts.get(receipt_key, 0) + amount
+                )
                 claims.add(award_id)
                 awarded.add(award_id)
                 accepted_ids.append(award_id)
+            mutation = builder.finish()
+            receipts, next_item_id = build_item_receipts(
+                inventory, mutation.inventory,
+                (item.item_id for item in mutation.changed_items),
+                mutation.replacements,
+                tuple(
+                    ItemReceiptGrant(template_id, amount, materialized, named)
+                    for (template_id, materialized, named), amount
+                    in receipt_amounts.items()
+                ),
+                next_item_id=mutation.next_item_id,
+            )
         except (ValueError, KeyError) as exc:
             print(f"[DrasaOnlineMapServer] Season Pass claim rejected: {exc}")
             return
 
-        mutation = builder.finish()
         state["claimed_awards"] = tuple(sorted(claims))
         state["awarded_awards"] = tuple(sorted(awarded))
         state["delivery_ledger_version"] = SEASON_PASS_DELIVERY_LEDGER_VERSION
@@ -274,6 +287,9 @@ class SeasonPassService:
         commands.extend(ServerCommand(
             GAME_CURRENCY_CHANGED_COMMAND, update, LOCAL_PLAYER_ACTOR_ID,
         ) for update in changed_game_currencies.values())
+        commands.extend(ServerCommand(
+            MESSAGE_COMMAND, item_received_message(receipt), LOCAL_PLAYER_ACTOR_ID,
+        ) for receipt in receipts)
         if mutation.changed_items and not changed_ingredient_bag_items:
             commands.append(ServerCommand(
                 INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID,
@@ -301,7 +317,7 @@ class SeasonPassService:
             else:
                 s.gameplay_season_pass = state
                 s.gameplay_inventory = mutation.inventory
-                s.gameplay_next_item_id = mutation.next_item_id
+                s.gameplay_next_item_id = next_item_id
                 s.gameplay_currency_state = currency
                 s.gameplay_game_currencies = game_currencies
         if retry_state is not None:

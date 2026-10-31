@@ -24,7 +24,11 @@ own static.db4.
 Client requests (`protocol/season_pass_protocol.py`): `GetSeasonPassRewardsInfo`,
 `GetSeasonPassMissionsInfo`, `AddSeasonPassExp` (buy experience, 10 Andermant
 each) and `GetSeasonPassAward` (claim; reward ID = lane × 100 + level, lanes
-0 free, 1/3 gold, 2/4 red).
+0 free, 1 gold, 2 red, 3 and 4 the second gold and red copy on a double track).
+The client claims every open ID at once, and each ID pays its track's reward
+once. On a double track its window puts a small tick in the corner of every tile
+not claimed yet, and hides that track's buy button. Each claim shows the usual
+item-received notifications, one per reward with the copies added together.
 
 ## Server rules
 
@@ -44,13 +48,17 @@ each) and `GetSeasonPassAward` (claim; reward ID = lane × 100 + level, lanes
 ## Tickets
 
 `gold_pass`, `gold_pass_2`, `red_pass` and `red_pass_2` are used from the
-inventory and consumed only when they apply. They follow the client's shop
-filter (`gameplay/season_pass.py`, `season_pass_ticket_types`):
+inventory and consumed only when they apply
+(`gameplay/season_pass.py`, `season_pass_ticket_types`):
 
 | Ticket | Adds | Refused when |
 | --- | --- | --- |
-| Standard | type 1 (red 2); the second use adds type 3 (red 4) | the double type is active |
-| Double | types 1 and 3 (red 2 and 4) | either type of its track is active |
+| Standard | type 1 (red 2); on a track that has it, type 3 (red 4) | the double type is active |
+| Double | types 1 and 3 (red 2 and 4); on a track that has the standard pass, type 3 (red 4) | the double type is active |
+
+The client's shop stops selling the double pass once a track has the standard
+one, but a ticket already in the bag still upgrades the track. Levels claimed
+before the upgrade stay claimable for their second copy.
 
 While no season runs the ticket stays in the bag, because the client has no
 Season Pass to show it on, and the player gets a System chat message saying so.
