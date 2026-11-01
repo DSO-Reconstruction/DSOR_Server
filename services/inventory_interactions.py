@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 import time
 
 from dso_server.runtime.context import *
@@ -14,8 +15,12 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import map_key
 from dso_server.protocol.gameplay_protocol import ENCOUNTER_COMMAND
-from dso_server.gameplay.crafting_outputs import resolve_crafting_outputs
+from dso_server.gameplay.crafting_outputs import (
+    CraftingOutput,
+    resolve_crafting_outputs,
+)
 from dso_server.services.recipe_progression import validate_crafting_recipe_access
+from dso_server.protocol.world_loot_protocol import roll_equipment_reward
 
 
 class InventoryInteractionService:
@@ -542,8 +547,10 @@ class InventoryInteractionService:
             if inventory is None or currency is None:
                 raise ValueError("player inventory is not initialized")
             recipe_key = str(request.recipe_id).strip().casefold()
-            if recipe_key[-1:].isdigit():
+            while recipe_key[-1:].isdigit():
                 recipe_key = recipe_key[:-1]
+                if not recipe_key:
+                    break
             normalized_recipe = "".join(
                 character for character in recipe_key if character.isalnum()
             )
@@ -758,7 +765,128 @@ class InventoryInteractionService:
                 raise ValueError(
                     "recipe is not present in the character recipe book"
                 )
-            outputs = resolve_crafting_outputs(self.static_database_path, recipe)
+            rarity_upgrade_roll = None
+            rarity_glyph_cost = 0
+            if recipe.crafting_recipe_type == "UpdateRarity":
+                if int(request.amount) != 1 or len(request.item_ids) != 4:
+                    raise ValueError(
+                        "rarity upgrades require exactly four items per craft"
+                    )
+                rarity_names = ("Common", "Uncommon", "Magic", "Rare", "Epic")
+                with sqlite3.connect(
+                    f"file:{Path(self.static_database_path).as_posix()}?mode=ro",
+                    uri=True,
+                ) as database:
+                    database.row_factory = sqlite3.Row
+                    rarity_rule = database.execute(
+                        "SELECT IngredientRarity, IngredientItemCategory, FactorUC "
+                        "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
+                        (recipe.resource_id,),
+                    ).fetchone()
+                    if rarity_rule is None:
+                        raise ValueError("rarity upgrade rule is unavailable")
+                    input_rarity = str(rarity_rule["IngredientRarity"] or "")
+                    if input_rarity not in rarity_names:
+                        raise ValueError(
+                            "rarity upgrade has an unsupported input rarity"
+                        )
+                    input_rarity_index = rarity_names.index(input_rarity)
+                    if input_rarity_index >= len(rarity_names) - 1:
+                        raise ValueError(
+                            "the highest equipment rarity cannot be upgraded"
+                        )
+                    allowed_categories = {
+                        value.strip().casefold()
+                        for value in str(
+                            rarity_rule["IngredientItemCategory"] or ""
+                        ).split(";")
+                        if value.strip()
+                    }
+                    selected_items = [
+                        items_by_id[int(item_id)] for item_id in request.item_ids
+                    ]
+                    if any(
+                        int(item.field_08) != input_rarity_index
+                        for item in selected_items
+                    ):
+                        raise ValueError(
+                            f"rarity upgrade requires four {input_rarity} items"
+                        )
+                    if any(
+                        int(item.item_id) in inventory.equipment_slots
+                        for item in selected_items
+                    ):
+                        raise ValueError("equipped items cannot be rarity-upgraded")
+                    item_rows = {
+                        str(row["Id"]): row
+                        for row in database.execute(
+                            "SELECT Id, ItemCategory, SlotType FROM _Template_Item "
+                            "WHERE Id IN (%s)" % ",".join(
+                                "?" for _ in selected_items
+                            ),
+                            tuple(item.template_id for item in selected_items),
+                        )
+                    }
+                    for item in selected_items:
+                        row = item_rows.get(item.template_id)
+                        if (
+                            row is None
+                            or str(row["ItemCategory"] or "").casefold()
+                            not in allowed_categories
+                            or not str(row["SlotType"] or "").strip()
+                        ):
+                            raise ValueError(
+                                "rarity upgrades accept equipment items only"
+                            )
+                    rarity_factor = max(
+                        0, int(round(float(rarity_rule["FactorUC"] or 0)))
+                    )
+                    rarity_glyph_cost = rarity_factor * sum(
+                        max(0, int(item.field_34)) for item in selected_items
+                    )
+                    if rarity_glyph_cost <= 0:
+                        raise ValueError(
+                            "rarity upgrade has no Glyphs of Power cost"
+                        )
+                    if int(currency.glyph_of_power) < rarity_glyph_cost:
+                        raise ValueError(
+                            f"rarity upgrade requires {rarity_glyph_cost} "
+                            "Glyphs of Power; balance is "
+                            f"{int(currency.glyph_of_power)}"
+                        )
+                crafted_item_level = max(1, int(selected_items[0].item_level))
+                rarity_upgrade_roll = roll_equipment_reward(
+                    self.static_database_path,
+                    class_name=CLASS_NAMES[int(character.class_id)],
+                    item_level=crafted_item_level,
+                    rarity=rarity_names[input_rarity_index + 1],
+                )
+                outputs = (CraftingOutput(rarity_upgrade_roll.template_id, 1),)
+            else:
+                outputs = resolve_crafting_outputs(
+                    self.static_database_path, recipe
+                )
+            if rarity_upgrade_roll is not None:
+                crafted_item_level = max(
+                    1, int(rarity_upgrade_roll.item_level)
+                )
+            else:
+                crafted_item_level = max(1, int(character.level))
+            if (
+                rarity_upgrade_roll is None
+                and recipe.item_level_source_template_id
+            ):
+                level_source = next(
+                    (
+                        items_by_id[int(item_id)]
+                        for item_id in request.item_ids
+                        if items_by_id[int(item_id)].template_id
+                        == recipe.item_level_source_template_id
+                    ),
+                    None,
+                )
+                if level_source is not None:
+                    crafted_item_level = max(1, int(level_source.item_level))
             output_amount = craft_count * sum(output.amount for output in outputs)
             from dso_server.protocol.consumable_protocol import load_consumable_catalog
             consumables = load_consumable_catalog(self.static_database_path)
@@ -776,6 +904,7 @@ class InventoryInteractionService:
                     preserve_item_ids=True,
                 )
             result_item_ids = set()
+            crafted_equipment_item_ids = set()
             for output in outputs:
                 result_definition = load_purchase_item_definition(
                     self.static_database_path, output.template_id,
@@ -783,27 +912,43 @@ class InventoryInteractionService:
                 previous_changes = len(builder.changed_items)
                 builder.add_item(
                     result_definition, craft_count * int(output.amount),
-                    item_level=max(1, int(character.level)),
+                    item_level=crafted_item_level,
                 )
-                result_item_ids.update(
-                    int(item.item_id) for item in builder.changed_items[previous_changes:]
+                created_items = builder.changed_items[previous_changes:]
+                result_item_ids.update(int(item.item_id) for item in created_items)
+                is_equipment = bool(result_definition.slot_types) and (
+                    "ConsumableSlot" not in result_definition.slot_types
                 )
-            result_row = prime_world_loot_cache(
-                self.static_database_path
-            ).items_by_id.get(recipe.result_template_id)
-            if str((result_row or {}).get("ItemCategory") or "") in {
-                "MercenaryJewelry",
-                "MercenaryDefenseBackitem",
-            }:
-                crafted_item_ids = tuple(
-                    int(item.item_id)
-                    for item in builder.changed_items
-                    if item.template_id == recipe.result_template_id
-                )
+                if is_equipment:
+                    crafted_equipment_item_ids.update(
+                        int(item.item_id) for item in created_items
+                    )
+                if result_definition.rarity == 7 and is_equipment:
+                    # BaseEnchantment quality is evaluated client-side from
+                    # ItemInfo.field_38. Tier 16 has a fixed 1.0 power factor;
+                    # apply it only to equipment created by this mythic recipe.
+                    created_ids = {int(item.item_id) for item in created_items}
+                    for item in builder.inventory.items:
+                        if int(item.item_id) in created_ids:
+                            item.field_38 = 16
+                    for item in created_items:
+                        item.field_38 = 16
+                if rarity_upgrade_roll is not None and is_equipment:
+                    created_ids = {int(item.item_id) for item in created_items}
+                    for item in builder.inventory.items:
+                        if int(item.item_id) in created_ids:
+                            item.field_08 = int(rarity_upgrade_roll.rarity)
+                            item.field_80 = str(rarity_upgrade_roll.appearance)
+                            item.item_level = int(crafted_item_level)
+                    for item in created_items:
+                        item.field_08 = int(rarity_upgrade_roll.rarity)
+                        item.field_80 = str(rarity_upgrade_roll.appearance)
+                        item.item_level = int(crafted_item_level)
+            if crafted_equipment_item_ids:
                 enchanted_item_ids = roll_new_equipment_enchantments(
                     self.static_database_path,
                     builder.inventory,
-                    crafted_item_ids,
+                    tuple(crafted_equipment_item_ids),
                     class_name=CLASS_NAMES[int(character.class_id)],
                     map_difficulty=int(s.gameplay_map_difficulty),
                 )
@@ -837,26 +982,38 @@ class InventoryInteractionService:
             # mutation path sets it for predictive inventory actions, which
             # makes the workbench render the output as another input.
             mutation.delta.field_1e0 = False
-            total_price = crafting_price_for_payment(
-                recipe.price,
-                request.payment_currency,
-                craft_count,
-                player_level=int(character.level),
-                # Keep a mixed rolling deployment of the interaction handler
-                # and recipe protocol backward-compatible. Older recipe
-                # objects do not carry the scaling flags yet.
-                scale_rc_to_player_level=getattr(
-                    recipe, "scale_price_rc", False
-                ),
-                scale_vc_to_player_level=getattr(
-                    recipe, "scale_price_vc", False
-                ),
-            )
-            updated_currency, updated_ic = debit_currency(
-                currency,
-                total_price,
-                ic_balance=ic_balance,
-            )
+            if recipe.crafting_recipe_type == "UpdateRarity":
+                # The client uses payment selector 5 for UpdateRarity, but its
+                # authored FactorUC is charged as Glyphs of Power from the
+                # selected items' melt values, not as legacy progression UC.
+                total_price = PurchasePrice()
+                updated_currency = replace(
+                    currency,
+                    delta=int(currency.glyph_of_power) - rarity_glyph_cost,
+                    notify=True,
+                )
+                updated_ic = ic_balance
+            else:
+                total_price = crafting_price_for_payment(
+                    recipe.price,
+                    request.payment_currency,
+                    craft_count,
+                    player_level=int(character.level),
+                    # Keep a mixed rolling deployment of the interaction handler
+                    # and recipe protocol backward-compatible. Older recipe
+                    # objects do not carry the scaling flags yet.
+                    scale_rc_to_player_level=getattr(
+                        recipe, "scale_price_rc", False
+                    ),
+                    scale_vc_to_player_level=getattr(
+                        recipe, "scale_price_vc", False
+                    ),
+                )
+                updated_currency, updated_ic = debit_currency(
+                    currency,
+                    total_price,
+                    ic_balance=ic_balance,
+                )
             result_items = tuple(
                 copy.deepcopy(item)
                 for item in mutation.changed_items
@@ -893,7 +1050,11 @@ class InventoryInteractionService:
                 include_terminator=True,
             )
         except (OSError, ValueError) as exc:
-            print(f"[{GAMEPLAY_SERVICE_NAME}] rejected crafting: {exc}")
+            resolved_type = getattr(locals().get("recipe"), "crafting_recipe_type", "")
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] rejected crafting: "
+                f"recipe={request.recipe_id!r} type={resolved_type!r}: {exc}"
+            )
             return
         with s.flow_lock:
             if (
