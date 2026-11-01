@@ -1008,8 +1008,8 @@ class Hit:
     # string length as a count of one-bit reactions happened to preserve an
     # empty value but corrupted every elemental hit.
     combat_text_type: str = ""
-    # Client +0x4a, sent only in the release261 layout. The server never
-    # produces rift hits; it is kept so captured packets round-trip.
+    # Client +0x4a, sent only in the release261 layout. Set for the separate
+    # Rift Force echo hit so the client renders its Rift-colored damage text.
     rift_hit: bool = False
 
 

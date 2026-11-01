@@ -36,6 +36,7 @@ from dso_server.gameplay.combat_entities import (
     shifted_skill_phases,
     impact_status_effects,
     scaled_skill_damage,
+    rift_force_echo_damage,
     PLANAR_MELEE_TARGET_SKILLS,
     PLANAR_MELEE_TARGET_VERTICAL_REACH,
 )
@@ -1188,6 +1189,8 @@ class ActivePlayerTrap:
     critical_damage_multiplier: float
     modifier_sources: tuple[object, ...]
     expires_at: float
+    rift_force_echo_chance: float = 0.0
+    rift_force_echo_multiplier: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1318,6 +1321,8 @@ class PendingPlayerHit:
     damage_type: str = "Physical"
     critical_hit_chance: float = 0.0
     critical_damage_multiplier: float = 2.0
+    rift_force_echo_chance: float = 0.0
+    rift_force_echo_multiplier: float = 0.0
     damage_immune: bool = False
     # An area impact's radius around ``origin`` (the aimed point), checked
     # again when it lands: a meteor falls 2.6 s after the cast.
@@ -1521,6 +1526,8 @@ class DamageResolution:
     # Kill.animation_time on the wire; player delivery uses retail's long life.
     corpse_lifetime_ticks: int = 300
     cast_id: int = 0
+    rift_damage: int = 0
+    pre_hit_health: int | None = None
 
 
 class _MonsterOccupancy:
@@ -4248,6 +4255,8 @@ class LocalCombatState:
         critical_hit_chance: float,
         critical_damage_multiplier: float,
         modifier_sources: tuple[object, ...] = (),
+        rift_force_echo_chance: float = 0.0,
+        rift_force_echo_multiplier: float = 0.0,
         now: float | None = None,
     ) -> ActivePlayerTrap:
         current_time = time.perf_counter() if now is None else float(now)
@@ -4269,6 +4278,12 @@ class LocalCombatState:
             critical_damage_multiplier=float(critical_damage_multiplier),
             modifier_sources=tuple(modifier_sources),
             expires_at=current_time + definition.lifetime_seconds,
+            rift_force_echo_chance=max(
+                0.0, min(1.0, float(rift_force_echo_chance))
+            ),
+            rift_force_echo_multiplier=max(
+                0.0, float(rift_force_echo_multiplier)
+            ),
         )
         self.player_traps[trap_id] = trap
         return trap
@@ -10390,6 +10405,8 @@ class LocalCombatState:
         player_damage_range: tuple[float, float] | None = None,
         player_critical_hit_chance: float = 0.0,
         player_critical_damage_multiplier: float = 2.0,
+        player_rift_force_echo_chance: float = 0.0,
+        player_rift_force_echo_multiplier: float = 0.0,
     ) -> tuple[PendingPlayerHit, ...]:
         """Schedule all authoritative impacts produced by one client cast.
 
@@ -10561,6 +10578,12 @@ class LocalCombatState:
                 critical_damage_multiplier=max(
                     1.0, float(player_critical_damage_multiplier)
                 ),
+                rift_force_echo_chance=max(
+                    0.0, min(1.0, float(player_rift_force_echo_chance))
+                ),
+                rift_force_echo_multiplier=max(
+                    0.0, float(player_rift_force_echo_multiplier)
+                ),
                 damage_immune=damage_immune,
             )
             key = (
@@ -10593,6 +10616,8 @@ class LocalCombatState:
         player_damage_range: tuple[float, float] | None = None,
         player_critical_hit_chance: float = 0.0,
         player_critical_damage_multiplier: float = 2.0,
+        player_rift_force_echo_chance: float = 0.0,
+        player_rift_force_echo_multiplier: float = 0.0,
         hit_plan=None,
         area_radius_override: float | None = None,
         impact_delay_override: float | None = None,
@@ -10721,6 +10746,12 @@ class LocalCombatState:
                 ),
                 critical_damage_multiplier=max(
                     1.0, float(player_critical_damage_multiplier)
+                ),
+                rift_force_echo_chance=max(
+                    0.0, min(1.0, float(player_rift_force_echo_chance))
+                ),
+                rift_force_echo_multiplier=max(
+                    0.0, float(player_rift_force_echo_multiplier)
                 ),
                 damage_immune=damage_immune,
             )
@@ -13046,6 +13077,18 @@ class LocalCombatState:
                 base_damage, pending.damage_modifier,
                 mitigation=defensive_multiplier, critical=critical_multiplier,
             )
+            base_hit_damage = damage
+            damage = rift_force_echo_damage(
+                damage,
+                pending.rift_force_echo_chance,
+                pending.rift_force_echo_multiplier,
+                deterministic_combat_roll(
+                    0x52494654, pending.cast_id, pending.source_actor_id,
+                    pending.target_actor_id, pending.projectile_index,
+                    pending.impact_index,
+                ),
+            )
+            rift_damage = max(0, damage - base_hit_damage)
         else:
             # Compatibility for standalone protocol fixtures which do not
             # own a character/inventory. Production casts always carry the
@@ -13063,6 +13106,7 @@ class LocalCombatState:
                 if pending.damage_modifier > 0.0
                 else 0
             )
+            rift_damage = 0
         # HitMarked observes the target before this hit installs its own mark.
         marked_hit = self.monster_has_status_group(
             monster.actor_id, ("mark",), now=current_time
@@ -13169,6 +13213,8 @@ class LocalCombatState:
             victim_status_effects=applied_effects,
             cast_id=pending.cast_id,
             critical_hit=critical_hit,
+            rift_damage=rift_damage,
+            pre_hit_health=previous,
         )
 
     def apply_bullet_skill(

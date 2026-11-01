@@ -512,3 +512,13 @@ def scaled_skill_damage(base, coefficient, *, mitigation=1.0, critical=1.0, bloc
     if coefficient <= 0.0:
         return 0
     return max(1, math.ceil(base * coefficient * mitigation * critical * block))
+
+
+def rift_force_echo_damage(damage, chance, multiplier, roll):
+    """Add Rift Force's resistance-ignoring echo to one resolved hit."""
+    damage = max(0, int(damage))
+    chance = max(0.0, min(1.0, float(chance)))
+    multiplier = max(0.0, float(multiplier))
+    if damage <= 0 or chance <= 0.0 or float(roll) >= chance:
+        return damage
+    return damage + int(math.ceil(damage * multiplier))

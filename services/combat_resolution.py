@@ -435,41 +435,72 @@ class CombatResolutionService:
             or bool(getattr(resolution, "damage_immune", False))
             or bool(getattr(resolution, "killed", False))
         ):
-            commands.append(HitServerCommand(
-                Hit(
-                    server_tick=resolution.server_tick,
-                    hit_tags=resolution.hit_tags,
-                    field_48=bool(getattr(resolution, "blocked", False)),
-                    # +0x49 is CriticalHit in the client handler, not a
-                    # killed flag. Death is represented by KillCommand.
-                    field_49=bool(resolution.critical_hit),
-                    current_health=resolution.current_health,
-                    maximum_health=resolution.maximum_health,
-                    absorbed_damage=0,
-                    shield_damage=0,
-                    damage=_wire_uint32(resolution.damage),
-                    damage_type=3,
-                    attacker_actor_id=resolution.attacker_actor_id,
-                    source_actor_id=(
-                        resolution.source_actor_id
-                        if resolution.source_actor_id is not None
-                        else resolution.attacker_actor_id
+            rift_damage = min(
+                max(0, int(resolution.damage)),
+                max(0, int(getattr(resolution, "rift_damage", 0))),
+            )
+            hit_damage_parts = []
+            if rift_damage:
+                base_damage = max(0, int(resolution.damage) - rift_damage)
+                previous_health = getattr(
+                    resolution, "pre_hit_health", None
+                )
+                if previous_health is None:
+                    previous_health = (
+                        int(resolution.current_health)
+                        + int(resolution.damage)
+                    )
+                base_current_health = max(
+                    0, int(previous_health) - base_damage
+                )
+                if not resolution.killed and int(resolution.current_health) > 0:
+                    base_current_health = max(1, base_current_health)
+                if base_damage:
+                    hit_damage_parts.append((
+                        base_damage, base_current_health, False,
+                    ))
+                hit_damage_parts.append((
+                    rift_damage, int(resolution.current_health), True,
+                ))
+            else:
+                hit_damage_parts.append((
+                    int(resolution.damage), int(resolution.current_health), False,
+                ))
+            for hit_damage, hit_health, rift_hit in hit_damage_parts:
+                commands.append(HitServerCommand(
+                    Hit(
+                        server_tick=resolution.server_tick,
+                        hit_tags=resolution.hit_tags,
+                        field_48=bool(getattr(resolution, "blocked", False)),
+                        # +0x49 is CriticalHit in the client handler, not a
+                        # killed flag. Death is represented by KillCommand.
+                        field_49=bool(resolution.critical_hit),
+                        current_health=hit_health,
+                        maximum_health=resolution.maximum_health,
+                        absorbed_damage=0,
+                        shield_damage=0,
+                        damage=_wire_uint32(hit_damage),
+                        damage_type=3,
+                        attacker_actor_id=resolution.attacker_actor_id,
+                        source_actor_id=(
+                            resolution.source_actor_id
+                            if resolution.source_actor_id is not None
+                            else resolution.attacker_actor_id
+                        ),
+                        skill_id=0,
+                        impact_strength=0.0,
+                        field_80=False,
+                        field_81=False,
+                        combat_text_type=_combat_text_type(
+                            resolution.hit_tags,
+                            periodic_damage=bool(resolution.periodic_damage),
+                        ) if not bool(
+                            getattr(resolution, "damage_immune", False)
+                        ) else "DamageImmunityOther",
+                        rift_hit=rift_hit,
                     ),
-                    skill_id=0,
-                    impact_strength=0.0,
-                    field_80=False,
-                    field_81=False,
-                    combat_text_type=_combat_text_type(
-                        resolution.hit_tags,
-                        periodic_damage=bool(resolution.periodic_damage),
-                    ) if not bool(
-                        getattr(resolution, "damage_immune", False)
-                    ) else (
-                        "DamageImmunityOther"
-                    ),
-                ),
-                resolution.target_actor_id,
-            ))
+                    resolution.target_actor_id,
+                ))
         if resolution.killed:
             commands.append(
                 KillServerCommand(

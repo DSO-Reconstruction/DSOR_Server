@@ -106,6 +106,8 @@ class PlayerTrapService:
         critical_hit_chance: float,
         critical_damage_multiplier: float,
         modifier_sources: tuple[object, ...],
+        rift_force_echo_chance: float = 0.0,
+        rift_force_echo_multiplier: float = 0.0,
     ) -> None:
         now = time.perf_counter()
         with combat.lock:
@@ -120,6 +122,8 @@ class PlayerTrapService:
                 player_damage_range=player_damage_range,
                 critical_hit_chance=critical_hit_chance,
                 critical_damage_multiplier=critical_damage_multiplier,
+                rift_force_echo_chance=rift_force_echo_chance,
+                rift_force_echo_multiplier=rift_force_echo_multiplier,
                 modifier_sources=modifier_sources,
                 now=now,
             )
@@ -215,6 +219,12 @@ class PlayerTrapService:
                         ),
                         player_critical_damage_multiplier=(
                             trap.critical_damage_multiplier
+                        ),
+                        player_rift_force_echo_chance=(
+                            trap.rift_force_echo_chance
+                        ),
+                        player_rift_force_echo_multiplier=(
+                            trap.rift_force_echo_multiplier
                         ),
                         area_radius_override=trap.definition.trip_radius,
                         impact_delay_override=0.0,
