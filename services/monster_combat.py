@@ -802,6 +802,31 @@ class MonsterCombatService(
             now=now,
         )
 
+        # A few authored buffs (Forgotten Glory's warrior Banner bonus) put
+        # Taunt on the player and define its range through a Creator aura.
+        # Snapshot those status leases before taking the map lock, then let
+        # the shared combat state refresh the affected monsters below.
+        player_buff_taunt_auras = []
+        for actor_id, wire_position, target_session in combat_targets:
+            world_position = combat.encounter.coordinate_frame.wire_to_world(
+                wire_position
+            )
+            with target_session.flow_lock:
+                active_statuses = tuple(
+                    target_session.gameplay_runtime_status_effects.values()
+                )
+            for entry, expires_at in active_statuses:
+                if expires_at is None or float(expires_at) <= now:
+                    continue
+                radius = combat.player_status_taunt_aura_radius(
+                    int(entry.effect_id)
+                )
+                if radius > 0.0:
+                    player_buff_taunt_auras.append((
+                        int(actor_id), world_position,
+                        int(entry.effect_id), float(expires_at),
+                    ))
+
         with combat.lock:
             if (
                 not visible_monster_actor_ids
@@ -869,6 +894,9 @@ class MonsterCombatService(
                 location_aura_applications = ()
                 location_aura_resolutions = ()
             else:
+                combat.refresh_player_buff_taunt_sources(
+                    player_buff_taunt_auras, now=now,
+                )
                 living_actor_ids = combat.living_actor_ids
                 ordinary_actor_ids = set(living_actor_ids)
                 movements = []
@@ -927,6 +955,7 @@ class MonsterCombatService(
                     tuple((actor_id, combat.encounter.coordinate_frame.wire_to_world(position),
                            spawned_by_viewer.get(id(viewer), set()))
                           for actor_id, position, viewer in aggro_targets),
+                    now=now,
                 )
                 for actor_id, scripted_target in tuple(
                     combat.scripted_monster_targets.items()
