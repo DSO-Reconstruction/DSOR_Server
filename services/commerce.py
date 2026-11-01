@@ -650,7 +650,14 @@ class CommerceService:
                 with s.flow_lock:
                     delivered = booking_id in s.gameplay_admin_booking_ids
                 if not delivered:
-                    raise ValueError("unknown CMS booking notification")
+                    # CMS booking notifications are receipt-only: the grant
+                    # is committed before the client acknowledges it. A stale
+                    # notification may outlive the session receipt snapshot;
+                    # accept it without applying or settling any reward.
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] ignored CMS booking "
+                        f"receipt without a session receipt: {booking_id}"
+                    )
                 CharacterService._accept_gameplay_state_command(s, CLIENT_NOTIFICATION_COMMAND)
                 return
             completed_key = ocp_booking_completed_key(

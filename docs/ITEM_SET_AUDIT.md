@@ -151,8 +151,22 @@ cast Frost Nova
   -> every mage skill's own UserStatusEffects entry
        chr2025_set_coldchill,C:0.0,On:skillstart   -- authored disabled, raised to C:1.0
   -> chr2025_set_coldchill                    (5s, MaxStackSize 30, +5% damage/stack)
-  -> at stack 30 the client derives ON:MaxStackSizeColdChill -> icy_wrath_2025_mage
+  -> at the accepted 30th stack the server dispatches the class-matched
+       icy_wrath_2025_mage max-stack effect and applies its authored
+       StopStatusEffect cleanup to the server runtime ledger
+  -> Icy Wrath's modVE,player_skills rule enables the frozen_plain_aura_2025
+       victim-effect placeholder on the class's authored combat skills
+  -> the server resolves the timed aura's frozen_plain_effect_2025 child
+       around the struck monster, including its periodic Ice damage
 ```
+
+The same flow is implemented for Ranger (`Adrenalin`), Warrior (`Battlecry`),
+and Dwarf (`JackInTheBox`). The 3-piece `mh_rings_set_aura` is also resolved
+server-side: its `mh_rings_set_buff` child is refreshed on nearby hostile
+monsters, where `SkillDamage:$0,relative,MonsterSkills` participates in the
+authoritative monster-skill damage calculation. Permanent equipment sources
+renew the short monster-side lease while equipped; timed aura sources remain
+bounded by their authored expiry.
 
 The `mod` operations are genuinely modifications here, not disguised adds:
 every class skill already authors `chr2025_set_coldchill` at `C:0.0`. That is

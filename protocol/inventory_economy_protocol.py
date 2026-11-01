@@ -76,6 +76,7 @@ class CraftingRecipe:
     crafting_recipe_type: str = ""
     scale_price_rc: bool = False
     scale_price_vc: bool = False
+    item_level_source_template_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -192,15 +193,37 @@ def _open_database(path: str) -> sqlite3.Connection:
     return database
 
 
-def _parse_ingredient(value: object) -> tuple[str, int] | None:
+def _parse_ingredient(
+    value: object,
+    *,
+    selected_template_ids: tuple[str, ...] = (),
+) -> tuple[str, int] | None:
     encoded = str(value or "").strip()
     if not encoded:
         return None
-    template_id, separator, raw_amount = encoded.partition(":")
+    template_options, separator, raw_amount = encoded.partition(":")
     amount = int(raw_amount) if separator and raw_amount else 1
-    if not template_id or amount <= 0:
+    options = tuple(
+        option.strip() for option in template_options.split("|")
+        if option.strip()
+    )
+    if not options or amount <= 0:
         raise ValueError(f"invalid crafting ingredient {encoded!r}")
-    return template_id, amount
+    if len(options) == 1:
+        return options[0], amount
+    if not selected_template_ids:
+        # Recipe readers that only inspect authored data still get a stable
+        # representative. Actual crafting always supplies selected items and
+        # must resolve the alternative from those items below.
+        return options[0], amount
+    selected = set(str(value) for value in selected_template_ids)
+    matches = tuple(option for option in options if option in selected)
+    if len(matches) != 1:
+        raise ValueError(
+            "selected crafting items must contain exactly one of the "
+            f"recipe alternatives ({len(matches)} matched)"
+        )
+    return matches[0], amount
 
 
 @lru_cache(maxsize=2048)
@@ -216,19 +239,27 @@ def _load_recipe_cached(
             (recipe_id,),
         ).fetchone()
         # The client appends a decimal result selector to some direct recipes
-        # (for example gem_diamond_fire_e_to_f0).
-        if row is None and recipe_id[-1:].isdigit():
+        # (for example gem_diamond_fire_e_to_f0). Some selector values contain
+        # multiple digits, so try each shorter suffix after the exact ID.
+        candidate_id = recipe_id
+        while row is None and candidate_id[-1:].isdigit():
+            candidate_id = candidate_id[:-1]
+            if not candidate_id:
+                break
             row = database.execute(
                 "SELECT * FROM _Template_CraftingRecipes "
                 "WHERE Id=? AND IsLive=1",
-                (recipe_id[:-1],),
+                (candidate_id,),
             ).fetchone()
         if row is None:
             raise ValueError(f"unknown or locked recipe {recipe_id!r}")
         ingredients = tuple(
             parsed
             for parsed in (
-                _parse_ingredient(row[f"IngredientItemId{index}"])
+                _parse_ingredient(
+                    row[f"IngredientItemId{index}"],
+                    selected_template_ids=selected_template_ids,
+                )
                 for index in range(1, 5)
             )
             if parsed is not None
@@ -248,9 +279,7 @@ def _load_recipe_cached(
                 candidate = tuple(
                     parsed
                     for parsed in (
-                        _parse_ingredient(
-                            opal_row[f"IngredientItemId{index}"]
-                        )
+                        _parse_ingredient(opal_row[f"IngredientItemId{index}"])
                         for index in range(1, 5)
                     )
                     if parsed is not None
@@ -272,10 +301,26 @@ def _load_recipe_cached(
                 raise ValueError(
                     "selected gems do not form an authored opal recipe"
                 )
+        elif not ingredients and crafting_recipe_type == "UpdateRarity":
+            selected = Counter(str(value) for value in selected_template_ids)
+            if len(selected_template_ids) != 4 or not selected:
+                raise ValueError(
+                    "rarity upgrades require exactly four equipment items"
+                )
+            ingredients = tuple(sorted(
+                (template_id, amount)
+                for template_id, amount in selected.items()
+            ))
+            # The result template is rolled from the rarity rule and the
+            # selected equipment at execution time.
+            encoded_result = "DYNAMIC_RARITY_UPGRADE"
         elif not ingredients:
             raise ValueError(f"recipe {row['Id']!r} has no item ingredients")
         result_is_loot_table = bool(row["ResultIsLootTable"])
-        if result_is_loot_table:
+        if crafting_recipe_type == "UpdateRarity":
+            result_template_id = encoded_result
+            result_amount = 1
+        elif result_is_loot_table:
             result_template_id = encoded_result
             result_amount = 1
         else:
@@ -285,6 +330,22 @@ def _load_recipe_cached(
                     f"recipe {row['Id']!r} has no crafted item"
                 )
             result_template_id, result_amount = parsed_result
+        equipment_templates = tuple(
+            template_id for template_id, _ in ingredients
+            if database.execute(
+                "SELECT 1 FROM _Template_Item WHERE Id=? "
+                "AND COALESCE(SlotType, '') != '' "
+                "AND SlotType != 'ConsumableSlot' LIMIT 1",
+                (template_id,),
+            ).fetchone() is not None
+        )
+        # Recipes that transform an item may list the output template itself
+        # as their first ingredient. Prefer the separate gear base supplied
+        # for the craft so its level carries into the new item.
+        level_source_templates = tuple(
+            template_id for template_id in equipment_templates
+            if template_id != result_template_id
+        ) or equipment_templates
         return CraftingRecipe(
             str(row["Id"]),
             result_template_id,
@@ -301,6 +362,7 @@ def _load_recipe_cached(
             crafting_recipe_type,
             str(row["ScalePriceRC"] or "NoScaling") == "ToPlayerLevel",
             str(row["ScalePriceVC"] or "NoScaling") == "ToPlayerLevel",
+            level_source_templates[0] if level_source_templates else "",
         )
     finally:
         database.close()
@@ -332,11 +394,15 @@ def load_enchantment_transfer_factor(
             "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
             (recipe_id,),
         ).fetchone()
-        if row is None and recipe_id[-1:].isdigit():
+        candidate_id = recipe_id
+        while row is None and candidate_id[-1:].isdigit():
+            candidate_id = candidate_id[:-1]
+            if not candidate_id:
+                break
             row = database.execute(
                 "SELECT CraftingRecipeType, FactorUC "
                 "FROM _Template_CraftingRecipes WHERE Id=? AND IsLive=1",
-                (recipe_id[:-1],),
+                (candidate_id,),
             ).fetchone()
         if row is None or str(row["CraftingRecipeType"] or "") not in {
             "EnchantmentTransfer", "SingleEnchantmentTransfer",
@@ -393,6 +459,10 @@ def crafting_price_for_payment(
         return PurchasePrice(rc=unit_price * count)
     if int(payment_currency) == 5:
         if int(price.uc) <= 0:
+            if not any(price.as_tuple()):
+                # Selector 5 is also emitted for special workbench recipes
+                # whose authored price is entirely ingredient-based.
+                return PurchasePrice()
             raise ValueError(
                 "recipe cannot be paid with legacy progression currency"
             )
@@ -538,7 +608,9 @@ class InventoryMutationBuilder:
             raise ValueError("inventory item ID allocator is exhausted")
         self.next_item_id += 1
         item.item_id = new_id
-        item.field_18 = new_id & 0xFFFF
+        # field_18 is the item's client-side base-value seed, not part of
+        # its identity. Keep it stable when a workbench mutation rekeys the
+        # object so enchantment transfers do not reroll its base values.
         _replace_item_id(self.inventory, old_id, new_id)
         self.removed_item_ids.append(old_id)
         self.replacements[new_id] = old_id

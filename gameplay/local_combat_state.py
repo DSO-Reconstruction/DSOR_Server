@@ -36,6 +36,7 @@ from dso_server.gameplay.combat_entities import (
     shifted_skill_phases,
     impact_status_effects,
     scaled_skill_damage,
+    rift_force_echo_damage,
     PLANAR_MELEE_TARGET_SKILLS,
     PLANAR_MELEE_TARGET_VERTICAL_REACH,
 )
@@ -409,6 +410,9 @@ def _skill_scopes(resource_id: str, char_class: str, groups: tuple) -> frozenset
 
     return frozenset({
         resource_id.casefold(),
+        # Static skill modifiers use this scope for every player skill
+        # (including Winter's Icy Wrath frozen_plain_aura_2025 modVE rule).
+        "player_skills",
         "allplayerskills",
         f"{char_class.casefold()}_skills",
         *(value.casefold() for value in groups),
@@ -1188,6 +1192,8 @@ class ActivePlayerTrap:
     critical_damage_multiplier: float
     modifier_sources: tuple[object, ...]
     expires_at: float
+    rift_force_echo_chance: float = 0.0
+    rift_force_echo_multiplier: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -1318,6 +1324,8 @@ class PendingPlayerHit:
     damage_type: str = "Physical"
     critical_hit_chance: float = 0.0
     critical_damage_multiplier: float = 2.0
+    rift_force_echo_chance: float = 0.0
+    rift_force_echo_multiplier: float = 0.0
     damage_immune: bool = False
     # An area impact's radius around ``origin`` (the aimed point), checked
     # again when it lands: a meteor falls 2.6 s after the cast.
@@ -1521,6 +1529,8 @@ class DamageResolution:
     # Kill.animation_time on the wire; player delivery uses retail's long life.
     corpse_lifetime_ticks: int = 300
     cast_id: int = 0
+    rift_damage: int = 0
+    pre_hit_health: int | None = None
 
 
 class _MonsterOccupancy:
@@ -1880,6 +1890,14 @@ class LocalCombatState:
         self._route_refresh_budget = 0
         self._route_actor_cursor = 0
         self.monster_target_actor_ids = {}
+        # Preserve the source of player-applied Taunt effects so the
+        # authoritative monster AI can focus the correct player.
+        self.monster_taunt_sources: dict[int, tuple[int, float]] = {}
+        # Some authored player buffs carry a Taunt modifier themselves rather
+        # than adding a Taunt status to each monster. Track those bounded
+        # auras separately so they do not replace direct monster taunts.
+        self.player_buff_taunt_sources: dict[int, tuple[int, float]] = {}
+        self._player_taunt_aura_radii: dict[int, float] = {}
         # Scripted map actors can follow an authoritative fixed target instead
         # of acquiring a player (for example, the Crypt of Kings ram).
         self.scripted_monster_targets: dict[
@@ -2005,6 +2023,15 @@ class LocalCombatState:
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
+        # Player-owned equipment auras are not all cast as location visuals.
+        # Keep the server-side receiver leases for the Winter set's enemy
+        # damage-reduction aura (also used by the Mythic ring set).
+        self.player_status_aura_members: set[tuple[int, int, int]] = set()
+        self.player_status_aura_refresh_at: dict[tuple[int, int, int], float] = {}
+        self._player_status_aura_cache: dict[
+            tuple[int, tuple[float, ...]],
+            tuple[VictimStatusEffectDefinition, tuple[VictimStatusEffectDefinition, ...]] | None,
+        ] = {}
         self._next_player_location_visual_id = 0x00010000
         self._monster_location_visual_casts: set[
             tuple[int, int, int]
@@ -4248,6 +4275,8 @@ class LocalCombatState:
         critical_hit_chance: float,
         critical_damage_multiplier: float,
         modifier_sources: tuple[object, ...] = (),
+        rift_force_echo_chance: float = 0.0,
+        rift_force_echo_multiplier: float = 0.0,
         now: float | None = None,
     ) -> ActivePlayerTrap:
         current_time = time.perf_counter() if now is None else float(now)
@@ -4269,6 +4298,12 @@ class LocalCombatState:
             critical_damage_multiplier=float(critical_damage_multiplier),
             modifier_sources=tuple(modifier_sources),
             expires_at=current_time + definition.lifetime_seconds,
+            rift_force_echo_chance=max(
+                0.0, min(1.0, float(rift_force_echo_chance))
+            ),
+            rift_force_echo_multiplier=max(
+                0.0, float(rift_force_echo_multiplier)
+            ),
         )
         self.player_traps[trap_id] = trap
         return trap
@@ -4537,22 +4572,47 @@ class LocalCombatState:
                     continue
                 key = (int(visual.instance_id), int(actor_id))
                 inside_now.add(key)
+                first_application = key not in self.player_location_aura_members
                 if key in self.player_location_aura_members:
                     if not visual.managed_aura or self.player_location_aura_refresh_at.get(key, 0.0) > current_time:
                         continue
                 self.player_location_aura_refresh_at[key] = current_time + 0.5
+                receiver_effects = []
+                for effect in visual.receiver_status_effects:
+                    if visual.managed_aura and visual.follows_owner:
+                        effect = replace(
+                            effect,
+                            duration_ticks=min(
+                                30,
+                                max(
+                                    1,
+                                    math.ceil(
+                                        (visual.expires_at - current_time)
+                                        * SERVER_TICKS_PER_SECOND
+                                    ),
+                                ),
+                            ),
+                        )
+                    elif visual.managed_aura:
+                        effect = replace(effect, duration_ticks=30)
+                    receiver_effects.append(effect)
                 definitions = self.accepted_monster_status_effects(
                     actor_id,
-                    tuple(
-                        replace(effect, duration_ticks=(
-                            min(30, max(1, round((visual.expires_at - current_time) * SERVER_TICKS_PER_SECOND)))
-                            if visual.follows_owner else 30
-                        ))
-                        if visual.managed_aura else effect
-                        for effect in visual.receiver_status_effects
-                    ),
+                    tuple(receiver_effects),
                     now=current_time,
                 )
+                if (
+                    first_application
+                    and visual.definition.resource_id.casefold()
+                    == "skill_battlecry_taunt_aura"
+                ):
+                    print(
+                        f"[outburst-trace] aura target={int(actor_id)} "
+                        f"owner={int(visual.owner_actor_id)} distance="
+                        f"{self._distance(visual.position, self.monster_positions[actor_id]):.2f} "
+                        f"accepted={tuple(effect.resource_id for effect in definitions)} "
+                        f"expires={visual.expires_at:.3f} now={current_time:.3f}"
+                    )
                 if not definitions:
                     continue
                 self._record_monster_status_effects(
@@ -5532,6 +5592,8 @@ class LocalCombatState:
         self.player_summon_heat_hits.pop(actor_id, None)
         self.player_summon_overheated_until.pop(actor_id, None)
         self.monster_status_effects.pop(actor_id, None)
+        self.monster_taunt_sources.pop(actor_id, None)
+        self.player_buff_taunt_sources.pop(actor_id, None)
         self.monster_status_immunities.pop(actor_id, None)
         self._monster_action_lock_cache.pop(actor_id, None)
         for key in tuple(self.monster_status_damage):
@@ -7410,6 +7472,13 @@ class LocalCombatState:
                         "skilldamage",
                         "skillhitdamage",
                     }:
+                        # SkillDamage is additive in some talent programs and
+                        # can therefore turn a status-only skill into a
+                        # damaging one. Keep skills with no authored damage
+                        # (Mind Control, Singularity, Frost Wind) status-only
+                        # under every modifier source.
+                        if geometry.damage_modifier <= 0.0:
+                            continue
                         damage_modifier = self._apply_numeric_modifier(
                             damage_modifier,
                             amount,
@@ -8182,6 +8251,8 @@ class LocalCombatState:
                 )
         if not active:
             self.monster_status_effects.pop(actor_id, None)
+            self.monster_taunt_sources.pop(actor_id, None)
+            self.player_buff_taunt_sources.pop(actor_id, None)
             return ()
         return tuple(definition for definition, _expires_at in active.values())
 
@@ -8328,8 +8399,8 @@ class LocalCombatState:
             )
         )
 
-    def _summon_status_scale(self, actor_id, kind, scope, *, now=None):
-        """Apply authored relative debuffs to a minion's speed or damage."""
+    def _monster_status_scale(self, actor_id, kind, scope, *, now=None):
+        """Resolve an actor's authored relative speed or damage modifiers."""
         relative = 0.0
         for source in self._active_monster_modifier_sources(actor_id, now=now):
             for modifier_kind, arguments in self._status_modifier_program(source.effect_id):
@@ -8343,6 +8414,10 @@ class LocalCombatState:
                 if amount is not None:
                     relative += amount * max(1, int(source.stack_count))
         return max(0.0, 1.0 + relative)
+
+    def _summon_status_scale(self, actor_id, kind, scope, *, now=None):
+        """Compatibility alias for player-summon modifier lookups."""
+        return self._monster_status_scale(actor_id, kind, scope, now=now)
 
     def _monster_skill_damage_multiplier(
             self, actor_id: int, *, now: float | None = None) -> float:
@@ -8408,6 +8483,215 @@ class LocalCombatState:
         self._mind_control_taunt_radius_value = cached
         return cached
 
+    def player_status_taunt_aura_radius(self, effect_id: int) -> float:
+        """Resolve a player Taunt buff's authored Creator-aura radius."""
+        effect_id = int(effect_id)
+        cached = self._player_taunt_aura_radii.get(effect_id)
+        if cached is not None:
+            return cached
+        radius = 0.0
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        )) as database:
+            row = database.execute(
+                "SELECT MAX(parent.AuraRadius) "
+                "FROM _Template_StatusEffect AS child "
+                "JOIN _Template_StatusEffect AS parent "
+                "ON lower(COALESCE(parent.AuraTargets, ''))='creator' "
+                "AND instr(';' || parent.AuraEffectId || ';', "
+                "';' || child.Id || ';')>0 "
+                "WHERE child.rowid=? "
+                "AND lower(child.StartModifiers) LIKE '%taunt%'",
+                (effect_id + 1,),
+            ).fetchone()
+            radius = max(0.0, float(row[0] or 0.0)) if row else 0.0
+        self._player_taunt_aura_radii[effect_id] = max(0.0, radius)
+        return self._player_taunt_aura_radii[effect_id]
+
+    def player_status_enemy_aura(self, effect_id, values=(), *, duration_ticks=1):
+        """Resolve the receiver effects for a player-hosted enemy aura.
+
+        Chillingly Cold's third tier applies ``mh_rings_set_aura`` directly
+        to the wearer. The client expands its 100-unit aura, but the server
+        must also install its ``mh_rings_set_buff`` child on nearby monsters
+        for ``SkillDamage:...,MonsterSkills`` to affect authoritative hits.
+        """
+        effect_id = int(effect_id)
+        normalized_values = tuple(float(value) for value in (values or ()))
+        key = (effect_id, normalized_values)
+        if key in self._player_status_aura_cache:
+            return self._player_status_aura_cache[key]
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        )) as database:
+            row = database.execute(
+                "SELECT Id, COALESCE(AuraTargets, ''), "
+                "COALESCE(AuraRadius, 0) "
+                "FROM _Template_StatusEffect WHERE rowid=? LIMIT 1",
+                (effect_id + 1,),
+            ).fetchone()
+            if row is None:
+                self._player_status_aura_cache[key] = None
+                return None
+            resource_id = str(row[0] or "")
+            if resource_id.casefold() != "mh_rings_set_aura":
+                self._player_status_aura_cache[key] = None
+                return None
+            targets = {
+                value.strip().casefold()
+                for value in str(row[1] or "").replace(",", ";").split(";")
+                if value.strip()
+            }
+            if "enemies" not in targets or float(row[2] or 0.0) <= 0.0:
+                self._player_status_aura_cache[key] = None
+                return None
+            encoded = [
+                resource_id,
+                "C:1.0",
+                f"D:{max(1, int(duration_ticks)) / SERVER_TICKS_PER_SECOND:g}",
+            ]
+            encoded.extend(
+                f"${index}:{value}"
+                for index, value in enumerate(normalized_values)
+            )
+            encoded_status = ",".join(encoded)
+            definitions = self._load_victim_status_effects(
+                database, encoded_status, default_trigger="immediate"
+            )
+            if not definitions:
+                self._player_status_aura_cache[key] = None
+                return None
+            aura = definitions[0]
+            receivers = self._load_location_aura_effects(
+                database, encoded_status
+            )
+        result = (aura, tuple(receivers)) if receivers else None
+        self._player_status_aura_cache[key] = result
+        return result
+
+    def apply_player_status_enemy_auras(
+        self, auras, *, now: float, server_tick: int,
+    ) -> tuple[PlayerSupportApplication, ...]:
+        """Refresh enemy effects from active player-hosted equipment auras."""
+        current_time = float(now)
+        inside_now: set[tuple[int, int, int]] = set()
+        applications = []
+        for (
+            owner_id, position, instance_id, effect_id, values, expires_at,
+        ) in auras:
+            if expires_at is not None and float(expires_at) <= current_time:
+                continue
+            # Equipment set roots have no timed runtime lease. Keep a short
+            # receiver lease alive and refresh it while the source is equipped;
+            # timed skill auras remain bounded by their actual expiry.
+            remaining_ticks = (
+                30
+                if expires_at is None
+                else max(
+                    1,
+                    math.ceil(
+                        (float(expires_at) - current_time)
+                        * SERVER_TICKS_PER_SECOND
+                    ),
+                )
+            )
+            resolved = self.player_status_enemy_aura(
+                int(effect_id), values, duration_ticks=remaining_ticks,
+            )
+            if resolved is None:
+                continue
+            aura, receivers = resolved
+            radius = max(0.0, float(aura.aura_radius))
+            if radius <= 0.0:
+                continue
+            source_key = (int(owner_id), int(instance_id))
+            for actor_id in self.living_actor_ids:
+                if not self.monster_hostile_to_player(actor_id, owner_id):
+                    continue
+                monster = self.monsters[actor_id]
+                if self._distance(
+                    position, self.monster_positions[actor_id]
+                ) > radius + max(0.0, monster.collision_radius):
+                    continue
+                key = (source_key[0], source_key[1], int(actor_id))
+                inside_now.add(key)
+                if (
+                    key in self.player_status_aura_members
+                    and self.player_status_aura_refresh_at.get(key, 0.0)
+                    > current_time
+                ):
+                    continue
+                self.player_status_aura_refresh_at[key] = current_time + 0.5
+                refreshed = tuple(
+                    replace(
+                        effect,
+                        duration_ticks=min(30, remaining_ticks),
+                        pvp_duration_ticks=min(30, remaining_ticks),
+                    )
+                    for effect in receivers
+                )
+                accepted = self.accepted_monster_status_effects(
+                    actor_id, refreshed, now=current_time,
+                )
+                if not accepted:
+                    continue
+                self._record_monster_status_effects(
+                    actor_id,
+                    accepted,
+                    now=current_time,
+                    source_actor_id=int(owner_id),
+                )
+                applications.append(PlayerSupportApplication(
+                    source_actor_id=int(owner_id),
+                    target_actor_id=int(actor_id),
+                    server_tick=int(server_tick) & 0xFFFFFFFF,
+                    status_effects=accepted,
+                ))
+        self.player_status_aura_members = inside_now
+        self.player_status_aura_refresh_at = {
+            key: value for key, value in self.player_status_aura_refresh_at.items()
+            if key in inside_now
+        }
+        return tuple(applications)
+
+    def refresh_player_buff_taunt_sources(self, auras, *, now: float) -> None:
+        """Apply active player Taunt buffs to hostile monsters in range."""
+        current_time = float(now)
+        for actor_id, (_owner_id, expires_at) in tuple(
+            self.player_buff_taunt_sources.items()
+        ):
+            if (
+                expires_at <= current_time
+                or actor_id not in self.monster_health
+                or self.monster_health.get(actor_id, 0) <= 0
+            ):
+                self.player_buff_taunt_sources.pop(actor_id, None)
+        for owner_id, position, effect_id, expires_at in auras:
+            if expires_at <= current_time:
+                continue
+            radius = self.player_status_taunt_aura_radius(effect_id)
+            if radius <= 0.0:
+                continue
+            for actor_id in self.living_actor_ids:
+                if not self.monster_hostile_to_player(actor_id, owner_id):
+                    continue
+                monster = self.monsters[actor_id]
+                if self._distance(
+                    position, self.monster_positions[actor_id]
+                ) > radius + max(0.0, monster.collision_radius):
+                    continue
+                previous = self.player_buff_taunt_sources.get(actor_id)
+                if (
+                    previous is None
+                    or previous[0] == int(owner_id)
+                    or float(expires_at) >= previous[1]
+                ):
+                    self.player_buff_taunt_sources[actor_id] = (
+                        int(owner_id), float(expires_at)
+                    )
+
     def _record_monster_status_effects(
         self,
         actor_id: int,
@@ -8436,6 +8720,12 @@ class LocalCombatState:
                 definition,
                 expires_at,
             )
+            if "taunt" in self._status_groups_for_effect(
+                definition.effect_id
+            ):
+                self.monster_taunt_sources[int(actor_id)] = (
+                    int(source_actor_id), expires_at
+                )
             self._arm_monster_status_immunity(
                 actor_id, definition.resource_id, expires_at=expires_at
             )
@@ -9447,12 +9737,13 @@ class LocalCombatState:
                     monster, invulnerable=bool(invulnerable),
                 )
 
-    def assign_monster_targets(self, actor_ids, candidates):
+    def assign_monster_targets(self, actor_ids, candidates, *, now=None):
         """Choose a visible, living player per monster; keep nearby targets stable.
 
         Candidates contain (player actor ID, world position, visible monsters).
         Position conversion and session eligibility belong to the caller.
         """
+        current_time = time.perf_counter() if now is None else float(now)
         result = {}
         for actor_id in actor_ids:
             position = self.monster_positions[actor_id]
@@ -9463,6 +9754,42 @@ class LocalCombatState:
                 self.monster_target_actor_ids[actor_id] = defender_id
                 result[actor_id] = (defender_id, defender.position)
                 continue
+            taunt = self.monster_taunt_sources.get(int(actor_id))
+            if taunt is not None and taunt[1] <= current_time:
+                self.monster_taunt_sources.pop(int(actor_id), None)
+                taunt = None
+            if taunt is None:
+                taunt = self.player_buff_taunt_sources.get(int(actor_id))
+                if taunt is not None and taunt[1] <= current_time:
+                    self.player_buff_taunt_sources.pop(int(actor_id), None)
+                    taunt = None
+            if taunt is not None:
+                taunter_id, taunt_expires_at = taunt
+                taunter = next((
+                    (int(player_id), world)
+                    for player_id, world, _visible in candidates
+                    if int(player_id) == int(taunter_id)
+                    and self.monster_hostile_to_player(
+                        actor_id, int(player_id)
+                    )
+                    and (
+                        self.player_health.get(int(player_id)) is None
+                        or self.player_health[int(player_id)][0] > 0
+                    )
+                ), None)
+                if taunter is not None:
+                    if self.monster_target_actor_ids.get(actor_id) != int(
+                        taunter_id
+                    ):
+                        print(
+                            f"[outburst-trace] target mob={int(actor_id)} "
+                            f"player={int(taunter_id)} "
+                            f"expires={taunt_expires_at:.3f} "
+                            f"now={current_time:.3f}"
+                        )
+                    self.monster_target_actor_ids[actor_id] = int(taunter_id)
+                    result[actor_id] = taunter
+                    continue
             choices = []
             for player_id, world, visible in candidates:
                 health = self.player_health.get(player_id)
@@ -9534,6 +9861,9 @@ class LocalCombatState:
             start = self.monster_positions[actor_id]
             previous_yaw = self.monster_yaws[actor_id]
             was_moving = self.monster_moving[actor_id]
+            movement_speed = monster.run_speed * self._monster_status_scale(
+                actor_id, "Speed", "Movement", now=current_time
+            )
             # Mounted trap actors keep their authored transform. Separation
             # and route grounding must not drag a stationary tower off its
             # pedestal, even when a player or another monster overlaps it.
@@ -9553,7 +9883,7 @@ class LocalCombatState:
                 dx = scripted_goal[0] - start[0]
                 dz = scripted_goal[2] - start[2]
                 distance = math.hypot(dx, dz)
-                step = min(float(monster.run_speed) * elapsed, distance)
+                step = min(float(movement_speed) * elapsed, distance)
                 if distance > 1e-5 and step > 1e-6:
                     ratio = step / distance
                     destination = (
@@ -9606,6 +9936,29 @@ class LocalCombatState:
             home_distance = self._distance(start, home)
             player_home_distance = self._distance(player_position, home)
             returning_home = actor_id in self.returning_home_actor_ids
+            taunt = self.monster_taunt_sources.get(actor_id)
+            if taunt is None:
+                taunt = self.player_buff_taunt_sources.get(actor_id)
+            assigned_target = (
+                targets_by_actor.get(actor_id)
+                if targets_by_actor is not None else None
+            )
+            active_taunt_target = bool(
+                taunt is not None
+                and taunt[1] > current_time
+                and assigned_target is not None
+                and int(assigned_target[0]) == int(taunt[0])
+                and not self._near_protected_waypoint(player_position)
+            )
+            if returning_home and active_taunt_target:
+                # A valid Taunt must release the AI's previous leash return.
+                # Keep the safe-zone checks below: the mob may pursue its
+                # taunter around protected travel points, but never through
+                # one or into a player's safe-zone.
+                self._set_returning_home(
+                    actor_id, False, server_tick, now=current_time,
+                )
+                returning_home = False
             if targets_by_actor is not None:
                 target = targets_by_actor.get(actor_id)
                 player_position = target[1] if target is not None else home
@@ -9939,7 +10292,7 @@ class LocalCombatState:
 
             if returning_home:
                 goal = home
-                travel = min(monster.run_speed * movement_elapsed, home_distance)
+                travel = min(movement_speed * movement_elapsed, home_distance)
             else:
                 # Pursue the player directly. This used to be clamped to the
                 # pursuit sphere, which made the goal a point on an invisible
@@ -9954,7 +10307,7 @@ class LocalCombatState:
                 )
                 goal_distance = self._distance(start, goal)
                 travel = min(
-                    monster.run_speed * movement_elapsed,
+                    movement_speed * movement_elapsed,
                     max(
                         0.0,
                         goal_distance
@@ -9976,7 +10329,7 @@ class LocalCombatState:
                     correction_x = candidate[0] - start[0]
                     correction_z = candidate[2] - start[2]
                     correction = math.hypot(correction_x, correction_z)
-                    maximum_correction = monster.run_speed * movement_elapsed
+                    maximum_correction = movement_speed * movement_elapsed
                     if correction > maximum_correction > 0.0:
                         ratio = maximum_correction / correction
                         candidate = (
@@ -10079,13 +10432,21 @@ class LocalCombatState:
                 if self._segment_intersects_protected_waypoint(
                     start, destination
                 ):
-                    if home_distance > MONSTER_HOME_ARRIVAL_DISTANCE:
+                    if (
+                        home_distance > MONSTER_HOME_ARRIVAL_DISTANCE
+                        and not active_taunt_target
+                    ):
                         self._set_returning_home(
                             actor_id, True, server_tick, now=current_time,
                             reason="its path crosses a travel stone's safe zone",
                         )
+                    elif active_taunt_target:
+                        # The cached route aimed through a protected point.
+                        # Drop it and let the route planner find a safe way
+                        # around on a later tick instead of abandoning Taunt.
+                        self.monster_routes.pop(actor_id, None)
                     destination = start
-            maximum_step = monster.run_speed * movement_elapsed
+            maximum_step = movement_speed * movement_elapsed
             destination = self.ground_monster_position(
                 actor_id,
                 destination,
@@ -10301,11 +10662,21 @@ class LocalCombatState:
         entities.extend(additional_entities)
         delay = (max(0.0, float(impact_delay_override)) if impact_delay_override is not None
                  else self._player_skill_impact_delay(geometry, attack_speed_multiplier))
+        area_radius = max(0.0, float(area_radius_override or 0.0))
+        if (
+            geometry.resource_id.casefold() == "battlecry"
+            and geometry.targeting_type.casefold() == "radius"
+        ):
+            # Battle Cry's fear debuffs apply to every enemy within the
+            # authored 18 m AttackRange. HitRange is only 7 m in the static
+            # row; using it as the radius silently dropped the fear effects
+            # for the outer part of the skill's displayed area.
+            area_radius = max(area_radius, float(geometry.attack_range))
         return plan_entity_skill(
             geometry, entities, origin=origin, direction=direction, projectile=projectile,
             point=point, explicit_targets=explicit_target_actor_ids,
             attack_speed=attack_speed_multiplier, impact_delay=delay,
-            area_radius=max(0.0, area_radius_override or 0.0),
+            area_radius=area_radius,
             require_explicit_target=require_explicit_target,
             range_tolerance=PLAYER_PROJECTILE_COLLISION_RADIUS,
             static_reach=(self._bullet_static_reach(geometry.start_offset)
@@ -10390,6 +10761,8 @@ class LocalCombatState:
         player_damage_range: tuple[float, float] | None = None,
         player_critical_hit_chance: float = 0.0,
         player_critical_damage_multiplier: float = 2.0,
+        player_rift_force_echo_chance: float = 0.0,
+        player_rift_force_echo_multiplier: float = 0.0,
     ) -> tuple[PendingPlayerHit, ...]:
         """Schedule all authoritative impacts produced by one client cast.
 
@@ -10561,6 +10934,12 @@ class LocalCombatState:
                 critical_damage_multiplier=max(
                     1.0, float(player_critical_damage_multiplier)
                 ),
+                rift_force_echo_chance=max(
+                    0.0, min(1.0, float(player_rift_force_echo_chance))
+                ),
+                rift_force_echo_multiplier=max(
+                    0.0, float(player_rift_force_echo_multiplier)
+                ),
                 damage_immune=damage_immune,
             )
             key = (
@@ -10593,6 +10972,8 @@ class LocalCombatState:
         player_damage_range: tuple[float, float] | None = None,
         player_critical_hit_chance: float = 0.0,
         player_critical_damage_multiplier: float = 2.0,
+        player_rift_force_echo_chance: float = 0.0,
+        player_rift_force_echo_multiplier: float = 0.0,
         hit_plan=None,
         area_radius_override: float | None = None,
         impact_delay_override: float | None = None,
@@ -10608,6 +10989,16 @@ class LocalCombatState:
         if hit_plan is None:
             geometry = self._modified_player_skill_geometry(
                 geometry, modifier_effect_ids
+            )
+        effective_area_radius = max(
+            0.0, float(area_radius_override or 0.0)
+        )
+        if (
+            geometry.resource_id.casefold() == "battlecry"
+            and geometry.targeting_type.casefold() == "radius"
+        ):
+            effective_area_radius = max(
+                effective_area_radius, float(geometry.attack_range)
             )
         ammunition_types = self._active_ammunition_types(
             modifier_effect_ids
@@ -10626,7 +11017,7 @@ class LocalCombatState:
             explicit_target_actor_ids=explicit_target_actor_ids,
             eligible_actor_ids=eligible_actor_ids, visible_actor_positions=visible_actor_positions,
             attack_speed_multiplier=attack_speed_multiplier, now=now, geometry=geometry,
-            area_radius_override=area_radius_override, impact_delay_override=impact_delay_override,
+            area_radius_override=effective_area_radius, impact_delay_override=impact_delay_override,
         )
         if plan is None:
             return ()
@@ -10683,7 +11074,7 @@ class LocalCombatState:
                 # a monster that left that wider ring.
                 area_radius=max(
                     0.25, geometry.hit_range, geometry.impact_radius,
-                    float(area_radius_override or 0.0),
+                    effective_area_radius,
                     max((
                         effect.aura_radius for effect in (
                             *geometry.location_status_effects,
@@ -10721,6 +11112,12 @@ class LocalCombatState:
                 ),
                 critical_damage_multiplier=max(
                     1.0, float(player_critical_damage_multiplier)
+                ),
+                rift_force_echo_chance=max(
+                    0.0, min(1.0, float(player_rift_force_echo_chance))
+                ),
+                rift_force_echo_multiplier=max(
+                    0.0, float(player_rift_force_echo_multiplier)
                 ),
                 damage_immune=damage_immune,
             )
@@ -10835,7 +11232,7 @@ class LocalCombatState:
             geometry, modifier_effect_ids
         )
         trigger = str(trigger).strip().lower()
-        return tuple(
+        definitions = tuple(
             definition
             for definition in geometry.user_status_effects
             if (
@@ -10853,6 +11250,43 @@ class LocalCombatState:
                 definition, cast_id=cast_id, killed=killed
             )
         )
+        # Battle Cry's client-side AuraEffect child ends with its parent aura.
+        # The authored parent lasts one second while its Taunt child lasts ten,
+        # so extend the parent to keep the mob's visible taunt alive.
+        taunt_durations = {}
+        for aura, receivers, _delay in self.player_user_effect_location_auras(
+            definitions
+        ):
+            duration = max(
+                (
+                    int(effect.duration_ticks)
+                    for effect in receivers
+                    if "taunt" in self._status_groups_for_effect(
+                        effect.effect_id
+                    )
+                ),
+                default=0,
+            )
+            if duration > int(aura.duration_ticks):
+                taunt_durations[aura.resource_id] = duration
+        if taunt_durations:
+            definitions = tuple(
+                replace(
+                    definition,
+                    duration_ticks=max(
+                        int(definition.duration_ticks),
+                        taunt_durations[definition.resource_id],
+                    ),
+                    pvp_duration_ticks=max(
+                        int(definition.pvp_duration_ticks or 0),
+                        taunt_durations[definition.resource_id],
+                    ),
+                )
+                if definition.resource_id in taunt_durations
+                else definition
+                for definition in definitions
+            )
+        return definitions
 
     def player_skill_location_owner_effects(
         self,
@@ -11104,6 +11538,8 @@ class LocalCombatState:
                 self.monster_status_damage.pop(key, None)
                 if previous <= 0:
                     self.monster_status_effects.get(actor_id, {}).clear()
+                    self.monster_taunt_sources.pop(actor_id, None)
+                    self.player_buff_taunt_sources.pop(actor_id, None)
                     for other_key in tuple(self.monster_status_damage):
                         if other_key[0] == actor_id:
                             self.monster_status_damage.pop(other_key, None)
@@ -11121,16 +11557,19 @@ class LocalCombatState:
         skill_index: int = 0,
         now: float | None = None,
     ) -> tuple[DamageResolution, ...]:
-        """Apply a victim-hosted aura with no duration once, around its host.
+        """Apply receiver children of a victim-hosted aura around its host.
 
-        Jewel of Glory's ``skill_explosiveshot_explosion_aura_bgh_jewel2026``
-        is an Explosive Arrow ``addVE`` with ``D:0`` and ``DE:0.11``: hosted on
-        the victim (``AuraTargets:Allies;Creator`` -- the victim and the
-        monsters beside it) it explodes once for 100% Physical damage and three
-        Burning stacks in 4.5 m. Like the client's radius query, an actor is
-        inside when its centre is within the radius plus its ActorShape
-        radius. Status-only children still land (zero-damage resolutions are
-        effect-only transactions).
+        Zero-duration auras resolve once at impact; timed auras can carry
+        periodic child effects that must be installed on each affected
+        monster. Jewel of Glory's
+        ``skill_explosiveshot_explosion_aura_bgh_jewel2026`` is an Explosive
+        Arrow ``addVE`` with ``D:0`` and ``DE:0.11``: hosted on the victim
+        (``AuraTargets:Allies;Creator`` -- the victim and the monsters beside
+        it) it explodes once for 100% Physical damage and three Burning stacks
+        in 4.5 m. Like the client's radius query, an actor is inside when its
+        centre is within the radius plus its ActorShape radius. Status-only
+        children still land (zero-damage resolutions are effect-only
+        transactions).
         """
 
         current_time = time.perf_counter() if now is None else float(now)
@@ -11139,6 +11578,8 @@ class LocalCombatState:
             return ()
         results = []
         for actor_id in self.living_actor_ids:
+            if not self.monster_hostile_to_player(actor_id, owner_actor_id):
+                continue
             monster = self.monsters[actor_id]
             position = self.monster_positions[actor_id]
             if abs(position[1] - centre[1]) > 10.0:
@@ -12024,6 +12465,15 @@ class LocalCombatState:
             }.get(attack_skill_type, 0)
             if attack_skill_type == 'MeleeTarget':
                 command_id = SKILL_COMMAND
+            bullet_commands = {
+                BULLET_SKILL_COMMAND,
+                TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
+            }
+            bullet_release_delay = max(
+                geometry.bullet_emit_delay,
+                geometry.loop_start_frame / SERVER_TICKS_PER_SECOND,
+            ) / summon_skill_speed
             emit_playback = (
                 definition.attack_playback_enabled
                 and bool(command_id)
@@ -12060,19 +12510,20 @@ class LocalCombatState:
                 )
             )
             impact_delay = (
-                geometry.bullet_emit_delay / summon_skill_speed
+                bullet_release_delay
                 + (
                     length / geometry.projectile_velocity
                     if geometry.projectile_velocity > 1e-6
                     else 0.0
                 )
                 if command_id
-                in {
-                    BULLET_SKILL_COMMAND,
-                    TARGET_BULLET_SKILL_COMMAND,
-                    TARGET_POINT_BULLET_SKILL_COMMAND,
-                }
+                in bullet_commands
                 else geometry.hit_frame / SERVER_TICKS_PER_SECOND / summon_skill_speed
+            )
+            animation_hit_frame = (
+                geometry.hit_frame
+                if geometry.hit_frame > 0
+                else geometry.loop_start_frame
             )
             impact_tick = (
                 start_tick
@@ -12088,7 +12539,7 @@ class LocalCombatState:
                 server_tick=start_tick,
                 cast_id=0,
                 impact_tick=impact_tick,
-                hit_frame=round(geometry.hit_frame / summon_skill_speed),
+                hit_frame=round(animation_hit_frame / summon_skill_speed),
                 motion_unblock_frame=(
                     round((attack_motion_unblock_frame or geometry.hit_frame) / summon_skill_speed)
                 ),
@@ -12159,7 +12610,7 @@ class LocalCombatState:
                 ):
                     arrivals = []
                     for target in target_actor_ids:
-                        travel = geometry.bullet_emit_delay + self._distance(
+                        travel = bullet_release_delay + self._distance(
                             summon.position, self.monster_positions[target],
                         ) / max(.01, geometry.projectile_velocity)
                         arrivals.append((
@@ -13046,6 +13497,18 @@ class LocalCombatState:
                 base_damage, pending.damage_modifier,
                 mitigation=defensive_multiplier, critical=critical_multiplier,
             )
+            base_hit_damage = damage
+            damage = rift_force_echo_damage(
+                damage,
+                pending.rift_force_echo_chance,
+                pending.rift_force_echo_multiplier,
+                deterministic_combat_roll(
+                    0x52494654, pending.cast_id, pending.source_actor_id,
+                    pending.target_actor_id, pending.projectile_index,
+                    pending.impact_index,
+                ),
+            )
+            rift_damage = max(0, damage - base_hit_damage)
         else:
             # Compatibility for standalone protocol fixtures which do not
             # own a character/inventory. Production casts always carry the
@@ -13063,6 +13526,7 @@ class LocalCombatState:
                 if pending.damage_modifier > 0.0
                 else 0
             )
+            rift_damage = 0
         # HitMarked observes the target before this hit installs its own mark.
         marked_hit = self.monster_has_status_group(
             monster.actor_id, ("mark",), now=current_time
@@ -13153,6 +13617,30 @@ class LocalCombatState:
                 ),
                 skill_index=pending.skill_index,
             )
+        if (
+            traced_geometry is not None
+            and traced_geometry.resource_id.casefold() == "battlecry"
+        ):
+            effect_ids = tuple(
+                effect.resource_id for effect in applied_effects
+            )
+            movement_scale = self._monster_status_scale(
+                monster.actor_id, "Speed", "Movement", now=current_time
+            )
+            skill_scale = self._monster_status_scale(
+                monster.actor_id, "Speed", "Skills", now=current_time
+            )
+            fire_damage_scale = self.monster_incoming_damage_multiplier(
+                monster.actor_id, "Fire", now=current_time
+            )
+            print(
+                f"[outburst-trace] impact target={int(monster.actor_id)} "
+                f"damage={int(damage)} killed={bool(killed)} "
+                f"effects={effect_ids} "
+                f"movement_scale={movement_scale:.3f} "
+                f"skill_scale={skill_scale:.3f} "
+                f"fire_damage_scale={fire_damage_scale:.3f}"
+            )
         return DamageResolution(
             target_actor_id=monster.actor_id,
             attacker_actor_id=pending.source_actor_id,
@@ -13169,6 +13657,8 @@ class LocalCombatState:
             victim_status_effects=applied_effects,
             cast_id=pending.cast_id,
             critical_hit=critical_hit,
+            rift_damage=rift_damage,
+            pre_hit_health=previous,
         )
 
     def apply_bullet_skill(
@@ -13512,13 +14002,20 @@ class LocalCombatState:
             )
             if definition is None:
                 continue
+            skill_speed_scale = max(
+                0.05,
+                self._monster_status_scale(
+                    actor_id, "Speed", "Skills", now=current_time
+                ),
+            )
             # The previous cast owns the recovery lock checked above. Using
             # the newly selected skill's duration here starves long specials:
             # every intervening basic hit restarts the interval they require.
             minimum_attack_interval = 0.1
             if not is_boss:
                 minimum_attack_interval = max(
-                    minimum_attack_interval, monster.attack_interval
+                    minimum_attack_interval,
+                    monster.attack_interval / skill_speed_scale,
                 )
             if (
                 current_time - self.last_monster_attack_at[actor_id]
@@ -13777,12 +14274,18 @@ class LocalCombatState:
                 )
             self.last_monster_attack_at[actor_id] = current_time
             self.monster_skill_unblock_at[actor_id] = (
-                current_time + attack.skill_unblock_frame / SERVER_TICKS_PER_SECOND
+                current_time
+                + attack.skill_unblock_frame
+                / SERVER_TICKS_PER_SECOND
+                / skill_speed_scale
             )
             if attack.motion_unblock_frame > 0:
                 self.monster_motion_unblock_at[actor_id] = max(
                     self.monster_motion_unblock_at.get(actor_id, 0.0),
-                    current_time + attack.motion_unblock_frame / SERVER_TICKS_PER_SECOND,
+                    current_time
+                    + attack.motion_unblock_frame
+                    / SERVER_TICKS_PER_SECOND
+                    / skill_speed_scale,
                 )
                 # The reliable cast batch publishes this exact stationary
                 # transform, superseding any chase snapshot from this tick.
@@ -13794,7 +14297,7 @@ class LocalCombatState:
             if definition.cooldown > 0.0:
                 self._monster_skill_ready_at.setdefault(actor_id, {})[
                     _cooldown_key(definition)
-                ] = current_time + definition.cooldown
+                ] = current_time + definition.cooldown / skill_speed_scale
             if definition.self_buff and attack.user_status_effects:
                 # Its effects (enrage: speed, skill speed, immunities) are on
                 # the caster from its start; clients get them with the cast

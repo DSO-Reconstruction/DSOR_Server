@@ -7,6 +7,7 @@ from dso_server.gameplay.combat_entities import (
     CombatEntity,
     impact_status_effects,
     scaled_skill_damage,
+    rift_force_echo_damage,
 )
 from dso_server.runtime.gameplay_scheduler import GameplayDeadlineHandle
 from dso_server.runtime.transport import Session
@@ -554,6 +555,8 @@ class PVPCombatService:
             player_critical_damage_multiplier: float = 2.0,
             attack_speed_multiplier: float,
             modifier_sources: tuple[object, ...],
+            player_rift_force_echo_chance: float = 0.0,
+            player_rift_force_echo_multiplier: float = 0.0,
             explicit_target_actor_ids: tuple[int, ...] = (),
             target_position: tuple[float, float, float] | None = None,
             now: float | None = None, hit_plan=None, target_snapshot=None
@@ -740,6 +743,22 @@ class PVPCombatService:
             key = (
                 "pvp-hit", int(source_actor_id), int(skill.cast_id), actor_id, projectile_index
             )
+            base_hit_damage = scaled_skill_damage(
+                rolled_damage, target_geometry.damage_modifier,
+                mitigation=mitigation,
+                block=block_multiplier,
+                critical=(max(1.0, float(player_critical_damage_multiplier))
+                          if critical_hit else 1.0),
+            )
+            hit_damage = rift_force_echo_damage(
+                base_hit_damage,
+                player_rift_force_echo_chance,
+                player_rift_force_echo_multiplier,
+                deterministic_combat_roll(
+                    0x52494654, int(skill.cast_id), int(source_actor_id),
+                    actor_id, int(skill.skill_index), projectile_index,
+                ),
+            )
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
                 combat=combat,
@@ -756,12 +775,8 @@ class PVPCombatService:
                     + round(delay * SERVER_TICKS_PER_SECOND)
                 ) & 0xFFFFFFFF,
                 position=position,
-                damage=scaled_skill_damage(
-                    rolled_damage, target_geometry.damage_modifier,
-                    mitigation=mitigation, block=block_multiplier,
-                    critical=(max(1.0, float(player_critical_damage_multiplier))
-                              if critical_hit else 1.0),
-                ),
+                damage=hit_damage,
+                rift_damage=max(0, hit_damage - base_hit_damage),
                 victim_status_effects=tuple(impact_effects.values()),
                 user_status_effects=user_effects,
                 frost_hit=frost_hit,
@@ -899,6 +914,10 @@ class PVPCombatService:
                 source_actor_id=pending.source_actor_id,
                 critical_hit=bool(pending.critical_hit),
                 blocked=bool(pending.blocked),
+                rift_damage=min(
+                    max(0, damage), max(0, int(pending.rift_damage))
+                ),
+                pre_hit_health=int(previous),
             )
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:

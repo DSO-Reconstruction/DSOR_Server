@@ -110,6 +110,9 @@ class PlayerCombatStats:
     damage_reflection_fraction: float = 0.0
     block_chance: float = 0.0
     block_damage_reduction: float = 0.0
+    final_damage_reduction: float = 0.0
+    rift_force_echo_chance: float = 0.0
+    rift_force_echo_multiplier: float = 0.0
     base_movement_speed: float = 5.0
     movement_speed: float = 5.0
     movement_bonus_speed: float = 0.0
@@ -1835,6 +1838,23 @@ def _calculate_defenses_and_life_leech(
     )
 
 
+def _final_damage_reduction(
+    instructions: tuple[_Instruction, ...], variables: dict[str, float]
+) -> float:
+    """Resolve item-owned final damage reduction, capped at immunity."""
+
+    total = 0.0
+    for instruction in instructions:
+        if instruction.modifier.kind.casefold() not in {
+            "itemriftforce", "finaldamagereduction",
+        }:
+            continue
+        amount = _resolved_range(instruction, variables)
+        if amount is not None:
+            total += max(0.0, (float(amount[0]) + float(amount[1])) * 0.5)
+    return min(1.0, max(0.0, total))
+
+
 _PLAYER_COMBAT_STATS_CACHE_MAXIMUM = 1024
 _player_combat_stats_cache: OrderedDict[tuple, PlayerCombatStats] = (
     OrderedDict()
@@ -2684,6 +2704,11 @@ def _calculate_player_combat_stats(
     critical_value_relative = 0.0
     critical_damage_absolute = 0.0
     critical_damage_relative = 0.0
+    rift_force_echo_chance = 0.0
+    rift_force_echo_multiplier = 0.0
+    final_damage_reduction = _final_damage_reduction(
+        tuple(global_instructions), variables
+    )
     for instruction in global_instructions:
         modifier = instruction.modifier
         kind = modifier.kind.casefold()
@@ -2713,6 +2738,10 @@ def _calculate_player_combat_stats(
                     apply_minimum,
                     apply_maximum,
                 )
+        elif kind == "riftechochance":
+            rift_force_echo_chance += sum(amount) / 2.0
+        elif kind == "riftecho":
+            rift_force_echo_multiplier += sum(amount) / 2.0
         elif kind == "damagefactorpve":
             if operation == "relative":
                 pve_factor_relative += sum(amount) / 2.0
@@ -2849,6 +2878,10 @@ def _calculate_player_combat_stats(
         equipped_item_armor=equipped_item_armor,
         equipped_item_resistances=tuple(equipped_item_resistances.items()),
     )
+    incoming_damage_multipliers = tuple(
+        (damage_type, multiplier * (1.0 - final_damage_reduction))
+        for damage_type, multiplier in incoming_damage_multipliers
+    )
     return PlayerCombatStats(
         minimum_damage=minimum,
         maximum_damage=maximum,
@@ -2881,6 +2914,9 @@ def _calculate_player_combat_stats(
         damage_reflection_fraction=damage_reflection_fraction,
         block_chance=block_chance,
         block_damage_reduction=block_damage_reduction,
+        final_damage_reduction=final_damage_reduction,
+        rift_force_echo_chance=min(1.0, max(0.0, rift_force_echo_chance)),
+        rift_force_echo_multiplier=max(0.0, rift_force_echo_multiplier),
         mount_duration_scale=_status_group_duration_scale(
             combined, variables, "mount"
         ),
