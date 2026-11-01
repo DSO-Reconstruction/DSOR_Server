@@ -764,13 +764,63 @@ class PresenceVisualService:
                 )
             except (OSError, ValueError, CharacterSelectionError):
                 continue
+            skins = tuple(
+                entry.strip() for entry in str(skin).split(";")
+                if entry.strip()
+            )
+            if not skins:
+                continue
             color = item_tint(item)
             for slot in visible_slots:
                 # RemotePlayerInfo's additional-skin slots 0..7 are the
                 # visible helmet, shoulders, torso, gloves, boots, both hands
                 # and cloak. Accessories do not create actor geometry.
-                visuals[slot] = RemoteEquipmentVisual(slot, (skin,), color)
+                visuals[slot] = RemoteEquipmentVisual(slot, skins, color)
         return tuple(visuals[slot] for slot in sorted(visuals))
+
+    def _remote_equipment_effect_sequences(
+            self, inventory, hidden_skins=None) -> tuple[str, ...]:
+        """Collect unique authored VFX sequences for visible remote equipment."""
+
+        if inventory is None or self.static_database is None:
+            return ()
+        items_by_id = {
+            int(item.item_id): item for item in inventory.items
+        }
+        hidden_skins = hidden_skins or {}
+        sequences = []
+        seen = set()
+        for item_id, slots in sorted(inventory.equipment_slots.items()):
+            visible_slots = tuple(
+                int(slot) for slot in slots if 0 <= int(slot) <= 7
+            )
+            if not visible_slots:
+                continue
+            item = items_by_id.get(int(item_id))
+            if item is None:
+                continue
+            item_skin = str(item.field_f8 or item.field_80 or "")
+            if all(
+                (hidden_skin := str(
+                    hidden_skins.get(12 if slot == 7 else slot, "")
+                )) and (not item_skin or hidden_skin == item_skin)
+                for slot in visible_slots
+            ):
+                continue
+            try:
+                item_sequences = (
+                    self.static_database.remote_equipment_effect_sequences(
+                        item.template_id,
+                        item.field_f8 or item.field_80,
+                    )
+                )
+            except (OSError, ValueError, CharacterSelectionError):
+                continue
+            for sequence in item_sequences:
+                if sequence and sequence not in seen:
+                    seen.add(sequence)
+                    sequences.append(sequence)
+        return tuple(sequences)
 
     @staticmethod
     def _remote_emblem_id(inventory) -> str:

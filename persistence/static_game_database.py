@@ -504,6 +504,72 @@ class StaticGameDatabase:
         )
 
     @_cached_content
+    def remote_equipment_effect_sequences(
+        self, template_id: str, appearance_id: str = ""
+    ) -> tuple[str, ...]:
+        """Return the authored VFX sequences for a remote player's equipment.
+
+        Effect sequences are separate from ``SkinGraphics`` in the equipment
+        skin templates. Include the selected appearance first, then the
+        item's default equipment skin, and remove duplicates.
+        """
+
+        template_id = str(template_id)
+        appearance_id = str(appearance_id or "")
+        with closing(self._connect()) as connection:
+            if not compat.table_exists(
+                connection, "_Template_EquipmentSkin"
+            ):
+                return ()
+
+            def sequences_for(skin_ids):
+                sequences = []
+                seen = set()
+                for skin_id in skin_ids:
+                    row = connection.execute(
+                        'SELECT "EffectSequence" '
+                        'FROM "_Template_EquipmentSkin" '
+                        'WHERE "Id"=? LIMIT 1',
+                        (skin_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    for sequence in str(row[0] or "").split(";"):
+                        sequence = sequence.strip()
+                        if sequence and sequence not in seen:
+                            seen.add(sequence)
+                            sequences.append(sequence)
+                return tuple(sequences)
+
+            if appearance_id:
+                appearance_skin_ids = []
+                if compat.table_exists(
+                    connection, "_Template_ItemAppearance"
+                ):
+                    row = connection.execute(
+                        'SELECT "EquipmentSkinId" '
+                        'FROM "_Template_ItemAppearance" '
+                        'WHERE "Id"=? LIMIT 1',
+                        (appearance_id,),
+                    ).fetchone()
+                    if row is not None and row[0]:
+                        appearance_skin_ids.append(str(row[0]))
+                appearance_skin_ids.append(appearance_id)
+                appearance_sequences = sequences_for(appearance_skin_ids)
+                if appearance_sequences:
+                    return appearance_sequences
+
+            item_row = connection.execute(
+                "SELECT " + compat.projection(
+                    connection, "_Template_Item", ("EquipmentSkinId",)
+                ) + ' FROM "_Template_Item" WHERE "Id"=? LIMIT 1',
+                (template_id,),
+            ).fetchone()
+            if item_row is None or not item_row[0]:
+                return ()
+            return sequences_for((str(item_row[0]),))
+
+    @_cached_content
     def remote_equipment_icon(self, template_id: str) -> str:
         """Return the client icon used for non-geometry equipment slots."""
 
