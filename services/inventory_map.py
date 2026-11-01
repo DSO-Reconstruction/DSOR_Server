@@ -304,16 +304,87 @@ class InventoryMapService:
                 storage_slot=storage_slot,
             )
             mutation = builder.finish()
+            previous_inventory = inventory
+            item_set_evaluation = None
+            item_set_transition = None
+            socket_effect_evaluation = None
+            socket_effect_transition = None
+            if was_worn:
+                with s.flow_lock:
+                    character = s.gameplay_character
+                    item_set_effects = dict(s.gameplay_item_set_effects)
+                    socket_effects = dict(s.gameplay_socket_effects)
+                    next_status_effect_instance_id = int(
+                        s.gameplay_next_status_effect_instance_id
+                    )
+                server_tick = int(time.perf_counter() * 25) & 0xFFFFFFFF
+                if self.item_set_database is not None:
+                    item_set_evaluation = (
+                        self.item_set_database.evaluate_inventory(
+                            mutation.inventory,
+                            class_name=(
+                                CLASS_NAMES[int(character.class_id)]
+                                if character is not None else ""
+                            ),
+                        )
+                    )
+                    item_set_transition = (
+                        self.item_set_database.reconcile_effects(
+                            item_set_evaluation,
+                            item_set_effects,
+                            actor_id=LOCAL_PLAYER_ACTOR_ID,
+                            next_instance_id=next_status_effect_instance_id,
+                            server_tick=server_tick,
+                        )
+                    )
+                if self.socket_effect_database is not None:
+                    socket_effect_evaluation = (
+                        self.socket_effect_database.evaluate_inventory(
+                            mutation.inventory
+                        )
+                    )
+                    socket_effect_transition = (
+                        self.socket_effect_database.reconcile_effects(
+                            socket_effect_evaluation,
+                            socket_effects,
+                            actor_id=LOCAL_PLAYER_ACTOR_ID,
+                            next_instance_id=(
+                                item_set_transition.next_instance_id
+                                if item_set_transition is not None
+                                else next_status_effect_instance_id
+                            ),
+                            server_tick=server_tick,
+                        )
+                    )
             # The client already holds the item object; only the allocation
             # changed. Replaying the definition makes it rebuild the item.
+            commands = [
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND,
+                    equipment_allocation_snapshot(mutation.inventory),
+                    LOCAL_PLAYER_ACTOR_ID,
+                )
+            ]
+            if (
+                item_set_transition is not None
+                and item_set_transition.status_effect is not None
+            ):
+                commands.append(ServerCommand(
+                    STATUS_EFFECT_COMMAND,
+                    item_set_transition.status_effect,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ))
+            if (
+                socket_effect_transition is not None
+                and socket_effect_transition.status_effect is not None
+            ):
+                commands.append(ServerCommand(
+                    STATUS_EFFECT_COMMAND,
+                    socket_effect_transition.status_effect,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ))
             packet, packet_bits = encode_server_command_batch(
-                (
-                    ServerCommand(
-                        INVENTORY_INFO_COMMAND,
-                        equipment_allocation_snapshot(mutation.inventory),
-                        LOCAL_PLAYER_ACTOR_ID,
-                    ),
-                ),
+                tuple(commands),
                 include_terminator=True,
             )
         except ValueError as exc:
@@ -325,6 +396,33 @@ class InventoryMapService:
         with s.flow_lock:
             s.gameplay_inventory = mutation.inventory
             s.gameplay_next_item_id = mutation.next_item_id
+            if item_set_transition is not None:
+                s.gameplay_item_set_effects = item_set_transition.effects
+                s.gameplay_item_set_evaluation = item_set_evaluation
+                s.gameplay_next_status_effect_instance_id = (
+                    item_set_transition.next_instance_id
+                )
+            if socket_effect_transition is not None:
+                s.gameplay_socket_effects = socket_effect_transition.effects
+                s.gameplay_socket_effect_evaluation = socket_effect_evaluation
+                active_cadence_keys = {
+                    ("periodic-aura", aura.key)
+                    for aura in socket_effect_evaluation.periodic_auras
+                }
+                s.gameplay_socket_event_state = {
+                    key: value
+                    for key, value in s.gameplay_socket_event_state.items()
+                    if (
+                        not (
+                            isinstance(key, tuple)
+                            and key[:1] == ("periodic-aura",)
+                        )
+                        or key in active_cadence_keys
+                    )
+                }
+                s.gameplay_next_status_effect_instance_id = (
+                    socket_effect_transition.next_instance_id
+                )
         CharacterService._send_world_loot_state_batch(
             s, packet, packet_bits, label="inventory-slot-moved"
         )
@@ -334,8 +432,14 @@ class InventoryMapService:
             # players' view of us included.
             # FAILURE: "je retire mon arme l'autre me voit toujours avec
             #   l'arme".
-            from dso_server.services.item_set_programs import reconcile_item_set_programs
+            from dso_server.services.item_set_programs import (
+                cleanse_unequipped_items,
+                reconcile_item_set_programs,
+            )
             reconcile_item_set_programs(s)
+            cleanse_unequipped_items(
+                s, previous_inventory, mutation.inventory
+            )
             CharacterService._achievement_on_equipment_changed(self, s)
             CharacterService._refresh_player_combat_vitals(s)
             if s.gameplay_presence_callback is not None:

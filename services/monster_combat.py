@@ -802,29 +802,65 @@ class MonsterCombatService(
             now=now,
         )
 
-        # A few authored buffs (Forgotten Glory's warrior Banner bonus) put
-        # Taunt on the player and define its range through a Creator aura.
-        # Snapshot those status leases before taking the map lock, then let
-        # the shared combat state refresh the affected monsters below.
+        # Snapshot player-owned status leases before taking the map lock.
+        # This feeds Creator-aura Taunt and the Winter set's equipment aura
+        # into the shared authoritative monster state.
         player_buff_taunt_auras = []
+        player_status_enemy_auras = []
         for actor_id, wire_position, target_session in combat_targets:
             world_position = combat.encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
             with target_session.flow_lock:
-                active_statuses = tuple(
+                active_statuses = list(
                     target_session.gameplay_runtime_status_effects.values()
                 )
-            for entry, expires_at in active_statuses:
-                if expires_at is None or float(expires_at) <= now:
-                    continue
-                radius = combat.player_status_taunt_aura_radius(
-                    int(entry.effect_id)
+                active_statuses.extend(
+                    (entry, None)
+                    for entry in (
+                        tuple(target_session.gameplay_persistent_status_effects.values())
+                        + tuple(target_session.gameplay_item_set_effects.values())
+                        + tuple(target_session.gameplay_socket_effects.values())
+                    )
                 )
-                if radius > 0.0:
-                    player_buff_taunt_auras.append((
+            seen_statuses = set()
+            for entry, expires_at in active_statuses:
+                status_key = (int(entry.field_04), int(entry.effect_id))
+                if status_key in seen_statuses:
+                    continue
+                seen_statuses.add(status_key)
+                status_expiry = (
+                    float(expires_at) if expires_at is not None else None
+                )
+                if status_expiry is not None and status_expiry <= now:
+                    continue
+                if expires_at is not None:
+                    radius = combat.player_status_taunt_aura_radius(
+                        int(entry.effect_id)
+                    )
+                    if radius > 0.0:
+                        player_buff_taunt_auras.append((
+                            int(actor_id), world_position,
+                            int(entry.effect_id), status_expiry,
+                        ))
+                enemy_aura = combat.player_status_enemy_aura(
+                    int(entry.effect_id),
+                    getattr(entry, "values", ()),
+                    duration_ticks=(
+                        30 if status_expiry is None else max(
+                            1,
+                            math.ceil(
+                                (status_expiry - now)
+                                * SERVER_TICKS_PER_SECOND
+                            ),
+                        )
+                    ),
+                )
+                if enemy_aura is not None:
+                    player_status_enemy_auras.append((
                         int(actor_id), world_position,
-                        int(entry.effect_id), float(expires_at),
+                        int(entry.field_04), int(entry.effect_id),
+                        tuple(getattr(entry, "values", ())), status_expiry,
                     ))
 
         with combat.lock:
@@ -896,6 +932,13 @@ class MonsterCombatService(
             else:
                 combat.refresh_player_buff_taunt_sources(
                     player_buff_taunt_auras, now=now,
+                )
+                location_aura_applications = tuple(
+                    combat.apply_player_status_enemy_auras(
+                        player_status_enemy_auras,
+                        now=now,
+                        server_tick=server_tick,
+                    )
                 )
                 living_actor_ids = combat.living_actor_ids
                 ordinary_actor_ids = set(living_actor_ids)
@@ -1124,13 +1167,16 @@ class MonsterCombatService(
                 )
                 (
                     location_aura_resolutions,
-                    location_aura_applications,
+                    cast_location_aura_applications,
                 ) = (
                     combat.apply_player_location_auras(
                         now=now, server_tick=server_tick,
                         player_positions=player_world_positions,
                     )
                 )
+                location_aura_applications = tuple(
+                    location_aura_applications
+                ) + tuple(cast_location_aura_applications)
                 status_resolutions = (
                     combat.resolve_due_monster_status_damage(
                         now=now, server_tick=server_tick

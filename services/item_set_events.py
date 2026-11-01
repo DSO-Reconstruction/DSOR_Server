@@ -6,13 +6,17 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from dso_server.runtime import resident_content
-from dso_server.gameplay.item_set_procs import collect_trigger_rules
+from dso_server.gameplay.item_set_procs import (
+    collect_trigger_rules,
+    resolve_for_trigger as resolve_item_set_trigger_effects,
+)
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.status_modifier_runtime import (
     load_status_modifier_catalog, parse_modifier_program, resolve_modifier_value,
 )
 from dso_server.persistence import readonly_db
 from dso_server.protocol.item_set_protocol import ItemSetModifier
+from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.services.base import CharacterService
 
 
@@ -29,6 +33,7 @@ MAX_STACK_EVENTS = {
     "setlight2026_dwarf_simpleshot_10": "maxstacksizesimpleshot10",
     "setlight2026_dwarf_simpleshot_20": "maxstacksizesimpleshot20",
     "setlight2026_dwarf_simpleshot_30": "maxstacksizesimpleshot30",
+    "chr2025_set_coldchill": "maxstacksizecoldchill",
 }
 
 
@@ -239,7 +244,124 @@ def dispatch_item_set_max_stack(session, definition, previous_stack_count,
     event = MAX_STACK_EVENTS.get(str(definition.resource_id).casefold())
     if event is None:
         return ()
+    if event == "maxstacksizecoldchill":
+        return dispatch_status_effect_max_stack(
+            session, definition, event, server_tick=server_tick,
+        )
     return dispatch_item_set_event(
         session, event, server_tick=server_tick,
         event_seed=int(definition.effect_id), parent_definition=definition,
     )
+
+
+def dispatch_status_effect_max_stack(session, definition, event, *, server_tick):
+    """Run class-matched ActorStatusEffect rules authored on a stack effect.
+
+    Most max-stack bonuses are declared by the equipped item-set tier and go
+    through ``dispatch_item_set_event``. Cold Chill is different: its four
+    class-specific Icy Wrath followups live on the ``chr2025_set_coldchill``
+    status effect itself, so the active set evaluation does not contain them.
+    """
+
+    combat = getattr(session, "gameplay_combat_state", None)
+    character = getattr(session, "gameplay_character", None)
+    if combat is None or character is None:
+        return ()
+    database_path = getattr(
+        getattr(combat, "encounter", None), "static_database_path", None,
+    )
+    if database_path is None:
+        return ()
+    database = readonly_db.connect(database_path)
+    row = database.execute(
+        "SELECT COALESCE(StartModifiers, '') FROM _Template_StatusEffect "
+        "WHERE rowid=? LIMIT 1",
+        (int(definition.effect_id) + 1,),
+    ).fetchone()
+    if row is None:
+        return ()
+    actor_rules = []
+    for instruction in parse_modifier_program(str(row[0] or "")):
+        if instruction.kind.casefold() != "actorstatuseffect":
+            continue
+        modifier = ItemSetModifier(
+            kind="ActorStatusEffect",
+            arguments=tuple(instruction.arguments),
+            label=instruction.label,
+            raw=instruction.raw,
+        )
+        if modifier.trigger == str(event).casefold():
+            actor_rules.append(modifier)
+    if not actor_rules:
+        return ()
+    resolved = resolve_item_set_trigger_effects(
+        SimpleNamespace(actor_effect_rules=tuple(actor_rules)),
+        database_path,
+        trigger=event,
+        loader=LocalCombatState._load_victim_status_effects,
+    )
+    class_name = CLASS_NAMES.get(int(character.class_id), "").casefold()
+    matching = []
+    for effect in resolved:
+        row = database.execute(
+            "SELECT COALESCE(CharClass, '') FROM _Template_StatusEffect "
+            "WHERE rowid=? LIMIT 1",
+            (int(effect.effect_id) + 1,),
+        ).fetchone()
+        classes = {
+            value.strip().casefold()
+            for value in str(row[0] if row else "").replace(",", ";").split(";")
+            if value.strip()
+        }
+        if classes and class_name not in classes:
+            continue
+        matching.append(effect)
+    if not matching:
+        return ()
+    # The Icy Wrath effects authored for this set stop Cold Chill and all
+    # class trigger buffs on the client. Apply those authored removals to the
+    # server's runtime status ledger as well, or the 30-second skill-enabling
+    # buff can survive the max-stack transition server-side and start a second
+    # Cold Chill generation while the client has already removed it.
+    stop_effect_ids = set()
+    for effect in matching:
+        effect_row = database.execute(
+            "SELECT COALESCE(StartModifiers, '') FROM _Template_StatusEffect "
+            "WHERE rowid=? LIMIT 1",
+            (int(effect.effect_id) + 1,),
+        ).fetchone()
+        for instruction in parse_modifier_program(
+            str(effect_row[0] if effect_row else "")
+        ):
+            if (
+                instruction.kind.casefold() != "stopstatuseffect"
+                or not instruction.arguments
+            ):
+                continue
+            resource_id = str(instruction.arguments[0]).split("|", 1)[0].strip()
+            if not resource_id:
+                continue
+            stopped = database.execute(
+                "SELECT rowid - 1 FROM _Template_StatusEffect "
+                "WHERE Id=? LIMIT 1",
+                (resource_id,),
+            ).fetchone()
+            if stopped is not None:
+                stop_effect_ids.add(int(stopped[0]))
+    if stop_effect_ids:
+        CharacterService._end_player_runtime_effects(
+            session,
+            lambda entry: int(entry.effect_id) in stop_effect_ids,
+            label=f"item-set-{str(event).casefold()}-stop-effects",
+        )
+    consequences = getattr(session, "gameplay_item_set_consequences", None)
+    if consequences is None:
+        consequences = session.gameplay_item_set_consequences = set()
+    consequences.update(int(effect.effect_id) for effect in matching)
+    CharacterService._send_player_skill_status_effects(
+        session,
+        tuple(matching),
+        server_tick=int(server_tick),
+        label=f"item-set-{str(event).casefold()}",
+    )
+    return tuple(matching)
