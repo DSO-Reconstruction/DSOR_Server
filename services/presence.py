@@ -750,8 +750,30 @@ class PresenceService:
                 self, session, session.gameplay_combat_state,
                 dispatches, (session, *peers),
             )
+            # Monster loot is generated per character, but the death event is
+            # authoritative for the shared map instance. Keep the existing
+            # roll for the killer and identify online party members in this
+            # same instance so each can receive an independent personal roll.
+            social_store = getattr(self, "social_store", None)
+            source_group = (
+                social_store.group_for(int(character.character_id))
+                if social_store is not None else None
+            )
+            group_id = int(source_group.group_id) if source_group else 0
+            loot_recipients = {session}
+            if group_id:
+                loot_recipients.update(
+                    viewer for viewer in peers
+                    if (
+                        (peer_group := social_store.group_for(
+                            int(viewer.gameplay_character.character_id)
+                        )) is not None
+                        and int(peer_group.group_id) == group_id
+                    )
+                )
             for viewer in (session, *peers):
                 visible_dispatches = []
+                viewer_received_loot = False
                 for resolution, label, loot_generation in dispatches:
                     if (
                         resolution.target_actor_id
@@ -781,22 +803,67 @@ class PresenceService:
                             (resolution, mapped, label)
                         )
                     if (
-                        viewer is session
-                        and
-                        loot_generation is not None
-                        and loot_generation.drops
+                        viewer in loot_recipients
+                        and resolution.killed
                     ):
+                        viewer_generation = loot_generation
+                        if viewer is not session:
+                            combat = session.gameplay_combat_state
+                            encounter = session.gameplay_monster_encounter
+                            monster = (
+                                combat.monsters.get(
+                                    int(resolution.target_actor_id)
+                                )
+                                if combat is not None else None
+                            )
+                            allocator = getattr(
+                                viewer,
+                                "gameplay_world_loot_allocator",
+                                None,
+                            )
+                            if (
+                                encounter is None
+                                or monster is None
+                                or allocator is None
+                            ):
+                                continue
+                            viewer_character = viewer.gameplay_character
+                            viewer_generation = allocator(
+                                viewer,
+                                encounter=encounter,
+                                monster=monster,
+                                class_name=CLASS_NAMES.get(
+                                    int(getattr(viewer_character, "class_id", 1)),
+                                    "mage",
+                                ),
+                                player_level=max(
+                                    1,
+                                    int(getattr(viewer_character, "level", 1)),
+                                ),
+                                position=resolution.position,
+                                position_projector=(
+                                    lambda candidate,
+                                    combat=combat,
+                                    actor_id=int(resolution.target_actor_id):
+                                    combat.ground_loot_position(
+                                        actor_id, candidate,
+                                    )
+                                ),
+                            )
+                        if viewer_generation is None or not viewer_generation.drops:
+                            continue
                         with viewer.flow_lock:
                             viewer.gameplay_next_item_id = max(
                                 viewer.gameplay_next_item_id,
-                                loot_generation.next_item_id,
+                                viewer_generation.next_item_id,
                             )
                             viewer.gameplay_world_loot.update(
                                 {
                                     drop.item.item_id: drop
-                                    for drop in loot_generation.drops
+                                    for drop in viewer_generation.drops
                                 }
                             )
+                        viewer_received_loot = True
                 try:
                     if visible_dispatches:
                         CharacterService._send_combat_resolutions(
@@ -832,10 +899,7 @@ class PresenceService:
                             viewer.gameplay_monsters_spawned = bool(
                                 viewer.gameplay_spawned_monster_actor_ids
                             )
-                if viewer is session and any(
-                    loot_generation is not None and loot_generation.drops
-                    for _resolution, _label, loot_generation in dispatches
-                ):
+                if viewer_received_loot:
                     CharacterService._reconcile_world_loot_visibility(
                         viewer,
                         label="world-loot-spawn",
