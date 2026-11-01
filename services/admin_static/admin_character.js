@@ -311,6 +311,37 @@ function bindUnlockRecipes(id) {
   });
 }
 
+function stickerbookSection(owned) {
+  return section("Sticker book", `<form id="unlock-stickers-form" class="form-page">
+    <fieldset class="form-section"><legend>Collection</legend>
+      <p class="help">Add every sticker-book item: costumes, mounts, pets, emotes, decorations and Shadow Souls. Items the character owns keep their rarity and favorite state; the rest arrive at base rarity. The Collector’s Bag bonuses and all reached item rewards are paid at next login. The character must be offline.</p>
+      <p class="muted">${owned} sticker-book items in the last save.</p>
+    </fieldset>
+    <p id="unlock-stickers-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit">Add all sticker-book items</button></div></form>`);
+}
+
+function bindUnlockStickers(id) {
+  $("#unlock-stickers-form").addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = event.target.querySelector("button[type=submit]");
+    button.disabled = true;
+    try {
+      const reason = await confirmAction("Add all sticker-book items?",
+        "This adds every item to the character’s sticker book. At next login the character also receives every Collector’s Bag bonus and item reward the collection has reached; rewards cannot be taken back from here. The character must be offline.",
+        "Add items");
+      if (reason === null) return;
+      const result = await api(`/api/characters/${id}/unlock-all-stickers`, {reason});
+      notice(`Added ${result.newly_unlocked} sticker-book items (${result.total_unlocked} total).`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) {
+      const target = $("#unlock-stickers-error");
+      if (target) { target.textContent = error.message; target.scrollIntoView({block: "nearest"}); }
+      else notice(error.message, true);
+    } finally { button.disabled = false; }
+  });
+}
+
 function bindActiveQuests(id) {
   $("#active-quests-form").addEventListener("submit", async event => {
     event.preventDefault();
@@ -463,7 +494,8 @@ export async function characterPage(route) {
     const open = Object.values(s.quest_log || {}).filter(q => q.state === 0 || q.state === 1).length;
     result.html += activeQuestSection(open);
     result.html += recipeBookSection();
-    result.mount = () => { bindActiveQuests(id); bindUnlockRecipes(id); };
+    result.html += stickerbookSection((s.stickerbook_entries || []).length);
+    result.mount = () => { bindActiveQuests(id); bindUnlockRecipes(id); bindUnlockStickers(id); };
   } else if (tab === "raw") {
     result.html += '<p class="muted">Complete saved documents for diagnostics. Read only.</p>' +
       section("Character profile", `<pre>${esc(JSON.stringify(p, null, 2))}</pre>`) +
