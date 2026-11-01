@@ -50,8 +50,11 @@ class RecipeProgressionCatalog:
         # Match the same exact-first lookup as load_crafting_recipe.
         key = str(resource_id)
         definition = self.recipes.get(key)
-        if definition is None and key[-1:].isdigit():
-            definition = self.recipes.get(key[:-1])
+        while definition is None and key[-1:].isdigit():
+            key = key[:-1]
+            if not key:
+                break
+            definition = self.recipes.get(key)
         if definition is None:
             raise ValueError(f"unknown or locked recipe {resource_id!r}")
         return definition
