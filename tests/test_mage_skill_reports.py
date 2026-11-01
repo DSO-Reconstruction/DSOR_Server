@@ -12,7 +12,10 @@ import pytest
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
-from dso_server.protocol.combat_protocol import SHIFTED_SKILL_COMMAND, ShiftedSkill
+from dso_server.protocol.combat_protocol import (
+    SHIFTED_SKILL_COMMAND, SKILL_COMMAND, TARGET_SKILL_COMMAND, SkillCast,
+    ShiftedSkill, TargetSkillCast,
+)
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
 from dso_server.services import player_combat
 from dso_server.services.base import CharacterService
@@ -66,6 +69,13 @@ def test_a_flat_element_bonus_gives_a_status_only_skill_no_damage(combat, resour
     geometry = combat._load_player_skill_geometry(skill(resource_id))
     assert geometry.damage_modifier == 0.0
     assert combat._modified_player_skill_geometry(geometry, (effect(bonus),)).damage_modifier == 0.0
+    for kind in ("SkillDamage", "SkillHitDamage"):
+        additive_damage = SimpleNamespace(
+            kind=kind, arguments=("2.0", "absolute", resource_id),
+        )
+        assert combat._modified_player_skill_geometry(
+            geometry, (additive_damage,),
+        ).damage_modifier == 0.0
 
 
 def test_a_flat_element_bonus_still_raises_a_damaging_skill(combat):
@@ -162,6 +172,25 @@ class SingularityCastTests(unittest.TestCase):
         self.assert_placed_where_aimed(self.cast_singularity())
         self.assertTrue(self.combat.pending_runtime_player_hits)
 
+    def test_its_resolved_target_takes_no_direct_damage(self):
+        self.place_monster((27.5, 0.0, 58.0))
+        self.cast_singularity()
+        pending = next(iter(self.combat.pending_runtime_player_hits.values()))
+        previous_health = self.combat.monster_health[pending.target_actor_id]
+
+        resolution = self.combat.resolve_runtime_player_hit(
+            pending.source_actor_id,
+            pending.cast_id,
+            pending.impact_index,
+            now=pending.due_at + 0.01,
+        )
+
+        self.assertEqual(pending.damage_modifier, 0.0)
+        self.assertEqual(resolution.damage, 0)
+        self.assertEqual(
+            self.combat.monster_health[pending.target_actor_id], previous_health,
+        )
+
     def test_it_opens_where_aimed_with_nothing_in_reach(self):
         self.place_monster((100.0, 0.0, 100.0))
         self.assert_placed_where_aimed(self.cast_singularity())
@@ -173,6 +202,81 @@ class SingularityCastTests(unittest.TestCase):
         unlikely = tuple(replace(visual, chance=1e-9) for visual in visuals)
         with patch.object(self.combat, "player_skill_location_visuals", return_value=unlikely):
             self.cast_singularity().assert_not_called()
+
+    def test_mind_control_applies_control_without_direct_damage(self):
+        skill_index = skill("mindcontrol")
+        self.source.gameplay_skill_book_ids = {skill_index}
+        client_skill = TargetSkillCast(
+            0, skill_index, 0.0, 201, 89, self.monster,
+        )
+        stats = SimpleNamespace(
+            minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
+            critical_damage_multiplier=2.0, attack_speed=1.0,
+            skill_modifier_sources=(),
+        )
+        previous_health = self.combat.monster_health[self.monster]
+        with (
+            patch.object(player_combat, "decode_target_skill", return_value=client_skill),
+            patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),
+            patch.object(CharacterService, "_apply_player_skill_resource", return_value=True),
+            patch.object(CharacterService, "_start_monster_chase"),
+            patch.object(CharacterService, "_record_monster_targeting_result"),
+            patch.object(CharacterService, "_send_remote_player_skill"),
+        ):
+            CharacterService._handle_spatial_skill(
+                self.source,
+                bytes((0x8B,)) + TARGET_SKILL_COMMAND.to_bytes(2, "little"),
+            )
+
+        pending = next(iter(self.combat.pending_runtime_player_hits.values()))
+        resolution = self.combat.resolve_runtime_player_hit(
+            pending.source_actor_id,
+            pending.cast_id,
+            pending.impact_index,
+            now=pending.due_at + 0.01,
+        )
+        self.assertEqual(pending.damage_modifier, 0.0)
+        self.assertEqual(resolution.damage, 0)
+        self.assertEqual(self.combat.monster_health[self.monster], previous_health)
+        self.assertIn("skill_mindcontrol_effect", self.combat.monster_status_effects[self.monster])
+
+    def test_frost_wind_cast_has_no_immediate_physical_damage(self):
+        skill_index = skill("frostwind")
+        close_position = (25.0, 0.0, 49.0)
+        self.combat.monster_positions[self.monster] = close_position
+        self.source.gameplay_delivered_monster_positions[self.monster] = close_position
+        self.source.gameplay_skill_book_ids = {skill_index}
+        client_skill = SkillCast(0, skill_index, 0.0, 202, 90)
+        stats = SimpleNamespace(
+            minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
+            critical_damage_multiplier=2.0, attack_speed=1.0,
+            skill_modifier_sources=(),
+        )
+        previous_health = self.combat.monster_health[self.monster]
+        with (
+            patch.object(player_combat, "decode_skill", return_value=client_skill),
+            patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),
+            patch.object(CharacterService, "_apply_player_skill_resource", return_value=True),
+            patch.object(CharacterService, "_start_monster_chase"),
+            patch.object(CharacterService, "_record_monster_targeting_result"),
+            patch.object(CharacterService, "_send_remote_player_skill"),
+        ):
+            CharacterService._handle_spatial_skill(
+                self.source,
+                bytes((0x8B,)) + SKILL_COMMAND.to_bytes(2, "little"),
+            )
+
+        pending = next(iter(self.combat.pending_runtime_player_hits.values()))
+        resolution = self.combat.resolve_runtime_player_hit(
+            pending.source_actor_id,
+            pending.cast_id,
+            pending.impact_index,
+            now=pending.due_at + 0.01,
+        )
+        self.assertEqual(pending.damage_modifier, 0.0)
+        self.assertEqual(pending.damage_type, "Ice")
+        self.assertEqual(resolution.damage, 0)
+        self.assertEqual(self.combat.monster_health[self.monster], previous_health)
 
 
 def _frost_trigger(combat):
@@ -282,6 +386,21 @@ def test_a_living_minion_ends_with_its_owner(combat, resource_id):
         actor.actor_id for actor in spawn.actors}
 
 
+@pytest.mark.parametrize("resource_id", ["arcanemanifestation", "firemanifestation"])
+def test_guardians_are_removed_from_combat_when_their_owner_dies(combat, resource_id):
+    s = _caster(combat)
+    spawn = _summon(combat, resource_id)
+    actor_ids = {actor.actor_id for actor in spawn.actors}
+    with (
+        patch("dso_server.services.minion_auras.request_minion_aura_sync"),
+        patch.object(CharacterService, "_publish_player_summon_despawn"),
+    ):
+        CharacterService._notify_player_death(s)
+
+    assert actor_ids.isdisjoint(combat.player_summons)
+    assert actor_ids.isdisjoint(combat.player_summon_health)
+
+
 def test_a_turret_keeps_its_own_leash(combat):
     s = _caster(combat)
     _summon(combat, "TurretCombat")
@@ -325,3 +444,31 @@ def test_the_guardian_aims_its_bullet_from_the_muzzle(combat):
     to_target = (target[0] - muzzle[0], target[2] - muzzle[1])
     across = to_target[0] * attack.direction[2] - to_target[1] * attack.direction[0]
     assert abs(across) < 1e-4
+
+
+@pytest.mark.parametrize("resource_id", ["arcanemanifestation", "firemanifestation"])
+def test_the_guardian_bullet_impact_waits_for_its_animated_release(combat, resource_id):
+    summon, attack = _first_shot(combat, resource_id)
+    geometry = combat._load_player_skill_geometry(attack.skill_index)
+    started_at = summon.attack_ready_at + 0.01
+    release_delay = max(
+        geometry.bullet_emit_delay,
+        geometry.loop_start_frame / 25.0,
+    )
+    side, _height, ahead = geometry.start_offset[:3]
+    sine, cosine = math.sin(attack.aim_angle), math.cos(attack.aim_angle)
+    muzzle = (
+        summon.position[0] + side * cosine + ahead * sine,
+        summon.position[1] + geometry.start_offset[1],
+        summon.position[2] + ahead * cosine - side * sine,
+    )
+    flight_delay = math.dist(muzzle, attack.target_position) / max(
+        0.01, geometry.projectile_velocity,
+    )
+
+    assert geometry.hit_frame == 0
+    assert geometry.loop_start_frame > 0
+    assert attack.hit_frame == geometry.loop_start_frame
+    # Skill haste scales the animation frames; allow one frame for that scaling
+    # and the server tick's impact-time quantization.
+    assert attack.due_at >= started_at + release_delay + flight_delay - 1 / 25
