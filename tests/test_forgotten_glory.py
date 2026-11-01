@@ -17,6 +17,7 @@ combat paths. Client text (gui.statuseffects.xml, db.itemset.xml):
 """
 
 from collections import Counter
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -24,6 +25,7 @@ import pytest
 
 from dso_server.gameplay.local_combat_state import DamageResolution, LocalCombatState
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+from dso_server.gameplay.player_skill_timing import player_skill_timing_state
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.persistence import readonly_db
 from dso_server.protocol.character_selection import CLASS_IDS
@@ -169,6 +171,57 @@ def test_warrior_jewel_trigger_grants_maximum_battle_frenzy(sets, sockets, quiet
     assert running["skill_defiance_buff_skill_damage_mighty360"] == 10
     assert running["skill_defiance_buff_skill_damage"] == 10
     assert running["bgh_warrior_bonus_heredur_02"] == 1
+
+
+def test_warrior_banner_set_taunts_nearby_monsters_for_buff_duration(
+        sets, sockets, quiet):
+    s = wearer(sets, sockets, "warrior")
+    timing = player_skill_timing_state(s)
+    now = time.perf_counter()
+    timing.cooldowns = {
+        f"skill{index:02}": now + 30 for index in (1, 7, 8, 9, 16)
+    }
+    cast(s, "defiance")
+    assert set(timing.cooldowns) == {"skill01"}
+    combat = s.gameplay_combat_state
+    owner_id = s.gameplay_remote_actor_id
+    with db() as database:
+        taunt_effect_id = database.execute(
+            "SELECT rowid-1 FROM _Template_StatusEffect "
+            "WHERE Id='bgh_warrior_bonus_heredur_02'"
+        ).fetchone()[0]
+    taunt_instance = next(
+        (entry, expiry)
+        for entry, expiry in s.gameplay_runtime_status_effects.values()
+        if entry.effect_id == taunt_effect_id
+    )
+    entry, expires_at = taunt_instance
+    assert combat.player_status_taunt_aura_radius(entry.effect_id) == 5.75
+
+    actor_id = combat.living_actor_ids[0]
+    combat.monster_positions[actor_id] = (4.0, 0.0, 0.0)
+    other_player_id = owner_id + 1
+    combat.player_health[other_player_id] = [1000, 1000]
+    candidates = (
+        (owner_id, (0.0, 0.0, 0.0), {actor_id}),
+        (other_player_id, (3.8, 0.0, 0.0), {actor_id}),
+    )
+    now = float(expires_at) - 5.0
+    assert combat.assign_monster_targets(
+        (actor_id,), candidates, now=now,
+    )[actor_id][0] == other_player_id
+
+    combat.refresh_player_buff_taunt_sources((
+        (owner_id, (0.0, 0.0, 0.0), entry.effect_id, expires_at),
+    ), now=now)
+    assert combat.assign_monster_targets(
+        (actor_id,), candidates, now=now + 0.1,
+    )[actor_id][0] == owner_id
+
+    combat.refresh_player_buff_taunt_sources((), now=float(expires_at) + 0.1)
+    assert combat.assign_monster_targets(
+        (actor_id,), candidates, now=float(expires_at) + 0.1,
+    )[actor_id][0] == other_player_id
 
 
 def test_dwarf_turret_damage_bonus_lasts_the_turret_shell(sets, sockets, quiet):
