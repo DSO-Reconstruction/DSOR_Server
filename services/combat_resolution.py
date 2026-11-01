@@ -1106,16 +1106,16 @@ class CombatResolutionService:
 
     @staticmethod
     def _apply_receiver_hosted_hit_auras(s: Session, resolutions) -> None:
-        """Explode a hit's victim-hosted aura that has no duration.
+        """Resolve the receiver children of a hit's victim-hosted aura.
 
-        A ``D:0`` aura in a skill's victim column is never installed as a
-        status effect (``_victim_effect_command_transactions`` skips zero
-        durations): the client hosts it on the victim for one application
-        after its ``DE`` delay and applies its ``AuraEffectId`` children to
-        the actors around it. Jewel of Glory's Explosive Arrow explosion and
-        the Marked armor shred (``ranger_explosive_shot_shredarmor_aura``)
-        are such auras. Only the caster's own session resolves them, once.
-        ``KeepOnDeath`` auras still go off when the hit was lethal.
+        A ``D:0`` aura is never installed as a status effect, so its children
+        must be resolved once here. Timed receiver auras are installed on the
+        struck monster for their client visuals, but the server must also
+        apply their ``AuraEffectId`` children around that host. Icy Wrath's
+        ``frozen_plain_aura_2025`` is a five-second aura whose child deals
+        periodic Ice damage; omitting timed roots left the aura visible while
+        its meteors never damaged nearby monsters. Only the caster's own
+        session resolves these player-caused auras.
         """
 
         character = s.gameplay_character
@@ -1147,7 +1147,6 @@ class CombatResolutionService:
             for definition in resolution.victim_status_effects:
                 if (
                     str(getattr(definition, "effect_hosts", "")).casefold() == "causer"
-                    or int(definition.duration_ticks) > 0
                     or float(getattr(definition, "aura_radius", 0.0)) <= 0.0
                     or float(definition.chance) <= 0.0
                     # Relative to the hosting monster: itself and its allies,
@@ -1169,12 +1168,12 @@ class CombatResolutionService:
                          int(resolution.server_tick) + int(definition.delay_ticks),
                          int(resolution.skill_index), tuple(resolution.position))
             if delay <= 1e-6:
-                CharacterService._explode_receiver_hosted_aura(*arguments)
+                CharacterService._apply_receiver_hosted_aura(*arguments)
                 continue
             with s.flow_lock:
                 key = ("receiver-hosted-aura", object())
                 timer = s.gameplay_deadline_timer(
-                    delay, CharacterService._explode_receiver_hosted_aura,
+                    delay, CharacterService._apply_receiver_hosted_aura,
                     args=(*arguments, key))
                 timer.daemon = True
                 s.gameplay_projectile_timers[key] = timer
@@ -1273,9 +1272,9 @@ class CombatResolutionService:
             )
 
     @staticmethod
-    def _explode_receiver_hosted_aura(s: Session, generation, combat, definition,
-                                      host_actor_id, server_tick, skill_index,
-                                      fallback_position, timer_key=None) -> None:
+    def _apply_receiver_hosted_aura(s: Session, generation, combat, definition,
+                                    host_actor_id, server_tick, skill_index,
+                                    fallback_position, timer_key=None) -> None:
         with s.flow_lock:
             if timer_key is not None and s.gameplay_projectile_timers.pop(timer_key, None) is None:
                 return
@@ -1310,15 +1309,16 @@ class CombatResolutionService:
                 player_damage_range=damage_range,
                 server_tick=int(server_tick), skill_index=int(skill_index),
             )
-        # The host shows the aura for one tick so the client plays its
-        # Done sequence (ranger_explosiveshot_explosion_bgh_jewel2026, the
-        # blast itself); one tick is not zero, so it does not explode again.
-        shown = replace(definition, duration_ticks=1, delay_ticks=0)
-        resolutions = tuple(
-            replace(value, victim_status_effects=(shown, *value.victim_status_effects))
-            if int(value.target_actor_id) == int(host_actor_id) else value
-            for value in resolutions
-        )
+        if int(definition.duration_ticks) <= 0:
+            # The host shows a zero-duration aura for one tick so the client
+            # plays its Done sequence (the explosion itself). Timed roots
+            # were already sent with the hit and must not be added again.
+            shown = replace(definition, duration_ticks=1, delay_ticks=0)
+            resolutions = tuple(
+                replace(value, victim_status_effects=(shown, *value.victim_status_effects))
+                if int(value.target_actor_id) == int(host_actor_id) else value
+                for value in resolutions
+            )
         if resolutions:
             CharacterService._dispatch_player_owned_resolutions(
                 combat, {owner_actor_id: s}, resolutions)

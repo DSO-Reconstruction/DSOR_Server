@@ -276,7 +276,18 @@ def build_definitions(
         # The skill applies the shell (it carries the aura shape the client
         # draws); its wearer payload follows the rule's own roll.  Every
         # authored Creator shell rule uses C:1.0, so the two cannot diverge.
-        owned = tuple(replace(d, item_set_program=True) for d in owner_loader(database, encoded))
+        owner_effects = owner_loader(database, encoded)
+        source_ancestry = (
+            (int(shells[0].effect_id),) if shells else ()
+        )
+        owned = tuple(
+            replace(
+                definition,
+                item_set_program=True,
+                item_set_ancestry=source_ancestry,
+            )
+            for definition in owner_effects
+        )
         if owned:
             grouped.setdefault("user", []).extend(owned)
     return {target: tuple(items) for target, items in grouped.items()}
@@ -322,6 +333,7 @@ SUPPORTED_TRIGGERS = {
     "hitblocked", "lowhealth", "costskillresource",
     "maxstacksizeearthquake", "maxstacksizesimpleshot10",
     "maxstacksizesimpleshot20", "maxstacksizesimpleshot30",
+    "maxstacksizecoldchill",
 }
 
 

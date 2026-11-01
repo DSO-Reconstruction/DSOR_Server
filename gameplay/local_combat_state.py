@@ -410,6 +410,9 @@ def _skill_scopes(resource_id: str, char_class: str, groups: tuple) -> frozenset
 
     return frozenset({
         resource_id.casefold(),
+        # Static skill modifiers use this scope for every player skill
+        # (including Winter's Icy Wrath frozen_plain_aura_2025 modVE rule).
+        "player_skills",
         "allplayerskills",
         f"{char_class.casefold()}_skills",
         *(value.casefold() for value in groups),
@@ -2020,6 +2023,15 @@ class LocalCombatState:
         self.player_location_aura_members: set[tuple[int, int]] = set()
         self.player_location_aura_refresh_at: dict[tuple[int, int], float] = {}
         self.player_location_owner_auras: dict[tuple[int, int], tuple[VictimStatusEffectDefinition, float]] = {}
+        # Player-owned equipment auras are not all cast as location visuals.
+        # Keep the server-side receiver leases for the Winter set's enemy
+        # damage-reduction aura (also used by the Mythic ring set).
+        self.player_status_aura_members: set[tuple[int, int, int]] = set()
+        self.player_status_aura_refresh_at: dict[tuple[int, int, int], float] = {}
+        self._player_status_aura_cache: dict[
+            tuple[int, tuple[float, ...]],
+            tuple[VictimStatusEffectDefinition, tuple[VictimStatusEffectDefinition, ...]] | None,
+        ] = {}
         self._next_player_location_visual_id = 0x00010000
         self._monster_location_visual_casts: set[
             tuple[int, int, int]
@@ -8497,6 +8509,153 @@ class LocalCombatState:
         self._player_taunt_aura_radii[effect_id] = max(0.0, radius)
         return self._player_taunt_aura_radii[effect_id]
 
+    def player_status_enemy_aura(self, effect_id, values=(), *, duration_ticks=1):
+        """Resolve the receiver effects for a player-hosted enemy aura.
+
+        Chillingly Cold's third tier applies ``mh_rings_set_aura`` directly
+        to the wearer. The client expands its 100-unit aura, but the server
+        must also install its ``mh_rings_set_buff`` child on nearby monsters
+        for ``SkillDamage:...,MonsterSkills`` to affect authoritative hits.
+        """
+        effect_id = int(effect_id)
+        normalized_values = tuple(float(value) for value in (values or ()))
+        key = (effect_id, normalized_values)
+        if key in self._player_status_aura_cache:
+            return self._player_status_aura_cache[key]
+        path = self.encounter.static_database_path
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True
+        )) as database:
+            row = database.execute(
+                "SELECT Id, COALESCE(AuraTargets, ''), "
+                "COALESCE(AuraRadius, 0) "
+                "FROM _Template_StatusEffect WHERE rowid=? LIMIT 1",
+                (effect_id + 1,),
+            ).fetchone()
+            if row is None:
+                self._player_status_aura_cache[key] = None
+                return None
+            resource_id = str(row[0] or "")
+            if resource_id.casefold() != "mh_rings_set_aura":
+                self._player_status_aura_cache[key] = None
+                return None
+            targets = {
+                value.strip().casefold()
+                for value in str(row[1] or "").replace(",", ";").split(";")
+                if value.strip()
+            }
+            if "enemies" not in targets or float(row[2] or 0.0) <= 0.0:
+                self._player_status_aura_cache[key] = None
+                return None
+            encoded = [
+                resource_id,
+                "C:1.0",
+                f"D:{max(1, int(duration_ticks)) / SERVER_TICKS_PER_SECOND:g}",
+            ]
+            encoded.extend(
+                f"${index}:{value}"
+                for index, value in enumerate(normalized_values)
+            )
+            encoded_status = ",".join(encoded)
+            definitions = self._load_victim_status_effects(
+                database, encoded_status, default_trigger="immediate"
+            )
+            if not definitions:
+                self._player_status_aura_cache[key] = None
+                return None
+            aura = definitions[0]
+            receivers = self._load_location_aura_effects(
+                database, encoded_status
+            )
+        result = (aura, tuple(receivers)) if receivers else None
+        self._player_status_aura_cache[key] = result
+        return result
+
+    def apply_player_status_enemy_auras(
+        self, auras, *, now: float, server_tick: int,
+    ) -> tuple[PlayerSupportApplication, ...]:
+        """Refresh enemy effects from active player-hosted equipment auras."""
+        current_time = float(now)
+        inside_now: set[tuple[int, int, int]] = set()
+        applications = []
+        for (
+            owner_id, position, instance_id, effect_id, values, expires_at,
+        ) in auras:
+            if expires_at is not None and float(expires_at) <= current_time:
+                continue
+            # Equipment set roots have no timed runtime lease. Keep a short
+            # receiver lease alive and refresh it while the source is equipped;
+            # timed skill auras remain bounded by their actual expiry.
+            remaining_ticks = (
+                30
+                if expires_at is None
+                else max(
+                    1,
+                    math.ceil(
+                        (float(expires_at) - current_time)
+                        * SERVER_TICKS_PER_SECOND
+                    ),
+                )
+            )
+            resolved = self.player_status_enemy_aura(
+                int(effect_id), values, duration_ticks=remaining_ticks,
+            )
+            if resolved is None:
+                continue
+            aura, receivers = resolved
+            radius = max(0.0, float(aura.aura_radius))
+            if radius <= 0.0:
+                continue
+            source_key = (int(owner_id), int(instance_id))
+            for actor_id in self.living_actor_ids:
+                if not self.monster_hostile_to_player(actor_id, owner_id):
+                    continue
+                monster = self.monsters[actor_id]
+                if self._distance(
+                    position, self.monster_positions[actor_id]
+                ) > radius + max(0.0, monster.collision_radius):
+                    continue
+                key = (source_key[0], source_key[1], int(actor_id))
+                inside_now.add(key)
+                if (
+                    key in self.player_status_aura_members
+                    and self.player_status_aura_refresh_at.get(key, 0.0)
+                    > current_time
+                ):
+                    continue
+                self.player_status_aura_refresh_at[key] = current_time + 0.5
+                refreshed = tuple(
+                    replace(
+                        effect,
+                        duration_ticks=min(30, remaining_ticks),
+                        pvp_duration_ticks=min(30, remaining_ticks),
+                    )
+                    for effect in receivers
+                )
+                accepted = self.accepted_monster_status_effects(
+                    actor_id, refreshed, now=current_time,
+                )
+                if not accepted:
+                    continue
+                self._record_monster_status_effects(
+                    actor_id,
+                    accepted,
+                    now=current_time,
+                    source_actor_id=int(owner_id),
+                )
+                applications.append(PlayerSupportApplication(
+                    source_actor_id=int(owner_id),
+                    target_actor_id=int(actor_id),
+                    server_tick=int(server_tick) & 0xFFFFFFFF,
+                    status_effects=accepted,
+                ))
+        self.player_status_aura_members = inside_now
+        self.player_status_aura_refresh_at = {
+            key: value for key, value in self.player_status_aura_refresh_at.items()
+            if key in inside_now
+        }
+        return tuple(applications)
+
     def refresh_player_buff_taunt_sources(self, auras, *, now: float) -> None:
         """Apply active player Taunt buffs to hostile monsters in range."""
         current_time = float(now)
@@ -11398,16 +11557,19 @@ class LocalCombatState:
         skill_index: int = 0,
         now: float | None = None,
     ) -> tuple[DamageResolution, ...]:
-        """Apply a victim-hosted aura with no duration once, around its host.
+        """Apply receiver children of a victim-hosted aura around its host.
 
-        Jewel of Glory's ``skill_explosiveshot_explosion_aura_bgh_jewel2026``
-        is an Explosive Arrow ``addVE`` with ``D:0`` and ``DE:0.11``: hosted on
-        the victim (``AuraTargets:Allies;Creator`` -- the victim and the
-        monsters beside it) it explodes once for 100% Physical damage and three
-        Burning stacks in 4.5 m. Like the client's radius query, an actor is
-        inside when its centre is within the radius plus its ActorShape
-        radius. Status-only children still land (zero-damage resolutions are
-        effect-only transactions).
+        Zero-duration auras resolve once at impact; timed auras can carry
+        periodic child effects that must be installed on each affected
+        monster. Jewel of Glory's
+        ``skill_explosiveshot_explosion_aura_bgh_jewel2026`` is an Explosive
+        Arrow ``addVE`` with ``D:0`` and ``DE:0.11``: hosted on the victim
+        (``AuraTargets:Allies;Creator`` -- the victim and the monsters beside
+        it) it explodes once for 100% Physical damage and three Burning stacks
+        in 4.5 m. Like the client's radius query, an actor is inside when its
+        centre is within the radius plus its ActorShape radius. Status-only
+        children still land (zero-damage resolutions are effect-only
+        transactions).
         """
 
         current_time = time.perf_counter() if now is None else float(now)
@@ -11416,6 +11578,8 @@ class LocalCombatState:
             return ()
         results = []
         for actor_id in self.living_actor_ids:
+            if not self.monster_hostile_to_player(actor_id, owner_actor_id):
+                continue
             monster = self.monsters[actor_id]
             position = self.monster_positions[actor_id]
             if abs(position[1] - centre[1]) > 10.0:
