@@ -495,7 +495,8 @@ class RespawnServiceTests(unittest.TestCase):
             target_session=target, combat=combat, target_actor_id=1, source_actor_id=65538,
             damage=100, blocked=False, position=(20.0, 0.0, 30.0), server_tick=100,
             damage_type="Physical", skill_index=1, victim_status_effects=(),
-            critical_hit=False, cast_id=1, frost_hit=False, user_status_effects=(),
+            critical_hit=False, cast_id=1, frost_hit=False, rift_damage=0,
+            user_status_effects=(),
         )
         for allowed, expected in ((False, 1), (True, 0)):
             target.gameplay_respawn_allowed = allowed

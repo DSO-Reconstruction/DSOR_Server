@@ -7425,6 +7425,13 @@ class LocalCombatState:
                         "skilldamage",
                         "skillhitdamage",
                     }:
+                        # SkillDamage is additive in some talent programs and
+                        # can therefore turn a status-only skill into a
+                        # damaging one. Keep skills with no authored damage
+                        # (Mind Control, Singularity, Frost Wind) status-only
+                        # under every modifier source.
+                        if geometry.damage_modifier <= 0.0:
+                            continue
                         damage_modifier = self._apply_numeric_modifier(
                             damage_modifier,
                             amount,
@@ -12055,6 +12062,15 @@ class LocalCombatState:
             }.get(attack_skill_type, 0)
             if attack_skill_type == 'MeleeTarget':
                 command_id = SKILL_COMMAND
+            bullet_commands = {
+                BULLET_SKILL_COMMAND,
+                TARGET_BULLET_SKILL_COMMAND,
+                TARGET_POINT_BULLET_SKILL_COMMAND,
+            }
+            bullet_release_delay = max(
+                geometry.bullet_emit_delay,
+                geometry.loop_start_frame / SERVER_TICKS_PER_SECOND,
+            ) / summon_skill_speed
             emit_playback = (
                 definition.attack_playback_enabled
                 and bool(command_id)
@@ -12091,19 +12107,20 @@ class LocalCombatState:
                 )
             )
             impact_delay = (
-                geometry.bullet_emit_delay / summon_skill_speed
+                bullet_release_delay
                 + (
                     length / geometry.projectile_velocity
                     if geometry.projectile_velocity > 1e-6
                     else 0.0
                 )
                 if command_id
-                in {
-                    BULLET_SKILL_COMMAND,
-                    TARGET_BULLET_SKILL_COMMAND,
-                    TARGET_POINT_BULLET_SKILL_COMMAND,
-                }
+                in bullet_commands
                 else geometry.hit_frame / SERVER_TICKS_PER_SECOND / summon_skill_speed
+            )
+            animation_hit_frame = (
+                geometry.hit_frame
+                if geometry.hit_frame > 0
+                else geometry.loop_start_frame
             )
             impact_tick = (
                 start_tick
@@ -12119,7 +12136,7 @@ class LocalCombatState:
                 server_tick=start_tick,
                 cast_id=0,
                 impact_tick=impact_tick,
-                hit_frame=round(geometry.hit_frame / summon_skill_speed),
+                hit_frame=round(animation_hit_frame / summon_skill_speed),
                 motion_unblock_frame=(
                     round((attack_motion_unblock_frame or geometry.hit_frame) / summon_skill_speed)
                 ),
@@ -12190,7 +12207,7 @@ class LocalCombatState:
                 ):
                     arrivals = []
                     for target in target_actor_ids:
-                        travel = geometry.bullet_emit_delay + self._distance(
+                        travel = bullet_release_delay + self._distance(
                             summon.position, self.monster_positions[target],
                         ) / max(.01, geometry.projectile_velocity)
                         arrivals.append((
