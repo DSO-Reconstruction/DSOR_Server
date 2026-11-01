@@ -222,7 +222,9 @@ subcategory, where an upgraded pet counts as its one row under any rarity tier.
 A status effect reward applies for as long as the threshold holds
 (`reconcile_collector_effects`). It only raises an actor variable; the bonus
 comes from the pet, mount or Shadow Soul effect that reads it, so it needs one
-of those active. An item reward is paid once, without a claim, when the
+of those active. Damage is the exception: combat stats also add
+`pet_damage_01` themselves, so a full book is +6% alone and +12% with a pet.
+An item reward is paid once, without a claim, when the
 threshold is reached, and on map entry for anything reached earlier or that did
 not fit the bags (`_grant_stickerbook_rewards`, saved as `stickerbook_rewards`).
 
