@@ -1,5 +1,6 @@
 """Collector's Bag rewards: every category pays what its count reaches, once."""
 
+from dataclasses import replace
 import sqlite3
 from unittest.mock import Mock
 
@@ -223,11 +224,11 @@ def _damage(*resources):
     ).minimum_damage
 
 
-def test_the_pet_damage_bonus_needs_a_pet_and_counts_once():
+def test_the_collector_damage_bonus_counts_alone_and_again_with_a_pet():
     base = _damage()
-    assert _damage("sb_pets_increased_damage_01") == base
+    assert _damage("sb_pets_increased_damage_01") == pytest.approx(base * 1.02)
     assert _damage("pet_dragon") == base
-    assert _damage("pet_dragon", "sb_pets_increased_damage_01") == pytest.approx(base * 1.02)
+    assert _damage("pet_dragon", "sb_pets_increased_damage_01") == pytest.approx(base * 1.04)
 
 
 # Domestic Animals reaches 3 with plain pets. Water and Fairy Beings reach it only
@@ -302,7 +303,21 @@ def test_a_saved_character_gains_the_rewards_it_was_missing():
     assert not any(entry.field_26 for entry in entered.effects.values())
 
 
-def test_collection_effects_carry_the_retail_duration():
+def test_collection_effects_are_permanent():
     (speed,) = collector_effect_definitions(
         DEFAULT_STATIC_DB_PATH, _live_items("sb_mounts_birds")[:5])
-    assert speed.duration_ticks == 25
+    assert speed.duration_ticks == 0
+
+
+def test_a_save_with_the_one_second_duration_goes_back_to_permanent():
+    def reconcile(owned, effects, instance):
+        return reconcile_collector_effects(
+            DEFAULT_STATIC_DB_PATH, owned, effects,
+            actor_id=1, next_instance_id=instance, server_tick=0,
+        )
+
+    saved = reconcile(COLLECTED_PETS, {}, 1).effects
+    timed = {key: replace(entry, field_10=25) for key, entry in saved.items()}
+    restored = reconcile(COLLECTED_PETS, timed, 100).effects
+    assert len(restored) == 3
+    assert {entry.field_10 for entry in restored.values()} == {0}

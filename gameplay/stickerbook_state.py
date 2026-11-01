@@ -663,8 +663,7 @@ def _collector_effect_definitions_cached(
             in _reached_collection_rewards(database, owned_resource_ids)
         ):
             status = database.execute(
-                "SELECT rowid, StatusEffectDuration "
-                "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                "SELECT rowid FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
                 (reward_id,),
             ).fetchone()
             if status is None:
@@ -674,10 +673,13 @@ def _collector_effect_definitions_cached(
                     reward_id,
                     int(status["rowid"]) - 1,
                     1,
-                    # field_0c=0 makes the entry permanent; retail still sends
-                    # the template's duration alongside it.
-                    round(float(status["StatusEffectDuration"] or 0.0)
-                          * SERVER_TICKS_PER_SECOND),
+                    # Stickerbook rewards are derived from permanent
+                    # collection progress. The database's one-second
+                    # duration is only a template default. These entries use
+                    # field_0c=0, which the client reserves for permanent
+                    # effects, so they must also carry a zero duration rather
+                    # than an inconsistent one-second timer.
+                    0,
                 )
             )
         return tuple(definitions)
