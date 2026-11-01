@@ -2669,7 +2669,13 @@ def _calculate_player_combat_stats(
     )
 
     damage_absolute = (0.0, 0.0)
-    damage_relative = (0.0, 0.0)
+    # The Collector's Bag damage share counts here with or without a pet, on
+    # top of the pet effect's own Damage:$pet_damage_01: a full book is +6%
+    # alone and +12% with a pet.
+    collector_pet_damage = max(
+        0.0, float(variables.get("pet_damage_01", 0.0))
+    )
+    damage_relative = (collector_pet_damage, collector_pet_damage)
     weapon_bonus = 0.0
     weapon_factor_relative = 0.0
     pve_factor_absolute = 0.0

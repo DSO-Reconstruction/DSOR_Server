@@ -26,6 +26,7 @@ from dso_server.gameplay.quest_content import (
 from dso_server.gameplay.achievement_content import (
     AchievementProgress, complete_achievement, load_achievement_catalog,
 )
+from dso_server.gameplay.stickerbook_state import missing_sticker_entries
 from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
 from dso_server.protocol.character_selection import CLASS_NAMES
@@ -1039,6 +1040,31 @@ class AdminService:
                 "total_unlocked": len(resources),
                 "achievements_completed": completed_achievements}
 
+    def unlock_character_all_stickers(self, cid, actor, reason):
+        if self.registry.character_owner(cid) is None or self.store.get_profile(cid) is None:
+            raise ValueError("owned character not found")
+        state = self.store.get(cid)
+        if state is None:
+            raise ValueError("character must enter the game once before the sticker book can be changed")
+        if cid in self.online_characters():
+            raise ValueError("character must be offline; stickers will appear at next login")
+        # Collector's Bag effects and rewards are derived from the book at the
+        # next login, like the achievements that count it.
+        added = missing_sticker_entries(self.static_database_path, {
+            entry.resource_id for entry in state.stickerbook_entries
+        })
+        entries = tuple(sorted(
+            (*state.stickerbook_entries, *added),
+            key=lambda entry: entry.resource_id,
+        ))
+        self.store.put(replace(state, stickerbook_entries=entries), flush=True)
+        self.repository.audit(actor.username, "character.stickerbook.unlock_all", cid, {
+            "newly_unlocked": len(added),
+            "total_unlocked": len(entries),
+            "reason": reason,
+        })
+        return {"ok": True, "newly_unlocked": len(added), "total_unlocked": len(entries)}
+
     def complete_character_ammon_parallel_world_quests(self, cid, actor, reason):
         from dso_server.gameplay.map_unlocks import (
             map_unlock_catalog, quest_map_unlocks,
@@ -1634,6 +1660,8 @@ class AdminService:
                 return self.complete_character_active_quests(cid, account, reason)
             if parts[3] == "unlock-all-recipes":
                 return self.unlock_character_all_recipes(cid, account, reason)
+            if parts[3] == "unlock-all-stickers":
+                return self.unlock_character_all_stickers(cid, account, reason)
             return self.live.action(cid, parts[3], payload, account.username, reason)
         if path == "/api/bookings":
             cid = payload.get("character_id")

@@ -378,47 +378,15 @@ def _load_sticker_definition_cached(
 
         mount = None
         if str(item["ItemCategory"]) == "Mount":
-            ride_resource = (
-                "ride_" + status_resource.removeprefix("cast_")
-                if status_resource.startswith("cast_")
-                else status_resource.replace("cast", "ride", 1)
-            )
-            ride = database.execute(
-                """
-                SELECT rowid, StatusEffectDuration, StartModifiers
-                FROM _Template_StatusEffect WHERE Id=? LIMIT 1
-                """,
-                (ride_resource,),
-            ).fetchone()
-            if ride is None:
-                return None
-            mount_resource = resource_id
-            marker = "Mounted:Mount,"
-            modifiers = str(ride["StartModifiers"] or "")
-            if marker in modifiers:
-                mount_resource = modifiers.split(marker, 1)[1].split(
-                    "#", 1
-                )[0].split(";", 1)[0]
-            cast_seconds = max(0.1, duration_seconds)
-            mount = MountDefinition(
-                stickerbook_resource_id=resource_id,
-                mount_resource_id=mount_resource,
-                cast_effect_id=int(status["rowid"]) - 1,
-                ride_effect_id=int(ride["rowid"]) - 1,
-                cast_duration_seconds=cast_seconds,
-                cast_duration_ticks=max(
-                    1, round(cast_seconds * SERVER_TICKS_PER_SECOND)
-                ),
-                ride_duration_ticks=max(
-                    1,
-                    round(
-                        float(ride["StatusEffectDuration"] or 36000.0)
-                        * SERVER_TICKS_PER_SECOND
-                    ),
-                ),
+            mount = _mount_definition_from_item(
+                database,
+                item,
+                resource_id=resource_id,
                 stickerbook_state=2,
                 stickerbook_favorite_position=0,
             )
+            if mount is None:
+                return None
 
         return StickerDefinition(
             resource_id=resource_id,
@@ -586,6 +554,34 @@ def owned_source_item_ids(
     return frozenset(result)
 
 
+def missing_sticker_entries(
+    static_database_path: str | Path,
+    owned_resource_ids: tuple[str, ...] | set[str],
+) -> tuple[StickerbookEntry, ...]:
+    """A new entry for every live book row the collection does not cover.
+
+    A row owned under any base item or rarity tier is left alone, so an
+    upgraded pet keeps its tier. New rows start at their base tier.
+    """
+
+    path = Path(static_database_path)
+    owned = set(owned_resource_ids)
+    with _open_read_only(path) as database:
+        rows = database.execute(
+            "SELECT Id, Items FROM _Template_StickerbookItem WHERE IsLive<>0"
+        ).fetchall()
+    entries = []
+    for row in rows:
+        base = _split(row["Items"])
+        definition = load_sticker_definition(path, base[0]) if base else None
+        if definition is None or owned.intersection(
+            (str(row["Id"]), *definition.source_item_ids)
+        ):
+            continue
+        entries.append(StickerbookEntry(2, 0, definition.resource_id))
+    return tuple(entries)
+
+
 def _reached_collection_rewards(
     database: sqlite3.Connection,
     owned_resource_ids: tuple[str, ...],
@@ -663,8 +659,7 @@ def _collector_effect_definitions_cached(
             in _reached_collection_rewards(database, owned_resource_ids)
         ):
             status = database.execute(
-                "SELECT rowid, StatusEffectDuration "
-                "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                "SELECT rowid FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
                 (reward_id,),
             ).fetchone()
             if status is None:
@@ -674,10 +669,13 @@ def _collector_effect_definitions_cached(
                     reward_id,
                     int(status["rowid"]) - 1,
                     1,
-                    # field_0c=0 makes the entry permanent; retail still sends
-                    # the template's duration alongside it.
-                    round(float(status["StatusEffectDuration"] or 0.0)
-                          * SERVER_TICKS_PER_SECOND),
+                    # Stickerbook rewards are derived from permanent
+                    # collection progress. The database's one-second
+                    # duration is only a template default. These entries use
+                    # field_0c=0, which the client reserves for permanent
+                    # effects, so they must also carry a zero duration rather
+                    # than an inconsistent one-second timer.
+                    0,
                 )
             )
         return tuple(definitions)
