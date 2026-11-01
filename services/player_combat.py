@@ -295,6 +295,8 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_rift_force_echo_chance = 0.0
+        player_rift_force_echo_multiplier = 0.0
         player_attack_speed = 0.0
         pvp_timers = ()
         entity_plan = None
@@ -385,6 +387,12 @@ class PlayerCombatService(PlayerCastTimingService):
                 )
                 player_critical_damage_multiplier = (
                     player_stats.critical_damage_multiplier
+                )
+                player_rift_force_echo_chance = (
+                    player_stats.rift_force_echo_chance
+                )
+                player_rift_force_echo_multiplier = (
+                    player_stats.rift_force_echo_multiplier
                 )
                 modifier_effect_ids = (
                     tuple(modifier_effect_ids)
@@ -503,6 +511,12 @@ class PlayerCombatService(PlayerCastTimingService):
                         player_critical_damage_multiplier=(
                             player_critical_damage_multiplier
                         ),
+                        player_rift_force_echo_chance=(
+                            player_rift_force_echo_chance
+                        ),
+                        player_rift_force_echo_multiplier=(
+                            player_rift_force_echo_multiplier
+                        ),
                     )
                     pending = pending_hits[0] if pending_hits else None
                 else:
@@ -595,6 +609,12 @@ class PlayerCombatService(PlayerCastTimingService):
                 player_critical_hit_chance=player_critical_hit_chance,
                 player_critical_damage_multiplier=(
                     player_critical_damage_multiplier
+                ),
+                player_rift_force_echo_chance=(
+                    player_rift_force_echo_chance
+                ),
+                player_rift_force_echo_multiplier=(
+                    player_rift_force_echo_multiplier
                 ),
                 attack_speed_multiplier=skill_speed_multiplier,
                 modifier_sources=modifier_effect_ids,
@@ -784,6 +804,8 @@ class PlayerCombatService(PlayerCastTimingService):
         player_damage_range = (0.0, 0.0)
         player_critical_hit_chance = 0.0
         player_critical_damage_multiplier = 2.0
+        player_rift_force_echo_chance = 0.0
+        player_rift_force_echo_multiplier = 0.0
         player_attack_speed = 0.0
         skill_speed_multiplier = 1.0
         summon_definition = None
@@ -872,6 +894,12 @@ class PlayerCombatService(PlayerCastTimingService):
             )
             player_critical_damage_multiplier = (
                 player_stats.critical_damage_multiplier
+            )
+            player_rift_force_echo_chance = (
+                player_stats.rift_force_echo_chance
+            )
+            player_rift_force_echo_multiplier = (
+                player_stats.rift_force_echo_multiplier
             )
             modifier_effect_ids = (
                 tuple(modifier_effect_ids)
@@ -1050,6 +1078,12 @@ class PlayerCombatService(PlayerCastTimingService):
                         player_critical_damage_multiplier=(
                             player_critical_damage_multiplier
                         ),
+                        player_rift_force_echo_chance=(
+                            player_rift_force_echo_chance
+                        ),
+                        player_rift_force_echo_multiplier=(
+                            player_rift_force_echo_multiplier
+                        ),
                     )
                 location_owner_effects = (
                     combat.player_skill_location_owner_effects(
@@ -1174,6 +1208,12 @@ class PlayerCombatService(PlayerCastTimingService):
                 player_critical_damage_multiplier=(
                     player_critical_damage_multiplier
                 ),
+                player_rift_force_echo_chance=(
+                    player_rift_force_echo_chance
+                ),
+                player_rift_force_echo_multiplier=(
+                    player_rift_force_echo_multiplier
+                ),
                 attack_speed_multiplier=skill_speed_multiplier,
                 modifier_sources=modifier_effect_ids,
                 explicit_target_actor_ids=explicit_target_actor_ids,
@@ -1251,6 +1291,8 @@ class PlayerCombatService(PlayerCastTimingService):
                 critical_damage_multiplier=(
                     player_critical_damage_multiplier
                 ),
+                rift_force_echo_chance=player_rift_force_echo_chance,
+                rift_force_echo_multiplier=player_rift_force_echo_multiplier,
                 modifier_sources=tuple(modifier_effect_ids),
             )
         if (
