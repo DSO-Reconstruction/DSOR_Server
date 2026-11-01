@@ -99,6 +99,9 @@ class PresenceService:
             inventory,
             animation_set,
         )
+        hidden_skins = getattr(
+            session, "gameplay_hidden_equipment_skins", {}
+        )
         return RemotePlayer(
             actor_id=actor_id,
             name=str(character.name),
@@ -127,10 +130,13 @@ class PresenceService:
             admin_name_color=bool(character.admin_name_color),
             equipment=self._remote_equipment_visuals(
                 inventory,
-                getattr(session, "gameplay_hidden_equipment_skins", {}),
+                hidden_skins,
             ),
             emblem_id=self._remote_emblem_id(inventory),
             animation_set=animation_set,
+            additional_sequences=self._remote_equipment_effect_sequences(
+                inventory, hidden_skins
+            ),
             title_type=int(session.gameplay_title_type),
             achievement_title=str(session.gameplay_achievement_title),
             honor_points=int(getattr(session, "gameplay_honor_points", 0) or 0),
