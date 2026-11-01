@@ -58,6 +58,7 @@ from dso_server.gameplay.local_monster_state import (
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
 from dso_server.gameplay.map_event_state import (
+    BLOODSHED_DIFFICULTY,
     CLIENT_REPORTED_SIGNAL_TYPES,
     GatedSpawnRow,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
@@ -140,9 +141,16 @@ from dso_server.protocol.commerce_protocol import (
     _new_item,
     load_purchase_item_definition,
 )
+from dso_server.protocol.inventory_codec import InventoryInfo
+from dso_server.protocol.inventory_economy_protocol import (
+    refresh_inventory_economy_values,
+)
 from dso_server.protocol.world_loot_protocol import (
     WorldLootDrop,
+    _threshold_value,
     roll_possible_reward_jewel,
+    roll_possible_reward_gems,
+    roll_new_equipment_enchantments,
 )
 from dso_server.gameplay.prop_loot import (
     chest_drop_positions,
@@ -2668,9 +2676,23 @@ class MapEventService:
             return
         with runtime.lock:
             runtime.boss_reward_chests_unlocked.add(gate[1])
+            chest_states = tuple(
+                state for state in runtime.published_props()
+                if state.definition.instance_id.casefold()
+                in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+            )
+            for state in chest_states:
+                state.state = PROP_STATE_ACTIVE
+        viewers = self._map_event_sessions(runtime)
+        for viewer in viewers:
+            for state in chest_states:
+                self._restore_prop_for_viewer(
+                    viewer, state.definition, label="boss-chest-unlocked",
+                )
         _log(
             f"boss reward chest unlocked on {runtime.map_id} after "
-            f"{gate[0]} was defeated"
+            f"{gate[0]} was defeated; refreshed {len(chest_states)} "
+            f"chest prop(s) for {len(viewers)} player(s)"
         )
 
     def _ensure_parallel_world_boss_reward_chest_visible(
@@ -3212,12 +3234,107 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
+        is_parallel_world_boss_chest = (
+            str(definition.instance_id).casefold()
+            in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
+        )
+        parallel_world_jewel_chance = None
+        equipment_rewards_by_template = {}
+        if is_parallel_world_boss_chest:
+            tier = int(definition.variation_difficulty or 0)
+            if tier >= BLOODSHED_DIFFICULTY:
+                materi_amount, parallel_world_jewel_chance = 10_000, 0.05
+            elif tier >= 7:
+                materi_amount, parallel_world_jewel_chance = 5_000, 0.02
+            else:
+                materi_amount, parallel_world_jewel_chance = 2_000, 0.01
+            materi_definition = load_purchase_item_definition(
+                self.static_database_path, "materi_fragment_01",
+            )
+            specifications = []
+            remaining_materi = materi_amount
+            while remaining_materi > 0:
+                stack = min(
+                    remaining_materi,
+                    max(1, int(materi_definition.max_stack_size)),
+                )
+                specifications.append(("materi_fragment_01", stack))
+                remaining_materi -= stack
+            with s.flow_lock:
+                access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+                character = s.gameplay_character
+                player_level = max(1, int(getattr(character, "level", 1) or 1))
+                class_name = CLASS_NAMES[
+                    int(getattr(character, "class_id", 0))
+                ].lower()
+            rng = random.SystemRandom()
+            gem_count = rng.randint(1, 2)
+            try:
+                gem_templates = roll_possible_reward_gems(
+                    self.static_database_path, access_id, gem_count, rng,
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(
+                    f"cannot roll Parallel World chest gems: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                gem_templates = ()
+            specifications.extend((template_id, 1) for template_id in gem_templates)
+            # Use the selected map difficulty's authored equipment rarity
+            # weights for each of the one or two class-appropriate items.
+            try:
+                equipment_rarity_weights = (
+                    prime_world_loot_cache(self.static_database_path)
+                    .rarity_weights_by_difficulty.get(tier, (0, 0, 1, 0, 0))
+                )
+                rarity_indices = (2, 3, 4)  # magic, rare, epic
+                rarity_weights = tuple(
+                    equipment_rarity_weights[index]
+                    for index in rarity_indices
+                )
+                item_count = rng.randint(1, 2)
+                from dso_server.protocol.chest_loot_protocol import (
+                    roll_chest_contents,
+                )
+                from dso_server.protocol.world_loot_protocol import (
+                    EQUIPMENT_RARITIES,
+                )
+
+                for _ in range(item_count):
+                    rarity_index = rng.choices(
+                        rarity_indices, weights=rarity_weights, k=1,
+                    )[0]
+                    rarity = EQUIPMENT_RARITIES[rarity_index].casefold()
+                    rolled = roll_chest_contents(
+                        self.static_database_path,
+                        f"all_class_all_equip_{rarity}_01",
+                        player_level=player_level,
+                        class_name=class_name,
+                        rng=rng,
+                    )
+                    for reward in rolled.rewards:
+                        specifications.append((
+                            reward.definition.template_id,
+                            int(reward.amount),
+                        ))
+                        equipment_rewards_by_template.setdefault(
+                            reward.definition.template_id, [],
+                        ).append(reward)
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(
+                    f"cannot roll Parallel World chest equipment: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        else:
+            specifications = None
         is_a_mighty_sentinel_chest = (
             "sentinel_lootchest_" in (
                 f"{definition.instance_id} {definition.template_id}"
             ).casefold()
         )
-        if is_a_mighty_sentinel_chest:
+        if is_parallel_world_boss_chest:
+            pass
+        elif is_a_mighty_sentinel_chest:
             try:
                 difficulty = int(getattr(
                     s, "gameplay_map_difficulty", 0,
@@ -3316,7 +3433,7 @@ class MapEventService:
                 specifications = []
             else:
                 specifications = list(self._roll_map_chest_loot(s, entries))
-        if str(definition.instance_id).casefold() in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS:
+        if is_parallel_world_boss_chest:
             with s.flow_lock:
                 access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
                 difficulty = int(getattr(s, "gameplay_map_difficulty", 0) or 0)
@@ -3326,6 +3443,7 @@ class MapEventService:
                     access_id,
                     difficulty,
                     random.SystemRandom(),
+                    chance_override=parallel_world_jewel_chance,
                 )
             except (OSError, ValueError, sqlite3.Error) as exc:
                 _log(f"cannot roll map jewel reward: {type(exc).__name__}: {exc}")
@@ -3357,6 +3475,42 @@ class MapEventService:
                 )
                 item = _new_item(item_definition, 0, amount, player_level)
                 item.field_100 = position
+                reward_queue = equipment_rewards_by_template.get(template_id)
+                if reward_queue:
+                    reward = reward_queue.pop(0)
+                    item.item_level = int(reward.item_level or player_level)
+                    if reward.rarity is not None:
+                        item.field_08 = int(reward.rarity)
+                    if reward.appearance:
+                        item.field_80 = str(reward.appearance)
+                    item_row = item_rows.get(template_id, {})
+                    socket_count = _threshold_value(
+                        str(item_row.get("MinSocketCount") or "0"),
+                        item.item_level,
+                    )
+                    item.socket_count = socket_count
+                    item.socketed_templates = [""] * socket_count
+                    item.field_3c = bool(
+                        int(item.field_08) > 0
+                        and item_row.get("NeedsIdentify", False)
+                    )
+                    reward_inventory = InventoryInfo(items=[item])
+                    roll_new_equipment_enchantments(
+                        self.static_database_path,
+                        reward_inventory,
+                        (int(item.item_id),),
+                        class_name=class_name,
+                        map_difficulty=int(definition.variation_difficulty or 0),
+                        rng=random.SystemRandom(),
+                    )
+                    refresh_inventory_economy_values(
+                        self.static_database_path,
+                        reward_inventory,
+                        item_ids=(int(item.item_id),),
+                        force_melt_value=True,
+                    )
+                    item = reward_inventory.items[0]
+                    item.field_100 = position
                 # The Key of Prowess is authored as AutoPickUp=Privileged in
                 # static.db4, which the server's proximity collector does not
                 # treat as an unconditional pickup. A Mighty Threat chest keys
