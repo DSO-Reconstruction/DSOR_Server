@@ -66,16 +66,16 @@ class GrimmagRewardChestTests(unittest.TestCase):
         # copies share the same boss-side transform and must not be sent.
         self.assertEqual(
             {entry.template_id for entry in info.entries},
-            {"t000_state_chest_loot_04"},
+            {"pw_run_lootchest"},
         )
         self.assertEqual(len(info.entries), 1)
         self.assertTrue(all(entry.field_24 == PROP_STATE_ACTIVE for entry in info.entries))
 
     def test_reward_chest_selection_follows_map_difficulty(self):
         expected = {
-            5: "t000_state_chest_loot_04",
-            7: "t000_state_chest_loot_04",
-            9: "t000_state_chest_loot_05",
+            5: "pw_run_lootchest",
+            7: "pw_run_lootchest",
+            9: "pw_run_lootchest_gold",
         }
         for difficulty, template_id in expected.items():
             with self.subTest(difficulty=difficulty):
@@ -101,7 +101,7 @@ class GrimmagRewardChestTests(unittest.TestCase):
             for entry in command.value.entries
         ]
         self.assertEqual(len(entries), 1)
-        self.assertEqual(entries[0].template_id, "t000_state_chest_loot_04")
+        self.assertEqual(entries[0].template_id, "pw_run_lootchest")
         self.assertEqual(entries[0].prop_id, self.chest.prop_id)
 
     def test_reward_chests_use_fresh_zero_guid_prop_ids(self):
@@ -213,7 +213,7 @@ class GrimmagRewardChestTests(unittest.TestCase):
         self.assertEqual(len(decoded), 1)
         self.assertEqual(
             {entry.template_id for entry in decoded[0].value.entries},
-            {"t000_state_chest_loot_04"},
+            {"pw_run_lootchest"},
         )
         self.assertTrue(all(
             entry.field_24 == PROP_STATE_ACTIVE
@@ -269,6 +269,8 @@ class GrimmagRewardChestTests(unittest.TestCase):
             side_effect=lambda viewer, packet, bits, **kwargs: packets.append((packet, bits)),
         ), patch.object(CharacterServer, "_quest_on_prop_interacted"), patch.object(
             CharacterServer, "_achievement_on_prop_interacted",
+        ), patch.object(
+            self.service, "_map_event_sessions", return_value=(self.viewer,),
         ):
             self.click_chest()
             self.assertFalse(self.runtime.individual_prop_usage)
@@ -288,9 +290,21 @@ class GrimmagRewardChestTests(unittest.TestCase):
             self.assertIn(
                 "pw003_spawn_chest", self.runtime.boss_reward_chests_unlocked,
             )
-            # The chest is already visible from the entry snapshot; boss
-            # death only unlocks its one-shot interaction.
-            self.assertEqual(len(packets), packets_before_boss_death)
+            # Boss death refreshes the already-visible prop so the client
+            # cannot retain a stale locked state from before the kill.
+            self.assertGreater(len(packets), packets_before_boss_death)
+            refreshed_commands = [
+                command
+                for packet, bits in packets[packets_before_boss_death:]
+                for command in decode_server_command_batch(packet, bits)
+                if getattr(command.value, "entries", None) is not None
+            ]
+            self.assertTrue(any(
+                entry.prop_id == self.chest.prop_id
+                and entry.field_24 == PROP_STATE_ACTIVE
+                for command in refreshed_commands
+                for entry in command.value.entries
+            ))
             self.click_chest()
             self.assertIn((123, self.chest.prop_id), self.runtime.individual_prop_usage)
             self.service._spawn_map_chest_loot.assert_called_once_with(self.viewer, self.chest)
@@ -364,15 +378,15 @@ class ParallelWorldRewardChestArenaTests(unittest.TestCase):
                             viewer
                         ).entries
                         if entry.template_id in {
-                            "t000_state_chest_loot_04",
-                            "t000_state_chest_loot_05",
+                            "pw_run_lootchest",
+                            "pw_run_lootchest_gold",
                         }
                     ]
                     self.assertEqual(len(entries), 1)
                     expected_template = (
-                        "t000_state_chest_loot_05"
+                        "pw_run_lootchest_gold"
                         if difficulty == 9
-                        else "t000_state_chest_loot_04"
+                        else "pw_run_lootchest"
                     )
                     self.assertEqual(entries[0].template_id, expected_template)
                     self.assertEqual(entries[0].position, authored_position)
@@ -380,6 +394,7 @@ class ParallelWorldRewardChestArenaTests(unittest.TestCase):
 
     def test_every_arena_boss_unlocks_its_chest_event(self):
         service = MapEventService()
+        service._map_event_sessions = lambda _runtime: ()
         for map_id, (boss_template, event_set) in (
             _PARALLEL_WORLD_BOSS_REWARD_CHESTS.items()
         ):

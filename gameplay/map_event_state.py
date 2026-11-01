@@ -702,11 +702,17 @@ def prop_visible_to_player(
 
     required = int(definition.variation_difficulty or 0)
     difficulty = selected_map_difficulty(player)
+    runtime = getattr(player, "gameplay_map_event_runtime", None)
     if difficulty > 0:
-        return required == difficulty
+        siblings = {
+            int(prop.variation_difficulty or 0)
+            for prop in getattr(getattr(runtime, "content", None), "props", ())
+            if int(prop.variation_group or 0)
+            == int(definition.variation_group or 0)
+        }
+        return required == selected_variation_tier(siblings, difficulty)
     # Sessions without map-access metadata (tests or direct map entry) still
     # see one deterministic variant instead of every overlapping copy.
-    runtime = getattr(player, "gameplay_map_event_runtime", None)
     siblings = {
         int(prop.variation_difficulty or 0)
         for prop in getattr(getattr(runtime, "content", None), "props", ())
@@ -1503,6 +1509,28 @@ def _load_map_event_content(
     ]
     if chest_props:
         variations = _map_variations(path)
+        # Production exports may omit the optional .mvr sidecar, leaving all
+        # authored chest variants untagged even though their Map DB rows keep
+        # the variation-node indices. These arenas author their variants in
+        # ascending node order: Q1-Q27 use Infernal/Merciless/Bloodshed (5, 7,
+        # 9), while Medusa authors every tier from 0 through 10.
+        ordered_chests = sorted(
+            chest_props, key=lambda prop: int(prop.parent_node_index),
+        )
+        fallback_tiers = (
+            (5, 7, 9) if len(ordered_chests) == 3
+            else tuple(range(11)) if len(ordered_chests) == 11
+            else ()
+        )
+        fallback_by_parent = {
+            int(prop.parent_node_index): tier
+            for prop, tier in zip(ordered_chests, fallback_tiers)
+        }
+        authored_variations_complete = all(
+            int(prop.parent_node_index) in variations
+            and int(variations[int(prop.parent_node_index)][0]) != 0
+            for prop in chest_props
+        )
         # ClientPropManager::HandlePropInfoCommand only creates a prop
         # entity when the entry carries a zero GUID; a non-zero GUID goes
         # through LookupPropEntity and the whole entry is dropped when the
@@ -1510,8 +1538,8 @@ def _load_map_event_content(
         # quest-controlled, so they never exist for a player without the
         # reward quest and both the initial snapshot and the map-entry
         # replay were silently ignored.  Publish the chests under fresh
-        # prop ids with a zero GUID so the client instantiates them from
-        # the non-quest templates instead.
+        # prop ids with a zero GUID so the client creates them from the
+        # authored template even if its quest-controlled scene entity is absent.
         next_index = max(prop_index(prop.prop_id) for prop in props) + 1
         if (
             prop_index(prop_actor_base) + next_index + len(chest_props)
@@ -1522,24 +1550,26 @@ def _load_map_event_content(
             )
         replacements = {}
         for offset, prop in enumerate(chest_props):
+            authored_variation = variations.get(
+                int(prop.parent_node_index), (0, 0),
+            )
+            variation_group, variation_difficulty = (
+                authored_variation if authored_variations_complete else (
+                    1,
+                    fallback_by_parent.get(int(prop.parent_node_index), 0),
+                )
+            )
             replacements[prop.prop_id] = replace(
                 prop,
                 prop_id=prop_actor_base + next_index + offset,
-                # These visual twins use the same chest graphics and state
-                # files as pw_run_lootchest, but are not QuestControlled in
-                # the client data.
-                template_id=(
-                    "t000_state_chest_loot_05"
-                    if prop.instance_id.casefold() == "pw_run_lootchest_gold"
-                    else "t000_state_chest_loot_04"
-                ),
+                # Keep the authored template id so the client can resolve the
+                # localized Parallel World chest title and use case. The
+                # zero GUID still factory-creates it when the quest-controlled
+                # scene entity is absent.
+                template_id=prop.instance_id,
                 instance_guid=ZERO_GUID,
-                variation_group=variations.get(
-                    prop.parent_node_index, (0, 0),
-                )[0],
-                variation_difficulty=variations.get(
-                    prop.parent_node_index, (0, 0),
-                )[1],
+                variation_group=variation_group,
+                variation_difficulty=variation_difficulty,
             )
         props = [
             replacements.get(prop.prop_id, prop) for prop in props

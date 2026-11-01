@@ -1461,8 +1461,15 @@ def roll_possible_reward_jewel(
     map_access_id: str,
     map_difficulty: int,
     rng: random.Random | None = None,
+    *,
+    chance_override: float | None = None,
 ) -> str | None:
-    """Roll the normal-jewel reward shown for maps with jewel chest rewards."""
+    """Roll a normal jewel from this map's eligible pool.
+
+    ``chance_override`` is for authored reward systems such as boss chests
+    with their own fixed rates; ordinary possible-reward rolls continue to
+    use the CMS rate and map-difficulty factors.
+    """
 
     generator = rng if rng is not None else random.SystemRandom()
     database = prime_world_loot_cache(static_database_path)
@@ -1470,13 +1477,16 @@ def roll_possible_reward_jewel(
     descriptors = _possible_reward_descriptors(database, map_access_id)
     if "dungeonaccess_jewels" not in descriptors:
         return None
-    _ordinary_chance, jewel_chance = _difficulty_drop_chances(
-        database,
-        map_difficulty,
-        monster_drop=rates["jewel"],
-        privileged_drop=rates["jewel"],
-    )
-    if generator.random() > jewel_chance:
+    if chance_override is None:
+        _ordinary_chance, jewel_chance = _difficulty_drop_chances(
+            database,
+            map_difficulty,
+            monster_drop=rates["jewel"],
+            privileged_drop=rates["jewel"],
+        )
+    else:
+        jewel_chance = _probability(chance_override)
+    if generator.random() >= jewel_chance:
         return None
     candidates = _possible_reward_item_pool(
         database,
@@ -1488,6 +1498,42 @@ def roll_possible_reward_jewel(
         check_level=False,
     )
     return generator.choice(candidates).template_id if candidates else None
+
+
+def roll_possible_reward_gems(
+    static_database_path: str | Path,
+    map_access_id: str,
+    count: int,
+    rng: random.Random | None = None,
+) -> tuple[str, ...]:
+    """Roll ``count`` regular gems from the map access's authored rank band."""
+
+    generator = rng if rng is not None else random.SystemRandom()
+    database = prime_world_loot_cache(static_database_path)
+    descriptors = _possible_reward_descriptors(database, map_access_id)
+    bounds = next((
+        match
+        for descriptor in descriptors
+        if (match := re.fullmatch(
+            r"dungeonaccess_gems_([a-s])_to_([a-s])", descriptor
+        ))
+    ), None)
+    if bounds is None:
+        return ()
+    first, last = bounds.groups()
+    low, high = sorted((first.casefold(), last.casefold()))
+    ranks = tuple(
+        rank for rank in sorted(database.standard_gems_by_rank)
+        if low <= rank <= high
+    )
+    if not ranks:
+        return ()
+    result = []
+    for _ in range(max(0, int(count))):
+        pool = database.gems_for_rank(generator.choice(ranks))
+        if pool:
+            result.append(generator.choice(pool).template_id)
+    return tuple(result)
 
 
 def _monster_gem_rank(

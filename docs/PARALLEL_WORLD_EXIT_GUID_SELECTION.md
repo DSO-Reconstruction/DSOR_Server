@@ -19,17 +19,22 @@ Each of the nine boss arenas in the Q1-Q27 chain (`pw003_grimmag_01_boss`,
 `pw015_khalys_boss_01`, `pw018_herold_01_boss`, `pw021_sigrismarr_01_boss`,
 `pw024_medusa_01_boss`, `pw027_gorga_01_boss`) authors its reward chests as
 `MapVariation` nodes. The server now rewrites every `pw_run_lootchest` /
-`pw_run_lootchest_gold` prop to a fresh prop id with a zero GUID, using the
-non-quest `t000_state_chest_loot_04/05` visual twins, and keeps its authored
-transform. Grimmag's chest, for example, stays at `-10.04, 0.28, 44.88`, about
-5 m from the boss; the other arenas likewise use their own authored positions
-rather than being moved to the map entry.
+`pw_run_lootchest` / `pw_run_lootchest_gold` prop to a fresh prop id with a
+zero GUID and keeps its authored template and transform. Retaining the authored
+template is necessary because it has localized title/use-case strings; the
+generic `t000_state_chest_loot_04/05` visual templates display untranslated
+localization keys. Grimmag's chest, for example, stays at
+`-10.04, 0.28, 44.88`, about 5 m from the boss; the other arenas likewise use
+their own authored positions rather than being moved to the map entry.
 
-The variant tag comes from the map's `.mvr` `MapVariation` family. Most arenas
-author three rows for tiers 5, 7 and 9 (Infernal, Merciless, Bloodshed);
-`pw024_medusa_01_boss` authors eleven (0-10). PropInfo sends keep only the row
-whose variation matches the player's `gameplay_map_difficulty`, so one chest
-appears per viewer instead of every difficulty variant stacking.
+When available, the variant tag comes from the map's `.mvr` `MapVariation`
+family. Production exports may omit that optional sidecar, so the server also
+recovers the tier sequence from the authored state-object parent-node order.
+Most arenas author three rows for tiers 5, 7 and 9 (Infernal, Merciless,
+Bloodshed); `pw024_medusa_01_boss` authors eleven (0-10). PropInfo sends keep
+only the highest authored tier at or below the player's
+`gameplay_map_difficulty`, so one chest appears per viewer instead of every
+difficulty variant stacking.
 
 Each arena's `<map>_spawn_chest` EventSet is enabled in the local baseline so
 the chest is present in the initial prop snapshot. The props are replayed after
