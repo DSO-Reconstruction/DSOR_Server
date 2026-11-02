@@ -55,8 +55,8 @@ def vendor():
     s.gameplay_open_shop_offers = OfferCommand(s.gameplay_open_shop_id, False, True, (), (), ())
     s.gameplay_next_item_id = 999
     s.gameplay_quickbar_info = QuickbarInfo(0, 0)
-    item = ItemInfo(item_id=800, template_id="gem_ruby_a", amount=3, field_30=60)
-    s.gameplay_inventory.items.append(item); s.gameplay_inventory.storage_58[800] = 0
+    item = ItemInfo(item_id=800, template_id="gem_ruby_a", amount=3, stack_vc_value=60)
+    s.gameplay_inventory.items.append(item); s.gameplay_inventory.storage_slots[800] = 0
     try: yield case, s, item
     finally: case.doCleanups()
 
@@ -236,7 +236,7 @@ def test_repurchase_preserves_equipment_upgrades_sockets_and_enchantments(vendor
     case,s,item=vendor
     item.template_id="warrior_base_helmet_crafted"
     item.amount=1; item.socket_count=1; item.socketed_templates=["gem_ruby_a"]
-    item.item_level=100; item.field_20=7
+    item.item_level=100; item.dye_argb=7
     item.enchantments=[ItemEnchantmentInfo(value=0.5,template_id="test_roll")]
     original=copy.deepcopy(item)
     trade(case,s,4); trade(case,s,5)

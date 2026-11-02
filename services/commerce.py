@@ -269,12 +269,12 @@ class CommerceService:
         delta = copy.deepcopy(inventory)
         delta.items = copy.deepcopy(changed_items)
         delta.changed_item_ids = list(replaced_item_ids)
-        delta.field_158 = dict(replacements)
+        delta.item_id_replacements = dict(replacements)
         delta.field_1e0 = True
         final = copy.deepcopy(inventory)
         final.items = []
         final.changed_item_ids = []
-        final.field_158 = {}
+        final.item_id_replacements = {}
         final.field_1e0 = False
         receipts, next_item_id = build_item_receipts(
             inventory_before,
@@ -1173,8 +1173,8 @@ class CommerceService:
                         item = builder.item(entry.field_58)
                         if int(item.item_id) in builder.inventory.equipment_slots:
                             raise ValueError("equipped items cannot be sold")
-                        if not (int(item.item_id) in builder.inventory.storage_58
-                                or int(item.item_id) in builder.inventory.storage_80):
+                        if not (int(item.item_id) in builder.inventory.storage_slots
+                                or int(item.item_id) in builder.inventory.extra_storage_slots):
                             raise ValueError("sale item must be in the backpack")
                         value = item_sell_value(self.static_database_path, item, item.amount)
                         sold = builder.consume(item.item_id)
@@ -1298,7 +1298,7 @@ class CommerceService:
                         ]
                 if offer.base_enchantment_tier_override >= 0:
                     for purchased_item in mutation.changed_items:
-                        purchased_item.field_38 = (
+                        purchased_item.base_enchantment_tier = (
                             offer.base_enchantment_tier_override
                         )
                 next_item_id = mutation.next_item_id
@@ -1362,11 +1362,11 @@ class CommerceService:
 
             delta_inventory = clone_inventory_info(inventory, changed_items)
             delta_inventory.changed_item_ids = list(replaced_item_ids)
-            delta_inventory.field_158 = dict(replacements)
+            delta_inventory.item_id_replacements = dict(replacements)
             delta_inventory.field_1e0 = True
             final_inventory = clone_inventory_info(inventory, ())
             final_inventory.changed_item_ids = []
-            final_inventory.field_158 = {}
+            final_inventory.item_id_replacements = {}
             final_inventory.field_1e0 = False
 
             commands = []

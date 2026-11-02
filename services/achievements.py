@@ -501,7 +501,7 @@ class AchievementService:
                           if item.item_id in inventory.equipment_slots) if inventory else ()
             templates = tuple(item.template_id for item in items)
             rarities = {value: key for key, value in OFFER_RARITY_IDS.items()}
-            equipped_rarities = tuple(rarities.get(item.field_08, "") for item in items)
+            equipped_rarities = tuple(rarities.get(item.rarity, "") for item in items)
         self._achievement_feed(s, "equipitem", templates)
         self._achievement_feed(s, "equiprarity", equipped_rarities)
         self._achievement_on_skins_collected(s)

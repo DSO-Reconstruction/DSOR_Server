@@ -99,7 +99,7 @@ def test_invalid_selections_change_nothing(seasonal, case):
     elif case == "no-wish-row":
         item_id = plain
     elif case == "equipped":
-        world.session.gameplay_inventory.storage_58.pop(chest)
+        world.session.gameplay_inventory.storage_slots.pop(chest)
         world.session.gameplay_inventory.equipment_slots[chest] = (37,)
     else:
         item_id = lamp

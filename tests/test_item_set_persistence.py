@@ -64,7 +64,7 @@ def wearer():
             for old_id, old_slots in tuple(inventory.equipment_slots.items()):
                 if set(slots).intersection(old_slots):
                     inventory.equipment_slots.pop(old_id)
-                    inventory.storage_58[old_id] = max(inventory.storage_58.values(), default=-1) + 1
+                    inventory.storage_slots[old_id] = max(inventory.storage_slots.values(), default=-1) + 1
             item_id = session.gameplay_next_item_id
             session.gameplay_next_item_id += 1
             inventory.items.append(ItemInfo(item_id, template_id=template, item_level=100))
@@ -177,7 +177,7 @@ def test_unequipped_saved_sources_are_removed_before_vitals_and_wire(wearer):
     for item in saved.inventory.items:
         if item.template_id in templates:
             saved.inventory.equipment_slots.pop(item.item_id, None)
-            saved.inventory.storage_58[item.item_id] = max(saved.inventory.storage_58.values(), default=-1) + 1
+            saved.inventory.storage_slots[item.item_id] = max(saved.inventory.storage_slots.values(), default=-1) + 1
     server.account_store.put(saved, flush=True)
     restored, state = initialize(server)
     assert not running(restored)

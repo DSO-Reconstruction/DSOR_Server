@@ -3474,15 +3474,15 @@ class MapEventService:
                     self.static_database_path, template_id,
                 )
                 item = _new_item(item_definition, 0, amount, player_level)
-                item.field_100 = position
+                item.ground_position = position
                 reward_queue = equipment_rewards_by_template.get(template_id)
                 if reward_queue:
                     reward = reward_queue.pop(0)
                     item.item_level = int(reward.item_level or player_level)
                     if reward.rarity is not None:
-                        item.field_08 = int(reward.rarity)
+                        item.rarity = int(reward.rarity)
                     if reward.appearance:
-                        item.field_80 = str(reward.appearance)
+                        item.appearance = str(reward.appearance)
                     item_row = item_rows.get(template_id, {})
                     socket_count = _threshold_value(
                         str(item_row.get("MinSocketCount") or "0"),
@@ -3490,8 +3490,8 @@ class MapEventService:
                     )
                     item.socket_count = socket_count
                     item.socketed_templates = [""] * socket_count
-                    item.field_3c = bool(
-                        int(item.field_08) > 0
+                    item.needs_identification = bool(
+                        int(item.rarity) > 0
                         and item_row.get("NeedsIdentify", False)
                     )
                     reward_inventory = InventoryInfo(items=[item])
@@ -3510,7 +3510,7 @@ class MapEventService:
                         force_melt_value=True,
                     )
                     item = reward_inventory.items[0]
-                    item.field_100 = position
+                    item.ground_position = position
                 # The Key of Prowess is authored as AutoPickUp=Privileged in
                 # static.db4, which the server's proximity collector does not
                 # treat as an unconditional pickup. A Mighty Threat chest keys

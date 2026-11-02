@@ -749,7 +749,7 @@ class PlayerProjectileService:
                     f"{len(loot_generation.drops)} database-resolved world "
                     f"drop(s) from "
                     f"{loot_generation.profile.loot_list_id!r}: "
-                    f"{[(drop.item.item_id, drop.item.template_id, drop.item.amount, drop.item.field_08) for drop in loot_generation.drops]}"
+                    f"{[(drop.item.item_id, drop.item.template_id, drop.item.amount, drop.item.rarity) for drop in loot_generation.drops]}"
                 )
             if VERBOSE_PACKET_LOGGING:
                 print(

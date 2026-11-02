@@ -147,7 +147,7 @@ class InventoryMapService:
             page_end = page_start + page_size
             page_items = [
                 (int(item_id), int(slot))
-                for item_id, slot in inventory.storage_58.items()
+                for item_id, slot in inventory.storage_slots.items()
                 if page_start <= int(slot) < page_end
             ]
             item_by_id = {
@@ -163,15 +163,15 @@ class InventoryMapService:
                 key=lambda item_id: (
                     str(item_by_id[item_id].template_id).casefold(),
                     int(item_by_id[item_id].item_level),
-                    int(item_by_id[item_id].field_1c),
+                    int(item_by_id[item_id].dye_color_id),
                     item_id,
                 ),
             )
             updated_inventory = clone_inventory_info(inventory)
             for item_id, _ in page_items:
-                updated_inventory.storage_58.pop(item_id, None)
+                updated_inventory.storage_slots.pop(item_id, None)
             for offset, item_id in enumerate(sorted_item_ids):
-                updated_inventory.storage_58[item_id] = page_start + offset
+                updated_inventory.storage_slots[item_id] = page_start + offset
 
             response_inventory = equipment_allocation_snapshot(
                 updated_inventory
@@ -902,13 +902,13 @@ class InventoryMapService:
                     raise ValueError("player inventory is not initialized")
                 item = next((i for i in current.items if i.item_id == action.item_id), None)
                 if item is None or not any(action.item_id in getattr(current, name)
-                                          for name in ("storage_58", "storage_80", "storage_a8", "storage_d0")):
+                                          for name in ("storage_slots", "extra_storage_slots", "bank_storage_slots", "extra_bank_storage_slots")):
                     raise ValueError("identification requires an owned stored item")
-                if not item.field_3c:
+                if not item.needs_identification:
                     return
                 inventory = copy.deepcopy(current)
                 item = next(i for i in inventory.items if i.item_id == action.item_id)
-                item.field_3c = False
+                item.needs_identification = False
                 packet, packet_bits = encode_item_info_response(item, actor_id=LOCAL_PLAYER_ACTOR_ID)
                 s.gameplay_inventory = inventory
             CharacterService._send_world_loot_state_batch(
@@ -1136,10 +1136,10 @@ class InventoryMapService:
                             "slot"
                         )
                     storage_name = {
-                        0x02: "storage_58",
-                        0x03: "storage_80",
-                        0x04: "storage_a8",
-                        0x05: "storage_d0",
+                        0x02: "storage_slots",
+                        0x03: "extra_storage_slots",
+                        0x04: "bank_storage_slots",
+                        0x05: "extra_bank_storage_slots",
                     }[action.operation]
                     storage_slot = (
                         int(arguments[0]) if arguments else None
@@ -1698,7 +1698,7 @@ class InventoryMapService:
                 inventory,
                 mutation.inventory,
                 (item.item_id for item in mutation.delta.items),
-                mutation.delta.field_158,
+                mutation.delta.item_id_replacements,
                 receipt_grants,
                 next_item_id=mutation.next_item_id,
             )

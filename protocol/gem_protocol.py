@@ -222,14 +222,14 @@ def _socket_unlock_rules(
             (
                 name
                 for name, rarity_id in OFFER_RARITY_IDS.items()
-                if name != "None" and int(rarity_id) == int(item.field_08)
+                if name != "None" and int(rarity_id) == int(item.rarity)
             ),
             None,
         )
         if rarity_name is None:
             raise ValueError(
                 f"item {item.template_id!r} has unknown rarity "
-                f"{item.field_08}"
+                f"{item.rarity}"
             )
         next_count = int(item.socket_count) + 1
         if next_count > maximum:
@@ -280,7 +280,7 @@ def unlock_gem_socket(
     equipment.socket_count += 1
     equipment.socketed_templates.append("")
     working.changed_item_ids = []
-    working.field_158 = {}
+    working.item_id_replacements = {}
     working.field_1e0 = False
     return SocketUnlockMutation(
         inventory=working,
@@ -300,7 +300,7 @@ def promote_local_loot_equipment_levels(
 ) -> tuple[InventoryInfo, tuple[int, ...]]:
     """Raise old local test drops to the configured player's item level.
 
-    Local world-loot equipment is serialized with ``field_30 == 11``. Earlier
+    Local world-loot equipment is serialized with ``stack_vc_value == 11``. Earlier
     builds generated those items at the static monster level even while the
     forced-drop testing mode was active. That made a level-100 player receive,
     for example, a level-6 pistol whose client-owned ``MaxSocketCount`` rule
@@ -316,7 +316,7 @@ def promote_local_loot_equipment_levels(
         item
         for item in inventory.items
         if (
-            int(item.field_30) == 11
+            int(item.stack_vc_value) == 11
             and int(item.item_level) < target
         )
     ]
@@ -443,7 +443,7 @@ def remove_gem(
     response_inventory.changed_item_ids = copy.deepcopy(
         added.delta.changed_item_ids
     )
-    response_inventory.field_158 = copy.deepcopy(added.delta.field_158)
+    response_inventory.item_id_replacements = copy.deepcopy(added.delta.item_id_replacements)
     # The retail no-stack removal has this flag clear. The replacement path
     # uses the same true value already proven by stacking vendor transactions.
     response_inventory.field_1e0 = bool(added.replaced_item_ids)
@@ -529,23 +529,23 @@ def insert_gem(
         working.items.remove(gem)
         for values in (
             working.equipment_slots,
-            working.storage_58,
-            working.storage_80,
-            working.storage_a8,
-            working.storage_d0,
+            working.storage_slots,
+            working.extra_storage_slots,
+            working.bank_storage_slots,
+            working.extra_bank_storage_slots,
         ):
             values.pop(int(gem_item_id), None)
         for values in (
-            working.field_f8,
-            working.field_118,
-            working.field_180,
+            working.overflow_storage_item_ids,
+            working.invisible_storage_item_ids,
+            working.ingredient_bag_item_ids,
         ):
             values[:] = [
                 value for value in values
                 if int(value) != int(gem_item_id)
             ]
     working.changed_item_ids = []
-    working.field_158 = {}
+    working.item_id_replacements = {}
     working.field_1e0 = False
     return GemMutation(
         inventory=working,
@@ -624,10 +624,10 @@ def upgrade_rune(
         )
     else:
         rune_item.template_id = upgraded_template_id
-        # ``field_08`` is the item's rarity ID, which drives the inventory
-        # frame color in the client.  Changing only the template updates the
-        # title and rune effect but leaves the old rarity border in place.
-        rune_item.field_08 = upgraded_definition.rarity
+        # ``rarity`` drives the inventory frame color in the client.  Changing
+        # only the template updates the title and rune effect but leaves the
+        # old rarity border in place.
+        rune_item.rarity = upgraded_definition.rarity
         builder.changed_items.append(copy.deepcopy(rune_item))
         upgraded_item = copy.deepcopy(rune_item)
 
@@ -712,7 +712,7 @@ def upgrade_gem(
         )
     else:
         gem.template_id = upgraded_template_id
-        gem.field_08 = upgraded_definition.rarity
+        gem.rarity = upgraded_definition.rarity
         builder.changed_items.append(copy.deepcopy(gem))
         upgraded_item = copy.deepcopy(gem)
 
@@ -734,17 +734,17 @@ def _write_item_info_response_body(
     writer.write_uint32_le(int(item.amount))
     writer.write_uint32_le(int(item.socket_count))
     writer.write_uint32_le(0)
-    writer.write_uint32_le(int(item.field_34))
+    writer.write_uint32_le(int(item.glyph_value))
     writer.write_uint32_le(0)
     writer.write_uint32_le(int(item.item_level))
-    writer.write_bool(bool(item.field_3c))
+    writer.write_bool(bool(item.needs_identification))
     writer.write_bool(bool(item.field_3d))
-    writer.write_uint32_le(int(item.field_20))
-    writer.write_uint32_le(int(item.field_1c))
+    writer.write_uint32_le(int(item.dye_argb))
+    writer.write_uint32_le(int(item.dye_color_id))
     writer.write_uint32_le(len(item.socketed_templates))
     for template_id in item.socketed_templates:
         writer.write_string(template_id)
-    writer.write_string(item.field_f8)
+    writer.write_string(item.equipment_skin)
     writer.write_bool(bool(item.field_3e))
 
 

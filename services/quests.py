@@ -2204,8 +2204,8 @@ class QuestService:
         """Native hand-ins count carried storage, never bank/equipped/socketed items."""
         if inventory is None:
             return ()
-        carried = set(inventory.storage_58) | set(inventory.storage_80) | set(inventory.field_180)
-        excluded = set(inventory.equipment_slots) | set(inventory.storage_a8) | set(inventory.storage_d0)
+        carried = set(inventory.storage_slots) | set(inventory.extra_storage_slots) | set(inventory.ingredient_bag_item_ids)
+        excluded = set(inventory.equipment_slots) | set(inventory.bank_storage_slots) | set(inventory.extra_bank_storage_slots)
         templates = (
             CharacterService._quest_delivery_item_templates(quest, barter)
             if quest is not None else barter.items
@@ -2774,7 +2774,7 @@ class QuestService:
             return None
         builder = InventoryMutationBuilder(inventory, s.gameplay_next_item_id)
         removed_ingredients = {item.template_id for item in inventory.items
-                               if item.item_id in remove and item.item_id in inventory.field_180}
+                               if item.item_id in remove and item.item_id in inventory.ingredient_bag_item_ids}
         for item in inventory.items:
             if item.item_id in remove:
                 builder.consume(item.item_id)
@@ -2782,8 +2782,8 @@ class QuestService:
             setattr(builder.inventory, name, [item for item in getattr(builder.inventory, name)
                                               if item.item_id not in remove])
         remaining_ingredients = {item.template_id for item in builder.inventory.items
-                                 if item.item_id in builder.inventory.field_180}
-        builder.inventory.field_1a0 = [template for template in builder.inventory.field_1a0
+                                 if item.item_id in builder.inventory.ingredient_bag_item_ids}
+        builder.inventory.ingredient_bag_templates = [template for template in builder.inventory.ingredient_bag_templates
                                       if template not in removed_ingredients - remaining_ingredients]
         return builder.finish()
 

@@ -456,7 +456,7 @@ class PlayerPersistenceService:
             except (OSError, ValueError):
                 pass
         inventory.changed_item_ids = []
-        inventory.field_158 = {}
+        inventory.item_id_replacements = {}
         inventory.field_1e0 = False
         inventory.actor_id = LOCAL_PLAYER_ACTOR_ID
         maximum_item_id = max(

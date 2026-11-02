@@ -747,7 +747,7 @@ class PresenceVisualService:
             item = items_by_id.get(int(item_id))
             if item is None:
                 continue
-            item_skin = str(item.field_f8 or item.field_80 or "")
+            item_skin = str(item.equipment_skin or item.appearance or "")
             visible_slots = tuple(
                 slot for slot in visible_slots
                 if not (
@@ -760,7 +760,7 @@ class PresenceVisualService:
             try:
                 skin = self.static_database.remote_equipment_skin(
                     item.template_id,
-                    item.field_f8 or item.field_80,
+                    item.equipment_skin or item.appearance,
                 )
             except (OSError, ValueError, CharacterSelectionError):
                 continue
@@ -799,7 +799,7 @@ class PresenceVisualService:
             item = items_by_id.get(int(item_id))
             if item is None:
                 continue
-            item_skin = str(item.field_f8 or item.field_80 or "")
+            item_skin = str(item.equipment_skin or item.appearance or "")
             if all(
                 (hidden_skin := str(
                     hidden_skins.get(12 if slot == 7 else slot, "")
@@ -811,7 +811,7 @@ class PresenceVisualService:
                 item_sequences = (
                     self.static_database.remote_equipment_effect_sequences(
                         item.template_id,
-                        item.field_f8 or item.field_80,
+                        item.equipment_skin or item.appearance,
                     )
                 )
             except (OSError, ValueError, CharacterSelectionError):

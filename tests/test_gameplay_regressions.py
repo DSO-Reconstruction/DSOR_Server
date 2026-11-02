@@ -223,16 +223,16 @@ def test_monster_equipment_uses_monster_level_and_keeps_identification_on_pickup
     assert equipment
     for drop in equipment:
         assert drop.item.item_level == monster_level
-        if drop.item.field_08 == 0:
-            assert not drop.item.field_3c
-        elif drop.item.field_08 <= 4:
-            assert drop.item.field_3c
+        if drop.item.rarity == 0:
+            assert not drop.item.needs_identification
+        elif drop.item.rarity <= 4:
+            assert drop.item.needs_identification
         # Some unique/event templates explicitly do not require identification.
         mutation = add_world_drop_to_inventory(InventoryInfo(), drop)
         packet, bits = encode_world_pickup_response(drop, actor_id=1, inventory=mutation)
         decoded = decode_world_pickup_response(packet, bits)
         restored = _inventory_from_document(_inventory_to_document(mutation.inventory))
-        assert restored.items[0].field_3c == drop.item.field_3c
+        assert restored.items[0].needs_identification == drop.item.needs_identification
         assert restored.items[0].item_level == monster_level
-        assert decoded.inventory_states[0].items[0].field_3c == drop.item.field_3c
+        assert decoded.inventory_states[0].items[0].needs_identification == drop.item.needs_identification
         assert decoded.inventory_states[0].items[0].item_level == monster_level

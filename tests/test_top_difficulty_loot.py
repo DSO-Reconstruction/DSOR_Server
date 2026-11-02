@@ -76,7 +76,7 @@ def test_a_bloodshed_kill_drops_equipment_using_bloodshed_odds(boss):
             map_difficulty=BLOODSHED,
         )
         rarities.update(
-            drop.item.field_08 for drop in generation.drops if drop.item.field_38 or drop.item.socket_count
+            drop.item.rarity for drop in generation.drops if drop.item.base_enchantment_tier or drop.item.socket_count
             or drop.item_category not in {"Currency", "InstantConsumable", "EquipmentGem"}
         )
     assert rarities

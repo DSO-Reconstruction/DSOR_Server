@@ -58,7 +58,7 @@ def add_item(s, resource, item_id, amount=1):
     s.gameplay_inventory.items.append(ItemInfo(
         item_id=item_id, template_id=resource, amount=amount, item_level=1,
     ))
-    s.gameplay_inventory.storage_58[item_id] = len(s.gameplay_inventory.storage_58)
+    s.gameplay_inventory.storage_slots[item_id] = len(s.gameplay_inventory.storage_slots)
 
 
 @pytest.fixture
@@ -168,8 +168,8 @@ def test_outputs_merge_existing_gem_stack_and_use_freed_ingredient_slots(player)
     add_item(p.s, GEMS[0], 13, 5)
     p.server._handle_crafting(p.s, packet())
     assert items(p.s) == Counter({GEMS[0]: 6, GEMS[1]: 1, GEMS[2]: 1})
-    assert len(p.s.gameplay_inventory.storage_58) == 3
-    assert 13 not in p.s.gameplay_inventory.storage_58
+    assert len(p.s.gameplay_inventory.storage_slots) == 3
+    assert 13 not in p.s.gameplay_inventory.storage_slots
     p.achievements.assert_called_once()
 
 
@@ -335,8 +335,8 @@ def test_real_tenth_craft_persists_reward_then_publishes_allocations_in_order(mo
         assert labels.index("achievement-reward") > labels.index("workbench-crafting")
         assert items(s) == Counter({recipe_id: 1, reward: 1})
         reward_views = next(commands for label, commands in messages if label == "achievement-reward")
-        final_allocation = reward_views[-1].value.storage_58
-        assert final_allocation == s.gameplay_inventory.storage_58
+        final_allocation = reward_views[-1].value.storage_slots
+        assert final_allocation == s.gameplay_inventory.storage_slots
         quests.assert_called_once()
         assert daily.call_count == 2
         server._handle_crafting(s, request)

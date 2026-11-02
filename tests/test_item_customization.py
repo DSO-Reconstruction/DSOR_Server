@@ -52,7 +52,7 @@ def apply(inv, changes, currency=WALLET):
 
 def equipped():
     item = ItemInfo(100, template_id='mage_base_helmet_crafted', item_level=100,
-                    field_30=10, field_38=0)
+                    stack_vc_value=10, base_enchantment_tier=0)
     return InventoryInfo(items=[item], equipment_slots={100: (0,)})
 
 
@@ -72,11 +72,11 @@ def test_dye_updates_match_retail_compact_item_packets(exchange):
     inv = InventoryInfo()
     for data, template, slot in zip(exchange['updates'], templates, (0, 5, 7)):
         item = ItemInfo(data['item_id'], template_id=template, amount=data['amount'],
-                        socket_count=data['socket_count'], field_34=data['field_34'],
-                        item_level=data['item_level'], field_3c=data['flags'][0],
-                        field_3d=data['flags'][1], field_f8=data['skin'],
+                        socket_count=data['socket_count'], glyph_value=data['glyph_value'],
+                        item_level=data['item_level'], needs_identification=data['flags'][0],
+                        field_3d=data['flags'][1], equipment_skin=data['skin'],
                         socketed_templates=data['sockets'], field_3e=data['enabled'],
-                        field_28=changes[0].remove_color)
+                        dye_id=changes[0].remove_color)
         inv.items.append(item)
         inv.equipment_slots[item.item_id] = (slot,)
     mutation, wallet, updated = apply(inv, changes)
@@ -86,8 +86,8 @@ def test_dye_updates_match_retail_compact_item_packets(exchange):
         packet, bits = encode_item_info_response(item, actor_id=data['actor_id'])
         assert (packet.hex(), bits) == (data['payload'], data['bit_length'])
     restored = _inventory_from_document(_inventory_to_document(mutation.inventory))
-    assert [(i.field_20, i.field_1c, i.field_28) for i in restored.items] == [
-        (i.field_20, i.field_1c, i.field_28) for i in updated]
+    assert [(i.dye_argb, i.dye_color_id, i.dye_id) for i in restored.items] == [
+        (i.dye_argb, i.dye_color_id, i.dye_id) for i in updated]
 
 
 def test_black_for_all_eight_equipment_types_maps_cloak_to_inventory_seven():
@@ -99,9 +99,9 @@ def test_black_for_all_eight_equipment_types_maps_cloak_to_inventory_seven():
     mutation, wallet, updated = apply(inv, decode_item_customization_changes(request(changes)))
     assert len(updated) == 8
     assert wallet.andermant == WALLET.andermant - 4000
-    assert all((i.field_20, i.field_1c, i.field_28) == (0xd1050505, 107, 'fk_Black_008')
+    assert all((i.dye_argb, i.dye_color_id, i.dye_id) == (0xd1050505, 107, 'fk_Black_008')
                for i in updated)
-    assert inv.items[0].field_20 == 0
+    assert inv.items[0].dye_argb == 0
     again, unchanged_wallet, updated = apply(mutation.inventory, changes, wallet)
     assert unchanged_wallet == wallet and updated == ()
 
@@ -110,7 +110,7 @@ def test_dye_stacks_are_used_before_currency_and_two_hand_color_costs_once():
     inv = equipped()
     inv.equipment_slots = {100: (5, 6)}
     inv.items.append(ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=2))
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     mutation, wallet, updated = apply(inv, (paint(5), paint(6)))
     assert wallet == WALLET and len(updated) == 1
     assert next(i for i in mutation.inventory.items if i.item_id == 200).amount == 1
@@ -121,13 +121,13 @@ def test_last_dye_is_removed_and_insufficient_money_does_not_consume_it():
     inv.items.extend([replace(inv.items[0], item_id=101),
                       ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=1)])
     inv.equipment_slots[101] = (1,)
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     before = copy.deepcopy(inv)
     with pytest.raises(ValueError, match='insufficient'):
         apply(inv, (paint(0), paint(1)), replace(WALLET, currency_type=0))
     assert inv == before
     mutation, _, _ = apply(inv, (paint(0),))
-    assert 200 not in mutation.inventory.field_180
+    assert 200 not in mutation.inventory.ingredient_bag_item_ids
     assert all(i.item_id != 200 for i in mutation.inventory.items)
 
 
@@ -138,7 +138,7 @@ def test_one_dye_stack_for_several_slots_publishes_only_its_final_state(amount):
         inv.items.append(replace(inv.items[0], item_id=100+slot))
         inv.equipment_slots[100+slot] = (slot,)
     inv.items.append(ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=amount))
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     mutation, wallet, updated = apply(inv, tuple(paint(slot) for slot in (0,1,2)))
     assert wallet == WALLET and len(updated) == 3
     assert [(item.item_id, item.amount) for item in mutation.delta.items] == (
@@ -151,22 +151,22 @@ def test_retail_skin_change_is_persisted_without_changing_stats_or_rolls():
     changes = decode_item_customization_changes(bytes.fromhex(data['request']))
     inv = equipped()
     inv.items[0].template_id = 'unique_mage_2h_staff2h_watergrave'
-    inv.items[0].field_f8 = 'mage_unique_2h_staff_watergrave'
+    inv.items[0].equipment_skin = 'mage_unique_2h_staff_watergrave'
     inv.equipment_slots = {100: (5, 6)}
     mutation, wallet, updated = apply(inv, changes)
-    assert updated[0].field_f8 == 'mage_unique_2h_staff_corruption_set_FX'
+    assert updated[0].equipment_skin == 'mage_unique_2h_staff_corruption_set_FX'
     assert updated[0].template_id == inv.items[0].template_id
     assert updated[0].item_level == inv.items[0].item_level
     assert updated[0].field_18 == inv.items[0].field_18
     assert wallet.andermant == WALLET.andermant - 799
     restored = _inventory_from_document(_inventory_to_document(mutation.inventory))
-    assert restored.items[0].field_f8 == updated[0].field_f8
-    assert CharacterServer._equipment_record_for(restored.items[0]).appearance_id == updated[0].field_f8
+    assert restored.items[0].equipment_skin == updated[0].equipment_skin
+    assert CharacterServer._equipment_record_for(restored.items[0]).appearance_id == updated[0].equipment_skin
     server = object.__new__(CharacterServer)
     server.static_database = StaticGameDatabase(DEFAULT_STATIC_DB_PATH)
     visuals = server._remote_equipment_visuals(restored)
     expected_skin = server.static_database.remote_equipment_skin(
-        restored.items[0].template_id, updated[0].field_f8)
+        restored.items[0].template_id, updated[0].equipment_skin)
     assert len(visuals) == 2
     assert all(visual.skins == (expected_skin,) for visual in visuals)
 
@@ -217,8 +217,8 @@ def test_retail_right_click_identification_survives_reload(raw):
     item_id = int.from_bytes(bytes.fromhex(raw)[3:7], 'little')
     server = object.__new__(CharacterServer)
     session = Session(('127.0.0.1', 40992), Mock())
-    item = ItemInfo(item_id, template_id='mage_base_helmet_crafted', field_08=2, field_3c=True)
-    session.gameplay_inventory = InventoryInfo(items=[item], storage_58={item_id:0})
+    item = ItemInfo(item_id, template_id='mage_base_helmet_crafted', rarity=2, needs_identification=True)
+    session.gameplay_inventory = InventoryInfo(items=[item], storage_slots={item_id:0})
     with patch.object(CharacterServer, '_request_account_save') as save, \
          patch.object(CharacterServer, '_send_world_loot_state_batch') as send:
         server._handle_inventory_item_action(session, bytes.fromhex(raw))
@@ -226,5 +226,5 @@ def test_retail_right_click_identification_survives_reload(raw):
     save.assert_called_once()
     send.assert_called_once()
     restored = _inventory_from_document(_inventory_to_document(session.gameplay_inventory))
-    assert not restored.items[0].field_3c
+    assert not restored.items[0].needs_identification
     assert restored.items[0].field_18 == item.field_18

@@ -155,7 +155,7 @@ class TradeService:
         inventory = s.gameplay_inventory
         by_id = {int(i.item_id): i for i in (inventory.items if inventory else ())}
         return tuple(
-            TradeItem(item_id, by_id[item_id].template_id, amount, int(by_id[item_id].field_08))
+            TradeItem(item_id, by_id[item_id].template_id, amount, int(by_id[item_id].rarity))
             for item_id, amount in side.items if item_id in by_id
         )
 
@@ -356,7 +356,7 @@ class TradeService:
             item = by_id.get(int(item_id))
             if (item is None or any(i == item_id for i, _ in items)
                     or int(item_id) in inventory.equipment_slots
-                    or not (int(item_id) in inventory.storage_58 or int(item_id) in inventory.storage_80)
+                    or not (int(item_id) in inventory.storage_slots or int(item_id) in inventory.extra_storage_slots)
                     or getattr(item, "quest_id", "")):
                 continue
             items.append((int(item_id), max(1, min(int(amount), int(item.amount)))))
@@ -413,15 +413,15 @@ class TradeService:
                 for item_id, amount in side.items:
                     item = builder.item(item_id)
                     if int(item_id) in builder.inventory.equipment_slots or not (
-                            int(item_id) in builder.inventory.storage_58 or int(item_id) in builder.inventory.storage_80):
+                            int(item_id) in builder.inventory.storage_slots or int(item_id) in builder.inventory.extra_storage_slots):
                         raise ValueError(f"{side.name}'s offered item moved")
                     if int(amount) > int(item.amount):
                         raise ValueError(f"{side.name}'s offered stack shrank")
                     whole = int(item.amount)
                     part = copy.deepcopy(builder.consume(item_id, int(amount)))
                     if int(amount) != whole:
-                        part.field_30 = int(part.field_30) * int(amount) // max(1, whole)
-                        part.field_34 = int(part.field_34) * int(amount) // max(1, whole)
+                        part.stack_vc_value = int(part.stack_vc_value) * int(amount) // max(1, whole)
+                        part.glyph_value = int(part.glyph_value) * int(amount) // max(1, whole)
                     part.amount = int(amount)
                     out.append(part)
                 given[side.character_id] = out

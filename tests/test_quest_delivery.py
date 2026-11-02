@@ -69,7 +69,7 @@ def accept(case):
     return case.server._quest_catalog().quest(RUBY).tasks[0].barters[0]
 
 
-def gem(case, amount=1, template="gem_ruby_a", item_id=800, storage="storage_58"):
+def gem(case, amount=1, template="gem_ruby_a", item_id=800, storage="storage_slots"):
     item = ItemInfo(item_id=item_id, template_id=template, amount=amount)
     inv = case.session.gameplay_inventory
     inv.items.append(item)
@@ -179,7 +179,7 @@ def test_invalid_handins_do_not_consume_items_or_progress(ruby_case, reason):
     barter = accept(case)
     if reason != "missing":
         gem(case, template="gem_onyx_a" if reason == "wrong_gem" else "gem_ruby_a",
-            storage="storage_a8" if reason == "bank" else "storage_58")
+            storage="bank_storage_slots" if reason == "bank" else "storage_slots")
     if reason == "equipped":
         case.session.gameplay_inventory.equipment_slots[800] = (5,)
     catalog = case.server._quest_catalog()
@@ -204,7 +204,7 @@ def test_alternative_items_across_stacks_and_show_only_retention(ruby_case):
     case = ruby_case
     barter = accept(case)
     gem(case, amount=2)
-    gem(case, amount=3, template="gem_onyx_a", item_id=801, storage="storage_80")
+    gem(case, amount=3, template="gem_onyx_a", item_id=801, storage="extra_storage_slots")
     catalog = case.server._quest_catalog()
     quest = catalog.quest(RUBY)
     barter = replace(barter, items=("gem_ruby_a", "gem_onyx_a"), amount=4, only_show=True)
@@ -223,8 +223,8 @@ def test_alternative_items_across_stacks_and_show_only_retention(ruby_case):
     with patch.object(case.server, "_quest_catalog", return_value=catalog):
         deliver(case)
     assert [(i.template_id, i.amount) for i in case.session.gameplay_inventory.items] == [("gem_onyx_a", 1)]
-    assert 800 not in case.session.gameplay_inventory.storage_58
-    assert case.session.gameplay_inventory.storage_80 == {801: 0}
+    assert 800 not in case.session.gameplay_inventory.storage_slots
+    assert case.session.gameplay_inventory.extra_storage_slots == {801: 0}
 
 
 def test_real_shop_purchase_then_deliver_and_restore_progress(ruby_case):

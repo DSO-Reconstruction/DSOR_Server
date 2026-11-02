@@ -85,7 +85,7 @@ def test_equipment_configuration_is_applied_to_live_inventory(cms, online):
                                   "enchantment_tier": 0, "roll_quality": 100})
     assert row["status"] == "delivered", row
     item = s.gameplay_inventory.items[-1]
-    assert item.item_level == 100 and item.field_08 == 4 and item.socket_count == 4
+    assert item.item_level == 100 and item.rarity == 4 and item.socket_count == 4
     assert len(item.enchantments) >= 4 and all(e.value == 1 for e in item.enchantments)
     assert len(commands(s)) == 3
 
@@ -236,7 +236,7 @@ def test_stack_booking_rekeys_existing_stack_in_live_packet(cms, online):
     new = s.gameplay_inventory.items[-1]
     assert new.amount == 6 and new.item_id != old.item_id
     delta = commands(s)[0].value
-    assert delta.field_158 == {new.item_id: old.item_id}
+    assert delta.item_id_replacements == {new.item_id: old.item_id}
     assert delta.changed_item_ids == [old.item_id]
     assert delta.items[0].amount == 6
 

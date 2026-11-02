@@ -3,7 +3,7 @@ import { $, esc, human, date, classes, rarities, api, link, navigate, status, ta
   section, tabs, toolbar, bindSearch, pager, tree, valueView, valueList, bookingTable, formError, notice,
   announce, rememberParams, routeInfo, confirmAction } from "./admin_ui.js";
 
-const containers = {equipment_slots: "Equipment", storage_58: "Inventory", storage_80: "Extra inventory", storage_a8: "Bank", storage_d0: "Extra bank"};
+const containers = {equipment_slots: "Equipment", storage_slots: "Inventory", extra_storage_slots: "Extra inventory", bank_storage_slots: "Bank", extra_bank_storage_slots: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
 const privileges = [["admin_privileges", "Game administrator"], ["admin_name_color", "Administrator name colour"]];
 const questStates = {0: "Accepted", 1: "Finished", 2: "Closed", 3: "Cancelled", 4: "Failed"};
@@ -395,7 +395,7 @@ function location(item, inventory) {
       return {name, slot: field === "equipment_slots" ? value.map(s => slots[s] || `Slot ${s}`).join(", ") : `Slot ${Number(value) + 1}`};
     }
   }
-  if ((inventory.field_180 || []).includes(item.item_id)) return {name: "Ingredients", slot: "—"};
+  if ((inventory.ingredient_bag_item_ids || []).includes(item.item_id)) return {name: "Ingredients", slot: "—"};
   return {name: "Other", slot: "—"};
 }
 
@@ -453,11 +453,11 @@ export async function characterPage(route) {
     const inventory = s.inventory, all = inventory.items || [];
     const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
       (inventory.premium_storage_overflow || []).length;
-    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_58 || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.storage_a8 || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
+    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_slots || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.bank_storage_slots || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
       filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
         const where = location(item, inventory);
         return [link(item.template_id, `${root}/inventory/${item.item_id}`, route.params, "resource mono") + `<span class="sub">Item ${item.item_id}</span>`,
-          esc(where.name), esc(where.slot), esc(rarities[item.field_08] ?? item.field_08), esc(item.item_level), esc(item.amount),
+          esc(where.name), esc(where.slot), esc(rarities[item.rarity] ?? item.rarity), esc(item.item_level), esc(item.amount),
           `${(item.socketed_templates || []).filter(Boolean).length} / ${item.socket_count}`];
       }), {facets: [["Location", 1, "container"], ["Rarity", 3, "rarity"]], empty: "This character has no items."}) +
       inventoryCopySection(id, itemCount);
@@ -570,15 +570,15 @@ function inventoryItemPage(result, route, data) {
   result.actions = link("Item template", `items/${encodeURIComponent(item.template_id)}`, {account_id: data.account?.account_id, character_id: data.profile.character_id}, "button secondary");
   result.html += '<div class="columns">' + section("Item properties", facts([
     ["Item ID", item.item_id], ["Template", `<code class="resource">${esc(item.template_id)}</code>`],
-    ["Rarity", esc(rarities[item.field_08] ?? item.field_08)], ["Item level", item.item_level], ["Stack size", item.amount],
+    ["Rarity", esc(rarities[item.rarity] ?? item.rarity)], ["Item level", item.item_level], ["Stack size", item.amount],
     ["Container", esc(where.name)], ["Slot", esc(where.slot)]
   ])) + section("Values", facts([
     ["Sockets", item.socket_count], ["Occupied sockets", (item.socketed_templates || []).filter(Boolean).length],
-    ["Sale value", esc(item.field_30)], ["Melt value", esc(item.field_34)],
+    ["Gold value (VC)", esc(item.stack_vc_value)], ["Glyph value", esc(item.glyph_value)],
     ["Created", esc((item.created_at || []).join(" / "))]
   ])) + '</div>';
-  result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Level", "Rarity"], (item.enchantments || []).map(e => [
-    `<code class="resource">${esc(e.template_id)}</code>`, `${(e.value * 100).toFixed(1)}%`, e.field_08, e.field_0c, esc(rarities[e.kind] ?? e.kind)
+  result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Origin level", "Rarity"], (item.enchantments || []).map(e => [
+    `<code class="resource">${esc(e.template_id)}</code>`, `${(e.value * 100).toFixed(1)}%`, e.tier, e.origin_item_level, esc(rarities[e.kind] ?? e.kind)
   ]), "No enchantments on this item."));
   result.html += section("Sockets", table(["Socket", "Content"], Array.from({length: item.socket_count}, (_, index) => [index + 1,
     item.socketed_templates[index] ? link(item.socketed_templates[index], `items/${encodeURIComponent(item.socketed_templates[index])}`, {}, "resource mono") : '<span class="muted">Empty</span>'

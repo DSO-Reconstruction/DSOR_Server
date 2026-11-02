@@ -85,18 +85,18 @@ def repair_skin_source_inventory(
     inventory.bank_storage_size = min(
         max(0, int(inventory.bank_storage_size)), MAX_BANK_STORAGE_SLOTS
     )
-    inventory.storage_a8 = {
+    inventory.bank_storage_slots = {
         item_id: slot
-        for item_id, slot in inventory.storage_a8.items()
+        for item_id, slot in inventory.bank_storage_slots.items()
         if 0 <= int(slot) < inventory.bank_storage_size
     }
     allocated_item_ids = (
         set(inventory.equipment_slots)
-        | set(inventory.storage_58)
-        | set(inventory.storage_80)
-        | set(inventory.storage_a8)
-        | set(inventory.storage_d0)
-        | set(inventory.field_180)
+        | set(inventory.storage_slots)
+        | set(inventory.extra_storage_slots)
+        | set(inventory.bank_storage_slots)
+        | set(inventory.extra_bank_storage_slots)
+        | set(inventory.ingredient_bag_item_ids)
     )
     # Remove only source records made unreachable by the previous grant
     # implementation. InventoryInfo requires every wire item to resolve to a

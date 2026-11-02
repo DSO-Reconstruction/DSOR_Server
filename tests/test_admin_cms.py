@@ -233,7 +233,7 @@ def test_item_booking_uses_catalog_and_real_inventory_allocation(cms):
     cms.service.delivery.deliver(42)
     saved = cms.store.get(42)
     assert sum(i.amount for i in saved.inventory.items) == 2
-    assert saved.inventory.storage_58
+    assert saved.inventory.storage_slots
     assert saved.next_item_id > 10000
 
 
@@ -471,10 +471,10 @@ def test_equipment_options_are_delivered_saved_and_audited(cms):
         equipment_booking(cms, {**options, "roll_quality": 96})
     cms.service.delivery.deliver(42)
     item = cms.store.get(42).inventory.items[0]
-    assert (item.item_level, item.field_08, item.socket_count) == (100, 4, 8)
+    assert (item.item_level, item.rarity, item.socket_count) == (100, 4, 8)
     assert item.socketed_templates == [""] * 8
     assert len(item.enchantments) == 4
-    assert all(e.value == .95 and e.field_08 == 3 for e in item.enchantments)
+    assert all(e.value == .95 and e.tier == 3 for e in item.enchantments)
     reloaded = AccountStateStore(cms.store.path)
     try:
         saved = reloaded.get(42).inventory.items[0]

@@ -32,9 +32,10 @@ def reconcile_premium_bags(
     removed = []
     restored = []
     for ordinary, extra, capacity, extra_capacity, overflow in (
-        (inventory.storage_58, inventory.storage_80, inventory.storage_size,
+        (inventory.storage_slots, inventory.extra_storage_slots, inventory.storage_size,
          inventory.extra_storage_size, inventory.premium_inventory_overflow),
-        (inventory.storage_a8, inventory.storage_d0, inventory.bank_storage_size,
+        (inventory.bank_storage_slots, inventory.extra_bank_storage_slots,
+         inventory.bank_storage_size,
          inventory.extra_bank_storage_size, inventory.premium_storage_overflow),
     ):
         displaced = {

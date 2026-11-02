@@ -57,7 +57,7 @@ def no_starter_tickets(player):
                if item.template_id in SEASON_PASS_TICKETS}
     inventory.items[:] = [item for item in inventory.items if item.item_id not in tickets]
     for item_id in tickets:
-        inventory.storage_58.pop(item_id, None)
+        inventory.storage_slots.pop(item_id, None)
 
 
 def _use(server, session, item_id, *, season=SEASON):

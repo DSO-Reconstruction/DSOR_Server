@@ -259,11 +259,11 @@ def test_held_items_contribute_their_own_class_look():
         ItemInfo(item_id=1, template_id="ranger_base_helmet_armor_block_damage"),
         # A generated drop shows its rolled appearance, not the template's.
         ItemInfo(item_id=2, template_id="ranger_base_helmet_armor_block_damage",
-                 field_80="ranger_rh_shortbow_02"),
+                 appearance="ranger_rh_shortbow_02"),
         # Another class's look, an unidentified item and a skin consumable.
         ItemInfo(item_id=3, template_id="mage_unique_rh_staff_gnob"),
-        ItemInfo(item_id=4, template_id="ranger_rh_shortbow_unknown", field_3c=True,
-                 field_80="ranger_rh_shortbow_03"),
+        ItemInfo(item_id=4, template_id="ranger_rh_shortbow_unknown", needs_identification=True,
+                 appearance="ranger_rh_shortbow_03"),
         ItemInfo(item_id=5, template_id="skin_ranger_unique_boots_manticore_01"),
     ]
     assert held_skins(skins, items, "Ranger") == {
@@ -273,7 +273,7 @@ def test_held_items_contribute_their_own_class_look():
 def _ranger_items(*templates):
     return InventoryInfo(
         items=[ItemInfo(item_id=index + 1, template_id=template) for index, template in enumerate(templates)],
-        storage_58={index + 1: index for index in range(len(templates))},
+        storage_slots={index + 1: index for index in range(len(templates))},
     )
 
 

@@ -523,7 +523,7 @@ def test_sticker_unlock_counts_the_collection_off_the_input_path(player, progres
     server, session, _saves = player
     session.gameplay_inventory = InventoryInfo(
         items=[ItemInfo(item_id=51, template_id="pet_goat", amount=1)],
-        storage_58={51: 0},
+        storage_slots={51: 0},
     )
     session.gameplay_next_item_id = 52
     payload, bits = encode_add_stickerbook_from_inventory(AddStickerbookFromInventoryRequest(51))

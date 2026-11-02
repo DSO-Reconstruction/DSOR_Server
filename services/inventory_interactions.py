@@ -596,8 +596,8 @@ class InventoryInteractionService:
                     "both items need at least one enchantment to transfer"
                 )
             glyph_cost = transfer_factor * (
-                max(0, int(first.field_34))
-                + max(0, int(second.field_34))
+                max(0, int(first.glyph_value))
+                + max(0, int(second.glyph_value))
             )
             if glyph_cost <= 0:
                 raise ValueError("enchantment transfer has no Glyphs of Power cost")
@@ -652,7 +652,7 @@ class InventoryInteractionService:
             # that otherwise makes the exchanged enchantments visible.
             full_inventory_refresh = copy.deepcopy(mutation.inventory)
             full_inventory_refresh.changed_item_ids = []
-            full_inventory_refresh.field_158 = {}
+            full_inventory_refresh.item_id_replacements = {}
             full_inventory_refresh.field_1e0 = False
             packet, packet_bits = encode_server_command_batch(
                 (
@@ -806,7 +806,7 @@ class InventoryInteractionService:
                         items_by_id[int(item_id)] for item_id in request.item_ids
                     ]
                     if any(
-                        int(item.field_08) != input_rarity_index
+                        int(item.rarity) != input_rarity_index
                         for item in selected_items
                     ):
                         raise ValueError(
@@ -842,7 +842,7 @@ class InventoryInteractionService:
                         0, int(round(float(rarity_rule["FactorUC"] or 0)))
                     )
                     rarity_glyph_cost = rarity_factor * sum(
-                        max(0, int(item.field_34)) for item in selected_items
+                        max(0, int(item.glyph_value)) for item in selected_items
                     )
                     if rarity_glyph_cost <= 0:
                         raise ValueError(
@@ -925,24 +925,24 @@ class InventoryInteractionService:
                     )
                 if result_definition.rarity == 7 and is_equipment:
                     # BaseEnchantment quality is evaluated client-side from
-                    # ItemInfo.field_38. Tier 16 has a fixed 1.0 power factor;
+                    # ItemInfo.base_enchantment_tier. Tier 16 has a fixed 1.0 power factor;
                     # apply it only to equipment created by this mythic recipe.
                     created_ids = {int(item.item_id) for item in created_items}
                     for item in builder.inventory.items:
                         if int(item.item_id) in created_ids:
-                            item.field_38 = 16
+                            item.base_enchantment_tier = 16
                     for item in created_items:
-                        item.field_38 = 16
+                        item.base_enchantment_tier = 16
                 if rarity_upgrade_roll is not None and is_equipment:
                     created_ids = {int(item.item_id) for item in created_items}
                     for item in builder.inventory.items:
                         if int(item.item_id) in created_ids:
-                            item.field_08 = int(rarity_upgrade_roll.rarity)
-                            item.field_80 = str(rarity_upgrade_roll.appearance)
+                            item.rarity = int(rarity_upgrade_roll.rarity)
+                            item.appearance = str(rarity_upgrade_roll.appearance)
                             item.item_level = int(crafted_item_level)
                     for item in created_items:
-                        item.field_08 = int(rarity_upgrade_roll.rarity)
-                        item.field_80 = str(rarity_upgrade_roll.appearance)
+                        item.rarity = int(rarity_upgrade_roll.rarity)
+                        item.appearance = str(rarity_upgrade_roll.appearance)
                         item.item_level = int(crafted_item_level)
             if crafted_equipment_item_ids:
                 enchanted_item_ids = roll_new_equipment_enchantments(

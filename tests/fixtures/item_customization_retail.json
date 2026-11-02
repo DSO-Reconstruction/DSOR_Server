@@ -11,14 +11,14 @@
           "item_id": 221852,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 14238,
+          "glyph_value": 14238,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 2576531282,
-          "field_1c": 36,
+          "dye_argb": 2576531282,
+          "dye_color_id": 36,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -41,14 +41,14 @@
           "item_id": 221830,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 75129,
+          "glyph_value": 75129,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 2576531282,
-          "field_1c": 36,
+          "dye_argb": 2576531282,
+          "dye_color_id": 36,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -71,14 +71,14 @@
           "item_id": 221757,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 21232,
+          "glyph_value": 21232,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 2576531282,
-          "field_1c": 36,
+          "dye_argb": 2576531282,
+          "dye_color_id": 36,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -107,14 +107,14 @@
           "item_id": 221852,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 14238,
+          "glyph_value": 14238,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 3506767109,
-          "field_1c": 107,
+          "dye_argb": 3506767109,
+          "dye_color_id": 107,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -137,14 +137,14 @@
           "item_id": 221830,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 75129,
+          "glyph_value": 75129,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 3506767109,
-          "field_1c": 107,
+          "dye_argb": 3506767109,
+          "dye_color_id": 107,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -167,14 +167,14 @@
           "item_id": 221757,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 21232,
+          "glyph_value": 21232,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 3506767109,
-          "field_1c": 107,
+          "dye_argb": 3506767109,
+          "dye_color_id": 107,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",
@@ -203,14 +203,14 @@
           "item_id": 221830,
           "amount": 1,
           "socket_count": 10,
-          "field_34": 75129,
+          "glyph_value": 75129,
           "item_level": 145,
           "flags": [
             false,
             false
           ],
-          "field_20": 3506767109,
-          "field_1c": 107,
+          "dye_argb": 3506767109,
+          "dye_color_id": 107,
           "sockets": [
             "gem_ruby_q",
             "gem_ruby_q",

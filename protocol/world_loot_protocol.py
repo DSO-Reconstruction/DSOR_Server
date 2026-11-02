@@ -233,7 +233,7 @@ def build_quest_world_drops(
     while remaining:
         stack = min(remaining, definition.max_stack_size)
         item = _new_item(definition, len(result), stack)
-        item.field_100 = tuple(float(v) for v in position)
+        item.ground_position = tuple(float(v) for v in position)
         result.append(WorldLootDrop(
             item, definition.item_category, auto_pick_up, quest_id, template_id,
         ))
@@ -1943,8 +1943,8 @@ def _roll_item_enchantments(
         enchantments.append(ItemEnchantmentInfo(
             value=1.0 if max_roll else random_roll,
             kind=int(rarity),
-            field_08=tier,
-            field_0c=max(1, int(item_level)),
+            tier=tier,
+            origin_item_level=max(1, int(item_level)),
             template_id=template_id,
         ))
     return enchantments
@@ -1978,7 +1978,7 @@ def backfill_missing_equipment_enchantments(
         seed_parts.extend(
             (
                 f"{item.template_id}:{int(item.field_18)}:"
-                f"{int(item.item_level)}:{int(item.field_08)}"
+                f"{int(item.item_level)}:{int(item.rarity)}"
             )
             for item in sorted(
                 inventory.items, key=lambda value: int(value.item_id)
@@ -2022,7 +2022,7 @@ def backfill_missing_equipment_enchantments(
             definition,
             class_name=class_name,
             item_level=max(1, int(item.item_level)),
-            rarity=max(0, min(7, int(item.field_08))),
+            rarity=max(0, min(7, int(item.rarity))),
             enchantment_tier=map_difficulty,
             rng=rng,
         )
@@ -2064,8 +2064,8 @@ def roll_new_equipment_enchantments(
         ) in MERCENARY_EQUIPMENT_CATEGORIES
         base_values_changed = False
         if is_mercenary_equipment:
-            if int(item.field_38) != 16:
-                item.field_38 = 16
+            if int(item.base_enchantment_tier) != 16:
+                item.base_enchantment_tier = 16
                 base_values_changed = True
             if item.enchantments:
                 maxed_enchantments = [
@@ -2099,7 +2099,7 @@ def roll_new_equipment_enchantments(
             definition,
             class_name=str(class_name),
             item_level=max(1, int(item.item_level)),
-            rarity=max(0, min(7, int(item.field_08))),
+            rarity=max(0, min(7, int(item.rarity))),
             enchantment_tier=int(map_difficulty),
             rng=rng,
         )
@@ -2836,23 +2836,23 @@ def generate_monster_loot(
             item = ItemInfo(
                 item_id=item_id,
                 amount=amount,
-                field_08=rarity,
+                rarity=rarity,
                 socket_count=socket_count,
                 field_18=generator.randrange(1, 0x8000),
-                field_28="none",
+                dye_id="none",
                 item_level=max(1, int(item_level)),
-                field_30=(
+                stack_vc_value=(
                     int(amount)
                     if definition.item_category in {"Currency", "InstantConsumable"}
                     else 0
                 ),
-                field_34=0,
-                field_3c=bool(rarity > 0 and item_row.get("NeedsIdentify", False)),
+                glyph_value=0,
+                needs_identification=bool(rarity > 0 and item_row.get("NeedsIdentify", False)),
                 field_3d=False,
                 template_id=definition.template_id,
-                field_100=item_position,
-                field_80=appearance,
-                field_38=(
+                ground_position=item_position,
+                appearance=appearance,
+                base_enchantment_tier=(
                     16
                     if definition.item_category
                     in MERCENARY_EQUIPMENT_CATEGORIES
@@ -2886,8 +2886,8 @@ def generate_monster_loot(
                 ),
             )
             if definition.item_category not in {"Currency", "InstantConsumable"}:
-                item.field_30 = item_stack_vc_value(item, item_row)
-                item.field_34 = equipment_melt_value(
+                item.stack_vc_value = item_stack_vc_value(item, item_row)
+                item.glyph_value = equipment_melt_value(
                     item,
                     item_row,
                     database.enchantments_by_id,
@@ -3295,7 +3295,7 @@ def add_world_drop_to_inventory(
     and every ``reserved_item_ids`` (the items still on the ground: one loot's
     drops have consecutive ids, so the inventory's highest id + 1 can be the
     next drop's, which then could no longer be picked up). Ingredient-bag
-    items use the inventory's dedicated ``field_180`` allocation and do not
+    items use the inventory's dedicated ``ingredient_bag_item_ids`` allocation and do not
     consume an ordinary storage slot.
     """
 
@@ -3306,18 +3306,18 @@ def add_world_drop_to_inventory(
         raise ValueError(f"inventory already contains item {drop.item.item_id}")
     stored = copy.deepcopy(drop.item)
     stored.quest_id = drop.quest_id
-    stored.field_100 = (0.0, 0.0, 0.0)
+    stored.ground_position = (0.0, 0.0, 0.0)
     changed_item_ids: list[int] = []
     replacements: dict[int, int] = {}
     remaining = max(1, int(stored.amount))
     maximum = max(1, int(max_stack_size))
     for old_item in tuple(inventory.items):
         in_destination = (
-            int(old_item.item_id) in inventory.field_180
+            int(old_item.item_id) in inventory.ingredient_bag_item_ids
             if ingredient_bag
             else (
-                int(old_item.item_id) in inventory.storage_58
-                or int(old_item.item_id) in inventory.storage_80
+                int(old_item.item_id) in inventory.storage_slots
+                or int(old_item.item_id) in inventory.extra_storage_slots
             )
         )
         if (
@@ -3325,7 +3325,7 @@ def add_world_drop_to_inventory(
             or old_item.quest_id != stored.quest_id
             or int(old_item.amount) >= maximum
             or not in_destination
-            or old_item.field_1c != stored.field_1c
+            or old_item.dye_color_id != stored.dye_color_id
             or old_item.field_04 != stored.field_04
             or old_item.item_level != stored.item_level
             or old_item.enchantments or stored.enchantments
@@ -3344,19 +3344,24 @@ def add_world_drop_to_inventory(
             item_id=new_id,
             amount=int(old_item.amount) + added,
             field_18=new_id & 0xFFFF,
-            field_30=(
-                (int(old_item.field_30) // max(1, int(old_item.amount)))
+            stack_vc_value=(
+                (int(old_item.stack_vc_value) // max(1, int(old_item.amount)))
                 * (int(old_item.amount) + added)
             ),
         )
         inventory.items[inventory.items.index(old_item)] = replacement
         for values in (
-            inventory.equipment_slots, inventory.storage_58,
-            inventory.storage_80, inventory.storage_a8, inventory.storage_d0,
+            inventory.equipment_slots, inventory.storage_slots,
+            inventory.extra_storage_slots, inventory.bank_storage_slots,
+            inventory.extra_bank_storage_slots,
         ):
             if int(old_item.item_id) in values:
                 values[new_id] = values.pop(int(old_item.item_id))
-        for values in (inventory.field_f8, inventory.field_118, inventory.field_180):
+        for values in (
+            inventory.overflow_storage_item_ids,
+            inventory.invisible_storage_item_ids,
+            inventory.ingredient_bag_item_ids,
+        ):
             for index, value in enumerate(values):
                 if int(value) == int(old_item.item_id):
                     values[index] = new_id
@@ -3369,9 +3374,9 @@ def add_world_drop_to_inventory(
         stored.amount = remaining
         inventory.items.append(stored)
         if ingredient_bag:
-            inventory.field_180.append(int(stored.item_id))
-            if stored.template_id not in inventory.field_1a0:
-                inventory.field_1a0.append(stored.template_id)
+            inventory.ingredient_bag_item_ids.append(int(stored.item_id))
+            if stored.template_id not in inventory.ingredient_bag_templates:
+                inventory.ingredient_bag_templates.append(stored.template_id)
         else:
             location = free_inventory_location(inventory)
             if location is None:
@@ -3381,7 +3386,7 @@ def add_world_drop_to_inventory(
     # Return changed stacks as authoritative item records; the pickup delta
     # also carries their retail ID replacement map.
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
 
     # Even with field_1e0=true, the client applies the equipment map as the
@@ -3395,22 +3400,25 @@ def add_world_drop_to_inventory(
         if int(item.item_id) in changed_ids
     ]
     delta.equipment_slots = copy.deepcopy(inventory.equipment_slots)
-    for name in ("storage_58", "storage_80", "storage_a8", "storage_d0"):
+    for name in (
+        "storage_slots", "extra_storage_slots",
+        "bank_storage_slots", "extra_bank_storage_slots",
+    ):
         allocation = getattr(inventory, name)
         setattr(delta, name, {
             int(allocated_id): int(slot)
             for allocated_id, slot in allocation.items()
             if int(allocated_id) in changed_ids
         })
-    delta.field_f8 = []
-    delta.field_118 = []
+    delta.overflow_storage_item_ids = []
+    delta.invisible_storage_item_ids = []
     delta.changed_item_ids = changed_item_ids
-    delta.field_158 = replacements
-    delta.field_180 = (
-        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    delta.item_id_replacements = replacements
+    delta.ingredient_bag_item_ids = (
+        copy.deepcopy(inventory.ingredient_bag_item_ids) if ingredient_bag else []
     )
-    delta.field_1a0 = (
-        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    delta.ingredient_bag_templates = (
+        copy.deepcopy(inventory.ingredient_bag_templates) if ingredient_bag else []
     )
     delta.field_1e0 = True
 
@@ -3420,18 +3428,18 @@ def add_world_drop_to_inventory(
     final = copy.deepcopy(inventory)
     final.items = []
     final.equipment_slots = copy.deepcopy(inventory.equipment_slots)
-    final.storage_58 = {}
-    final.storage_80 = {}
-    final.storage_a8 = {}
-    final.storage_d0 = {}
-    final.field_f8 = []
-    final.field_118 = []
+    final.storage_slots = {}
+    final.extra_storage_slots = {}
+    final.bank_storage_slots = {}
+    final.extra_bank_storage_slots = {}
+    final.overflow_storage_item_ids = []
+    final.invisible_storage_item_ids = []
     final.changed_item_ids = []
-    final.field_158 = {}
-    final.field_180 = (
-        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    final.item_id_replacements = {}
+    final.ingredient_bag_item_ids = (
+        copy.deepcopy(inventory.ingredient_bag_item_ids) if ingredient_bag else []
     )
-    final.field_1a0 = (
-        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    final.ingredient_bag_templates = (
+        copy.deepcopy(inventory.ingredient_bag_templates) if ingredient_bag else []
     )
     return InventoryLootMutation(inventory, delta, final)

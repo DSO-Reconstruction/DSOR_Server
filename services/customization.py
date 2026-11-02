@@ -946,7 +946,7 @@ class CustomizationService:
                         # The client asserts on an ingredient-bag stack in a
                         # delta (see the Season Pass claim): send the full view.
                         if set(item.item_id for item in mutation.changed_items
-                               ).intersection(inventory.field_180):
+                               ).intersection(inventory.ingredient_bag_item_ids):
                             commands.append(ServerCommand(
                                 INVENTORY_INFO_COMMAND, inventory,
                                 LOCAL_PLAYER_ACTOR_ID,

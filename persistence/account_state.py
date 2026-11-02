@@ -269,16 +269,64 @@ def _integer_map(values: dict) -> dict[int, int]:
     return {int(key): int(value) for key, value in values.items()}
 
 
+# Saved items keep the wire offset names they have always had. A document this
+# or an older build cannot parse drops the character with only a warning, so
+# renaming an ItemInfo attribute must not change what is written.
+_ITEM_SAVED_KEYS = {
+    "rarity": "field_08",
+    "dye_argb": "field_20",
+    "dye_color_id": "field_1c",
+    "dye_id": "field_28",
+    "stack_vc_value": "field_30",
+    "glyph_value": "field_34",
+    "needs_identification": "field_3c",
+    "ground_position": "field_100",
+    "appearance": "field_80",
+    "base_enchantment_tier": "field_38",
+    "equipment_skin": "field_f8",
+}
+_ITEM_ATTRIBUTES = {saved: name for name, saved in _ITEM_SAVED_KEYS.items()}
+_ENCHANTMENT_SAVED_KEYS = {"tier": "field_08", "origin_item_level": "field_0c"}
+_ENCHANTMENT_ATTRIBUTES = {
+    saved: name for name, saved in _ENCHANTMENT_SAVED_KEYS.items()
+}
+_INVENTORY_SAVED_KEYS = {
+    "storage_slots": "storage_58",
+    "extra_storage_slots": "storage_80",
+    "bank_storage_slots": "storage_a8",
+    "extra_bank_storage_slots": "storage_d0",
+    "overflow_storage_item_ids": "field_f8",
+    "invisible_storage_item_ids": "field_118",
+    "item_id_replacements": "field_158",
+    "ingredient_bag_item_ids": "field_180",
+    "ingredient_bag_templates": "field_1a0",
+}
+_INVENTORY_ATTRIBUTES = {
+    saved: name for name, saved in _INVENTORY_SAVED_KEYS.items()
+}
+
+
+def _with_keys(document: dict, keys: dict) -> dict:
+    return {keys.get(key, key): value for key, value in document.items()}
+
+
 def _item_to_document(item: ItemInfo) -> dict:
-    return asdict(item)
+    document = _with_keys(asdict(item), _ITEM_SAVED_KEYS)
+    document["enchantments"] = [
+        _with_keys(entry, _ENCHANTMENT_SAVED_KEYS)
+        for entry in document["enchantments"]
+    ]
+    return document
 
 
 def _item_from_document(document: dict) -> ItemInfo:
-    values = dict(document)
-    values["field_100"] = tuple(float(value) for value in values["field_100"])
+    values = _with_keys(document, _ITEM_ATTRIBUTES)
+    values["ground_position"] = tuple(
+        float(value) for value in values["ground_position"]
+    )
     values["created_at"] = tuple(int(value) for value in values["created_at"])
     values["enchantments"] = [
-        ItemEnchantmentInfo(**entry)
+        ItemEnchantmentInfo(**_with_keys(entry, _ENCHANTMENT_ATTRIBUTES))
         for entry in values.get("enchantments", ())
     ]
     values["socketed_templates"] = [
@@ -287,29 +335,32 @@ def _item_from_document(document: dict) -> ItemInfo:
     return ItemInfo(**values)
 
 
-def _inventory_to_document(inventory: InventoryInfo) -> dict:
-    return {
-        "items": [_item_to_document(item) for item in inventory.items],
+def _inventory_to_document(
+    inventory: InventoryInfo, *, attribute_names: bool = False,
+) -> dict:
+    item_document = asdict if attribute_names else _item_to_document
+    document = {
+        "items": [item_document(item) for item in inventory.items],
         "premium_inventory_overflow": [
-            _item_to_document(item) for item in inventory.premium_inventory_overflow
+            item_document(item) for item in inventory.premium_inventory_overflow
         ],
         "premium_storage_overflow": [
-            _item_to_document(item) for item in inventory.premium_storage_overflow
+            item_document(item) for item in inventory.premium_storage_overflow
         ],
         "equipment_slots": {
             str(item_id): list(slots)
             for item_id, slots in inventory.equipment_slots.items()
         },
-        "storage_58": inventory.storage_58,
-        "storage_80": inventory.storage_80,
-        "storage_a8": inventory.storage_a8,
-        "storage_d0": inventory.storage_d0,
-        "field_f8": inventory.field_f8,
-        "field_118": inventory.field_118,
+        "storage_slots": inventory.storage_slots,
+        "extra_storage_slots": inventory.extra_storage_slots,
+        "bank_storage_slots": inventory.bank_storage_slots,
+        "extra_bank_storage_slots": inventory.extra_bank_storage_slots,
+        "overflow_storage_item_ids": inventory.overflow_storage_item_ids,
+        "invisible_storage_item_ids": inventory.invisible_storage_item_ids,
         "changed_item_ids": inventory.changed_item_ids,
-        "field_158": inventory.field_158,
-        "field_180": inventory.field_180,
-        "field_1a0": inventory.field_1a0,
+        "item_id_replacements": inventory.item_id_replacements,
+        "ingredient_bag_item_ids": inventory.ingredient_bag_item_ids,
+        "ingredient_bag_templates": inventory.ingredient_bag_templates,
         "storage_upgrade": inventory.storage_upgrade,
         "bank_storage_upgrade": inventory.bank_storage_upgrade,
         "storage_size": inventory.storage_size,
@@ -321,9 +372,13 @@ def _inventory_to_document(inventory: InventoryInfo) -> dict:
         "field_1e0": False,
         "actor_id": inventory.actor_id,
     }
+    if attribute_names:
+        return document
+    return _with_keys(document, _INVENTORY_SAVED_KEYS)
 
 
 def _inventory_from_document(document: dict) -> InventoryInfo:
+    document = _with_keys(document, _INVENTORY_ATTRIBUTES)
     inventory = InventoryInfo(
         premium_inventory_overflow=[
             _item_from_document(item)
@@ -343,16 +398,16 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
                 "equipment_slots", {}
             ).items()
         },
-        storage_58=_integer_map(document.get("storage_58", {})),
-        storage_80=_integer_map(document.get("storage_80", {})),
-        storage_a8=_integer_map(document.get("storage_a8", {})),
-        storage_d0=_integer_map(document.get("storage_d0", {})),
-        field_f8=[int(value) for value in document.get("field_f8", ())],
-        field_118=[int(value) for value in document.get("field_118", ())],
+        storage_slots=_integer_map(document.get("storage_slots", {})),
+        extra_storage_slots=_integer_map(document.get("extra_storage_slots", {})),
+        bank_storage_slots=_integer_map(document.get("bank_storage_slots", {})),
+        extra_bank_storage_slots=_integer_map(document.get("extra_bank_storage_slots", {})),
+        overflow_storage_item_ids=[int(value) for value in document.get("overflow_storage_item_ids", ())],
+        invisible_storage_item_ids=[int(value) for value in document.get("invisible_storage_item_ids", ())],
         changed_item_ids=[],
-        field_158=_integer_map(document.get("field_158", {})),
-        field_180=[int(value) for value in document.get("field_180", ())],
-        field_1a0=[str(value) for value in document.get("field_1a0", ())],
+        item_id_replacements=_integer_map(document.get("item_id_replacements", {})),
+        ingredient_bag_item_ids=[int(value) for value in document.get("ingredient_bag_item_ids", ())],
+        ingredient_bag_templates=[str(value) for value in document.get("ingredient_bag_templates", ())],
         storage_upgrade=int(document.get("storage_upgrade", 30)),
         bank_storage_upgrade=int(
             document.get("bank_storage_upgrade", 53)
@@ -384,10 +439,10 @@ def _validate_inventory(inventory: InventoryInfo) -> None:
     known = {int(item.item_id) for item in inventory.items}
     for label, values in (
         ("equipment", inventory.equipment_slots),
-        ("storage_58", inventory.storage_58),
-        ("storage_80", inventory.storage_80),
-        ("storage_a8", inventory.storage_a8),
-        ("storage_d0", inventory.storage_d0),
+        ("storage_slots", inventory.storage_slots),
+        ("extra_storage_slots", inventory.extra_storage_slots),
+        ("bank_storage_slots", inventory.bank_storage_slots),
+        ("extra_bank_storage_slots", inventory.extra_bank_storage_slots),
     ):
         unknown = set(values) - known
         if unknown:
@@ -578,7 +633,12 @@ def _category_talent_presets_from_document(
     return result
 
 
-def _state_to_document(state: AccountState) -> dict:
+def _state_to_document(
+    state: AccountState, *, attribute_names: bool = False,
+) -> dict:
+    """Build the saved document; the CMS asks for attribute names instead."""
+
+    item_document = asdict if attribute_names else _item_to_document
     mount = None
     if state.mount_ride is not None:
         mount = {
@@ -603,10 +663,12 @@ def _state_to_document(state: AccountState) -> dict:
         "position": (
             list(state.position) if state.position is not None else None
         ),
-        "inventory": _inventory_to_document(state.inventory),
+        "inventory": _inventory_to_document(
+            state.inventory, attribute_names=attribute_names
+        ),
         "starter_equipment_version": int(state.starter_equipment_version),
         "vendor_buyback": [
-            {"item": _item_to_document(item), "price": price}
+            {"item": item_document(item), "price": price}
             for item, price in state.vendor_buyback
         ],
         "currencies": {

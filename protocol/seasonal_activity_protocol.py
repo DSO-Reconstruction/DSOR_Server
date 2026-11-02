@@ -1378,7 +1378,7 @@ def apply_reward_mutation(
         inventory,
         mutation.inventory,
         (item.item_id for item in mutation.delta.items),
-        mutation.delta.field_158,
+        mutation.delta.item_id_replacements,
         grants,
         next_item_id=mutation.next_item_id,
     )
