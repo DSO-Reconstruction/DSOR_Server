@@ -5,6 +5,8 @@ from dataclasses import replace
 import http.client
 import json
 from pathlib import Path
+import socket
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -111,6 +113,22 @@ def test_cross_origin_login_and_form_posts_are_rejected(cms):
     assert request(cms, "POST", "/api/login", data, headers={"Content-Type": "text/plain"})[0] == 415
     assert request(cms, "POST", "/api/login", ["not an object"])[0] == 400
     assert request(cms, "POST", "/api/login", {"password": "x" * 20000})[0] == 413
+
+
+def test_rejected_post_keeps_its_response_when_the_body_arrives_after_the_headers(cms):
+    # http.client always sends them separately. Before the handler lingered,
+    # the late body drew a reset and the client lost the 401 it was waiting for.
+    body = json.dumps({"reason": "Enable map testing"}).encode()
+    head = (f"POST /api/characters/42/unlock_maps HTTP/1.1\r\nHost: 127.0.0.1\r\n"
+            f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n").encode()
+    with socket.create_connection(("127.0.0.1", cms.service.port), timeout=5) as client:
+        client.sendall(head)
+        time.sleep(0.05)
+        client.sendall(body)
+        response = b""
+        while chunk := client.recv(65536):
+            response += chunk
+    assert response.startswith(b"HTTP/1.0 401 ")
 
 
 def test_login_throttle(cms):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gc
 import unittest
+import weakref
 
 from dso_server.runtime.gc_tuning import (
     NEVER_AUTOMATIC_FULL_COLLECTION,
@@ -18,6 +19,10 @@ class FakeClock:
 
     def __call__(self) -> float:
         return self.now
+
+
+class Cycle:
+    pass
 
 
 class ManagedGarbageCollectorTests(unittest.TestCase):
@@ -100,17 +105,27 @@ class ManagedGarbageCollectorTests(unittest.TestCase):
             busy_check=lambda: False, interval_seconds=60,
             unfreeze_every_cycles=3,
         )
-        gc.collect()
+        # Follow objects: gc.get_freeze_count() is process-wide, and a leaked
+        # thread leaving a timed wait frees the wait's objects if they were
+        # frozen, so comparing counts fails for reasons unrelated to the walk.
+        # The garbage is dropped only after the freeze, so no collection can
+        # reclaim it early.
+        survivor = Cycle()
+        garbage = Cycle()
+        garbage.myself = garbage
+        frozen_garbage = weakref.ref(garbage)
         gc.freeze()
-        frozen_before = gc.get_freeze_count()
+        del garbage
         for _ in range(2):
             collector._cycle(clock.now)
         self.assertEqual(collector.statistics()["full_collections"], 0)
-        self.assertEqual(gc.get_freeze_count(), frozen_before)
+        self.assertIsNotNone(frozen_garbage())
         collector._cycle(clock.now)
         self.assertEqual(collector.statistics()["full_collections"], 1)
+        self.assertIsNone(frozen_garbage())
         # Survivors are frozen again, so the next ordinary walk stays small.
-        self.assertGreater(gc.get_freeze_count(), 0)
+        # gc.get_objects() lists everything except the frozen generation.
+        self.assertFalse(any(obj is survivor for obj in gc.get_objects()))
 
     def test_encounter_freeze_hook_is_inert_without_the_policy(self):
         from dso_server.runtime import gc_tuning
