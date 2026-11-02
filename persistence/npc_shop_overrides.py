@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import closing
 import sqlite3
 import threading
@@ -171,7 +172,7 @@ class NpcShopOverrideStore:
             for npc in row["npcs"]
         )]
 
-    def detail(self, shop_id, *, search="", offset=0, limit=50, category_ids=None):
+    def detail(self, shop_id, *, search="", offset=0, limit=50, category_ids=None, category=""):
         from dso_server.protocol.shop_protocol import OFFER_CATEGORY_IDS
         from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
@@ -322,11 +323,17 @@ class NpcShopOverrideStore:
                 seen_category_ids.add(value)
                 if value not in used_category_ids:
                     available.append({"category_id": value, "category_name": name})
+            # Names can alias one tab, so offers are grouped by category id.
+            offer_counts = Counter(offer["category_id"] for offer in offers)
+            for item in categories:
+                item["offer_count"] = offer_counts[item["category_id"]]
             query = str(search or "").casefold()
-            filtered = [offer for offer in offers if not query or any(
+            filtered = [offer for offer in offers if (
+                not category or str(offer["category_id"]) == str(category)
+            ) and (not query or any(
                 query in str(offer[key]).casefold()
                 for key in ("offer_id", "item_id", "item_name", "category_name")
-            )]
+            ))]
             return {
                 "shop": {
                     "shop_id": shop_id,
@@ -340,6 +347,7 @@ class NpcShopOverrideStore:
                 "categories": categories,
                 "available_categories": available,
                 "offers": filtered[offset:offset + limit],
+                "offer_total": len(offers),
                 "total": len(filtered),
                 "offset": offset,
                 "limit": limit,

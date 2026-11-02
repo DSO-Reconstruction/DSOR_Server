@@ -1,4 +1,4 @@
-import { $, esc, api, section, table, confirmAction, notice, formError } from "./admin_ui.js";
+import { $, esc, api, section, table, debounce, confirmAction, notice, formError } from "./admin_ui.js";
 
 const categories = [
   ["map_reward", "Listed map items"],
@@ -77,36 +77,25 @@ export async function lootRatesPage() {
     if (data.selected?.access_id) params.set("access_id", data.selected.access_id);
     const fresh = await api(`/api/loot-rates?${params}`);
     data.revision = fresh.revision;
-    data.defaults = fresh.defaults;
     data.maps = fresh.maps;
     data.total = fresh.total;
-    data.selected = fresh.selected;
-    data.selected_overrides = fresh.selected_overrides;
     data.query = query;
-    draw();
+    // Only the results change, so unsaved edits in the rate form below survive.
+    $("#loot-map-results").innerHTML = mapResults(data);
+    bindMapResults();
   }
 
   function bind() {
-    $("#loot-map-search").addEventListener("submit", async event => {
-      event.preventDefault();
-      const button = event.target.querySelector("button"); button.disabled = true;
-      try { await searchMaps(String(new FormData(event.target).get("q") || "").trim()); }
+    const form = $("#loot-map-search");
+    const search = async () => {
+      const button = form.querySelector("button"); button.disabled = true;
+      try { await searchMaps(String(new FormData(form).get("q") || "").trim()); }
       catch (error) { notice(error.message, true); }
       finally { button.disabled = false; }
-    });
-    document.querySelectorAll("[data-map-access-id]").forEach(button => button.addEventListener("click", async () => {
-      button.disabled = true;
-      try {
-        const params = new URLSearchParams({access_id: button.dataset.mapAccessId});
-        if (data.query) params.set("q", data.query);
-        const fresh = await api(`/api/loot-rates?${params}`);
-        data.revision = fresh.revision;
-        data.defaults = fresh.defaults;
-        data.selected = fresh.selected;
-        data.selected_overrides = fresh.selected_overrides;
-        draw();
-      } catch (error) { notice(error.message, true); }
-    }));
+    };
+    form.addEventListener("submit", event => { event.preventDefault(); search(); });
+    form.elements.q.addEventListener("input", debounce(search));
+    bindMapResults();
     $("#loot-rates-form").addEventListener("submit", async event => {
       event.preventDefault();
       const form = event.target;
@@ -136,6 +125,22 @@ export async function lootRatesPage() {
       } catch (error) { if (form.isConnected) formError(error); }
       finally { buttons.forEach(button => button.disabled = false); }
     });
+  }
+
+  function bindMapResults() {
+    document.querySelectorAll("[data-map-access-id]").forEach(button => button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        const params = new URLSearchParams({access_id: button.dataset.mapAccessId});
+        if (data.query) params.set("q", data.query);
+        const fresh = await api(`/api/loot-rates?${params}`);
+        data.revision = fresh.revision;
+        data.defaults = fresh.defaults;
+        data.selected = fresh.selected;
+        data.selected_overrides = fresh.selected_overrides;
+        draw();
+      } catch (error) { notice(error.message, true); }
+    }));
   }
 
   result.html = renderContent(data);

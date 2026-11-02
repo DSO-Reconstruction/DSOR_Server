@@ -1,5 +1,5 @@
 import { $, esc, date, api, link, navigate, status, table, facts, stats, section, toolbar,
-  bindSearch, pager, formError, notice, confirmAction, tree } from "./admin_ui.js";
+  bindSearch, searchAsYouType, pager, formError, notice, confirmAction, tree } from "./admin_ui.js";
 
 const stateLabel = state => ({active: "Active", upcoming: "Upcoming", expired: "Inactive"}[state] || state);
 export const refreshMessage = (action, result) => `${action} ${result.refresh.updated} online ${result.refresh.updated === 1 ? "character" : "characters"} updated.${result.refresh.deferred ? ` ${result.refresh.deferred} could not refresh now; their next map entry will load the change.` : ""}`;
@@ -290,7 +290,7 @@ export async function newEventPage() {
     html: `<form id="new-event" class="form-page">
       <fieldset class="form-section"><legend>Event templates</legend>
         <label for="template-search">Find event</label><div class="toolbar"><input id="template-search" placeholder="Event name or template ID" maxlength="100"><button type="button" id="find-template" class="secondary">Search templates</button></div>
-        <div id="template-results"></div>
+        <div id="template-results" class="picker-results"></div>
         <p class="help">Choose one or more global game events; selections are kept across searches. Map-local scripts and client-owned events are managed by the game.</p>
       </fieldset>
       <fieldset class="form-section"><legend>Selected events</legend><div id="selected-templates"></div>
@@ -332,8 +332,10 @@ export async function newEventPage() {
         } catch (error) { if (form.isConnected) formError(error); } finally { button.disabled = false; }
       }
       $("#find-template").addEventListener("click", search);
+      searchAsYouType($("#template-search"), search, $("#template-results"));
       $("#template-search").addEventListener("keydown", action => { if (action.key === "Enter") { action.preventDefault(); search(); } });
       drawSelection();
+      search();
       form.addEventListener("submit", async action => {
         action.preventDefault(); if (!selected.size) return;
         const button = $("#add-event"); button.disabled = true;
