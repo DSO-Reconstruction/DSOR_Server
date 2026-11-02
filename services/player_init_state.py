@@ -1584,7 +1584,7 @@ class PlayerInitializationStateService:
                     item = items_by_id.get(int(item_id))
                     if item is None:
                         continue
-                    item_skin = str(item.field_f8 or item.field_80 or "")
+                    item_skin = str(item.equipment_skin or item.appearance or "")
                     for equipment_slot in slots:
                         customization_slot = (
                             12 if int(equipment_slot) == 7

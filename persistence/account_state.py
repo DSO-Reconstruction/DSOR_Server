@@ -274,28 +274,45 @@ def _integer_map(values: dict) -> dict[int, int]:
 # renaming an ItemInfo attribute must not change what is written.
 _ITEM_SAVED_KEYS = {
     "rarity": "field_08",
+    "dye_argb": "field_20",
+    "dye_color_id": "field_1c",
+    "dye_id": "field_28",
     "stack_vc_value": "field_30",
     "glyph_value": "field_34",
+    "needs_identification": "field_3c",
+    "ground_position": "field_100",
+    "appearance": "field_80",
+    "base_enchantment_tier": "field_38",
+    "equipment_skin": "field_f8",
 }
 _ITEM_ATTRIBUTES = {saved: name for name, saved in _ITEM_SAVED_KEYS.items()}
+_ENCHANTMENT_SAVED_KEYS = {"tier": "field_08", "origin_item_level": "field_0c"}
+_ENCHANTMENT_ATTRIBUTES = {
+    saved: name for name, saved in _ENCHANTMENT_SAVED_KEYS.items()
+}
+
+
+def _with_keys(document: dict, keys: dict) -> dict:
+    return {keys.get(key, key): value for key, value in document.items()}
 
 
 def _item_to_document(item: ItemInfo) -> dict:
-    return {
-        _ITEM_SAVED_KEYS.get(key, key): value
-        for key, value in asdict(item).items()
-    }
+    document = _with_keys(asdict(item), _ITEM_SAVED_KEYS)
+    document["enchantments"] = [
+        _with_keys(entry, _ENCHANTMENT_SAVED_KEYS)
+        for entry in document["enchantments"]
+    ]
+    return document
 
 
 def _item_from_document(document: dict) -> ItemInfo:
-    values = {
-        _ITEM_ATTRIBUTES.get(key, key): value
-        for key, value in document.items()
-    }
-    values["field_100"] = tuple(float(value) for value in values["field_100"])
+    values = _with_keys(document, _ITEM_ATTRIBUTES)
+    values["ground_position"] = tuple(
+        float(value) for value in values["ground_position"]
+    )
     values["created_at"] = tuple(int(value) for value in values["created_at"])
     values["enchantments"] = [
-        ItemEnchantmentInfo(**entry)
+        ItemEnchantmentInfo(**_with_keys(entry, _ENCHANTMENT_ATTRIBUTES))
         for entry in values.get("enchantments", ())
     ]
     values["socketed_templates"] = [

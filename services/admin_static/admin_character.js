@@ -577,8 +577,8 @@ function inventoryItemPage(result, route, data) {
     ["Gold value (VC)", esc(item.stack_vc_value)], ["Glyph value", esc(item.glyph_value)],
     ["Created", esc((item.created_at || []).join(" / "))]
   ])) + '</div>';
-  result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Level", "Rarity"], (item.enchantments || []).map(e => [
-    `<code class="resource">${esc(e.template_id)}</code>`, `${(e.value * 100).toFixed(1)}%`, e.field_08, e.field_0c, esc(rarities[e.kind] ?? e.kind)
+  result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Origin level", "Rarity"], (item.enchantments || []).map(e => [
+    `<code class="resource">${esc(e.template_id)}</code>`, `${(e.value * 100).toFixed(1)}%`, e.tier, e.origin_item_level, esc(rarities[e.kind] ?? e.kind)
   ]), "No enchantments on this item."));
   result.html += section("Sockets", table(["Socket", "Content"], Array.from({length: item.socket_count}, (_, index) => [index + 1,
     item.socketed_templates[index] ? link(item.socketed_templates[index], `items/${encodeURIComponent(item.socketed_templates[index])}`, {}, "resource mono") : '<span class="muted">Empty</span>'

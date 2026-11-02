@@ -32,7 +32,7 @@ def world():
 def place_globe(session, template_id=GLOBE):
     definition = load_purchase_item_definition(DEFAULT_STATIC_DB_PATH, template_id)
     item = _new_item(definition, 0x00F20001, 1)
-    item.field_100 = session.gameplay_monster_encounter.coordinate_frame.wire_to_world(
+    item.ground_position = session.gameplay_monster_encounter.coordinate_frame.wire_to_world(
         session.gameplay_last_move.relative_position
     )
     drop = WorldLootDrop(item, definition.item_category, "All")

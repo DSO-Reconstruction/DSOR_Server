@@ -474,7 +474,7 @@ def test_equipment_options_are_delivered_saved_and_audited(cms):
     assert (item.item_level, item.rarity, item.socket_count) == (100, 4, 8)
     assert item.socketed_templates == [""] * 8
     assert len(item.enchantments) == 4
-    assert all(e.value == .95 and e.field_08 == 3 for e in item.enchantments)
+    assert all(e.value == .95 and e.tier == 3 for e in item.enchantments)
     reloaded = AccountStateStore(cms.store.path)
     try:
         saved = reloaded.get(42).inventory.items[0]

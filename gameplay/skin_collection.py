@@ -12,7 +12,7 @@ Evidence:
   collecting the eponymous equipment item ...".  Skin consumables, shop
   offers and achievement rewards are separate sources.
 * A collected equipment item shows its own look: generated drops carry the
-  rolled ``_Template_ItemAppearance`` row in ``ItemInfo.field_80`` (whose
+  rolled ``_Template_ItemAppearance`` row in ``ItemInfo.appearance`` (whose
   ``EquipmentSkinId`` is the skin); other items name it in
   ``_Template_Item.EquipmentSkinId``.
 
@@ -47,13 +47,13 @@ class SkinCatalog:
     def item_skin(self, item, class_name: str) -> str:
         """The visible class skin a held item contributes, or ``""``.
 
-        Unidentified items (``field_3c``) contribute nothing until identified:
+        Items with ``needs_identification`` contribute nothing until identified:
         their look is not known to the player yet (local rule).
         """
 
-        if getattr(item, "field_3c", False):
+        if getattr(item, "needs_identification", False):
             return ""
-        appearance = str(getattr(item, "field_80", "") or "")
+        appearance = str(getattr(item, "appearance", "") or "")
         skin = self.appearance_skins.get(appearance, "") if appearance else ""
         if not skin:
             skin = self.template_skins.get(str(getattr(item, "template_id", "")), "")

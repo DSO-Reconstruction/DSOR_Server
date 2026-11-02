@@ -134,9 +134,10 @@ _BOOTSTRAP_CORE_ITEM_ID_END = 0x00F00110
 @dataclass(frozen=True)
 class ItemEnchantmentInfo:
     value: float = 0.0
-    kind: int = 0
-    field_08: int = 0
-    field_0c: int = 0
+    kind: int = 0                   # structure offset +0x04, origin rarity
+    # A renamed field keeps its saved key: see _ENCHANTMENT_SAVED_KEYS in account_state.
+    tier: int = 0                   # structure offset +0x08, _Template_EnchantmentTiers.Id
+    origin_item_level: int = 0      # structure offset +0x0c
     template_id: str = ""
 
 
@@ -151,20 +152,20 @@ class ItemInfo:
     field_11: int = 0
     field_12: int = 0
     field_18: int = 8477
-    field_20: int = 0              # packed ARGB equipment dye
-    field_1c: int = 0              # _Template_ItemRarityColors.ColorId
-    field_28: str = "none"         # equipment dye resource ID
+    dye_argb: int = 0               # structure offset +0x20, packed dye color
+    dye_color_id: int = 0           # structure offset +0x1c, _Template_ItemRarityColors.ColorId
+    dye_id: str = "none"            # structure offset +0x28, _Template_EquipmentColor.Id
     item_level: int = 135           # structure offset +0x0c
     stack_vc_value: int = 11        # structure offset +0x30, PriceVC * amount
     glyph_value: int = 0            # structure offset +0x34, equipment only
-    field_3c: bool = False          # needs identification (true until identified)
+    needs_identification: bool = False  # structure offset +0x3c
     field_3d: bool = False
     template_id: str = BOOTSTRAP_ITEM_TEMPLATE  # structure offset +0x40
     field_88: str = ""
-    field_100: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    field_80: str = ""
-    field_38: int = 7
-    field_f8: str = ""             # equipped transmog skin ID
+    ground_position: tuple[float, float, float] = (0.0, 0.0, 0.0)  # structure offset +0x100
+    appearance: str = ""            # structure offset +0x80, _Template_ItemAppearance.Id
+    base_enchantment_tier: int = 7  # structure offset +0x38, _Template_EnchantmentBaseTiers.Id
+    equipment_skin: str = ""        # structure offset +0xf8, _Template_EquipmentSkin.Id
     field_3e: bool = True
     enchantments: list[ItemEnchantmentInfo] = field(default_factory=list)
     socketed_templates: list[str] = field(default_factory=list)
@@ -186,29 +187,29 @@ def encode_item_info(writer: BitWriter, item: ItemInfo) -> None:
     writer.write_uint8(item.field_11)
     writer.write_uint8(item.field_12)
     writer.write_uint32_le(item.field_18)
-    writer.write_uint32_le(item.field_20)
-    writer.write_uint32_le(item.field_1c)
-    writer.write_string(item.field_28)
+    writer.write_uint32_le(item.dye_argb)
+    writer.write_uint32_le(item.dye_color_id)
+    writer.write_string(item.dye_id)
     writer.write_uint32_le(item.item_level)
     writer.write_uint32_le(item.stack_vc_value)
     writer.write_uint32_le(item.glyph_value)
-    writer.write_bool(item.field_3c)
+    writer.write_bool(item.needs_identification)
     writer.write_bool(item.field_3d)
     writer.write_string(item.template_id)
     writer.write_string(item.field_88)
-    for value in item.field_100:
+    for value in item.ground_position:
         writer.write_float(value)
-    writer.write_string(item.field_80)
-    writer.write_uint32_le(item.field_38)
-    writer.write_string(item.field_f8)
+    writer.write_string(item.appearance)
+    writer.write_uint32_le(item.base_enchantment_tier)
+    writer.write_string(item.equipment_skin)
     writer.write_bool(item.field_3e)
 
     writer.write_uint8(len(item.enchantments))
     for enchantment in item.enchantments:
         writer.write_float(enchantment.value)
         writer.write_uint8(enchantment.kind)
-        writer.write_uint32_le(enchantment.field_08)
-        writer.write_uint32_le(enchantment.field_0c)
+        writer.write_uint32_le(enchantment.tier)
+        writer.write_uint32_le(enchantment.origin_item_level)
         writer.write_string(enchantment.template_id)
 
     writer.write_uint8(len(item.socketed_templates))
@@ -232,28 +233,28 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
     field_11 = reader.read_uint8()
     field_12 = reader.read_uint8()
     field_18 = reader.read_uint32_le()
-    field_20 = reader.read_uint32_le()
-    field_1c = reader.read_uint32_le()
-    field_28 = reader.read_string()
+    dye_argb = reader.read_uint32_le()
+    dye_color_id = reader.read_uint32_le()
+    dye_id = reader.read_string()
     item_level = reader.read_uint32_le()
     stack_vc_value = reader.read_uint32_le()
     glyph_value = reader.read_uint32_le()
-    field_3c = reader.read_bool()
+    needs_identification = reader.read_bool()
     field_3d = reader.read_bool()
     template_id = reader.read_string()
     field_88 = reader.read_string()
-    field_100 = tuple(reader.read_float() for _ in range(3))
-    field_80 = reader.read_string()
-    field_38 = reader.read_uint32_le()
-    field_f8 = reader.read_string()
+    ground_position = tuple(reader.read_float() for _ in range(3))
+    appearance = reader.read_string()
+    base_enchantment_tier = reader.read_uint32_le()
+    equipment_skin = reader.read_string()
     field_3e = reader.read_bool()
 
     enchantments = [
         ItemEnchantmentInfo(
             value=reader.read_float(),
             kind=reader.read_uint8(),
-            field_08=reader.read_uint32_le(),
-            field_0c=reader.read_uint32_le(),
+            tier=reader.read_uint32_le(),
+            origin_item_level=reader.read_uint32_le(),
             template_id=reader.read_string(),
         )
         for _ in range(reader.read_uint8())
@@ -272,20 +273,20 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
         field_11=field_11,
         field_12=field_12,
         field_18=field_18,
-        field_20=field_20,
-        field_1c=field_1c,
-        field_28=field_28,
+        dye_argb=dye_argb,
+        dye_color_id=dye_color_id,
+        dye_id=dye_id,
         item_level=item_level,
         stack_vc_value=stack_vc_value,
         glyph_value=glyph_value,
-        field_3c=field_3c,
+        needs_identification=needs_identification,
         field_3d=field_3d,
         template_id=template_id,
         field_88=field_88,
-        field_100=field_100,
-        field_80=field_80,
-        field_38=field_38,
-        field_f8=field_f8,
+        ground_position=ground_position,
+        appearance=appearance,
+        base_enchantment_tier=base_enchantment_tier,
+        equipment_skin=equipment_skin,
         field_3e=field_3e,
         enchantments=enchantments,
         socketed_templates=socketed_templates,
@@ -1004,7 +1005,7 @@ def encode_bootstrap_inventory_info(
                 item_level=max(1, int(item_level)),
                 field_18=0x1000 + index,
                 stack_vc_value=1,
-                field_38=0,
+                base_enchantment_tier=0,
                 enchantments=[],
                 created_at=created_at,
             )
@@ -1020,7 +1021,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=0x2120,
         stack_vc_value=1,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     ring_life = ItemInfo(
@@ -1032,7 +1033,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=0x2121,
         stack_vc_value=1,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     manticore = ItemInfo(
@@ -1044,7 +1045,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=0x2122,
         stack_vc_value=1,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     mortis_pet = ItemInfo(
@@ -1056,7 +1057,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=0x2123,
         stack_vc_value=1,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     health_potion = ItemInfo(
@@ -1069,7 +1070,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=22721,
         stack_vc_value=151600,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     travel_map = ItemInfo(
@@ -1081,7 +1082,7 @@ def encode_bootstrap_inventory_info(
         item_level=10,
         field_18=18045,
         stack_vc_value=22498,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     season_pass_tickets = [
@@ -1094,7 +1095,7 @@ def encode_bootstrap_inventory_info(
             item_level=1,
             field_18=0x2124 + index,
             stack_vc_value=1,
-            field_38=0,
+            base_enchantment_tier=0,
             created_at=created_at,
         )
         for index, (item_id, template_id, rarity) in enumerate(zip(
@@ -1114,7 +1115,7 @@ def encode_bootstrap_inventory_info(
         item_level=1,
         field_18=0x2128,
         stack_vc_value=1,
-        field_38=0,
+        base_enchantment_tier=0,
         created_at=created_at,
     )
     equipment_slots = dict(core_allocations)

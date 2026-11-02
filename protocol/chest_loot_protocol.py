@@ -1260,7 +1260,7 @@ def open_mapped_chest(
                 added.rarity = int(reward.rarity)
                 added.item_level = int(item_level)
                 if reward.appearance:
-                    added.field_80 = str(reward.appearance)
+                    added.appearance = str(reward.appearance)
 
     changed_ids = tuple(
         int(item.item_id) for item in builder.changed_items

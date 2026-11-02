@@ -243,8 +243,8 @@ def test_stored_collectibles_drop_as_retail_new_items():
                 if drop.item.template_id == "e_dra_02_RiseOfDragan_key_for_maps_01")
     item = drop.item
     assert (drop.item_category, drop.auto_pick_up) == ("Key", "All")
-    assert (item.amount, item.rarity, item.item_level, item.field_28, item.stack_vc_value,
-            item.field_3c, item.field_3e, item.field_38, item.socket_count) == (
+    assert (item.amount, item.rarity, item.item_level, item.dye_id, item.stack_vc_value,
+            item.needs_identification, item.field_3e, item.base_enchantment_tier, item.socket_count) == (
         2, 0, 1, "none", 0, False, True, 0, 0)
 
 

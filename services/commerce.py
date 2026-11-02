@@ -1298,7 +1298,7 @@ class CommerceService:
                         ]
                 if offer.base_enchantment_tier_override >= 0:
                     for purchased_item in mutation.changed_items:
-                        purchased_item.field_38 = (
+                        purchased_item.base_enchantment_tier = (
                             offer.base_enchantment_tier_override
                         )
                 next_item_id = mutation.next_item_id

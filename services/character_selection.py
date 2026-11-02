@@ -237,7 +237,7 @@ class CharacterSelectionService:
             item, static_database=None, *, enabled: bool = True) -> EquipmentRecord:
         """One selection-screen record for an equipped inventory item.
 
-        ``field_f8`` is the transmog skin and ``field_20`` is packed ARGB.
+        ``equipment_skin`` is the transmog skin and ``dye_argb`` is packed ARGB.
         Character-selection previews construct models from item templates, so
         newer skin ids are resolved to their authored ``TooltipItem`` model.
         The captured retail records also carry an ``effect_id``
@@ -246,7 +246,7 @@ class CharacterSelectionService:
         """
 
         tint = item_tint(item) or (0.0, 0.0, 0.0, 0.0)
-        appearance_id = str(item.field_f8 or item.field_80 or "")
+        appearance_id = str(item.equipment_skin or item.appearance or "")
         item_id = str(item.template_id)
         if appearance_id and static_database is not None:
             try:
@@ -304,7 +304,7 @@ class CharacterSelectionService:
             item = by_slot[slot]
             customization_slot = 12 if slot == 7 else slot
             hidden_skin = str(hidden_skins.get(customization_slot, ""))
-            item_skin = str(item.field_f8 or item.field_80 or "")
+            item_skin = str(item.equipment_skin or item.appearance or "")
             enabled = not hidden_skin or bool(
                 item_skin and item_skin != hidden_skin
             )

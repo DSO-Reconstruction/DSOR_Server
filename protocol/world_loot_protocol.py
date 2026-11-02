@@ -233,7 +233,7 @@ def build_quest_world_drops(
     while remaining:
         stack = min(remaining, definition.max_stack_size)
         item = _new_item(definition, len(result), stack)
-        item.field_100 = tuple(float(v) for v in position)
+        item.ground_position = tuple(float(v) for v in position)
         result.append(WorldLootDrop(
             item, definition.item_category, auto_pick_up, quest_id, template_id,
         ))
@@ -1943,8 +1943,8 @@ def _roll_item_enchantments(
         enchantments.append(ItemEnchantmentInfo(
             value=1.0 if max_roll else random_roll,
             kind=int(rarity),
-            field_08=tier,
-            field_0c=max(1, int(item_level)),
+            tier=tier,
+            origin_item_level=max(1, int(item_level)),
             template_id=template_id,
         ))
     return enchantments
@@ -2064,8 +2064,8 @@ def roll_new_equipment_enchantments(
         ) in MERCENARY_EQUIPMENT_CATEGORIES
         base_values_changed = False
         if is_mercenary_equipment:
-            if int(item.field_38) != 16:
-                item.field_38 = 16
+            if int(item.base_enchantment_tier) != 16:
+                item.base_enchantment_tier = 16
                 base_values_changed = True
             if item.enchantments:
                 maxed_enchantments = [
@@ -2839,7 +2839,7 @@ def generate_monster_loot(
                 rarity=rarity,
                 socket_count=socket_count,
                 field_18=generator.randrange(1, 0x8000),
-                field_28="none",
+                dye_id="none",
                 item_level=max(1, int(item_level)),
                 stack_vc_value=(
                     int(amount)
@@ -2847,12 +2847,12 @@ def generate_monster_loot(
                     else 0
                 ),
                 glyph_value=0,
-                field_3c=bool(rarity > 0 and item_row.get("NeedsIdentify", False)),
+                needs_identification=bool(rarity > 0 and item_row.get("NeedsIdentify", False)),
                 field_3d=False,
                 template_id=definition.template_id,
-                field_100=item_position,
-                field_80=appearance,
-                field_38=(
+                ground_position=item_position,
+                appearance=appearance,
+                base_enchantment_tier=(
                     16
                     if definition.item_category
                     in MERCENARY_EQUIPMENT_CATEGORIES
@@ -3306,7 +3306,7 @@ def add_world_drop_to_inventory(
         raise ValueError(f"inventory already contains item {drop.item.item_id}")
     stored = copy.deepcopy(drop.item)
     stored.quest_id = drop.quest_id
-    stored.field_100 = (0.0, 0.0, 0.0)
+    stored.ground_position = (0.0, 0.0, 0.0)
     changed_item_ids: list[int] = []
     replacements: dict[int, int] = {}
     remaining = max(1, int(stored.amount))
@@ -3325,7 +3325,7 @@ def add_world_drop_to_inventory(
             or old_item.quest_id != stored.quest_id
             or int(old_item.amount) >= maximum
             or not in_destination
-            or old_item.field_1c != stored.field_1c
+            or old_item.dye_color_id != stored.dye_color_id
             or old_item.field_04 != stored.field_04
             or old_item.item_level != stored.item_level
             or old_item.enchantments or stored.enchantments

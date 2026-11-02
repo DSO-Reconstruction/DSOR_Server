@@ -925,24 +925,24 @@ class InventoryInteractionService:
                     )
                 if result_definition.rarity == 7 and is_equipment:
                     # BaseEnchantment quality is evaluated client-side from
-                    # ItemInfo.field_38. Tier 16 has a fixed 1.0 power factor;
+                    # ItemInfo.base_enchantment_tier. Tier 16 has a fixed 1.0 power factor;
                     # apply it only to equipment created by this mythic recipe.
                     created_ids = {int(item.item_id) for item in created_items}
                     for item in builder.inventory.items:
                         if int(item.item_id) in created_ids:
-                            item.field_38 = 16
+                            item.base_enchantment_tier = 16
                     for item in created_items:
-                        item.field_38 = 16
+                        item.base_enchantment_tier = 16
                 if rarity_upgrade_roll is not None and is_equipment:
                     created_ids = {int(item.item_id) for item in created_items}
                     for item in builder.inventory.items:
                         if int(item.item_id) in created_ids:
                             item.rarity = int(rarity_upgrade_roll.rarity)
-                            item.field_80 = str(rarity_upgrade_roll.appearance)
+                            item.appearance = str(rarity_upgrade_roll.appearance)
                             item.item_level = int(crafted_item_level)
                     for item in created_items:
                         item.rarity = int(rarity_upgrade_roll.rarity)
-                        item.field_80 = str(rarity_upgrade_roll.appearance)
+                        item.appearance = str(rarity_upgrade_roll.appearance)
                         item.item_level = int(crafted_item_level)
             if crafted_equipment_item_ids:
                 enchanted_item_ids = roll_new_equipment_enchantments(

@@ -406,7 +406,7 @@ def _new_item(
         item_level=resolved_level,
         field_18=item_id & 0xFFFF,
         stack_vc_value=max(0, int(definition.unit_vc_price)) * int(amount),
-        field_38=0,
+        base_enchantment_tier=0,
         template_id=definition.template_id,
         enchantments=[],
         created_at=(
