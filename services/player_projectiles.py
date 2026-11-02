@@ -670,10 +670,17 @@ class PlayerProjectileService:
                 s, (definition,), server_tick=tick,
                 label="mightystab-hit-speed-stack",
             )
-        if batched_user_effects:
+        from dso_server.services.talent_events import (
+            dispatch_kill_talents, route_talent_user_effects,
+        )
+        impact_user_effects = route_talent_user_effects(
+            s, tuple(batched_user_effects.values()),
+            server_tick=batched_user_effect_tick,
+        )
+        if impact_user_effects:
             CharacterService._send_player_skill_status_effects(
                 s,
-                tuple(batched_user_effects.values()),
+                impact_user_effects,
                 server_tick=batched_user_effect_tick,
                 label="player-skill-impact-status-effects",
             )
@@ -687,6 +694,7 @@ class PlayerProjectileService:
             tuple(item[0] for item in dispatches),
             label="player-kill-heal",
         )
+        dispatch_kill_talents(s, tuple(item[0] for item in dispatches))
         if (
             source_actor_id is not None
             and s.gameplay_presence_callback is not None

@@ -171,6 +171,25 @@ class ConsumableService:
             )
 
     @staticmethod
+    def _schedule_timed_status_expiry(s: Session, instance_id: int) -> None:
+        """End a finite persistent effect no consumable program owns."""
+
+        instance_id = int(instance_id)
+        with s.flow_lock:
+            expires_at = s.gameplay_timed_status_effect_expiries.get(instance_id)
+            if expires_at is None:
+                return
+            timer_key = ('consumable-expire', instance_id)
+            timer = s.gameplay_deadline_timer(
+                max(0.0, float(expires_at) - time.time()),
+                CharacterService._expire_consumable_status,
+                args=(s, s.gameplay_chase_generation, timer_key, instance_id),
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        timer.start()
+
+    @staticmethod
     def _tick_consumable_health(
             s: Session, generation: int, timer_key,
             instance_id: int, definition: ConsumableDefinition,
@@ -489,6 +508,7 @@ class ConsumableService:
         now_epoch = time.time()
         restored = []
         expired = []
+        unowned = []
         with s.flow_lock:
             for instance_id, expires_at in tuple(
                 s.gameplay_timed_status_effect_expiries.items()
@@ -507,6 +527,7 @@ class ConsumableService:
                     entry.effect_id, tuple(entry.values)
                 )
                 if definition is None:
+                    unowned.append(int(instance_id))
                     continue
                 remaining_ticks = max(
                     1,
@@ -529,6 +550,8 @@ class ConsumableService:
             CharacterService._schedule_consumable_timers(
                 s, instance_id, definition
             )
+        for instance_id in unowned:
+            CharacterService._schedule_timed_status_expiry(s, instance_id)
 
     @staticmethod
     def _install_instant_status_entry(

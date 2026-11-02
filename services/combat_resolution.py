@@ -1447,7 +1447,8 @@ class CombatResolutionService:
     def _send_player_skill_status_effects(
             s: Session, definitions, *, server_tick: int,
             label: str, max_stack_followups=None,
-            force_fresh_effect_ids=None, effect_position=None) -> None:
+            force_fresh_effect_ids=None, effect_position=None,
+            persistent_effect_ids=()) -> None:
         if not definitions or STATUS_EFFECTS_DISABLED:
             return
         if getattr(s, "gameplay_item_set_programs", None):
@@ -1506,6 +1507,7 @@ class CombatResolutionService:
             set_programs = []
             instant_programs = []
             stack_transitions = []
+            persisted = []
             applied_at = time.perf_counter()
             for definition in definitions:
                 combat = s.gameplay_combat_state
@@ -1670,6 +1672,14 @@ class CombatResolutionService:
                             int(definition.effect_id), ()
                         )
                     )
+                elif int(definition.effect_id) in persistent_effect_ids:
+                    # A talent's five-minute cooldown outlives the map, whose
+                    # change clears the runtime store: zoning would reset it.
+                    s.gameplay_persistent_status_effects[instance_id] = entry
+                    s.gameplay_timed_status_effect_expiries[instance_id] = (
+                        time.time() + duration / float(SERVER_TICKS_PER_SECOND)
+                    )
+                    persisted.append(instance_id)
                 elif not instant_cooldown:
                     s.gameplay_runtime_status_effects[instance_id] = (
                         entry,
@@ -1697,6 +1707,8 @@ class CombatResolutionService:
                 )
         for timer in retired_timers:
             timer.cancel()
+        for instance_id in persisted:
+            CharacterService._schedule_timed_status_expiry(s, instance_id)
         output_error = None
 
         def finish_effect_step(operation, *args, **kwargs):

@@ -1026,6 +1026,7 @@ class MonsterCombatService(
                         actor_id: combat.encounter.coordinate_frame.wire_to_world(position)
                         for actor_id, position, _viewer in combat_targets
                     },
+                    hostile_player_actor_ids_by_owner=summon_context[0],
                 ))
                 movements = tuple(movements)
                 attacks = tuple(attacks)
@@ -1111,7 +1112,10 @@ class MonsterCombatService(
                         periodic_monster_resolutions.extend(monster_ticks)
                         periodic_owner_resolutions.extend(owner_ticks)
                 hostile_resolutions.extend(periodic_owner_resolutions)
-                hostile_resolutions = tuple(hostile_resolutions)
+                from dso_server.services.talent_events import spare_lethal_hits
+                hostile_resolutions = spare_lethal_hits(
+                    combat, combat_targets, hostile_resolutions
+                )
                 reflected_resolutions = tuple(
                     reflected
                     for hostile in hostile_resolutions
@@ -1153,6 +1157,9 @@ class MonsterCombatService(
                     hostile_player_actor_ids_by_owner=summon_context[0],
                     player_damage_multipliers=summon_context[1],
                     lethal_player_actor_ids_by_owner=summon_context[2],
+                )
+                pvp_summon_resolutions = spare_lethal_hits(
+                    combat, combat_targets, pvp_summon_resolutions
                 )
                 (
                     location_aura_resolutions,
@@ -1359,6 +1366,7 @@ class MonsterCombatService(
                     resolutions,
                 )
         mark_phase(s, "socket-status-updates")
+        from dso_server.services.talent_events import dispatch_incoming_hit
         for resolution in resolutions:
             target_session = target_sessions.get(
                 int(resolution.target_actor_id)
@@ -1396,6 +1404,7 @@ class MonsterCombatService(
                     server_tick=int(resolution.server_tick),
                     event_seed=int(resolution.attacker_actor_id),
                 )
+                dispatch_incoming_hit(target_session, resolution)
         mark_phase(s, "console-attacks")
         if attacks and (
             VERBOSE_PACKET_LOGGING
