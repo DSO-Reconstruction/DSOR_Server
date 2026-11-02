@@ -161,7 +161,10 @@ def test_retail_skin_change_is_persisted_without_changing_stats_or_rolls():
     assert wallet.andermant == WALLET.andermant - 799
     restored = _inventory_from_document(_inventory_to_document(mutation.inventory))
     assert restored.items[0].equipment_skin == updated[0].equipment_skin
-    assert CharacterServer._equipment_record_for(restored.items[0]).appearance_id == updated[0].equipment_skin
+    record = CharacterServer._equipment_record_for(restored.items[0])
+    assert record.item_id == restored.items[0].template_id
+    assert record.equipment_skin == updated[0].equipment_skin
+    assert record.appearance_id == ''
     server = object.__new__(CharacterServer)
     server.static_database = StaticGameDatabase(DEFAULT_STATIC_DB_PATH)
     visuals = server._remote_equipment_visuals(restored)
