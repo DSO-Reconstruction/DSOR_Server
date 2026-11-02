@@ -242,7 +242,7 @@ def test_missing_template_is_logged_without_false_collection(world, capsys):
 
 
 @pytest.mark.parametrize("storage", [
-    "storage_58", "storage_80", "storage_a8", "storage_d0", "field_180",
+    "storage_slots", "extra_storage_slots", "bank_storage_slots", "extra_bank_storage_slots", "ingredient_bag_item_ids",
     "premium_inventory_overflow", "premium_storage_overflow",
 ])
 def test_cancellation_removes_owned_items_from_every_storage(world, storage):
@@ -251,26 +251,26 @@ def test_cancellation_removes_owned_items_from_every_storage(world, storage):
     inv = world.session.gameplay_inventory
     item, = inv.items
     assert item.quest_id == QUEST
-    inv.storage_58.clear()
+    inv.storage_slots.clear()
     if storage.endswith("overflow"):
         inv.items.remove(item)
         getattr(inv, storage).append(item)
-    elif storage == "field_180":
-        inv.field_180.append(item.item_id)
-        inv.field_1a0.append(item.template_id)
+    elif storage == "ingredient_bag_item_ids":
+        inv.ingredient_bag_item_ids.append(item.item_id)
+        inv.ingredient_bag_templates.append(item.template_id)
     else:
         getattr(inv, storage)[item.item_id] = 0
     ordinary = ItemInfo(item_id=50, template_id="gem_ruby_a")
     inv.items.append(ordinary)
-    inv.storage_58[ordinary.item_id] = 1
+    inv.storage_slots[ordinary.item_id] = 1
     with patch.object(CharacterServer, "_request_account_save") as save:
         assert world.server._quest_cancel(world.session, QUEST, force=True)
     save.assert_called_once_with(world.session, "quest cancelled")
     inv = world.session.gameplay_inventory
     assert list(owned_inventory_items(inv)) == [ordinary]
-    assert inv.storage_58 == {50: 1}
-    assert not inv.storage_80 and not inv.storage_a8 and not inv.storage_d0
-    assert not inv.field_180 and not inv.field_1a0
+    assert inv.storage_slots == {50: 1}
+    assert not inv.extra_storage_slots and not inv.bank_storage_slots and not inv.extra_bank_storage_slots
+    assert not inv.ingredient_bag_item_ids and not inv.ingredient_bag_templates
     records = [command.value
                for data, bits, label in world.session.recorder.messages
                if label == "quest-cancel-inventory"
@@ -295,7 +295,7 @@ def test_inventory_quest_ownership_survives_save_reload_and_stack_split(world):
     document["items"][0].pop("quest_id")
     assert _inventory_from_document(document).items[0].quest_id == ""
     builder = InventoryMutationBuilder(inv, 1000)
-    builder.split_stack(900, 2, storage_name="storage_58", storage_slot=1)
+    builder.split_stack(900, 2, storage_name="storage_slots", storage_slot=1)
     mutation = builder.finish()
     world.session.gameplay_inventory = mutation.inventory
     world.session.gameplay_next_item_id = mutation.next_item_id
@@ -319,7 +319,7 @@ def test_cancellation_removes_legacy_quest_items_but_preserves_ordinary_requirem
     world.session.gameplay_quest_log[quest_id] = QuestProgress(quest_id)
     wood = ItemInfo(item_id=50, template_id=WOOD, amount=3)
     ruby = ItemInfo(item_id=51, template_id="gem_ruby_a", amount=2)
-    world.session.gameplay_inventory = InventoryInfo(items=[wood, ruby], storage_58={50: 0, 51: 1})
+    world.session.gameplay_inventory = InventoryInfo(items=[wood, ruby], storage_slots={50: 0, 51: 1})
     assert world.server._quest_cancel(world.session, QUEST, force=True)
     assert world.session.gameplay_inventory.items == [ruby]
     assert world.server._quest_cancel(world.session, quest_id, force=True)
@@ -333,7 +333,7 @@ def test_legacy_shared_items_are_kept_until_last_quest_is_cancelled(world, monke
     monkeypatch.setattr(world.server, "_quest_catalog", lambda: catalog)
     world.session.gameplay_quest_log[other.quest_id] = QuestProgress(other.quest_id)
     wood = ItemInfo(item_id=50, template_id=WOOD, amount=3)
-    world.session.gameplay_inventory = InventoryInfo(items=[wood], storage_58={50: 0})
+    world.session.gameplay_inventory = InventoryInfo(items=[wood], storage_slots={50: 0})
     assert world.server._quest_cancel(world.session, QUEST, force=True)
     assert world.session.gameplay_inventory.items == [wood]
     assert world.server._quest_cancel(world.session, other.quest_id, force=True)
@@ -344,7 +344,7 @@ def test_legacy_aliased_item_is_removed_on_cancellation(world):
     quest_id = "k0002-free-the-spirit"
     world.session.gameplay_quest_log[quest_id] = QuestProgress(quest_id)
     ashes = ItemInfo(item_id=50, template_id="quest_k0002_cremationashes")
-    world.session.gameplay_inventory = InventoryInfo(items=[ashes], storage_58={50: 0})
+    world.session.gameplay_inventory = InventoryInfo(items=[ashes], storage_slots={50: 0})
     assert world.server._quest_cancel(world.session, quest_id, force=True)
     assert not world.session.gameplay_inventory.items
 

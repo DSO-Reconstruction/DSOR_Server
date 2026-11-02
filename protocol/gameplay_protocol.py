@@ -539,19 +539,19 @@ def encode_quick_slots(value: QuickSlots) -> tuple[bytes, int]:
 # their last argument.
 MOVE_ITEM_EQUIPMENT_OPERATION = 0x06
 MOVE_ITEM_STORAGE_OPERATIONS = {
-    0x07: "storage_58",
-    0x08: "storage_80",
-    0x09: "storage_a8",
-    0x0A: "storage_d0",
+    0x07: "storage_slots",
+    0x08: "extra_storage_slots",
+    0x09: "bank_storage_slots",
+    0x0A: "extra_bank_storage_slots",
 }
 # ``Messaging::SplitStack``'s first argument is the amount that *stays* in the
 # source stack, not the amount that moves: ``InventoryProperty::OnSplitStack``
 # assigns it directly to the source item's amount.
 SPLIT_STACK_OPERATIONS = {
-    0x1E: "storage_58",
-    0x1F: "storage_80",
-    0x20: "storage_a8",
-    0x21: "storage_d0",
+    0x1E: "storage_slots",
+    0x1F: "extra_storage_slots",
+    0x20: "bank_storage_slots",
+    0x21: "extra_bank_storage_slots",
 }
 
 

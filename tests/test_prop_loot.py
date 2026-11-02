@@ -267,8 +267,8 @@ class AmphoraInteractionTests(unittest.TestCase):
             load_purchase_item_definition(DEFAULT_STATIC_DB_PATH, CHEST_KEY), 66080, keys,
         )
         session.gameplay_inventory = InventoryInfo(
-            items=[key] if keys else [], field_180=[66080] if keys else [],
-            field_1a0=[CHEST_KEY] if keys else [],
+            items=[key] if keys else [], ingredient_bag_item_ids=[66080] if keys else [],
+            ingredient_bag_templates=[CHEST_KEY] if keys else [],
         )
         recorder = _Recorder()
         session.send_reliable_ordered = recorder

@@ -290,6 +290,20 @@ _ENCHANTMENT_SAVED_KEYS = {"tier": "field_08", "origin_item_level": "field_0c"}
 _ENCHANTMENT_ATTRIBUTES = {
     saved: name for name, saved in _ENCHANTMENT_SAVED_KEYS.items()
 }
+_INVENTORY_SAVED_KEYS = {
+    "storage_slots": "storage_58",
+    "extra_storage_slots": "storage_80",
+    "bank_storage_slots": "storage_a8",
+    "extra_bank_storage_slots": "storage_d0",
+    "overflow_storage_item_ids": "field_f8",
+    "invisible_storage_item_ids": "field_118",
+    "item_id_replacements": "field_158",
+    "ingredient_bag_item_ids": "field_180",
+    "ingredient_bag_templates": "field_1a0",
+}
+_INVENTORY_ATTRIBUTES = {
+    saved: name for name, saved in _INVENTORY_SAVED_KEYS.items()
+}
 
 
 def _with_keys(document: dict, keys: dict) -> dict:
@@ -322,9 +336,10 @@ def _item_from_document(document: dict) -> ItemInfo:
 
 
 def _inventory_to_document(
-    inventory: InventoryInfo, item_document=_item_to_document,
+    inventory: InventoryInfo, *, attribute_names: bool = False,
 ) -> dict:
-    return {
+    item_document = asdict if attribute_names else _item_to_document
+    document = {
         "items": [item_document(item) for item in inventory.items],
         "premium_inventory_overflow": [
             item_document(item) for item in inventory.premium_inventory_overflow
@@ -336,16 +351,16 @@ def _inventory_to_document(
             str(item_id): list(slots)
             for item_id, slots in inventory.equipment_slots.items()
         },
-        "storage_58": inventory.storage_58,
-        "storage_80": inventory.storage_80,
-        "storage_a8": inventory.storage_a8,
-        "storage_d0": inventory.storage_d0,
-        "field_f8": inventory.field_f8,
-        "field_118": inventory.field_118,
+        "storage_slots": inventory.storage_slots,
+        "extra_storage_slots": inventory.extra_storage_slots,
+        "bank_storage_slots": inventory.bank_storage_slots,
+        "extra_bank_storage_slots": inventory.extra_bank_storage_slots,
+        "overflow_storage_item_ids": inventory.overflow_storage_item_ids,
+        "invisible_storage_item_ids": inventory.invisible_storage_item_ids,
         "changed_item_ids": inventory.changed_item_ids,
-        "field_158": inventory.field_158,
-        "field_180": inventory.field_180,
-        "field_1a0": inventory.field_1a0,
+        "item_id_replacements": inventory.item_id_replacements,
+        "ingredient_bag_item_ids": inventory.ingredient_bag_item_ids,
+        "ingredient_bag_templates": inventory.ingredient_bag_templates,
         "storage_upgrade": inventory.storage_upgrade,
         "bank_storage_upgrade": inventory.bank_storage_upgrade,
         "storage_size": inventory.storage_size,
@@ -357,9 +372,13 @@ def _inventory_to_document(
         "field_1e0": False,
         "actor_id": inventory.actor_id,
     }
+    if attribute_names:
+        return document
+    return _with_keys(document, _INVENTORY_SAVED_KEYS)
 
 
 def _inventory_from_document(document: dict) -> InventoryInfo:
+    document = _with_keys(document, _INVENTORY_ATTRIBUTES)
     inventory = InventoryInfo(
         premium_inventory_overflow=[
             _item_from_document(item)
@@ -379,16 +398,16 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
                 "equipment_slots", {}
             ).items()
         },
-        storage_58=_integer_map(document.get("storage_58", {})),
-        storage_80=_integer_map(document.get("storage_80", {})),
-        storage_a8=_integer_map(document.get("storage_a8", {})),
-        storage_d0=_integer_map(document.get("storage_d0", {})),
-        field_f8=[int(value) for value in document.get("field_f8", ())],
-        field_118=[int(value) for value in document.get("field_118", ())],
+        storage_slots=_integer_map(document.get("storage_slots", {})),
+        extra_storage_slots=_integer_map(document.get("extra_storage_slots", {})),
+        bank_storage_slots=_integer_map(document.get("bank_storage_slots", {})),
+        extra_bank_storage_slots=_integer_map(document.get("extra_bank_storage_slots", {})),
+        overflow_storage_item_ids=[int(value) for value in document.get("overflow_storage_item_ids", ())],
+        invisible_storage_item_ids=[int(value) for value in document.get("invisible_storage_item_ids", ())],
         changed_item_ids=[],
-        field_158=_integer_map(document.get("field_158", {})),
-        field_180=[int(value) for value in document.get("field_180", ())],
-        field_1a0=[str(value) for value in document.get("field_1a0", ())],
+        item_id_replacements=_integer_map(document.get("item_id_replacements", {})),
+        ingredient_bag_item_ids=[int(value) for value in document.get("ingredient_bag_item_ids", ())],
+        ingredient_bag_templates=[str(value) for value in document.get("ingredient_bag_templates", ())],
         storage_upgrade=int(document.get("storage_upgrade", 30)),
         bank_storage_upgrade=int(
             document.get("bank_storage_upgrade", 53)
@@ -420,10 +439,10 @@ def _validate_inventory(inventory: InventoryInfo) -> None:
     known = {int(item.item_id) for item in inventory.items}
     for label, values in (
         ("equipment", inventory.equipment_slots),
-        ("storage_58", inventory.storage_58),
-        ("storage_80", inventory.storage_80),
-        ("storage_a8", inventory.storage_a8),
-        ("storage_d0", inventory.storage_d0),
+        ("storage_slots", inventory.storage_slots),
+        ("extra_storage_slots", inventory.extra_storage_slots),
+        ("bank_storage_slots", inventory.bank_storage_slots),
+        ("extra_bank_storage_slots", inventory.extra_bank_storage_slots),
     ):
         unknown = set(values) - known
         if unknown:
@@ -615,10 +634,11 @@ def _category_talent_presets_from_document(
 
 
 def _state_to_document(
-    state: AccountState, *, item_document=_item_to_document,
+    state: AccountState, *, attribute_names: bool = False,
 ) -> dict:
-    """Build the saved document; the CMS passes ``asdict`` for attribute names."""
+    """Build the saved document; the CMS asks for attribute names instead."""
 
+    item_document = asdict if attribute_names else _item_to_document
     mount = None
     if state.mount_ride is not None:
         mount = {
@@ -643,7 +663,9 @@ def _state_to_document(
         "position": (
             list(state.position) if state.position is not None else None
         ),
-        "inventory": _inventory_to_document(state.inventory, item_document),
+        "inventory": _inventory_to_document(
+            state.inventory, attribute_names=attribute_names
+        ),
         "starter_equipment_version": int(state.starter_equipment_version),
         "vendor_buyback": [
             {"item": item_document(item), "price": price}

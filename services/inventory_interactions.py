@@ -652,7 +652,7 @@ class InventoryInteractionService:
             # that otherwise makes the exchanged enchantments visible.
             full_inventory_refresh = copy.deepcopy(mutation.inventory)
             full_inventory_refresh.changed_item_ids = []
-            full_inventory_refresh.field_158 = {}
+            full_inventory_refresh.item_id_replacements = {}
             full_inventory_refresh.field_1e0 = False
             packet, packet_bits = encode_server_command_batch(
                 (

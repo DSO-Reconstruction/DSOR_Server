@@ -118,7 +118,7 @@ def test_request_commits_all_rewards_and_consumption_before_failed_first_deliver
     item_id = session.gameplay_next_item_id
     session.gameplay_next_item_id += 1
     session.gameplay_inventory.items.append(ItemInfo(item_id, template_id="potion_health_restore_rarity_01", quest_id=REACT))
-    session.gameplay_inventory.storage_58[item_id] = 7
+    session.gameplay_inventory.storage_slots[item_id] = 7
 
     def outbound(*args, **kwargs):
         saved = server.account_store.get(session.gameplay_character.character_id)

@@ -89,7 +89,7 @@ def add_item(session, template_id=FISH, amount=1):
     session.gameplay_inventory.items.append(ItemInfo(
         item_id=item_id, template_id=template_id, amount=amount, item_level=1,
     ))
-    session.gameplay_inventory.storage_58[item_id] = max(session.gameplay_inventory.storage_58.values(), default=-1) + 1
+    session.gameplay_inventory.storage_slots[item_id] = max(session.gameplay_inventory.storage_slots.values(), default=-1) + 1
     return item_id
 
 
@@ -121,7 +121,7 @@ def test_dispatch_converts_full_stacks_and_persists_before_response(player):
     ]
     assert commands[0].value.changed_item_ids == list(item_ids)
     assert commands[1].value.resource_id == "money_cc" and commands[1].value.amount == 127
-    assert not set(item_ids).intersection(commands[2].value.storage_58)
+    assert not set(item_ids).intersection(commands[2].value.storage_slots)
     saved_stamp = server.account_store.get(session.gameplay_character.character_id).saved_at
     sent.reset_mock()
     server._dispatch_char_op_now(session, payload)
@@ -143,12 +143,12 @@ def test_invalid_mixed_batch_has_no_partial_consumption_or_credit(player, invali
     elif invalid == "zero-yield":
         next(item for item in session.gameplay_inventory.items if item.item_id == bad).template_id = "item_cooking_food_carrotjuice"
     elif invalid == "equipped":
-        session.gameplay_inventory.storage_58.pop(bad)
+        session.gameplay_inventory.storage_slots.pop(bad)
         session.gameplay_inventory.equipment_slots[bad] = (37,)
     elif invalid == "overflow":
         item = next(item for item in session.gameplay_inventory.items if item.item_id == bad)
         session.gameplay_inventory.items.remove(item)
-        session.gameplay_inventory.storage_58.pop(bad)
+        session.gameplay_inventory.storage_slots.pop(bad)
         session.gameplay_inventory.premium_inventory_overflow.append(item)
     else:
         next(item for item in session.gameplay_inventory.items if item.item_id == bad).amount = 0

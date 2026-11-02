@@ -110,7 +110,7 @@ def test_dye_stacks_are_used_before_currency_and_two_hand_color_costs_once():
     inv = equipped()
     inv.equipment_slots = {100: (5, 6)}
     inv.items.append(ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=2))
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     mutation, wallet, updated = apply(inv, (paint(5), paint(6)))
     assert wallet == WALLET and len(updated) == 1
     assert next(i for i in mutation.inventory.items if i.item_id == 200).amount == 1
@@ -121,13 +121,13 @@ def test_last_dye_is_removed_and_insufficient_money_does_not_consume_it():
     inv.items.extend([replace(inv.items[0], item_id=101),
                       ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=1)])
     inv.equipment_slots[101] = (1,)
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     before = copy.deepcopy(inv)
     with pytest.raises(ValueError, match='insufficient'):
         apply(inv, (paint(0), paint(1)), replace(WALLET, currency_type=0))
     assert inv == before
     mutation, _, _ = apply(inv, (paint(0),))
-    assert 200 not in mutation.inventory.field_180
+    assert 200 not in mutation.inventory.ingredient_bag_item_ids
     assert all(i.item_id != 200 for i in mutation.inventory.items)
 
 
@@ -138,7 +138,7 @@ def test_one_dye_stack_for_several_slots_publishes_only_its_final_state(amount):
         inv.items.append(replace(inv.items[0], item_id=100+slot))
         inv.equipment_slots[100+slot] = (slot,)
     inv.items.append(ItemInfo(200, template_id='misc_colorize_fk_Black_008', amount=amount))
-    inv.field_180 = [200]
+    inv.ingredient_bag_item_ids = [200]
     mutation, wallet, updated = apply(inv, tuple(paint(slot) for slot in (0,1,2)))
     assert wallet == WALLET and len(updated) == 3
     assert [(item.item_id, item.amount) for item in mutation.delta.items] == (
@@ -218,7 +218,7 @@ def test_retail_right_click_identification_survives_reload(raw):
     server = object.__new__(CharacterServer)
     session = Session(('127.0.0.1', 40992), Mock())
     item = ItemInfo(item_id, template_id='mage_base_helmet_crafted', rarity=2, needs_identification=True)
-    session.gameplay_inventory = InventoryInfo(items=[item], storage_58={item_id:0})
+    session.gameplay_inventory = InventoryInfo(items=[item], storage_slots={item_id:0})
     with patch.object(CharacterServer, '_request_account_save') as save, \
          patch.object(CharacterServer, '_send_world_loot_state_batch') as send:
         server._handle_inventory_item_action(session, bytes.fromhex(raw))

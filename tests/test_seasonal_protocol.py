@@ -117,8 +117,8 @@ class SeasonalWorld:
         session.gameplay_inventory.items.append(ItemInfo(
             item_id=item_id, template_id=template_id, amount=amount, item_level=1,
         ))
-        session.gameplay_inventory.storage_58[item_id] = (
-            max(session.gameplay_inventory.storage_58.values(), default=-1) + 1
+        session.gameplay_inventory.storage_slots[item_id] = (
+            max(session.gameplay_inventory.storage_slots.values(), default=-1) + 1
         )
         return item_id
 

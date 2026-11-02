@@ -57,9 +57,9 @@ def traders():
     alice, bob = sessions
     # The same item id in both inventories: ids are per character.
     alice.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="gem_ruby_a", amount=5, stack_vc_value=100))
-    alice.gameplay_inventory.storage_58[0x00F11000] = 0
+    alice.gameplay_inventory.storage_slots[0x00F11000] = 0
     bob.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="epicmount_death_knight_horse", amount=1, rarity=4))
-    bob.gameplay_inventory.storage_58[0x00F11000] = 0
+    bob.gameplay_inventory.storage_slots[0x00F11000] = 0
     for s in sessions:
         case.server._refresh_premium_bags(s)
         case.server._handle_trade_command(s, command(tp.TRADE_HELLO_COMMAND, lambda w: w.write_uint8(1)))
@@ -113,7 +113,7 @@ def test_both_acceptances_exchange_items_and_gold(traders):
     for s in (alice, bob):
         ids = [int(i.item_id) for i in s.gameplay_inventory.items]
         assert len(ids) == len(set(ids))
-        assert set(ids) == set(s.gameplay_inventory.storage_58)
+        assert set(ids) == set(s.gameplay_inventory.storage_slots)
     assert alice.gameplay_currency_state.gold == 4000
     assert bob.gameplay_currency_state.gold == 1100
     assert trade_service._TRADES == {}

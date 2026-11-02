@@ -59,7 +59,7 @@ def add_book(session, template_id=FOOD_BOOK, item_id=910001):
     session.gameplay_inventory.items.append(ItemInfo(
         item_id=item_id, template_id=template_id, amount=1, item_level=1,
     ))
-    session.gameplay_inventory.storage_58[item_id] = 10 + item_id - 910001
+    session.gameplay_inventory.storage_slots[item_id] = 10 + item_id - 910001
     session.gameplay_next_item_id = max(session.gameplay_next_item_id, item_id + 1)
     return item_id
 
@@ -99,7 +99,7 @@ def test_authored_recipe_item_use_consumes_unlocks_publishes_and_survives_relog(
     use(server, session, item_id)
     assert session.gameplay_recipe_book_resources == (book,)
     assert item_id not in {item.item_id for item in session.gameplay_inventory.items}
-    assert item_id not in session.gameplay_inventory.storage_58
+    assert item_id not in session.gameplay_inventory.storage_slots
     sent.assert_called_once()
     commands = decode_server_command_batch(*sent.call_args.args[1:])
     assert [command.command_id for command in commands] == [

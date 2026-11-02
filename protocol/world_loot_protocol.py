@@ -3295,7 +3295,7 @@ def add_world_drop_to_inventory(
     and every ``reserved_item_ids`` (the items still on the ground: one loot's
     drops have consecutive ids, so the inventory's highest id + 1 can be the
     next drop's, which then could no longer be picked up). Ingredient-bag
-    items use the inventory's dedicated ``field_180`` allocation and do not
+    items use the inventory's dedicated ``ingredient_bag_item_ids`` allocation and do not
     consume an ordinary storage slot.
     """
 
@@ -3313,11 +3313,11 @@ def add_world_drop_to_inventory(
     maximum = max(1, int(max_stack_size))
     for old_item in tuple(inventory.items):
         in_destination = (
-            int(old_item.item_id) in inventory.field_180
+            int(old_item.item_id) in inventory.ingredient_bag_item_ids
             if ingredient_bag
             else (
-                int(old_item.item_id) in inventory.storage_58
-                or int(old_item.item_id) in inventory.storage_80
+                int(old_item.item_id) in inventory.storage_slots
+                or int(old_item.item_id) in inventory.extra_storage_slots
             )
         )
         if (
@@ -3351,12 +3351,17 @@ def add_world_drop_to_inventory(
         )
         inventory.items[inventory.items.index(old_item)] = replacement
         for values in (
-            inventory.equipment_slots, inventory.storage_58,
-            inventory.storage_80, inventory.storage_a8, inventory.storage_d0,
+            inventory.equipment_slots, inventory.storage_slots,
+            inventory.extra_storage_slots, inventory.bank_storage_slots,
+            inventory.extra_bank_storage_slots,
         ):
             if int(old_item.item_id) in values:
                 values[new_id] = values.pop(int(old_item.item_id))
-        for values in (inventory.field_f8, inventory.field_118, inventory.field_180):
+        for values in (
+            inventory.overflow_storage_item_ids,
+            inventory.invisible_storage_item_ids,
+            inventory.ingredient_bag_item_ids,
+        ):
             for index, value in enumerate(values):
                 if int(value) == int(old_item.item_id):
                     values[index] = new_id
@@ -3369,9 +3374,9 @@ def add_world_drop_to_inventory(
         stored.amount = remaining
         inventory.items.append(stored)
         if ingredient_bag:
-            inventory.field_180.append(int(stored.item_id))
-            if stored.template_id not in inventory.field_1a0:
-                inventory.field_1a0.append(stored.template_id)
+            inventory.ingredient_bag_item_ids.append(int(stored.item_id))
+            if stored.template_id not in inventory.ingredient_bag_templates:
+                inventory.ingredient_bag_templates.append(stored.template_id)
         else:
             location = free_inventory_location(inventory)
             if location is None:
@@ -3381,7 +3386,7 @@ def add_world_drop_to_inventory(
     # Return changed stacks as authoritative item records; the pickup delta
     # also carries their retail ID replacement map.
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
 
     # Even with field_1e0=true, the client applies the equipment map as the
@@ -3395,22 +3400,25 @@ def add_world_drop_to_inventory(
         if int(item.item_id) in changed_ids
     ]
     delta.equipment_slots = copy.deepcopy(inventory.equipment_slots)
-    for name in ("storage_58", "storage_80", "storage_a8", "storage_d0"):
+    for name in (
+        "storage_slots", "extra_storage_slots",
+        "bank_storage_slots", "extra_bank_storage_slots",
+    ):
         allocation = getattr(inventory, name)
         setattr(delta, name, {
             int(allocated_id): int(slot)
             for allocated_id, slot in allocation.items()
             if int(allocated_id) in changed_ids
         })
-    delta.field_f8 = []
-    delta.field_118 = []
+    delta.overflow_storage_item_ids = []
+    delta.invisible_storage_item_ids = []
     delta.changed_item_ids = changed_item_ids
-    delta.field_158 = replacements
-    delta.field_180 = (
-        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    delta.item_id_replacements = replacements
+    delta.ingredient_bag_item_ids = (
+        copy.deepcopy(inventory.ingredient_bag_item_ids) if ingredient_bag else []
     )
-    delta.field_1a0 = (
-        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    delta.ingredient_bag_templates = (
+        copy.deepcopy(inventory.ingredient_bag_templates) if ingredient_bag else []
     )
     delta.field_1e0 = True
 
@@ -3420,18 +3428,18 @@ def add_world_drop_to_inventory(
     final = copy.deepcopy(inventory)
     final.items = []
     final.equipment_slots = copy.deepcopy(inventory.equipment_slots)
-    final.storage_58 = {}
-    final.storage_80 = {}
-    final.storage_a8 = {}
-    final.storage_d0 = {}
-    final.field_f8 = []
-    final.field_118 = []
+    final.storage_slots = {}
+    final.extra_storage_slots = {}
+    final.bank_storage_slots = {}
+    final.extra_bank_storage_slots = {}
+    final.overflow_storage_item_ids = []
+    final.invisible_storage_item_ids = []
     final.changed_item_ids = []
-    final.field_158 = {}
-    final.field_180 = (
-        copy.deepcopy(inventory.field_180) if ingredient_bag else []
+    final.item_id_replacements = {}
+    final.ingredient_bag_item_ids = (
+        copy.deepcopy(inventory.ingredient_bag_item_ids) if ingredient_bag else []
     )
-    final.field_1a0 = (
-        copy.deepcopy(inventory.field_1a0) if ingredient_bag else []
+    final.ingredient_bag_templates = (
+        copy.deepcopy(inventory.ingredient_bag_templates) if ingredient_bag else []
     )
     return InventoryLootMutation(inventory, delta, final)

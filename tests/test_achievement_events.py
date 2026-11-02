@@ -108,7 +108,7 @@ def test_currency_item_use_counts_once_even_when_primary_output_fails(player, fa
     server, session = player
     session.gameplay_inventory = InventoryInfo(
         items=[ItemInfo(item_id=51, template_id="money_cc", amount=30)],
-        storage_58={51: 0},
+        storage_slots={51: 0},
     )
     session.gameplay_next_item_id = 52
     session.gameplay_currency_state = CurrencyChanged(0, 0, (0, 0, 0), 0, False)
@@ -145,7 +145,7 @@ def test_mapped_chest_direct_currency_award_counts_once_without_inventory_use(pl
     chest = "levelchest_lvl_60"
     session.gameplay_character.level = 100
     session.gameplay_inventory = InventoryInfo(
-        items=[ItemInfo(item_id=51, template_id=chest, amount=1)], storage_58={51: 0},
+        items=[ItemInfo(item_id=51, template_id=chest, amount=1)], storage_slots={51: 0},
     )
     session.gameplay_next_item_id = 52
     session.gameplay_currency_state = CurrencyChanged(0, 0, (0, 0, 0), 0, False)
@@ -230,7 +230,7 @@ def test_real_sticker_unlock_and_replayed_snapshot_count_one_owned_pet(player):
     server, session = player
     session.gameplay_inventory = InventoryInfo(
         items=[ItemInfo(item_id=51, template_id="pet_goat", amount=1)],
-        storage_58={51: 0},
+        storage_slots={51: 0},
     )
     session.gameplay_next_item_id = 52
     payload, bits = encode_add_stickerbook_from_inventory(AddStickerbookFromInventoryRequest(51))

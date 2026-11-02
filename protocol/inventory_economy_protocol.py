@@ -544,14 +544,18 @@ def load_recipe_unlock_achievements(
 def _replace_item_id(info: InventoryInfo, old_id: int, new_id: int) -> None:
     for values in (
         info.equipment_slots,
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         if old_id in values:
             values[new_id] = values.pop(old_id)
-    for values in (info.field_f8, info.field_118, info.field_180):
+    for values in (
+        info.overflow_storage_item_ids,
+        info.invisible_storage_item_ids,
+        info.ingredient_bag_item_ids,
+    ):
         for index, value in enumerate(values):
             if int(value) == old_id:
                 values[index] = new_id
@@ -560,15 +564,21 @@ def _replace_item_id(info: InventoryInfo, old_id: int, new_id: int) -> None:
 def _remove_item_references(info: InventoryInfo, item_id: int) -> None:
     info.equipment_slots.pop(item_id, None)
     for storage in (
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         storage.pop(item_id, None)
-    info.field_f8 = [value for value in info.field_f8 if value != item_id]
-    info.field_118 = [value for value in info.field_118 if value != item_id]
-    info.field_180 = [value for value in info.field_180 if value != item_id]
+    info.overflow_storage_item_ids = [
+        value for value in info.overflow_storage_item_ids if value != item_id
+    ]
+    info.invisible_storage_item_ids = [
+        value for value in info.invisible_storage_item_ids if value != item_id
+    ]
+    info.ingredient_bag_item_ids = [
+        value for value in info.ingredient_bag_item_ids if value != item_id
+    ]
 
 
 class InventoryMutationBuilder:
@@ -624,9 +634,9 @@ class InventoryMutationBuilder:
             raise ValueError("repurchase item is already in inventory")
         restored = copy.deepcopy(item)
         if ingredient_bag:
-            self.inventory.field_180.append(restored.item_id)
-            if restored.template_id not in self.inventory.field_1a0:
-                self.inventory.field_1a0.append(restored.template_id)
+            self.inventory.ingredient_bag_item_ids.append(restored.item_id)
+            if restored.template_id not in self.inventory.ingredient_bag_templates:
+                self.inventory.ingredient_bag_templates.append(restored.template_id)
         else:
             location = free_inventory_location(self.inventory)
             if location is None:
@@ -718,14 +728,17 @@ class InventoryMutationBuilder:
     # ``Game::Inventory`` names the four containers storage, extra storage,
     # bank storage, and extra bank storage.  Every slot-addressed inventory
     # operation selects one of them in that order.
-    STORAGE_NAMES = ("storage_58", "storage_80", "storage_a8", "storage_d0")
+    STORAGE_NAMES = (
+        "storage_slots", "extra_storage_slots",
+        "bank_storage_slots", "extra_bank_storage_slots",
+    )
 
     def _storage_capacity(self, storage_name: str) -> int:
         capacities = {
-            "storage_58": int(self.inventory.storage_size),
-            "storage_80": int(self.inventory.extra_storage_size),
-            "storage_a8": int(self.inventory.bank_storage_size),
-            "storage_d0": int(self.inventory.extra_bank_storage_size),
+            "storage_slots": int(self.inventory.storage_size),
+            "extra_storage_slots": int(self.inventory.extra_storage_size),
+            "bank_storage_slots": int(self.inventory.bank_storage_size),
+            "extra_bank_storage_slots": int(self.inventory.extra_bank_storage_size),
         }
         if storage_name not in capacities:
             raise ValueError(f"unknown inventory storage {storage_name!r}")
@@ -750,7 +763,7 @@ class InventoryMutationBuilder:
         The new stack is a copy of the source, so enchantments, item level,
         rarity and sockets survive the split.  The source keeps the retail
         identity transition every other partial-stack mutation uses: it is
-        republished under a fresh item id with ``field_158`` mapping new to
+        republished under a fresh item id with ``item_id_replacements`` mapping new to
         old, because the client rebuilds a changed stack as a new object.
         """
 
@@ -914,15 +927,15 @@ class InventoryMutationBuilder:
 
     def finish(self) -> InventoryMutation:
         self.inventory.changed_item_ids = []
-        self.inventory.field_158 = {}
+        self.inventory.item_id_replacements = {}
         self.inventory.field_1e0 = False
         delta = clone_inventory_info(self.inventory, self.changed_items)
         delta.changed_item_ids = list(dict.fromkeys(self.removed_item_ids))
-        delta.field_158 = dict(self.replacements)
+        delta.item_id_replacements = dict(self.replacements)
         delta.field_1e0 = True
         final = clone_inventory_info(self.inventory, ())
         final.changed_item_ids = []
-        final.field_158 = {}
+        final.item_id_replacements = {}
         final.field_1e0 = False
         return InventoryMutation(
             self.inventory,

@@ -909,16 +909,16 @@ def sticker_status_entry(
 def _remove_item_id(inventory: InventoryInfo, item_id: int) -> None:
     for mapping in (
         inventory.equipment_slots,
-        inventory.storage_58,
-        inventory.storage_80,
-        inventory.storage_a8,
-        inventory.storage_d0,
+        inventory.storage_slots,
+        inventory.extra_storage_slots,
+        inventory.bank_storage_slots,
+        inventory.extra_bank_storage_slots,
     ):
         mapping.pop(item_id, None)
     for values in (
-        inventory.field_f8,
-        inventory.field_118,
-        inventory.field_180,
+        inventory.overflow_storage_item_ids,
+        inventory.invisible_storage_item_ids,
+        inventory.ingredient_bag_item_ids,
     ):
         while item_id in values:
             values.remove(item_id)
@@ -929,17 +929,17 @@ def _replace_item_id(
 ) -> None:
     for mapping in (
         inventory.equipment_slots,
-        inventory.storage_58,
-        inventory.storage_80,
-        inventory.storage_a8,
-        inventory.storage_d0,
+        inventory.storage_slots,
+        inventory.extra_storage_slots,
+        inventory.bank_storage_slots,
+        inventory.extra_bank_storage_slots,
     ):
         if old_item_id in mapping:
             mapping[new_item_id] = mapping.pop(old_item_id)
     for values in (
-        inventory.field_f8,
-        inventory.field_118,
-        inventory.field_180,
+        inventory.overflow_storage_item_ids,
+        inventory.invisible_storage_item_ids,
+        inventory.ingredient_bag_item_ids,
     ):
         for index, value in enumerate(values):
             if value == old_item_id:
@@ -980,12 +980,12 @@ def consume_sticker_inventory_item(
         replacements[replacement_id] = int(item_id)
 
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
     delta = copy.deepcopy(inventory)
     delta.items = copy.deepcopy(changed_items)
     delta.changed_item_ids = replaced_ids
-    delta.field_158 = replacements
+    delta.item_id_replacements = replacements
     delta.field_1e0 = True
     final = copy.deepcopy(inventory)
     final.items = []
