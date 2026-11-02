@@ -54,10 +54,8 @@ CAPTURED_PROGRESSION_BITS = 64
 SELECTION_PROGRESSION_BITS = 32 if SELECTION_WIRE == "legacy" else 64
 # The equipment record differs the same way. This build reads two strings there
 # -- 0xc4a959, which wraps the string reader -- then the tint and the enabled
-# flag. The current build writes three: item, appearance and *effect*. The third
-# is the weapon-effect id, and weapon effects are exactly the feature this
-# client predates, which is also why its tooltip has no
-# ItemValueWeaponEffectsLabelTemplate.
+# flag. The current build writes three: item, appearance and equipment skin, and
+# equipment skins are the feature this client predates.
 CAPTURED_EQUIPMENT_STRINGS = 3
 SELECTION_EQUIPMENT_STRINGS = 2 if SELECTION_WIRE == "legacy" else 3
 CLASS_IDS = {
@@ -361,8 +359,8 @@ class CharacterRecord:
 @dataclass
 class EquipmentRecord:
     item_id: str
-    appearance_id: str = ""
-    effect_id: str = ""
+    appearance_id: str = ""         # _Template_ItemAppearance.Id
+    equipment_skin: str = ""        # _Template_EquipmentSkin.Id, wins over appearance_id
     tint: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
     enabled: bool = True
 
@@ -527,7 +525,7 @@ def decode_character_selection(
             EquipmentRecord(
                 item_id=reader.read_string(),
                 appearance_id=reader.read_string(),
-                effect_id=(
+                equipment_skin=(
                     reader.read_string() if equipment_strings == 3 else ""
                 ),
                 tint=tuple(reader.read_float() for _ in range(4)),
@@ -596,7 +594,7 @@ def encode_character_selection(model: CharacterSelection) -> tuple[bytes, int]:
         writer.write_string(equipment.item_id)
         writer.write_string(equipment.appearance_id)
         if SELECTION_EQUIPMENT_STRINGS == 3:
-            writer.write_string(equipment.effect_id)
+            writer.write_string(equipment.equipment_skin)
         for value in equipment.tint:
             writer.write_float(value)
         writer.write_bool(equipment.enabled)
