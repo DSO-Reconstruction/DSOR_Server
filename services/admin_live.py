@@ -91,10 +91,10 @@ def booking_packet(after, booking, mutation, details=None):
             delta = copy.deepcopy(after.inventory)
             delta.items = [item for item in delta.items if item.item_id in changed]
             delta.changed_item_ids = replaced
-            delta.field_158 = replacements
+            delta.item_id_replacements = replacements
             delta.field_1e0 = True
             final = copy.deepcopy(after.inventory)
-            final.items, final.changed_item_ids, final.field_158, final.field_1e0 = [], [], {}, False
+            final.items, final.changed_item_ids, final.item_id_replacements, final.field_1e0 = [], [], {}, False
             commands.extend((ServerCommand(INVENTORY_INFO_COMMAND, delta, 1),
                              ServerCommand(INVENTORY_INFO_COMMAND, final, 1)))
         fixed_currency_changed = False
@@ -124,10 +124,10 @@ def booking_packet(after, booking, mutation, details=None):
         delta = copy.deepcopy(after.inventory)
         delta.items = [item for item in delta.items if item.item_id in changed]
         delta.changed_item_ids = list(mutation.replaced_item_ids)
-        delta.field_158 = dict(mutation.replacements)
+        delta.item_id_replacements = dict(mutation.replacements)
         delta.field_1e0 = True
         final = copy.deepcopy(after.inventory)
-        final.items, final.changed_item_ids, final.field_158, final.field_1e0 = [], [], {}, False
+        final.items, final.changed_item_ids, final.item_id_replacements, final.field_1e0 = [], [], {}, False
         commands.extend((ServerCommand(INVENTORY_INFO_COMMAND, delta, 1),
                          ServerCommand(INVENTORY_INFO_COMMAND, final, 1)))
         notifications.append((resource, booking["amount"], EQUIPMENT_RARITIES[(booking.get("options") or {}).get("rarity", 0)]))

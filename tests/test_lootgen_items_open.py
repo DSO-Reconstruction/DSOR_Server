@@ -57,7 +57,7 @@ def test_using_a_deluxe_teaser_consumes_it_and_extends_deluxe():
     try:
         server, session = case.server, case.session
         session.gameplay_inventory = InventoryInfo(
-            items=[ItemInfo(item_id=51, template_id="deluxe_teaser_one_week", amount=1)], storage_58={51: 0},
+            items=[ItemInfo(item_id=51, template_id="deluxe_teaser_one_week", amount=1)], storage_slots={51: 0},
         )
         session.gameplay_next_item_id = 52
         before = parse_membership_expiry(session.gameplay_membership_expires_at)

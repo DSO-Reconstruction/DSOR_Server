@@ -3,8 +3,8 @@
 The client sends ``TransactionCommand`` (0x005b) after an ordinary NPC offer
 is selected.  Item destinations are not inferred from names: live entries in
 ``_Template_IngredientBag`` go to InventoryInfo's ingredient/currency-bag
-arrays, while other items use ordinary ``storage_58`` slots and then the
-unlocked premium ``storage_80`` bag.
+arrays, while other items use ordinary ``storage_slots`` slots and then the
+unlocked premium ``extra_storage_slots`` bag.
 """
 
 from __future__ import annotations
@@ -371,14 +371,18 @@ def debit_purchase_currency(
 def _replace_item_id(info: InventoryInfo, old_id: int, new_id: int) -> None:
     for values in (
         info.equipment_slots,
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         if old_id in values:
             values[new_id] = values.pop(old_id)
-    for values in (info.field_f8, info.field_118, info.field_180):
+    for values in (
+        info.overflow_storage_item_ids,
+        info.invisible_storage_item_ids,
+        info.ingredient_bag_item_ids,
+    ):
         for index, value in enumerate(values):
             if value == old_id:
                 values[index] = new_id
@@ -448,13 +452,13 @@ def add_purchased_item(
 
     def in_destination(item_id: int) -> bool:
         return (
-            item_id in info.field_180
+            item_id in info.ingredient_bag_item_ids
             if definition.ingredient_bag
-            else item_id in info.storage_58 or item_id in info.storage_80
+            else item_id in info.storage_slots or item_id in info.extra_storage_slots
         )
 
     # Retail replaces a modified stack with a newly allocated item id and
-    # publishes new->old in field_158. Preserve that identity transition.
+    # publishes new->old in item_id_replacements. Preserve that identity transition.
     for index, old_item in enumerate(list(info.items)):
         if (
             remaining <= 0
@@ -496,9 +500,9 @@ def add_purchased_item(
         )
         info.items.append(new_item)
         if definition.ingredient_bag:
-            info.field_180.append(new_id)
-            if definition.template_id not in info.field_1a0:
-                info.field_1a0.append(definition.template_id)
+            info.ingredient_bag_item_ids.append(new_id)
+            if definition.template_id not in info.ingredient_bag_templates:
+                info.ingredient_bag_templates.append(definition.template_id)
         else:
             location = free_inventory_location(info)
             if location is None:
@@ -510,18 +514,18 @@ def add_purchased_item(
 
     # Persistent state does not retain one-shot delta bookkeeping.
     info.changed_item_ids = []
-    info.field_158 = {}
+    info.item_id_replacements = {}
     info.field_1e0 = False
 
     delta = clone_inventory_info(info, changed_items)
     delta.changed_item_ids = list(replaced_ids)
-    delta.field_158 = dict(replacements)
+    delta.item_id_replacements = dict(replacements)
     delta.field_1e0 = True
 
     final = clone_inventory_info(info, ())
     final.items = []
     final.changed_item_ids = []
-    final.field_158 = {}
+    final.item_id_replacements = {}
     final.field_1e0 = False
     return InventoryPurchaseMutation(
         tuple(changed_items),

@@ -265,7 +265,7 @@ class SeasonPassService:
         changed_ingredient_bag_items = tuple(
             int(item.item_id)
             for item in mutation.changed_items
-            if int(item.item_id) in set(mutation.inventory.field_180)
+            if int(item.item_id) in set(mutation.inventory.ingredient_bag_item_ids)
         )
         if changed_ingredient_bag_items:
             # Ingredient-bag stacks have no ordinary primary storage slot.

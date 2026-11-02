@@ -273,7 +273,7 @@ def test_held_items_contribute_their_own_class_look():
 def _ranger_items(*templates):
     return InventoryInfo(
         items=[ItemInfo(item_id=index + 1, template_id=template) for index, template in enumerate(templates)],
-        storage_58={index + 1: index for index in range(len(templates))},
+        storage_slots={index + 1: index for index in range(len(templates))},
     )
 
 

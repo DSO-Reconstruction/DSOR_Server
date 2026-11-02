@@ -236,7 +236,7 @@ def test_stack_booking_rekeys_existing_stack_in_live_packet(cms, online):
     new = s.gameplay_inventory.items[-1]
     assert new.amount == 6 and new.item_id != old.item_id
     delta = commands(s)[0].value
-    assert delta.field_158 == {new.item_id: old.item_id}
+    assert delta.item_id_replacements == {new.item_id: old.item_id}
     assert delta.changed_item_ids == [old.item_id]
     assert delta.items[0].amount == 6
 

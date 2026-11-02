@@ -6,8 +6,8 @@ and eighth bank bag. Each matches its normal counterpart: 28 inventory slots
 match the local client inventory/bank layouts and the extension row sizes in
 `_Globals`. The normal purchased capacities and upgrade levels stay intact.
 
-The existing extra containers carry these bags: `storage_80` /
-`extra_storage_size` for inventory and `storage_d0` /
+The existing extra containers carry these bags: `extra_storage_slots` /
+`extra_storage_size` for inventory and `extra_bank_storage_slots` /
 `extra_bank_storage_size` for the bank. Moves and splits use their existing
 protocol operations. Purchases and loot fill ordinary inventory slots first,
 then premium slots; purchases also stack into the premium inventory bag.

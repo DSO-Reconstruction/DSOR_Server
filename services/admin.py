@@ -774,13 +774,13 @@ class AdminService:
             int(target.next_item_id), max(existing_ids, default=0) + 1
         )
         source_banks = {}
-        for name in ("storage_a8", "storage_d0"):
+        for name in ("bank_storage_slots", "extra_bank_storage_slots"):
             for item_id, slot in getattr(source_inventory, name).items():
                 source_banks[int(item_id)] = (name, int(slot))
-        source_ingredients = set(map(int, source_inventory.field_180))
+        source_ingredients = set(map(int, source_inventory.ingredient_bag_item_ids))
 
         def bank_slot(name, item_id):
-            capacity = (inventory.bank_storage_size if name == "storage_a8"
+            capacity = (inventory.bank_storage_size if name == "bank_storage_slots"
                         else inventory.extra_bank_storage_size)
             slots = getattr(inventory, name)
             used = set(map(int, slots.values()))
@@ -799,8 +799,8 @@ class AdminService:
             return True
 
         def place_in_bank(item_id):
-            return bank_slot("storage_a8", item_id) or bank_slot(
-                "storage_d0", item_id
+            return bank_slot("bank_storage_slots", item_id) or bank_slot(
+                "extra_bank_storage_slots", item_id
             )
 
         copied = 0
@@ -817,7 +817,7 @@ class AdminService:
             inventory.items.append(duplicate)
 
             if old_id in source_ingredients:
-                inventory.field_180.append(new_id)
+                inventory.ingredient_bag_item_ids.append(new_id)
             else:
                 old_bank = source_banks.get(old_id)
                 placed = (
@@ -842,7 +842,7 @@ class AdminService:
         final = clone_inventory_info(inventory)
         final.items = []
         final.changed_item_ids = []
-        final.field_158 = {}
+        final.item_id_replacements = {}
         final.field_1e0 = False
         packet, packet_bits = encode_server_command_batch((
             ServerCommand(INVENTORY_INFO_COMMAND, delta, 1),
@@ -1298,9 +1298,9 @@ class AdminService:
         inventory.premium_storage_overflow = [
             entry for entry in inventory.premium_storage_overflow if int(entry.item_id) != item_id
         ]
-        for name in ("equipment_slots", "storage_58", "storage_80", "storage_a8", "storage_d0", "field_158"):
+        for name in ("equipment_slots", "storage_slots", "extra_storage_slots", "bank_storage_slots", "extra_bank_storage_slots", "item_id_replacements"):
             getattr(inventory, name).pop(item_id, None)
-        for name in ("field_f8", "field_118", "field_180"):
+        for name in ("overflow_storage_item_ids", "invisible_storage_item_ids", "ingredient_bag_item_ids"):
             values = getattr(inventory, name)
             setattr(inventory, name, [value for value in values if int(value) != item_id])
         inventory.changed_item_ids = []
@@ -1316,7 +1316,7 @@ class AdminService:
             final = clone_inventory_info(inventory)
             final.items = []
             final.changed_item_ids = []
-            final.field_158 = {}
+            final.item_id_replacements = {}
             packet, packet_bits = encode_server_command_batch((
                 ServerCommand(INVENTORY_INFO_COMMAND, delta, inventory.actor_id),
                 ServerCommand(INVENTORY_INFO_COMMAND, final, inventory.actor_id),
@@ -1412,7 +1412,7 @@ class AdminService:
                     "wisdom": {"level": self.wisdom_progression_level(wisdom_xp),
                                "experience": wisdom_xp, "range": wisdom_range},
                     "online": cid in self.online_characters(),
-                    "state": _state_to_document(state, item_document=asdict)
+                    "state": _state_to_document(state, attribute_names=True)
                     if state is not None else None}
         if path.startswith("/api/bookings/"):
             result = self.repository.booking(int(path.rsplit("/", 1)[1]))

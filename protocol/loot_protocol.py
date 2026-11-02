@@ -142,27 +142,31 @@ def load_payment_package_contents(
 def _is_allocated(info: InventoryInfo, item_id: int) -> bool:
     return any((
         item_id in info.equipment_slots,
-        item_id in info.storage_58,
-        item_id in info.storage_80,
-        item_id in info.storage_a8,
-        item_id in info.storage_d0,
-        item_id in info.field_f8,
-        item_id in info.field_118,
-        item_id in info.field_180,
+        item_id in info.storage_slots,
+        item_id in info.extra_storage_slots,
+        item_id in info.bank_storage_slots,
+        item_id in info.extra_bank_storage_slots,
+        item_id in info.overflow_storage_item_ids,
+        item_id in info.invisible_storage_item_ids,
+        item_id in info.ingredient_bag_item_ids,
     ))
 
 
 def _replace_item_id(info: InventoryInfo, old_id: int, new_id: int) -> None:
     for values in (
         info.equipment_slots,
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         if old_id in values:
             values[new_id] = values.pop(old_id)
-    for values in (info.field_f8, info.field_118, info.field_180):
+    for values in (
+        info.overflow_storage_item_ids,
+        info.invisible_storage_item_ids,
+        info.ingredient_bag_item_ids,
+    ):
         for index, value in enumerate(values):
             if value == old_id:
                 values[index] = new_id
@@ -171,13 +175,17 @@ def _replace_item_id(info: InventoryInfo, old_id: int, new_id: int) -> None:
 def _remove_item_id(info: InventoryInfo, item_id: int) -> None:
     for values in (
         info.equipment_slots,
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         values.pop(item_id, None)
-    for values in (info.field_f8, info.field_118, info.field_180):
+    for values in (
+        info.overflow_storage_item_ids,
+        info.invisible_storage_item_ids,
+        info.ingredient_bag_item_ids,
+    ):
         values[:] = [value for value in values if value != item_id]
 
 
@@ -204,14 +212,14 @@ def _consume_one(
         info.items.remove(item)
         _remove_item_id(info, item_id)
         if (
-            item.template_id in info.field_1a0
+            item.template_id in info.ingredient_bag_templates
             and not any(
                 other.template_id == item.template_id
-                and other.item_id in info.field_180
+                and other.item_id in info.ingredient_bag_item_ids
                 for other in info.items
             )
         ):
-            info.field_1a0.remove(item.template_id)
+            info.ingredient_bag_templates.remove(item.template_id)
         return [], [item_id], {}, next_item_id
 
     replacement_id = next_item_id
@@ -296,19 +304,19 @@ def open_payment_package(
         replacements.update(mutation.replacements)
 
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
 
     delta = copy.deepcopy(inventory)
     delta.items = copy.deepcopy(changed_items)
     delta.changed_item_ids = list(changed_item_ids)
-    delta.field_158 = dict(replacements)
+    delta.item_id_replacements = dict(replacements)
     delta.field_1e0 = True
 
     final = copy.deepcopy(inventory)
     final.items = []
     final.changed_item_ids = []
-    final.field_158 = {}
+    final.item_id_replacements = {}
     final.field_1e0 = False
 
     return PaymentPackageOpenMutation(

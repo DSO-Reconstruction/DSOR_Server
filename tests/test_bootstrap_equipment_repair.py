@@ -54,7 +54,7 @@ def test_a_full_bag_parks_displaced_starter_items_instead_of_failing():
     for item_id, slot in ((900001, 10), (900002, 11)):
         inventory.items.append(ItemInfo(item_id, template_id=f"acquired_{slot}"))
         inventory.equipment_slots[item_id] = (slot,)
-    inventory.storage_size = len(inventory.storage_58)
+    inventory.storage_size = len(inventory.storage_slots)
     overflowed = []
     result = _repair(inventory, overflowed)
     # The acquired items keep their slots; the starter amulet and belt wait

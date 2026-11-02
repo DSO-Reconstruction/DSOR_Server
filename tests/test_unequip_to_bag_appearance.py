@@ -25,7 +25,7 @@ def test_a_worn_weapon_moved_to_a_bag_cell_updates_the_appearance():
         payload, _ = encode_inventory_item_action(InventoryItemAction(51, 0x107, 0, 3, 0))
         server._handle_inventory_item_action(session, payload)
         assert 51 not in session.gameplay_inventory.equipment_slots
-        assert session.gameplay_inventory.storage_58.get(51) == 3
+        assert session.gameplay_inventory.storage_slots.get(51) == 3
         assert "appearance" in events
     finally:
         case.doCleanups()

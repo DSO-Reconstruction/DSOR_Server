@@ -56,7 +56,7 @@ def vendor():
     s.gameplay_next_item_id = 999
     s.gameplay_quickbar_info = QuickbarInfo(0, 0)
     item = ItemInfo(item_id=800, template_id="gem_ruby_a", amount=3, stack_vc_value=60)
-    s.gameplay_inventory.items.append(item); s.gameplay_inventory.storage_58[800] = 0
+    s.gameplay_inventory.items.append(item); s.gameplay_inventory.storage_slots[800] = 0
     try: yield case, s, item
     finally: case.doCleanups()
 

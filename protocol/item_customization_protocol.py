@@ -145,8 +145,8 @@ def apply_item_customizations(inventory, currency, changes, *, database_path,
                     if desired:
                         definition, packed, color_id = color(desired)
                         dye_template = str(definition['Color'])
-                        accessible = (set(builder.inventory.storage_58) | set(builder.inventory.storage_80)
-                                      | set(builder.inventory.field_180))
+                        accessible = (set(builder.inventory.storage_slots) | set(builder.inventory.extra_storage_slots)
+                                      | set(builder.inventory.ingredient_bag_item_ids))
                         dye = next((i for i in builder.inventory.items if i.template_id == dye_template
                                     and i.item_id in accessible and i.amount > 0), None)
                         if dye is not None:

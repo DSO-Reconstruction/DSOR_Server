@@ -154,13 +154,13 @@ class LegacySlotRepairTests(unittest.TestCase):
     def test_slot_34_goes_to_the_bag_when_the_pair_is_full(self):
         inventory = InventoryInfo(
             equipment_slots={7: (34,), 8: (35,), 9: (36,)},
-            storage_58={100: 0},
+            storage_slots={100: 0},
         )
         inventory.storage_size = 10
         repaired, moved = repair_ammunition_slot_allocations(inventory)
         self.assertEqual(moved, (7,))
         self.assertNotIn(7, repaired.equipment_slots)
-        self.assertEqual(repaired.storage_58[7], 1)
+        self.assertEqual(repaired.storage_slots[7], 1)
 
     def test_nothing_to_repair_returns_the_same_object(self):
         inventory = InventoryInfo(equipment_slots={8: (35,)})
@@ -188,7 +188,7 @@ class EquipHandlerTests(unittest.TestCase):
             if isinstance(where, tuple):
                 inventory.equipment_slots[item_id] = where
             else:
-                inventory.storage_58[item_id] = where
+                inventory.storage_slots[item_id] = where
         session = Session(("127.0.0.1", 40800), self.server.sock)
         session.gameplay_mode = True
         session.gameplay_inventory = inventory
@@ -213,7 +213,7 @@ class EquipHandlerTests(unittest.TestCase):
         inventory = session.gameplay_inventory
         if item_id in inventory.equipment_slots:
             return inventory.equipment_slots[item_id]
-        return ("bag", inventory.storage_58.get(item_id))
+        return ("bag", inventory.storage_slots.get(item_id))
 
     def test_live_sequence_swap_then_move_to_secondary_is_accepted(self):
         session = self._session(snow_at=5, bgh_at=(35,))

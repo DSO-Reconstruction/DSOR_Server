@@ -39,8 +39,8 @@ def full_bags():
         items=[ItemInfo(i, template_id=f"item_{i}") for i in range(1, 7)],
         storage_size=1, bank_storage_size=1,
         extra_storage_size=28, extra_bank_storage_size=40,
-        storage_58={1: 0}, storage_80={3: 0, 4: 1},
-        storage_a8={2: 0}, storage_d0={5: 0, 6: 1},
+        storage_slots={1: 0}, extra_storage_slots={3: 0, 4: 1},
+        bank_storage_slots={2: 0}, extra_bank_storage_slots={5: 0, 6: 1},
     )
 
 
@@ -60,9 +60,9 @@ def test_membership_requires_paid_active_unexpired_tier(tier, enabled, offset, e
     assert (inventory.storage_size, inventory.bank_storage_size) == (224, 270)
 
 
-@pytest.mark.parametrize("storage_name,last_slot", [("storage_80", 27), ("storage_d0", 39)])
+@pytest.mark.parametrize("storage_name,last_slot", [("extra_storage_slots", 27), ("extra_bank_storage_slots", 39)])
 def test_premium_bags_accept_exactly_one_standard_bag(storage_name, last_slot):
-    inventory = InventoryInfo(items=[ItemInfo(1)], storage_58={1: 0})
+    inventory = InventoryInfo(items=[ItemInfo(1)], storage_slots={1: 0})
     reconcile_premium_bags(inventory, active=True)
     builder = InventoryMutationBuilder(inventory, 100)
     builder.move_item(1, storage_name=storage_name, storage_slot=last_slot)
@@ -76,20 +76,20 @@ def test_expiry_uses_free_slots_then_restores_fifo_in_the_same_container():
     inventory.storage_size = 2
     original_items = {i.item_id: copy.deepcopy(i) for i in inventory.items}
     changes = reconcile_premium_bags(inventory, active=False)
-    assert inventory.storage_58 == {1: 0, 3: 1}
-    assert inventory.storage_a8 == {2: 0}
+    assert inventory.storage_slots == {1: 0, 3: 1}
+    assert inventory.bank_storage_slots == {2: 0}
     assert changes.removed_ids == (4, 5, 6)
     assert not changes.restored_items  # Item 3 was already registered on the client.
     assert [i.item_id for i in inventory.premium_inventory_overflow] == [4]
     assert [i.item_id for i in inventory.premium_storage_overflow] == [5, 6]
-    assert not inventory.storage_80 and not inventory.storage_d0
+    assert not inventory.extra_storage_slots and not inventory.extra_bank_storage_slots
 
     builder = InventoryMutationBuilder(inventory, 100)
     builder.consume(2)
     inventory = builder.finish().inventory
     changes = reconcile_premium_bags(inventory, active=False)
     assert [i.item_id for i in changes.restored_items] == [5]
-    assert inventory.storage_a8 == {5: 0}
+    assert inventory.bank_storage_slots == {5: 0}
     assert [i.item_id for i in inventory.premium_inventory_overflow] == [4]
     assert [i.item_id for i in inventory.premium_storage_overflow] == [6]
     assert all(i == original_items[i.item_id] for i in owned_inventory_items(inventory))
@@ -109,10 +109,10 @@ def test_unavailable_items_cannot_be_used_or_sent_to_the_client():
             action()
     wire = decode_inventory_info(*encode_inventory_info(inventory))
     assert [i.item_id for i in wire.items] == [1, 2]
-    assert not wire.storage_80 and not wire.storage_d0
+    assert not wire.extra_storage_slots and not wire.extra_bank_storage_slots
     assert not wire.premium_inventory_overflow and not wire.premium_storage_overflow
     with pytest.raises(ValueError, match="unavailable"):
-        InventoryMutationBuilder(inventory, 100).move_item(1, storage_name="storage_80", storage_slot=0)
+        InventoryMutationBuilder(inventory, 100).move_item(1, storage_name="extra_storage_slots", storage_slot=0)
 
 
 def test_overflow_survives_database_restart_and_map_rekey_with_full_item_data(tmp_path):
@@ -155,8 +155,8 @@ def test_overflow_survives_database_restart_and_map_rekey_with_full_item_data(tm
     assert len({i.item_id for i in owned_inventory_items(rekeyed)}) == 6
     changes = reconcile_premium_bags(rekeyed, active=True)
     assert len(changes.restored_items) == 4
-    assert rekeyed.storage_80 == {mapping[3]: 0, mapping[4]: 1}
-    assert rekeyed.storage_d0 == {mapping[5]: 0, mapping[6]: 1}
+    assert rekeyed.extra_storage_slots == {mapping[3]: 0, mapping[4]: 1}
+    assert rekeyed.extra_bank_storage_slots == {mapping[5]: 0, mapping[6]: 1}
     item = next(i for i in rekeyed.items if i.item_id == mapping[3])
     assert item.amount == 81 and item.socketed_templates == ["gem_test"]
     assert item.enchantments == inventory.premium_inventory_overflow[0].enchantments
@@ -174,19 +174,19 @@ def test_legacy_documents_and_duplicate_overflow_ids():
 
 
 def test_purchases_stack_and_loot_use_the_premium_bag_when_regular_bags_are_full():
-    inventory = InventoryInfo(items=[ItemInfo(1)], storage_size=1, storage_58={1: 0})
+    inventory = InventoryInfo(items=[ItemInfo(1)], storage_size=1, storage_slots={1: 0})
     reconcile_premium_bags(inventory, active=True)
     definition = PurchaseItemDefinition("test_stack", 99, 0, 1, "Consumable", False)
     add_purchased_item(inventory, definition, 5, next_item_id=10)
-    assert inventory.storage_80 == {10: 0}
+    assert inventory.extra_storage_slots == {10: 0}
     add_purchased_item(inventory, definition, 2, next_item_id=11)
-    assert inventory.storage_80 == {11: 0}
+    assert inventory.extra_storage_slots == {11: 0}
     assert next(i for i in inventory.items if i.item_id == 11).amount == 7
     drop = WorldLootDrop(ItemInfo(20, template_id="loot"), "Equipment", "")
     mutation = add_world_drop_to_inventory(inventory, drop)
-    assert mutation.inventory.storage_80 == {11: 0, 20: 1}
-    assert mutation.delta.storage_80 == {20: 1}
-    assert not mutation.delta.storage_58
+    assert mutation.inventory.extra_storage_slots == {11: 0, 20: 1}
+    assert mutation.delta.extra_storage_slots == {20: 1}
+    assert not mutation.delta.storage_slots
 
 
 def outgoing(session, command_id):
@@ -243,7 +243,7 @@ def test_moving_an_item_frees_a_slot_and_recovers_overflow_in_the_same_request(l
     server, session, _, saves = live
     session.gameplay_inventory = InventoryInfo(
         items=[ItemInfo(1), ItemInfo(2)], storage_size=1, bank_storage_size=1,
-        storage_58={1: 0}, storage_80={2: 0}, extra_storage_size=28, extra_bank_storage_size=40,
+        storage_slots={1: 0}, extra_storage_slots={2: 0}, extra_storage_size=28, extra_bank_storage_size=40,
     )
     session.gameplay_membership_expires_at = PAST
     # A stale request naming an expired item cannot move it out of overflow.
@@ -257,7 +257,7 @@ def test_moving_an_item_frees_a_slot_and_recovers_overflow_in_the_same_request(l
     session.current_message_bit_length = bits
     server._on_char_op(session, payload)
     inventory = session.gameplay_inventory
-    assert inventory.storage_58 == {2: 0} and inventory.storage_a8 == {1: 0}
+    assert inventory.storage_slots == {2: 0} and inventory.bank_storage_slots == {1: 0}
     assert not inventory.premium_inventory_overflow
     assert saves[-1] == inventory
     definitions = [i.item_id for update in outgoing(session, INVENTORY_INFO_COMMAND) for i in update.items]
@@ -293,7 +293,7 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
         saved = account_state(42, membership_type=tier, membership_expires_at=expiry)
         saved.talent_categories = tuple(TalentCategorySelection(0, (), ()) for _ in range(4))
         saved.inventory = decode_inventory_info(*encode_bootstrap_inventory_info(class_name="mage"))
-        saved.inventory.storage_size = len(saved.inventory.storage_58)
+        saved.inventory.storage_size = len(saved.inventory.storage_slots)
         saved.inventory.bank_storage_size = 0
         saved.inventory.extra_storage_size = 28
         saved.inventory.extra_bank_storage_size = 40
@@ -302,8 +302,8 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
         extra_bank = copy.deepcopy(extra_inventory)
         extra_bank.item_id = 501
         saved.inventory.items.extend((extra_inventory, extra_bank))
-        saved.inventory.storage_80 = {500: 0}
-        saved.inventory.storage_d0 = {501: 0}
+        saved.inventory.extra_storage_slots = {500: 0}
+        saved.inventory.extra_bank_storage_slots = {501: 0}
         server.account_store.put(saved, flush=True)
         session = _session(50778, 42, "PremiumLogin")
         session.gameplay_character = server.character_selection.active_character

@@ -296,22 +296,25 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
 
 @dataclass
 class InventoryInfo:
+    # A renamed field keeps its saved key: see _INVENTORY_SAVED_KEYS in account_state.
     items: list[ItemInfo] = field(default_factory=list)          # +0x20
     equipment_slots: dict[int, tuple[int, ...]] = field(
         default_factory=dict
     )                                                           # +0x30
     # First inventory bag: values are zero-based slot indexes (0 = first slot).
-    storage_58: dict[int, int] = field(default_factory=dict)
-    storage_80: dict[int, int] = field(default_factory=dict)
-    storage_a8: dict[int, int] = field(default_factory=dict)
-    storage_d0: dict[int, int] = field(default_factory=dict)
-    field_f8: list[int] = field(default_factory=list)
-    field_118: list[int] = field(default_factory=list)
+    storage_slots: dict[int, int] = field(default_factory=dict)  # +0x58
+    extra_storage_slots: dict[int, int] = field(default_factory=dict)  # +0x80
+    bank_storage_slots: dict[int, int] = field(default_factory=dict)  # +0xa8
+    extra_bank_storage_slots: dict[int, int] = field(default_factory=dict)  # +0xd0
+    overflow_storage_item_ids: list[int] = field(default_factory=list)  # +0xf8
+    invisible_storage_item_ids: list[int] = field(default_factory=list)  # +0x118
+    # Ids the client removes (RemoveObsoleteItems), not every changed id.
     changed_item_ids: list[int] = field(default_factory=list)   # +0x138
-    field_158: dict[int, int] = field(default_factory=dict)
-    field_180: list[int] = field(default_factory=list)
-    # Generated helper 0x1409225a4: array<string>.
-    field_1a0: list[str] = field(default_factory=list)
+    # New item id -> the old id it replaces.
+    item_id_replacements: dict[int, int] = field(default_factory=dict)  # +0x158
+    ingredient_bag_item_ids: list[int] = field(default_factory=list)  # +0x180
+    # Generated helper 0x1409225a4: array<string>, _Template_IngredientBag ids.
+    ingredient_bag_templates: list[str] = field(default_factory=list)  # +0x1a0
     storage_upgrade: int = 30
     bank_storage_upgrade: int = 53
     storage_size: int = 224
@@ -320,7 +323,7 @@ class InventoryInfo:
     extra_storage_size: int = 0
     health_points: float = 3459715.25
     secondary_resource: float = 100.0
-    field_1e0: bool = False
+    field_1e0: bool = False         # gates ClientInventoryManager::PrepareNewItem handling
     actor_id: int = 1
     # Server-only records, deliberately excluded from wire items/allocations.
     premium_inventory_overflow: list[ItemInfo] = field(default_factory=list)
@@ -373,16 +376,16 @@ def clone_inventory_info(
     ]
     # Values are tuples, so the mapping itself is the only mutable level.
     clone.equipment_slots = dict(info.equipment_slots)
-    clone.storage_58 = dict(info.storage_58)
-    clone.storage_80 = dict(info.storage_80)
-    clone.storage_a8 = dict(info.storage_a8)
-    clone.storage_d0 = dict(info.storage_d0)
-    clone.field_f8 = list(info.field_f8)
-    clone.field_118 = list(info.field_118)
+    clone.storage_slots = dict(info.storage_slots)
+    clone.extra_storage_slots = dict(info.extra_storage_slots)
+    clone.bank_storage_slots = dict(info.bank_storage_slots)
+    clone.extra_bank_storage_slots = dict(info.extra_bank_storage_slots)
+    clone.overflow_storage_item_ids = list(info.overflow_storage_item_ids)
+    clone.invisible_storage_item_ids = list(info.invisible_storage_item_ids)
     clone.changed_item_ids = list(info.changed_item_ids)
-    clone.field_158 = dict(info.field_158)
-    clone.field_180 = list(info.field_180)
-    clone.field_1a0 = list(info.field_1a0)
+    clone.item_id_replacements = dict(info.item_id_replacements)
+    clone.ingredient_bag_item_ids = list(info.ingredient_bag_item_ids)
+    clone.ingredient_bag_templates = list(info.ingredient_bag_templates)
     clone.premium_inventory_overflow = [
         clone_item_info(item) for item in info.premium_inventory_overflow
     ]
@@ -404,8 +407,8 @@ def free_inventory_location(info: InventoryInfo) -> tuple[str, int] | None:
     """Find a normal inventory slot, then a slot in the premium bag."""
 
     for name, size in (
-        ("storage_58", info.storage_size),
-        ("storage_80", info.extra_storage_size),
+        ("storage_slots", info.storage_size),
+        ("extra_storage_slots", info.extra_storage_size),
     ):
         used = set(getattr(info, name).values())
         for slot in range(size):
@@ -489,18 +492,22 @@ def write_inventory_info_body(writer: BitWriter, info: InventoryInfo) -> None:
             writer.write_uint8(slot)
 
     for values in (
-        info.storage_58,
-        info.storage_80,
-        info.storage_a8,
-        info.storage_d0,
+        info.storage_slots,
+        info.extra_storage_slots,
+        info.bank_storage_slots,
+        info.extra_bank_storage_slots,
     ):
         _write_u32_map(writer, values)
-    for values in (info.field_f8, info.field_118, info.changed_item_ids):
+    for values in (
+        info.overflow_storage_item_ids,
+        info.invisible_storage_item_ids,
+        info.changed_item_ids,
+    ):
         _write_u32_array(writer, values)
-    _write_u32_map(writer, info.field_158)
-    _write_u32_array(writer, info.field_180)
-    writer.write_uint32_le(len(info.field_1a0))
-    for value in info.field_1a0:
+    _write_u32_map(writer, info.item_id_replacements)
+    _write_u32_array(writer, info.ingredient_bag_item_ids)
+    writer.write_uint32_le(len(info.ingredient_bag_templates))
+    for value in info.ingredient_bag_templates:
         writer.write_string(value)
 
     for value in (
@@ -528,28 +535,28 @@ def read_inventory_info_body(reader: BitReader) -> InventoryInfo:
             reader.read_uint8() for _ in range(reader.read_uint32_le())
         )
     storage_maps = [_read_u32_map(reader) for _ in range(4)]
-    field_f8 = _read_u32_array(reader)
-    field_118 = _read_u32_array(reader)
+    overflow_storage_item_ids = _read_u32_array(reader)
+    invisible_storage_item_ids = _read_u32_array(reader)
     changed_item_ids = _read_u32_array(reader)
-    field_158 = _read_u32_map(reader)
-    field_180 = _read_u32_array(reader)
-    field_1a0 = [
+    item_id_replacements = _read_u32_map(reader)
+    ingredient_bag_item_ids = _read_u32_array(reader)
+    ingredient_bag_templates = [
         reader.read_string() for _ in range(reader.read_uint32_le())
     ]
     capacities = tuple(reader.read_uint32_le() for _ in range(6))
     return InventoryInfo(
         items=items,
         equipment_slots=equipment_slots,
-        storage_58=storage_maps[0],
-        storage_80=storage_maps[1],
-        storage_a8=storage_maps[2],
-        storage_d0=storage_maps[3],
-        field_f8=field_f8,
-        field_118=field_118,
+        storage_slots=storage_maps[0],
+        extra_storage_slots=storage_maps[1],
+        bank_storage_slots=storage_maps[2],
+        extra_bank_storage_slots=storage_maps[3],
+        overflow_storage_item_ids=overflow_storage_item_ids,
+        invisible_storage_item_ids=invisible_storage_item_ids,
         changed_item_ids=changed_item_ids,
-        field_158=field_158,
-        field_180=field_180,
-        field_1a0=field_1a0,
+        item_id_replacements=item_id_replacements,
+        ingredient_bag_item_ids=ingredient_bag_item_ids,
+        ingredient_bag_templates=ingredient_bag_templates,
         storage_upgrade=capacities[0],
         bank_storage_upgrade=capacities[1],
         storage_size=capacities[2],
@@ -621,7 +628,10 @@ def equip_inventory_item(
     if not any(item.item_id == item_id for item in inventory.items):
         raise ValueError(f"inventory item {item_id} does not exist")
 
-    storage_names = ("storage_58", "storage_80", "storage_a8", "storage_d0")
+    storage_names = (
+        "storage_slots", "extra_storage_slots",
+        "bank_storage_slots", "extra_bank_storage_slots",
+    )
     source_locations: list[tuple[str, int]] = []
     for name in storage_names:
         storage = getattr(inventory, name)
@@ -660,7 +670,7 @@ def equip_inventory_item(
 
     inventory.equipment_slots[item_id] = slots
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
     return inventory
 
@@ -669,7 +679,7 @@ def store_inventory_item(
     info: InventoryInfo,
     item_id: int,
     *,
-    storage_name: str = "storage_58",
+    storage_name: str = "storage_slots",
     storage_slot: int | None = None,
 ) -> InventoryInfo:
     """Move one equipped item into an authoritative storage allocation.
@@ -682,10 +692,10 @@ def store_inventory_item(
 
     item_id = int(item_id)
     capacities = {
-        "storage_58": int(info.storage_size),
-        "storage_80": int(info.extra_storage_size),
-        "storage_a8": int(info.bank_storage_size),
-        "storage_d0": int(info.extra_bank_storage_size),
+        "storage_slots": int(info.storage_size),
+        "extra_storage_slots": int(info.extra_storage_size),
+        "bank_storage_slots": int(info.bank_storage_size),
+        "extra_bank_storage_slots": int(info.extra_bank_storage_size),
     }
     if storage_name not in capacities:
         raise ValueError(f"unknown inventory storage {storage_name!r}")
@@ -733,7 +743,7 @@ def store_inventory_item(
     inventory.equipment_slots.pop(item_id)
     target[item_id] = storage_slot
     inventory.changed_item_ids = []
-    inventory.field_158 = {}
+    inventory.item_id_replacements = {}
     inventory.field_1e0 = False
     return inventory
 
@@ -776,22 +786,28 @@ def consume_equipped_stack(
         del result.items[index]
         result.equipment_slots.pop(item_id, None)
         for storage in (
-            result.storage_58, result.storage_80,
-            result.storage_a8, result.storage_d0,
+            result.storage_slots, result.extra_storage_slots,
+            result.bank_storage_slots, result.extra_bank_storage_slots,
         ):
             storage.pop(item_id, None)
-        result.field_f8 = [value for value in result.field_f8 if value != item_id]
-        result.field_118 = [value for value in result.field_118 if value != item_id]
-        result.field_180 = [value for value in result.field_180 if value != item_id]
+        result.overflow_storage_item_ids = [
+            value for value in result.overflow_storage_item_ids if value != item_id
+        ]
+        result.invisible_storage_item_ids = [
+            value for value in result.invisible_storage_item_ids if value != item_id
+        ]
+        result.ingredient_bag_item_ids = [
+            value for value in result.ingredient_bag_item_ids if value != item_id
+        ]
     else:
         item.amount = int(item.amount) - amount
     result.changed_item_ids = []
-    result.field_158 = {}
+    result.item_id_replacements = {}
     result.field_1e0 = False
     delta = clone_inventory_info(result)
     delta.items = [] if depleted else [clone_item_info(item)]
     delta.changed_item_ids = [item_id] if depleted else []
-    delta.field_158 = {}
+    delta.item_id_replacements = {}
     delta.field_1e0 = True
     return result, delta, depleted
 
@@ -853,7 +869,7 @@ def repair_ammunition_slot_allocations(
             inventory.equipment_slots[item_id] = (SECONDARY_AMMUNITION_SLOT,)
             moved.append(item_id)
             continue
-        used = set(inventory.storage_58.values())
+        used = set(inventory.storage_slots.values())
         free = next(
             (
                 candidate for candidate in range(inventory.storage_size)
@@ -864,7 +880,7 @@ def repair_ammunition_slot_allocations(
         if free is None:
             continue
         inventory.equipment_slots.pop(item_id, None)
-        inventory.storage_58[item_id] = free
+        inventory.storage_slots[item_id] = free
         moved.append(item_id)
     return inventory, tuple(moved)
 
@@ -889,7 +905,7 @@ def equipment_allocation_snapshot(info: InventoryInfo) -> InventoryInfo:
     result = copy.deepcopy(info)
     result.items = []
     result.changed_item_ids = []
-    result.field_158 = {}
+    result.item_id_replacements = {}
     result.field_1e0 = False
     return result
 
@@ -935,26 +951,26 @@ def rekey_inventory_items(
         }
 
     result.equipment_slots = remap_keyed(result.equipment_slots)
-    result.storage_58 = remap_keyed(result.storage_58)
-    result.storage_80 = remap_keyed(result.storage_80)
-    result.storage_a8 = remap_keyed(result.storage_a8)
-    result.storage_d0 = remap_keyed(result.storage_d0)
-    result.field_f8 = [
+    result.storage_slots = remap_keyed(result.storage_slots)
+    result.extra_storage_slots = remap_keyed(result.extra_storage_slots)
+    result.bank_storage_slots = remap_keyed(result.bank_storage_slots)
+    result.extra_bank_storage_slots = remap_keyed(result.extra_bank_storage_slots)
+    result.overflow_storage_item_ids = [
         mapping.get(int(item_id), int(item_id))
-        for item_id in result.field_f8
+        for item_id in result.overflow_storage_item_ids
     ]
-    result.field_118 = [
+    result.invisible_storage_item_ids = [
         mapping.get(int(item_id), int(item_id))
-        for item_id in result.field_118
+        for item_id in result.invisible_storage_item_ids
     ]
-    result.field_180 = [
+    result.ingredient_bag_item_ids = [
         mapping.get(int(item_id), int(item_id))
-        for item_id in result.field_180
+        for item_id in result.ingredient_bag_item_ids
     ]
     # A full destination snapshot establishes new identity directly; carrying
     # a prior incremental new->old replacement map across servers is invalid.
     result.changed_item_ids = []
-    result.field_158 = {}
+    result.item_id_replacements = {}
     result.field_1e0 = False
     return result, mapping, first_item_id + len(old_ids)
 
@@ -1135,7 +1151,7 @@ def encode_bootstrap_inventory_info(
             # Retail places TravelMapItem in ordinary inventory storage. It
             # must never enter equipment_slots: AddItemAtEquipmentSlot calls
             # CanBeEquipped(), which correctly rejects misc_travelmap.
-            storage_58={
+            storage_slots={
                 travel_map.item_id: 0,
                 health_potion.item_id: 1,
                 manticore.item_id: 2,
@@ -1211,7 +1227,7 @@ def repair_bootstrap_class_equipment(
             BOOTSTRAP_CONSUMABLE_ID,
         }
     }
-    used_storage_slots = set(inventory.storage_58.values())
+    used_storage_slots = set(inventory.storage_slots.values())
     for item_id in sorted(auxiliary_ids):
         if item_id not in inventory.equipment_slots:
             continue
@@ -1227,7 +1243,7 @@ def repair_bootstrap_class_equipment(
         if slot is None:
             _overflow(inventory, item_id)
             continue
-        inventory.storage_58[item_id] = slot
+        inventory.storage_slots[item_id] = slot
         used_storage_slots.add(slot)
 
     expected_template_ids = {
@@ -1326,10 +1342,10 @@ def repair_bootstrap_class_equipment(
         for item_id in removed_ids | added_ids:
             result.equipment_slots.pop(item_id, None)
             for storage_name in (
-                "storage_58",
-                "storage_80",
-                "storage_a8",
-                "storage_d0",
+                "storage_slots",
+                "extra_storage_slots",
+                "bank_storage_slots",
+                "extra_bank_storage_slots",
             ):
                 getattr(result, storage_name).pop(item_id, None)
         # A kept starter that shares a slot with an acquired item yields it
@@ -1362,16 +1378,16 @@ def repair_bootstrap_class_equipment(
 
     allocated_ids = set(result.equipment_slots)
     for storage_name in (
-        "storage_58",
-        "storage_80",
-        "storage_a8",
-        "storage_d0",
+        "storage_slots",
+        "extra_storage_slots",
+        "bank_storage_slots",
+        "extra_bank_storage_slots",
     ):
         allocated_ids.update(getattr(result, storage_name))
     free_slots = (
         slot
         for slot in range(max(0, int(result.storage_size)))
-        if slot not in set(result.storage_58.values())
+        if slot not in set(result.storage_slots.values())
     )
     for item_id in sorted(conflicting_core_ids):
         if item_id in allocated_ids:
@@ -1380,10 +1396,10 @@ def repair_bootstrap_class_equipment(
         if storage_slot is None:
             _overflow(result, item_id)
             continue
-        result.storage_58[item_id] = storage_slot
+        result.storage_slots[item_id] = storage_slot
         allocated_ids.add(item_id)
 
     result.changed_item_ids = []
-    result.field_158 = {}
+    result.item_id_replacements = {}
     result.field_1e0 = False
     return result

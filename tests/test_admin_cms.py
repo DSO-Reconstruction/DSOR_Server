@@ -233,7 +233,7 @@ def test_item_booking_uses_catalog_and_real_inventory_allocation(cms):
     cms.service.delivery.deliver(42)
     saved = cms.store.get(42)
     assert sum(i.amount for i in saved.inventory.items) == 2
-    assert saved.inventory.storage_58
+    assert saved.inventory.storage_slots
     assert saved.next_item_id > 10000
 
 

@@ -173,7 +173,7 @@ class AccountSnapshotLockTests(unittest.TestCase):
         live.items[0].amount += 7
         live.items[0].socketed_templates.append("gem_ruby_i")
         live.equipment_slots.clear()
-        live.storage_58.clear()
+        live.storage_slots.clear()
         self.assertEqual(state.inventory, before)
 
     def test_the_lock_is_held_for_a_small_fraction_of_the_snapshot(self):

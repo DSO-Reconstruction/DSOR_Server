@@ -44,7 +44,7 @@ def add_item(session, template=RUNE_EXTENSION_ITEM, amount=1, *, equipped=None):
     item = ItemInfo(item_id=item_id, template_id=template, amount=amount, item_level=1)
     session.gameplay_inventory.items.append(item)
     if equipped is None:
-        session.gameplay_inventory.storage_58[item_id] = max(session.gameplay_inventory.storage_58.values(), default=-1) + 1
+        session.gameplay_inventory.storage_slots[item_id] = max(session.gameplay_inventory.storage_slots.values(), default=-1) + 1
     else:
         session.gameplay_inventory.equipment_slots[item_id] = (equipped,)
     return item_id
@@ -70,7 +70,7 @@ def test_new_character_has_two_stones_and_no_trinkets_or_entitlements(player):
     assert not any("trinket" in item.template_id for item in inventory.items)
     stones = [item for item in inventory.items if item.template_id == RUNE_EXTENSION_ITEM]
     assert [item.amount for item in stones] == [2]
-    assert stones[0].item_id in inventory.storage_58
+    assert stones[0].item_id in inventory.storage_slots
     assert stones[0].item_id not in inventory.equipment_slots
     assert unlocked_rune_slots(session) == frozenset()
     assert not any(key in session.gameplay_achievements for key in RUNE_SLOT_ACHIEVEMENTS)
@@ -176,7 +176,7 @@ def test_slot_unlock_update_precedes_the_stone_and_rewards_follow_it(player, mon
     rewards = decode_server_command_batch(*sent.call_args_list[2].args[1:])
     reward_id = next(item.item_id for item in rewards[0].value.items
                      if item.template_id == "ingredient_gem_dust")
-    assert reward_id in rewards[-1].value.field_180
+    assert reward_id in rewards[-1].value.ingredient_bag_item_ids
     saved = saved_state(server, session)
     assert saved.achievements[definition.key]["reward_status"] == "granted"
     assert reward_id in {item.item_id for item in saved.inventory.items}
@@ -245,7 +245,7 @@ def test_saved_entitlement_stays_authorized_after_unequip_save_and_relog(player)
     # Map initialization intentionally rekeys every inventory item.
     restored_id = next(item.item_id for item in restored.gameplay_inventory.items
                        if item.template_id == "all_base_trinket_rune_01"
-                       and item.item_id in restored.gameplay_inventory.storage_58)
+                       and item.item_id in restored.gameplay_inventory.storage_slots)
     act(server, restored, restored_id, 0x01, 14)
     assert restored.gameplay_inventory.equipment_slots[restored_id] == (14,)
 

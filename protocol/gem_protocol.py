@@ -280,7 +280,7 @@ def unlock_gem_socket(
     equipment.socket_count += 1
     equipment.socketed_templates.append("")
     working.changed_item_ids = []
-    working.field_158 = {}
+    working.item_id_replacements = {}
     working.field_1e0 = False
     return SocketUnlockMutation(
         inventory=working,
@@ -443,7 +443,7 @@ def remove_gem(
     response_inventory.changed_item_ids = copy.deepcopy(
         added.delta.changed_item_ids
     )
-    response_inventory.field_158 = copy.deepcopy(added.delta.field_158)
+    response_inventory.item_id_replacements = copy.deepcopy(added.delta.item_id_replacements)
     # The retail no-stack removal has this flag clear. The replacement path
     # uses the same true value already proven by stacking vendor transactions.
     response_inventory.field_1e0 = bool(added.replaced_item_ids)
@@ -529,23 +529,23 @@ def insert_gem(
         working.items.remove(gem)
         for values in (
             working.equipment_slots,
-            working.storage_58,
-            working.storage_80,
-            working.storage_a8,
-            working.storage_d0,
+            working.storage_slots,
+            working.extra_storage_slots,
+            working.bank_storage_slots,
+            working.extra_bank_storage_slots,
         ):
             values.pop(int(gem_item_id), None)
         for values in (
-            working.field_f8,
-            working.field_118,
-            working.field_180,
+            working.overflow_storage_item_ids,
+            working.invisible_storage_item_ids,
+            working.ingredient_bag_item_ids,
         ):
             values[:] = [
                 value for value in values
                 if int(value) != int(gem_item_id)
             ]
     working.changed_item_ids = []
-    working.field_158 = {}
+    working.item_id_replacements = {}
     working.field_1e0 = False
     return GemMutation(
         inventory=working,

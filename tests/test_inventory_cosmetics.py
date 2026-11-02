@@ -77,7 +77,7 @@ class UseCostumeFromInventoryTests(unittest.TestCase):
         inventory.items.append(
             ItemInfo(item_id=COSTUME_ITEM_ID, template_id=COLLECTIBLE_COSTUME, amount=1, item_level=1)
         )
-        inventory.storage_58[COSTUME_ITEM_ID] = 7
+        inventory.storage_slots[COSTUME_ITEM_ID] = 7
         self.session = Session(("127.0.0.1", 40900), self.server.sock)
         self.session.gameplay_mode = True
         self.session.gameplay_inventory = inventory
@@ -110,7 +110,7 @@ class UseCostumeFromInventoryTests(unittest.TestCase):
         self.assertEqual(len(self._costume_effects()), 1)
         self.assertTrue(self.server.sock.sent, "the status effect must reach the client")
         inventory = self.session.gameplay_inventory
-        self.assertEqual(inventory.storage_58.get(COSTUME_ITEM_ID), 7)
+        self.assertEqual(inventory.storage_slots.get(COSTUME_ITEM_ID), 7)
         self.assertEqual(
             next(item for item in inventory.items if item.item_id == COSTUME_ITEM_ID).amount,
             1,

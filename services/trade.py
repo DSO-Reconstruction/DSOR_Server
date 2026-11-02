@@ -356,7 +356,7 @@ class TradeService:
             item = by_id.get(int(item_id))
             if (item is None or any(i == item_id for i, _ in items)
                     or int(item_id) in inventory.equipment_slots
-                    or not (int(item_id) in inventory.storage_58 or int(item_id) in inventory.storage_80)
+                    or not (int(item_id) in inventory.storage_slots or int(item_id) in inventory.extra_storage_slots)
                     or getattr(item, "quest_id", "")):
                 continue
             items.append((int(item_id), max(1, min(int(amount), int(item.amount)))))
@@ -413,7 +413,7 @@ class TradeService:
                 for item_id, amount in side.items:
                     item = builder.item(item_id)
                     if int(item_id) in builder.inventory.equipment_slots or not (
-                            int(item_id) in builder.inventory.storage_58 or int(item_id) in builder.inventory.storage_80):
+                            int(item_id) in builder.inventory.storage_slots or int(item_id) in builder.inventory.extra_storage_slots):
                         raise ValueError(f"{side.name}'s offered item moved")
                     if int(amount) > int(item.amount):
                         raise ValueError(f"{side.name}'s offered stack shrank")

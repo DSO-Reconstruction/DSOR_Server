@@ -3,7 +3,7 @@ import { $, esc, human, date, classes, rarities, api, link, navigate, status, ta
   section, tabs, toolbar, bindSearch, pager, tree, valueView, valueList, bookingTable, formError, notice,
   announce, rememberParams, routeInfo, confirmAction } from "./admin_ui.js";
 
-const containers = {equipment_slots: "Equipment", storage_58: "Inventory", storage_80: "Extra inventory", storage_a8: "Bank", storage_d0: "Extra bank"};
+const containers = {equipment_slots: "Equipment", storage_slots: "Inventory", extra_storage_slots: "Extra inventory", bank_storage_slots: "Bank", extra_bank_storage_slots: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
 const privileges = [["admin_privileges", "Game administrator"], ["admin_name_color", "Administrator name colour"]];
 const questStates = {0: "Accepted", 1: "Finished", 2: "Closed", 3: "Cancelled", 4: "Failed"};
@@ -395,7 +395,7 @@ function location(item, inventory) {
       return {name, slot: field === "equipment_slots" ? value.map(s => slots[s] || `Slot ${s}`).join(", ") : `Slot ${Number(value) + 1}`};
     }
   }
-  if ((inventory.field_180 || []).includes(item.item_id)) return {name: "Ingredients", slot: "—"};
+  if ((inventory.ingredient_bag_item_ids || []).includes(item.item_id)) return {name: "Ingredients", slot: "—"};
   return {name: "Other", slot: "—"};
 }
 
@@ -453,7 +453,7 @@ export async function characterPage(route) {
     const inventory = s.inventory, all = inventory.items || [];
     const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
       (inventory.premium_storage_overflow || []).length;
-    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_58 || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.storage_a8 || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
+    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_slots || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.bank_storage_slots || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
       filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
         const where = location(item, inventory);
         return [link(item.template_id, `${root}/inventory/${item.item_id}`, route.params, "resource mono") + `<span class="sub">Item ${item.item_id}</span>`,

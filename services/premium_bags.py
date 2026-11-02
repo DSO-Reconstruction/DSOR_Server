@@ -47,14 +47,14 @@ class PremiumBagService:
             )
             pending = (
                 bool(inventory.premium_inventory_overflow)
-                and (len(inventory.storage_58) < inventory.storage_size
-                     or len(inventory.storage_80) < inventory.extra_storage_size)
+                and (len(inventory.storage_slots) < inventory.storage_size
+                     or len(inventory.extra_storage_slots) < inventory.extra_storage_size)
             ) or (
                 bool(inventory.premium_storage_overflow)
-                and (len(inventory.storage_a8) < inventory.bank_storage_size
-                     or len(inventory.storage_d0) < inventory.extra_bank_storage_size)
+                and (len(inventory.bank_storage_slots) < inventory.bank_storage_size
+                     or len(inventory.extra_bank_storage_slots) < inventory.extra_bank_storage_size)
             )
-            locked_allocations = not active and bool(inventory.storage_80 or inventory.storage_d0)
+            locked_allocations = not active and bool(inventory.extra_storage_slots or inventory.extra_bank_storage_slots)
             commands = []
             membership_effect_changes = []
             if membership_changed:
