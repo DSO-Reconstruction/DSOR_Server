@@ -331,7 +331,8 @@ def test_all_client_skill_commands_reject_without_payment_or_damage(kind):
         }
         command, request = commands[kind]
         stats = SimpleNamespace(minimum_damage=10, maximum_damage=10, critical_hit_chance=0,
-                                critical_damage_multiplier=2, attack_speed=1, skill_modifier_sources=())
+                                critical_damage_multiplier=2, attack_speed=1, skill_modifier_sources=(),
+                                rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0)
         with ExitStack() as stack:
             decoder = "decode_" + kind + ("_skill" if "bullet" in kind else "")
             stack.enter_context(patch.object(player_combat, decoder, return_value=request))
@@ -369,7 +370,8 @@ def test_rejected_recast_preserves_all_first_cast_projectile_and_pvp_impacts():
         before_monsters = dict(fixture.combat.pending_runtime_player_hits)
         before_players = dict(fixture.source.gameplay_pending_pvp_hits)
         stats = SimpleNamespace(minimum_damage=10, maximum_damage=10, critical_hit_chance=0,
-                                critical_damage_multiplier=2, attack_speed=1, skill_modifier_sources=())
+                                critical_damage_multiplier=2, attack_speed=1, skill_modifier_sources=(),
+                                rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0)
         with patch.object(player_combat, "decode_bullet_skill", return_value=replace(fixture.skill, cast_id=999)), \
              patch.object(player_combat, "calculate_player_combat_stats", return_value=stats), \
              patch.object(CharacterService, "_apply_player_skill_resource") as pay:

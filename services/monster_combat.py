@@ -795,6 +795,7 @@ class MonsterCombatService(
             combat_targets,
             due_periodic_auras_by_actor,
             prepared_target_stats,
+            active_statuses_by_actor,
         ) = CharacterService._prepare_monster_target_inputs(
             combat,
             combat_targets,
@@ -802,29 +803,17 @@ class MonsterCombatService(
             now=now,
         )
 
-        # Snapshot player-owned status leases before taking the map lock.
-        # This feeds Creator-aura Taunt and the Winter set's equipment aura
-        # into the shared authoritative monster state.
+        # Resolve the player-owned status leases snapshotted above, before
+        # taking the map lock. This feeds Creator-aura Taunt and the Winter
+        # set's equipment aura into the shared authoritative monster state.
         player_buff_taunt_auras = []
         player_status_enemy_auras = []
-        for actor_id, wire_position, target_session in combat_targets:
+        for actor_id, wire_position, _target_session in combat_targets:
             world_position = combat.encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
-            with target_session.flow_lock:
-                active_statuses = list(
-                    target_session.gameplay_runtime_status_effects.values()
-                )
-                active_statuses.extend(
-                    (entry, None)
-                    for entry in (
-                        tuple(target_session.gameplay_persistent_status_effects.values())
-                        + tuple(target_session.gameplay_item_set_effects.values())
-                        + tuple(target_session.gameplay_socket_effects.values())
-                    )
-                )
             seen_statuses = set()
-            for entry, expires_at in active_statuses:
+            for entry, expires_at in active_statuses_by_actor[actor_id]:
                 status_key = (int(entry.field_04), int(entry.effect_id))
                 if status_key in seen_statuses:
                     continue

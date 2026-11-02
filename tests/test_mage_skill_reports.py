@@ -140,6 +140,7 @@ class SingularityCastTests(unittest.TestCase):
         stats = SimpleNamespace(
             minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
             critical_damage_multiplier=2.0, attack_speed=1.0, skill_modifier_sources=(),
+            rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0,
         )
         with (
             patch.object(player_combat, "decode_shifted_skill", return_value=client_skill),
@@ -213,6 +214,7 @@ class SingularityCastTests(unittest.TestCase):
             minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
             critical_damage_multiplier=2.0, attack_speed=1.0,
             skill_modifier_sources=(),
+            rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0,
         )
         previous_health = self.combat.monster_health[self.monster]
         with (
@@ -251,6 +253,7 @@ class SingularityCastTests(unittest.TestCase):
             minimum_damage=10.0, maximum_damage=10.0, critical_hit_chance=0.0,
             critical_damage_multiplier=2.0, attack_speed=1.0,
             skill_modifier_sources=(),
+            rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0,
         )
         previous_health = self.combat.monster_health[self.monster]
         with (
