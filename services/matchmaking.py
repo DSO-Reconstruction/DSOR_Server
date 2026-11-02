@@ -927,6 +927,10 @@ class MatchmakingService:
         # A session re-bound after the objectives are up needs the flags that
         # are lying on the ground; its world-item table was reset on load.
         CharacterService._show_ground_flags(self, s, match)
+        from dso_server.services.talent_events import dispatch_talent_event
+        dispatch_talent_event(
+            s, "enterpvp", server_tick=int(s.gameplay_chase_server_tick),
+        )
         self._send_match_info(s, match)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] character {character_id} entered PvP "

@@ -89,6 +89,7 @@ class ModifierAmounts:
 @dataclass(frozen=True)
 class ActiveStatusModifiers:
     xp_gain: ModifierAmounts = ModifierAmounts()
+    honor_gain: ModifierAmounts = ModifierAmounts()
     virtual_currency_drop: ModifierAmounts = ModifierAmounts()
     drop_amounts: tuple[tuple[str, ModifierAmounts], ...] = ()
     quest_experience: ModifierAmounts = ModifierAmounts()
@@ -381,6 +382,7 @@ def evaluate_active_status_modifiers(
     globe_resource = ModifierAmounts()
     additional_essence_cost = 0.0
     ignore_essence_cost = 0.0
+    honor_gain = ModifierAmounts()
     sources = tuple(status_effects)
     programs = []
     for entry in _status_entries(sources):
@@ -439,7 +441,7 @@ def evaluate_active_status_modifiers(
             continue
         if kind not in {
             'xpgain', 'questexperience', 'virtualcurrencydropamount',
-            'dropamount', 'questdropfactor', 'healthglobebonus',
+            'dropamount', 'questdropfactor', 'healthglobebonus', 'honorgain',
         }:
             continue
         if len(modifier.arguments) < 2:
@@ -457,6 +459,8 @@ def evaluate_active_status_modifiers(
         operation = modifier.arguments[1]
         if kind == 'xpgain':
             xp_gain = xp_gain.plus(value, operation)
+        elif kind == 'honorgain':
+            honor_gain = honor_gain.plus(value, operation)
         elif kind == 'questexperience':
             quest_experience = quest_experience.plus(value, operation)
         elif kind == 'virtualcurrencydropamount':
@@ -480,6 +484,7 @@ def evaluate_active_status_modifiers(
                 ).plus(value, operation)
     return ActiveStatusModifiers(
         xp_gain=xp_gain,
+        honor_gain=honor_gain,
         quest_experience=quest_experience,
         virtual_currency_drop=virtual_currency,
         drop_amounts=tuple(sorted(drops.items())),

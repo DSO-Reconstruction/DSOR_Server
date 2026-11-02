@@ -133,6 +133,8 @@ class PlayerOwnedResolutionDispatchService:
                 owner_resolutions,
                 label="player-owned-kill-heal",
             )
+            from dso_server.services.talent_events import dispatch_kill_talents
+            dispatch_kill_talents(owner_session, owner_resolutions)
 
             dispatches = []
             killed_monsters = []

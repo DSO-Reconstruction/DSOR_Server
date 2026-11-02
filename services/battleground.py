@@ -24,6 +24,10 @@ from dso_server.protocol.pvp_match_protocol import (
     MATCH_MODE_LAST_MAN_STANDING_8FFA,
 )
 from dso_server.gameplay.player_skill_timing import reset_player_skill_timing
+from dso_server.gameplay.status_modifier_runtime import (
+    evaluate_active_status_modifiers, load_status_modifier_catalog,
+    snapshot_player_modifier_sources,
+)
 
 from dso_server.gameplay.map_status_effects import (
     map_status_effect_definitions,
@@ -147,6 +151,12 @@ class BattlegroundService(BattlegroundObjectiveService):
             CharacterService._clear_battleground_round_effects(self, session)
             CharacterService._restore_battleground_health(self, session)
             CharacterService._send_battleground_effects(self, session)
+            # The round clear took Nimble's attack speed with the rest.
+            from dso_server.services.talent_events import dispatch_talent_event
+            dispatch_talent_event(
+                session, "enterpvp",
+                server_tick=int(session.gameplay_chase_server_tick),
+            )
         CharacterService._broadcast_round_message(self, match, 28, match.round_index + 1)
         self._broadcast_match_info(match)
         # C3 changes the match phase; Message(5, seconds) draws the digits.
@@ -839,7 +849,11 @@ class BattlegroundService(BattlegroundObjectiveService):
             if session is None:
                 continue
             won = entry.team == winning_team
-            honor = entry.honor_earned(rounds, match_won=won)
+            # Crowd Favorite: "increases your Honor Points ... after each battle".
+            honor = evaluate_active_status_modifiers(
+                load_status_modifier_catalog(server.static_database_path),
+                snapshot_player_modifier_sources(session),
+            ).honor_gain.apply(entry.honor_earned(rounds, match_won=won))
             total = int(getattr(session, "gameplay_honor_points", 0))
             if credit:
                 with session.flow_lock:

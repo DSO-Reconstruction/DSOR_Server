@@ -283,6 +283,8 @@ class PlayerRespawnService:
             allowed = getattr(s, "gameplay_respawn_allowed", False)
         CharacterService._clear_player_death_effects(s)
         CharacterService._expire_summons_with_owner(s)
+        from dso_server.services.talent_events import dispatch_player_death
+        dispatch_player_death(s)
         if allowed and getattr(s, "gameplay_match", None) is None:
             with s.flow_lock:
                 if not s.gameplay_death_pending or s.gameplay_respawn_in_progress:

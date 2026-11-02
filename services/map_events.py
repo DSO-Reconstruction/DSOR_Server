@@ -3842,6 +3842,9 @@ class MapEventService:
         )
         if inventory is None:
             return
+        from dso_server.services.talent_events import (
+            dispatch_talent_event, spare_player,
+        )
         with combat.lock:
             health = combat.player_health.get(actor_id)
             if health is None or int(health[0]) <= 0:
@@ -3853,6 +3856,8 @@ class MapEventService:
             health[0] = current
             if actor_id == int(combat.player_actor_id):
                 combat.player_current_health = current
+            death_saved = current <= 0 and spare_player(s, combat, actor_id)
+            current = int(health[0])
         if applied <= 0:
             return
         CharacterService._cancel_respawn_protection(s)
@@ -3878,6 +3883,8 @@ class MapEventService:
             s, resolution, label="fractured-planes-path-trap",
             include_item_set_procs=False,
         )
+        if death_saved:
+            dispatch_talent_event(s, "nohealth", server_tick=server_tick)
 
     @staticmethod
     def _apply_tower_aura_damage(
@@ -4047,6 +4054,9 @@ class MapEventService:
                      + float(monster.maximum_damage)) / 2.0
                 )),
             )
+            from dso_server.services.talent_events import (
+                dispatch_talent_event, spare_player,
+            )
             with combat.lock:
                 health = combat.player_health.get(actor)
                 if health is None or int(health[0]) <= 0:
@@ -4057,6 +4067,8 @@ class MapEventService:
                 health[0] = current
                 if actor == int(combat.player_actor_id):
                     combat.player_current_health = current
+                death_saved = current <= 0 and spare_player(s, combat, actor)
+                current = int(health[0])
             if applied <= 0:
                 continue
             applied_any = True
@@ -4084,6 +4096,8 @@ class MapEventService:
                 label="fractured-planes-tower-aura",
                 include_item_set_procs=False,
             )
+            if death_saved:
+                dispatch_talent_event(s, "nohealth", server_tick=server_tick)
         if applied_any:
             contact_summary = tuple(
                 (

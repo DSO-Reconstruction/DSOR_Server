@@ -117,6 +117,11 @@ class PlayerCombatStats:
     movement_speed: float = 5.0
     movement_bonus_speed: float = 0.0
     mount_duration_scale: float = 1.0
+    # ``DamagePermeabilityPvP``: the share of a player's damage that gets
+    # through (Steadfastness, Cyanite Shield).
+    pvp_damage_permeability: float = 1.0
+    # ``StatusEffectGroupDuration:...,relative,Disabled`` (Defiance).
+    stun_duration_scale: float = 1.0
 
     def incoming_damage_multiplier(self, damage_type: str) -> float:
         """Return the level-scaled mitigation multiplier for one element."""
@@ -886,6 +891,17 @@ def _status_group_duration_scale(
             or arguments[1].casefold() != "relative"
             or _clean_token(arguments[2]).casefold() != group
         ):
+            continue
+        amount = _resolved_range(instruction, variables)
+        if amount is not None:
+            total += sum(amount) / 2.0
+    return max(0.0, 1.0 + total)
+
+
+def _pvp_damage_permeability(instructions, variables) -> float:
+    total = 0.0
+    for instruction in instructions:
+        if instruction.modifier.kind.casefold() != "damagepermeabilitypvp":
             continue
         amount = _resolved_range(instruction, variables)
         if amount is not None:
@@ -2919,6 +2935,10 @@ def _calculate_player_combat_stats(
         rift_force_echo_multiplier=max(0.0, rift_force_echo_multiplier),
         mount_duration_scale=_status_group_duration_scale(
             combined, variables, "mount"
+        ),
+        pvp_damage_permeability=_pvp_damage_permeability(combined, variables),
+        stun_duration_scale=_status_group_duration_scale(
+            combined, variables, "disabled"
         ),
     )
 
