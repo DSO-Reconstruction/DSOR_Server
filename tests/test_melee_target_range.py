@@ -37,7 +37,8 @@ class RageAttackRangeTests(unittest.TestCase):
             self.session.gameplay_last_move = None
             self.session.gameplay_spawn_position = self.origin
         stats = SimpleNamespace(minimum_damage=10.0, maximum_damage=10.0,
-            critical_hit_chance=0.0, critical_damage_multiplier=2.0, attack_speed=1.0, skill_modifier_sources=())
+            critical_hit_chance=0.0, critical_damage_multiplier=2.0, attack_speed=1.0, skill_modifier_sources=(),
+            rift_force_echo_chance=0.0, rift_force_echo_multiplier=0.0)
         payload, self.session.current_message_bit_length = target_packet(self.monster)
         with (
             patch.object(player_combat, "calculate_player_combat_stats", return_value=stats),

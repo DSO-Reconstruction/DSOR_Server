@@ -173,7 +173,10 @@ class MapLocalEventUpdateTests(unittest.TestCase):
         runtime = SimpleNamespace(
             lock=RLock(), map_id='h0001_hub', running={gate: object()},
             active_flags=lambda: frozenset({gate}),
-            content=SimpleNamespace(referenced_events=frozenset(events)),
+            content=SimpleNamespace(
+                referenced_events=frozenset(events),
+                a_mighty_threat_spawn_event_keys=lambda _catalog: frozenset(),
+            ),
             catalog=SimpleNamespace(event=events.get),
         )
         transition = SimpleNamespace(event=events[gate], active=True)

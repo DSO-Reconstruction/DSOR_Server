@@ -253,10 +253,12 @@ def test_booking_notification_acknowledgement_never_credits_again(cms, online):
         server._handle_notification_action(s, b"")
         server._handle_notification_action(s, b"")
     assert s.gameplay_currency_state.andermant == 125
+    # A receipt the session no longer knows is acknowledged: no reward, no disconnect.
     unknown = replace(action, instance_guid=BOOKING_GUID_PREFIX + (row["id"] + 1).to_bytes(8, "big"))
     with patch.object(commerce, "decode_notification_action", return_value=unknown):
-        with pytest.raises(ValueError, match="unknown CMS"):
-            server._handle_notification_action(s, b"")
+        server._handle_notification_action(s, b"")
+    assert s.connected
+    assert s.gameplay_currency_state.andermant == 125
 
 
 def test_full_inventory_stays_pending_without_notification(cms, online):

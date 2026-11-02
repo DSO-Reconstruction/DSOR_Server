@@ -86,7 +86,7 @@ class PVPPlayerEffectTests(unittest.TestCase):
             position=self.frame.world_to_wire((10.0, 0.0, 10.0)),
             damage=damage, victim_status_effects=effects, user_status_effects=(),
             frost_hit=False, damage_type="Fire", player_damage_range=(100.0, 100.0),
-            critical_hit=False, blocked=False,
+            critical_hit=False, blocked=False, rift_damage=0,
         )
         self.source.gameplay_pending_pvp_hits[key] = pending
         CharacterService._resolve_pvp_skill_hit(

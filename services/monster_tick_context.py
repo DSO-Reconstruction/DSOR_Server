@@ -310,11 +310,16 @@ class MonsterTickContextService:
         due_attack_actor_ids,
         now: float,
     ):
-        """Reserve aura cadence and calculate target stats outside map locks."""
+        """Reserve aura cadence and calculate target stats outside map locks.
+
+        Each target's status leases are copied in the same ``flow_lock`` hold,
+        so this one pass covers everything the tick reads from that session.
+        """
 
         prepared_targets = []
         due_auras_by_actor = {}
         target_stats_by_actor = {}
+        active_statuses_by_actor = {}
         for actor_id, position, target_session in combat_targets:
             with target_session.flow_lock:
                 if (
@@ -347,10 +352,22 @@ class MonsterTickContextService:
                     due_periodic_auras.append(aura)
                 character = target_session.gameplay_character
                 inventory = target_session.gameplay_inventory
+                active_statuses = list(
+                    target_session.gameplay_runtime_status_effects.values()
+                )
+                active_statuses.extend(
+                    (entry, None)
+                    for entry in (
+                        tuple(target_session.gameplay_persistent_status_effects.values())
+                        + tuple(target_session.gameplay_item_set_effects.values())
+                        + tuple(target_session.gameplay_socket_effects.values())
+                    )
+                )
 
             actor_id = int(actor_id)
             prepared_targets.append((actor_id, position, target_session))
             due_auras_by_actor[actor_id] = tuple(due_periodic_auras)
+            active_statuses_by_actor[actor_id] = tuple(active_statuses)
             if (
                 actor_id not in due_attack_actor_ids
                 and not due_periodic_auras
@@ -375,4 +392,5 @@ class MonsterTickContextService:
             tuple(prepared_targets),
             due_auras_by_actor,
             target_stats_by_actor,
+            active_statuses_by_actor,
         )

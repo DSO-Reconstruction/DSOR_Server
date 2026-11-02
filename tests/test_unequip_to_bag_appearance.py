@@ -14,6 +14,7 @@ def test_a_worn_weapon_moved_to_a_bag_cell_updates_the_appearance():
     case.setUp()
     try:
         server, session = case.server, case.session
+        server.item_set_database = server.socket_effect_database = None
         session.gameplay_inventory = InventoryInfo(
             items=[ItemInfo(item_id=51, template_id="warrior_unique_2h_mace_anniversary_2026", amount=1, item_level=10)],
             equipment_slots={51: (5, 6)}, storage_size=28,

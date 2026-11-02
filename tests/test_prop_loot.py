@@ -314,14 +314,13 @@ class AmphoraInteractionTests(unittest.TestCase):
         loot = sorted(self.session.gameplay_world_loot.values(), key=lambda d: d.item.item_id)
         kinds = [drop.item.template_id for drop in loot]
         self.assertEqual(kinds.count("money_vc"), 3)
-        self.assertIn("e_chr_2012_event_currency", kinds)
-        self.assertIn(DRAGAN_KEY, kinds)
-        first = loot[0].item.field_100
-        self.assertAlmostEqual(first[0], self.player[0], places=3)
-        self.assertAlmostEqual(first[2], self.player[2], places=3)
+        # AutoPickUp=All drops land within reach, so the click collects them.
+        bag = {item.template_id: item.amount for item in self.session.gameplay_inventory.items}
+        self.assertEqual(bag["e_chr_2012_event_currency"], 10)
+        self.assertIn(DRAGAN_KEY, bag)
+        self.assertNotIn("e_chr_2012_event_currency", kinds)
+        self.assertNotIn(DRAGAN_KEY, kinds)
         auto = {drop.item.template_id: drop.auto_pick_up for drop in loot}
-        self.assertEqual(auto["e_chr_2012_event_currency"], "All")
-        self.assertEqual(auto[DRAGAN_KEY], "All")
         if "e_dra_03_hardmode_bosskey" in auto:
             self.assertEqual(auto["e_dra_03_hardmode_bosskey"], "Privileged")
         # A second click on the used amphora spends nothing more.
