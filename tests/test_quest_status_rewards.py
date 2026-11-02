@@ -94,16 +94,16 @@ def test_every_current_authored_status_reward_reaches_the_client_and_saves(playe
     assert server._quest_turn_in(session, quest_id)
     entry = effect(session, quest_id)
     definition = load_consumable_catalog(DEFAULT_STATIC_DB_PATH).definition_for_effect(entry.effect_id)
-    assert entry.field_10 == definition.duration_ticks
-    assert entry.field_18 == 0 and not entry.field_39
-    assert session.gameplay_timed_status_effect_expiries[entry.field_04] > 0
-    assert ("consumable-expire", entry.field_04) in session.gameplay_projectile_timers
+    assert entry.total_duration == definition.duration_ticks
+    assert entry.stack_index == 0 and not entry.permanent
+    assert session.gameplay_timed_status_effect_expiries[entry.instance_id] > 0
+    assert ("consumable-expire", entry.instance_id) in session.gameplay_projectile_timers
     call = next(call for call in sent.call_args_list if call.kwargs.get("label") == "quest-status-rewards")
     commands = decode_server_command_batch(*call.args[1:])
     assert any(command.command_id == STATUS_EFFECT_COMMAND and entry in command.value.entries for command in commands)
     saved = server.account_store.get(session.gameplay_character.character_id)
     assert saved.quest_log[quest_id]["state"] == QUEST_STATE_CLOSED
-    assert entry.field_04 in saved.status_effect_names
+    assert entry.instance_id in saved.status_effect_names
     sent.reset_mock()
     assert not server._quest_turn_in(session, quest_id)
     sent.assert_not_called()
@@ -138,7 +138,7 @@ def test_request_commits_all_rewards_and_consumption_before_failed_first_deliver
         server._handle_quest_command(session, payload)
     assert not server._quest_turn_in(session, REACT)
     restored = initialize(server, 47832)
-    assert effect(restored, REACT).field_18 == 0
+    assert effect(restored, REACT).stack_index == 0
     assert not server._quest_turn_in(restored, REACT)
     assert quantities(restored.gameplay_inventory)["react_bundle_gems_min_lvl_1"] == before.get("react_bundle_gems_min_lvl_1", 0) + 1
 
@@ -150,14 +150,14 @@ def test_repeated_completions_honor_deny_and_reset_runtime(player, monkeypatch, 
     finished(session, quest_id)
     assert server._quest_turn_in(session, quest_id)
     first = effect(session, quest_id)
-    expiry = session.gameplay_timed_status_effect_expiries[first.field_04]
+    expiry = session.gameplay_timed_status_effect_expiries[first.instance_id]
     monkeypatch.setattr(quest_status_rewards.time, "time", lambda: 1900000100.0)
     finished(session, quest_id)  # Another legitimately finished repeat/run.
     assert server._quest_turn_in(session, quest_id)
     second = effect(session, quest_id)
-    assert session.gameplay_timed_status_effect_expiries[second.field_04] == expiry + (100 if refresh else 0)
-    assert second.field_18 == 0
-    assert (second.field_04 == first.field_04) == (quest_id == EASTER)
+    assert session.gameplay_timed_status_effect_expiries[second.instance_id] == expiry + (100 if refresh else 0)
+    assert second.stack_index == 0
+    assert (second.instance_id == first.instance_id) == (quest_id == EASTER)
 
 
 @pytest.mark.parametrize("quest_id,offline,remaining", [(ZAH, 100, 1700), ("TestTriggeredQuest", 10000, 600)])
@@ -170,19 +170,19 @@ def test_real_time_and_paused_clocks_survive_codec_and_rejoin(player, monkeypatc
     original = effect(session, quest_id)
     captured = _state_from_document(_state_to_document(server._capture_account_state(session)))
     if quest_id == "TestTriggeredQuest":
-        assert captured.timed_status_effect_expiries[original.field_04] == -600
+        assert captured.timed_status_effect_expiries[original.instance_id] == -600
     server.account_store.put(captured, flush=True)
     monkeypatch.setattr(quest_status_rewards.time, "time", lambda: epoch + offline)
     restored = initialize(server, 47833)
     install_timers(restored)
     entry = effect(restored, quest_id)
-    assert entry.field_10 == remaining * 25
-    assert restored.gameplay_timed_status_effect_expiries[entry.field_04] == epoch + offline + remaining
+    assert entry.total_duration == remaining * 25
+    assert restored.gameplay_timed_status_effect_expiries[entry.instance_id] == epoch + offline + remaining
     server._restore_consumable_timers(restored)
-    timer = restored.gameplay_projectile_timers[("consumable-expire", entry.field_04)]
+    timer = restored.gameplay_projectile_timers[("consumable-expire", entry.instance_id)]
     assert timer.delay == pytest.approx(remaining + .1)
     timer.callback(*timer.args)
-    assert entry.field_04 not in restored.gameplay_persistent_status_effects
+    assert entry.instance_id not in restored.gameplay_persistent_status_effects
 
 
 def test_expired_real_time_reward_does_not_restart_from_closed_quest(player, monkeypatch):
@@ -193,7 +193,7 @@ def test_expired_real_time_reward_does_not_restart_from_closed_quest(player, mon
     entry = effect(session, ZAH)
     monkeypatch.setattr(quest_status_rewards.time, "time", lambda: 1900002000.0)
     restored = initialize(server, 47834)
-    assert entry.field_04 not in restored.gameplay_persistent_status_effects
+    assert entry.instance_id not in restored.gameplay_persistent_status_effects
     assert not server._quest_turn_in(restored, ZAH)
 
 
@@ -239,7 +239,7 @@ def test_simultaneous_turn_ins_credit_status_currency_and_loot_once(player):
     assert not errors
     assert sorted(results) == [False, True]
     assert session.gameplay_currency_state.andermant == before + 500
-    assert effect(session, REACT).field_18 == 0
+    assert effect(session, REACT).stack_index == 0
 
 
 def test_reactivation_reward_contributes_its_authored_xp_multiplier(player):
@@ -259,17 +259,17 @@ def test_authored_keep_on_death_preserves_live_rewards_and_removes_test_fire_buf
     for quest_id in representatives:
         finished(session, quest_id)
         assert server._quest_turn_in(session, quest_id)
-    keep = {effect(session, quest_id).field_04 for quest_id in representatives[:-1]}
+    keep = {effect(session, quest_id).instance_id for quest_id in representatives[:-1]}
     fire = effect(session, "TestTriggeredQuest")
-    timer = session.gameplay_projectile_timers[("consumable-expire", fire.field_04)]
+    timer = session.gameplay_projectile_timers[("consumable-expire", fire.instance_id)]
     server._notify_player_death(session)
     assert keep <= set(session.gameplay_persistent_status_effects)
-    assert fire.field_04 not in session.gameplay_persistent_status_effects
-    assert fire.field_04 not in session.gameplay_timed_status_effect_expiries
+    assert fire.instance_id not in session.gameplay_persistent_status_effects
+    assert fire.instance_id not in session.gameplay_timed_status_effect_expiries
     timer.cancel.assert_called_once()
     saved = server.account_store.get(session.gameplay_character.character_id)
-    assert keep <= {entry.field_04 for entry in saved.status_effects}
-    assert fire.field_04 not in saved.status_effect_names
+    assert keep <= {entry.instance_id for entry in saved.status_effects}
+    assert fire.instance_id not in saved.status_effect_names
 
 
 def test_status_reward_quest_xp_and_currency_are_saved_even_if_publication_fails(player, monkeypatch):

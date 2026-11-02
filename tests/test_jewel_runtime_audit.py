@@ -36,7 +36,7 @@ def test_blocked_energy_accumulates_two_real_occurrences(wearer, rank):
     entries = [entry for entry, expiry in wearer.gameplay_runtime_status_effects.values()
                if entry.effect_id == rule.definition.effect_id]
     assert len(entries) == 1
-    assert entries[0].field_18 == 1
+    assert entries[0].stack_index == 1
 
 
 def test_frozen_heart_does_not_proc_when_wearer_hits_frozen_target():

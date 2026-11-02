@@ -4048,7 +4048,7 @@ class LocalCombatState:
                 continue
             if hasattr(source, "effect_id"):
                 effect_id = int(source.effect_id)
-                stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+                stack_count = max(1, int(getattr(source, "stack_index", 0)) + 1)
                 details = tuple(
                     float(value) for value in getattr(source, "values", ())
                 )
@@ -7038,7 +7038,7 @@ class LocalCombatState:
             return (
                 "effect",
                 int(getattr(source, "effect_id", -1)),
-                int(getattr(source, "field_18", 0)),
+                int(getattr(source, "stack_index", 0)),
                 tuple(float(value) for value in getattr(source, "values", ())),
             )
         if hasattr(source, "kind") and hasattr(source, "arguments"):
@@ -7060,7 +7060,7 @@ class LocalCombatState:
 
         A source may be a wire ``StatusEffectEntry``, a legacy integer effect
         id, or an already parsed item-set modifier. Status-effect stack values
-        matter: rank ten is one effect with ``field_18 == 9``, not ten ids.
+        matter: rank ten is one effect with ``stack_index == 9``, not ten ids.
         """
 
         if not modifier_sources:
@@ -7929,7 +7929,7 @@ class LocalCombatState:
             else:
                 instructions = ((source_kind, source_arguments, 1, ()),)
         elif effect_id is not None:
-            stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+            stack_count = max(1, int(getattr(source, "stack_index", 0)) + 1)
             details = tuple(
                 float(value) for value in getattr(source, "values", ())
             )
@@ -11962,7 +11962,7 @@ class LocalCombatState:
         if hasattr(source, "effect_id"):
             return (
                 int(source.effect_id),
-                max(1, int(getattr(source, "field_18", 0)) + 1),
+                max(1, int(getattr(source, "stack_index", 0)) + 1),
                 tuple(
                     float(value)
                     for value in getattr(source, "values", ())

@@ -43,7 +43,7 @@ def effect(resource, *, stacks=1, values=()):
         index = database.execute(
             "SELECT rowid-1 FROM _Template_StatusEffect WHERE Id=?", (resource,),
         ).fetchone()[0]
-    return SimpleNamespace(effect_id=index, field_18=stacks - 1, values=values)
+    return SimpleNamespace(effect_id=index, stack_index=stacks - 1, values=values)
 
 
 def session():

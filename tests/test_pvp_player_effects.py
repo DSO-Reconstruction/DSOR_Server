@@ -132,7 +132,7 @@ class PVPPlayerEffectTests(unittest.TestCase):
             self.assertTrue(commands)
             self.assertTrue(all(isinstance(c, StatusEffectServerCommand) for c in commands))
         entry = self.target.gameplay_victim_status_effect_instances[(1, effect.effect_id)][0]
-        self.assertEqual(entry.field_10, 50)
+        self.assertEqual(entry.total_duration, 50)
         self.assertIn("regularskills", CharacterService._player_disabled_actor_features(self.target))
         self.assertIn(entry, CharacterService._active_skill_modifier_sources(self.target))
         self.assertNotIn(entry, CharacterService._active_skill_modifier_sources(self.source))
@@ -168,7 +168,7 @@ class PVPPlayerEffectTests(unittest.TestCase):
         timer = self.timers[-1]
         cache = self.target.gameplay_victim_status_effect_instances
         entry, expiry = cache[(1, effect.effect_id)]
-        cache[(1, effect.effect_id)] = (replace(entry, field_04=entry.field_04 + 1), expiry)
+        cache[(1, effect.effect_id)] = (replace(entry, instance_id=entry.instance_id + 1), expiry)
         timer.function(*timer.args)
         self.assertEqual(self.combat.player_health[self.target.gameplay_remote_actor_id][0], 1000)
 
@@ -304,7 +304,7 @@ class PVPPlayerEffectTests(unittest.TestCase):
         self.assertFalse(self.combat.player_skill_cleanse_groups(frenzyshout))
         talent = SimpleNamespace(
             effect_id=self.combat._status_effect_ids["pvp_warrior_talent2_activator"],
-            field_18=0, values=(),
+            stack_index=0, values=(),
         )
         self.assertIn("disabled", self.combat.player_skill_cleanse_groups(
             frenzyshout, modifier_sources=(talent,)))

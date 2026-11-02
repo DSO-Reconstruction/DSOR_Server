@@ -36,10 +36,10 @@ class PresenceVisualService:
 
         source_actor_id = int(source_actor_id)
         removed_ids = {
-            int(entry.field_04)
+            int(entry.instance_id)
             for value in values
             for entry in value.entries
-            if not entry.has_details and not entry.field_25
+            if not entry.has_details and not entry.update_timing
         }
         if not removed_ids:
             return
@@ -67,7 +67,7 @@ class PresenceVisualService:
             source_actor_id,
         ).entries
         active_instance_ids = {
-            int(source.field_04)
+            int(source.instance_id)
             for source in (*tuple(modifier_sources), *tuple(remapped))
             if isinstance(source, StatusEffectEntry)
         }
@@ -84,7 +84,7 @@ class PresenceVisualService:
                 cache.pop(key, None)
                 removed.append(replace(
                     previous,
-                    field_25=False,
+                    update_timing=False,
                     has_details=False,
                     values=(),
                     field_38=False,
@@ -92,13 +92,13 @@ class PresenceVisualService:
                     shape_values=(),
                 ))
             for entry in remapped:
-                key = (source_actor_id, int(entry.field_04))
+                key = (source_actor_id, int(entry.instance_id))
                 if key in cache:
                     continue
                 canonical = replace(
                     entry,
-                    field_20=source_actor_id,
-                    field_25=False,
+                    source_actor_id=source_actor_id,
+                    update_timing=False,
                     has_details=True,
                 )
                 cache[key] = canonical
@@ -845,8 +845,8 @@ class PresenceVisualService:
         return StatusEffect(
             value.clear_existing,
             tuple(
-                replace(entry, field_20=int(actor_id))
-                if int(entry.field_20) == LOCAL_PLAYER_ACTOR_ID
+                replace(entry, source_actor_id=int(actor_id))
+                if int(entry.source_actor_id) == LOCAL_PLAYER_ACTOR_ID
                 else entry
                 for entry in value.entries
             ),
@@ -1017,9 +1017,9 @@ class PresenceVisualService:
                             tuple(
                                 replace(
                                     entry,
-                                    field_20=viewer_owner_actor_id,
+                                    source_actor_id=viewer_owner_actor_id,
                                 )
-                                if int(entry.field_20)
+                                if int(entry.source_actor_id)
                                 == source_owner_actor_id
                                 else entry
                                 for entry in command.value.entries
@@ -1047,8 +1047,8 @@ class PresenceVisualService:
                     tuple(
                         replace(
                             entry,
-                            field_20=CharacterService._viewer_actor_id(
-                                session, entry.field_20
+                            source_actor_id=CharacterService._viewer_actor_id(
+                                session, entry.source_actor_id
                             ),
                         )
                         for entry in command.value.entries

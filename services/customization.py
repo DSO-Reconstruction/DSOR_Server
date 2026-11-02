@@ -324,20 +324,20 @@ class CustomizationService:
             start_tick = int(s.gameplay_chase_server_tick or tick) & 0xFFFFFFFF
         status_entry = StatusEffectEntry(
             effect_id=int(definition.status_effect_wire_id),
-            field_04=instance_id,
+            instance_id=instance_id,
             # The companion remains active until another Shadow Soul replaces
             # it. A one-second database duration made the buff icon disappear
             # while the summoned actor kept following the player.
-            field_0c=0,
-            field_14=0,
-            field_08=0,
-            field_18=0,
-            field_10=0,
-            field_1c=100,
-            field_20=LOCAL_PLAYER_ACTOR_ID,
-            field_25=False,
-            field_26=False,
-            field_39=True,
+            end_tick=0,
+            tick_interval=0,
+            start_tick=0,
+            stack_index=0,
+            total_duration=0,
+            source_level=100,
+            source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            update_timing=False,
+            stacked=False,
+            permanent=True,
             has_details=True,
             values=tuple(definition.values),
         )
@@ -346,21 +346,21 @@ class CustomizationService:
             for effect_id in owner_auras:
                 aura_entries.append(StatusEffectEntry(
                     effect_id=int(effect_id),
-                    field_04=int(s.gameplay_next_status_effect_instance_id),
-                    field_0c=0,
+                    instance_id=int(s.gameplay_next_status_effect_instance_id),
+                    end_tick=0,
                     # Permanent monster effects and sticker-book collector
-                    # buffs carry the server tick rate even with field_0c=0.
+                    # buffs carry the server tick rate even with end_tick=0.
                     # A zero tick rate leaves these aura children visible but
                     # prevents the client from evaluating their modifiers.
-                    field_14=SERVER_TICKS_PER_SECOND,
-                    field_08=start_tick,
-                    field_18=0,
-                    field_10=0,
-                    field_1c=100,
-                    field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False,
-                    field_26=False,
-                    field_39=True,
+                    tick_interval=SERVER_TICKS_PER_SECOND,
+                    start_tick=start_tick,
+                    stack_index=0,
+                    total_duration=0,
+                    source_level=100,
+                    source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False,
+                    stacked=False,
+                    permanent=True,
                     has_details=True,
                     values=(0.0, 0.0, 0.0, 0.0, 0.0),
                 ))
@@ -382,7 +382,7 @@ class CustomizationService:
             # removal per aura instance, not two in the same status batch.
             unique_auras = {}
             for previous in previous_auras:
-                unique_auras.setdefault(int(previous.field_04), previous)
+                unique_auras.setdefault(int(previous.instance_id), previous)
             previous_auras = tuple(unique_auras.values())
             s.gameplay_mercenary_status_effect = status_entry
             s.gameplay_mercenary_aura_status_effect = (
@@ -394,14 +394,14 @@ class CustomizationService:
             for previous in (previous_status, *previous_auras):
                 if previous is not None:
                     s.gameplay_persistent_status_effects.pop(
-                        int(previous.field_04), None
+                        int(previous.instance_id), None
                     )
             s.gameplay_persistent_status_effects[
-                int(status_entry.field_04)
+                int(status_entry.instance_id)
             ] = status_entry
             for aura_entry in aura_entries:
                 s.gameplay_persistent_status_effects[
-                    int(aura_entry.field_04)
+                    int(aura_entry.instance_id)
                 ] = aura_entry
         status_entries = []
         if previous_status is not None:
@@ -606,10 +606,10 @@ class CustomizationService:
                 instance_id = s.gameplay_next_status_effect_instance_id
                 s.gameplay_next_status_effect_instance_id += 1
                 entry = StatusEffectEntry(
-                    effect_id=effect_id, field_04=instance_id,
-                    field_0c=0, field_14=25, field_08=start_tick, field_18=0,
-                    field_10=0, field_1c=100, field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False, field_26=False, field_39=True,
+                    effect_id=effect_id, instance_id=instance_id,
+                    end_tick=0, tick_interval=25, start_tick=start_tick, stack_index=0,
+                    total_duration=0, source_level=100, source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False, stacked=False, permanent=True,
                     has_details=True, values=preset["values"],
                 )
                 s.gameplay_persistent_status_effects[instance_id] = entry
@@ -619,7 +619,7 @@ class CustomizationService:
                     replace(entry, has_details=False, values=()) for entry in current
                 )
                 for entry in current:
-                    s.gameplay_persistent_status_effects.pop(entry.field_04)
+                    s.gameplay_persistent_status_effects.pop(entry.instance_id)
         if enabled and effect == "speed":
             adjustment = CustomizationService._refresh_admin_speed(
                 s, static_database_path=self.static_database_path, publish=False,
@@ -676,14 +676,14 @@ class CustomizationService:
                     if s.gameplay_last_move is not None else server_time() // 40) & 0xFFFFFFFF
             entries = []
             for replacement in replacements:
-                old = s.gameplay_persistent_status_effects.pop(replacement.field_04)
+                old = s.gameplay_persistent_status_effects.pop(replacement.instance_id)
                 # Remove and re-add explicitly, so the client recomputes the
                 # modifier even when its template and duration are unchanged.
                 replacement = replace(replacement,
-                    field_04=s.gameplay_next_status_effect_instance_id,
-                    field_08=tick, field_18=0)
+                    instance_id=s.gameplay_next_status_effect_instance_id,
+                    start_tick=tick, stack_index=0)
                 s.gameplay_next_status_effect_instance_id += 1
-                s.gameplay_persistent_status_effects[replacement.field_04] = replacement
+                s.gameplay_persistent_status_effects[replacement.instance_id] = replacement
                 entries.extend((replace(old, has_details=False, values=()), replacement))
             status = StatusEffect(False, tuple(entries))
         if publish:
@@ -794,7 +794,7 @@ class CustomizationService:
                 active=True,
             ).entries[0]
             s.gameplay_persistent_status_effects[
-                ride_effect.field_04
+                ride_effect.instance_id
             ] = ride_effect
 
         CharacterService._achievement_feed(
@@ -1525,11 +1525,11 @@ class CustomizationService:
             for old_effect in cleanup_effects:
                 if (
                     new_instance_id is not None
-                    and int(old_effect.field_04) == int(new_instance_id)
+                    and int(old_effect.instance_id) == int(new_instance_id)
                 ):
                     continue
                 removed_effect = s.gameplay_persistent_status_effects.pop(
-                    int(old_effect.field_04), None
+                    int(old_effect.instance_id), None
                 )
                 if removed_effect is None:
                     continue
@@ -1539,13 +1539,13 @@ class CustomizationService:
                         entries=(
                             replace(
                                 removed_effect,
-                                field_0c=0,
-                                field_14=0,
-                                field_18=0,
-                                field_10=0,
-                                field_25=False,
-                                field_26=False,
-                                field_39=False,
+                                end_tick=0,
+                                tick_interval=0,
+                                stack_index=0,
+                                total_duration=0,
+                                update_timing=False,
+                                stacked=False,
+                                permanent=False,
                                 has_details=False,
                                 values=(),
                                 field_38=False,

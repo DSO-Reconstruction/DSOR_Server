@@ -377,13 +377,13 @@ class TalentServiceTests(unittest.TestCase):
         self.preset(s, 1, 1)
         self.assertEqual(s.gameplay_talent_categories[1].preselection, 1)
         (cooldown,) = self.cooldowns(s, wire_id)
-        self.assertEqual(cooldown.field_10, int(seconds * 25))
+        self.assertEqual(cooldown.total_duration, int(seconds * 25))
         self.assertAlmostEqual(
-            s.gameplay_timed_status_effect_expiries[cooldown.field_04],
+            s.gameplay_timed_status_effect_expiries[cooldown.instance_id],
             time.time() + seconds,
             delta=5,
         )
-        key = (talent_service.TALENT_PRESET_COOLDOWN_TIMER, cooldown.field_04)
+        key = (talent_service.TALENT_PRESET_COOLDOWN_TIMER, cooldown.instance_id)
         self.assertIn(key, s.gameplay_projectile_timers)
         self.assertIn(
             cooldown,
@@ -412,14 +412,14 @@ class TalentServiceTests(unittest.TestCase):
             )
         self.assertFalse(self.cooldowns(s, wire_id))
         self.assertNotIn(
-            cooldown.field_04, s.gameplay_timed_status_effect_expiries
+            cooldown.instance_id, s.gameplay_timed_status_effect_expiries
         )
         (removal,) = [
             entry
             for value in self.sent_values(STATUS_EFFECT_COMMAND)
             for entry in value.entries
         ]
-        self.assertEqual(removal.field_04, cooldown.field_04)
+        self.assertEqual(removal.instance_id, cooldown.instance_id)
         self.assertFalse(removal.has_details)
         self.preset(s, 1, 2)
         self.assertEqual(s.gameplay_talent_categories[1].preselection, 2)
@@ -432,19 +432,19 @@ class TalentServiceTests(unittest.TestCase):
 
         again, _ = self.enter(DUNGEON)
         (restored,) = self.cooldowns(again, wire_id)
-        self.assertEqual(restored.field_04, cooldown.field_04)
+        self.assertEqual(restored.instance_id, cooldown.instance_id)
         self.assertIn(
-            (talent_service.TALENT_PRESET_COOLDOWN_TIMER, cooldown.field_04),
+            (talent_service.TALENT_PRESET_COOLDOWN_TIMER, cooldown.instance_id),
             again.gameplay_projectile_timers,
         )
 
         town, _ = self.enter(HUB)
         self.assertFalse(self.cooldowns(town, wire_id))
         self.assertNotIn(
-            cooldown.field_04, town.gameplay_timed_status_effect_expiries
+            cooldown.instance_id, town.gameplay_timed_status_effect_expiries
         )
         self.assertTrue(any(
-            entry.field_04 == cooldown.field_04 and not entry.has_details
+            entry.instance_id == cooldown.instance_id and not entry.has_details
             for command in self.login_sent
             if command.command_id == STATUS_EFFECT_COMMAND
             for entry in command.value.entries

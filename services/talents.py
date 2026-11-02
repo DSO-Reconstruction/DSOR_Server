@@ -206,7 +206,7 @@ class TalentService:
             s: Session, entry: StatusEffectEntry, seconds: float) -> None:
         with s.flow_lock:
             generation = s.gameplay_chase_generation
-            timer_key = (TALENT_PRESET_COOLDOWN_TIMER, int(entry.field_04))
+            timer_key = (TALENT_PRESET_COOLDOWN_TIMER, int(entry.instance_id))
             timer = s.gameplay_deadline_timer(
                 max(0.0, float(seconds)) + 0.10,
                 CharacterService._expire_talent_preset_cooldown,
@@ -234,8 +234,8 @@ class TalentService:
             s.gameplay_projectile_timers.pop(timer_key, None)
             if generation != s.gameplay_chase_generation:
                 return
-            s.gameplay_persistent_status_effects.pop(entry.field_04, None)
-            s.gameplay_timed_status_effect_expiries.pop(entry.field_04, None)
+            s.gameplay_persistent_status_effects.pop(entry.instance_id, None)
+            s.gameplay_timed_status_effect_expiries.pop(entry.instance_id, None)
             server_tick = CharacterService._talent_server_tick(s)
         if not s.connected:
             return
@@ -634,17 +634,17 @@ class TalentService:
                 s.gameplay_category_talent_presets = category_presets
             for effect in previous_effects:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
             for effect in new_effects:
                 s.gameplay_persistent_status_effects[
-                    effect.field_04
+                    effect.instance_id
                 ] = effect
             effect_key = CharacterService._talent_effect_key(
                 category_id, request.talent_id
             )
             s.gameplay_talent_effect_instance_ids[effect_key] = tuple(
-                effect.field_04 for effect in new_effects
+                effect.instance_id for effect in new_effects
             )
             s.gameplay_next_status_effect_instance_id = (
                 next_instance_id + len(new_effects)
@@ -839,15 +839,15 @@ class TalentService:
             s.gameplay_category_talent_presets = category_presets
             for effect in previous_effects:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
             for effect in new_effects:
                 s.gameplay_persistent_status_effects[
-                    effect.field_04
+                    effect.instance_id
                 ] = effect
             if new_effects:
                 s.gameplay_talent_effect_instance_ids[effect_key] = tuple(
-                    effect.field_04 for effect in new_effects
+                    effect.instance_id for effect in new_effects
                 )
             else:
                 s.gameplay_talent_effect_instance_ids.pop(effect_key, None)
@@ -1103,7 +1103,7 @@ class TalentService:
                 )
                 remaining = max(
                     (
-                        float(expiries.get(effect.field_04, 0.0))
+                        float(expiries.get(effect.instance_id, 0.0))
                         - now_epoch
                         for effect in stale_cooldowns
                     ),
@@ -1168,7 +1168,7 @@ class TalentService:
                     category_id, selection.resource_id
                 )
                 new_mapping[effect_key] = tuple(
-                    effect.field_04 for effect in effects
+                    effect.instance_id for effect in effects
                 )
                 next_instance_id += len(effects)
             updated_category = TalentCategorySelection(
@@ -1181,17 +1181,17 @@ class TalentService:
                 )))
                 cooldown_entry = StatusEffectEntry(
                     effect_id=cooldown[1],
-                    field_04=next_instance_id,
-                    field_0c=(cooldown_tick + duration_ticks) & 0xFFFFFFFF,
-                    field_14=SERVER_TICKS_PER_SECOND,
-                    field_08=cooldown_tick,
-                    field_18=0,
-                    field_10=duration_ticks,
-                    field_1c=100,
-                    field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False,
-                    field_26=False,
-                    field_39=False,
+                    instance_id=next_instance_id,
+                    end_tick=(cooldown_tick + duration_ticks) & 0xFFFFFFFF,
+                    tick_interval=SERVER_TICKS_PER_SECOND,
+                    start_tick=cooldown_tick,
+                    stack_index=0,
+                    total_duration=duration_ticks,
+                    source_level=100,
+                    source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False,
+                    stacked=False,
+                    permanent=False,
                     has_details=True,
                     values=(0.0, 0.0, 0.0, 0.0, 0.0),
                 )
@@ -1281,30 +1281,30 @@ class TalentService:
         with s.flow_lock:
             for effect in previous_effects:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
             for effect in new_effects:
                 s.gameplay_persistent_status_effects[
-                    effect.field_04
+                    effect.instance_id
                 ] = effect
             for effect in stale_cooldowns:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
                 s.gameplay_timed_status_effect_expiries.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
                 timer = s.gameplay_projectile_timers.pop(
-                    (TALENT_PRESET_COOLDOWN_TIMER, effect.field_04), None
+                    (TALENT_PRESET_COOLDOWN_TIMER, effect.instance_id), None
                 )
                 if timer is not None:
                     retired_timers.append(timer)
             if cooldown_entry is not None:
                 s.gameplay_persistent_status_effects[
-                    cooldown_entry.field_04
+                    cooldown_entry.instance_id
                 ] = cooldown_entry
                 s.gameplay_timed_status_effect_expiries[
-                    cooldown_entry.field_04
+                    cooldown_entry.instance_id
                 ] = time.time() + cooldown[2]
             s.gameplay_talent_effect_instance_ids = new_mapping
             s.gameplay_next_status_effect_instance_id = next_instance_id
@@ -1470,7 +1470,7 @@ class TalentService:
         with s.flow_lock:
             for effect in previous_effects:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
             for effect_key in removed_effect_keys:
                 s.gameplay_talent_effect_instance_ids.pop(
@@ -1633,7 +1633,7 @@ class TalentService:
         with s.flow_lock:
             for effect in previous_effects:
                 s.gameplay_persistent_status_effects.pop(
-                    effect.field_04, None
+                    effect.instance_id, None
                 )
             presets[request.preselection] = ()
             if category_id == 0:

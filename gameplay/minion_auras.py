@@ -564,7 +564,7 @@ def owner_actor_variable(combat, sources, name: str) -> float:
         program = load_minion_program_by_id(path, int(source.effect_id))
         if program is None:
             continue
-        stack = min(program.max_stack_size, max(1, int(getattr(source, "field_18", 0)) + 1))
+        stack = min(program.max_stack_size, max(1, int(getattr(source, "stack_index", 0)) + 1))
         for variable, amount, operation in program.variables:
             if variable == key:
                 scaled = amount * stack
@@ -613,7 +613,7 @@ def minion_geometry_overrides(combat, geometry, sources, owner_sources=()):
         program = load_minion_program_by_id(path, int(source.effect_id))
         if program is None or not program.end_widths:
             continue
-        stack = min(program.max_stack_size, max(1, int(getattr(source, "field_18", 0)) + 1))
+        stack = min(program.max_stack_size, max(1, int(getattr(source, "stack_index", 0)) + 1))
         for amount, operation, scopes in program.end_widths:
             if not combat._skill_scope_matches(geometry, scopes):
                 continue
@@ -819,9 +819,9 @@ class _OwnerPass:
     @staticmethod
     def removal(entry: StatusEffectEntry, tick: int) -> StatusEffectEntry:
         return replace(
-            entry, field_0c=tick, field_14=SERVER_TICKS_PER_SECOND,
-            field_08=tick, field_10=0, field_25=False, field_26=False,
-            field_39=False, has_details=False, values=(), field_38=False,
+            entry, end_tick=tick, tick_interval=SERVER_TICKS_PER_SECOND,
+            start_tick=tick, total_duration=0, update_timing=False, stacked=False,
+            permanent=False, has_details=False, values=(), field_38=False,
             field_3c=0xFF, shape_values=(),
         )
 
@@ -856,34 +856,34 @@ class _OwnerPass:
         stack = min(maximum, existing.stack_count + 1) if existing is not None else 1
         duration = max(0, int(definition.duration_ticks))
         end_tick = (self.tick + duration) & TICK_MASK if duration else 0
-        if existing is not None and stack - 1 == int(existing.entry.field_18):
+        if existing is not None and stack - 1 == int(existing.entry.stack_index):
             # At its cap (or MaxStackSize 1) a re-application refreshes the
-            # running instance: the native no-details field_25 branch.
+            # running instance: the native no-details update_timing branch.
             refreshed = replace(
-                existing.entry, field_08=self.tick, field_0c=end_tick,
-                field_10=duration, field_25=True, has_details=False, values=(),
+                existing.entry, start_tick=self.tick, end_tick=end_tick,
+                total_duration=duration, update_timing=True, has_details=False, values=(),
             )
             self.adds.setdefault(summon.actor_id, []).append(refreshed)
             entry = replace(
-                refreshed, field_25=False, has_details=True,
+                refreshed, update_timing=False, has_details=True,
                 values=tuple(definition.values),
             )
         else:
             entry = StatusEffectEntry(
                 effect_id=int(definition.effect_id),
-                field_04=self.combat._allocate_player_summon_aura_instance_id(),
-                field_0c=end_tick,
-                field_14=SERVER_TICKS_PER_SECOND if duration else 0,
-                field_08=self.tick,
-                field_18=stack - 1,
-                field_10=duration,
-                field_1c=100,
-                field_20=self.owner,
-                field_25=False,
-                field_26=stack > 1,
-                # End tick zero with field_39 is native permanence: a child
+                instance_id=self.combat._allocate_player_summon_aura_instance_id(),
+                end_tick=end_tick,
+                tick_interval=SERVER_TICKS_PER_SECOND if duration else 0,
+                start_tick=self.tick,
+                stack_index=stack - 1,
+                total_duration=duration,
+                source_level=100,
+                source_actor_id=self.owner,
+                update_timing=False,
+                stacked=stack > 1,
+                # End tick zero with permanent is native permanence: a child
                 # without its own duration lives exactly as long as its hold.
-                field_39=not duration,
+                permanent=not duration,
                 has_details=True,
                 values=tuple(definition.values),
             )
@@ -913,7 +913,7 @@ class _OwnerPass:
                 self.depth -= 1
 
     def start_program(self, summon, hosted, program):
-        parent = (summon.actor_id, int(hosted.entry.field_04))
+        parent = (summon.actor_id, int(hosted.entry.instance_id))
         for start in program.starts:
             if start.delay_ticks > 0:
                 self.state.pending.append(_PendingStart(
@@ -993,7 +993,7 @@ class _OwnerPass:
         self.removals.setdefault(actor_id, []).append(
             self.removal(hosted.entry, self.tick)
         )
-        parent = (actor_id, int(hosted.entry.field_04))
+        parent = (actor_id, int(hosted.entry.instance_id))
         self.state.pending = [item for item in self.state.pending if item.parent != parent]
         program = load_minion_program(self.path, hosted.definition.resource_id)
         if program is not None and program.stop_despawn and actor_id not in self.despawn:

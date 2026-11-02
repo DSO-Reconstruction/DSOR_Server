@@ -40,7 +40,7 @@ class _Generation:
 def _entry(effect_id: int, *, stack_index: int = 0, values=()):
     return SimpleNamespace(
         effect_id=effect_id,
-        field_18=stack_index,
+        stack_index=stack_index,
         values=tuple(values),
     )
 

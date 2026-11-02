@@ -9,7 +9,10 @@ from dso_server.persistence.account_state import (
     _item_from_document,
     _item_to_document,
     _state_to_document,
+    _status_from_document,
+    _status_to_document,
 )
+from dso_server.protocol.gameplay_protocol import StatusEffectEntry
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemEnchantmentInfo, ItemInfo
 from dso_server.protocol.player_init_protocol import (
     CurrencyChanged,
@@ -127,6 +130,34 @@ def test_saved_inventory_keeps_offset_keys_and_item_skin_stays_separate():
     assert document["items"][0]["field_f8"] == "mage_basic_torso_06"
 
 
+def status() -> StatusEffectEntry:
+    return StatusEffectEntry(
+        effect_id=11, instance_id=12, end_tick=900, tick_interval=25, start_tick=100,
+        stack_index=2, total_duration=800, source_level=60, source_actor_id=77,
+        update_timing=False, stacked=True, permanent=False, has_details=True,
+        values=(1.5, 2.5),
+    )
+
+
+def test_saved_status_effect_keys_are_pinned():
+    # Same rule as items: an unknown key makes the store drop the character.
+    assert _status_to_document(status()) == {
+        "effect_id": 11, "field_04": 12, "field_0c": 900, "field_14": 25, "field_08": 100,
+        "field_18": 2, "field_10": 800, "field_1c": 60, "field_20": 77, "field_25": False,
+        "field_26": True, "field_39": False, "has_details": True, "values": (1.5, 2.5),
+        "field_38": False, "field_3c": 0xFF, "shape_values": (),
+    }
+    assert list(_status_to_document(status()))[:6] == [
+        "effect_id", "field_04", "field_0c", "field_14", "field_08", "field_18",
+    ]
+
+
+def test_old_status_effect_document_loads_into_the_named_attributes():
+    document = json.loads(json.dumps(_status_to_document(status())))
+
+    assert _status_from_document(document) == status()
+
+
 def test_cms_document_uses_attribute_names_and_saves_do_not():
     state = AccountState(
         1, "a0200_kingscity", None, inventory(),
@@ -135,6 +166,7 @@ def test_cms_document_uses_attribute_names_and_saves_do_not():
         talent_categories=tuple(TalentCategorySelection(0, (), ()) for _ in range(4)),
     )
     state.vendor_buyback = ((item(), 5),)
+    state.status_effects = (status(),)
 
     saved = _state_to_document(state)
     shown = _state_to_document(state, attribute_names=True)
@@ -150,3 +182,6 @@ def test_cms_document_uses_attribute_names_and_saves_do_not():
     assert shown["inventory"]["storage_slots"] == {7: 0}
     assert shown["inventory"]["ingredient_bag_item_ids"] == [11]
     assert "storage_58" not in shown["inventory"] and "field_180" not in shown["inventory"]
+    assert saved["active_status_effects"][0]["field_0c"] == 900
+    assert shown["active_status_effects"][0]["end_tick"] == 900
+    assert "field_0c" not in shown["active_status_effects"][0]

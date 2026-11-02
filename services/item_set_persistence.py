@@ -81,13 +81,13 @@ def prepare_persistent_item_set_effects(state, database_path):
         if entry.effect_id not in known:
             continue
         definition = eligible.get(entry.effect_id)
-        if definition is None or not entry.field_39 or entry.field_10 != 0:
+        if definition is None or not entry.permanent or entry.total_duration != 0:
             continue
         # One occurrence per effect, preserving its earned count rather than
         # replaying StartModifiers or firing the original combat event.
         selected[entry.effect_id] = replace(
-            entry, field_08=0, field_0c=0,
-            field_18=min(max(0, int(entry.field_18)), max(0, definition.max_stack_size - 1)),
+            entry, start_tick=0, end_tick=0,
+            stack_index=min(max(0, int(entry.stack_index)), max(0, definition.max_stack_size - 1)),
         )
     for _ in range(16):
         orphans = {effect_id for effect_id in selected
@@ -101,12 +101,12 @@ def prepare_persistent_item_set_effects(state, database_path):
         instance_id: entry for instance_id, entry in state.persistent_status_effects.items()
         if entry.effect_id not in known
     }
-    state.persistent_status_effects.update((entry.field_04, entry) for entry in selected.values())
+    state.persistent_status_effects.update((entry.instance_id, entry) for entry in selected.values())
     state.timed_status_effect_expiries = {
         instance_id: expiry for instance_id, expiry in state.timed_status_effect_expiries.items()
         if instance_id in state.persistent_status_effects
     }
-    return {entry.field_04: eligible[effect_id] for effect_id, entry in selected.items()}
+    return {entry.instance_id: eligible[effect_id] for effect_id, entry in selected.items()}
 
 
 def restore_persistent_item_set_effects(session, state, database_path):

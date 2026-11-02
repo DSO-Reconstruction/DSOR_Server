@@ -97,7 +97,7 @@ def test_quick_shot_overload_is_hosted_once_on_the_shooter_as_a_set_program(owne
     CharacterService._send_combat_resolutions(owner, (hit,), label="test-hit")
     (entry,) = [entry for entry, _ in owner.gameplay_runtime_status_effects.values()
                 if entry.effect_id == overload.effect_id]
-    assert entry.field_18 == 1
+    assert entry.stack_index == 1
 
 
 def test_overcharged_tesla_delivers_the_authored_second_electrified_occurrence(owner, sets, clock):

@@ -50,7 +50,7 @@ class AdminSpeedTests(unittest.TestCase):
         self.assertIn("+100% enabled for Admin", self.command("!speed"))
         (entry,) = self.home.gameplay_persistent_status_effects.values()
         self.assertEqual(entry.values, ADMIN_SPEED_EFFECT_VALUES)
-        self.assertEqual(entry.field_10, 0)
+        self.assertEqual(entry.total_duration, 0)
         self.assertFalse(self.home.gameplay_timed_status_effect_expiries)
         payload, bits, label = self.home.recorder.messages[-1]
         self.assertEqual(label, "admin-speed-toggle")
@@ -61,7 +61,7 @@ class AdminSpeedTests(unittest.TestCase):
         self.assertFalse(self.home.gameplay_persistent_status_effects)
         payload, bits, _ = self.home.recorder.messages[-1]
         removed = decode_status_effect_batch(payload, bits)[0].entries[0]
-        self.assertEqual(removed.field_04, entry.field_04)
+        self.assertEqual(removed.instance_id, entry.instance_id)
         self.assertFalse(removed.has_details)
         self.assertIn("enabled", self.command("!speed"))
         self.assertEqual(len(self.home.gameplay_persistent_status_effects), 1)
@@ -72,9 +72,9 @@ class AdminSpeedTests(unittest.TestCase):
         self.command("!speed")
         payload, bits, _ = self.home.recorder.messages[-1]
         entry = decode_status_effect_batch(payload, bits)[0].entries[0]
-        self.assertEqual(entry.field_08, 98766)
-        self.assertEqual(entry.field_14, 25)
-        self.assertEqual(entry.field_0c, 0)
+        self.assertEqual(entry.start_tick, 98766)
+        self.assertEqual(entry.tick_interval, 25)
+        self.assertEqual(entry.end_tick, 0)
         self.assertEqual(entry.values[0], 5.0)
 
     def test_stationary_character_uses_the_current_server_clock(self):
@@ -83,23 +83,23 @@ class AdminSpeedTests(unittest.TestCase):
         with patch.object(customization_module, "server_time", return_value=500000):
             self.command("!speed")
         (entry,) = self.home.gameplay_persistent_status_effects.values()
-        self.assertEqual(entry.field_08, 12500)
-        self.assertEqual(entry.field_14, 25)
+        self.assertEqual(entry.start_tick, 12500)
+        self.assertEqual(entry.tick_interval, 25)
 
     def test_restore_repairs_only_the_durable_admin_speed_instance(self):
         self.command("!speed")
         (entry,) = self.home.gameplay_persistent_status_effects.values()
-        old_admin = replace(entry, field_08=90000, field_14=0)
-        other_speed = replace(entry, field_04=71, field_08=70000,
-                              field_14=25, values=(0.1, 0, 0, 0, 0))
-        timed_speed = replace(entry, field_04=72, field_08=80000, field_10=250)
+        old_admin = replace(entry, start_tick=90000, tick_interval=0)
+        other_speed = replace(entry, instance_id=71, start_tick=70000,
+                              tick_interval=25, values=(0.1, 0, 0, 0, 0))
+        timed_speed = replace(entry, instance_id=72, start_tick=80000, total_duration=250)
         restored = restore_admin_effects(
-            {e.field_04: e for e in (old_admin, other_speed, timed_speed)},
+            {e.instance_id: e for e in (old_admin, other_speed, timed_speed)},
             load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH),
         )
-        self.assertEqual(restored[entry.field_04].field_08, 0)
-        self.assertEqual(restored[entry.field_04].field_14, 25)
-        self.assertEqual(restored[entry.field_04].values, entry.values)
+        self.assertEqual(restored[entry.instance_id].start_tick, 0)
+        self.assertEqual(restored[entry.instance_id].tick_interval, 25)
+        self.assertEqual(restored[entry.instance_id].values, entry.values)
         self.assertIs(restored[71], other_speed)
         self.assertIs(restored[72], timed_speed)
 
@@ -148,8 +148,8 @@ class AdminSpeedTests(unittest.TestCase):
     def test_other_bonuses_and_a_different_instance_of_the_same_effect_survive(self):
         self.command("!speed")
         (entry,) = self.home.gameplay_persistent_status_effects.values()
-        other = replace(entry, field_04=71, effect_id=2050, values=(0.2, 0, 0, 0, 0))
-        same_template = replace(entry, field_04=72, field_10=250, values=(0.1, 0, 0, 0, 0))
+        other = replace(entry, instance_id=71, effect_id=2050, values=(0.2, 0, 0, 0, 0))
+        same_template = replace(entry, instance_id=72, total_duration=250, values=(0.1, 0, 0, 0, 0))
         self.home.gameplay_persistent_status_effects.update({71: other, 72: same_template})
         self.command("!speed")
         self.assertEqual(self.home.gameplay_persistent_status_effects, {71: other, 72: same_template})
@@ -191,7 +191,7 @@ class AdminSpeedPersistenceTests(unittest.TestCase):
         saved = self.server.account_store.get(character_id)
         self.assertEqual(sum(e.effect_id == effect_id for e in saved.status_effects), 1)
         saved = replace(saved, status_effects=tuple(
-            replace(e, field_08=saved_tick, field_14=saved_interval,
+            replace(e, start_tick=saved_tick, tick_interval=saved_interval,
                     effect_id=(load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids[
                         ADMIN_EFFECTS["speed"]["legacy_resource"]] if legacy else effect_id),
                     values=(ADMIN_EFFECTS["speed"]["legacy_values"] if legacy else e.values))
@@ -212,8 +212,8 @@ class AdminSpeedPersistenceTests(unittest.TestCase):
         effects = [e for e in restored.gameplay_persistent_status_effects.values() if e.effect_id == effect_id]
         self.assertEqual(len(effects), 1)
         self.assertEqual(effects[0].values, ADMIN_SPEED_EFFECT_VALUES)
-        self.assertEqual(effects[0].field_08, 0)
-        self.assertEqual(effects[0].field_14, 25)
+        self.assertEqual(effects[0].start_tick, 0)
+        self.assertEqual(effects[0].tick_interval, 25)
         self.assertFalse(self.server._toggle_admin_speed(restored))
         saved = self.server.account_store.get(character_id)
         self.assertFalse(any(e.effect_id == effect_id for e in saved.status_effects))

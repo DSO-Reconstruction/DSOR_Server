@@ -73,10 +73,10 @@ def test_mod_user_rule_is_applied_once_per_cast_as_a_set_program(owner, sets):
         owner, on_hit, server_tick=605, label="test-hit")
     (entry,) = [entry for entry, _ in owner.gameplay_runtime_status_effects.values()
                 if entry.effect_id == stacks[0].effect_id]
-    assert entry.field_18 == 0
+    assert entry.stack_index == 0
     # Delivered by the skill, still run as the set's program (its stack cap,
     # children and unequip cleanup).
-    assert entry.field_04 in owner.gameplay_item_set_programs
+    assert entry.instance_id in owner.gameplay_item_set_programs
 
 
 def test_mod_victim_rule_rolls_only_with_the_skill(owner, sets):

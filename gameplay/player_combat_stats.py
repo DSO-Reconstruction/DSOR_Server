@@ -1051,7 +1051,7 @@ def _status_instructions(
             continue
         if hasattr(source, "effect_id"):
             effect_id = int(source.effect_id)
-            # ``field_18`` is also the wire occurrence/generation used when
+            # ``stack_index`` is also the wire occurrence/generation used when
             # an active effect is replaced. It is not an unbounded gameplay
             # multiplier: max-one effects may advance it on every refresh.
             # Clamp it to the authored status stack limit before applying the
@@ -1059,7 +1059,7 @@ def _status_instructions(
             # the Wisdom damage ranks.
             stack_count = min(
                 database.status_effect_max_stack_sizes.get(effect_id, 1),
-                max(1, int(getattr(source, "field_18", 0)) + 1),
+                max(1, int(getattr(source, "stack_index", 0)) + 1),
             )
             details = tuple(
                 float(value) for value in getattr(source, "values", ())
@@ -2052,7 +2052,7 @@ def _uncached_combat_modifier_signature(
         )
     if hasattr(source, "effect_id"):
         effect_id = int(source.effect_id)
-        occurrence = int(getattr(source, "field_18", 0))
+        occurrence = int(getattr(source, "stack_index", 0))
         effective_stack = max(1, occurrence + 1)
         if database is not None:
             effective_stack = min(

@@ -222,7 +222,7 @@ def apply_skill_cooldown_effect_locked(session, definition, database_path, *, no
         source_program = catalog.definitions.get(int(source.effect_id))
         if source_program is None:
             continue
-        stacks = min(source_program.max_stack_size, max(1, int(getattr(source, "field_18", 0)) + 1))
+        stacks = min(source_program.max_stack_size, max(1, int(getattr(source, "stack_index", 0)) + 1))
         instructions.extend(
             (modifier.kind, modifier.arguments, stacks, tuple(getattr(source, "values", ())))
             for modifier in source_program.start_modifiers

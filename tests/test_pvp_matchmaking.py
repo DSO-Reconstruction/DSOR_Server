@@ -698,7 +698,7 @@ class BattlegroundTests(unittest.TestCase):
             value, actor = decode_status_effect_batch(*packet)
             self.assertEqual(actor, 1)
             reset = next(entry for entry in value.entries if entry.has_details)
-            self.assertEqual((reset.effect_id, reset.field_10),
+            self.assertEqual((reset.effect_id, reset.total_duration),
                              (_status_effect_id("pvp_cooldown_reset"), 0))
             self.assertFalse(session.gameplay_runtime_status_effects)
             self.assertFalse(CharacterService._player_disabled_actor_features(session))
@@ -744,12 +744,12 @@ class BattlegroundTests(unittest.TestCase):
         removed_ids = {}
         for session in (self.home, self.away):
             seed = next(iter(session.gameplay_runtime_status_effects.values()))[0]
-            runtime = replace(seed, effect_id=5905, field_04=800001)
-            victim = replace(seed, effect_id=5905, field_04=800002,
-                             field_20=0x10002 if session is self.home else 0x10001)
+            runtime = replace(seed, effect_id=5905, instance_id=800001)
+            victim = replace(seed, effect_id=5905, instance_id=800002,
+                             source_actor_id=0x10002 if session is self.home else 0x10001)
             debuff = replace(seed, effect_id=_status_effect_id("debuff_dot_burn"),
-                             field_04=800003)
-            permanent = replace(seed, effect_id=5906, field_04=800004)
+                             instance_id=800003)
+            permanent = replace(seed, effect_id=5906, instance_id=800004)
             session.gameplay_runtime_status_effects = {800001: (runtime, None)}
             session.gameplay_victim_status_effect_instances = {(1, 5905): (victim, 1e20)}
             session.gameplay_persistent_status_effects = {800003: debuff, 800004: permanent}
@@ -783,7 +783,7 @@ class BattlegroundTests(unittest.TestCase):
                           if label == "pvp-round-cleanse")
             value, actor_id = decode_status_effect_batch(*packet)
             self.assertEqual(actor_id, 1)
-            self.assertEqual({entry.field_04 for entry in value.entries}, removed_ids[session.addr])
+            self.assertEqual({entry.instance_id for entry in value.entries}, removed_ids[session.addr])
             self.assertTrue(all(not entry.has_details for entry in value.entries))
             self.assertTrue(any(owner is session and event[0] == "player_revived"
                                 for owner, event in callbacks))

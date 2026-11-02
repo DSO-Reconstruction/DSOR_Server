@@ -37,7 +37,7 @@ def test_saved_effects_follow_their_name_into_a_renumbered_database():
     names = {10: "pet_jabbax", 11: "sb_pets_increased_hitpoints_01",
              12: "removed_from_the_game"}
     rebound = rebind_saved_status_effects(saved, names, october)
-    assert [(e.field_04, e.effect_id) for e in rebound] == [
+    assert [(e.instance_id, e.effect_id) for e in rebound] == [
         (10, 507), (11, 6397),
         # No recorded name (an older save): the number is kept.
         (13, 504),

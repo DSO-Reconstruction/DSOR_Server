@@ -1553,18 +1553,19 @@ def decode_monster_update(payload: bytes) -> tuple[MonsterUpdate, int]:
 
 @dataclass(frozen=True)
 class StatusEffectEntry:
+    # A renamed field keeps its saved key: see _STATUS_SAVED_KEYS in account_state.
     effect_id: int
-    field_04: int
-    field_0c: int
-    field_14: int
-    field_08: int
-    field_18: int
-    field_10: int
-    field_1c: int
-    field_20: int
-    field_25: bool
-    field_26: bool
-    field_39: bool
+    instance_id: int                # structure offset +0x04
+    end_tick: int                   # structure offset +0x0c, 0 when permanent
+    tick_interval: int              # structure offset +0x14
+    start_tick: int                 # structure offset +0x08
+    stack_index: int                # structure offset +0x18, zero-based
+    total_duration: int             # structure offset +0x10, client fills in 0
+    source_level: int               # structure offset +0x1c, the client's causerLevel
+    source_actor_id: int            # structure offset +0x20
+    update_timing: bool             # structure offset +0x25, without details False removes
+    stacked: bool                   # structure offset +0x26, an added stack
+    permanent: bool                 # structure offset +0x39
     has_details: bool
     values: tuple[float, ...] = ()
     field_38: bool = False
@@ -1574,12 +1575,12 @@ class StatusEffectEntry:
     def __post_init__(self):
         # End tick zero is native permanence. A detailed finite effect needs
         # a positive duration, including instantaneous one-tick effects.
-        if self.has_details and self.field_0c and self.field_10 <= 0:
-            span = (int(self.field_0c) - int(self.field_08)) & 0xffffffff
+        if self.has_details and self.end_tick and self.total_duration <= 0:
+            span = (int(self.end_tick) - int(self.start_tick)) & 0xffffffff
             span = span if 0 < span < 0x80000000 else 1
-            object.__setattr__(self, 'field_10', span)
-            if self.field_0c == self.field_08:
-                object.__setattr__(self, 'field_0c', (self.field_08 + span) & 0xffffffff)
+            object.__setattr__(self, 'total_duration', span)
+            if self.end_tick == self.start_tick:
+                object.__setattr__(self, 'end_tick', (self.start_tick + span) & 0xffffffff)
 
 
 @dataclass(frozen=True)
@@ -1619,29 +1620,29 @@ def _write_status_effect_body(writer: BitWriter, value: StatusEffect) -> None:
     writer.write_uint32_le(len(value.entries))
     for entry in value.entries:
         writer.write_bytes(int(entry.effect_id).to_bytes(2, "little"))
-        # The client reuses field_26 as the BuffBar counted-icon bit and
-        # forwards field_18 directly to UI::Icon::AddCount. That function
+        # The client reuses stacked as the BuffBar counted-icon bit and
+        # forwards stack_index directly to UI::Icon::AddCount. That function
         # asserts unless the value is strictly positive. Keep the protocol
         # boundary safe even if a future producer builds an invalid refresh.
         icon_count = (
-            max(1, int(entry.field_18))
-            if entry.field_26
-            else int(entry.field_18)
+            max(1, int(entry.stack_index))
+            if entry.stacked
+            else int(entry.stack_index)
         )
         for number in (
-            entry.field_04,
-            entry.field_0c,
-            entry.field_14,
-            entry.field_08,
+            entry.instance_id,
+            entry.end_tick,
+            entry.tick_interval,
+            entry.start_tick,
             icon_count,
-            entry.field_10,
-            entry.field_1c,
-            entry.field_20,
+            entry.total_duration,
+            entry.source_level,
+            entry.source_actor_id,
         ):
             writer.write_uint32_le(number)
-        writer.write_bool(entry.field_25)
-        writer.write_bool(entry.field_26)
-        writer.write_bool(entry.field_39)
+        writer.write_bool(entry.update_timing)
+        writer.write_bool(entry.stacked)
+        writer.write_bool(entry.permanent)
         writer.write_bool(entry.has_details)
         if entry.has_details:
             writer.write_uint32_le(len(entry.values))
@@ -1670,9 +1671,9 @@ def _read_status_effect_body(reader: BitReader) -> StatusEffect:
     for _ in range(reader.read_uint32_le()):
         effect_id = int.from_bytes(reader.read_bytes(2), "little")
         numbers = tuple(reader.read_uint32_le() for _ in range(8))
-        field_25 = reader.read_bool()
-        field_26 = reader.read_bool()
-        field_39 = reader.read_bool()
+        update_timing = reader.read_bool()
+        stacked = reader.read_bool()
+        permanent = reader.read_bool()
         has_details = reader.read_bool()
         values: tuple[float, ...] = ()
         field_38 = False
@@ -1691,9 +1692,9 @@ def _read_status_effect_body(reader: BitReader) -> StatusEffect:
             StatusEffectEntry(
                 effect_id,
                 *numbers,
-                field_25,
-                field_26,
-                field_39,
+                update_timing,
+                stacked,
+                permanent,
                 has_details,
                 values,
                 field_38,

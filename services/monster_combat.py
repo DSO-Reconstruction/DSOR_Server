@@ -587,18 +587,18 @@ class MonsterCombatService(
         duration = int(transition.duration_ticks)
         entry = StatusEffectEntry(
             effect_id=int(transition.effect_id),
-            field_04=int(transition.instance_id),
-            field_0c=(start_tick + duration) & 0xFFFFFFFF,
-            field_14=25,
-            field_08=start_tick,
-            field_18=0,
-            field_10=duration,
-            field_1c=100,
-            field_20=int(transition.actor_id),
-            # Detailed constructs; no-details + field_25=false removes.
-            field_25=False,
-            field_26=False,
-            field_39=False,
+            instance_id=int(transition.instance_id),
+            end_tick=(start_tick + duration) & 0xFFFFFFFF,
+            tick_interval=25,
+            start_tick=start_tick,
+            stack_index=0,
+            total_duration=duration,
+            source_level=100,
+            source_actor_id=int(transition.actor_id),
+            # Detailed constructs; no-details + update_timing=false removes.
+            update_timing=False,
+            stacked=False,
+            permanent=False,
             has_details=bool(transition.active),
             values=(
                 (0.0, 0.0, 0.0, 0.0, 0.0)
@@ -814,7 +814,7 @@ class MonsterCombatService(
             )
             seen_statuses = set()
             for entry, expires_at in active_statuses_by_actor[actor_id]:
-                status_key = (int(entry.field_04), int(entry.effect_id))
+                status_key = (int(entry.instance_id), int(entry.effect_id))
                 if status_key in seen_statuses:
                     continue
                 seen_statuses.add(status_key)
@@ -848,7 +848,7 @@ class MonsterCombatService(
                 if enemy_aura is not None:
                     player_status_enemy_auras.append((
                         int(actor_id), world_position,
-                        int(entry.field_04), int(entry.effect_id),
+                        int(entry.instance_id), int(entry.effect_id),
                         tuple(getattr(entry, "values", ())), status_expiry,
                     ))
 
