@@ -1,9 +1,9 @@
 """Database-authored per-instance values carried by ``Game::ItemInfo``.
 
 The client does not calculate these values when an item is received.  In the
-generated structure ``field_30`` is the complete VC value of the stack and
-``field_34`` is the Glyphs-of-Power value of one equipment instance.  A zero
-value makes the corresponding blacksmith melt action unavailable.
+generated structure ``stack_vc_value`` is the complete VC value of the stack
+and ``glyph_value`` is the Glyphs-of-Power value of one equipment instance.  A
+zero value makes the corresponding blacksmith melt action unavailable.
 """
 
 from __future__ import annotations
@@ -91,7 +91,7 @@ def equipment_melt_value(
         progression = max(1.0, (level - 15.0) / 5.0)
         return max(1, round(contribution * progression))
 
-    rarity = max(1, int(item.field_08))
+    rarity = max(1, int(item.rarity))
     unit_vc = max(1, int(item_row.get("PriceVC") or 1))
     progression = max(1.0, (level - 15.0) / 5.0)
     return max(1, round(progression * rarity * (300.0 + unit_vc)))

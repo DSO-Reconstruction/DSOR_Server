@@ -223,9 +223,9 @@ def test_monster_equipment_uses_monster_level_and_keeps_identification_on_pickup
     assert equipment
     for drop in equipment:
         assert drop.item.item_level == monster_level
-        if drop.item.field_08 == 0:
+        if drop.item.rarity == 0:
             assert not drop.item.field_3c
-        elif drop.item.field_08 <= 4:
+        elif drop.item.rarity <= 4:
             assert drop.item.field_3c
         # Some unique/event templates explicitly do not require identification.
         mutation = add_world_drop_to_inventory(InventoryInfo(), drop)

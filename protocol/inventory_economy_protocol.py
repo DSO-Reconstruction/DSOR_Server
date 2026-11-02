@@ -783,16 +783,16 @@ class InventoryMutationBuilder:
             )
 
         moved_amount = total - remaining_amount
-        unit_value = int(item.field_30) // total if total else 0
+        unit_value = int(item.stack_vc_value) // total if total else 0
         source = copy.deepcopy(item)
         # Reduce and re-key the source first so the split-off stack cannot be
         # be handed the id the source is about to release.  ``consume`` leaves
         # the reduced source in ``changed_items`` under its new id.
         self.consume(item_id, moved_amount)
-        self.item(self.next_item_id - 1).field_30 = unit_value * remaining_amount
+        self.item(self.next_item_id - 1).stack_vc_value = unit_value * remaining_amount
         for published in self.changed_items:
             if int(published.item_id) == self.next_item_id - 1:
-                published.field_30 = unit_value * remaining_amount
+                published.stack_vc_value = unit_value * remaining_amount
 
         new_id = self.next_item_id
         self.next_item_id += 1
@@ -801,7 +801,7 @@ class InventoryMutationBuilder:
             item_id=new_id,
             amount=moved_amount,
             field_18=new_id & 0xFFFF,
-            field_30=unit_value * moved_amount,
+            stack_vc_value=unit_value * moved_amount,
             enchantments=copy.deepcopy(source.enchantments),
             socketed_templates=list(source.socketed_templates),
         )
@@ -1013,15 +1013,15 @@ def refresh_item_economy_values(
 
     path = str(Path(static_database_path))
     row = _item_economy_row(path, item.template_id)
-    item.field_30 = item_stack_vc_value(item, row)
-    if force_melt_value or int(item.field_34) <= 0:
+    item.stack_vc_value = item_stack_vc_value(item, row)
+    if force_melt_value or int(item.glyph_value) <= 0:
         enchantments = {
             enchantment.template_id: _enchantment_economy_row(
                 path, enchantment.template_id
             )
             for enchantment in item.enchantments
         }
-        item.field_34 = equipment_melt_value(item, row, enchantments)
+        item.glyph_value = equipment_melt_value(item, row, enchantments)
     return item
 
 
@@ -1062,18 +1062,18 @@ def item_melt_reward(
     row = _item_economy_row(path, item.template_id)
     category = str(row.get("ItemCategory") or "")
     if category in GEM_MELT_CATEGORIES:
-        amount = int(item.field_30) or item_stack_vc_value(item, row)
+        amount = int(item.stack_vc_value) or item_stack_vc_value(item, row)
         if amount <= 0:
             raise ValueError(f"gem {item.template_id!r} has no dust value")
         return ItemMeltReward(0, "ingredient_gem_dust", amount)
     if category in RUNE_MELT_CATEGORIES:
-        amount = int(item.field_30) or item_stack_vc_value(item, row)
+        amount = int(item.stack_vc_value) or item_stack_vc_value(item, row)
         if amount <= 0:
             raise ValueError(f"rune {item.template_id!r} has no dust value")
         return ItemMeltReward(0, "ingredient_rune_dust", amount)
     if not is_meltable_equipment(row):
         raise ValueError(f"item {item.template_id!r} cannot be melted")
-    glyphs = int(item.field_34)
+    glyphs = int(item.glyph_value)
     if glyphs <= 0:
         enchantments = {
             enchantment.template_id: _enchantment_economy_row(

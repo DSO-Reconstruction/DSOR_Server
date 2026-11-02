@@ -52,7 +52,7 @@ def apply(inv, changes, currency=WALLET):
 
 def equipped():
     item = ItemInfo(100, template_id='mage_base_helmet_crafted', item_level=100,
-                    field_30=10, field_38=0)
+                    stack_vc_value=10, field_38=0)
     return InventoryInfo(items=[item], equipment_slots={100: (0,)})
 
 
@@ -72,7 +72,7 @@ def test_dye_updates_match_retail_compact_item_packets(exchange):
     inv = InventoryInfo()
     for data, template, slot in zip(exchange['updates'], templates, (0, 5, 7)):
         item = ItemInfo(data['item_id'], template_id=template, amount=data['amount'],
-                        socket_count=data['socket_count'], field_34=data['field_34'],
+                        socket_count=data['socket_count'], glyph_value=data['glyph_value'],
                         item_level=data['item_level'], field_3c=data['flags'][0],
                         field_3d=data['flags'][1], field_f8=data['skin'],
                         socketed_templates=data['sockets'], field_3e=data['enabled'],
@@ -217,7 +217,7 @@ def test_retail_right_click_identification_survives_reload(raw):
     item_id = int.from_bytes(bytes.fromhex(raw)[3:7], 'little')
     server = object.__new__(CharacterServer)
     session = Session(('127.0.0.1', 40992), Mock())
-    item = ItemInfo(item_id, template_id='mage_base_helmet_crafted', field_08=2, field_3c=True)
+    item = ItemInfo(item_id, template_id='mage_base_helmet_crafted', rarity=2, field_3c=True)
     session.gameplay_inventory = InventoryInfo(items=[item], storage_58={item_id:0})
     with patch.object(CharacterServer, '_request_account_save') as save, \
          patch.object(CharacterServer, '_send_world_loot_state_batch') as send:

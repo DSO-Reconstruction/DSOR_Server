@@ -457,7 +457,7 @@ export async function characterPage(route) {
       filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
         const where = location(item, inventory);
         return [link(item.template_id, `${root}/inventory/${item.item_id}`, route.params, "resource mono") + `<span class="sub">Item ${item.item_id}</span>`,
-          esc(where.name), esc(where.slot), esc(rarities[item.field_08] ?? item.field_08), esc(item.item_level), esc(item.amount),
+          esc(where.name), esc(where.slot), esc(rarities[item.rarity] ?? item.rarity), esc(item.item_level), esc(item.amount),
           `${(item.socketed_templates || []).filter(Boolean).length} / ${item.socket_count}`];
       }), {facets: [["Location", 1, "container"], ["Rarity", 3, "rarity"]], empty: "This character has no items."}) +
       inventoryCopySection(id, itemCount);
@@ -570,11 +570,11 @@ function inventoryItemPage(result, route, data) {
   result.actions = link("Item template", `items/${encodeURIComponent(item.template_id)}`, {account_id: data.account?.account_id, character_id: data.profile.character_id}, "button secondary");
   result.html += '<div class="columns">' + section("Item properties", facts([
     ["Item ID", item.item_id], ["Template", `<code class="resource">${esc(item.template_id)}</code>`],
-    ["Rarity", esc(rarities[item.field_08] ?? item.field_08)], ["Item level", item.item_level], ["Stack size", item.amount],
+    ["Rarity", esc(rarities[item.rarity] ?? item.rarity)], ["Item level", item.item_level], ["Stack size", item.amount],
     ["Container", esc(where.name)], ["Slot", esc(where.slot)]
   ])) + section("Values", facts([
     ["Sockets", item.socket_count], ["Occupied sockets", (item.socketed_templates || []).filter(Boolean).length],
-    ["Sale value", esc(item.field_30)], ["Melt value", esc(item.field_34)],
+    ["Gold value (VC)", esc(item.stack_vc_value)], ["Glyph value", esc(item.glyph_value)],
     ["Created", esc((item.created_at || []).join(" / "))]
   ])) + '</div>';
   result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Level", "Rarity"], (item.enchantments || []).map(e => [

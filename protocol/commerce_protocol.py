@@ -400,12 +400,12 @@ def _new_item(
     item = ItemInfo(
         item_id=item_id,
         amount=amount,
-        field_08=definition.rarity,
+        rarity=definition.rarity,
         socket_count=0,
         socketed_templates=[],
         item_level=resolved_level,
         field_18=item_id & 0xFFFF,
-        field_30=max(0, int(definition.unit_vc_price)) * int(amount),
+        stack_vc_value=max(0, int(definition.unit_vc_price)) * int(amount),
         field_38=0,
         template_id=definition.template_id,
         enchantments=[],
@@ -417,7 +417,7 @@ def _new_item(
     if definition.slot_types:
         from dso_server.gameplay.item_economy_values import equipment_melt_value
 
-        item.field_34 = equipment_melt_value(
+        item.glyph_value = equipment_melt_value(
             item,
             {
                 "ItemCategory": definition.item_category,
@@ -476,7 +476,7 @@ def add_purchased_item(
             item_id=new_id,
             amount=new_amount,
             field_18=new_id & 0xFFFF,
-            field_30=(
+            stack_vc_value=(
                 max(0, int(definition.unit_vc_price)) * new_amount
             ),
         )

@@ -3480,7 +3480,7 @@ class MapEventService:
                     reward = reward_queue.pop(0)
                     item.item_level = int(reward.item_level or player_level)
                     if reward.rarity is not None:
-                        item.field_08 = int(reward.rarity)
+                        item.rarity = int(reward.rarity)
                     if reward.appearance:
                         item.field_80 = str(reward.appearance)
                     item_row = item_rows.get(template_id, {})
@@ -3491,7 +3491,7 @@ class MapEventService:
                     item.socket_count = socket_count
                     item.socketed_templates = [""] * socket_count
                     item.field_3c = bool(
-                        int(item.field_08) > 0
+                        int(item.rarity) > 0
                         and item_row.get("NeedsIdentify", False)
                     )
                     reward_inventory = InventoryInfo(items=[item])

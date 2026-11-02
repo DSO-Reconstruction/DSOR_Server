@@ -155,7 +155,7 @@ class TradeService:
         inventory = s.gameplay_inventory
         by_id = {int(i.item_id): i for i in (inventory.items if inventory else ())}
         return tuple(
-            TradeItem(item_id, by_id[item_id].template_id, amount, int(by_id[item_id].field_08))
+            TradeItem(item_id, by_id[item_id].template_id, amount, int(by_id[item_id].rarity))
             for item_id, amount in side.items if item_id in by_id
         )
 
@@ -420,8 +420,8 @@ class TradeService:
                     whole = int(item.amount)
                     part = copy.deepcopy(builder.consume(item_id, int(amount)))
                     if int(amount) != whole:
-                        part.field_30 = int(part.field_30) * int(amount) // max(1, whole)
-                        part.field_34 = int(part.field_34) * int(amount) // max(1, whole)
+                        part.stack_vc_value = int(part.stack_vc_value) * int(amount) // max(1, whole)
+                        part.glyph_value = int(part.glyph_value) * int(amount) // max(1, whole)
                     part.amount = int(amount)
                     out.append(part)
                 given[side.character_id] = out

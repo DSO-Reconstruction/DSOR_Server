@@ -201,7 +201,7 @@ def test_reward_receipts_survive_roundtrip_and_old_completions_are_legacy():
 def test_equipment_hook_counts_each_item_once_even_if_it_occupies_two_slots(player):
     server, session = player
     session.gameplay_inventory = InventoryInfo(
-        items=[ItemInfo(item_id=1, template_id="test_equipment", field_08=4)],
+        items=[ItemInfo(item_id=1, template_id="test_equipment", rarity=4)],
         equipment_slots={1: [5, 6]},
     )
     for _ in range(8):

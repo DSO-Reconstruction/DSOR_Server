@@ -56,9 +56,9 @@ def traders():
         sessions.append(s)
     alice, bob = sessions
     # The same item id in both inventories: ids are per character.
-    alice.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="gem_ruby_a", amount=5, field_30=100))
+    alice.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="gem_ruby_a", amount=5, stack_vc_value=100))
     alice.gameplay_inventory.storage_58[0x00F11000] = 0
-    bob.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="epicmount_death_knight_horse", amount=1, field_08=4))
+    bob.gameplay_inventory.items.append(ItemInfo(item_id=0x00F11000, template_id="epicmount_death_knight_horse", amount=1, rarity=4))
     bob.gameplay_inventory.storage_58[0x00F11000] = 0
     for s in sessions:
         case.server._refresh_premium_bags(s)

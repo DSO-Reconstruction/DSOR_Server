@@ -85,7 +85,7 @@ def test_equipment_configuration_is_applied_to_live_inventory(cms, online):
                                   "enchantment_tier": 0, "roll_quality": 100})
     assert row["status"] == "delivered", row
     item = s.gameplay_inventory.items[-1]
-    assert item.item_level == 100 and item.field_08 == 4 and item.socket_count == 4
+    assert item.item_level == 100 and item.rarity == 4 and item.socket_count == 4
     assert len(item.enchantments) >= 4 and all(e.value == 1 for e in item.enchantments)
     assert len(commands(s)) == 3
 

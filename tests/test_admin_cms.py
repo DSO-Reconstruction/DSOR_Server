@@ -471,7 +471,7 @@ def test_equipment_options_are_delivered_saved_and_audited(cms):
         equipment_booking(cms, {**options, "roll_quality": 96})
     cms.service.delivery.deliver(42)
     item = cms.store.get(42).inventory.items[0]
-    assert (item.item_level, item.field_08, item.socket_count) == (100, 4, 8)
+    assert (item.item_level, item.rarity, item.socket_count) == (100, 4, 8)
     assert item.socketed_templates == [""] * 8
     assert len(item.enchantments) == 4
     assert all(e.value == .95 and e.field_08 == 3 for e in item.enchantments)
