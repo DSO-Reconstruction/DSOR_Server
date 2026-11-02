@@ -142,10 +142,11 @@ class ItemEnchantmentInfo:
 
 @dataclass
 class ItemInfo:
+    # A renamed field keeps its saved key: add it to _ITEM_SAVED_KEYS in account_state.
     item_id: int
     field_04: int = 0
     amount: int = 1                 # structure offset +0x14
-    field_08: int = 0
+    rarity: int = 0                 # structure offset +0x08
     socket_count: int = 0           # structure offset +0x10
     field_11: int = 0
     field_12: int = 0
@@ -154,8 +155,8 @@ class ItemInfo:
     field_1c: int = 0              # _Template_ItemRarityColors.ColorId
     field_28: str = "none"         # equipment dye resource ID
     item_level: int = 135           # structure offset +0x0c
-    field_30: int = 11
-    field_34: int = 0
+    stack_vc_value: int = 11        # structure offset +0x30, PriceVC * amount
+    glyph_value: int = 0            # structure offset +0x34, equipment only
     field_3c: bool = False          # needs identification (true until identified)
     field_3d: bool = False
     template_id: str = BOOTSTRAP_ITEM_TEMPLATE  # structure offset +0x40
@@ -180,7 +181,7 @@ def encode_item_info(writer: BitWriter, item: ItemInfo) -> None:
     writer.write_uint32_le(item.item_id)
     writer.write_uint32_le(item.field_04)
     writer.write_uint32_le(item.amount)
-    writer.write_uint8(item.field_08)
+    writer.write_uint8(item.rarity)
     writer.write_uint8(item.socket_count)
     writer.write_uint8(item.field_11)
     writer.write_uint8(item.field_12)
@@ -189,8 +190,8 @@ def encode_item_info(writer: BitWriter, item: ItemInfo) -> None:
     writer.write_uint32_le(item.field_1c)
     writer.write_string(item.field_28)
     writer.write_uint32_le(item.item_level)
-    writer.write_uint32_le(item.field_30)
-    writer.write_uint32_le(item.field_34)
+    writer.write_uint32_le(item.stack_vc_value)
+    writer.write_uint32_le(item.glyph_value)
     writer.write_bool(item.field_3c)
     writer.write_bool(item.field_3d)
     writer.write_string(item.template_id)
@@ -226,7 +227,7 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
     item_id = reader.read_uint32_le()
     field_04 = reader.read_uint32_le()
     amount = reader.read_uint32_le()
-    field_08 = reader.read_uint8()
+    rarity = reader.read_uint8()
     socket_count = reader.read_uint8()
     field_11 = reader.read_uint8()
     field_12 = reader.read_uint8()
@@ -235,8 +236,8 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
     field_1c = reader.read_uint32_le()
     field_28 = reader.read_string()
     item_level = reader.read_uint32_le()
-    field_30 = reader.read_uint32_le()
-    field_34 = reader.read_uint32_le()
+    stack_vc_value = reader.read_uint32_le()
+    glyph_value = reader.read_uint32_le()
     field_3c = reader.read_bool()
     field_3d = reader.read_bool()
     template_id = reader.read_string()
@@ -266,7 +267,7 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
         item_id=item_id,
         field_04=field_04,
         amount=amount,
-        field_08=field_08,
+        rarity=rarity,
         socket_count=socket_count,
         field_11=field_11,
         field_12=field_12,
@@ -275,8 +276,8 @@ def decode_item_info(reader: BitReader) -> ItemInfo:
         field_1c=field_1c,
         field_28=field_28,
         item_level=item_level,
-        field_30=field_30,
-        field_34=field_34,
+        stack_vc_value=stack_vc_value,
+        glyph_value=glyph_value,
         field_3c=field_3c,
         field_3d=field_3d,
         template_id=template_id,
@@ -997,12 +998,12 @@ def encode_bootstrap_inventory_info(
                 template_id=template_id,
                 # All gameplay starter rows are Common.  CharCreation rows are
                 # intentionally excluded from this packet.
-                field_08=0,
+                rarity=0,
                 socket_count=0,
                 socketed_templates=[],
                 item_level=max(1, int(item_level)),
                 field_18=0x1000 + index,
-                field_30=1,
+                stack_vc_value=1,
                 field_38=0,
                 enchantments=[],
                 created_at=created_at,
@@ -1013,48 +1014,48 @@ def encode_bootstrap_inventory_info(
     ring_death = ItemInfo(
         item_id=BOOTSTRAP_STARTER_RING_DEATH_ID,
         template_id="all_mythic_ring_death",
-        field_08=6,
+        rarity=6,
         socket_count=0,
         socketed_templates=[],
         item_level=1,
         field_18=0x2120,
-        field_30=1,
+        stack_vc_value=1,
         field_38=0,
         created_at=created_at,
     )
     ring_life = ItemInfo(
         item_id=BOOTSTRAP_STARTER_RING_LIFE_ID,
         template_id="all_mythic_ring_life",
-        field_08=6,
+        rarity=6,
         socket_count=0,
         socketed_templates=[],
         item_level=1,
         field_18=0x2121,
-        field_30=1,
+        stack_vc_value=1,
         field_38=0,
         created_at=created_at,
     )
     manticore = ItemInfo(
         item_id=BOOTSTRAP_STARTER_MOUNT_ID,
         template_id="mythical_mount_manticore_01",
-        field_08=7,
+        rarity=7,
         socket_count=0,
         socketed_templates=[],
         item_level=1,
         field_18=0x2122,
-        field_30=1,
+        stack_vc_value=1,
         field_38=0,
         created_at=created_at,
     )
     mortis_pet = ItemInfo(
         item_id=BOOTSTRAP_STARTER_MORTIS_PET_ID,
         template_id="pet_mortis_phase2_epic",
-        field_08=4,
+        rarity=4,
         socket_count=0,
         socketed_templates=[],
         item_level=1,
         field_18=0x2123,
-        field_30=1,
+        stack_vc_value=1,
         field_38=0,
         created_at=created_at,
     )
@@ -1062,12 +1063,12 @@ def encode_bootstrap_inventory_info(
         item_id=BOOTSTRAP_CONSUMABLE_ID,
         template_id=BOOTSTRAP_CONSUMABLE_TEMPLATE,
         amount=1,
-        field_08=4,
+        rarity=4,
         socket_count=0,
         socketed_templates=[],
         item_level=1,
         field_18=22721,
-        field_30=151600,
+        stack_vc_value=151600,
         field_38=0,
         created_at=created_at,
     )
@@ -1079,7 +1080,7 @@ def encode_bootstrap_inventory_info(
         socketed_templates=[],
         item_level=10,
         field_18=18045,
-        field_30=22498,
+        stack_vc_value=22498,
         field_38=0,
         created_at=created_at,
     )
@@ -1087,12 +1088,12 @@ def encode_bootstrap_inventory_info(
         ItemInfo(
             item_id=item_id,
             template_id=template_id,
-            field_08=rarity,
+            rarity=rarity,
             socket_count=0,
             socketed_templates=[],
             item_level=1,
             field_18=0x2124 + index,
-            field_30=1,
+            stack_vc_value=1,
             field_38=0,
             created_at=created_at,
         )
@@ -1112,7 +1113,7 @@ def encode_bootstrap_inventory_info(
         socketed_templates=[],
         item_level=1,
         field_18=0x2128,
-        field_30=1,
+        stack_vc_value=1,
         field_38=0,
         created_at=created_at,
     )

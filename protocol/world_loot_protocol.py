@@ -1978,7 +1978,7 @@ def backfill_missing_equipment_enchantments(
         seed_parts.extend(
             (
                 f"{item.template_id}:{int(item.field_18)}:"
-                f"{int(item.item_level)}:{int(item.field_08)}"
+                f"{int(item.item_level)}:{int(item.rarity)}"
             )
             for item in sorted(
                 inventory.items, key=lambda value: int(value.item_id)
@@ -2022,7 +2022,7 @@ def backfill_missing_equipment_enchantments(
             definition,
             class_name=class_name,
             item_level=max(1, int(item.item_level)),
-            rarity=max(0, min(7, int(item.field_08))),
+            rarity=max(0, min(7, int(item.rarity))),
             enchantment_tier=map_difficulty,
             rng=rng,
         )
@@ -2099,7 +2099,7 @@ def roll_new_equipment_enchantments(
             definition,
             class_name=str(class_name),
             item_level=max(1, int(item.item_level)),
-            rarity=max(0, min(7, int(item.field_08))),
+            rarity=max(0, min(7, int(item.rarity))),
             enchantment_tier=int(map_difficulty),
             rng=rng,
         )
@@ -2836,17 +2836,17 @@ def generate_monster_loot(
             item = ItemInfo(
                 item_id=item_id,
                 amount=amount,
-                field_08=rarity,
+                rarity=rarity,
                 socket_count=socket_count,
                 field_18=generator.randrange(1, 0x8000),
                 field_28="none",
                 item_level=max(1, int(item_level)),
-                field_30=(
+                stack_vc_value=(
                     int(amount)
                     if definition.item_category in {"Currency", "InstantConsumable"}
                     else 0
                 ),
-                field_34=0,
+                glyph_value=0,
                 field_3c=bool(rarity > 0 and item_row.get("NeedsIdentify", False)),
                 field_3d=False,
                 template_id=definition.template_id,
@@ -2886,8 +2886,8 @@ def generate_monster_loot(
                 ),
             )
             if definition.item_category not in {"Currency", "InstantConsumable"}:
-                item.field_30 = item_stack_vc_value(item, item_row)
-                item.field_34 = equipment_melt_value(
+                item.stack_vc_value = item_stack_vc_value(item, item_row)
+                item.glyph_value = equipment_melt_value(
                     item,
                     item_row,
                     database.enchantments_by_id,
@@ -3344,8 +3344,8 @@ def add_world_drop_to_inventory(
             item_id=new_id,
             amount=int(old_item.amount) + added,
             field_18=new_id & 0xFFFF,
-            field_30=(
-                (int(old_item.field_30) // max(1, int(old_item.amount)))
+            stack_vc_value=(
+                (int(old_item.stack_vc_value) // max(1, int(old_item.amount)))
                 * (int(old_item.amount) + added)
             ),
         )

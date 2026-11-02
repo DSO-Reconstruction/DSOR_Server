@@ -1412,7 +1412,8 @@ class AdminService:
                     "wisdom": {"level": self.wisdom_progression_level(wisdom_xp),
                                "experience": wisdom_xp, "range": wisdom_range},
                     "online": cid in self.online_characters(),
-                    "state": _state_to_document(state) if state is not None else None}
+                    "state": _state_to_document(state, item_document=asdict)
+                    if state is not None else None}
         if path.startswith("/api/bookings/"):
             result = self.repository.booking(int(path.rsplit("/", 1)[1]))
             result["account"] = self.account_document(self.registry.account_by_id(result["account_id"]))

@@ -596,8 +596,8 @@ class InventoryInteractionService:
                     "both items need at least one enchantment to transfer"
                 )
             glyph_cost = transfer_factor * (
-                max(0, int(first.field_34))
-                + max(0, int(second.field_34))
+                max(0, int(first.glyph_value))
+                + max(0, int(second.glyph_value))
             )
             if glyph_cost <= 0:
                 raise ValueError("enchantment transfer has no Glyphs of Power cost")
@@ -806,7 +806,7 @@ class InventoryInteractionService:
                         items_by_id[int(item_id)] for item_id in request.item_ids
                     ]
                     if any(
-                        int(item.field_08) != input_rarity_index
+                        int(item.rarity) != input_rarity_index
                         for item in selected_items
                     ):
                         raise ValueError(
@@ -842,7 +842,7 @@ class InventoryInteractionService:
                         0, int(round(float(rarity_rule["FactorUC"] or 0)))
                     )
                     rarity_glyph_cost = rarity_factor * sum(
-                        max(0, int(item.field_34)) for item in selected_items
+                        max(0, int(item.glyph_value)) for item in selected_items
                     )
                     if rarity_glyph_cost <= 0:
                         raise ValueError(
@@ -937,11 +937,11 @@ class InventoryInteractionService:
                     created_ids = {int(item.item_id) for item in created_items}
                     for item in builder.inventory.items:
                         if int(item.item_id) in created_ids:
-                            item.field_08 = int(rarity_upgrade_roll.rarity)
+                            item.rarity = int(rarity_upgrade_roll.rarity)
                             item.field_80 = str(rarity_upgrade_roll.appearance)
                             item.item_level = int(crafted_item_level)
                     for item in created_items:
-                        item.field_08 = int(rarity_upgrade_roll.rarity)
+                        item.rarity = int(rarity_upgrade_roll.rarity)
                         item.field_80 = str(rarity_upgrade_roll.appearance)
                         item.item_level = int(crafted_item_level)
             if crafted_equipment_item_ids:

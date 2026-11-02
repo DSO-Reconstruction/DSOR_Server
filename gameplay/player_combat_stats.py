@@ -1307,7 +1307,7 @@ def _item_instructions(
                 if enchantment.use_tier_factor:
                     roll_fraction = database.base_enchantment_power_factor(
                         int(getattr(item, "field_38", 0)),
-                        int(getattr(item, "field_08", 0)),
+                        int(getattr(item, "rarity", 0)),
                         roll_fraction,
                     )
             result.append(_scaled_item_instruction(
@@ -1340,7 +1340,7 @@ def _item_instructions(
                 )
                 for modifier in enchantment.modifiers
             )
-    item_rarity = max(0, int(getattr(item, "field_08", 0)))
+    item_rarity = max(0, int(getattr(item, "rarity", 0)))
     for concrete in concrete_enchantments:
         enchantment = database.enchantments.get(
             str(getattr(concrete, "template_id", ""))
@@ -1976,7 +1976,7 @@ def _combat_item_signature(item, slots) -> tuple:
         tuple(int(slot) for slot in slots),
         str(item.template_id),
         max(1, int(getattr(item, "item_level", 1))),
-        max(0, int(getattr(item, "field_08", 0))),
+        max(0, int(getattr(item, "rarity", 0))),
         int(getattr(item, "field_18", 0)),
         max(0, int(getattr(item, "field_38", 0))),
         tuple(

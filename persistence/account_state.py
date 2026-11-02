@@ -269,12 +269,29 @@ def _integer_map(values: dict) -> dict[int, int]:
     return {int(key): int(value) for key, value in values.items()}
 
 
+# Saved items keep the wire offset names they have always had. A document this
+# or an older build cannot parse drops the character with only a warning, so
+# renaming an ItemInfo attribute must not change what is written.
+_ITEM_SAVED_KEYS = {
+    "rarity": "field_08",
+    "stack_vc_value": "field_30",
+    "glyph_value": "field_34",
+}
+_ITEM_ATTRIBUTES = {saved: name for name, saved in _ITEM_SAVED_KEYS.items()}
+
+
 def _item_to_document(item: ItemInfo) -> dict:
-    return asdict(item)
+    return {
+        _ITEM_SAVED_KEYS.get(key, key): value
+        for key, value in asdict(item).items()
+    }
 
 
 def _item_from_document(document: dict) -> ItemInfo:
-    values = dict(document)
+    values = {
+        _ITEM_ATTRIBUTES.get(key, key): value
+        for key, value in document.items()
+    }
     values["field_100"] = tuple(float(value) for value in values["field_100"])
     values["created_at"] = tuple(int(value) for value in values["created_at"])
     values["enchantments"] = [
@@ -287,14 +304,16 @@ def _item_from_document(document: dict) -> ItemInfo:
     return ItemInfo(**values)
 
 
-def _inventory_to_document(inventory: InventoryInfo) -> dict:
+def _inventory_to_document(
+    inventory: InventoryInfo, item_document=_item_to_document,
+) -> dict:
     return {
-        "items": [_item_to_document(item) for item in inventory.items],
+        "items": [item_document(item) for item in inventory.items],
         "premium_inventory_overflow": [
-            _item_to_document(item) for item in inventory.premium_inventory_overflow
+            item_document(item) for item in inventory.premium_inventory_overflow
         ],
         "premium_storage_overflow": [
-            _item_to_document(item) for item in inventory.premium_storage_overflow
+            item_document(item) for item in inventory.premium_storage_overflow
         ],
         "equipment_slots": {
             str(item_id): list(slots)
@@ -578,7 +597,11 @@ def _category_talent_presets_from_document(
     return result
 
 
-def _state_to_document(state: AccountState) -> dict:
+def _state_to_document(
+    state: AccountState, *, item_document=_item_to_document,
+) -> dict:
+    """Build the saved document; the CMS passes ``asdict`` for attribute names."""
+
     mount = None
     if state.mount_ride is not None:
         mount = {
@@ -603,10 +626,10 @@ def _state_to_document(state: AccountState) -> dict:
         "position": (
             list(state.position) if state.position is not None else None
         ),
-        "inventory": _inventory_to_document(state.inventory),
+        "inventory": _inventory_to_document(state.inventory, item_document),
         "starter_equipment_version": int(state.starter_equipment_version),
         "vendor_buyback": [
-            {"item": _item_to_document(item), "price": price}
+            {"item": item_document(item), "price": price}
             for item, price in state.vendor_buyback
         ],
         "currencies": {
