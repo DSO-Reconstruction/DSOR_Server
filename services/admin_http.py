@@ -6,7 +6,9 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import socket
 import sqlite3
+import time
 from urllib.parse import parse_qs, urlsplit
 
 from dso_server.persistence.account_registry import AccountRegistryError
@@ -14,6 +16,8 @@ from dso_server.services.admin import AdminError
 
 
 ASSETS = Path(__file__).with_name("admin_static")
+# How long a rejected request may keep sending a body nobody will read.
+REJECTED_BODY_LINGER_SECONDS = 2.0
 
 
 class AdminHTTPServer(ThreadingHTTPServer):
@@ -29,10 +33,31 @@ class AdminHTTPServer(ThreadingHTTPServer):
 class AdminRequestHandler(BaseHTTPRequestHandler):
     server_version = "DSO-Admin"
     sys_version = ""
+    _body_unread = False
 
     def setup(self):
         super().setup()
         self.connection.settimeout(10)
+
+    def finish(self):
+        super().finish()
+        if self._body_unread:
+            self._linger_for_unread_body()
+
+    def _linger_for_unread_body(self):
+        # A POST refused before its body was read can still have that body in
+        # flight. Closing now answers it with a reset, and the reset makes the
+        # client drop this response even when it has already arrived. Finish
+        # sending and read until the client hangs up (RFC 9112 section 9.6).
+        deadline = time.monotonic() + REJECTED_BODY_LINGER_SECONDS
+        try:
+            self.connection.shutdown(socket.SHUT_WR)
+            while (remaining := deadline - time.monotonic()) > 0:
+                self.connection.settimeout(remaining)
+                if not self.connection.recv(65536):
+                    break
+        except OSError:
+            pass
 
     def log_message(self, format, *args):
         pass
@@ -83,7 +108,9 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         length = int(lengths[0])
         if not 1 <= length <= 16384:
             raise AdminError(413, "request body must be from 1 to 16,384 bytes")
-        payload = json.loads(self.rfile.read(length))
+        body = self.rfile.read(length)
+        self._body_unread = False
+        payload = json.loads(body)
         if not isinstance(payload, dict):
             raise ValueError("JSON object required")
         return payload
@@ -143,4 +170,5 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self._dispatch(False)
 
     def do_POST(self):
+        self._body_unread = True
         self._dispatch(True)
