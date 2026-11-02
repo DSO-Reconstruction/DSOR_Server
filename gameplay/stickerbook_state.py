@@ -151,6 +151,33 @@ def _open_read_only(path: Path) -> sqlite3.Connection:
     return connection
 
 
+@lru_cache(maxsize=8)
+def _costume_status_effect_wire_ids_cached(
+    static_database_path: Path,
+) -> frozenset[int]:
+    with _open_read_only(static_database_path) as database:
+        return frozenset(
+            int(row["effect_rowid"]) - 1
+            for row in database.execute(
+                "SELECT rowid AS effect_rowid, Groups "
+                "FROM _Template_StatusEffect"
+            )
+            if "costume" in {
+                group.casefold() for group in _split(row["Groups"])
+            }
+        )
+
+
+def costume_status_effect_wire_ids(
+    static_database_path: str | Path,
+) -> frozenset[int]:
+    """Return every status-effect wire id used by a costume visual."""
+
+    return _costume_status_effect_wire_ids_cached(
+        Path(static_database_path)
+    )
+
+
 def _mount_definition_from_item(
     database: sqlite3.Connection,
     item: sqlite3.Row,

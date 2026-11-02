@@ -22,6 +22,9 @@ from dso_server.protocol.currency_protocol import (
 
 from dso_server.runtime.context import *
 from dso_server.gameplay.premium_bags import reconcile_premium_bags
+from dso_server.gameplay.stickerbook_state import (
+    costume_status_effect_wire_ids,
+)
 from dso_server.protocol.membership_protocol import membership_is_active
 from dso_server.protocol.inventory_codec import (
     BOOTSTRAP_ITEM_ID,
@@ -964,6 +967,48 @@ class PlayerInitializationStateService:
                 )
                 if persisted_state is not None
                 else ()
+            )
+        }
+        costume_effect_ids = costume_status_effect_wire_ids(
+            self.static_database_path
+        )
+        active_costume = str(
+            getattr(persisted_state, "active_costume", "") or ""
+        )
+        active_costume_definition = (
+            load_cosmetic_definition(
+                self.static_database_path, active_costume
+            )
+            if active_costume else None
+        )
+        active_costume_effect_id = (
+            int(active_costume_definition.status_effect_wire_id)
+            if (
+                active_costume_definition is not None
+                and active_costume_definition.kind == "costume"
+            ) else None
+        )
+        matching_costume_instances = tuple(
+            instance_id
+            for instance_id, effect in persistent_status_effects.items()
+            if (
+                active_costume_effect_id is not None
+                and int(effect.effect_id) == active_costume_effect_id
+            )
+        )
+        keep_costume_instance_id = (
+            max(matching_costume_instances)
+            if matching_costume_instances else None
+        )
+        # Old saves can contain costume statuses after their active selection
+        # was cleared. Reconcile the persisted effect list with the selected
+        # costume so stale visual modifiers are never replayed at map entry.
+        persistent_status_effects = {
+            instance_id: effect
+            for instance_id, effect in persistent_status_effects.items()
+            if (
+                int(effect.effect_id) not in costume_effect_ids
+                or int(instance_id) == keep_costume_instance_id
             )
         }
         if mount_ride is not None:

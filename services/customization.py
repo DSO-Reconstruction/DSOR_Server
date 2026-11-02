@@ -15,6 +15,7 @@ from dso_server.protocol.item_customization_protocol import (
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.gameplay.stickerbook_state import (
     STICKERBOOK_FAVORITE_SLOTS, collector_item_rewards,
+    costume_status_effect_wire_ids,
     stickerbook_info_entries,
 )
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
@@ -1447,6 +1448,10 @@ class CustomizationService:
             definition.exclusive_group.casefold() or definition.resource_id
             if definition.kind == "decoration" else None
         )
+        costume_effect_ids = (
+            costume_status_effect_wire_ids(self.static_database_path)
+            if definition.kind == "costume" else frozenset()
+        )
         transitions = []
         with s.flow_lock:
             if decoration_group is not None:
@@ -1463,6 +1468,16 @@ class CustomizationService:
                 if current_instance_id is not None
                 else None
             )
+            cleanup_effects = (
+                tuple(
+                    effect
+                    for effect in s.gameplay_persistent_status_effects.values()
+                    if int(effect.effect_id) in costume_effect_ids
+                )
+                if definition.kind == "costume"
+                else ((current_effect,) if current_effect is not None else ())
+            )
+            new_instance_id = None
 
             # Add the replacement first. Retail does the same for exclusive
             # effects so the actor never briefly falls back to its base skin.
@@ -1507,16 +1522,30 @@ class CustomizationService:
                     setattr(s, resource_attribute, "")
                     setattr(s, instance_attribute, None)
 
-            if current_effect is not None:
-                s.gameplay_persistent_status_effects.pop(
-                    current_effect.field_04, None
+            for old_effect in cleanup_effects:
+                if (
+                    new_instance_id is not None
+                    and int(old_effect.field_04) == int(new_instance_id)
+                ):
+                    continue
+                removed_effect = s.gameplay_persistent_status_effects.pop(
+                    int(old_effect.field_04), None
                 )
+                if removed_effect is None:
+                    continue
                 transitions.append(
                     StatusEffect(
                         clear_existing=False,
                         entries=(
                             replace(
-                                current_effect,
+                                removed_effect,
+                                field_0c=0,
+                                field_14=0,
+                                field_18=0,
+                                field_10=0,
+                                field_25=False,
+                                field_26=False,
+                                field_39=False,
                                 has_details=False,
                                 values=(),
                                 field_38=False,
