@@ -12,6 +12,7 @@ from dso_server.protocol.character_generation import (
 from dso_server.protocol.character_selection import (
     LOCAL_CHARACTER_ID_BASE, decode_character_selection, encode_character_selection,
 )
+from dso_server.protocol.inventory_codec import ItemInfo
 from dso_server.runtime.transport import Session
 from dso_server.tests.fixtures.characters import character_profile, character_server
 from dso_server.tests.fixtures.captured_character_selection import (
@@ -71,6 +72,38 @@ class CharacterRosterTests(unittest.TestCase):
         saved = SimpleNamespace(inventory=SimpleNamespace(items=[], equipment_slots={}))
         with patch.object(server.account_store, "get", return_value=saved):
             self.assertEqual(server._selection_equipment(character_id), [])
+
+    def test_transmog_keeps_the_worn_item_and_travels_as_the_skin(self):
+        captured = decode_character_selection(
+            CHARACTER_SELECTION_PAYLOAD, CHARACTER_SELECTION_BIT_LENGTH,
+        )
+        rifle = next(
+            record for record in captured.equipment
+            if record.item_id == "dwarf_unique_2h_rifle_anniversary"
+        )
+        self.assertEqual(rifle.appearance_id, "")
+        self.assertEqual(
+            rifle.equipment_skin, "dwarf_unique_2h_rifle_dragan_set_01_base_FX",
+        )
+
+        server = character_server(self)
+        character_id = server.character_selection.active_character_id
+        staff = ItemInfo(
+            100,
+            template_id="mage_unique_2h_staff_anniversary_2026",
+            equipment_skin="mage_unique_2h_staff2h_bloodmoon_set_FX",
+        )
+        saved = SimpleNamespace(
+            inventory=SimpleNamespace(items=[staff], equipment_slots={100: (5, 6)}),
+            hidden_equipment_skins={},
+        )
+        with patch.object(server.account_store, "get", return_value=saved):
+            records = server._selection_equipment(character_id)
+        self.assertEqual(len(records), 2)
+        for record in records:
+            self.assertEqual(record.item_id, staff.template_id)
+            self.assertEqual(record.appearance_id, "")
+            self.assertEqual(record.equipment_skin, staff.equipment_skin)
 
     def test_character_created_on_empty_server_survives_reload(self):
         server = character_server(self, profiles=())

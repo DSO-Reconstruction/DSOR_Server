@@ -150,7 +150,7 @@ class StaticGameDatabase:
                 for label, value in (
                     ("item", equipment.item_id),
                     ("appearance", equipment.appearance_id),
-                    ("effect", equipment.effect_id),
+                    ("equipment skin", equipment.equipment_skin),
                 ):
                     if not value:
                         continue
@@ -386,64 +386,6 @@ class StaticGameDatabase:
                 (row[0],),
             ).fetchone()[0]
         return int(index)
-
-    @_cached_content
-    def character_selection_visual_item_template(
-            self, item_template_id: str, appearance_id: str = "") -> str:
-        """Resolve a selected equipment skin to the item used by previews.
-
-        The character-selection equipment record builds its model from the
-        item template. Unlike RemotePlayerInfo, it does not apply a
-        ``SkinGraphics`` value as a runtime slot override. Newer equipment
-        skins provide their preview model through ``TooltipItem``; older item
-        appearances link to one of those skins through ``EquipmentSkinId``.
-        """
-
-        fallback = str(item_template_id)
-        appearance_id = str(appearance_id or "")
-        if not appearance_id:
-            return fallback
-        with closing(self._connect()) as connection:
-            if not compat.table_exists(connection, "_Template_EquipmentSkin"):
-                return fallback
-            skin_id = appearance_id
-            if not self._exists(
-                connection, "_Template_EquipmentSkin", "Id", skin_id
-            ):
-                if not compat.table_exists(
-                    connection, "_Template_ItemAppearance"
-                ):
-                    return fallback
-                row = connection.execute(
-                    'SELECT "EquipmentSkinId" '
-                    'FROM "_Template_ItemAppearance" '
-                    'WHERE "Id"=? LIMIT 1',
-                    (appearance_id,),
-                ).fetchone()
-                if row is None or not row[0]:
-                    return fallback
-                skin_id = str(row[0])
-            tooltip_item = connection.execute(
-                'SELECT ' + compat.projection(
-                    connection, "_Template_EquipmentSkin", ("TooltipItem",)
-                ) + ' FROM "_Template_EquipmentSkin" '
-                'WHERE "Id"=? LIMIT 1',
-                (skin_id,),
-            ).fetchone()
-            candidate = str(tooltip_item[0] or "") if tooltip_item else ""
-            # Basic equipment skins commonly omit TooltipItem even though
-            # their skin id has a corresponding item template.  In that case
-            # use the same-id template as the preview model instead of
-            # falling back to the currently equipped item's default model.
-            if not candidate and self._exists(
-                connection, "_Template_Item", "Id", skin_id
-            ):
-                candidate = skin_id
-            if candidate and self._exists(
-                connection, "_Template_Item", "Id", candidate
-            ):
-                return candidate
-        return fallback
 
     @_cached_content
     def remote_equipment_skin(

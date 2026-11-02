@@ -233,44 +233,21 @@ class CharacterSelectionService:
         return True
 
     @staticmethod
-    def _equipment_record_for(
-            item, static_database=None, *, enabled: bool = True) -> EquipmentRecord:
+    def _equipment_record_for(item, *, enabled: bool = True) -> EquipmentRecord:
         """One selection-screen record for an equipped inventory item.
 
-        ``equipment_skin`` is the transmog skin and ``dye_argb`` is packed ARGB.
-        Character-selection previews construct models from item templates, so
-        newer skin ids are resolved to their authored ``TooltipItem`` model.
-        The captured retail records also carry an ``effect_id``
-        for set/weapon FX; its runtime source is not recovered, so it is left
-        empty exactly as the character-creation records leave it.
+        The record carries the same ids as ``ItemInfo``. The client resolves
+        the skin from ``equipment_skin``, then ``appearance``, then the item
+        template, and that skin supplies both the model and the effect
+        sequence, so the worn template stays in ``item_id`` under a transmog.
+        ``dye_argb`` is packed ARGB.
         """
 
-        tint = item_tint(item) or (0.0, 0.0, 0.0, 0.0)
-        appearance_id = str(item.equipment_skin or item.appearance or "")
-        item_id = str(item.template_id)
-        if appearance_id and static_database is not None:
-            try:
-                visual_item = (
-                    static_database.character_selection_visual_item_template(
-                        item.template_id, appearance_id
-                    )
-                )
-                if visual_item != item_id:
-                    item_id = visual_item
-                    # The resolved template already carries the selected
-                    # model. Keep a same-id appearance override: basic
-                    # equipment skins often use their own item template as
-                    # the preview model while that template still points at
-                    # the legacy base skin.
-                    if visual_item != appearance_id:
-                        appearance_id = ""
-            except (OSError, ValueError, CharacterSelectionError):
-                # Older static databases may not contain the preview link.
-                pass
         return EquipmentRecord(
-            item_id=item_id,
-            appearance_id=appearance_id,
-            tint=tint,
+            item_id=str(item.template_id),
+            appearance_id=str(item.appearance or ""),
+            equipment_skin=str(item.equipment_skin or ""),
+            tint=item_tint(item) or (0.0, 0.0, 0.0, 0.0),
             enabled=bool(enabled),
         )
 
@@ -310,9 +287,7 @@ class CharacterSelectionService:
             )
             records.append(
                 CharacterSelectionService._equipment_record_for(
-                    item,
-                    getattr(self, "static_database", None),
-                    enabled=enabled,
+                    item, enabled=enabled
                 )
             )
         return records
