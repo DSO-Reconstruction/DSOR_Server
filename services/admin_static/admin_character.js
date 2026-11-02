@@ -1,10 +1,13 @@
 import { livePage } from "./admin_live.js";
-import { $, esc, human, date, classes, rarities, api, link, navigate, status, table, facts,
-  section, tabs, toolbar, bindSearch, pager, tree, bookingTable, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, human, date, classes, rarities, api, link, navigate, status, table, filteredTable, facts,
+  section, tabs, toolbar, bindSearch, pager, tree, valueView, valueList, bookingTable, formError, notice,
+  announce, rememberParams, routeInfo, confirmAction } from "./admin_ui.js";
 
 const containers = {equipment_slots: "Equipment", storage_58: "Inventory", storage_80: "Extra inventory", storage_a8: "Bank", storage_d0: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
 const privileges = [["admin_privileges", "Game administrator"], ["admin_name_color", "Administrator name colour"]];
+const questStates = {0: "Accepted", 1: "Finished", 2: "Closed", 3: "Cancelled", 4: "Failed"};
+const RAW_MATCH_LIMIT = 200;
 
 function privilegeSection(p) {
   return section("Game administrator privileges", `<form id="privilege-form" class="form-page">
@@ -450,35 +453,25 @@ export async function characterPage(route) {
     const inventory = s.inventory, all = inventory.items || [];
     const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
       (inventory.premium_storage_overflow || []).length;
-    const counts = {};
-    for (const item of all) { const where = location(item, inventory).name; counts[where] = (counts[where] || 0) + 1; }
-    let rows = all.filter(item => (!route.params.container || location(item, inventory).name === route.params.container) &&
-      (!route.params.q || (item.template_id + " " + item.item_id).toLowerCase().includes(route.params.q.toLowerCase())));
-    const offset = Math.max(0, Number(route.params.offset) || 0), total = rows.length;
-    rows = rows.slice(offset, offset + 50);
-    const options = ["", ...Object.keys(counts)].map(name => `<option value="${esc(name)}" ${route.params.container === name ? "selected" : ""}>${name ? `${esc(name)} (${counts[name]})` : "All containers"}</option>`).join("");
     result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_58 || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.storage_a8 || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
-      inventoryCopySection(id, itemCount) +
-      toolbar(route, "Search template or item ID", `<select id="container-filter" aria-label="Inventory container">${options}</select>`) +
-      table(["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], rows.map(item => {
+      filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
         const where = location(item, inventory);
         return [link(item.template_id, `${root}/inventory/${item.item_id}`, route.params, "resource mono") + `<span class="sub">Item ${item.item_id}</span>`,
           esc(where.name), esc(where.slot), esc(rarities[item.field_08] ?? item.field_08), esc(item.item_level), esc(item.amount),
           `${(item.socketed_templates || []).filter(Boolean).length} / ${item.socket_count}`];
-      }), "No items match this filter.") + pager({total, offset, limit: 50}, route);
-    result.mount = () => {
-      bindInventoryCopy(id);
-      bindSearch(route);
-      $("#container-filter").addEventListener("change", event => navigate(route.path, {...route.params, container: event.target.value, offset: 0}));
-    };
+      }), {facets: [["Location", 1, "container"], ["Rarity", 3, "rarity"]], empty: "This character has no items."}) +
+      inventoryCopySection(id, itemCount);
+    result.mount = () => bindInventoryCopy(id);
   } else if (tab === "progression") {
     result.html += '<div class="columns">' + section("Progression", facts([
       ["Level", p.level], ["Progression", esc(p.progression_u64)], ["Progression points", esc(p.progression_u32)],
       ["Talent category points", esc((s.talent_category_points || []).join(" / "))],
-      ["Unlocked chapters", esc((s.chapters_unlocked || []).join(", ") || "None")],
-      ["Unlocked maps", esc((s.unlocked_maps || []).join(", ") || "None")]
+      ["Unlocked chapters", valueList(s.chapters_unlocked || [])],
+      ["Unlocked maps", valueList(s.unlocked_maps || [])]
     ])) + section("Talent selections", tree(s.talent_categories)) + '</div>';
-    result.html += section("Quest log", records(s.quest_log, "Quest")) + section("Achievements", records(s.achievements, "Achievement")) +
+    result.html += section("Quest log", recordTable("quests", "quests", "Quest", Object.entries(s.quest_log || {}),
+        {state: value => esc(questStates[value] ?? value)}, [["State", 1, "quest_state"]])) +
+      section("Achievements", recordTable("achievements", "achievements", "Achievement", Object.entries(s.achievements || {}))) +
       '<div class="columns">' + section("Events", tree({progress: s.event_progress, participation: s.event_participation})) +
       section("Talent presets", tree({skills: s.skill_talent_presets, categories: s.category_talent_presets})) + '</div>';
     result.html += mainQuestSection() + ammonPWQuestSection();
@@ -488,9 +481,10 @@ export async function characterPage(route) {
       map_access: s.map_access_id, map_difficulty: s.map_difficulty, scaling_difficulty: s.scaling_difficulty, unlocked_maps: s.unlocked_maps})) +
       section("Vitals and appearance", tree({health: s.inventory.health_points, resource: s.inventory.secondary_resource,
         costume: s.active_costume, pet: s.active_pet, decorations: s.active_decorations, mount: s.mount_ride})) + '</div>' +
-      section("Active status effects", tree(s.active_status_effects)) + '<div class="columns">' +
-      section("Collections and crafting", tree({stickerbook: s.stickerbook_entries, recipes: s.recipe_book_resources})) +
-      section("Quickbars and offers", tree({quickbar: s.quickbar, slots: s.quick_slots, offer_purchases: s.timed_offer_purchases})) + '</div>';
+      section("Active status effects", tree(s.active_status_effects)) +
+      section("Collection", recordTable("collection", "collection", "Item", (s.stickerbook_entries || []).map(({resource_id, ...entry}) => [resource_id, entry]))) +
+      section("Recipe book", filteredTable("recipes", "Filter recipes", ["Recipe"], (s.recipe_book_resources || []).map(recipe => [`<code class="resource">${esc(recipe)}</code>`]), {empty: "No recipes learned."})) +
+      section("Quickbars and offers", tree({quickbar: s.quickbar, slots: s.quick_slots, offer_purchases: s.timed_offer_purchases}));
     const open = Object.values(s.quest_log || {}).filter(q => q.state === 0 || q.state === 1).length;
     result.html += activeQuestSection(open);
     result.html += recipeBookSection();
@@ -498,16 +492,71 @@ export async function characterPage(route) {
     result.mount = () => { bindActiveQuests(id); bindUnlockRecipes(id); bindUnlockStickers(id); };
   } else if (tab === "raw") {
     result.html += '<p class="muted">Complete saved documents for diagnostics. Read only.</p>' +
-      section("Character profile", `<pre>${esc(JSON.stringify(p, null, 2))}</pre>`) +
-      section("Saved state", `<pre>${esc(JSON.stringify(s, null, 2))}</pre>`);
+      section("Character profile", `<details><summary>Profile document</summary><pre>${esc(JSON.stringify(p, null, 2))}</pre></details>`) +
+      section("Saved state", rawSection(s));
+    result.mount = () => bindRaw(s);
   } else throw new Error("Character page not found.");
   return result;
 }
 
-function records(document, label) {
-  return table([label, "Details"], Object.entries(document || {}).map(([id, value]) => [
-    `<code class="resource">${esc(id)}</code>`, typeof value === "object" ? tree(value) : esc(value)
-  ]));
+// One line per record: fields become columns, fields no record uses are left
+// out, and nested values stay one click away in their cell. format maps a
+// field to its renderer and puts that column first.
+function recordTable(id, name, label, entries, format = {}, facets = []) {
+  const blank = value => value == null || value === "" || value === "0000-00-00 00:00:00" ||
+    (typeof value === "object" && !Object.keys(value).length);
+  const keys = [...new Set([...Object.keys(format), ...entries.flatMap(([, value]) => Object.keys(value))])]
+    .filter(key => entries.some(([, value]) => !blank(value[key])));
+  const cell = (key, value) => blank(value) ? valueView("") : format[key] ? format[key](value) :
+    typeof value === "object" && !Array.isArray(value) ? `<details><summary>${Object.keys(value).length}</summary>${tree(value)}</details>` : valueView(value);
+  return filteredTable(id, `Filter ${name}`, [label, ...keys.map(human)], entries.map(([key, value]) =>
+    [`<code class="resource">${esc(key)}</code>`, ...keys.map(field => cell(field, value[field]))]), {facets});
+}
+
+function rawLeaves(value, path, rows) {
+  if (value && typeof value === "object" && Object.keys(value).length) {
+    for (const [key, item] of Object.entries(value)) rawLeaves(item, path ? `${path}.${key}` : key, rows);
+  } else rows.push([path, JSON.stringify(value) ?? "null"]);
+  return rows;
+}
+
+function rawSection(saved) {
+  return `<div class="toolbar" role="search" aria-label="Search saved state">
+      <input id="raw-search" type="search" aria-label="Search saved state keys and values" placeholder="Search keys and values" maxlength="100" autocomplete="off" spellcheck="false">
+      <span class="spacer"></span><span id="raw-count" class="list-count"></span></div>
+    <div id="raw-matches"></div>
+    <div id="raw-keys">${Object.entries(saved).map(([key, value]) => `<details data-raw-key="${esc(key)}"><summary>${esc(key)} <span class="raw-size">${(JSON.stringify(value)?.length ?? 0).toLocaleString()} bytes</span></summary></details>`).join("")}</div>`;
+}
+
+// The saved state runs to hundreds of kilobytes, so a key's JSON is only built
+// when it is opened and a search shows matching leaves rather than the document.
+function bindRaw(saved) {
+  const search = $("#raw-search"), rows = rawLeaves(saved, "", []);
+  const text = rows.map(([path, value]) => `${path} ${value}`.toLowerCase());
+  for (const entry of document.querySelectorAll("[data-raw-key]")) entry.addEventListener("toggle", () => {
+    if (entry.open && !entry.querySelector("pre")) entry.insertAdjacentHTML("beforeend", `<pre>${esc(JSON.stringify(saved[entry.dataset.rawKey], null, 2))}</pre>`);
+  });
+  const apply = () => {
+    const terms = search.value.toLowerCase().split(/\s+/).filter(Boolean);
+    $("#raw-keys").hidden = terms.length > 0;
+    rememberParams({raw: search.value});
+    if (!terms.length) {
+      $("#raw-matches").replaceChildren();
+      $("#raw-count").textContent = `${Object.keys(saved).length} keys · ${rows.length.toLocaleString()} values`;
+      return;
+    }
+    const found = rows.filter((_, index) => terms.every(term => text[index].includes(term)));
+    $("#raw-matches").innerHTML = table(["Path", "Value"], found.slice(0, RAW_MATCH_LIMIT).map(([path, value]) =>
+      [`<code class="resource">${esc(path)}</code>`, `<code class="resource">${esc(value)}</code>`]), "Nothing in the saved state matches this search.");
+    $("#raw-count").textContent = found.length > RAW_MATCH_LIMIT ? `First ${RAW_MATCH_LIMIT} of ${found.length.toLocaleString()} matches` : `${found.length.toLocaleString()} matches`;
+    announce($("#raw-count").textContent);
+  };
+  search.value = routeInfo().params.raw || "";
+  search.addEventListener("input", apply);
+  search.addEventListener("keydown", event => {
+    if (event.key === "Escape" && search.value) { event.preventDefault(); search.value = ""; apply(); }
+  });
+  apply();
 }
 
 function inventoryItemPage(result, route, data) {

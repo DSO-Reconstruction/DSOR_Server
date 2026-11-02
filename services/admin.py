@@ -1388,7 +1388,8 @@ class AdminService:
             shop_id = unquote(path[len("/api/npc-shops/"):])
             offset, limit = paging(query)
             return self.npc_shop_overrides.detail(
-                shop_id, search=search, offset=offset, limit=limit
+                shop_id, search=search, offset=offset, limit=limit,
+                category=query.get("category", ""),
             )
         if path.startswith("/api/characters/") and path.endswith("/live"):
             cid = int(path.split("/")[-2])
@@ -1474,8 +1475,11 @@ class AdminService:
             }
             if sort not in orders:
                 raise ValueError("invalid item catalog sort order")
+            catalog, category = item_catalog(self.static_database_path), query.get("category", "")
             rows = []
-            for row in item_catalog(self.static_database_path):
+            for row in catalog:
+                if category and row["category"] != category:
+                    continue
                 localized_matches = [
                     (locale, name) for locale, name in row["localized_names"]
                     if search and search in name.casefold()
@@ -1497,9 +1501,11 @@ class AdminService:
             rows.sort(key=lambda row: row["template_id"])
             key, reverse = orders[sort]
             rows.sort(key=key, reverse=reverse)
-            return page([{key: value for key, value in row.items()
-                          if key not in {"search_names", "localized_names"}}
-                         for row in rows], query)
+            result = page([{key: value for key, value in row.items()
+                            if key not in {"search_names", "localized_names"}}
+                           for row in rows], query)
+            result["categories"] = sorted({row["category"] for row in catalog}, key=str.casefold)
+            return result
         if path == "/api/sessions":
             # Do not expose game bearer tokens in the CMS.
             return page([{"account_id": s.account_id, "username": s.username,

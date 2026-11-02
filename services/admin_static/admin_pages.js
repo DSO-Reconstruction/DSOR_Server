@@ -41,12 +41,15 @@ export async function listPage(route) {
     result.description = "Game item templates. Open a template to inspect its properties and book it.";
     searchHint = "Search by in-game name, category, or template ID";
     const sort = route.params.sort || "template";
-    extra = '<span class="spacer"></span><label for="item-sort">Sort by</label><select id="item-sort" name="sort">' +
+    extra = `<select id="item-category" aria-label="Category"><option value="">All categories</option>${(data.categories || [])
+        .map(value => `<option value="${esc(value)}" ${route.params.category === value ? "selected" : ""}>${esc(value)}</option>`).join("")}</select>` +
+      '<span class="spacer"></span><label for="item-sort">Sort by</label><select id="item-sort" name="sort">' +
       [["template", "Template ID"], ["name", "Name (A-Z)"], ["category", "Category (A-Z)"], ["category_desc", "Category (Z-A)"]]
         .map(([value, label]) => `<option value="${value}" ${sort === value ? "selected" : ""}>${label}</option>`).join("") + '</select>';
     result.mount = () => {
       bindSearch(route);
-      $("#item-sort").addEventListener("change", event => navigate(route.path, {...route.params, sort: event.target.value, offset: 0}));
+      $("#item-category").addEventListener("change", event => navigate(route.path, {...route.params, category: event.target.value, offset: ""}));
+      $("#item-sort").addEventListener("change", event => navigate(route.path, {...route.params, sort: event.target.value, offset: ""}));
     };
     rows = table(["Name", "Template", "Category", "Rarity", "Required level", "Stack limit"], data.rows.map(i => [
       esc(i.name),

@@ -1,4 +1,4 @@
-import { $, esc, api, table, facts, section, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, api, table, facts, section, searchAsYouType, formError, notice, confirmAction } from "./admin_ui.js";
 
 export async function livePage(result, id) {
   const live = await api(`/api/characters/${id}/live`);
@@ -13,7 +13,7 @@ export async function livePage(result, id) {
       <button id="unlock-maps" type="button" class="secondary" ${!live.ready || live.all_maps_unlocked ? "disabled" : ""}>${live.all_maps_unlocked ? "All maps unlocked" : "Unlock all maps"}</button>`)}
     ${section("Change map", `<p class="muted">Force a transfer to the selected map's normal entry point. This bypasses travel costs and event access restrictions.</p>
       <label for="map-query">Find destination</label><div class="toolbar"><input id="map-query" placeholder="Map ID or type" maxlength="100" ${!live.ready ? "disabled" : ""}><button id="find-map" type="button" class="secondary" ${!live.ready ? "disabled" : ""}>Search maps</button></div>
-      <div id="map-results"></div><div id="map-selection" class="selection" hidden></div>
+      <div id="map-results" class="picker-results"></div><div id="map-selection" class="selection" hidden></div>
       <div class="form-grid"><label>Scaling difficulty<input name="scaling_difficulty" type="number" min="0" max="100" step="1" value="0" ${!live.ready ? "disabled" : ""}><small>0 uses normal scaling. Map access variants also carry their own difficulty.</small></label></div>`)}
     <p class="help">Every action asks for a reason, recorded with the administrator and character in the audit log.</p>
     <p id="form-error" class="error-text" role="alert"></p>
@@ -45,6 +45,7 @@ export async function livePage(result, id) {
       finally { if (form.isConnected) button.disabled = false; }
     }
     $("#find-map").addEventListener("click", findMaps);
+    searchAsYouType($("#map-query"), findMaps, $("#map-results"));
     if (live.ready) findMaps();
     $("#map-query").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findMaps(); } });
     async function act(action, payload, title, message, success) {

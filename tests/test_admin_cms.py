@@ -434,8 +434,32 @@ def test_item_metadata_distinguishes_equipment_from_slotted_consumables(cms):
     assert equipment["equipment"] and equipment["socket_limits"][100] == 8
     assert not consumable["equipment"]
     assert consumable["slot_types"]  # Having a slot alone must not expose equipment controls.
-    for asset in ["admin_ui.js", "admin_pages.js", "admin_character.js", "admin_booking.js"]:
+    for asset in ["admin_ui.js", "admin_find.js", "admin_pages.js", "admin_character.js", "admin_booking.js"]:
         assert request(cms, "GET", "/" + asset)[0] == 200
+
+
+def test_item_catalog_filters_by_category_and_lists_every_category(cms):
+    cookie, _ = login(cms)
+    catalog = request(cms, "GET", "/api/items?limit=1", cookie=cookie)[1]
+    assert catalog["categories"] == sorted(catalog["categories"], key=str.casefold)
+    category = catalog["rows"][0]["category"]
+    filtered = request(cms, "GET", f"/api/items?limit=100&category={category}", cookie=cookie)[1]
+    assert 0 < filtered["total"] < catalog["total"]
+    assert {row["category"] for row in filtered["rows"]} == {category}
+    # The list of choices must not shrink to the category already chosen.
+    assert filtered["categories"] == catalog["categories"]
+
+
+def test_npc_shop_offers_filter_by_category_with_counts_for_every_tab(cms):
+    cookie, _ = login(cms)
+    shops = request(cms, "GET", "/api/npc-shops?limit=100", cookie=cookie)[1]["rows"]
+    shop_id = max(shops, key=lambda shop: shop["offer_count"])["shop_id"]
+    shop = request(cms, "GET", f"/api/npc-shops/{shop_id}?limit=1", cookie=cookie)[1]
+    assert shop["offer_total"] == shop["total"] == sum(tab["offer_count"] for tab in shop["categories"])
+    tab = shop["categories"][0]
+    filtered = request(cms, "GET", f"/api/npc-shops/{shop_id}?limit=100&category={tab['category_id']}", cookie=cookie)[1]
+    assert filtered["total"] == tab["offer_count"] and filtered["offer_total"] == shop["offer_total"]
+    assert {offer["category_id"] for offer in filtered["offers"]} == {tab["category_id"]}
 
 
 def test_equipment_options_are_delivered_saved_and_audited(cms):
