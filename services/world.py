@@ -1394,8 +1394,8 @@ class WorldService:
                     int(item_id)
                     for item_id, drop in s.gameplay_world_loot.items()
                     if math.hypot(
-                        float(drop.item.field_100[0]) - player_world[0],
-                        float(drop.item.field_100[2]) - player_world[2],
+                        float(drop.item.ground_position[0]) - player_world[0],
+                        float(drop.item.ground_position[2]) - player_world[2],
                     ) <= WORLD_LOOT_VICINITY_RADIUS
                 }
             announced = s.gameplay_announced_world_item_ids
@@ -1904,8 +1904,8 @@ class WorldService:
                         'NoAutoUseCurrency', 'IngredientItem',
                     }
                     and math.hypot(
-                        drop.item.field_100[0] - player_position[0],
-                        drop.item.field_100[2] - player_position[2],
+                        drop.item.ground_position[0] - player_position[0],
+                        drop.item.ground_position[2] - player_position[2],
                     ) <= 2.5
                 )
             )
@@ -1939,8 +1939,8 @@ class WorldService:
                     last_move.relative_position
                 )
                 distance = math.hypot(
-                    drop.item.field_100[0] - player_position[0],
-                    drop.item.field_100[2] - player_position[2],
+                    drop.item.ground_position[0] - player_position[0],
+                    drop.item.ground_position[2] - player_position[2],
                 )
         CharacterService._accept_gameplay_state_command(s, PICKUP_ITEM_COMMAND)
         if drop is None:

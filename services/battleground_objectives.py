@@ -281,7 +281,7 @@ class BattlegroundObjectiveService(BattlegroundFortressService):
             str(server.static_database_path), flag.item_template
         )
         item = _new_item(definition, int(item_id), 1)
-        item.field_100 = tuple(float(value) for value in flag.position)
+        item.ground_position = tuple(float(value) for value in flag.position)
         return WorldLootDrop(item, definition.item_category, auto_pick_up)
 
     @staticmethod

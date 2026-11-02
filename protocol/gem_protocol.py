@@ -737,14 +737,14 @@ def _write_item_info_response_body(
     writer.write_uint32_le(int(item.glyph_value))
     writer.write_uint32_le(0)
     writer.write_uint32_le(int(item.item_level))
-    writer.write_bool(bool(item.field_3c))
+    writer.write_bool(bool(item.needs_identification))
     writer.write_bool(bool(item.field_3d))
-    writer.write_uint32_le(int(item.field_20))
-    writer.write_uint32_le(int(item.field_1c))
+    writer.write_uint32_le(int(item.dye_argb))
+    writer.write_uint32_le(int(item.dye_color_id))
     writer.write_uint32_le(len(item.socketed_templates))
     for template_id in item.socketed_templates:
         writer.write_string(template_id)
-    writer.write_string(item.field_f8)
+    writer.write_string(item.equipment_skin)
     writer.write_bool(bool(item.field_3e))
 
 

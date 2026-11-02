@@ -154,7 +154,7 @@ def test_static_appearance_cache_reuses_results_and_explicitly_invalidates(tmp_p
 def test_equipment_visibility_is_filtered_before_content_queries():
     content = SimpleNamespace(remote_equipment_skin=Mock(side_effect=AssertionError('invisible item queried')))
     server = SimpleNamespace(static_database=content)
-    item = SimpleNamespace(item_id=1, template_id='accessory', field_f8='', field_80='')
+    item = SimpleNamespace(item_id=1, template_id='accessory', equipment_skin='', appearance='')
     inventory = SimpleNamespace(items=[item], equipment_slots={1: (8, 23)})
     assert PresenceVisualService._remote_equipment_visuals(server, inventory) == ()
     inventory.equipment_slots = {1: (7,)}

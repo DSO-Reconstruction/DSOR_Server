@@ -74,7 +74,7 @@ def test_kill_spawns_a_native_item_without_collection_credit(world):
                if data[0] == 0x85 and int.from_bytes(data[1:3], "little") == NEW_ITEM_COMMAND]
     assert len(packets) == 1
     item, actor = decode_new_item_batch(*packets[0])[0]
-    assert item.template_id == WOOD and item.field_100 == (0., 0., 0.)
+    assert item.template_id == WOOD and item.ground_position == (0., 0., 0.)
     assert pickup(world, drop)
     assert counter(world) == 1
     assert any(i.template_id == WOOD for i in world.session.gameplay_inventory.items)
@@ -107,7 +107,7 @@ def test_loot_uses_each_monsters_death_position(world):
         SimpleNamespace(template_id=ROOTS, actor_id=11, position=(5., 6., 7.)),
     )
     world.server._quest_on_monsters_killed(world.session, monsters)
-    assert {d.item.field_100 for d in world.session.gameplay_world_loot.values()} == {
+    assert {d.item.ground_position for d in world.session.gameplay_world_loot.values()} == {
         (2., 3., 4.), (5., 6., 7.)}
     assert counter(world) == 0
 
@@ -204,7 +204,7 @@ def test_inventory_flag_keeps_direct_collection():
 def test_item_stacks_respect_the_template_limit():
     drops = build_quest_world_drops(DEFAULT_STATIC_DB_PATH, QUEST, WOOD, 10000, (1., 2., 3.))
     assert [d.item.amount for d in drops] == [9999, 1]
-    assert all(d.quest_id == QUEST and d.item.field_100 == (1., 2., 3.) for d in drops)
+    assert all(d.quest_id == QUEST and d.item.ground_position == (1., 2., 3.) for d in drops)
 
 
 def test_authored_item_alias_keeps_its_collect_id_on_pickup(world):

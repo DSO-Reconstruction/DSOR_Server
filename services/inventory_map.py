@@ -163,7 +163,7 @@ class InventoryMapService:
                 key=lambda item_id: (
                     str(item_by_id[item_id].template_id).casefold(),
                     int(item_by_id[item_id].item_level),
-                    int(item_by_id[item_id].field_1c),
+                    int(item_by_id[item_id].dye_color_id),
                     item_id,
                 ),
             )
@@ -904,11 +904,11 @@ class InventoryMapService:
                 if item is None or not any(action.item_id in getattr(current, name)
                                           for name in ("storage_58", "storage_80", "storage_a8", "storage_d0")):
                     raise ValueError("identification requires an owned stored item")
-                if not item.field_3c:
+                if not item.needs_identification:
                     return
                 inventory = copy.deepcopy(current)
                 item = next(i for i in inventory.items if i.item_id == action.item_id)
-                item.field_3c = False
+                item.needs_identification = False
                 packet, packet_bits = encode_item_info_response(item, actor_id=LOCAL_PLAYER_ACTOR_ID)
                 s.gameplay_inventory = inventory
             CharacterService._send_world_loot_state_batch(
