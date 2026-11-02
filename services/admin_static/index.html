@@ -4,12 +4,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DSO Administration</title>
-  <script>
-    try {
-      const savedTheme = localStorage.getItem("dso-admin-theme");
-      if (savedTheme === "dark" || savedTheme === "light") document.documentElement.dataset.theme = savedTheme;
-    } catch {}
-  </script>
   <link rel="stylesheet" href="/admin.css">
   <script type="module" src="/admin.js"></script>
 </head>
@@ -25,22 +19,33 @@
       <p id="login-error" class="error-text" role="alert"></p>
     </form>
   </section>
+  <p id="live-status" class="sr-only" role="status"></p>
   <div id="app" hidden>
+    <button id="skip-to-content" class="skip-link" type="button">Skip to content</button>
     <aside class="sidebar">
       <a class="product-name" href="#status">DSO <span>Administration</span></a>
+      <button id="open-find" class="find-button" type="button" aria-keyshortcuts="Control+K">Search <kbd>Ctrl K</kbd></button>
       <nav aria-label="Main navigation">
         <a href="#status">Status</a>
-        <a href="#accounts">Accounts</a>
-        <a href="#characters">Characters</a>
-        <a href="#bookings">Bookings</a>
-        <a href="#bookings/batch">Batch booking</a>
-        <a href="#events">Events</a>
-        <a href="#loot-rates">Loot rates</a>
-        <a href="#season-pass">Season Pass</a>
-        <a href="#items">Item catalog</a>
-        <a href="#npc-shops">NPC shops</a>
-        <a href="#sessions">Sessions</a>
-        <a href="#audit">Audit log</a>
+        <div role="group" aria-labelledby="nav-players"><p id="nav-players" class="nav-heading">Players</p>
+          <a href="#accounts">Accounts</a>
+          <a href="#characters">Characters</a>
+          <a href="#sessions">Sessions</a>
+        </div>
+        <div role="group" aria-labelledby="nav-grants"><p id="nav-grants" class="nav-heading">Grants</p>
+          <a href="#bookings">Bookings</a>
+          <a href="#bookings/batch">Batch booking</a>
+        </div>
+        <div role="group" aria-labelledby="nav-game"><p id="nav-game" class="nav-heading">Game</p>
+          <a href="#events">Events</a>
+          <a href="#season-pass">Season Pass</a>
+          <a href="#loot-rates">Loot rates</a>
+          <a href="#items">Item catalog</a>
+          <a href="#npc-shops">NPC shops</a>
+        </div>
+        <div role="group" aria-labelledby="nav-records"><p id="nav-records" class="nav-heading">Records</p>
+          <a href="#audit">Audit log</a>
+        </div>
       </nav>
       <div class="sidebar-footer"><span id="identity"></span><button id="logout" class="text-button">Sign out</button></div>
     </aside>
@@ -48,9 +53,18 @@
       <nav id="breadcrumbs" class="breadcrumbs" aria-label="Breadcrumb"></nav>
       <header class="page-header"><div><h1 id="page-title" tabindex="-1">Status</h1><p id="page-description" class="muted"></p></div><div class="page-actions"><span id="page-actions"></span><button id="theme-toggle" class="secondary" type="button" aria-pressed="false">Dark theme</button><button id="refresh" class="secondary">Refresh</button></div></header>
       <p id="notice" class="notice" role="status" hidden></p>
-      <div id="content" aria-live="polite"></div>
+      <div id="content"></div>
     </main>
   </div>
+  <dialog id="quick-find" aria-labelledby="quick-find-label">
+    <div class="quick-find-body">
+      <label id="quick-find-label" for="quick-find-input">Search pages, players, items, shops and events</label>
+      <input id="quick-find-input" type="search" maxlength="100" autocomplete="off" spellcheck="false" aria-describedby="quick-find-help">
+      <p id="quick-find-help" class="help">Enter opens the first result. Arrow keys move through the results. Escape closes.</p>
+      <p id="quick-find-status" class="sr-only" role="status"></p>
+      <div id="quick-find-results"></div>
+    </div>
+  </dialog>
   <dialog id="confirmation" aria-labelledby="confirmation-title">
     <form id="confirmation-form" method="dialog" novalidate>
       <h2 id="confirmation-title"></h2><p id="confirmation-message"></p>

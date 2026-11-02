@@ -1,5 +1,5 @@
-import { $, esc, api, link, navigate, table, section, facts, stats, toolbar,
-  bindSearch, pager, formError, confirmAction, notice } from "./admin_ui.js";
+import { $, esc, api, link, navigate, table, section, facts, stats, tabs, toolbar,
+  bindSearch, searchAsYouType, pager, formError, confirmAction, notice } from "./admin_ui.js";
 
 const query = params => new URLSearchParams({limit: 50, ...params});
 const priceFields = [
@@ -32,14 +32,15 @@ export async function npcShopsPage(route) {
 }
 
 export async function npcShopPage(route) {
-  const shopId = decodeURIComponent(route.parts[1]);
-  const data = await api(`/api/npc-shops/${encodeURIComponent(shopId)}?${query(route.params)}`);
+  const shopId = decodeURIComponent(route.parts[1]), tab = route.parts[2] || "offers";
+  const root = `npc-shops/${encodeURIComponent(shopId)}`;
+  const data = await api(`/api/npc-shops/${encodeURIComponent(shopId)}?${query(tab === "offers" ? route.params : {limit: 1})}`);
   const shop = data.shop;
   const editOffer = route.params.edit ? data.offers.find(row => row.offer_id === route.params.edit) : null;
   const editForm = editOffer ? `<form id="shop-price-form" class="form-page">
     <h2>Edit offer price</h2><p><code>${esc(editOffer.offer_id)}</code> · ${esc(editOffer.item_name)} (${esc(editOffer.item_id)})</p>
     ${priceInputs(editOffer.prices)}<p id="form-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button type="submit">Save price</button>${link("Cancel", `npc-shops/${encodeURIComponent(shopId)}`, Object.fromEntries(Object.entries(route.params).filter(([key]) => key !== "edit")), "button secondary")}</div></form>` : "";
+    <div class="form-actions"><button type="submit">Save price</button>${link("Cancel", root, Object.fromEntries(Object.entries(route.params).filter(([key]) => key !== "edit")), "button secondary")}</div></form>` : "";
   const categoryForm = data.available_categories.length ? `<form id="shop-category-form" class="form-page">
     <h2>Create category tab</h2><p class="muted">The game client has a fixed set of category tabs. Choose an unused supported tab for this NPC.</p>
     <label>Client category<select name="category_name" required>${data.available_categories.map(c => `<option value="${esc(c.category_name)}">${esc(c.category_name)} (${c.category_id})</option>`).join("")}</select></label>
@@ -58,24 +59,36 @@ export async function npcShopPage(route) {
     `<span>${esc(row.item_name)}${row.custom ? " <small>CMS</small>" : row.price_overridden ? " <small>Custom price</small>" : ""}</span>`,
     `<code class="resource mono">${esc(row.item_id)}</code><span class="sub">${esc(row.offer_id)}</span>`,
     esc(row.category_name), esc(row.amount), esc(pricesText(row.prices)),
-    `${link("Edit price", `npc-shops/${encodeURIComponent(shopId)}`, {...route.params, edit: row.offer_id})}${row.custom ? ` <button type="button" class="danger" data-delete-offer="${esc(row.offer_id)}" data-item-name="${esc(row.item_name)}">Delete</button>` : ""}`
+    `${link("Edit price", root, {...route.params, edit: row.offer_id})}${row.custom ? ` <button type="button" class="danger" data-delete-offer="${esc(row.offer_id)}" data-item-name="${esc(row.item_name)}">Delete</button>` : ""}`
   ]);
-  const categoryTable = table(["Game tab", "Category ID", "Origin"], data.categories.map(c => [
-    esc(c.category_name), esc(c.category_id), c.created ? "CMS created" : "Existing"
+  const categoryTable = table(["Game tab", "Category ID", "Offers", "Origin"], data.categories.map(c => [
+    esc(c.category_name), esc(c.category_id), esc(c.offer_count ?? "—"), c.created ? "CMS created" : "Existing"
   ]), "This shop has no categories.");
+  const categoryFilter = `<select id="offer-category" aria-label="Category"><option value="">All categories</option>${data.categories.map(c =>
+    `<option value="${esc(c.category_id)}" ${route.params.category === String(c.category_id) ? "selected" : ""}>${esc(c.category_name)} (${esc(c.offer_count ?? "—")})</option>`).join("")}</select>`;
+  const views = {
+    offers: () => editForm + toolbar(route, "Search offers by item, offer ID, or category", categoryFilter) +
+      table(["Item", "Template / offer", "Category", "Amount", "Price", "Action"], offerRows, "This NPC shop has no matching offers.") + pager(data, route),
+    add: () => addForm || '<p class="muted">Create a category tab first; offers are sold from a tab.</p>',
+    categories: () => stats([["NPCs", shop.npcs.length], ["Offers", data.offer_total ?? data.total], ["Can sell items", shop.player_can_sell ? "Yes" : "No"]]) +
+      section("Shop categories", categoryTable) + categoryForm +
+      section("NPCs using this shop", facts(shop.npcs.map(npc => [npc.npc_id, `${npc.profession || "NPC"} · ${npc.shop_loca_id || "No shop label"}`])))
+  };
+  if (!views[tab]) throw new Error("NPC shop page not found.");
   const result = {
     title: shopId,
     description: "NPC shop inventory and pricing. Saved changes refresh players who currently have this shop open.",
     breadcrumbs: [["NPC shops", "npc-shops"], [shopId]],
     actions: link("Back to NPC shops", "npc-shops", {}, "button secondary"),
-    html: stats([["NPCs", shop.npcs.length], ["Offers", data.total], ["Can sell items", shop.player_can_sell ? "Yes" : "No"]]) +
-      section("NPCs using this shop", facts(shop.npcs.map(npc => [npc.npc_id, `${npc.profession || "NPC"} · ${npc.shop_loca_id || "No shop label"}`]))) +
-      section("Shop categories", categoryTable) + categoryForm + addForm + editForm +
-      toolbar(route, "Search offers by item, offer ID, or category") +
-      table(["Item", "Template / offer", "Category", "Amount", "Price", "Action"], offerRows, "This NPC shop has no matching offers.") + pager(data, route)
+    html: tabs([["Offers", root, {}, data.offer_total ?? data.total], ["Add item", `${root}/add`], ["Categories and NPCs", `${root}/categories`]], tab === "offers" ? root : `${root}/${tab}`) + views[tab]()
   };
   result.mount = () => {
     bindSearch(route);
+    $("#offer-category")?.addEventListener("change", event => navigate(route.path, {...route.params, category: event.target.value, offset: ""}));
+    if ($("#shop-price-form")) {
+      $("#shop-price-form").scrollIntoView({block: "nearest"});
+      $("#shop-price-form input").focus({preventScroll: true});
+    }
     $("#shop-category-form")?.addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
       try {
@@ -92,7 +105,7 @@ export async function npcShopPage(route) {
       } catch (error) { const target = $("#category-error"); if (target) target.textContent = error.message; else notice(error.message, true); }
       finally { button.disabled = false; }
     });
-    $("#npc-item-find")?.addEventListener("click", async () => {
+    async function findItems() {
       const button = $("#npc-item-find"), queryText = $("#npc-item-search").value.trim(); button.disabled = true;
       try {
         const found = await api(`/api/items?${new URLSearchParams({q: queryText, limit: 10})}`);
@@ -104,7 +117,12 @@ export async function npcShopPage(route) {
           $("#npc-item-id").value = select.dataset.itemId;
         });
       } catch (error) { notice(error.message, true); } finally { button.disabled = false; }
-    });
+    }
+    if ($("#npc-item-find")) {
+      $("#npc-item-find").addEventListener("click", findItems);
+      searchAsYouType($("#npc-item-search"), findItems, $("#npc-item-results"));
+      $("#npc-item-search").addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); findItems(); } });
+    }
     $("#shop-offer-form")?.addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]"); button.disabled = true;
       try {
@@ -117,7 +135,7 @@ export async function npcShopPage(route) {
           : result.live_refreshed
             ? `Item added; refreshed ${result.live_refreshed} open shop(s).`
             : "Item saved; it will appear next time the shop is opened.");
-        navigate(`npc-shops/${encodeURIComponent(shopId)}`);
+        navigate(root);
       } catch (error) { const target = $("#offer-error"); if (target) target.textContent = error.message; else notice(error.message, true); }
       finally { button.disabled = false; }
     });
@@ -133,7 +151,7 @@ export async function npcShopPage(route) {
           : result.live_refreshed
             ? `Price updated; refreshed ${result.live_refreshed} open shop(s).`
             : "Price saved; it will apply next time the shop is opened.");
-        navigate(`npc-shops/${encodeURIComponent(shopId)}`);
+        navigate(root, Object.fromEntries(Object.entries(route.params).filter(([key]) => key !== "edit")));
       } catch (error) { formError(error); } finally { button.disabled = false; }
     });
     for (const button of document.querySelectorAll("[data-delete-offer]")) {
@@ -157,7 +175,7 @@ export async function npcShopPage(route) {
             : result.live_refreshed
               ? `Offer deleted; refreshed ${result.live_refreshed} open shop(s).`
               : "Offer deleted; it will be gone next time the shop is opened.");
-          navigate(`npc-shops/${encodeURIComponent(shopId)}`, route.params);
+          window.dispatchEvent(new Event("reload-page"));
         } catch (error) {
           button.disabled = false;
           notice(error.message, true);

@@ -8,9 +8,14 @@ export const human = value => String(value).replace(/_/g, " ").replace(/\b\w/g, 
 export const date = value => value ? new Date(typeof value === "number" ? value * 1000 : value).toLocaleString() : "—";
 export const classes = ["Dragonknight", "Spellweaver", "Ranger", "Steam Mechanicus", "Niwalk"];
 export const rarities = ["Common", "Uncommon", "Magic", "Rare", "Epic", "Unique", "Set", "Mythic"];
-let csrf = "";
+let csrf = "", searchTimer, sectionSpy;
 export function setSession(value) { csrf = value; }
 export function hasSession() { return !!csrf; }
+export function debounce(action, wait = 250) {
+  let timer;
+  return (...values) => { clearTimeout(timer); timer = setTimeout(() => action(...values), wait); };
+}
+export function announce(message) { $("#live-status").textContent = message; }
 export function notice(message, error = false) {
   $("#notice").textContent = message;
   $("#notice").className = error ? "notice error" : "notice";
@@ -45,11 +50,117 @@ export function routeInfo() {
   const [path, query = ""] = raw.split("?");
   return {path, parts: path.split("/"), params: Object.fromEntries(new URLSearchParams(query))};
 }
+// Keeps a filter in the address bar without another render or history entry.
+export function rememberParams(values) {
+  const {path, params} = routeInfo();
+  history.replaceState(null, "", href(path, {...params, ...values}));
+}
 export function status(label, tone = "") { return `<span class="status ${tone}">${esc(label)}</span>`; }
 export function table(headers, rows, empty = "No records found.") {
   if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
-  return `<div class="table-wrap"><table><thead><tr>${headers.map(v => `<th>${esc(v)}</th>`).join("")}</tr></thead>
+  // Long tables scroll inside their own box, which needs a keyboard stop.
+  const scroller = rows.length > 12 ? ` tabindex="0" role="region" aria-label="${esc(headers.find(Boolean) || "Table")} list, scrollable"` : "";
+  return `<div class="table-wrap"${scroller}><table><thead><tr>${headers.map(v => `<th scope="col">${esc(v)}</th>`).join("")}</tr></thead>
     <tbody>${rows.map(row => `<tr>${row.map(v => `<td>${v ?? "—"}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}
+// A table whose rows are all in the page, with an instant filter above it.
+// facets are [label, column, url parameter]: a select of that column's values.
+// bindFilters wires these up after every render.
+export function filteredTable(id, label, headers, rows, {facets = [], empty} = {}) {
+  if (!rows.length) return table(headers, rows, empty);
+  return `<div class="filtered" data-param="${esc(id)}"><div class="toolbar" role="search" aria-label="${esc(label)}">
+      <input id="filter-${esc(id)}" type="search" aria-label="${esc(label)}" placeholder="${esc(label)}" maxlength="100" autocomplete="off" spellcheck="false">
+      ${facets.map(([name, column, param]) => `<select id="filter-${esc(param)}" aria-label="${esc(name)}" data-name="${esc(name)}" data-column="${column}" data-param="${esc(param)}"></select>`).join("")}
+      <span class="spacer"></span><span class="list-count"></span></div>
+    ${table(headers, rows)}
+    <div class="empty" hidden>Nothing matches this filter. <button type="button" class="text-button">Clear filter</button></div></div>`;
+}
+export function bindFilters(root) {
+  for (const box of root.querySelectorAll(".filtered")) {
+    const input = box.querySelector("input"), selects = [...box.querySelectorAll("select")];
+    const count = box.querySelector(".list-count"), none = box.querySelector(":scope > .empty");
+    const rows = [...box.querySelector("tbody").rows], text = rows.map(row => row.textContent.toLowerCase());
+    const cell = (row, select) => row.cells[select.dataset.column].textContent.trim();
+    const {params} = routeInfo();
+    for (const select of selects) {
+      const counts = {};
+      for (const row of rows) counts[cell(row, select)] = (counts[cell(row, select)] || 0) + 1;
+      select.innerHTML = `<option value="">${esc(select.dataset.name)}: all (${rows.length})</option>` + Object.keys(counts).sort()
+        .map(value => `<option value="${esc(value)}">${esc(value)} (${counts[value]})</option>`).join("");
+      select.value = params[select.dataset.param] || "";
+    }
+    input.value = params[box.dataset.param] || "";
+    const announceCount = debounce(announce, 400);
+    const apply = () => {
+      const terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
+      let shown = 0;
+      rows.forEach((row, index) => {
+        const match = terms.every(term => text[index].includes(term)) && selects.every(select => !select.value || cell(row, select) === select.value);
+        row.hidden = !match;
+        if (match) shown++;
+      });
+      const filtering = terms.length || selects.some(select => select.value);
+      count.textContent = filtering ? `${shown} of ${rows.length}` : `${rows.length} total`;
+      box.querySelector(".table-wrap").hidden = !shown;
+      none.hidden = !!shown;
+      rememberParams({[box.dataset.param]: input.value, ...Object.fromEntries(selects.map(select => [select.dataset.param, select.value]))});
+      return filtering && `${shown} of ${rows.length} shown`;
+    };
+    const update = () => { const message = apply(); if (message) announceCount(message); };
+    input.addEventListener("input", update);
+    input.addEventListener("keydown", event => {
+      if (event.key === "Escape" && input.value) { event.preventDefault(); input.value = ""; update(); }
+    });
+    selects.forEach(select => select.addEventListener("change", update));
+    none.querySelector("button").addEventListener("click", () => {
+      input.value = ""; selects.forEach(select => { select.value = ""; });
+      update(); input.focus();
+    });
+    apply();
+  }
+}
+// Long pages get a sticky index of their sections. The fragment belongs to the
+// router, so these links scroll and move focus themselves.
+export function sectionNav(route) {
+  sectionSpy?.();
+  sectionSpy = null;
+  const content = $("#content"), headings = [...content.querySelectorAll(".section-heading h2")];
+  const slug = heading => heading.textContent.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  headings.forEach(heading => { heading.id = "section-" + slug(heading); heading.tabIndex = -1; });
+  const jump = id => {
+    const heading = document.getElementById(id);
+    heading?.scrollIntoView({block: "start"});
+    heading?.focus({preventScroll: true});
+  };
+  if (headings.length >= 3 && document.documentElement.scrollHeight > innerHeight * 1.3) {
+    const nav = document.createElement("nav");
+    nav.className = "section-nav";
+    nav.setAttribute("aria-label", "On this page");
+    nav.innerHTML = headings.map(heading => `<a href="${esc(href(route.path, {...route.params, section: slug(heading)}))}" data-section="${heading.id}">${esc(heading.textContent)}</a>`).join("");
+    const pageTabs = content.querySelector(":scope > .tabs");
+    if (pageTabs) pageTabs.after(nav); else content.prepend(nav);
+    nav.addEventListener("click", event => {
+      const anchor = event.target.closest("a");
+      if (!anchor || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      rememberParams({section: anchor.dataset.section.slice("section-".length)});
+      jump(anchor.dataset.section);
+    });
+    // The current section is the lowest heading past the sticky bars; the first
+    // of two side-by-side sections wins, and the page end selects the last one.
+    const mark = () => {
+      const tops = headings.map(heading => heading.getBoundingClientRect().top);
+      const ended = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
+      const current = ended ? headings.length - 1 : tops.reduce((best, top, index) => top <= 150 && top > tops[best] + 1 ? index : best, 0);
+      [...nav.children].forEach((anchor, index) => {
+        if (index === current) anchor.setAttribute("aria-current", "location"); else anchor.removeAttribute("aria-current");
+      });
+    };
+    window.addEventListener("scroll", mark, {passive: true});
+    sectionSpy = () => window.removeEventListener("scroll", mark);
+    mark();
+  }
+  if (route.params.section) jump("section-" + route.params.section);
 }
 export function facts(rows) {
   return `<dl class="facts">${rows.map(([name, value]) => `<div class="fact"><dt>${esc(name)}</dt><dd>${value ?? "—"}</dd></div>`).join("")}</dl>`;
@@ -61,21 +172,44 @@ export function section(title, html, extra = "") {
   return `<section class="section"><div class="section-heading"><h2>${esc(title)}</h2>${extra}</div>${html}</section>`;
 }
 export function tabs(entries, active) {
-  return `<nav class="tabs" aria-label="Page sections">${entries.map(([label, path, params = {}]) => link(label, path, params, path === active ? "active" : "")).join("")}</nav>`;
+  return `<nav class="tabs" aria-label="Page sections">${entries.map(([label, path, params = {}, count]) =>
+    `<a class="${path === active ? "active" : ""}" href="${esc(href(path, params))}"${path === active ? ' aria-current="page"' : ""}>${esc(label)}${count == null ? "" : ` <small>${esc(Number(count).toLocaleString())}</small>`}</a>`).join("")}</nav>`;
 }
 export function toolbar(route, placeholder, extra = "") {
-  return `<form id="search-form" class="toolbar"><input name="q" aria-label="Search" placeholder="${esc(placeholder)}" value="${esc(route.params.q || "")}" maxlength="100"><button class="secondary">Search</button>${extra}</form>`;
+  return `<form id="search-form" class="toolbar" role="search"><input type="search" name="q" aria-label="${esc(placeholder)}" placeholder="${esc(placeholder)}" value="${esc(route.params.q || "")}" maxlength="100" autocomplete="off"><button class="secondary">Search</button>${extra}</form>`;
 }
+// Server-side lists search as you type. Replacing the history entry keeps Back
+// on the previous page instead of the previous keystroke.
 export function bindSearch(route) {
-  $("#search-form")?.addEventListener("submit", event => {
-    event.preventDefault();
-    navigate(route.path, {...route.params, q: new FormData(event.target).get("q"), offset: 0});
+  const form = $("#search-form");
+  if (!form) return;
+  const search = form.elements.q;
+  const apply = () => {
+    clearTimeout(searchTimer);
+    const q = search.value.trim(), {params} = routeInfo();
+    if (q !== (params.q || "")) location.replace(href(route.path, {...params, q, offset: ""}));
+  };
+  form.addEventListener("submit", event => { event.preventDefault(); apply(); });
+  search.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(apply, 300); });
+  search.addEventListener("keydown", event => {
+    if (event.key === "Escape" && search.value) { event.preventDefault(); search.value = ""; apply(); }
   });
 }
+// The find-as-you-type behaviour of the item, account and map pickers.
+export function searchAsYouType(input, action, results) {
+  input.addEventListener("input", debounce(async () => {
+    await action();
+    const count = results.querySelectorAll("tbody tr").length;
+    if (input.isConnected) announce(`${count} ${count === 1 ? "result" : "results"}`);
+  }));
+}
 export function pager(data, route) {
-  return `<div class="pager"><span>${data.total ? data.offset + 1 : 0}–${Math.min(data.offset + data.limit, data.total)} of ${data.total}</span>
-    ${data.offset > 0 ? link("Previous", route.path, {...route.params, offset: Math.max(0, data.offset - data.limit)}) : ""}
-    ${data.offset + data.limit < data.total ? link("Next", route.path, {...route.params, offset: data.offset + data.limit}) : ""}</div>`;
+  const {total, offset, limit} = data, pages = Math.ceil(total / limit), current = Math.floor(offset / limit) + 1;
+  const go = (label, page, show) => show ? `<a id="pager-${label.toLowerCase()}" href="${esc(href(route.path, {...route.params, offset: (page - 1) * limit || ""}))}">${label}</a>` : "";
+  return `<nav class="pager" aria-label="Pagination"><span data-list-count>${total ? `${offset + 1}–${Math.min(offset + limit, total)} of ${total.toLocaleString()}` : "No results"}</span>
+    ${go("First", 1, current > 2)}${go("Previous", current - 1, current > 1)}
+    ${pages > 2 ? `<label>Page <input id="pager-page" type="number" min="1" max="${pages}" step="1" value="${current}" data-page-limit="${limit}" aria-label="Page number, of ${pages}"></label><span>of ${pages.toLocaleString()}</span>` : ""}
+    ${go("Next", current + 1, current < pages)}${go("Last", pages, current < pages - 1)}</nav>`;
 }
 export function formError(error) {
   const target = $("#form-error");
@@ -119,9 +253,13 @@ export function bindConfirmation() {
 export function valueView(value) {
   if (value == null || value === "") return '<span class="muted">—</span>';
   if (typeof value === "boolean") return value ? "Yes" : "No";
-  if (Array.isArray(value) && value.every(v => v == null || typeof v !== "object")) return esc(value.join(", ") || "None");
+  if (Array.isArray(value) && value.every(v => v == null || typeof v !== "object")) return valueList(value);
   if (typeof value !== "object") return esc(value);
   return tree(value);
+}
+export function valueList(values) {
+  if (values.length <= 6) return esc(values.join(", ") || "None");
+  return `<details class="value-list"><summary>${values.length} values</summary><ul>${values.map(v => `<li>${esc(v)}</li>`).join("")}</ul></details>`;
 }
 export function tree(value) {
   const entries = Object.entries(value || {});

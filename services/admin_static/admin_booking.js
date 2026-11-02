@@ -1,4 +1,4 @@
-import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, searchAsYouType, formError, notice, confirmAction } from "./admin_ui.js";
 
 const requestId = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), v => v.toString(16).padStart(2, "0")).join("");
 
@@ -131,7 +131,8 @@ export async function newBookingPage(route) {
     }
     $("#find-account").addEventListener("click", findAccount);
     $("#find-item").addEventListener("click", findItem);
-    for (const [selector, action] of [["#account-search", findAccount], ["#item-search", findItem]]) {
+    for (const [selector, action, results] of [["#account-search", findAccount, "#account-results"], ["#item-search", findItem, "#item-results"]]) {
+      searchAsYouType($(selector), action, $(results));
       $(selector).addEventListener("keydown", event => { if (event.key === "Enter") { event.preventDefault(); action(); } });
     }
     field("character_id").addEventListener("change", () => {
@@ -280,7 +281,7 @@ export async function batchBookingPage(route) {
         item.options ? `Rarity: ${esc(rarities[item.options.rarity])}, Level: ${item.options.item_level}` : ""
       ]);
       $("#batch-items").innerHTML = table(["", "Name", "Type", "Amount", "Options"], rows);
-      for (const btn of $(".remove-item", true)) btn.addEventListener("click", () => {
+      for (const btn of document.querySelectorAll(".remove-item")) btn.addEventListener("click", () => {
         batchItems.splice(Number(btn.dataset.idx), 1);
         renderBatchItems();
       });
@@ -424,6 +425,7 @@ export async function batchBookingPage(route) {
     $("#add-item").addEventListener("click", () => addItemEntry("item"));
     $("#add-currency").addEventListener("click", () => addItemEntry("currency"));
     $("#find-batch-item").addEventListener("click", findBatchItem);
+    searchAsYouType($("#batch-item-search"), findBatchItem, $("#batch-item-results"));
     $("#batch-item-search").addEventListener("keydown", event => {
       if (event.key === "Enter") { event.preventDefault(); findBatchItem(); }
     });
@@ -485,6 +487,10 @@ export async function batchBookingPage(route) {
     });
 
     $("#find-account").addEventListener("click", findAccount);
+    searchAsYouType($("#account-search"), findAccount, $("#account-results"));
+    $("#account-search").addEventListener("keydown", event => {
+      if (event.key === "Enter") { event.preventDefault(); findAccount(); }
+    });
     field("character_id").addEventListener("change", () => {
       character = account?.characters.find(c => c.character_id === Number(field("character_id").value));
       drawCharacterNote();

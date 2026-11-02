@@ -1,4 +1,5 @@
-import { $, esc, api, setSession, hasSession, routeInfo, link, notice, bindConfirmation } from "./admin_ui.js";
+import { $, esc, api, setSession, hasSession, routeInfo, link, navigate, notice, announce, bindConfirmation, bindFilters, sectionNav } from "./admin_ui.js";
+import { bindQuickFind } from "./admin_find.js";
 import { listPage, accountPage, itemPage, bookingPage, auditPage } from "./admin_pages.js";
 import { characterPage } from "./admin_character.js";
 import { newBookingPage, batchBookingPage } from "./admin_booking.js";
@@ -7,7 +8,7 @@ import { npcShopsPage, npcShopPage } from "./admin_shops.js";
 import { seasonPassPage } from "./admin_season_pass.js";
 import { lootRatesPage } from "./admin_loot.js";
 
-let generation = 0;
+let generation = 0, shownPath = null;
 const THEME_STORAGE_KEY = "dso-admin-theme";
 function applyTheme(theme) {
   const selected = theme === "light" ? "light" : "dark";
@@ -18,7 +19,9 @@ function applyTheme(theme) {
     toggle.setAttribute("aria-pressed", String(selected === "dark"));
   }
 }
-applyTheme(document.documentElement.dataset.theme);
+let savedTheme = null;
+try { savedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch {}
+applyTheme(savedTheme || document.documentElement.dataset.theme);
 $("#theme-toggle").addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   applyTheme(next);
@@ -27,12 +30,38 @@ $("#theme-toggle").addEventListener("click", () => {
 
 function signedOut() {
   generation++;
+  shownPath = null;
   setSession("");
   $("#app").hidden = true;
   $("#login-view").hidden = false;
   $("#confirmation").close();
+  $("#quick-find").close();
   $("#content").replaceChildren();
   $("#refresh").disabled = false;
+}
+// A search or filter re-render replaces the input being typed in, so carry its
+// focus, text and caret over to the new one.
+function focusedField() {
+  const element = document.activeElement;
+  if (!element?.closest("#content")) return null;
+  const selector = element.id ? "#" + CSS.escape(element.id) : element.name ? `[name="${CSS.escape(element.name)}"]` : "";
+  return {selector, search: element.type === "search", value: element.value, start: element.selectionStart, end: element.selectionEnd};
+}
+function restoreField(field) {
+  if (document.activeElement !== document.body) return;
+  const element = field.selector && $("#content").querySelector(field.selector);
+  if (!element) return $("#page-title").focus({preventScroll: true});
+  if (field.search) { element.value = field.value; element.setSelectionRange(field.start, field.end); }
+  element.focus({preventScroll: true});
+}
+function markCurrentPage(path) {
+  const links = [...document.querySelectorAll(".sidebar nav a")];
+  const current = links.filter(a => path === a.hash.slice(1) || path.startsWith(a.hash.slice(1) + "/"))
+    .sort((a, b) => b.hash.length - a.hash.length)[0];
+  for (const a of links) {
+    a.classList.toggle("active", a === current);
+    if (a === current) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  }
 }
 function signedIn(data) {
   setSession(data.csrf);
@@ -70,17 +99,20 @@ async function render() {
     else throw new Error("Page not found.");
     if (version !== generation) return;
     $("#page-title").textContent = result.title;
-    document.title = result.title + " ? DSO Administration";
+    document.title = result.title + " · DSO Administration";
     $("#page-description").textContent = result.description || "";
     $("#page-actions").innerHTML = result.actions || "";
     $("#breadcrumbs").innerHTML = result.breadcrumbs.map(([label, path, params]) => path ? link(label, path, params) : `<span aria-current="page">${esc(label)}</span>`).join('<span class="separator" aria-hidden="true">/</span>');
-    document.querySelectorAll(".sidebar nav a").forEach(a => {
-      const active = a.hash === "#" + name;
-      a.classList.toggle("active", active);
-      if (active) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
-    });
+    markCurrentPage(route.path);
+    const samePage = route.path === shownPath, entered = shownPath !== null, field = samePage ? focusedField() : null;
     $("#content").innerHTML = result.html;
     result.mount?.();
+    bindFilters($("#content"));
+    sectionNav(route);
+    shownPath = route.path;
+    if (field) restoreField(field);
+    else if (!samePage && entered) $("#page-title").focus({preventScroll: true});
+    if (samePage) announce($("#content [data-list-count]")?.textContent || "");
   } catch (error) {
     if (version !== generation) return;
     $("#page-title").textContent = "Unable to load this page";
@@ -96,6 +128,14 @@ async function render() {
   }
 }
 bindConfirmation();
+bindQuickFind();
+$("#skip-to-content").addEventListener("click", () => $("#page-title").focus());
+$("#content").addEventListener("change", event => {
+  const input = event.target.closest("[data-page-limit]");
+  if (!input) return;
+  const {path, params} = routeInfo(), page = Math.max(1, Math.min(Number(input.max), Math.floor(Number(input.value)) || 1));
+  navigate(path, {...params, offset: (page - 1) * Number(input.dataset.pageLimit) || ""});
+});
 $("#login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target, button = form.querySelector("button");
@@ -108,7 +148,7 @@ $("#logout").addEventListener("click", async () => {
   try { await api("/api/logout", {}); signedOut(); } catch (error) { notice(error.message, true); }
 });
 $("#refresh").addEventListener("click", render);
-window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });
+window.addEventListener("hashchange", () => { if (routeInfo().path !== shownPath) window.scrollTo(0, 0); render(); });
 window.addEventListener("signed-out", signedOut);
 window.addEventListener("reload-page", render);
 api("/api/me").then(signedIn).catch(signedOut).finally(() => {
