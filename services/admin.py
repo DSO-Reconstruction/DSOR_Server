@@ -41,6 +41,7 @@ from dso_server.protocol.player_init_protocol import (
 from dso_server.protocol.quest_protocol import QUEST_UPDATE_COMMAND, QuestUpdate
 from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.services.accounts import FailureThrottle
+from dso_server.services.admin_bonus_codes import BonusCodeAdministration
 from dso_server.services.admin_bookings import BookingDelivery, CURRENCIES
 from dso_server.services.admin_items import item_catalog, item_metadata
 from dso_server.services.admin_live import (
@@ -115,6 +116,7 @@ class AdminService:
         self.events = EventAdministration(self)
         self.season_pass = SeasonPassAdministration(self)
         self.loot_rates = LootRateAdministration(self)
+        self.bonus_codes = BonusCodeAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
         self.started_at = time.time()
@@ -1432,6 +1434,12 @@ class AdminService:
             return self.repository.history("admin_" + path.rsplit("/", 1)[1],
                                            offset=offset, limit=limit, query=search,
                                            account_id=query.get("account_id"), character_id=query.get("character_id"))
+        if path == "/api/bonus-codes":
+            offset, limit = paging(query)
+            return self.bonus_codes.listing(offset=offset, limit=limit, query=search)
+        if path.startswith("/api/bonus-codes/"):
+            offset, limit = paging(query)
+            return self.bonus_codes.detail(int(path.rsplit("/", 1)[1]), offset=offset, limit=limit)
         if path == "/api/event-templates":
             rows = [row for row in self.events.templates()
                     if search in row["template_id"].casefold()
@@ -1726,6 +1734,10 @@ class AdminService:
             booking_id = int(path.split("/")[-2])
             self.delivery.cancel(account.username, booking_id, reason)
             return {"ok": True}
+        if path == "/api/bonus-codes":
+            return self.bonus_codes.create(payload, account, reason)
+        if path.startswith("/api/bonus-codes/"):
+            return self.bonus_codes.update(int(path.rsplit("/", 1)[1]), payload.get("changes"), account, reason)
         raise AdminError(404, "action not found")
 
     def start(self):
@@ -1741,6 +1753,7 @@ class AdminService:
                                         kwargs={"poll_interval": 0.2}, name="admin-cms", daemon=True)
         self.live.start()
         self.events.start()
+        self.bonus_codes.start()
         self._thread.start()
 
     def stop(self):
@@ -1751,6 +1764,7 @@ class AdminService:
         if self._thread is not None:
             self._thread.join(timeout=2)
             self._thread = None
+        self.bonus_codes.stop()
         self.events.stop()
         self.live.stop()
         with self._lock:

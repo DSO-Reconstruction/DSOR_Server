@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 import sqlite3
 
-from dso_server.protocol.character_selection import BitReader
+from dso_server.protocol.character_selection import BitReader, BitWriter
 from dso_server.protocol.commerce_protocol import (
     PurchaseItemDefinition,
     load_purchase_item_definition,
@@ -31,6 +31,17 @@ OCP_BOOKING_NOTIFICATION_KIND = 16
 OCP_BOOKING_NOTIFICATION_VALUES = (0, 0x06A7EB00, 0x06A7EB00)
 OCP_PENDING_PREFIX = 'ocp-pending:'
 OCP_COMPLETED_PREFIX = 'ocp-completed:'
+REDEEM_VOUCHER_COMMAND = command_id("Commands::RedeemVoucherCommand", 0x0110)
+REDEEM_VOUCHER_RESPONSE_COMMAND = command_id("Commands::RedeemVoucherResponseCommand", 0x0111)
+# ShopWidget 0x140531dec clears the code box on 0 and shows its own localized
+# general error on -1 or 500. Every other status only shows the message, so
+# the remaining values are this server's.
+VOUCHER_REDEEMED = 0
+VOUCHER_FAILED = -1
+VOUCHER_INVALID = 1
+VOUCHER_ALREADY_USED = 2
+VOUCHER_NOT_ELIGIBLE = 3
+VOUCHER_TOO_MANY_ATTEMPTS = 4
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,20 @@ class OCPBookingReward:
     item_id: str
     amount: int
     rarity: str = 'Common'
+
+
+@dataclass(frozen=True)
+class RedeemVoucherResponse:
+    """Answer to a voucher code; the client shows ``message`` verbatim.
+
+    ClientIngamePaymentManager 0x1402558b0 also opens ``url`` when ``action``
+    is ``PAYMENT_URL``, which this server has no use for.
+    """
+
+    message: str
+    status: int
+    action: str = ''
+    url: str = ''
 
 
 def _client_reader(
@@ -142,6 +167,48 @@ def decode_ocp_booking_request(payload: bytes) -> OCPBookingRequest:
     if not request.offer_id or not request.payment_method:
         raise ValueError('OCP booking offer and payment method are required')
     return request
+
+
+def decode_redeem_voucher_request(payload: bytes) -> str:
+    reader = _client_reader(payload, REDEEM_VOUCHER_COMMAND)
+    code = reader.read_string()
+    _finish_padding(reader, 'RedeemVoucher')
+    return code
+
+
+def encode_redeem_voucher_response(
+    value: RedeemVoucherResponse, *, actor_id: int = 0
+) -> tuple[bytes, int]:
+    """Serialize a standalone RedeemVoucherResponseCommand (0x0111)."""
+
+    writer = BitWriter()
+    writer.write_uint8(0x84)
+    writer.write_bytes(REDEEM_VOUCHER_RESPONSE_COMMAND.to_bytes(2, 'little'))
+    writer.write_string(value.message)
+    writer.write_uint32_le(value.status & 0xFFFFFFFF)
+    writer.write_string(value.action)
+    writer.write_string(value.url)
+    writer.write_uint32_le(actor_id)
+    return writer.finish()
+
+
+def decode_redeem_voucher_response(
+    payload: bytes, bit_length: int
+) -> RedeemVoucherResponse:
+    reader = BitReader(payload, bit_length)
+    if reader.read_uint8() != 0x84:
+        raise ValueError('RedeemVoucherResponse is not a server application message')
+    if int.from_bytes(reader.read_bytes(2), 'little') != REDEEM_VOUCHER_RESPONSE_COMMAND:
+        raise ValueError('RedeemVoucherResponse has the wrong command ID')
+    message = reader.read_string()
+    status = int.from_bytes(reader.read_bytes(4), 'little', signed=True)
+    response = RedeemVoucherResponse(
+        message, status, reader.read_string(), reader.read_string()
+    )
+    reader.read_uint32_le()
+    if reader.remaining:
+        raise ValueError('RedeemVoucherResponse has unaccounted trailing bits')
+    return response
 
 
 def resolve_ocp_booking_reward(
