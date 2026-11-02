@@ -597,6 +597,8 @@ class DispatchService:
                 self._handle_ocp_offer_request(s, payload)
             elif command_id == OCP_BOOKING_COMMAND:
                 self._handle_ocp_booking(s, payload)
+            elif command_id == REDEEM_VOUCHER_COMMAND:
+                self._handle_redeem_voucher(s, payload)
             elif command_id == ACCEPTED_TIER_SPENDER_COMMAND:
                 self._handle_tier_spender_accept(s, payload)
             elif command_id == SHUFFLE_TIER_SPENDER_DEALS_COMMAND:

@@ -403,6 +403,8 @@ class ServerApplication:
                 raise ValueError("admin and account HTTP services require different ports")
             self.login.admin_booking_delivery = self.admin.delivery
             self.characters.admin_booking_delivery = self.admin.delivery
+            self.login.admin_bonus_codes = self.admin.bonus_codes
+            self.characters.admin_bonus_codes = self.admin.bonus_codes
 
     def start(self) -> None:
         if self._started:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 import sqlite3
 
 from dso_server.runtime.context import *
@@ -435,6 +436,43 @@ class CommerceService:
             f'{instance_guid.hex()} for {reward.amount}x '
             f'{reward.item_id}; awaiting notification confirmation'
         )
+
+    @staticmethod
+    def _send_redeem_voucher_response(
+            s: Session, response: RedeemVoucherResponse) -> None:
+        packet, packet_bits = encode_redeem_voucher_response(response)
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix='redeem-voucher-response',
+        )
+
+    def _handle_redeem_voucher(self, s: Session, payload: bytes) -> None:
+        """Redeem a code from the shop's voucher tab.
+
+        The client keeps its Redeem button disabled until it hears back, so
+        every path answers. Redemption leaves this handler because delivery
+        commits through the CMS queue, which waits for the gameplay gate held
+        here.
+        """
+        CharacterService._accept_gameplay_state_command(
+            s, REDEEM_VOUCHER_COMMAND
+        )
+        bonus_codes = getattr(self, 'admin_bonus_codes', None)
+        character = s.gameplay_character
+        reply = partial(CommerceService._send_redeem_voucher_response, s)
+        try:
+            code = decode_redeem_voucher_request(payload)
+        except ValueError as exc:
+            print(
+                f'[{GAMEPLAY_SERVICE_NAME}] rejected malformed '
+                f'RedeemVoucherCommand: {exc}'
+            )
+            code = None
+        if (code is None or bonus_codes is None or character is None
+                or not bonus_codes.submit(character.character_id, code, reply)):
+            reply(RedeemVoucherResponse('', VOUCHER_FAILED))
 
     def _handle_tier_spender_accept(
             self, s: Session, payload: bytes) -> None:

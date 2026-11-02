@@ -347,3 +347,10 @@ by the flow lock. A conflict retries preparation, then leaves the booking pendin
 if the character is still busy. Publication and persistence happen after release.
 The existing delivery/cancellation lock is held only by CMS/initialization callers,
 never acquired by the queued game-thread commit.
+
+Bonus codes arrive as a gameplay command, whose handler holds the session's
+`gameplay_mutation_lock`: the gate a booking commit waits for. The handler only
+queues the redemption. One `bonus-codes` worker claims the code, delivers the booking
+and answers the client. Its queue is bounded and each character has at most one
+redemption in flight. A refused submission is answered at once, because the client
+keeps its Redeem button disabled until it hears back.

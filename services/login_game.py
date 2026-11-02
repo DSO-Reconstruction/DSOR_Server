@@ -370,6 +370,8 @@ class LoginGameServer(DispatchService, LoginServer):
             CharacterServer._handle_ocp_offer_request(self, s, payload)
         elif command_id == OCP_BOOKING_COMMAND:
             CharacterServer._handle_ocp_booking(self, s, payload)
+        elif command_id == REDEEM_VOUCHER_COMMAND:
+            CharacterServer._handle_redeem_voucher(self, s, payload)
         elif command_id == ACCEPTED_TIER_SPENDER_COMMAND:
             CharacterServer._handle_tier_spender_accept(self, s, payload)
         elif command_id == SHUFFLE_TIER_SPENDER_DEALS_COMMAND:

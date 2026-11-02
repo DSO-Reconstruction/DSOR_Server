@@ -179,6 +179,212 @@ export async function newBookingPage(route) {
   return result;
 }
 
+// The list of items and currencies shared by batch bookings and bonus codes.
+export function grantEditor(currencies) {
+  return `<div id="batch-items"></div>
+<button type="button" id="add-item" class="secondary">+ Add item</button>
+<button type="button" id="add-currency" class="secondary">+ Add currency</button>
+<div id="batch-item-picker" class="form-section" hidden>
+  <div id="batch-selected-item"></div>
+  <div id="batch-item-search-area"><label for="batch-item-search">Find an item by its in-game name</label><div class="toolbar"><input id="batch-item-search" aria-label="Find item" placeholder="In-game name, category, or template ID" maxlength="100"><button id="find-batch-item" type="button" class="secondary">Find item</button></div><div id="batch-item-results" class="picker-results"></div></div>
+  <div id="batch-item-options"></div>
+  <p id="batch-item-error" class="error-text" role="alert"></p>
+  <div class="form-actions"><button type="button" id="cancel-batch-item" class="secondary">Cancel</button><button type="button" id="confirm-batch-item" disabled>Add selected item</button></div>
+</div>
+<div id="batch-currency-picker" class="form-section" hidden>
+  <div class="form-grid">
+    <label>Currency<select id="batch-currency">${currencies.map(c => `<option value="${esc(c)}">${esc(human(c))}</option>`).join("")}</select></label>
+    <label>Amount<input id="batch-currency-amount" type="number" min="1" max="1000000000" step="1" value="100" required><small>Enter a positive amount in the game's base currency unit.</small></label>
+  </div>
+  <p id="batch-currency-error" class="error-text" role="alert"></p>
+  <div class="form-actions"><button type="button" id="cancel-batch-currency" class="secondary">Cancel</button><button type="button" id="confirm-batch-currency">Add currency</button></div>
+</div>`;
+}
+
+// Binds grantEditor's markup inside form and returns the live list of grants,
+// each {kind, resource, amount, options, template_name}.
+export function mountGrantEditor(form, currencies, preferredLevel = () => null) {
+  let itemGeneration = 0, pendingItem = null;
+  const alive = () => form.isConnected;
+  const batchItems = [];
+
+  function renderBatchItems() {
+    if (!batchItems.length) {
+      $("#batch-items").innerHTML = '<p class="muted">No items added yet. Use the buttons below to add items or currencies.</p>';
+      return;
+    }
+    const rows = batchItems.map((item, idx) => [
+      `<button type="button" class="secondary remove-item" data-idx="${idx}">Remove</button>`,
+      esc(item.kind === "currency" ? human(item.resource) : item.template_name || item.resource),
+      item.kind === "currency" ? esc(human(item.resource)) : "",
+      item.amount,
+      item.options?.item_level ? `Rarity: ${esc(rarities[item.options.rarity])}, Level: ${item.options.item_level}` : ""
+    ]);
+    $("#batch-items").innerHTML = table(["", "Name", "Type", "Amount", "Options"], rows);
+    for (const btn of document.querySelectorAll(".remove-item")) btn.addEventListener("click", () => {
+      batchItems.splice(Number(btn.dataset.idx), 1);
+      renderBatchItems();
+    });
+  }
+  async function addItemEntry(kind) {
+    if (kind === "item") {
+      itemGeneration++;
+      pendingItem = null;
+      $("#batch-currency-picker").hidden = true;
+      $("#batch-item-search").value = "";
+      $("#batch-item-results").innerHTML = "";
+      $("#batch-item-error").textContent = "";
+      $("#batch-item-picker").hidden = false;
+      drawBatchItemSelection();
+      $("#batch-item-search").focus();
+    } else {
+      itemGeneration++;
+      pendingItem = null;
+      $("#batch-item-picker").hidden = true;
+      $("#batch-currency-error").textContent = "";
+      $("#batch-currency-amount").value = "100";
+      $("#batch-currency-picker").hidden = false;
+      $("#batch-currency").focus();
+    }
+  }
+
+  function confirmBatchCurrency() {
+    const resource = $("#batch-currency").value;
+    const amountField = $("#batch-currency-amount");
+    const amount = Number(amountField.value);
+    if (!currencies.includes(resource) || !Number.isInteger(amount) || amount < 1 || amount > 1000000000) {
+      $("#batch-currency-error").textContent = "Choose a currency and enter an amount from 1 to 1,000,000,000.";
+      return;
+    }
+    batchItems.push({kind: "currency", resource, amount});
+    itemGeneration++;
+    $("#batch-currency-picker").hidden = true;
+    renderBatchItems();
+  }
+
+  function drawBatchItemSelection() {
+    const selected = $("#batch-selected-item"), searchArea = $("#batch-item-search-area");
+    const options = $("#batch-item-options"), confirm = $("#confirm-batch-item");
+    selected.innerHTML = pendingItem ? `<div class="selection"><div><strong>${esc(pendingItem.name)}</strong><small class="mono">${esc(pendingItem.template_id)}</small> · <small>${esc(pendingItem.category)} · ${esc(pendingItem.rarity_name)} · ${pendingItem.equipment ? "Equipment" : "Stack limit " + pendingItem.max_stack_size}</small></div><button id="change-batch-item" type="button" class="secondary">Change</button></div>` : "";
+    searchArea.hidden = !!pendingItem;
+    confirm.disabled = !pendingItem || !pendingItem.bookable;
+    options.innerHTML = "";
+    if (!pendingItem) return;
+    $("#change-batch-item").addEventListener("click", () => {
+      itemGeneration++; pendingItem = null; drawBatchItemSelection();
+    });
+    if (!pendingItem.bookable) {
+      options.innerHTML = '<p class="error-text">This template cannot be booked as an inventory item. Choose another template or use a currency booking.</p>';
+      return;
+    }
+    if (!pendingItem.equipment) {
+      options.innerHTML = `<div class="form-grid"><label>Stack size<input name="batch_amount" type="number" min="1" max="${pendingItem.max_stack_size}" step="1" value="1" required><small>One stack, up to ${pendingItem.max_stack_size} units.</small></label></div>`;
+      return;
+    }
+    const level = Math.min(pendingItem.max_level, Math.max(pendingItem.min_level, preferredLevel() || pendingItem.min_level));
+    options.innerHTML = `<p class="help">One equipment item per batch entry. Unique, set and mythic templates keep their authored rarity.</p><div class="form-grid">
+      <label>Item level<input name="batch_item_level" type="number" min="${pendingItem.min_level}" max="${pendingItem.max_level}" step="1" value="${level}" required></label>
+      <label>Rarity<select name="batch_rarity">${pendingItem.rarities.map(r => `<option value="${r.value}" ${r.value === pendingItem.rarity ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
+      <label>Open sockets<input name="batch_socket_count" type="number" min="0" step="1" value="0" required><small id="batch-socket-limit"></small></label>
+      <label>Enchantment tier<select name="batch_enchantment_tier">${pendingItem.enchantment_tiers.map(t => `<option value="${t}" ${t === 1 ? "selected" : ""}>${t === 0 ? "0 · Normal" : t}</option>`).join("")}</select></label>
+      <label>Enchantment roll quality<select name="batch-quality-mode"><option value="random">Random rolls</option><option value="fixed">Fixed percentage</option></select><small>Compatible enchantments are generated from the item's template, class, level and rarity.</small></label>
+      <label id="batch-quality-field" hidden>Roll percentage<input name="batch-roll-quality" type="number" min="0" max="100" step="1" value="100" disabled><small>Applies to each generated enchantment.</small></label>
+    </div>`;
+    const syncSockets = () => {
+      const max = pendingItem.socket_limits[Number(form.elements.namedItem("batch_item_level").value)] ?? 0;
+      form.elements.namedItem("batch_socket_count").max = max;
+      $("#batch-socket-limit").textContent = `Maximum ${max} at this item level.`;
+    };
+    form.elements.namedItem("batch_item_level").addEventListener("input", syncSockets);
+    syncSockets();
+    form.elements.namedItem("batch-quality-mode").addEventListener("change", () => {
+      const fixed = form.elements.namedItem("batch-quality-mode").value === "fixed";
+      $("#batch-quality-field").hidden = !fixed;
+      form.elements.namedItem("batch-roll-quality").disabled = !fixed;
+      form.elements.namedItem("batch-roll-quality").required = fixed;
+    });
+  }
+
+  async function findBatchItem() {
+    const version = ++itemGeneration, button = $("#find-batch-item"); button.disabled = true;
+    $("#batch-item-error").textContent = "";
+    try {
+      const data = await api(`/api/items?limit=30&q=${encodeURIComponent($("#batch-item-search").value)}`);
+      if (!alive() || version !== itemGeneration) return;
+      $("#batch-item-results").innerHTML = table(["Name", "Template", "Category", "Rarity", ""], data.rows.map(i => [
+        esc(i.name), `<code class="resource">${esc(i.template_id)}</code>`, esc(i.category), esc(i.rarity),
+        `<button type="button" class="secondary" data-batch-template="${esc(i.template_id)}">Select</button>`
+      ]));
+      for (const select of $("#batch-item-results").querySelectorAll("[data-batch-template]")) select.addEventListener("click", async () => {
+        const selectionVersion = ++itemGeneration; select.disabled = true;
+        try {
+          const selected = await api(`/api/items/${encodeURIComponent(select.dataset.batchTemplate)}`);
+          if (!alive() || selectionVersion !== itemGeneration) return;
+          pendingItem = selected; $("#batch-item-error").textContent = ""; drawBatchItemSelection();
+        } catch (error) { if (alive()) $("#batch-item-error").textContent = error.message; }
+        finally { select.disabled = false; }
+      });
+      if (data.total > data.rows.length) $("#batch-item-results").insertAdjacentHTML("beforeend", '<p class="help">Refine the search to find more items.</p>');
+    } catch (error) { if (alive()) $("#batch-item-error").textContent = error.message; }
+    finally { button.disabled = false; }
+  }
+
+  function confirmBatchItem() {
+    if (!pendingItem || !pendingItem.bookable) return;
+    const amountField = form.elements.namedItem("batch_amount");
+    const amount = pendingItem.equipment ? 1 : Number(amountField?.value);
+    if (!Number.isInteger(amount) || amount < 1 || amount > (pendingItem.equipment ? 1 : pendingItem.max_stack_size)) {
+      $("#batch-item-error").textContent = `Enter a valid stack size (maximum ${pendingItem.equipment ? 1 : pendingItem.max_stack_size}).`;
+      return;
+    }
+    let options = {};
+    if (pendingItem.equipment) {
+      const itemLevel = Number(form.elements.namedItem("batch_item_level").value);
+      const rarity = Number(form.elements.namedItem("batch_rarity").value);
+      const socketCount = Number(form.elements.namedItem("batch_socket_count").value);
+      const enchantmentTier = Number(form.elements.namedItem("batch_enchantment_tier").value);
+      const qualityMode = form.elements.namedItem("batch-quality-mode").value;
+      const qualityField = form.elements.namedItem("batch-roll-quality");
+      const rollQuality = qualityMode === "fixed" ? Number(qualityField.value) : null;
+      if (!Number.isInteger(itemLevel) || itemLevel < pendingItem.min_level || itemLevel > pendingItem.max_level ||
+          !pendingItem.rarities.some(option => option.value === rarity) ||
+          !Number.isInteger(socketCount) || socketCount < 0 || socketCount > (pendingItem.socket_limits[itemLevel] ?? 0) ||
+          !Number.isInteger(enchantmentTier) || !pendingItem.enchantment_tiers.includes(enchantmentTier) ||
+          (rollQuality !== null && (!qualityField.value.trim() || !Number.isInteger(rollQuality) || rollQuality < 0 || rollQuality > 100))) {
+        $("#batch-item-error").textContent = "Check the item level, sockets, enchantment tier, and roll percentage.";
+        return;
+      }
+      options = {item_level: itemLevel, rarity, socket_count: socketCount, enchantment_tier: enchantmentTier, roll_quality: rollQuality};
+    }
+    batchItems.push({kind: "item", resource: pendingItem.template_id, amount, options, template_name: pendingItem.name});
+    pendingItem = null; itemGeneration++;
+    $("#batch-item-picker").hidden = true;
+    renderBatchItems();
+  }
+
+  $("#add-item").addEventListener("click", () => addItemEntry("item"));
+  $("#add-currency").addEventListener("click", () => addItemEntry("currency"));
+  $("#find-batch-item").addEventListener("click", findBatchItem);
+  searchAsYouType($("#batch-item-search"), findBatchItem, $("#batch-item-results"));
+  $("#batch-item-search").addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); findBatchItem(); }
+  });
+  $("#cancel-batch-item").addEventListener("click", () => {
+    itemGeneration++; pendingItem = null; $("#batch-item-picker").hidden = true;
+  });
+  $("#confirm-batch-item").addEventListener("click", confirmBatchItem);
+  $("#cancel-batch-currency").addEventListener("click", () => {
+    itemGeneration++; $("#batch-currency-picker").hidden = true;
+  });
+  $("#confirm-batch-currency").addEventListener("click", confirmBatchCurrency);
+  $("#batch-currency-amount").addEventListener("keydown", event => {
+    if (event.key === "Enter") { event.preventDefault(); confirmBatchCurrency(); }
+  });
+
+  renderBatchItems();
+  return batchItems;
+}
+
 export async function batchBookingPage(route) {
   const currencies = (await api("/api/currencies")).currencies;
   let account = null, character = null;
@@ -203,24 +409,7 @@ export async function batchBookingPage(route) {
         <p id="character-note" class="help"></p>
       </fieldset>
       <fieldset class="form-section"><legend>2. Items & Currencies</legend>
-        <div id="batch-items"></div>
-        <button type="button" id="add-item" class="secondary">+ Add item</button>
-        <button type="button" id="add-currency" class="secondary">+ Add currency</button>
-        <div id="batch-item-picker" class="form-section" hidden>
-          <div id="batch-selected-item"></div>
-          <div id="batch-item-search-area"><label for="batch-item-search">Find an item by its in-game name</label><div class="toolbar"><input id="batch-item-search" aria-label="Find item" placeholder="In-game name, category, or template ID" maxlength="100"><button id="find-batch-item" type="button" class="secondary">Find item</button></div><div id="batch-item-results" class="picker-results"></div></div>
-          <div id="batch-item-options"></div>
-          <p id="batch-item-error" class="error-text" role="alert"></p>
-          <div class="form-actions"><button type="button" id="cancel-batch-item" class="secondary">Cancel</button><button type="button" id="confirm-batch-item" disabled>Add selected item</button></div>
-        </div>
-        <div id="batch-currency-picker" class="form-section" hidden>
-          <div class="form-grid">
-            <label>Currency<select id="batch-currency">${currencies.map(c => `<option value="${esc(c)}">${esc(human(c))}</option>`).join("")}</select></label>
-            <label>Amount<input id="batch-currency-amount" type="number" min="1" max="1000000000" step="1" value="100" required><small>Enter a positive amount in the game's base currency unit.</small></label>
-          </div>
-          <p id="batch-currency-error" class="error-text" role="alert"></p>
-          <div class="form-actions"><button type="button" id="cancel-batch-currency" class="secondary">Cancel</button><button type="button" id="confirm-batch-currency">Add currency</button></div>
-        </div>
+        ${grantEditor(currencies)}
       </fieldset>
       <p class="help">All items are delivered together when the character is ready online, or queued for their next game entry. You enter the audit reason when you create the booking.</p>
       <p id="form-error" class="error-text" role="alert"></p>
@@ -229,10 +418,10 @@ export async function batchBookingPage(route) {
   };
   result.mount = () => {
     const form = $("#batch-form");
-    let prepared = null, recipientGeneration = 0, itemGeneration = 0, pendingItem = null;
+    let prepared = null, recipientGeneration = 0;
     const alive = () => form.isConnected;
     const field = name => form.elements.namedItem(name);
-    const batchItems = []; // Array of {kind, resource, amount, options, template_name}
+    const batchItems = mountGrantEditor(form, currencies, () => character?.level);
 
     function drawAccount() {
       $("#selected-account").innerHTML = account ? `<div class="selection"><div><strong>${esc(account.account.username)}</strong><small>Account ${account.account.account_id}</small></div><button id="change-account" type="button" class="secondary">Change</button></div>` : "";
@@ -268,179 +457,6 @@ export async function batchBookingPage(route) {
         if (data.total > data.rows.length) $("#account-results").insertAdjacentHTML("beforeend", '<p class="help">Refine the search to find more accounts.</p>');
       } catch (error) { if (alive()) formError(error); } finally { button.disabled = false; }
     }
-    function renderBatchItems() {
-      if (!batchItems.length) {
-        $("#batch-items").innerHTML = '<p class="muted">No items added yet. Use the buttons below to add items or currencies.</p>';
-        return;
-      }
-      const rows = batchItems.map((item, idx) => [
-        `<button type="button" class="secondary remove-item" data-idx="${idx}">Remove</button>`,
-        esc(item.kind === "currency" ? human(item.resource) : item.template_name || item.resource),
-        item.kind === "currency" ? esc(human(item.resource)) : "",
-        item.amount,
-        item.options ? `Rarity: ${esc(rarities[item.options.rarity])}, Level: ${item.options.item_level}` : ""
-      ]);
-      $("#batch-items").innerHTML = table(["", "Name", "Type", "Amount", "Options"], rows);
-      for (const btn of document.querySelectorAll(".remove-item")) btn.addEventListener("click", () => {
-        batchItems.splice(Number(btn.dataset.idx), 1);
-        renderBatchItems();
-      });
-    }
-    async function addItemEntry(kind) {
-      if (kind === "item") {
-        itemGeneration++;
-        pendingItem = null;
-        $("#batch-currency-picker").hidden = true;
-        $("#batch-item-search").value = "";
-        $("#batch-item-results").innerHTML = "";
-        $("#batch-item-error").textContent = "";
-        $("#batch-item-picker").hidden = false;
-        drawBatchItemSelection();
-        $("#batch-item-search").focus();
-      } else {
-        itemGeneration++;
-        pendingItem = null;
-        $("#batch-item-picker").hidden = true;
-        $("#batch-currency-error").textContent = "";
-        $("#batch-currency-amount").value = "100";
-        $("#batch-currency-picker").hidden = false;
-        $("#batch-currency").focus();
-      }
-    }
-
-    function confirmBatchCurrency() {
-      const resource = $("#batch-currency").value;
-      const amountField = $("#batch-currency-amount");
-      const amount = Number(amountField.value);
-      if (!currencies.includes(resource) || !Number.isInteger(amount) || amount < 1 || amount > 1000000000) {
-        $("#batch-currency-error").textContent = "Choose a currency and enter an amount from 1 to 1,000,000,000.";
-        return;
-      }
-      batchItems.push({kind: "currency", resource, amount});
-      itemGeneration++;
-      $("#batch-currency-picker").hidden = true;
-      renderBatchItems();
-    }
-
-    function drawBatchItemSelection() {
-      const selected = $("#batch-selected-item"), searchArea = $("#batch-item-search-area");
-      const options = $("#batch-item-options"), confirm = $("#confirm-batch-item");
-      selected.innerHTML = pendingItem ? `<div class="selection"><div><strong>${esc(pendingItem.name)}</strong><small class="mono">${esc(pendingItem.template_id)}</small> · <small>${esc(pendingItem.category)} · ${esc(pendingItem.rarity_name)} · ${pendingItem.equipment ? "Equipment" : "Stack limit " + pendingItem.max_stack_size}</small></div><button id="change-batch-item" type="button" class="secondary">Change</button></div>` : "";
-      searchArea.hidden = !!pendingItem;
-      confirm.disabled = !pendingItem || !pendingItem.bookable;
-      options.innerHTML = "";
-      if (!pendingItem) return;
-      $("#change-batch-item").addEventListener("click", () => {
-        itemGeneration++; pendingItem = null; drawBatchItemSelection();
-      });
-      if (!pendingItem.bookable) {
-        options.innerHTML = '<p class="error-text">This template cannot be booked as an inventory item. Choose another template or use a currency booking.</p>';
-        return;
-      }
-      if (!pendingItem.equipment) {
-        options.innerHTML = `<div class="form-grid"><label>Stack size<input name="batch_amount" type="number" min="1" max="${pendingItem.max_stack_size}" step="1" value="1" required><small>One stack, up to ${pendingItem.max_stack_size} units.</small></label></div>`;
-        return;
-      }
-      const level = Math.min(pendingItem.max_level, Math.max(pendingItem.min_level, character?.level || pendingItem.min_level));
-      options.innerHTML = `<p class="help">One equipment item per batch entry. Unique, set and mythic templates keep their authored rarity.</p><div class="form-grid">
-        <label>Item level<input name="batch_item_level" type="number" min="${pendingItem.min_level}" max="${pendingItem.max_level}" step="1" value="${level}" required></label>
-        <label>Rarity<select name="batch_rarity">${pendingItem.rarities.map(r => `<option value="${r.value}" ${r.value === pendingItem.rarity ? "selected" : ""}>${esc(r.name)}</option>`).join("")}</select></label>
-        <label>Open sockets<input name="batch_socket_count" type="number" min="0" step="1" value="0" required><small id="batch-socket-limit"></small></label>
-        <label>Enchantment tier<select name="batch_enchantment_tier">${pendingItem.enchantment_tiers.map(t => `<option value="${t}" ${t === 1 ? "selected" : ""}>${t === 0 ? "0 · Normal" : t}</option>`).join("")}</select></label>
-        <label>Enchantment roll quality<select name="batch-quality-mode"><option value="random">Random rolls</option><option value="fixed">Fixed percentage</option></select><small>Compatible enchantments are generated from the item's template, class, level and rarity.</small></label>
-        <label id="batch-quality-field" hidden>Roll percentage<input name="batch-roll-quality" type="number" min="0" max="100" step="1" value="100" disabled><small>Applies to each generated enchantment.</small></label>
-      </div>`;
-      const syncSockets = () => {
-        const max = pendingItem.socket_limits[Number(form.elements.namedItem("batch_item_level").value)] ?? 0;
-        form.elements.namedItem("batch_socket_count").max = max;
-        $("#batch-socket-limit").textContent = `Maximum ${max} at this item level.`;
-      };
-      form.elements.namedItem("batch_item_level").addEventListener("input", syncSockets);
-      syncSockets();
-      form.elements.namedItem("batch-quality-mode").addEventListener("change", () => {
-        const fixed = form.elements.namedItem("batch-quality-mode").value === "fixed";
-        $("#batch-quality-field").hidden = !fixed;
-        form.elements.namedItem("batch-roll-quality").disabled = !fixed;
-        form.elements.namedItem("batch-roll-quality").required = fixed;
-      });
-    }
-
-    async function findBatchItem() {
-      const version = ++itemGeneration, button = $("#find-batch-item"); button.disabled = true;
-      $("#batch-item-error").textContent = "";
-      try {
-        const data = await api(`/api/items?limit=30&q=${encodeURIComponent($("#batch-item-search").value)}`);
-        if (!alive() || version !== itemGeneration) return;
-        $("#batch-item-results").innerHTML = table(["Name", "Template", "Category", "Rarity", ""], data.rows.map(i => [
-          esc(i.name), `<code class="resource">${esc(i.template_id)}</code>`, esc(i.category), esc(i.rarity),
-          `<button type="button" class="secondary" data-batch-template="${esc(i.template_id)}">Select</button>`
-        ]));
-        for (const select of $("#batch-item-results").querySelectorAll("[data-batch-template]")) select.addEventListener("click", async () => {
-          const selectionVersion = ++itemGeneration; select.disabled = true;
-          try {
-            const selected = await api(`/api/items/${encodeURIComponent(select.dataset.batchTemplate)}`);
-            if (!alive() || selectionVersion !== itemGeneration) return;
-            pendingItem = selected; $("#batch-item-error").textContent = ""; drawBatchItemSelection();
-          } catch (error) { if (alive()) $("#batch-item-error").textContent = error.message; }
-          finally { select.disabled = false; }
-        });
-        if (data.total > data.rows.length) $("#batch-item-results").insertAdjacentHTML("beforeend", '<p class="help">Refine the search to find more items.</p>');
-      } catch (error) { if (alive()) $("#batch-item-error").textContent = error.message; }
-      finally { button.disabled = false; }
-    }
-
-    function confirmBatchItem() {
-      if (!pendingItem || !pendingItem.bookable) return;
-      const amountField = form.elements.namedItem("batch_amount");
-      const amount = pendingItem.equipment ? 1 : Number(amountField?.value);
-      if (!Number.isInteger(amount) || amount < 1 || amount > (pendingItem.equipment ? 1 : pendingItem.max_stack_size)) {
-        $("#batch-item-error").textContent = `Enter a valid stack size (maximum ${pendingItem.equipment ? 1 : pendingItem.max_stack_size}).`;
-        return;
-      }
-      let options = {};
-      if (pendingItem.equipment) {
-        const itemLevel = Number(form.elements.namedItem("batch_item_level").value);
-        const rarity = Number(form.elements.namedItem("batch_rarity").value);
-        const socketCount = Number(form.elements.namedItem("batch_socket_count").value);
-        const enchantmentTier = Number(form.elements.namedItem("batch_enchantment_tier").value);
-        const qualityMode = form.elements.namedItem("batch-quality-mode").value;
-        const qualityField = form.elements.namedItem("batch-roll-quality");
-        const rollQuality = qualityMode === "fixed" ? Number(qualityField.value) : null;
-        if (!Number.isInteger(itemLevel) || itemLevel < pendingItem.min_level || itemLevel > pendingItem.max_level ||
-            !pendingItem.rarities.some(option => option.value === rarity) ||
-            !Number.isInteger(socketCount) || socketCount < 0 || socketCount > (pendingItem.socket_limits[itemLevel] ?? 0) ||
-            !Number.isInteger(enchantmentTier) || !pendingItem.enchantment_tiers.includes(enchantmentTier) ||
-            (rollQuality !== null && (!qualityField.value.trim() || !Number.isInteger(rollQuality) || rollQuality < 0 || rollQuality > 100))) {
-          $("#batch-item-error").textContent = "Check the item level, sockets, enchantment tier, and roll percentage.";
-          return;
-        }
-        options = {item_level: itemLevel, rarity, socket_count: socketCount, enchantment_tier: enchantmentTier, roll_quality: rollQuality};
-      }
-      batchItems.push({kind: "item", resource: pendingItem.template_id, amount, options, template_name: pendingItem.name});
-      pendingItem = null; itemGeneration++;
-      $("#batch-item-picker").hidden = true;
-      renderBatchItems();
-    }
-
-    $("#add-item").addEventListener("click", () => addItemEntry("item"));
-    $("#add-currency").addEventListener("click", () => addItemEntry("currency"));
-    $("#find-batch-item").addEventListener("click", findBatchItem);
-    searchAsYouType($("#batch-item-search"), findBatchItem, $("#batch-item-results"));
-    $("#batch-item-search").addEventListener("keydown", event => {
-      if (event.key === "Enter") { event.preventDefault(); findBatchItem(); }
-    });
-    $("#cancel-batch-item").addEventListener("click", () => {
-      itemGeneration++; pendingItem = null; $("#batch-item-picker").hidden = true;
-    });
-    $("#confirm-batch-item").addEventListener("click", confirmBatchItem);
-    $("#cancel-batch-currency").addEventListener("click", () => {
-      itemGeneration++; $("#batch-currency-picker").hidden = true;
-    });
-    $("#confirm-batch-currency").addEventListener("click", confirmBatchCurrency);
-    $("#batch-currency-amount").addEventListener("keydown", event => {
-      if (event.key === "Enter") { event.preventDefault(); confirmBatchCurrency(); }
-    });
-
     form.addEventListener("submit", async event => {
       event.preventDefault();
       const button = form.querySelector("button[type=submit]");
@@ -495,7 +511,7 @@ export async function batchBookingPage(route) {
       character = account?.characters.find(c => c.character_id === Number(field("character_id").value));
       drawCharacterNote();
     });
-    drawAccount(); renderBatchItems();
+    drawAccount();
   };
   return result;
 }
