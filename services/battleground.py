@@ -251,11 +251,11 @@ class BattlegroundService(BattlegroundObjectiveService):
                 instance_id = s.gameplay_next_status_effect_instance_id
                 s.gameplay_next_status_effect_instance_id += 1
                 entry = StatusEffectEntry(
-                    effect_id=definition.effect_id, field_04=instance_id,
-                    field_08=tick, field_0c=(tick + duration) & 0xFFFFFFFF,
-                    field_10=duration, field_14=SERVER_TICKS_PER_SECOND,
-                    field_18=0, field_1c=100, field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False, field_26=False, field_39=False,
+                    effect_id=definition.effect_id, instance_id=instance_id,
+                    start_tick=tick, end_tick=(tick + duration) & 0xFFFFFFFF,
+                    total_duration=duration, tick_interval=SERVER_TICKS_PER_SECOND,
+                    stack_index=0, source_level=100, source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False, stacked=False, permanent=False,
                     has_details=True, values=definition.values,
                 )
                 entries.append(entry)
@@ -354,7 +354,7 @@ class BattlegroundService(BattlegroundObjectiveService):
                 setattr(s, attribute, None)
                 if entry is None:
                     continue
-                instance_id = int(entry.field_04)
+                instance_id = int(entry.instance_id)
                 current = s.gameplay_persistent_status_effects.pop(
                     instance_id, entry,
                 )
@@ -365,7 +365,7 @@ class BattlegroundService(BattlegroundObjectiveService):
             for entry in tuple(getattr(
                 s, "gameplay_mercenary_aura_status_effects", ()
             )):
-                instance_id = int(entry.field_04)
+                instance_id = int(entry.instance_id)
                 current = s.gameplay_persistent_status_effects.pop(
                     instance_id, entry,
                 )
@@ -381,8 +381,8 @@ class BattlegroundService(BattlegroundObjectiveService):
         if not removed:
             return
         value = StatusEffect(False, tuple(replace(
-            entry, has_details=False, values=(), field_25=False,
-            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
         ) for entry in removed.values()))
         server._send_pvp(s, encode_status_effect_batch(
             value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -419,8 +419,8 @@ class BattlegroundService(BattlegroundObjectiveService):
         if not entries:
             return
         value = StatusEffect(False, tuple(replace(
-            entry, has_details=False, values=(), field_25=False,
-            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
         ) for entry in entries))
         server._send_pvp(s, encode_status_effect_batch(
             value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -519,8 +519,8 @@ class BattlegroundService(BattlegroundObjectiveService):
             timer.cancel()
         if removed:
             value = StatusEffect(False, tuple(replace(
-                entry, has_details=False, values=(), field_25=False,
-                field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+                entry, has_details=False, values=(), update_timing=False,
+                permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
             ) for entry in removed))
             server._send_pvp(s, encode_status_effect_batch(
                 value, actor_id=LOCAL_PLAYER_ACTOR_ID,

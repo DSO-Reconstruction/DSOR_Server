@@ -387,7 +387,7 @@ def evaluate_active_status_modifiers(
         definition = catalog.definitions.get(int(entry.effect_id))
         if definition is None:
             continue
-        count = min(max(1, int(getattr(entry, 'field_18', 0)) + 1),
+        count = min(max(1, int(getattr(entry, 'stack_index', 0)) + 1),
                     definition.max_stack_size)
         values = tuple(getattr(entry, 'values', ()))
         programs.extend((modifier, count, values)

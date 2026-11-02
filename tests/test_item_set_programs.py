@@ -117,7 +117,7 @@ def test_one_mortis_kill_applies_persistent_variables_and_managed_children_once(
                     for command in decode_status_effect_command_batch(packet, bits).commands
                     for entry in command.value.entries if entry.has_details]
     assert wire_entries
-    assert all(entry.field_39 and entry.field_10 == 0 and entry.field_0c == 0
+    assert all(entry.permanent and entry.total_duration == 0 and entry.end_tick == 0
                for entry in wire_entries)
 
 
@@ -130,11 +130,11 @@ def test_mortis_persistent_variable_stacks_stop_at_authored_fifty(sets, players)
     assert capped.minimum_damage == pytest.approx(before.minimum_damage * 6.0)
     for name in (MORTIS_DAMAGE, MORTIS_HEALTH):
         entry, expiry = running(wearer)[name]
-        assert entry.field_18 + 1 == 50
+        assert entry.stack_index + 1 == 50
         assert expiry is None
     kill(wearer, definitions, 5)
     assert stats(wearer) == capped
-    assert all(running(wearer)[name][0].field_18 + 1 == 50
+    assert all(running(wearer)[name][0].stack_index + 1 == 50
                for name in (MORTIS_DAMAGE, MORTIS_HEALTH))
     assert not timers
 
@@ -153,7 +153,7 @@ def test_failed_child_publication_keeps_all_earned_programs_and_vitals(sets, pla
     if rare_trigger:
         expected.update(("item_pw_mortis_set_kill_trigger", "item_pw_mortis_set_kill_trigger_stun"))
         entry, _ = running(wearer)["item_pw_mortis_set_kill_trigger"]
-        assert ("item-set-program-expire", entry.field_04) in wearer.gameplay_projectile_timers
+        assert ("item-set-program-expire", entry.instance_id) in wearer.gameplay_projectile_timers
     assert set(running(wearer)) == expected
     assert {definition.resource_id for definition in wearer.gameplay_item_set_programs.values()} == expected
     with wearer.flow_lock:
@@ -200,7 +200,7 @@ def test_mortis_terminal_program_runs_death_cleanup_once(sets, players):
                     if value.resource_id == "item_pw_mortis_set_kill_trigger")
     kill(wearer, (terminal,))
     entry, _ = running(wearer)[terminal.resource_id]
-    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.field_04)]
+    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.instance_id)]
     notifier = CharacterService._notify_player_death
     with patch.object(CharacterService, "_notify_player_death", wraps=notifier) as notify:
         timer.function(*timer.args)
@@ -222,7 +222,7 @@ def test_terminal_state_finishes_when_nested_cleanup_packet_cannot_be_sent(sets,
                     if value.resource_id == "item_pw_mortis_set_kill_trigger")
     kill(wearer, (terminal,))
     entry, _ = running(wearer)[terminal.resource_id]
-    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.field_04)]
+    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.instance_id)]
     with patch.object(wearer, "send_reliable_ordered", side_effect=OSError("output unavailable")):
         try:
             timer.function(*timer.args)
@@ -239,14 +239,14 @@ def test_replaced_timed_set_effect_ignores_its_canceled_expiry_callback(sets, pl
     definition, = effects(sets, "set_mage_01_worlddrop")
     kill(wearer, (definition,))
     old_entry, _ = running(wearer)[definition.resource_id]
-    old_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", old_entry.field_04)]
+    old_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", old_entry.instance_id)]
     kill(wearer, (definition,))
     new_entry, _ = running(wearer)[definition.resource_id]
-    assert new_entry.field_04 != old_entry.field_04
+    assert new_entry.instance_id != old_entry.instance_id
     old_timer.cancel.assert_called_once()
     old_timer.function(*old_timer.args)
     assert running(wearer)[definition.resource_id][0] == new_entry
-    new_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", new_entry.field_04)]
+    new_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", new_entry.instance_id)]
     new_timer.function(*new_timer.args)
     assert definition.resource_id not in running(wearer)
 
@@ -259,7 +259,7 @@ def test_terminal_death_does_not_report_a_kill_into_a_replacement_match(sets, pl
                     if value.resource_id == "item_pw_mortis_set_kill_trigger")
     kill(wearer, (terminal,))
     entry, _ = running(wearer)[terminal.resource_id]
-    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.field_04)]
+    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.instance_id)]
 
     def handoff(*_args, **_kwargs):
         with wearer.flow_lock:
@@ -277,7 +277,7 @@ def test_old_map_expiry_cannot_remove_new_map_timer_reusing_instance_id(sets, pl
     definition, = effects(sets, "set_mage_01_worlddrop")
     kill(wearer, (definition,))
     old_entry, _ = running(wearer)[definition.resource_id]
-    key = ("item-set-program-expire", old_entry.field_04)
+    key = ("item-set-program-expire", old_entry.instance_id)
     old_timer = wearer.gameplay_projectile_timers[key]
     # Map initialization replaces runtime effects and allocates a fresh local
     # status namespace. A canceled timer may already be queued by the worker.
@@ -286,7 +286,7 @@ def test_old_map_expiry_cannot_remove_new_map_timer_reusing_instance_id(sets, pl
         wearer.gameplay_runtime_status_effects.clear()
         wearer.gameplay_item_set_programs.clear()
         wearer.gameplay_projectile_timers.clear()
-        wearer.gameplay_next_status_effect_instance_id = old_entry.field_04
+        wearer.gameplay_next_status_effect_instance_id = old_entry.instance_id
     kill(wearer, (definition,))
     new_timer = wearer.gameplay_projectile_timers[key]
     old_timer.function(*old_timer.args)
@@ -301,7 +301,7 @@ def test_map_handoff_between_expiry_check_and_cleanup_preserves_new_effect(sets,
     definition, = effects(sets, "set_mage_01_worlddrop")
     kill(wearer, (definition,))
     old_entry, _ = running(wearer)[definition.resource_id]
-    key = ("item-set-program-expire", old_entry.field_04)
+    key = ("item-set-program-expire", old_entry.instance_id)
     old_timer = wearer.gameplay_projectile_timers[key]
     reached_cleanup, release_cleanup = Event(), Event()
     original_stop = item_set_programs.stop_item_set_effects
@@ -321,7 +321,7 @@ def test_map_handoff_between_expiry_check_and_cleanup_preserves_new_effect(sets,
                 wearer.gameplay_runtime_status_effects.clear()
                 wearer.gameplay_item_set_programs.clear()
                 wearer.gameplay_projectile_timers.clear()
-                wearer.gameplay_next_status_effect_instance_id = old_entry.field_04
+                wearer.gameplay_next_status_effect_instance_id = old_entry.instance_id
             kill(wearer, (definition,))
             current_entry, _ = running(wearer)[definition.resource_id]
             current_timer = wearer.gameplay_projectile_timers[key]
@@ -341,7 +341,7 @@ def test_old_terminal_program_cannot_kill_a_character_after_map_handoff(sets, pl
                     if value.resource_id == "item_pw_mortis_set_kill_trigger")
     kill(wearer, (terminal,))
     entry, _ = running(wearer)[terminal.resource_id]
-    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.field_04)]
+    timer = wearer.gameplay_projectile_timers[("item-set-program-expire", entry.instance_id)]
     reached_program, release_program = Event(), Event()
     original_program = item_set_programs._terminal_programs
 

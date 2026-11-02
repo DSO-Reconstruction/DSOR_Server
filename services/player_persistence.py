@@ -354,7 +354,7 @@ class PlayerPersistenceService:
                 )
                 | set(s.gameplay_map_status_effect_instance_ids)
                 | {
-                    int(entry.field_04)
+                    int(entry.instance_id)
                     for entry in (
                         getattr(s, "gameplay_mercenary_status_effect", None),
                         getattr(s, "gameplay_mercenary_aura_status_effect", None),
@@ -439,7 +439,7 @@ class PlayerPersistenceService:
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
                 active=True,
             ).entries[0]
-            status_effects[mount_effect.field_04] = mount_effect
+            status_effects[mount_effect.instance_id] = mount_effect
         position = spawn_position
         if last_move is not None:
             try:

@@ -304,6 +304,20 @@ _INVENTORY_SAVED_KEYS = {
 _INVENTORY_ATTRIBUTES = {
     saved: name for name, saved in _INVENTORY_SAVED_KEYS.items()
 }
+_STATUS_SAVED_KEYS = {
+    "instance_id": "field_04",
+    "start_tick": "field_08",
+    "end_tick": "field_0c",
+    "total_duration": "field_10",
+    "tick_interval": "field_14",
+    "stack_index": "field_18",
+    "source_level": "field_1c",
+    "source_actor_id": "field_20",
+    "update_timing": "field_25",
+    "stacked": "field_26",
+    "permanent": "field_39",
+}
+_STATUS_ATTRIBUTES = {saved: name for name, saved in _STATUS_SAVED_KEYS.items()}
 
 
 def _with_keys(document: dict, keys: dict) -> dict:
@@ -452,8 +466,12 @@ def _validate_inventory(inventory: InventoryInfo) -> None:
             )
 
 
+def _status_to_document(effect: StatusEffectEntry) -> dict:
+    return _with_keys(asdict(effect), _STATUS_SAVED_KEYS)
+
+
 def _status_from_document(document: dict) -> StatusEffectEntry:
-    values = dict(document)
+    values = _with_keys(document, _STATUS_ATTRIBUTES)
     values["values"] = tuple(float(value) for value in values.get("values", ()))
     values["shape_values"] = tuple(
         float(value) for value in values.get("shape_values", ())
@@ -731,7 +749,8 @@ def _state_to_document(
             for key, value in state.event_participation.items()
         },
         "active_status_effects": [
-            asdict(effect) for effect in state.status_effects
+            asdict(effect) if attribute_names else _status_to_document(effect)
+            for effect in state.status_effects
         ],
         "status_effect_names": {
             str(instance_id): str(name)

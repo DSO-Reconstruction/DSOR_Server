@@ -450,7 +450,7 @@ class DailyChallengeService:
         for entry, definition, retired, timers in applied:
             for timer in timers:
                 timer.cancel()
-            CharacterService._schedule_consumable_timers(s, entry.field_04, definition,
+            CharacterService._schedule_consumable_timers(s, entry.instance_id, definition,
                                                           database_path=self.static_database_path)
             if s.gameplay_presence_callback:
                 from dso_server.protocol.gameplay_protocol import StatusEffect

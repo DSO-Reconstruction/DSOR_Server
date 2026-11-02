@@ -384,11 +384,11 @@ class BattlegroundObjectiveService(BattlegroundFortressService):
             previous = current.pop(int(flag.team), None)
             if previous is not None:
                 entry = s.gameplay_persistent_status_effects.pop(
-                    int(previous.field_04), previous
+                    int(previous.instance_id), previous
                 )
                 entries.append(replace(
-                    entry, has_details=False, values=(), field_25=False,
-                    field_39=False, field_38=False, field_3c=0xFF,
+                    entry, has_details=False, values=(), update_timing=False,
+                    permanent=False, field_38=False, field_3c=0xFF,
                     shape_values=(),
                 ))
             if carrying:
@@ -401,10 +401,10 @@ class BattlegroundObjectiveService(BattlegroundFortressService):
                     # leaves the carrier.
                     entry = StatusEffectEntry(
                         effect_id=int(definition.effect_id),
-                        field_04=instance_id, field_0c=0, field_14=0,
-                        field_08=0, field_18=0, field_10=0, field_1c=100,
-                        field_20=LOCAL_PLAYER_ACTOR_ID, field_25=False,
-                        field_26=False, field_39=True, has_details=True,
+                        instance_id=instance_id, end_tick=0, tick_interval=0,
+                        start_tick=0, stack_index=0, total_duration=0, source_level=100,
+                        source_actor_id=LOCAL_PLAYER_ACTOR_ID, update_timing=False,
+                        stacked=False, permanent=True, has_details=True,
                         values=tuple(float(value) for value in definition.values),
                     )
                     s.gameplay_persistent_status_effects[instance_id] = entry
@@ -445,11 +445,11 @@ class BattlegroundObjectiveService(BattlegroundFortressService):
             if previous is None:
                 return
             entry = s.gameplay_persistent_status_effects.pop(
-                int(previous.field_04), previous
+                int(previous.instance_id), previous
             )
         value = StatusEffect(False, (replace(
-            entry, has_details=False, values=(), field_25=False,
-            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
         ),))
         server._send_pvp(s, encode_status_effect_batch(
             value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -730,11 +730,11 @@ class BattlegroundObjectiveService(BattlegroundFortressService):
                 instance_id = s.gameplay_next_status_effect_instance_id
                 s.gameplay_next_status_effect_instance_id += 1
                 entry = StatusEffectEntry(
-                    effect_id=definition.effect_id, field_04=instance_id,
-                    field_08=tick, field_0c=(tick + duration) & 0xFFFFFFFF,
-                    field_10=duration, field_14=SERVER_TICKS_PER_SECOND,
-                    field_18=0, field_1c=100, field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False, field_26=False, field_39=False,
+                    effect_id=definition.effect_id, instance_id=instance_id,
+                    start_tick=tick, end_tick=(tick + duration) & 0xFFFFFFFF,
+                    total_duration=duration, tick_interval=SERVER_TICKS_PER_SECOND,
+                    stack_index=0, source_level=100, source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False, stacked=False, permanent=False,
                     has_details=True, values=definition.values,
                 )
                 entries.append(entry)

@@ -588,8 +588,8 @@ def test_hangmans_pride_heals_its_rank_per_final_blow():
         gameplay_chase_server_tick=100, gameplay_last_heal_server_tick=0,
     )
     # Rank 10: the base trigger plus nine stacks of +165.
-    sources = (SimpleNamespace(effect_id=trigger, field_18=0),
-               SimpleNamespace(effect_id=stack, field_18=8))
+    sources = (SimpleNamespace(effect_id=trigger, stack_index=0),
+               SimpleNamespace(effect_id=stack, stack_index=8))
     kills = (SimpleNamespace(killed=True), SimpleNamespace(killed=False),
              SimpleNamespace(killed=True))
     with patch.object(CharacterServer, "_active_skill_modifier_sources", return_value=sources), \
@@ -679,7 +679,7 @@ def geometry_state():
     def entry(effect, stack_index):
         effect_id = state._status_effect_ids[effect] if isinstance(effect, str) else effect
         return replace_entry(template, effect_id=int(effect_id),
-                             field_04=next(instances), field_18=stack_index)
+                             instance_id=next(instances), stack_index=stack_index)
 
     stack, buff = _load_attack_speed_bonus_effects(str(DEFAULT_STATIC_DB_PATH))
     yield SimpleNamespace(state=state, geometry=state._load_player_skill_geometry(1849),

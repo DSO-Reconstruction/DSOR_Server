@@ -74,7 +74,7 @@ def character_sources(document, *, database_path=DEFAULT_STATIC_DB_PATH):
     ).effects.values())
     collector = reconcile_collector_effects(
         database_path, {entry.resource_id for entry in state.stickerbook_entries},
-        {entry.field_04: entry for entry in sources if hasattr(entry, "effect_id")},
+        {entry.instance_id: entry for entry in sources if hasattr(entry, "effect_id")},
         actor_id=1, next_instance_id=500000, server_tick=0,
     )
     sources = tuple(collector.effects.values()) + tuple(

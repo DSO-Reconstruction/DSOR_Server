@@ -719,7 +719,7 @@ class CombatResolutionService:
         Consequently, sending another detailed record with the same instance
         id is a duplicate ADD, not a refresh. Retail allocates a fresh id for
         every application, then removes the superseded detailed instance with
-        a no-details record. ``field_18`` is a monotonically increasing,
+        a no-details record. ``stack_index`` is a monotonically increasing,
         zero-based occurrence for a running resource. It advances on every
         replacement, including resources whose authored ``MaxStackSize`` is
         one. Retail relies on that occurrence to distinguish the new detailed
@@ -737,7 +737,7 @@ class CombatResolutionService:
                 previous = None
 
         stack_index = (
-            int(previous.field_18) + 1
+            int(previous.stack_index) + 1
             if previous is not None else 0
         )
         causer_stack = str(getattr(definition, "effect_hosts", "")).casefold() == "causer"
@@ -754,21 +754,21 @@ class CombatResolutionService:
         instance_id = int(s.gameplay_next_status_effect_instance_id)
         s.gameplay_next_status_effect_instance_id += 1
         start_tick = int(server_tick) & 0xFFFFFFFF
-        if causer_stack and previous is not None and stack_index == previous.field_18:
+        if causer_stack and previous is not None and stack_index == previous.stack_index:
             # At the authored cap there is no new stack. Native no-details
-            # field_25 refreshes the existing instance; another ADD followed
+            # update_timing refreshes the existing instance; another ADD followed
             # by cleanup can delete the capped effect when ADD is rejected.
             refreshed = replace(
                 previous,
-                field_08=start_tick,
-                field_0c=(start_tick + duration) & 0xFFFFFFFF,
-                field_10=duration,
-                field_25=True,
+                start_tick=start_tick,
+                end_tick=(start_tick + duration) & 0xFFFFFFFF,
+                total_duration=duration,
+                update_timing=True,
                 has_details=False,
                 values=(),
             )
             cache[key] = (
-                replace(refreshed, field_25=False, has_details=True, values=tuple(definition.values)),
+                replace(refreshed, update_timing=False, has_details=True, values=tuple(definition.values)),
                 float(applied_at) + duration / float(SERVER_TICKS_PER_SECOND),
             )
             return refreshed, None, False
@@ -779,24 +779,24 @@ class CombatResolutionService:
         )
         created = StatusEffectEntry(
             effect_id=int(definition.effect_id),
-            field_04=instance_id,
-            field_0c=(start_tick + duration) & 0xFFFFFFFF,
-            field_14=SERVER_TICKS_PER_SECOND if duration else 0,
-            field_08=start_tick,
-            field_18=stack_index,
-            field_10=duration,
-            field_1c=100,
-            field_20=int(source_actor_id),
-            # A detailed record is the create branch. Retail leaves field_25
+            instance_id=instance_id,
+            end_tick=(start_tick + duration) & 0xFFFFFFFF,
+            tick_interval=SERVER_TICKS_PER_SECOND if duration else 0,
+            start_tick=start_tick,
+            stack_index=stack_index,
+            total_duration=duration,
+            source_level=100,
+            source_actor_id=int(source_actor_id),
+            # A detailed record is the create branch. Retail leaves update_timing
             # false in every captured detailed combat entry.
-            field_25=False,
+            update_timing=False,
             # Retail marks every positive running-resource occurrence as a
             # counted replacement, including effects authored with
             # MaxStackSize=1.  Omitting this bit makes the client reject the
             # detailed replacement as already present; the following stale-id
             # cleanup then removes the only visible effect.
-            field_26=bool(stack_index > 0),
-            field_39=(definition.resource_id == "mercenary_ember_knight_overheated"),
+            stacked=bool(stack_index > 0),
+            permanent=(definition.resource_id == "mercenary_ember_knight_overheated"),
             has_details=True,
             values=tuple(definition.values),
             field_38=False,
@@ -814,13 +814,13 @@ class CombatResolutionService:
         removed = (
             replace(
                 previous,
-                field_0c=(start_tick + duration) & 0xFFFFFFFF,
-                field_14=SERVER_TICKS_PER_SECOND if duration else 0,
-                field_08=start_tick,
-                field_10=duration,
-                field_20=int(source_actor_id),
-                field_25=False,
-                field_39=False,
+                end_tick=(start_tick + duration) & 0xFFFFFFFF,
+                tick_interval=SERVER_TICKS_PER_SECOND if duration else 0,
+                start_tick=start_tick,
+                total_duration=duration,
+                source_actor_id=int(source_actor_id),
+                update_timing=False,
+                permanent=False,
                 has_details=False,
                 values=(),
                 field_38=False,
@@ -1409,7 +1409,7 @@ class CombatResolutionService:
             if (
                 running is None
                 and int(entry.effect_id) == effect_id
-                and int(entry.field_20) == LOCAL_PLAYER_ACTOR_ID
+                and int(entry.source_actor_id) == LOCAL_PLAYER_ACTOR_ID
             ):
                 running = (instance_id, entry)
         return running
@@ -1549,7 +1549,7 @@ class CombatResolutionService:
                     0
                     if int(definition.effect_id) in force_fresh_effect_ids
                     else (
-                        int(previous.field_18) + 1
+                        int(previous.stack_index) + 1
                         if previous is not None else 0
                     )
                 )
@@ -1559,24 +1559,24 @@ class CombatResolutionService:
                 start_tick = int(server_tick) & 0xFFFFFFFF
                 entry = StatusEffectEntry(
                         effect_id=int(definition.effect_id),
-                        field_04=instance_id,
-                        field_0c=0 if native_permanent else (start_tick + duration) & 0xFFFFFFFF,
-                        field_14=25 if duration else 0,
-                        field_08=start_tick,
-                        field_18=stack_index,
-                        field_10=duration,
-                        field_1c=100,
-                        field_20=LOCAL_PLAYER_ACTOR_ID,
-                        field_25=False,
+                        instance_id=instance_id,
+                        end_tick=0 if native_permanent else (start_tick + duration) & 0xFFFFFFFF,
+                        tick_interval=25 if duration else 0,
+                        start_tick=start_tick,
+                        stack_index=stack_index,
+                        total_duration=duration,
+                        source_level=100,
+                        source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                        update_timing=False,
                         # This is an occurrence/replacement marker, not a
                         # "database allows stacks" marker.  Retail sets it for
                         # positive occurrences even when MaxStackSize is one.
-                        field_26=bool(stack_index > 0),
+                        stacked=bool(stack_index > 0),
                         # The native counted-player branch rebuilds from the
                         # static template and ignores the wire D override.
                         # Zero-duration templates must use its permanent bit;
                         # our existing timer still expires this runtime buff.
-                        field_39=bool(native_permanent or (stack_index > 0 and definition.effect_id in zero_duration_ids)),
+                        permanent=bool(native_permanent or (stack_index > 0 and definition.effect_id in zero_duration_ids)),
                         has_details=True,
                         values=definition.values,
                 )
@@ -1587,17 +1587,17 @@ class CombatResolutionService:
                         "skill_frostwind_buff_frostnova_damage",
                         "skill_mightystab_buff_attackspeed",
                     }
-                    and previous.field_18 >= definition.max_stack_size - 1
+                    and previous.stack_index >= definition.max_stack_size - 1
                 )
                 if capped_refresh:
                     # At the cap the client rejects another counted ADD with
                     # the same index. Removing the old occurrence afterwards
                     # then erases the visible buff. Refresh its existing id.
                     instance_id = int(previous_id)
-                    entry = replace(entry, field_04=instance_id,
-                                    field_18=previous.field_18)
+                    entry = replace(entry, instance_id=instance_id,
+                                    stack_index=previous.stack_index)
                 wire_entry = (
-                    replace(entry, field_25=True, has_details=False, values=())
+                    replace(entry, update_timing=True, has_details=False, values=())
                     if capped_refresh else entry
                 )
                 commands.append(
@@ -1609,13 +1609,13 @@ class CombatResolutionService:
                 if previous is not None:
                     previous_removal = replace(
                         previous,
-                        field_0c=(start_tick + duration) & 0xFFFFFFFF,
-                        field_14=SERVER_TICKS_PER_SECOND,
-                        field_08=start_tick,
-                        field_10=duration,
-                        field_20=LOCAL_PLAYER_ACTOR_ID,
-                        field_25=False,
-                        field_39=False,
+                        end_tick=(start_tick + duration) & 0xFFFFFFFF,
+                        tick_interval=SERVER_TICKS_PER_SECOND,
+                        start_tick=start_tick,
+                        total_duration=duration,
+                        source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                        update_timing=False,
+                        permanent=False,
                         has_details=False,
                         values=(),
                         field_38=False,
@@ -1658,8 +1658,8 @@ class CombatResolutionService:
                         entry,
                         has_details=False,
                         values=(),
-                        field_25=False,
-                        field_39=False,
+                        update_timing=False,
+                        permanent=False,
                         field_38=False,
                         field_3c=0xFF,
                         shape_values=(),
@@ -1686,7 +1686,7 @@ class CombatResolutionService:
                 if definition.item_set_program:
                     set_programs.append((instance_id, definition))
                 stack_transitions.append((definition,
-                    min(int(previous.field_18) + 1, definition.max_stack_size) if previous else 0,
+                    min(int(previous.stack_index) + 1, definition.max_stack_size) if previous else 0,
                     min(stack_index + 1, definition.max_stack_size)))
             if removals:
                 commands.append(
@@ -1763,7 +1763,7 @@ class CombatResolutionService:
             )
         for instance_id, definition in periodic_effects:
             runtime = s.gameplay_runtime_status_effects.get(instance_id)
-            if runtime is not None and runtime[0].field_39 and not definition.item_set_program:
+            if runtime is not None and runtime[0].permanent and not definition.item_set_program:
                 CharacterService._schedule_counted_status_expiry(s, runtime[0], definition.duration_ticks)
             finish_effect_step(CharacterService._schedule_player_status_ticks,
                 s,
@@ -1790,7 +1790,7 @@ class CombatResolutionService:
         # Counted effects authored with duration zero are client-permanent;
         # send an explicit removal at the finite server-owned deadline.
         with s.flow_lock:
-            key = ('runtime-effect-expire', entry.field_04)
+            key = ('runtime-effect-expire', entry.instance_id)
             timer = s.gameplay_deadline_timer(
                 duration_ticks / float(SERVER_TICKS_PER_SECOND),
                 CharacterService._expire_counted_status,
@@ -1801,10 +1801,10 @@ class CombatResolutionService:
     @staticmethod
     def _expire_counted_status(s, generation, entry):
         with s.flow_lock:
-            s.gameplay_projectile_timers.pop(('runtime-effect-expire', entry.field_04), None)
+            s.gameplay_projectile_timers.pop(('runtime-effect-expire', entry.instance_id), None)
             if not s.connected or generation != s.gameplay_chase_generation:
                 return
-            s.gameplay_runtime_status_effects.pop(entry.field_04, None)
+            s.gameplay_runtime_status_effects.pop(entry.instance_id, None)
             removal = CharacterService._consumable_cleanup_entry(entry, server_tick=s.gameplay_chase_server_tick)
         value = StatusEffect(False, (removal,))
         s.send_reliable_ordered(encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),

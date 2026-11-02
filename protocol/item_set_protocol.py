@@ -447,11 +447,11 @@ class ItemSetDatabase:
             changed_entries.append(
                 replace(
                     previous,
-                    field_0c=0,
-                    field_14=0,
-                    field_18=0,
-                    field_10=0,
-                    field_39=False,
+                    end_tick=0,
+                    tick_interval=0,
+                    stack_index=0,
+                    total_duration=0,
+                    permanent=False,
                     has_details=False,
                     values=(),
                     field_38=False,
@@ -465,21 +465,21 @@ class ItemSetDatabase:
             duration = int(definition.duration_ticks)
             entry = StatusEffectEntry(
                 effect_id=definition.effect_id,
-                field_04=next_instance_id,
-                field_0c=(
+                instance_id=next_instance_id,
+                end_tick=(
                     (int(server_tick) + duration) & 0xFFFFFFFF
                     if duration
                     else 0
                 ),
-                field_14=25,
-                field_08=int(server_tick) & 0xFFFFFFFF,
-                field_18=0,
-                field_10=duration,
-                field_1c=100,
-                field_20=int(actor_id),
-                field_25=False,
-                field_26=False,
-                field_39=True,
+                tick_interval=25,
+                start_tick=int(server_tick) & 0xFFFFFFFF,
+                stack_index=0,
+                total_duration=duration,
+                source_level=100,
+                source_actor_id=int(actor_id),
+                update_timing=False,
+                stacked=False,
+                permanent=True,
                 has_details=True,
                 values=definition.values,
             )

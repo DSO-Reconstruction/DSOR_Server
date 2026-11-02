@@ -122,8 +122,8 @@ def test_equipping_and_removing_speed_gear_while_mounted_reconciles_bonus(case):
                   if label == "admin-speed-adjust")
     status, actor = decode_status_effect_batch(*update)
     assert actor == 1
-    assert status.entries[0].field_04 == old.field_04 and not status.entries[0].has_details
-    assert status.entries[1] == new and new.field_04 != old.field_04
+    assert status.entries[0].instance_id == old.instance_id and not status.entries[0].has_details
+    assert status.entries[1] == new and new.instance_id != old.instance_id
     session.gameplay_inventory = equipment(False)
     case.gameplay_server._refresh_player_combat_vitals(session)
     assert admin_entry(session).values[0] == 5.0
@@ -173,17 +173,17 @@ def test_mounted_relog_recomputes_limit_before_initial_status_snapshot():
         session.gameplay_next_status_effect_instance_id += 2
         session.gameplay_mount_ride = ride
         mount_entry = mount_status_effect(ride, actor_id=1, active=True).entries[0]
-        session.gameplay_persistent_status_effects[mount_entry.field_04] = mount_entry
+        session.gameplay_persistent_status_effects[mount_entry.instance_id] = mount_entry
         assert test.server._toggle_admin_speed(session)
         assert admin_entry(session).values[0] == 1.0
         # A native movement buff also reaches the cap after the initializer
         # rebuilds bootstrap equipment from the selected character record.
         native = replace(admin_entry(session),
-            field_04=session.gameplay_next_status_effect_instance_id,
+            instance_id=session.gameplay_next_status_effect_instance_id,
             effect_id=load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids["pvp_talent_speed"],
             values=(2.0, 0.0, 0.0, 0.0, 0.0))
         session.gameplay_next_status_effect_instance_id += 1
-        session.gameplay_persistent_status_effects[native.field_04] = native
+        session.gameplay_persistent_status_effects[native.instance_id] = native
         test.server._persist_gameplay_session(session, reason="mounted speed regression", flush=True)
         # Toggle persistence stores the limited instance and the ride.
         saved = test.server.account_store.get(session.gameplay_character.character_id)
@@ -198,7 +198,7 @@ def test_mounted_relog_recomputes_limit_before_initial_status_snapshot():
         test.server._send_local_player_initialization(restored)
         assert restored.gameplay_mount_ride is not None
         assert admin_entry(restored).values[0] == 1.0
-        assert admin_entry(restored).field_08 == 0
+        assert admin_entry(restored).start_tick == 0
         assert not test.server._toggle_admin_speed(restored)
         assert restored.gameplay_mount_ride is not None
     finally:

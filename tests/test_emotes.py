@@ -102,11 +102,11 @@ class EmoteTests(unittest.TestCase):
         self.play()
         entry, expires = next(iter(self.source.gameplay_runtime_status_effects.values()))
         self.assertEqual(entry.effect_id, 762)
-        self.assertEqual(entry.field_10, 140)
-        self.assertEqual(entry.field_0c - entry.field_08, 140)
+        self.assertEqual(entry.total_duration, 140)
+        self.assertEqual(entry.end_tick - entry.start_tick, 140)
         self.assertEqual(entry.values, (-1.0, 0.0, 0.0, 0.0, 0.0))
         self.assertTrue(entry.has_details)
-        self.assertNotIn(entry.field_04, self.source.gameplay_persistent_status_effects)
+        self.assertNotIn(entry.instance_id, self.source.gameplay_persistent_status_effects)
         self.assertFalse(self.source.gameplay_inventory.items)
         for session, actor_id in ((self.source, 1),
                                   (self.target, self.source.gameplay_remote_actor_id)):
@@ -135,12 +135,12 @@ class EmoteTests(unittest.TestCase):
         self.play()
         self.assertEqual(len(self.source.gameplay_runtime_status_effects), 1)
         entry, _ = next(iter(self.source.gameplay_runtime_status_effects.values()))
-        self.assertNotEqual(entry.field_04, old_instance)
-        self.assertEqual(entry.field_10, 140)
-        self.assertEqual(entry.field_18, 0)
+        self.assertNotEqual(entry.instance_id, old_instance)
+        self.assertEqual(entry.total_duration, 140)
+        self.assertEqual(entry.stack_index, 0)
         old_timer.cancel.assert_called_once()
         old_timer.function(*old_timer.args)
-        self.assertIn(entry.field_04, self.source.gameplay_runtime_status_effects)
+        self.assertIn(entry.instance_id, self.source.gameplay_runtime_status_effects)
 
     def test_unowned_and_consumable_only_emotes_cannot_unlock_or_play(self):
         self.assertIsNone(load_sticker_definition(

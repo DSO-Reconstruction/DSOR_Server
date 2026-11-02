@@ -120,12 +120,12 @@ def test_saved_occurrences_keep_counts_and_managed_children_on_relog_or_map_hand
     restored, state = initialize(server, session if same_session else None)
     after = running(restored)
     assert set(after) == set(before)
-    assert {name: (entry.field_18, entry.values) for name, entry in after.items()} == {
-        name: (entry.field_18, entry.values) for name, entry in before.items()
+    assert {name: (entry.stack_index, entry.values) for name, entry in after.items()} == {
+        name: (entry.stack_index, entry.values) for name, entry in before.items()
     }
     assert len(restored.gameplay_item_set_programs) == 6
-    assert all(entry.field_08 == entry.field_0c == entry.field_10 == 0 for entry in after.values())
-    assert set(entry.field_04 for entry in after.values()) <= set(state.persistent_status_effects)
+    assert all(entry.start_tick == entry.end_tick == entry.total_duration == 0 for entry in after.values())
+    assert set(entry.instance_id for entry in after.values()) <= set(state.persistent_status_effects)
     assert not set(restored.gameplay_item_set_programs).intersection(restored.gameplay_persistent_status_effects)
     restore_persistent_item_set_effects(restored, state, DEFAULT_STATIC_DB_PATH)
     assert running(restored) == after
@@ -133,22 +133,22 @@ def test_saved_occurrences_keep_counts_and_managed_children_on_relog_or_map_hand
     for entry in after.values():
         assert sum(getattr(source, "effect_id", None) == entry.effect_id for source in sources) == 1
     trigger(restored)
-    assert running(restored)[DAMAGE].field_18 == before[DAMAGE].field_18 + 1
+    assert running(restored)[DAMAGE].stack_index == before[DAMAGE].stack_index + 1
 
 
 def test_capture_only_persists_tracked_native_effects_with_no_expiry(wearer):
     server, session = wearer
     trigger(session)
     entries = running(session)
-    tracked_id = entries[DAMAGE].field_04
+    tracked_id = entries[DAMAGE].instance_id
     original = session.gameplay_runtime_status_effects[tracked_id]
     session.gameplay_runtime_status_effects[tracked_id] = (original[0], 9999999999.0)
-    session.gameplay_runtime_status_effects[987654] = (replace(original[0], field_04=987654), None)
+    session.gameplay_runtime_status_effects[987654] = (replace(original[0], instance_id=987654), None)
     saved = save(server, session)
-    ids = {entry.field_04 for entry in saved.status_effects}
+    ids = {entry.instance_id for entry in saved.status_effects}
     assert tracked_id not in ids
     assert 987654 not in ids
-    assert entries[PARENT].field_04 in ids
+    assert entries[PARENT].instance_id in ids
 
 
 def test_saved_template_names_rebind_renumbered_effect_ids(wearer):
@@ -156,9 +156,9 @@ def test_saved_template_names_rebind_renumbered_effect_ids(wearer):
     trigger(session, 3)
     expected = running(session)
     saved = save(server, session)
-    set_ids = {entry.field_04 for entry in expected.values()}
+    set_ids = {entry.instance_id for entry in expected.values()}
     saved = replace(saved, status_effects=tuple(
-        replace(entry, effect_id=60000) if entry.field_04 in set_ids else entry
+        replace(entry, effect_id=60000) if entry.instance_id in set_ids else entry
         for entry in saved.status_effects
     ))
     server.account_store.put(saved, flush=True)
@@ -192,8 +192,8 @@ def test_restore_does_not_create_missing_managed_effects_or_restore_orphans(wear
     server, session = wearer
     trigger(session)
     saved = save(server, session)
-    removed_id = running(session)[missing].field_04
-    saved = replace(saved, status_effects=tuple(entry for entry in saved.status_effects if entry.field_04 != removed_id))
+    removed_id = running(session)[missing].instance_id
+    saved = replace(saved, status_effects=tuple(entry for entry in saved.status_effects if entry.instance_id != removed_id))
     server.account_store.put(saved, flush=True)
     restored, _ = initialize(server)
     assert CHILD not in running(restored)

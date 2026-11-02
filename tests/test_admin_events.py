@@ -171,7 +171,7 @@ def test_live_event_buff_add_remove_keeps_unrelated_effects_and_progress(event_c
     assert active_xp_gain_multiplier(server.static_database_path, tuple(s.gameplay_persistent_status_effects.values())) == 1.25
     (effect_id,) = s.gameplay_event_status_effect_instance_ids
     snapshot = server._capture_account_state(s)
-    assert all(entry.field_04 != effect_id for entry in snapshot.status_effects)
+    assert all(entry.instance_id != effect_id for entry in snapshot.status_effects)
     response = change(event_cms, result["event_id"], "deactivate")
     assert response["refresh"]["updated"] == 1
     assert s.gameplay_persistent_status_effects == unrelated

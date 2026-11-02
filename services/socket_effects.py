@@ -79,11 +79,11 @@ class SocketEffectService:
                     timers.append(timer)
                 removed_entries.append(replace(
                     entry,
-                    field_0c=int(server_tick) & 0xFFFFFFFF,
-                    field_10=0,
-                    field_25=False,
-                    field_26=False,
-                    field_39=False,
+                    end_tick=int(server_tick) & 0xFFFFFFFF,
+                    total_duration=0,
+                    update_timing=False,
+                    stacked=False,
+                    permanent=False,
                     has_details=False,
                     values=(),
                     field_38=False,
@@ -810,7 +810,7 @@ class SocketEffectService:
                 )
                 if (
                     running is not None
-                    and int(running[1].field_18) + 1
+                    and int(running[1].stack_index) + 1
                     >= int(definition.max_stack_size)
                 ):
                     chained = (

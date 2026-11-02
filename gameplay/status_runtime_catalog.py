@@ -105,7 +105,7 @@ def rebind_saved_status_effects(entries, names, catalog: StatusRuntimeCatalog):
 
     rebound = []
     for entry in entries:
-        name = names.get(int(entry.field_04))
+        name = names.get(int(entry.instance_id))
         if name is None:
             rebound.append(entry)
             continue

@@ -409,7 +409,7 @@ class DungeonQuestTests(unittest.TestCase):
         with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as db:
             premium = db.execute("SELECT rowid-1 FROM _Template_StatusEffect WHERE Id='Premium'").fetchone()[0]
         self.session.gameplay_persistent_status_effects[123] = SimpleNamespace(
-            effect_id=premium, field_18=0, values=(.5, 10))
+            effect_id=premium, stack_index=0, values=(.5, 10))
         boosted = math.floor((thresholds[56] - base) * .015 + .5)
         self.assertEqual(self.server._quest_dynamic_xp(self.session, 1), boosted)
         self.session.gameplay_character.level = 99

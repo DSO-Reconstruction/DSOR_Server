@@ -44,7 +44,7 @@ the pending attack blocking the next cast for the original, unscaled hit time.
 Headless Ghidra analysis of `ClientActorStatusEffectModule::AddEffect`
 (`0x1401eaa70`) shows that explicit stack indices at or above `MaxStackSize`
 are rejected. Causer stack indices therefore stay in `0..19`. At the cap,
-the existing instance is renewed using the no-details `field_25=true` branch
+the existing instance is renewed using the no-details `update_timing=true` branch
 in `ClientStatusEffectManager::HandleStatusEffectCommand` (`0x140354b98`),
 without sending a stale-instance deletion. Its native branch refreshes the
 instance and updates its duration. Ordinary effects retain their existing

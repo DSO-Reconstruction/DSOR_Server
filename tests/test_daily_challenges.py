@@ -405,7 +405,7 @@ def test_honor_and_authored_buff_are_awarded(daily_service, monkeypatch):
     assert next(e for e in session.gameplay_daily_challenges.daily if e.challenge_id == 'test_daily').state == 3
     effects = [e for e, expiry in session.gameplay_runtime_status_effects.values()]
     effects += list(session.gameplay_persistent_status_effects.values())
-    assert any(e.field_10 == 900 * 25 for e in effects)
+    assert any(e.total_duration == 900 * 25 for e in effects)
     server._daily_challenge_feed(session, 'MatchesWon')
     assert session.gameplay_honor_points == 5000
 

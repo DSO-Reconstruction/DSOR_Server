@@ -299,8 +299,8 @@ class PVPCombatService:
             viewer.send_reliable_ordered(
                 encode_status_effect_batch(
                     StatusEffect(False, tuple(replace(
-                        entry, has_details=False, values=(), field_25=False,
-                        field_39=False, field_38=False, field_3c=0xFF,
+                        entry, has_details=False, values=(), update_timing=False,
+                        permanent=False, field_38=False, field_3c=0xFF,
                         shape_values=(),
                     ) for entry in removed)),
                     actor_id=actor_id,
@@ -1018,7 +1018,7 @@ class PVPCombatService:
             if running is None:
                 continue
             entry, expires_at = running
-            if int(entry.field_20) != int(pending.source_actor_id):
+            if int(entry.source_actor_id) != int(pending.source_actor_id):
                 continue
             program = pending.combat.monster_status_damage_program(definition)
             if program is None:
@@ -1039,7 +1039,7 @@ class PVPCombatService:
                 relative=bool(relative),
                 interval=float(interval),
                 expires_at=float(expires_at),
-                instance_id=int(entry.field_04),
+                instance_id=int(entry.instance_id),
             )
             key = (
                 "pvp-status-damage",
@@ -1097,8 +1097,8 @@ class PVPCombatService:
         )
         if not any(
             int(entry.effect_id) == int(state.definition.effect_id)
-            and int(entry.field_04) == int(state.instance_id)
-            and int(entry.field_20) == int(state.source_actor_id)
+            and int(entry.instance_id) == int(state.instance_id)
+            and int(entry.source_actor_id) == int(state.source_actor_id)
             for entry in victim_sources
         ):
             return

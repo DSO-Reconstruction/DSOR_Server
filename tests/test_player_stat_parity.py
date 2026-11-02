@@ -147,7 +147,7 @@ def test_conditional_speed_buff_waits_for_active_instance(database, trigger):
     source = CombatModifier("ActorStatusEffect",("addAE","test_speed_child","C:1","ON:"+trigger))
     inv = InventoryInfo()
     assert calculate(db,inv,source).attack_speed == 1
-    assert calculate(db,inv,source,SimpleNamespace(effect_id=effect_id,field_18=0,values=())).attack_speed == 1.5
+    assert calculate(db,inv,source,SimpleNamespace(effect_id=effect_id,stack_index=0,values=())).attack_speed == 1.5
 
 
 def test_increase_relative_regeneration_scales_base_fraction(database):
@@ -166,8 +166,8 @@ def test_status_drop_variables_resolve_before_reads_even_from_generator():
         2:StatusModifierDefinition(2,3,parse_modifier_program("ActorVariable:$0,absolute,rank_bonus"),()),
     }, actor_variables={"rank_bonus":.01})
     # Reader precedes the rank writer; an oversized occurrence is clamped to 3.
-    entries = (SimpleNamespace(effect_id=1,values=(),field_18=0),
-               SimpleNamespace(effect_id=2,values=(.1,),field_18=99))
+    entries = (SimpleNamespace(effect_id=1,values=(),stack_index=0),
+               SimpleNamespace(effect_id=2,values=(.1,),stack_index=99))
     bonus = evaluate_active_status_modifiers(catalog,(entry for entry in entries))
     assert bonus.drop_amount_bonus("money_vc").apply(10000) == 13100
     assert catalog.actor_variables["rank_bonus"] == .01

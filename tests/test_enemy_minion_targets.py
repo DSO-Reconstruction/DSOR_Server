@@ -96,7 +96,7 @@ class EnemyMinionTargetTests(unittest.TestCase):
             self.assertTrue(any(isinstance(c, HitServerCommand) and c.actor_id == summon.actor_id for c in commands))
             self.assertTrue(any(isinstance(c, StatusEffectServerCommand) and c.actor_id == summon.actor_id for c in commands))
             entry = viewer.gameplay_victim_status_effect_instances[(summon.actor_id, effect.effect_id)][0]
-            self.assertEqual(entry.field_10, 50)  # PvP duration, not the PvE duration.
+            self.assertEqual(entry.total_duration, 50)  # PvP duration, not the PvE duration.
         self.assertTrue(self.combat._monster_actions_disabled(summon.actor_id))
         self.assertFalse(CharacterService._player_disabled_actor_features(self.target))
 

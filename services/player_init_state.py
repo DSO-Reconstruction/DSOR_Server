@@ -958,7 +958,7 @@ class PlayerInitializationStateService:
         # Saved wire ids are _Template_StatusEffect row numbers; re-resolve
         # them by the recorded name in case the client data was updated.
         persistent_status_effects = {
-            effect.field_04: effect
+            effect.instance_id: effect
             for effect in (
                 rebind_saved_status_effects(
                     persisted_state.status_effects,
@@ -1040,15 +1040,15 @@ class PlayerInitializationStateService:
             instance_id: (
                 replace(
                     effect,
-                    field_0c=max(
+                    end_tick=max(
                         1,
                         int(math.ceil(
                             (timed_status_effect_expiries[instance_id]
                              - now_epoch) * SERVER_TICKS_PER_SECOND
                         )),
                     ),
-                    field_08=0,
-                    field_10=max(
+                    start_tick=0,
+                    total_duration=max(
                         1,
                         int(math.ceil(
                             (timed_status_effect_expiries[instance_id]
@@ -1077,7 +1077,7 @@ class PlayerInitializationStateService:
                 actor_id=LOCAL_PLAYER_ACTOR_ID,
                 active=True,
             ).entries[0]
-            persistent_status_effects[mount_effect.field_04] = mount_effect
+            persistent_status_effects[mount_effect.instance_id] = mount_effect
         # Talent effects are derived from every active category preset. Old
         # saves made before presets were modeled may contain one effect per
         # click; remove those legacy instances and reconstruct the compact
@@ -1138,7 +1138,7 @@ class PlayerInitializationStateService:
                 server_tick=0,
             )
             if membership_effect is not None:
-                persistent_status_effects[membership_effect.field_04] = membership_effect
+                persistent_status_effects[membership_effect.instance_id] = membership_effect
                 next_status_effect_instance_id += 1
         if persisted_state is not None:
             for resource_id in (
@@ -1171,7 +1171,7 @@ class PlayerInitializationStateService:
                     # clock. Rebase it just like newly reconstructed effects.
                     persistent_status_effects[matching_instance_id] = replace(
                         persistent_status_effects[matching_instance_id],
-                        field_08=0,
+                        start_tick=0,
                     )
                     continue
                 effect = sticker_status_entry(
@@ -1181,7 +1181,7 @@ class PlayerInitializationStateService:
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                     active=True,
                 )
-                persistent_status_effects[effect.field_04] = effect
+                persistent_status_effects[effect.instance_id] = effect
                 next_status_effect_instance_id += 1
         # Active game events grant durable buffs (the XP bonus event's
         # ``xpgain,$0:0.25`` for example). They are rebuilt from the schedule
@@ -1222,8 +1222,8 @@ class PlayerInitializationStateService:
                     instance_id=next_status_effect_instance_id,
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 )
-                persistent_status_effects[effect.field_04] = effect
-                event_status_effect_instance_ids.add(effect.field_04)
+                persistent_status_effects[effect.instance_id] = effect
+                event_status_effect_instance_ids.add(effect.instance_id)
                 next_status_effect_instance_id += 1
         fractured_planes_status_effect_instance_ids = set()
         tower_buffs = endless_tower_player_buffs(
@@ -1259,9 +1259,9 @@ class PlayerInitializationStateService:
                     instance_id=next_status_effect_instance_id,
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                 )
-                persistent_status_effects[effect.field_04] = effect
+                persistent_status_effects[effect.instance_id] = effect
                 fractured_planes_status_effect_instance_ids.add(
-                    effect.field_04
+                    effect.instance_id
                 )
                 next_status_effect_instance_id += 1
             if tower_buffs.specs:
@@ -1305,10 +1305,10 @@ class PlayerInitializationStateService:
                 category_id, selection.resource_id
             )
             talent_effect_instance_ids[effect_key] = tuple(
-                effect.field_04 for effect in effects
+                effect.instance_id for effect in effects
             )
             for effect in effects:
-                persistent_status_effects[effect.field_04] = effect
+                persistent_status_effects[effect.instance_id] = effect
             next_status_effect_instance_id += len(effects)
         item_set_evaluation = None
         item_set_effects = {}
@@ -1398,7 +1398,7 @@ class PlayerInitializationStateService:
             state.persistent_status_effects.values(),
             load_status_runtime_catalog(self.static_database_path), stats,
         ):
-            state.persistent_status_effects[entry.field_04] = entry
+            state.persistent_status_effects[entry.instance_id] = entry
         state.maximum_health = max(1, int(stats.maximum_health))
         state.maximum_resource = max(1, int(stats.maximum_resource))
         state.health_regeneration_fraction = max(
@@ -1673,7 +1673,7 @@ class PlayerInitializationStateService:
                 if definition is None or definition.kind != "decoration":
                     continue
                 matching = tuple(
-                    entry.field_04 for entry in state.persistent_status_effects.values()
+                    entry.instance_id for entry in state.persistent_status_effects.values()
                     if entry.effect_id == definition.status_effect_wire_id
                 )
                 group = definition.exclusive_group.casefold() or definition.resource_id
@@ -1699,7 +1699,7 @@ class PlayerInitializationStateService:
                 )
                 matching = (
                     tuple(
-                        entry.field_04
+                        entry.instance_id
                         for entry in state.persistent_status_effects.values()
                         if (
                             definition is not None

@@ -77,7 +77,7 @@ def owner_minion_auras(path, item_set_entries, runtime, tracked, evaluation):
         if definition.resource_id in rules.LEGACY_MINION_AURAS:
             continue
         result.append(rules.OwnerMinionAura(
-            key=f"{int(entry.field_04)}:{int(entry.effect_id)}",
+            key=f"{int(entry.instance_id)}:{int(entry.effect_id)}",
             definition=definition,
             expires_at=None if expires_at is None else float(expires_at),
         ))
@@ -92,7 +92,7 @@ def owner_group_bonus(path, entries) -> dict[str, tuple[float, float]]:
         program = rules.load_minion_program_by_id(path, int(entry.effect_id))
         if program is None or not program.group_durations:
             continue
-        stack = min(program.max_stack_size, max(1, int(getattr(entry, "field_18", 0)) + 1))
+        stack = min(program.max_stack_size, max(1, int(getattr(entry, "stack_index", 0)) + 1))
         for group, amount, operation, runtime_update in program.group_durations:
             if not runtime_update:
                 # Without RunTimeUpdate the modifier only shapes effects
@@ -126,14 +126,14 @@ def _adjust_owner_group_durations(s, path, bonus, generation, now) -> None:
                 origins.pop(instance_id, None)
         tracked = getattr(s, "gameplay_item_set_programs", {})
         for instance_id, (entry, expires_at) in tuple(runtime.items()):
-            if expires_at is None or int(entry.field_10) <= 0:
+            if expires_at is None or int(entry.total_duration) <= 0:
                 continue
             members = groups.get(int(entry.effect_id), frozenset())
             relative = sum(bonus[group][0] for group in members if group in bonus)
             absolute = sum(bonus[group][1] for group in members if group in bonus)
             if not (relative or absolute) and instance_id not in origins:
                 continue
-            base = int(entry.field_10) / SERVER_TICKS_PER_SECOND
+            base = int(entry.total_duration) / SERVER_TICKS_PER_SECOND
             origin = origins.setdefault(instance_id, float(expires_at) - base)
             target = origin + base * (1.0 + relative) + absolute
             if not (relative or absolute):

@@ -1448,17 +1448,17 @@ class LocalCombatStateTests(unittest.TestCase):
             ).fetchone()[0]
         rank_ten = StatusEffectEntry(
             effect_id=effect_id,
-            field_04=100,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=9,
-            field_10=25,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=True,
-            field_39=True,
+            instance_id=100,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=9,
+            total_duration=25,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=True,
+            permanent=True,
             has_details=True,
             values=(0.0, 0.0, 0.0, 0.0, 0.0),
         )
@@ -1495,17 +1495,17 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertIsNotNone(geometry)
         frozen_master_rank_five = StatusEffectEntry(
             effect_id=6174,  # mage_talent_frozen_master_lvl
-            field_04=101,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=4,
-            field_10=25,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=True,
-            field_39=True,
+            instance_id=101,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=4,
+            total_duration=25,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=True,
+            permanent=True,
             has_details=True,
             values=(0.0, 0.0, 0.0, 0.0, 0.0),
         )
@@ -1569,17 +1569,17 @@ class LocalCombatStateTests(unittest.TestCase):
             ).fetchone()[0]
         rank_ten = StatusEffectEntry(
             effect_id=effect_id,
-            field_04=100,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=9,
-            field_10=25,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=True,
-            field_39=True,
+            instance_id=100,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=9,
+            total_duration=25,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=True,
+            permanent=True,
             has_details=True,
             values=(0.0, 0.0, 0.0, 0.0, 0.0),
         )
@@ -1709,17 +1709,17 @@ class LocalCombatStateTests(unittest.TestCase):
             ).fetchone()[0]
         poison_master = StatusEffectEntry(
             effect_id=effect_id,
-            field_04=101,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=0,
-            field_10=25,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=True,
-            field_39=True,
+            instance_id=101,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=0,
+            total_duration=25,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=True,
+            permanent=True,
             has_details=True,
             values=(),
         )
@@ -1760,17 +1760,17 @@ class LocalCombatStateTests(unittest.TestCase):
             ).fetchone()[0]
         poison_master = StatusEffectEntry(
             effect_id=effect_id,
-            field_04=202,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=0,
-            field_10=0,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=False,
-            field_39=True,
+            instance_id=202,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=0,
+            total_duration=0,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=False,
+            permanent=True,
             has_details=True,
             values=(),
         )
@@ -1811,17 +1811,17 @@ class LocalCombatStateTests(unittest.TestCase):
             ).fetchone()[0]
         poison_rank = StatusEffectEntry(
             effect_id=effect_id,
-            field_04=102,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=0,
-            field_10=25,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=True,
-            field_39=True,
+            instance_id=102,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=0,
+            total_duration=25,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=True,
+            permanent=True,
             has_details=True,
             values=(),
         )
@@ -3719,15 +3719,15 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(monster.field_c4, 500)
         self.assertTrue(status.clear_existing)
         self.assertEqual(status.entries[0].effect_id, 5452)
-        self.assertEqual(status.entries[0].field_08, 501)
-        self.assertEqual(status.entries[0].field_10, 12)
-        self.assertEqual(status.entries[0].field_20, 0x000103C1)
+        self.assertEqual(status.entries[0].start_tick, 501)
+        self.assertEqual(status.entries[0].total_duration, 12)
+        self.assertEqual(status.entries[0].source_actor_id, 0x000103C1)
         self.assertEqual(
             status.entries[0].shape_values,
             (60.0, 100.0, 0.5, *monster.position),
         )
         self.assertTrue(
-            all(entry.field_08 == 500 for entry in status.entries[1:])
+            all(entry.start_tick == 500 for entry in status.entries[1:])
         )
 
         second = self.state.spawn_player_summon(
@@ -4155,11 +4155,11 @@ class LocalCombatStateTests(unittest.TestCase):
             if entry.effect_id == definition.aura.effect_id
         )
         self.assertEqual(
-            aura_snapshot.field_04,
+            aura_snapshot.instance_id,
             summon.initial_aura_instance_id,
         )
-        self.assertEqual(aura_snapshot.field_08, 630)
-        self.assertEqual(aura_snapshot.field_10, 12)
+        self.assertEqual(aura_snapshot.start_tick, 630)
+        self.assertEqual(aura_snapshot.total_duration, 12)
 
         # The spawn snapshot owns a 12-tick lease beginning at tick 630. The
         # reconstructed transport renews halfway through it, retaining a
@@ -4183,9 +4183,9 @@ class LocalCombatStateTests(unittest.TestCase):
         refresh = refreshes[0]
         self.assertEqual(refresh.actor_id, summon.actor_id)
         self.assertFalse(refresh.value.clear_existing)
-        self.assertEqual(refresh.value.entries[0].field_08, 636)
+        self.assertEqual(refresh.value.entries[0].start_tick, 636)
         self.assertNotEqual(
-            refresh.value.entries[0].field_04,
+            refresh.value.entries[0].instance_id,
             summon.initial_aura_instance_id,
         )
         self.assertEqual(
@@ -4415,17 +4415,17 @@ class LocalCombatStateTests(unittest.TestCase):
         )
         source = StatusEffectEntry(
             effect_id=armor.effect_id,
-            field_04=1,
-            field_0c=0,
-            field_14=25,
-            field_08=0,
-            field_18=0,
-            field_10=armor.duration_ticks,
-            field_1c=100,
-            field_20=1,
-            field_25=False,
-            field_26=False,
-            field_39=False,
+            instance_id=1,
+            end_tick=0,
+            tick_interval=25,
+            start_tick=0,
+            stack_index=0,
+            total_duration=armor.duration_ticks,
+            source_level=100,
+            source_actor_id=1,
+            update_timing=False,
+            stacked=False,
+            permanent=False,
             has_details=True,
             values=armor.values,
         )
