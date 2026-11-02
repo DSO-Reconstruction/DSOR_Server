@@ -43,6 +43,12 @@ from dso_server.protocol.inventory_codec import (
     write_inventory_info_body,
     free_inventory_location,
 )
+from dso_server.protocol.currency_protocol import (
+    GAME_CURRENCY_CHANGED_COMMAND,
+    GameCurrencyChanged,
+    read_game_currency_changed_body,
+    write_game_currency_changed_body,
+)
 from dso_server.protocol.player_init_protocol import CurrencyChanged
 from dso_server.gameplay.item_economy_values import equipment_melt_value, item_stack_vc_value
 
@@ -285,6 +291,7 @@ class WorldPickupResponse:
     currency: CurrencyChanged | None
     inventory_states: tuple[InventoryInfo, ...]
     state_actor_ids: tuple[int, ...]
+    game_currency_updates: tuple[GameCurrencyChanged, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -3092,6 +3099,7 @@ def encode_world_pickup_response(
     *,
     actor_id: int,
     currency: CurrencyChanged | None = None,
+    game_currency_updates: tuple[GameCurrencyChanged, ...] = (),
     inventory: InventoryLootMutation | None = None,
     loot_text_type: int | None = None,
 ) -> tuple[bytes, int]:
@@ -3102,14 +3110,22 @@ def encode_world_pickup_response(
     begins with ``MessageCommand`` type ``0x19`` so the still-registered world
     item can anchor the loot text before ``DiscardItem`` removes it; a bag
     item does too when ``loot_text_type`` names its text kind.
+
+    Keyed wallet items (``ItemCurrency`` such as Materi Fragments) commit the
+    authoritative ``GameCurrencyChanged`` entry in the same batch instead of
+    becoming ordinary inventory objects.
     """
 
+    updates = tuple(game_currency_updates)
     if drop.item_category == "Currency":
-        if currency is None or inventory is not None:
+        if currency is None or inventory is not None or updates:
             raise ValueError("currency pickup requires only currency state")
     elif drop.item_category == "InstantConsumable":
-        if currency is not None or inventory is not None:
+        if currency is not None or inventory is not None or updates:
             raise ValueError("instant pickup has no persistent state")
+    elif updates:
+        if currency is not None or inventory is not None:
+            raise ValueError("item-currency pickup requires only wallet state")
     elif inventory is None or currency is not None:
         raise ValueError("inventory pickup requires only inventory mutation")
 
@@ -3142,6 +3158,11 @@ def encode_world_pickup_response(
             writer.write_bytes(INVENTORY_INFO_COMMAND.to_bytes(2, "little"))
             write_inventory_info_body(writer, state)
             writer.write_uint32_le(int(actor_id))
+    for update in updates:
+        writer.write_uint8(0xFF)
+        writer.write_bytes(GAME_CURRENCY_CHANGED_COMMAND.to_bytes(2, "little"))
+        write_game_currency_changed_body(writer, update)
+        writer.write_uint32_le(int(actor_id))
 
     writer.write_uint8(0xFF)
     return writer.finish()
@@ -3206,6 +3227,7 @@ def decode_world_pickup_response(
 
     currency = None
     inventory_states = []
+    game_currency_updates = []
     state_actor_ids = []
     while True:
         if reader.read_uint8() != 0xFF:
@@ -3214,14 +3236,21 @@ def decode_world_pickup_response(
             break
         command_id = int.from_bytes(reader.read_bytes(2), "little")
         if command_id == CURRENCY_CHANGED_COMMAND:
-            if currency is not None or inventory_states:
+            if currency is not None or inventory_states or game_currency_updates:
                 raise ValueError("duplicate or mixed pickup destination state")
             currency = _read_currency_changed_body(reader)
             state_actor_ids.append(reader.read_uint32_le())
         elif command_id == INVENTORY_INFO_COMMAND:
-            if currency is not None:
+            if currency is not None or game_currency_updates:
                 raise ValueError("mixed currency and inventory pickup state")
             inventory_states.append(read_inventory_info_body(reader))
+            state_actor_ids.append(reader.read_uint32_le())
+        elif command_id == GAME_CURRENCY_CHANGED_COMMAND:
+            if currency is not None or inventory_states:
+                raise ValueError("mixed wallet and item pickup state")
+            game_currency_updates.append(
+                read_game_currency_changed_body(reader)
+            )
             state_actor_ids.append(reader.read_uint32_le())
         else:
             raise ValueError(
@@ -3243,6 +3272,7 @@ def decode_world_pickup_response(
         currency,
         tuple(inventory_states),
         tuple(state_actor_ids),
+        tuple(game_currency_updates),
     )
 
 

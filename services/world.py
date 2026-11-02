@@ -1687,6 +1687,35 @@ class WorldService:
                         )
                     )
                     s.gameplay_currency_state = currency
+                elif (
+                    drop.item_category == 'ItemCurrency'
+                    and currency is not None
+                    and (currency_credit := credit_currency_item(
+                        instant_database_path,
+                        currency,
+                        dict(s.gameplay_game_currencies),
+                        drop.item,
+                    )) is not None
+                    and currency_credit.game_currency_update is not None
+                ):
+                    # Keyed wallet currencies (notably Materi Fragments) are
+                    # consumed into the currency bag instead of taking an
+                    # ordinary inventory slot.
+                    s.gameplay_currency_state = currency_credit.currency
+                    s.gameplay_game_currencies = dict(
+                        currency_credit.game_currencies
+                    )
+                    response_packet, response_bits = (
+                        encode_world_pickup_response(
+                            drop,
+                            actor_id=LOCAL_PLAYER_ACTOR_ID,
+                            game_currency_updates=(
+                                (currency_credit.game_currency_update,)
+                                if currency_credit.game_currency_update
+                                is not None else ()
+                            ),
+                        )
+                    )
                 elif drop.item_category == 'InstantConsumable':
                     if healed is not None:
                         previous, current, maximum = healed
@@ -1901,7 +1930,7 @@ class WorldService:
                     # (NoAutoUseCurrency) into the bag too.
                     and drop.item_category in {
                         'Currency', 'InstantConsumable', 'Key',
-                        'NoAutoUseCurrency', 'IngredientItem',
+                        'NoAutoUseCurrency', 'IngredientItem', 'ItemCurrency',
                     }
                     and math.hypot(
                         drop.item.ground_position[0] - player_position[0],

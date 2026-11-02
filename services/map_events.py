@@ -147,8 +147,9 @@ from dso_server.protocol.inventory_economy_protocol import (
 )
 from dso_server.protocol.world_loot_protocol import (
     WorldLootDrop,
+    _difficulty_drop_chances,
     _threshold_value,
-    roll_possible_reward_jewel,
+    possible_reward_rates,
     roll_possible_reward_gems,
     roll_new_equipment_enchantments,
 )
@@ -828,6 +829,31 @@ _BLOOD_CHEST_GEM_TEMPLATES = (
     "gem_onyx_e", "gem_ruby_e",
 )
 _BLOOD_CHEST_LOOT_LIST = "chest_lootlist_bloodshed"
+
+# Parallel World reward chests only drop the unupgraded (Common) jewels that
+# belong to this mode. The two Flower Jewels are class-specific, while the
+# other four are shared across every class.
+_PARALLEL_WORLD_CLASS_JEWELS = {
+    "warrior": "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior",
+    "ranger": "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger",
+    "mage": "jewel_unique_damage_AreaDamageFireOnHit_common_mage",
+    "dwarf": "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf",
+}
+_PARALLEL_WORLD_SHARED_JEWELS = (
+    "jewel_unique_damage_HealthGlobeDamageBuff_common",  # Amplified Healing
+    "jewel_skill_cooldown_common",                       # Focus
+    "jewel_buff_critical_attackspeed_onHitCritical_common",  # Rage
+    "jewel_resource_cost_common",                        # Relentlessness
+)
+
+
+def _parallel_world_reward_jewel_candidates(class_name: str) -> tuple[str, ...]:
+    """The Common jewel pool for one Parallel World class."""
+
+    class_jewel = _PARALLEL_WORLD_CLASS_JEWELS.get(
+        str(class_name or "").casefold()
+    )
+    return ((class_jewel,) if class_jewel else ()) + _PARALLEL_WORLD_SHARED_JEWELS
 
 
 def _log(message: str) -> None:
@@ -3240,14 +3266,15 @@ class MapEventService:
         )
         parallel_world_jewel_chance = None
         equipment_rewards_by_template = {}
+        class_name = ""
         if is_parallel_world_boss_chest:
             tier = int(definition.variation_difficulty or 0)
             if tier >= BLOODSHED_DIFFICULTY:
-                materi_amount, parallel_world_jewel_chance = 10_000, 0.05
+                materi_amount = 10_000
             elif tier >= 7:
-                materi_amount, parallel_world_jewel_chance = 5_000, 0.02
+                materi_amount = 5_000
             else:
-                materi_amount, parallel_world_jewel_chance = 2_000, 0.01
+                materi_amount = 2_000
             materi_definition = load_purchase_item_definition(
                 self.static_database_path, "materi_fragment_01",
             )
@@ -3268,6 +3295,18 @@ class MapEventService:
                     int(getattr(character, "class_id", 0))
                 ].lower()
             rng = random.SystemRandom()
+            # The CMS jewel rate is the source of truth for these chest
+            # jewels. Apply the selected map difficulty's privileged-loot
+            # factor in the same way as other Possible Rewards categories.
+            jewel_rates = possible_reward_rates(access_id)
+            _ordinary_chance, parallel_world_jewel_chance = (
+                _difficulty_drop_chances(
+                    prime_world_loot_cache(self.static_database_path),
+                    tier,
+                    monster_drop=jewel_rates["jewel"],
+                    privileged_drop=jewel_rates["jewel"],
+                )
+            )
             gem_count = rng.randint(1, 2)
             try:
                 gem_templates = roll_possible_reward_gems(
@@ -3433,23 +3472,19 @@ class MapEventService:
                 specifications = []
             else:
                 specifications = list(self._roll_map_chest_loot(s, entries))
-        if is_parallel_world_boss_chest:
-            with s.flow_lock:
-                access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
-                difficulty = int(getattr(s, "gameplay_map_difficulty", 0) or 0)
-            try:
-                jewel = roll_possible_reward_jewel(
-                    self.static_database_path,
-                    access_id,
-                    difficulty,
-                    random.SystemRandom(),
-                    chance_override=parallel_world_jewel_chance,
+        if (
+            is_parallel_world_boss_chest
+            and parallel_world_jewel_chance is not None
+        ):
+            jewel_rng = random.SystemRandom()
+            if jewel_rng.random() < float(parallel_world_jewel_chance):
+                candidates = _parallel_world_reward_jewel_candidates(
+                    class_name
                 )
-            except (OSError, ValueError, sqlite3.Error) as exc:
-                _log(f"cannot roll map jewel reward: {type(exc).__name__}: {exc}")
-                jewel = None
-            if jewel:
-                specifications.append((jewel, 1))
+                if candidates:
+                    specifications.append(
+                        (jewel_rng.choice(candidates), 1)
+                    )
         if not specifications:
             _log(f"chest {definition.instance_id!r} rolled no rewards")
             return 0
