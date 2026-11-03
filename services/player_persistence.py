@@ -344,6 +344,7 @@ class PlayerPersistenceService:
             membership_type = int(s.gameplay_membership_type)
             membership_expires_at = str(s.gameplay_membership_expires_at)
             membership_active = bool(s.gameplay_membership_active)
+            membership_premium_expires_at = str(s.gameplay_membership_premium_expires_at)
             # Event and map-scoped buffs are rebuilt from their catalog on
             # every map entry; saving them would outlive the event or carry
             # the arena's PvP ruleset into the hub.
@@ -561,6 +562,7 @@ class PlayerPersistenceService:
             membership_type=membership_type,
             membership_expires_at=membership_expires_at,
             membership_active=membership_active,
+            membership_premium_expires_at=membership_premium_expires_at,
             recipe_book_resources=recipe_book_resources,
             rune_trinket_unlocked_slots=rune_trinket_unlocked_slots,
             talent_category_points=talent_category_points,

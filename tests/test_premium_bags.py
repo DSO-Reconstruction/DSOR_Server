@@ -239,6 +239,36 @@ def test_idle_expiry_sends_removals_and_persists_overflow(live):
     assert outgoing(session, MEMBERSHIP_UPDATE_COMMAND)[-1].active is False
 
 
+def test_deluxe_expiry_resumes_the_paused_premium_with_its_buff(live):
+    from dso_server.gameplay.membership_effects import membership_status_effect
+    from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+    from dso_server.protocol.gameplay_protocol import STATUS_EFFECT_COMMAND
+
+    server, session, timers, saves = live
+    session.gameplay_membership_type = 2
+    session.gameplay_membership_premium_expires_at = FUTURE
+    session.gameplay_persistent_status_effects[7] = membership_status_effect(
+        DEFAULT_STATIC_DB_PATH, 2, instance_id=7, actor_id=1, expires_at=FUTURE,
+    )
+    server._refresh_premium_bags(session)
+    session.gameplay_membership_expires_at = PAST
+    timers[0].callback()
+    assert (session.gameplay_membership_type, session.gameplay_membership_expires_at,
+            session.gameplay_membership_active) == (1, FUTURE, True)
+    updates = outgoing(session, MEMBERSHIP_UPDATE_COMMAND)
+    assert [(update.membership_type, update.active) for update in updates] == [(2, False), (1, True)]
+    # Premium keeps the bags.
+    assert not outgoing(session, INVENTORY_INFO_COMMAND)
+    assert saves
+    effect_ids = load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids
+    [status] = outgoing(session, STATUS_EFFECT_COMMAND)
+    added, removed = status.entries
+    assert added.effect_id == effect_ids["Premium"] and added.has_details
+    assert (removed.effect_id, removed.instance_id, removed.has_details) == (effect_ids["Deluxe"], 7, False)
+    # The next deadline is Premium's own.
+    assert len(timers) == 2
+
+
 def test_moving_an_item_frees_a_slot_and_recovers_overflow_in_the_same_request(live):
     server, session, _, saves = live
     session.gameplay_inventory = InventoryInfo(
@@ -280,8 +310,12 @@ def test_renewal_reschedules_and_disconnect_cancels_the_deadline(live):
     assert not session.gameplay_inventory.premium_inventory_overflow
 
 
-@pytest.mark.parametrize("tier,expiry,active", [(1, FUTURE, True), (2, FUTURE, True), (1, PAST, False)])
-def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, active):
+@pytest.mark.parametrize("tier,expiry,premium,active", [
+    (1, FUTURE, "", True), (2, FUTURE, "", True), (1, PAST, "", False),
+    # Deluxe ended while offline: the paused Premium has been running since.
+    (2, PAST, FUTURE, True),
+])
+def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, premium, active):
     import unittest
     from dso_server.protocol.inventory_codec import encode_bootstrap_inventory_info
     from dso_server.protocol.player_init_protocol import TalentCategorySelection
@@ -290,7 +324,9 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
     case = unittest.TestCase()
     try:
         server = character_server(case, (character_profile(42, "PremiumLogin"),))
-        saved = account_state(42, membership_type=tier, membership_expires_at=expiry)
+        saved = account_state(
+            42, membership_type=tier, membership_expires_at=expiry, membership_premium_expires_at=premium,
+        )
         saved.talent_categories = tuple(TalentCategorySelection(0, (), ()) for _ in range(4))
         saved.inventory = decode_inventory_info(*encode_bootstrap_inventory_info(class_name="mage"))
         saved.inventory.storage_size = len(saved.inventory.storage_slots)
@@ -314,6 +350,8 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
         server._resolve_initialization_persistent_effects(session, state)
         wire = decode_inventory_info(*encode_inventory_info(state.inventory))
         assert state.membership_active is active
+        assert state.membership_type == (1 if premium else tier)
+        assert state.membership_premium_expires_at == premium
         assert (wire.extra_storage_size, wire.extra_bank_storage_size) == ((28, 40) if active else (0, 0))
         assert len(state.inventory.premium_inventory_overflow) == (0 if active else 1)
         assert len(state.inventory.premium_storage_overflow) == (0 if active else 1)

@@ -17,6 +17,7 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.services.player_init_state import PlayerInitializationState
 from dso_server.protocol.reward_protocol import daily_login_offers
+from dso_server.protocol.membership_protocol import membership_updates
 from dso_server.protocol.player_init_protocol import (
     ACTORS_ENTER_VICINITY_COMMAND,
     NEW_NPC_COMMAND,
@@ -662,10 +663,11 @@ class PlayerInitializationWorldService:
             activity_signin_calendar=ActivitySigninCalendar(
                 tuple(activity_days[-32:])
             ),
-            membership_update=membership_update_from_expiry(
+            membership_update=membership_updates(
+                state.membership_type,
                 state.membership_expires_at,
-                membership_type=state.membership_type,
-                active=state.membership_active,
+                state.membership_active,
+                state.membership_premium_expires_at,
             ),
             event_update=event_update,
             event_progress_info=event_progress_info,

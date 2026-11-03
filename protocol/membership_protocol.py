@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from dso_server.protocol.character_selection import BitReader, BitWriter
 
@@ -127,6 +127,88 @@ def membership_update_from_expiry(
         CalendarTime.from_datetime(parse_membership_expiry(expires_at)),
         bool(active),
     )
+
+
+# Premium and Deluxe are separate plans. While Deluxe runs, Premium time is
+# paused and resumes when Deluxe ends, so the stored Premium expiry is an
+# absolute date that already includes the pause: Deluxe end + Premium left.
+# The client keeps both expiries and its membership tooltip
+# (Util::ToolTips::GetMembershipTooltip, 0x140606d3c in the Feb 2026 exe)
+# shows the Premium time after Deluxe as Premium expiry - Deluxe expiry.
+# ``membership_*`` stay the current, highest running plan. The helpers below
+# take and return (type, expires_at, active[, premium_expires_at]).
+
+
+def premium_handover(
+    membership_type: int, expires_at: str, active: bool, premium_expires_at: str,
+    *, now: datetime | None = None,
+) -> tuple[int, str, bool]:
+    """When Deluxe has ended, the paused Premium is the current plan."""
+
+    if (
+        int(membership_type) == DELUXE_MEMBERSHIP
+        and premium_expires_at
+        and not membership_is_active(membership_type, active, expires_at, now=now)
+        and membership_is_active(PREMIUM_MEMBERSHIP, True, premium_expires_at, now=now)
+    ):
+        return PREMIUM_MEMBERSHIP, str(premium_expires_at), True
+    return int(membership_type), str(expires_at), bool(active)
+
+
+def extend_membership(
+    membership_type: int, expires_at: str, active: bool, premium_expires_at: str,
+    tier: int, days: int, *, now: datetime | None = None,
+) -> tuple[int, str, bool, str]:
+    """Add ``days`` of ``tier``; returns the new current plan and Premium expiry."""
+
+    now = now or datetime.now(timezone.utc)
+    deluxe_end = (
+        parse_membership_expiry(expires_at)
+        if int(membership_type) == DELUXE_MEMBERSHIP
+        and membership_is_active(membership_type, active, expires_at, now=now)
+        else None
+    )
+    premium_end = None
+    if int(membership_type) == PREMIUM_MEMBERSHIP and membership_is_active(
+            membership_type, active, expires_at, now=now):
+        premium_end = parse_membership_expiry(expires_at)
+    elif premium_expires_at and membership_is_active(
+            PREMIUM_MEMBERSHIP, True, premium_expires_at, now=now):
+        premium_end = parse_membership_expiry(premium_expires_at)
+    running_until = max(now, deluxe_end or now)
+    if int(tier) == DELUXE_MEMBERSHIP:
+        paused = premium_end - running_until if premium_end and premium_end > running_until else None
+        deluxe = running_until + timedelta(days=days)
+        premium = (deluxe + paused).isoformat() if paused else ""
+        return DELUXE_MEMBERSHIP, deluxe.isoformat(), True, premium
+    premium = (max(running_until, premium_end or now) + timedelta(days=days)).isoformat()
+    if deluxe_end is not None:
+        return DELUXE_MEMBERSHIP, str(expires_at), True, premium
+    return PREMIUM_MEMBERSHIP, premium, True, premium
+
+
+def membership_updates(
+    membership_type: int, expires_at: str, active: bool, premium_expires_at: str,
+    *, now: datetime | None = None,
+) -> tuple[MembershipUpdate, ...]:
+    """Both plans for the client, the current one last.
+
+    The client takes the last update's tier as the current membership.
+    """
+
+    updates = []
+    if (
+        int(membership_type) == DELUXE_MEMBERSHIP
+        and premium_expires_at
+        and membership_is_active(PREMIUM_MEMBERSHIP, True, premium_expires_at, now=now)
+    ):
+        updates.append(membership_update_from_expiry(
+            premium_expires_at, membership_type=PREMIUM_MEMBERSHIP, active=True,
+        ))
+    updates.append(membership_update_from_expiry(
+        expires_at, membership_type=membership_type, active=active,
+    ))
+    return tuple(updates)
 
 
 def read_membership_update_body(reader: BitReader) -> MembershipUpdate:
