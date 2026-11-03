@@ -1,7 +1,7 @@
 """TEST game launcher.
 
 Login with username/password (or register a new account), then start
-dro_client64.exe with an authenticated session. TR/EN UI and game languages.
+dro_client64.exe with an authenticated session. TR/EN UI with selectable game language.
 """
 
 from __future__ import annotations
@@ -21,7 +21,14 @@ from urllib.parse import urlsplit
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
-from client_settings import enable_all_cooldown_timers
+from client_settings import (
+    OldItemVisuals,
+    apply_old_item_visuals,
+    discard_old_item_visuals,
+    enable_all_cooldown_timers,
+    remember_client_process,
+    restore_old_item_visuals,
+)
 
 def app_dir() -> Path:
     """Directory of the launcher (exe folder when frozen, not PyInstaller temp)."""
@@ -108,16 +115,90 @@ def _dpapi(data: bytes, *, decrypt: bool = False) -> bytes:
         kernel32.LocalFree(output_blob.pbData)
 
 
-def _credentials_path() -> Path:
+def _settings_dir() -> Path:
     local_app_data = os.getenv("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / "TESTCLIENT" / "saved-account.bin"
+    return base / "TESTCLIENT"
+
+
+def _credentials_path() -> Path:
+    return _settings_dir() / "saved-account.bin"
 
 
 def _client_dir_path() -> Path:
-    local_app_data = os.getenv("LOCALAPPDATA")
-    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / "TESTCLIENT" / "client-folder.txt"
+    return _settings_dir() / "client-folder.txt"
+
+
+GAME_LANGUAGES = (
+    ("ar", "Arabic"),
+    ("bg", "Bulgarian"),
+    ("cs", "Czech"),
+    ("de", "German"),
+    ("el", "Greek"),
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fa", "Persian"),
+    ("fr", "French"),
+    ("hu", "Hungarian"),
+    ("it", "Italian"),
+    ("ko", "Korean"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("ro", "Romanian"),
+    ("ru", "Russian"),
+    ("sk", "Slovak"),
+    ("tr", "Turkish"),
+    ("tw", "Chinese (Traditional)"),
+    ("zh", "Chinese (Simplified)"),
+)
+GAME_LANGUAGE_CODES = {code for code, _name in GAME_LANGUAGES}
+GAME_LANGUAGE_LABELS = {
+    f"{name} ({code})": code for code, name in GAME_LANGUAGES
+}
+GAME_LANGUAGE_NAMES = {code: name for code, name in GAME_LANGUAGES}
+
+
+def _game_language_path() -> Path:
+    return _settings_dir() / "game-language.txt"
+
+
+def _load_game_language() -> str:
+    try:
+        language = _game_language_path().read_text(encoding="utf-8").strip()
+    except OSError:
+        return "en"
+    return language if language in GAME_LANGUAGE_CODES else "en"
+
+
+def _save_game_language(language: str) -> None:
+    if language not in GAME_LANGUAGE_CODES:
+        return
+    path = _game_language_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(language, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _old_look_path() -> Path:
+    return _settings_dir() / "old-look.txt"
+
+
+def _load_old_look() -> bool:
+    try:
+        return _old_look_path().read_text(encoding="utf-8").strip() == "1"
+    except OSError:
+        return False
+
+
+def _save_old_look(enabled: bool) -> None:
+    path = _old_look_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("1" if enabled else "0", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _save_client_dir(path: Path) -> None:
@@ -183,11 +264,14 @@ STRINGS = {
     "tr": {
         "subtitle": "TEST CLIENT",
         "server_ip": "Sunucu IP Adresi",
+        "game_language": "Oyun Dili",
         "err_ip": "Geçerli bir sunucu IP adresi gir.",
+        "err_language": "Desteklenmeyen oyun dili seçildi.",
         "username": "Kullanıcı Adı",
         "password": "Şifre",
         "password2": "Şifre (tekrar)",
         "remember": "Hesabı kaydet",
+        "old_look": "Eski item görünümü (eski çerçeve ve arka planlar)",
         "play_saved": "OYNA",
         "login": "GİRİŞ YAP",
         "register": "HESAP OLUŞTUR",
@@ -205,16 +289,18 @@ STRINGS = {
         "err_no_client": "dro_client64.exe bulunamadı!\nClient\\dlcache veya DSOClient\\dlcache klasörünü kontrol et.",
         "err_launch": "Giriş başarısız (HTTP {code})",
         "err_register": "Kayıt başarısız (HTTP {code})",
-        "lang_btn": "EN",
     },
     "en": {
         "subtitle": "TEST CLIENT",
         "server_ip": "Server IP Address",
+        "game_language": "Game Language",
         "err_ip": "Enter a valid server IP address.",
+        "err_language": "The selected game language is not supported.",
         "username": "Username",
         "password": "Password",
         "password2": "Password (repeat)",
         "remember": "Remember account",
+        "old_look": "Old item look (old frames and backgrounds)",
         "play_saved": "PLAY",
         "login": "SIGN IN",
         "register": "CREATE ACCOUNT",
@@ -232,7 +318,6 @@ STRINGS = {
         "err_no_client": "dro_client64.exe not found!\nCheck the Client\\dlcache or DSOClient\\dlcache folder.",
         "err_launch": "Sign-in failed (HTTP {code})",
         "err_register": "Registration failed (HTTP {code})",
-        "lang_btn": "TR",
     },
 }
 
@@ -285,8 +370,8 @@ class App(tk.Tk):
         self.title(APP_TITLE)
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.lang = "tr"
-        self._center(460, 610)
+        self.lang = "en"
+        self._center(460, 690)
         if ICON_PATH.exists():
             try:
                 self.iconbitmap(str(ICON_PATH))
@@ -305,6 +390,34 @@ class App(tk.Tk):
 
     def _build(self) -> None:
         s = STRINGS[self.lang]
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure(
+            "Client.TCombobox",
+            fieldbackground=BG_INPUT,
+            background=BG_PANEL,
+            foreground=TEXT,
+            arrowcolor=GOLD,
+            bordercolor=BORDER,
+            lightcolor=BORDER,
+            darkcolor=BORDER,
+            padding=(8, 5),
+            font=FONT_ENTRY,
+        )
+        style.map(
+            "Client.TCombobox",
+            fieldbackground=[("readonly", BG_INPUT), ("focus", BG_INPUT)],
+            foreground=[("readonly", TEXT)],
+            selectbackground=[("readonly", BG_INPUT)],
+            selectforeground=[("readonly", TEXT)],
+        )
+        self.option_add("*TCombobox*Listbox*Background", BG_INPUT)
+        self.option_add("*TCombobox*Listbox*Foreground", TEXT)
+        self.option_add("*TCombobox*Listbox*selectBackground", BORDER)
+        self.option_add("*TCombobox*Listbox*selectForeground", TEXT)
 
         # --- title banner ---------------------------------------------------
         banner = tk.Frame(self, bg=BG, height=130)
@@ -319,16 +432,6 @@ class App(tk.Tk):
         sep = tk.Canvas(banner, height=3, bg=RED, highlightthickness=0, bd=0)
         sep.pack(fill="x", pady=(8, 0))
 
-        # --- language switch -------------------------------------------------
-        self.lang_btn = tk.Button(
-            self, text=s["lang_btn"], font=("Segoe UI", 9, "bold"),
-            fg=GOLD, bg=BG_PANEL, activebackground=BG_PANEL,
-            activeforeground=RED_HOVER, relief="flat", bd=1,
-            highlightbackground=BORDER, cursor="hand2",
-            command=self._toggle_lang, width=4,
-        )
-        self.lang_btn.place(x=460 - 44, y=8)
-
         # --- form panel -----------------------------------------------------
         panel = self._panel(self)
         panel.pack(fill="both", expand=True, padx=30, pady=(14, 10))
@@ -340,9 +443,33 @@ class App(tk.Tk):
         self.password_var = tk.StringVar()
         self.password2_var = tk.StringVar()
         self.server_ip_var = tk.StringVar(value=DEFAULT_SERVER_HOST)
+        self.game_language_var = tk.StringVar(value=_load_game_language())
+        self.game_language_choice_var = tk.StringVar(
+            value=self._game_language_label(self.game_language_var.get())
+        )
         self.remember_var = tk.BooleanVar(value=False)
+        self.old_look_var = tk.BooleanVar(value=_load_old_look())
 
         self.server_ip_row = self._field(inner, s["server_ip"], self.server_ip_var)
+        self.game_language_row = tk.Frame(inner, bg=BG_PANEL)
+        self.game_language_row.pack(fill="x", pady=(8, 0))
+        self.game_language_label = tk.Label(
+            self.game_language_row, text=s["game_language"].upper(),
+            font=FONT_LABEL, fg=GOLD, bg=BG_PANEL,
+        )
+        self.game_language_label.pack(anchor="w")
+        self.game_language_combo = ttk.Combobox(
+            self.game_language_row,
+            textvariable=self.game_language_choice_var,
+            values=tuple(GAME_LANGUAGE_LABELS),
+            state="readonly",
+            style="Client.TCombobox",
+            font=FONT_ENTRY,
+        )
+        self.game_language_combo.pack(fill="x", ipady=2, pady=(2, 0))
+        self.game_language_combo.bind(
+            "<<ComboboxSelected>>", self._on_game_language_selected
+        )
         self.username_row = self._field(inner, s["username"], self.username_var)
         self.password_row = self._field(inner, s["password"], self.password_var,
                                         show="\u25cf")
@@ -364,6 +491,15 @@ class App(tk.Tk):
             command=self._on_remember_toggle,
         )
         self.remember_check.pack(fill="x", before=self.status_lbl, pady=(8, 0))
+
+        self.old_look_check = tk.Checkbutton(
+            inner, text=s["old_look"], variable=self.old_look_var,
+            font=("Segoe UI", 9), fg=TEXT, bg=BG_PANEL,
+            activebackground=BG_PANEL, activeforeground=GOLD,
+            selectcolor=BG_INPUT, highlightthickness=0,
+            command=self._on_old_look_toggle,
+        )
+        self.old_look_check.pack(fill="x", before=self.status_lbl, pady=(2, 0))
 
         # buttons
         btns = tk.Frame(inner, bg=BG_PANEL)
@@ -407,6 +543,17 @@ class App(tk.Tk):
         entry.pack(fill="x", ipady=5, pady=(2, 0))
         return row
 
+    @staticmethod
+    def _game_language_label(language: str) -> str:
+        return f"{GAME_LANGUAGE_NAMES[language]} ({language})"
+
+    def _on_game_language_selected(self, _event=None) -> None:
+        language = GAME_LANGUAGE_LABELS.get(self.game_language_choice_var.get())
+        if language is None:
+            return
+        self.game_language_var.set(language)
+        _save_game_language(language)
+
     def _button(self, parent, text: str, cmd) -> tk.Button:
         return tk.Button(
             parent, text=text, font=FONT_BTN, fg=TEXT, bg=RED,
@@ -414,15 +561,9 @@ class App(tk.Tk):
             relief="flat", bd=0, cursor="hand2", command=cmd,
         )
 
-    # ----------------------------------------------------------- language ---
-    def _toggle_lang(self) -> None:
-        self.lang = "en" if self.lang == "tr" else "tr"
-        self._apply_language()
-
     def _apply_language(self) -> None:
         s = STRINGS[self.lang]
         self.subtitle_lbl.config(text=s["subtitle"])
-        self.lang_btn.config(text=s["lang_btn"])
         self.toggle_btn.config(text=s["to_register"] if self.mode == "login"
                                else s["to_login"])
         self.version_lbl.config(text=s["version"])
@@ -436,6 +577,8 @@ class App(tk.Tk):
                 if isinstance(child, tk.Label):
                     child.config(text=label.upper())
         self.remember_check.config(text=s["remember"])
+        self.old_look_check.config(text=s["old_look"])
+        self.game_language_label.config(text=s["game_language"].upper())
         self._busy_refresh()
         self._set_status("")
 
@@ -463,6 +606,9 @@ class App(tk.Tk):
             except OSError:
                 pass
         self._busy_refresh()
+
+    def _on_old_look_toggle(self) -> None:
+        _save_old_look(self.old_look_var.get())
 
     def _set_status(self, msg: str, color: str = TEXT_DIM) -> None:
         self.status_var.set(msg)
@@ -600,12 +746,22 @@ class App(tk.Tk):
         self.after(0, self._set_status, s["status_launching"], OK_GREEN)
         try:
             launch_game(api, username, password, self.lang,
-                        server_host_override=server_host)
+                        server_host_override=server_host,
+                        game_language=self.game_language_var.get(),
+                        old_look=self.old_look_var.get())
         except RuntimeError as exc:
             self.after(0, self._busy, False)
             self.after(0, self._set_status, str(exc), RED_HOVER)
             return
         self.after(300, self.destroy)
+
+
+def _restore_old_visuals(process: subprocess.Popen, visuals: OldItemVisuals) -> None:
+    """Put the client's own item frames and backgrounds back after it exits."""
+    try:
+        process.wait()
+    finally:
+        restore_old_item_visuals(visuals)
 
 
 def launch_game(
@@ -615,9 +771,14 @@ def launch_game(
     lang: str,
     *,
     server_host_override: str | None = None,
+    game_language: str | None = None,
+    old_look: bool = False,
 ) -> None:
     """Login then spawn the game client. Raises RuntimeError on failure."""
     s = STRINGS[lang]
+    game_language = game_language or lang
+    if game_language not in GAME_LANGUAGE_CODES:
+        raise RuntimeError(s["err_language"])
     client_exe, working_dir = find_client_exe()
     if not client_exe:
         raise RuntimeError(s["err_no_client"])
@@ -645,8 +806,8 @@ def launch_game(
         "-sid", str(session_id),
         "-w", "1024",
         "-h", "768",
-        "-language", "en",
-        "-serverlanguage", lang,
+        "-language", game_language,
+        "-serverlanguage", game_language,
         "-instanceid", str(instance_id),
         "-bica", str(host),
         "-bicp", str(chat_port),
@@ -660,7 +821,29 @@ def launch_game(
             except OSError:
                 pass
     enable_all_cooldown_timers(working_dir)
-    subprocess.Popen(cmd, cwd=str(working_dir))
+    if old_look:
+        visuals = apply_old_item_visuals(working_dir)
+    else:
+        # Clean up a patch left behind if the launcher or game was terminated
+        # before its normal restore handler ran.
+        discard_old_item_visuals(working_dir)
+        visuals = None
+    try:
+        process = subprocess.Popen(cmd, cwd=str(working_dir))
+    except OSError:
+        if visuals is not None:
+            restore_old_item_visuals(visuals)
+        raise
+    if visuals is not None:
+        remember_client_process(visuals, process.pid)
+        # The launcher window closes now, but the interpreter waits for this
+        # thread, so the client's own art is back once the game has exited.
+        threading.Thread(
+            target=_restore_old_visuals,
+            args=(process, visuals),
+            name="restore-old-item-visuals",
+            daemon=False,
+        ).start()
 
 
 if __name__ == "__main__":
