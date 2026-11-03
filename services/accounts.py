@@ -652,9 +652,10 @@ class AccountService:
         self._httpd = httpd
         # Binding to port 0 in tests resolves to a real port only after bind.
         self.port = httpd.server_address[1]
+        # stop() waits up to one poll interval for serve_forever to notice.
         self._thread = threading.Thread(
             target=httpd.serve_forever,
-            kwargs={"poll_interval": 0.2},
+            kwargs={"poll_interval": 0.05},
             daemon=True,
             name="account-service",
         )
