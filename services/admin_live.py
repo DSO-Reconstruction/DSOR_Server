@@ -326,7 +326,9 @@ class LiveAdministration:
                 ServerCommand(TALENT_CATEGORY_POINTS_INFO_COMMAND,
                               TalentCategoryPointsInfo(0xFF, updated), 0),
                 ServerCommand(TALENT_SELECTION_INFO_COMMAND,
-                              TalentSelectionInfo(0, tuple(categories)), 0),
+                              CharacterService._client_talent_selection_info(
+                                  s, TalentSelectionInfo(0, tuple(categories)),
+                                  self.service.static_database_path), 0),
             ), include_terminator=True)
             CharacterService._send_world_loot_state_batch(
                 s, packet, packet_bits, label="admin-cms-wisdom")

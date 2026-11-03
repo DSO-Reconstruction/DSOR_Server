@@ -655,7 +655,10 @@ class PlayerInitializationWorldService:
                     for key in sorted(s.gameplay_socket_effects)
                 )
             ),
-            talent_categories=state.talent_categories,
+            talent_categories=CharacterService._client_talent_selection_info(
+                s, TalentSelectionInfo(0, tuple(state.talent_categories)),
+                self.static_database_path,
+            ).categories,
             talent_category_points=state.talent_category_points,
             unlocked_skill_presets=state.unlocked_skill_presets,
             prop_info=world.crafting_props,
@@ -937,10 +940,14 @@ class PlayerInitializationWorldService:
                 (
                     ServerCommand(
                         TALENT_SELECTION_INFO_COMMAND,
-                        TalentSelectionInfo(
-                            3,
-                            preselection=state.active_skill_preselection,
-                            selections=state.active_skill_selections,
+                        CharacterService._client_talent_selection_info(
+                            s,
+                            TalentSelectionInfo(
+                                3,
+                                preselection=state.active_skill_preselection,
+                                selections=state.active_skill_selections,
+                            ),
+                            self.static_database_path,
                         ),
                         0,
                     ),

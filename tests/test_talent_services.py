@@ -13,10 +13,12 @@ from dso_server.persistence.account_state import (
     _state_to_document,
 )
 from dso_server.protocol.gameplay_protocol import STATUS_EFFECT_COMMAND
+from dso_server.protocol.inventory_codec import ItemInfo
 from dso_server.protocol.player_init_protocol import (
     CURRENCY_CHANGED_COMMAND,
     TALENT_SELECTION_INFO_COMMAND,
     UNLOCK_SKILL_TALENT_PRESELECTION_INFO_COMMAND,
+    TalentSelectionEntry,
     decode_player_init_prefix,
 )
 from dso_server.protocol.shop_protocol import RequestOffer
@@ -498,6 +500,48 @@ class TalentServiceTests(unittest.TestCase):
         self.assertEqual(
             s.gameplay_currency_state.gold, 1000000 - round(3 * LEVEL_100)
         )
+
+    def test_equipment_bonus_talents_stay_in_every_selection_list(self):
+        """The client keeps an item's TalentLevelBonus only for a talent the
+        0x011b list names (SetTalents); the map entry snapshot dropped the
+        rifle's +5 on an unlearned Heavy Shot until it was re-equipped."""
+        s, _ = self.enter()
+        belt = ItemInfo(
+            item_id=990001, template_id="mage_unique_belt_pw_bearach_set",
+            item_level=int(s.gameplay_character.level), amount=1,
+        )
+        inventory = s.gameplay_inventory
+        s.gameplay_inventory = replace(
+            inventory,
+            items=(*inventory.items, belt),
+            equipment_slots={
+                **{item_id: slots for item_id, slots
+                   in inventory.equipment_slots.items() if 11 not in slots},
+                belt.item_id: (11,),
+            },
+        )
+        self.server.account_store.put(
+            self.server._capture_account_state(s), flush=True)
+
+        relogged, batch = self.enter()
+        (snapshot,) = [c.value for c in batch
+                       if c.command_id == TALENT_SELECTION_INFO_COMMAND]
+        bonus = TalentSelectionEntry(4, 4, "mage_lightningstrike_talent")
+        self.assertIn(replace(bonus, field_00=0),
+                      snapshot.categories[0].selected_skills)
+        self.assertNotIn("mage_lightningstrike_talent", {
+            entry.resource_id for entry in
+            relogged.gameplay_talent_categories[0].selected_skills})
+
+        self.select(relogged, MASTERY)
+        (refresh,) = self.sent_values(TALENT_SELECTION_INFO_COMMAND)
+        self.assertIn(replace(bonus, field_00=0), refresh.selections)
+        self.assertIn(TalentSelectionEntry(1, 0, MASTERY), refresh.selections)
+        self.sent.clear()
+        self.select(relogged, "mage_lightningstrike_talent", 4)
+        (refresh,) = self.sent_values(TALENT_SELECTION_INFO_COMMAND)
+        self.assertIn(bonus, refresh.selections)
+        self.assertEqual(self.rank(relogged, 0, "mage_lightningstrike_talent"), 4)
 
     def test_the_wisdom_trader_needs_its_trait(self):
         s, _ = self.enter()

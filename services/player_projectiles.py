@@ -32,10 +32,13 @@ def _location_effect_follows_hit(
 
     A bullet lands only the effect a talent switched on at its impact
     (``LocalCombatState.hit_placed_location_auras``), also on a monster it
-    struck point-blank, with no travel left.
+    struck point-blank, with no travel left. One switched on with a partial
+    chance is rolled by the caller: Forgotten Glory's ``addLE,SimpleShot,
+    item_pw_sigrismarr_dwarf_turret_bonus_aura_t2,C:0.6,ON:Hit`` ("60% chance
+    that hits with Quick Shot ...") was never placed at all.
     """
 
-    if visual.chance < 1.0 or normalize_socket_trigger(visual.trigger) != "hit":
+    if visual.chance <= 0.0 or normalize_socket_trigger(visual.trigger) != "hit":
         return False
     if projectile or travel_distance > 0.0:
         return visual.chance > authored_chance
@@ -703,18 +706,34 @@ class PlayerProjectileService:
                         if hit_location_visuals:
                             hit_location_receivers = tuple(
                                 e for e in skill_geometry.location_status_effects
-                                if e.chance >= 1.0 and normalize_socket_trigger(e.trigger) in ("", "hit")
+                                if e.chance > 0.0 and normalize_socket_trigger(e.trigger) in ("", "hit")
                             )
                             for visual_def in hit_location_visuals:
                                 aura_key = (pending.cast_id, visual_def.resource_id)
                                 if aura_key in triggered_hit_auras:
                                     continue
                                 triggered_hit_auras.add(aura_key)
+                                # One roll per cast, as the set procs: a
+                                # piercing shot must not roll once per enemy.
+                                if not combat._effect_applies(
+                                    visual_def, cast_id=pending.cast_id,
+                                    killed=resolution.killed,
+                                ):
+                                    continue
                                 # Only its own children: Marking Wave's 10 m
                                 # mark aura also dealt Explosive Arrow's
                                 # explosion to everything it reached.
                                 own_children = combat.location_aura_child_ids(
                                     visual_def.resource_id
+                                )
+                                # The children carry the rule's chance, which
+                                # the aura just rolled; a child authored with
+                                # a chance of its own stays out, as before.
+                                placed_receivers = tuple(
+                                    e if visual_def.chance >= 1.0 else replace(e, chance=1.0)
+                                    for e in hit_location_receivers
+                                    if e.resource_id in own_children
+                                    and (e.chance >= 1.0 or e.chance == visual_def.chance)
                                 )
                                 CharacterService._schedule_player_location_visuals(
                                     s,
@@ -726,10 +745,7 @@ class PlayerProjectileService:
                                     owner_actor_id=int(source_actor_id),
                                     cast_id=int(pending.cast_id ^ pending.impact_index),
                                     delay_seconds=0.0,
-                                    receiver_status_effects=tuple(
-                                        e for e in hit_location_receivers
-                                        if e.resource_id in own_children
-                                    ),
+                                    receiver_status_effects=placed_receivers,
                                     source_skill_index=int(pending.skill_index),
                                     player_damage_range=(
                                         pending.player_minimum_damage,
@@ -744,11 +760,17 @@ class PlayerProjectileService:
                                 # Wave's mark) has no resolution to carry it.
                                 # Without player positions this pass also
                                 # "ends" owners' own ground buffs; the next
-                                # tick restores those, so only monsters'.
+                                # tick restores those, so only monsters', and
+                                # a minion's from this aura (the turret's ice
+                                # shot; its despawn hold is the tick's).
+                                placed_ids = {e.resource_id for e in placed_receivers}
                                 monster_applications = tuple(
                                     a for a in loc_applications
                                     if not a.remove
-                                    and int(a.target_actor_id) in combat.monsters
+                                    and (int(a.target_actor_id) in combat.monsters
+                                         or (int(a.target_actor_id) in combat.player_summons
+                                             and {e.resource_id for e in a.status_effects}
+                                             <= placed_ids))
                                 )
                                 if monster_applications:
                                     CharacterService._dispatch_location_aura_applications(

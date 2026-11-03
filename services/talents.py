@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 import sqlite3
 
+from dso_server.persistence import readonly_db
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.membership_protocol import membership_is_active
@@ -23,6 +25,18 @@ from dso_server.protocol.talent_protocol import (
 
 # Timer key prefix of a running preset cooldown's removal.
 TALENT_PRESET_COOLDOWN_TIMER = "talent-preset-cooldown"
+
+
+@lru_cache(maxsize=4)
+def _skill_talent_groups(database_path) -> dict[str, tuple[str, str]]:
+    """``_Template_SkillTalent`` ids (casefolded) -> (id, GroupId)."""
+
+    return {
+        str(talent).casefold(): (str(talent), str(group or "").casefold())
+        for talent, group in readonly_db.connect(database_path).execute(
+            "SELECT Id, GroupId FROM _Template_SkillTalent"
+        )
+    }
 
 
 class TalentService:
@@ -87,6 +101,104 @@ class TalentService:
             ),
             0,
         )
+
+    @staticmethod
+    def _client_talent_selection_info(
+            s: Session, info: TalentSelectionInfo,
+            database_path=None) -> TalentSelectionInfo:
+        """``info`` with the skill talents the wearer's equipment raises.
+
+        The client adds an item's ``TalentLevelBonus`` ranks to its own list,
+        but every 0x011b list replaces that list and keeps a bonus only for a
+        talent the list names (PlayerTalentModule::SetTalents 0x1409d3734).
+        The rifle's +5 on an unlearned Heavy Shot was dropped by the map
+        entry snapshot and came back only on re-equipping. Retail's server
+        holds the bonus in its own talent module, so its lists name the
+        talent: (rank 0, bonus 5). The rank-0 entry is never stored.
+        LocalCombatState._talent_ranked_sources applies the same ranks.
+        """
+
+        if database_path is None:
+            database_path = getattr(
+                getattr(s, "gameplay_monster_encounter", None),
+                "static_database_path", None,
+            )
+        character = getattr(s, "gameplay_character", None)
+        inventory = getattr(s, "gameplay_inventory", None)
+        if database_path is None or character is None or inventory is None:
+            return info
+        if info.selection_type == 3:
+            selections = info.selections
+        elif info.selection_type == 0 and info.categories:
+            selections = info.categories[0].selected_skills
+        else:
+            return info
+        stats = calculate_player_combat_stats(
+            database_path,
+            cache_owner=s,
+            class_name=CLASS_NAMES.get(int(character.class_id), ""),
+            level=max(1, int(character.level)),
+            inventory=inventory,
+        )
+        bonuses: dict[str, int] = {}
+        for source in (
+            *stats.skill_modifier_sources,
+            *getattr(getattr(s, "gameplay_item_set_evaluation", None),
+                     "modifiers", ()),
+        ):
+            arguments = tuple(str(value) for value in getattr(source, "arguments", ()))
+            if (
+                str(getattr(source, "kind", "")).casefold() != "talentlevelbonus"
+                or len(arguments) < 2
+            ):
+                continue
+            try:
+                levels = int(round(float(arguments[0])))
+            except ValueError:
+                continue
+            if levels > 0:
+                talent = arguments[1].split("#", 1)[0].strip()
+                bonuses[talent] = bonuses.get(talent, 0) + levels
+        if not bonuses:
+            return info
+        talents = _skill_talent_groups(database_path)
+        result = list(selections)
+        groups = {
+            talents[entry.resource_id.casefold()][1]
+            for entry in result
+            if int(entry.field_00) > 0
+            and entry.resource_id.casefold() in talents
+        }
+        for talent, levels in bonuses.items():
+            known = talents.get(talent.casefold())
+            if known is None:
+                continue
+            talent_id, group = known
+            index = next((
+                position for position, entry in enumerate(result)
+                if entry.resource_id.casefold() == talent.casefold()
+            ), None)
+            if index is not None and int(result[index].field_00) > 0:
+                result[index] = replace(result[index], field_04=levels)
+                continue
+            # The client never selects two of one GroupId (elemental
+            # masteries); the server applies no such bonus either.
+            if group and group in groups:
+                continue
+            entry = TalentSelectionEntry(0, levels, talent_id)
+            if index is None:
+                result.append(entry)
+            else:
+                result[index] = entry
+            if group:
+                groups.add(group)
+        result = tuple(result)
+        if info.selection_type == 3:
+            return replace(info, selections=result)
+        return replace(info, categories=(
+            replace(info.categories[0], selected_skills=result),
+            *info.categories[1:],
+        ))
 
     @staticmethod
     def _talent_server_tick(s: Session) -> int:
@@ -584,7 +696,8 @@ class TalentService:
             commands.append(
                 ServerCommand(
                     TALENT_SELECTION_INFO_COMMAND,
-                    (
+                    CharacterService._client_talent_selection_info(
+                        s,
                         TalentSelectionInfo(
                             3,
                             preselection=active_preselection,
@@ -597,7 +710,8 @@ class TalentService:
                         if category_id == 0
                         else TalentSelectionInfo(
                             0, updated_categories
-                        )
+                        ),
+                        self.static_database_path,
                     ),
                     0,
                 )
@@ -808,7 +922,10 @@ class TalentService:
                 ))
             commands.append(ServerCommand(
                 TALENT_SELECTION_INFO_COMMAND,
-                TalentSelectionInfo(0, updated_categories),
+                CharacterService._client_talent_selection_info(
+                    s, TalentSelectionInfo(0, updated_categories),
+                    self.static_database_path,
+                ),
                 0,
             ))
             response, response_bits = encode_server_command_batch(
@@ -1016,7 +1133,10 @@ class TalentService:
                 ),
                 ServerCommand(
                     TALENT_SELECTION_INFO_COMMAND,
-                    TalentSelectionInfo(0, tuple(categories)),
+                    CharacterService._client_talent_selection_info(
+                        s, TalentSelectionInfo(0, tuple(categories)),
+                        self.static_database_path,
+                    ),
                     0,
                 ),
             ),
@@ -1234,7 +1354,8 @@ class TalentService:
                 ))
             commands.append(ServerCommand(
                 TALENT_SELECTION_INFO_COMMAND,
-                (
+                CharacterService._client_talent_selection_info(
+                    s,
                     TalentSelectionInfo(
                         3,
                         preselection=request.preselection,
@@ -1249,7 +1370,8 @@ class TalentService:
                             else category
                             for index, category in enumerate(categories)
                         ),
-                    )
+                    ),
+                    self.static_database_path,
                 ),
                 0,
             ))
@@ -1442,7 +1564,10 @@ class TalentService:
                 ))
             commands.append(ServerCommand(
                 TALENT_SELECTION_INFO_COMMAND,
-                TalentSelectionInfo(0, updated_categories),
+                CharacterService._client_talent_selection_info(
+                    s, TalentSelectionInfo(0, updated_categories),
+                    self.static_database_path,
+                ),
                 0,
             ))
             response, response_bits = encode_server_command_batch(
@@ -1587,7 +1712,8 @@ class TalentService:
                 ))
             commands.append(ServerCommand(
                 TALENT_SELECTION_INFO_COMMAND,
-                (
+                CharacterService._client_talent_selection_info(
+                    s,
                     TalentSelectionInfo(
                         3,
                         preselection=request.preselection,
@@ -1604,7 +1730,8 @@ class TalentService:
                             else category
                             for index, category in enumerate(categories)
                         ),
-                    )
+                    ),
+                    self.static_database_path,
                 ),
                 0,
             ))
