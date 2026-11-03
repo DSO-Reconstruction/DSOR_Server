@@ -183,7 +183,11 @@ class PlayerSummonService:
         from dso_server.services.talent_events import talent_minion_auras
         for summon in spawn.actors:
             for aura, receivers in (
-                *combat.player_status_minion_auras(summon.definition.monster_template_id),
+                # A Shadow Soul's buffs are its owner's already
+                # (_mercenary_owner_aura_effects): its aura would add them twice.
+                *(() if summon.definition.category == "mercenary"
+                  else combat.player_status_minion_auras(
+                      summon.definition.monster_template_id)),
                 *talent_minion_auras(s, summon),
             ):
                 CharacterService._publish_player_location_visuals(

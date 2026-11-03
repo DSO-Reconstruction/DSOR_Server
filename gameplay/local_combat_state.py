@@ -341,6 +341,9 @@ MONSTER_TELEPORT_TOLERANCE = max(
     1.0, float(os.getenv('DSO_MONSTER_TELEPORT_TOLERANCE', '1.5'))
 )
 SERVER_TICKS_PER_SECOND = 25.0
+# The lease of an aura hosted by a summon without a LifeTime. The summon's
+# expiry removes the aura sooner; a day only has to outlast any play session.
+PERMANENT_SUMMON_AURA_LEASE_TICKS = round(24 * 3600 * SERVER_TICKS_PER_SECOND)
 # (database file, revision, effect column, trigger) -> frozen definitions.
 _VICTIM_EFFECT_CACHE: dict[tuple, tuple] = {}
 # id(source) -> (source, semantic key). A geared character brings ~470
@@ -4626,7 +4629,11 @@ class LocalCombatState:
                 continue
             if visual.managed_aura and visual.definition.aura_targets.casefold() == "summoner":
                 position = (player_positions or {}).get(visual.owner_actor_id)
-                if position is not None and self._distance(visual.position, position) <= radius:
+                # Measured from the summon hosting it, which may move: Bond of
+                # Friends' wolf runs with its ranger, far from where it came.
+                host = self.player_summons.get(visual.source_actor_id)
+                centre = host.position if host is not None else visual.position
+                if position is not None and self._distance(centre, position) <= radius:
                     for effect in visual.receiver_status_effects:
                         key = (visual.owner_actor_id, effect.effect_id)
                         old = owner_auras.get(key)
@@ -12269,7 +12276,7 @@ class LocalCombatState:
         )
 
     def player_status_minion_auras(self, monster_template_id: str):
-        """Resolve permanent auras of finite status-created actors.
+        """Resolve the permanent auras of player summons.
 
         Cached per template: the static database does not change while the
         server runs, and this is asked at every summon spawn.
@@ -12287,12 +12294,26 @@ class LocalCombatState:
                 "SELECT PermanentStatusEffect, LifeTime FROM _Template_Monster WHERE Id=?",
                 (monster_template_id,),
             ).fetchone()
-            if row is None or float(row[1] or 0) <= 0:
+            if row is None:
                 return ()
+            lifetime = float(row[1] or 0)
             result = []
             for root in self._load_victim_status_effects(db, str(row[0] or "")):
                 if root.aura_targets.casefold() not in {"enemies", "summoner"}:
                     continue
+                if lifetime <= 0:
+                    # A summon without a LifeTime stays until it dies or is
+                    # replaced: Bond of Friends' wolf "does not despawn
+                    # anymore" and gives its ranger +25% damage within 20 m
+                    # (skill_packofwolves_big_minion_damage_buff_aura). Its
+                    # aura leaves with it (expire_player_summon), so it holds
+                    # for good, not for the authored one-second renewal. Only
+                    # its summoner's auras: lasting monster templates also
+                    # escort the player (map companions), and their enemy
+                    # auras were never applied.
+                    if root.aura_targets.casefold() != "summoner":
+                        continue
+                    root = replace(root, duration_ticks=PERMANENT_SUMMON_AURA_LEASE_TICKS)
                 aura = db.execute("SELECT AuraEffectId FROM _Template_StatusEffect WHERE Id=?", (root.resource_id,)).fetchone()
                 if aura is None:
                     # A status effect the database lacks has no aura to apply.
