@@ -218,3 +218,36 @@ dialog p.error-text { color: var(--danger); margin: 8px 0 0; }
 .batch-steps .activated button { background: var(--success); border-color: var(--success); color: white; }
 .batch-steps .skipped button { text-decoration: line-through; }
 .row-select { display: inline; }
+
+.item-editor { max-width: 1180px; }
+.item-editor .form-section:first-of-type { padding-top: 8px; }
+.editor-note { margin: 0 0 6px; }
+.roll-field > label { margin-bottom: 6px; }
+.roll-control { display: flex; align-items: center; gap: 10px; }
+.roll-control input[type=range] { flex: 1; min-width: 90px; padding: 0; border: 0; background: none; accent-color: var(--link); }
+.roll-control input[type=number] { width: 78px; flex: none; }
+#base-stats { margin-top: 18px; }
+.seed-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.seed-line input { width: 100px; padding: 4px 8px; }
+.seed-line button { padding: 4px 10px; font-size: 12px; }
+.quality { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.quality meter { width: 90px; height: 8px; }
+strong.changed { color: var(--link); }
+.enchant-tools button { padding: 5px 11px; font-size: 13px; }
+.enchant-list { list-style: none; margin: 0 0 14px; padding: 0; border-top: 1px solid var(--line); }
+.enchant-list > .empty { border-top: 0; }
+.enchant-row { display: grid; grid-template-columns: minmax(220px, 2.2fr) minmax(150px, 1.3fr) minmax(110px, .9fr) minmax(190px, 1.5fr) minmax(130px, 1fr) auto; gap: 12px 16px; align-items: start; padding: 14px 0; border-bottom: 1px solid var(--border-soft); }
+.enchant-row small.mono { overflow-wrap: anywhere; }
+.enchant-row .text-button { margin-top: 30px; color: var(--danger); }
+.enchant-result { padding-top: 27px; overflow-wrap: anywhere; }
+.enchant-result strong { font-size: 15px; }
+.enchant-result span { color: var(--muted); }
+.enchant-result small { display: block; margin-top: 2px; }
+.editor-actions { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 12px 0; background: var(--page); border-top: 1px solid var(--line); }
+.editor-actions #editor-state { margin-right: auto; }
+@media (max-width: 1100px) {
+  .enchant-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .enchant-row .enchant-name { grid-column: 1 / -1; }
+  .enchant-result, .enchant-row .text-button { padding-top: 0; margin-top: 0; }
+}
+@media (max-width: 600px) { .enchant-row { grid-template-columns: 1fr; } }
