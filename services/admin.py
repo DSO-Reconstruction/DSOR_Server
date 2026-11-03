@@ -1749,8 +1749,9 @@ class AdminService:
         self._httpd = httpd
         self.port = httpd.server_address[1]
         self.started_at = time.time()
+        # stop() waits up to one poll interval for serve_forever to notice.
         self._thread = threading.Thread(target=httpd.serve_forever,
-                                        kwargs={"poll_interval": 0.2}, name="admin-cms", daemon=True)
+                                        kwargs={"poll_interval": 0.05}, name="admin-cms", daemon=True)
         self.live.start()
         self.events.start()
         self.bonus_codes.start()

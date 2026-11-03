@@ -1141,22 +1141,20 @@ def _schedule_revision(path: Path) -> tuple[int, int]:
     return stat.st_mtime_ns, stat.st_size
 
 
-@lru_cache(maxsize=4)
-def _load_catalog(
-    database_path: str,
-    database_mtime_ns: int,
-    database_size: int,
-    schedule_path: str,
-    schedule_mtime_ns: int,
-    schedule_size: int,
-    loot_path: str = "",
-    loot_mtime_ns: int = 0,
-    loot_size: int = 0,
-) -> EventCatalog:
-    del database_mtime_ns, database_size, schedule_mtime_ns, schedule_size
-    del loot_mtime_ns, loot_size
+@lru_cache(maxsize=2)
+def _static_event_rows(
+    database_path: str, database_mtime_ns: int, database_size: int,
+) -> tuple:
+    """The static.db4 rows the event catalogue reads, cached per revision.
+
+    Reading ``_Template_Item`` alone takes about a second, and the catalogue
+    is rebuilt for every schedule revision (each CMS edit, each test's own
+    events.json), so the database half is kept apart from the schedule half.
+    The rows are shared between catalogues: read them, never change them.
+    """
+
+    del database_mtime_ns, database_size
     db_path = Path(database_path)
-    config = json.loads(resident_content.read_text(schedule_path, encoding="utf-8"))
     with sqlite3.connect(
         f"file:{db_path.as_posix()}?mode=ro", uri=True
     ) as database:
@@ -1226,6 +1224,33 @@ def _load_catalog(
                 'FROM _Template_StatusEffect'
             )
         }
+    return (
+        item_rows, map_rows, access_rows, monster_region_rows,
+        monster_event_drop_rows, progress_rows, event_rows, status_rows,
+        status_stack_limits,
+    )
+
+
+@lru_cache(maxsize=4)
+def _load_catalog(
+    database_path: str,
+    database_mtime_ns: int,
+    database_size: int,
+    schedule_path: str,
+    schedule_mtime_ns: int,
+    schedule_size: int,
+    loot_path: str = "",
+    loot_mtime_ns: int = 0,
+    loot_size: int = 0,
+) -> EventCatalog:
+    del schedule_mtime_ns, schedule_size, loot_mtime_ns, loot_size
+    db_path = Path(database_path)
+    config = json.loads(resident_content.read_text(schedule_path, encoding="utf-8"))
+    (
+        item_rows, map_rows, access_rows, monster_region_rows,
+        monster_event_drop_rows, progress_rows, event_rows, status_rows,
+        status_stack_limits,
+    ) = _static_event_rows(database_path, database_mtime_ns, database_size)
 
     item_regions = _authored_item_regions()
     templates: dict[str, EventTemplateDefinition] = {}

@@ -1076,13 +1076,14 @@ class MapEventContent:
             )
         else:
             map_clear_sets = set(self.event_sets)
+        # One pass over the spawn rows: testing every row against every
+        # EventSet took up to 0.36 s per call (h0006_valley_dun).
+        candidate_rows = {
+            spawn.event_set_row for spawn in self.spawn_rows
+            if spawn.template_id.casefold() in candidate_templates
+        }
         return frozenset(
-            int(row) for row in map_clear_sets
-            if any(
-                spawn.event_set_row == int(row)
-                and spawn.template_id.casefold() in candidate_templates
-                for spawn in self.spawn_rows
-            )
+            int(row) for row in map_clear_sets if int(row) in candidate_rows
         )
 
     def a_mighty_threat_spawn_event_keys(self, catalog) -> frozenset[str]:
