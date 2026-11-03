@@ -109,9 +109,12 @@ def test_finite_zero_duration_is_repaired_without_changing_permanent_or_removal(
 def test_counted_zero_template_has_explicit_client_expiry(monkeypatch):
     from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
     catalog = load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH)
-    identity = next(iter(catalog.zero_duration_effect_ids))
-    resource = next(name for name, value in catalog.effect_ids.items() if value == identity)
-    definition = VictimStatusEffectDefinition(resource, identity, 1, 125, (0,0,0,0,0), 'hit')
+    # Counted below its cap; a one-stack template is renewed in place instead.
+    resource = 'buff_resourceonhit'
+    identity = catalog.effect_ids[resource]
+    assert identity in catalog.zero_duration_effect_ids
+    definition = VictimStatusEffectDefinition(resource, identity, 1, 125, (0,0,0,0,0), 'hit',
+                                              max_stack_size=999)
     s = _session(52014, 14, 'Buffed')
     timers = []
     class Timer:

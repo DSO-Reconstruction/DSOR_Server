@@ -337,6 +337,44 @@ def test_quick_shot_proc_unlocks_only_the_owners_turret_ice_shot(quiet):
         assert "minionskill_combatturret" in picks
 
 
+def test_ranger_bonus_frees_an_explosive_arrow_still_cooling_down(sets, sockets, quiet):
+    """"Explosive Arrow does not have cooldown": the client keeps the end tick
+    the last arrow set, so the bonus resets that category on both sides
+    (tools/install_admin_effects.py STATUS_MODIFIER_ADDITIONS)."""
+    s = wearer(sets, sockets, "ranger")
+    timing = player_skill_timing_state(s)
+    timing.cooldowns = {"skill07": time.perf_counter() + 4.0,
+                        "skill05": time.perf_counter() + 4.0}
+    cast(s, "thorntrail", trigger="hit")
+    assert stacks(s)["bgh_ranger_bonus_heredur"] == 1
+    assert set(timing.cooldowns) == {"skill05"}
+
+
+def test_ranger_bonus_renewed_by_later_targets_is_never_removed(sets, sockets, quiet):
+    """A piercing Thicket of Thorns re-applies Old Glory for each target it
+    reaches later. The client refuses a second one-stack ADD, so the old
+    instance's cleanup erased the bonus; it is renewed in place instead."""
+    import dso_server.services.combat_resolution as resolution
+    s = wearer(sets, sockets, "ranger")
+    sent = []
+    encode = resolution.encode_status_effect_command_batch
+
+    def capture(batch):
+        sent.extend(entry for command in batch.commands for entry in command.value.entries
+                    if effect_name(entry.effect_id) == "bgh_ranger_bonus_heredur")
+        return encode(batch)
+
+    with patch.object(resolution, "encode_status_effect_command_batch", capture):
+        for _target in range(3):
+            cast(s, "thorntrail", trigger="hit")
+    added, *renewed = sent
+    assert added.has_details
+    assert len(renewed) == 2
+    assert all(entry.instance_id == added.instance_id and entry.update_timing
+               and not entry.has_details for entry in renewed)
+    assert stacks(s)["bgh_ranger_bonus_heredur"] == 1
+
+
 def test_unequipping_a_piece_cleanses_bgh_bonus_effects(sets, sockets, quiet):
     s = wearer(sets, sockets, "ranger")
     cast(s, "thorntrail", trigger="hit")

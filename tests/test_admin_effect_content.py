@@ -11,7 +11,9 @@ import pytest
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
 from dso_server.services.admin_effects import ADMIN_EFFECTS, restore_admin_effects
-from dso_server.tools.install_admin_effects import install_content, TABLE, digest
+from dso_server.tools.install_admin_effects import (
+    install_content, TABLE, digest, STATUS_MODIFIER_ADDITIONS,
+)
 
 
 @pytest.fixture
@@ -81,6 +83,38 @@ def test_divergent_client_data_is_refused_before_any_writes(bundle):
         install_content(*bundle, apply=True)
     assert before == (server.read_bytes(), client.read_bytes())
     assert not list(server.parent.rglob("*.bak"))
+
+
+def test_forgotten_glory_ranger_bonus_resets_explosive_arrow_once(bundle):
+    server, client, _ = bundle
+    with sqlite3.connect(DEFAULT_STATIC_DB_PATH) as source:
+        stock = source.execute(f"SELECT * FROM {TABLE} WHERE Id='bgh_ranger_bonus_heredur'").fetchone()
+    stock = list(stock)
+    columns = [r[1] for r in sqlite3.connect(server).execute(f"PRAGMA table_info({TABLE})")]
+    stock[columns.index("StartModifiers")] = (
+        "CoolDown:-1.0,relative,explosiveshot#~;ResourceCost:-10.0,relative,ranger_skills#~;"
+        "Localize:#bgh_ranger_bonus_heredurDESC;")
+    for path in (server, client):
+        with sqlite3.connect(path) as db:
+            db.execute(f"INSERT INTO {TABLE} VALUES (" + ",".join("?" for _ in stock) + ")", stock)
+
+    def modifiers(path):
+        with sqlite3.connect(path) as db:
+            return db.execute(f"SELECT StartModifiers FROM {TABLE} "
+                              "WHERE Id='bgh_ranger_bonus_heredur'").fetchone()[0]
+
+    install_content(*bundle, apply=True)
+    expected = ("CoolDown:-1.0,relative,explosiveshot#~;ResourceCost:-10.0,relative,ranger_skills#~;"
+                "Localize:#bgh_ranger_bonus_heredurDESC;"
+                + STATUS_MODIFIER_ADDITIONS["bgh_ranger_bonus_heredur"])
+    assert modifiers(server) == modifiers(client) == expected
+    # A refreshed (stock) client is accepted again and re-synced.
+    with sqlite3.connect(client) as db:
+        db.execute(f"UPDATE {TABLE} SET StartModifiers=? WHERE Id='bgh_ranger_bonus_heredur'",
+                   (stock[columns.index("StartModifiers")],))
+    rerun = install_content(*bundle, apply=True)
+    assert not rerun["database_changed"] and rerun["client_sync"]
+    assert modifiers(client) == expected
 
 
 def test_server_additions_are_preserved_when_syncing_client(bundle):
