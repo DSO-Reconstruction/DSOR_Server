@@ -431,7 +431,7 @@ class PlayerSummonService:
             player_damage_range: tuple[float, float] = (1.0, 1.0),
             round_token=None, managed_aura: bool = False,
             source_actor_id: int | None = None,
-            follows_owner: bool = False) -> None:
+            follows_owner: bool = False, visual_only: bool = False) -> None:
         """Create and synchronize generated command 0x003e visuals."""
 
         with combat.lock:
@@ -450,7 +450,7 @@ class PlayerSummonService:
                 source_skill_index=source_skill_index,
                 player_damage_range=player_damage_range,
                 managed_aura=managed_aura, source_actor_id=source_actor_id,
-                follows_owner=follows_owner,
+                follows_owner=follows_owner, visual_only=visual_only,
             )
         if not visuals:
             return

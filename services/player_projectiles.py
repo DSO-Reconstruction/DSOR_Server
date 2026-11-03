@@ -175,6 +175,113 @@ class PlayerProjectileService:
             )
 
     @staticmethod
+    def _schedule_point_bullet_landing(
+            s: Session, combat, plan, skill, *, player_position,
+            target_position, owner_actor_id: int, player_damage_range,
+            cast_started_at: float) -> None:
+        """Arm a thrown bomb's explosions for the moment it lands.
+
+        They go off at the landing point whether a monster stands there or
+        not, and catch one that walked in during the fuse, so the cast arms
+        them rather than a monster's impact
+        (``LocalCombatState.point_bullet_explosions``).
+        """
+
+        explosions = tuple(
+            explosion
+            for explosion in combat.point_bullet_explosions(plan.geometry)
+            # One roll per cast, as the hit-placed auras.
+            if combat._effect_applies(
+                explosion, cast_id=int(skill.cast_id), killed=False,
+            )
+        )
+        if not explosions:
+            return
+        landing = combat.point_bullet_landing(
+            plan, player_position, target_position
+        )
+        if landing is None:
+            return
+        position, delay_seconds = landing
+        armed = []
+        for explosion in explosions:
+            own_children = combat.location_aura_child_ids(
+                explosion.resource_id
+            )
+            armed.append((explosion, tuple(
+                effect if explosion.chance >= 1.0
+                else replace(effect, chance=1.0)
+                for effect in plan.geometry.location_status_effects
+                if effect.resource_id in own_children
+                and (effect.chance >= 1.0 or effect.chance == explosion.chance)
+            )))
+        timer_key = (
+            "point-bullet-landing", int(owner_actor_id), int(skill.cast_id),
+        )
+        with s.flow_lock:
+            generation = s.gameplay_chase_generation
+            old_timer = s.gameplay_projectile_timers.pop(timer_key, None)
+            timer = s.gameplay_deadline_timer(
+                delay_seconds,
+                CharacterService._land_point_bullet,
+                args=(s, generation, timer_key, combat, tuple(armed)),
+                kwargs={
+                    "position": tuple(position),
+                    "owner_actor_id": int(owner_actor_id),
+                    "cast_id": int(skill.cast_id),
+                    "skill_index": int(skill.skill_index),
+                    "player_damage_range": tuple(player_damage_range),
+                    "server_tick": (
+                        int(skill.server_tick)
+                        + round(delay_seconds * SERVER_TICKS_PER_SECOND)
+                    ) & 0xFFFFFFFF,
+                    "round_token": CharacterService._pvp_round_token(s),
+                },
+            )
+            timer.absolute_deadline = float(cast_started_at) + delay_seconds
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        if old_timer is not None:
+            old_timer.cancel()
+        timer.start()
+
+    @staticmethod
+    def _land_point_bullet(
+            s: Session, generation: int, timer_key, combat, armed, *,
+            position, owner_actor_id: int, cast_id: int, skill_index: int,
+            player_damage_range, server_tick: int, round_token=None) -> None:
+        """The bomb is down: publish its explosions and light their fuses."""
+
+        with s.flow_lock:
+            s.gameplay_projectile_timers.pop(timer_key, None)
+            if (
+                not s.connected
+                or generation != s.gameplay_chase_generation
+                or s.gameplay_combat_state is not combat
+                or (round_token is not None
+                    and round_token != CharacterService._pvp_round_token(s))
+            ):
+                return
+        # Visual only, starting after its delay: the client plays each aura's
+        # own sequences (dwarf_grenade_explode when the D:0 damage aura ends)
+        # while the fuses below land the receivers once.
+        CharacterService._publish_player_location_visuals(
+            s, combat, tuple(explosion for explosion, _receivers in armed),
+            position=position, yaw=0.0, server_tick=server_tick,
+            owner_actor_id=owner_actor_id, cast_id=cast_id,
+            source_skill_index=skill_index, visual_only=True,
+        )
+        for explosion, receivers in armed:
+            if receivers:
+                CharacterService._schedule_bullet_explosion(
+                    s, combat, explosion, receivers, position=position,
+                    owner_actor_id=owner_actor_id, cast_id=cast_id,
+                    skill_index=skill_index,
+                    player_damage_range=player_damage_range,
+                    server_tick=server_tick,
+                )
+
+    @staticmethod
     def _resolve_player_projectile_group(
             s: Session, generation: int, timer_keys,
             due_at: float) -> None:
@@ -695,9 +802,17 @@ class PlayerProjectileService:
                             v.resource_id: v.chance
                             for v in unmodified_geometry.location_visual_effects
                         } if unmodified_geometry is not None else {}
+                        # A bomb's explosions belong to its landing: Frozen
+                        # Master's frost explosion, raised above its authored
+                        # chance, also went off on each monster beside it.
+                        landing = {
+                            v.resource_id
+                            for v in combat.point_bullet_explosions(skill_geometry)
+                        }
                         hit_location_visuals = tuple(
                             v for v in skill_geometry.location_visual_effects
-                            if _location_effect_follows_hit(
+                            if v.resource_id not in landing
+                            and _location_effect_follows_hit(
                                 v, skill_geometry, pending.travel_distance,
                                 unmod_chances.get(v.resource_id, 0.0),
                                 projectile=pending.projectile_velocity > 0.0,
