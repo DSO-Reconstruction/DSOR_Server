@@ -1058,6 +1058,20 @@ class CombatResolutionService:
         )
         if not resolutions:
             return
+        # A blow on an invulnerable monster takes nothing and shows nothing:
+        # its Hit carried the damage it would have done, so numbers rose over
+        # the Mortis bone dragon while it was still frozen
+        # (Boss_Mortis_Bone_Dragon_Initial_Freeze: ActorFeature off Damage).
+        # FAILURE: "au debut je tape mortis il perd pas de pv ... je dois pas
+        #   voir les degats que je lui mets".
+        monsters = getattr(combat, "monsters", None) or {}
+        resolutions = tuple(
+            replace(resolution, damage=0, critical_hit=False)
+            if not resolution.killed and int(resolution.damage) > 0
+            and getattr(monsters.get(int(resolution.target_actor_id)), "invulnerable", False)
+            else resolution
+            for resolution in resolutions
+        )
         # Every InventoryInfo (delta and final) carries
         # inventory.health_points; a blow that left it at its old value made
         # the next loot, sale or potion put the HUD back to that health.
