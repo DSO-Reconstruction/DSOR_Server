@@ -9,9 +9,10 @@ from dso_server.gameplay.premium_bags import (
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND, InventoryInfo, clone_inventory_info, equipment_allocation_snapshot,
 )
+from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.membership_protocol import (
-    MEMBERSHIP_UPDATE_COMMAND, membership_is_active,
-    membership_update_from_expiry, parse_membership_expiry,
+    DELUXE_MEMBERSHIP, MEMBERSHIP_UPDATE_COMMAND, PREMIUM_MEMBERSHIP, membership_is_active,
+    membership_update_from_expiry, parse_membership_expiry, premium_handover,
 )
 from dso_server.protocol.player_init_protocol import (
     ServerCommand, encode_server_command_batch,
@@ -20,6 +21,7 @@ from dso_server.protocol.gameplay_protocol import (
     StatusEffect, encode_status_effect_batch,
 )
 from dso_server.services.base import CharacterService
+from dso_server.services.membership_items import sync_membership_effect
 
 
 class PremiumBagService:
@@ -36,6 +38,27 @@ class PremiumBagService:
             inventory = getattr(s, "gameplay_inventory", None)
             if not isinstance(inventory, InventoryInfo) or s.gameplay_exit_transition_started:
                 return False
+            commands = []
+            membership_effect_changes = []
+            ended_deluxe = s.gameplay_membership_expires_at
+            handed = premium_handover(
+                s.gameplay_membership_type, s.gameplay_membership_expires_at,
+                s.gameplay_membership_active, s.gameplay_membership_premium_expires_at,
+            )
+            handed_over = handed[0] != s.gameplay_membership_type
+            if handed_over:
+                # Deluxe ended: the paused Premium runs from here, bags stay.
+                (s.gameplay_membership_type, s.gameplay_membership_expires_at,
+                 s.gameplay_membership_active) = handed
+                commands.extend(ServerCommand(MEMBERSHIP_UPDATE_COMMAND, update, inventory.actor_id) for update in (
+                    membership_update_from_expiry(ended_deluxe, membership_type=DELUXE_MEMBERSHIP, active=False),
+                    membership_update_from_expiry(handed[1], membership_type=PREMIUM_MEMBERSHIP, active=True),
+                ))
+                database_path = getattr(
+                    getattr(getattr(s, "gameplay_combat_state", None), "encounter", None),
+                    "static_database_path", DEFAULT_STATIC_DB_PATH,
+                )
+                membership_effect_changes.extend(sync_membership_effect(s, database_path))
             active = membership_is_active(
                 s.gameplay_membership_type, s.gameplay_membership_active,
                 s.gameplay_membership_expires_at,
@@ -55,8 +78,6 @@ class PremiumBagService:
                      or len(inventory.extra_bank_storage_slots) < inventory.extra_bank_storage_size)
             )
             locked_allocations = not active and bool(inventory.extra_storage_slots or inventory.extra_bank_storage_slots)
-            commands = []
-            membership_effect_changes = []
             if membership_changed:
                 s.gameplay_membership_active = active
                 commands.append(ServerCommand(
@@ -121,7 +142,7 @@ class PremiumBagService:
             if s.gameplay_presence_callback is not None:
                 s.gameplay_presence_callback(s, ("status_effects", (status,)))
         CharacterService._schedule_premium_bag_expiry(s)
-        return membership_changed or inventory_changed
+        return handed_over or membership_changed or inventory_changed
 
     @staticmethod
     def _schedule_premium_bag_expiry(s) -> None:

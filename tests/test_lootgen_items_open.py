@@ -21,9 +21,16 @@ from dso_server.protocol.commerce_protocol import load_purchase_item_definition
 from dso_server.protocol.gameplay_protocol import InventoryItemAction, encode_inventory_item_action
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
 from dso_server.protocol.inventory_economy_protocol import CurrencyChanged
-from dso_server.protocol.membership_protocol import DELUXE_MEMBERSHIP, parse_membership_expiry
+from dso_server.gameplay.membership_effects import membership_status_effect
+from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.protocol.gameplay_protocol import STATUS_EFFECT_COMMAND
+from dso_server.protocol.membership_protocol import (
+    DELUXE_MEMBERSHIP, MEMBERSHIP_UPDATE_COMMAND, PREMIUM_MEMBERSHIP, extend_membership, parse_membership_expiry,
+    premium_handover,
+)
+from dso_server.protocol.player_init_protocol import decode_server_command_batch
 from dso_server.services.character_server import CharacterServer
-from dso_server.services.membership_items import extended_expiry, teaser_days
+from dso_server.services.membership_items import teaser_days, teaser_membership
 from dso_server.tests import test_achievements as achievement_fixtures
 from dso_server.tests.test_seasonal_protocol import seasonal  # noqa: F401
 
@@ -64,10 +71,47 @@ def test_deluxe_teaser_durations_and_extension():
     now = datetime(2026, 1, 1, tzinfo=timezone.utc)
     later = (now + timedelta(days=10)).isoformat()
     # Extended from the current Deluxe expiry ...
-    assert parse_membership_expiry(extended_expiry(DELUXE_MEMBERSHIP, True, later, 1, now)) == now + timedelta(days=11)
+    plan = extend_membership(DELUXE_MEMBERSHIP, later, True, "", DELUXE_MEMBERSHIP, 1, now=now)
+    assert parse_membership_expiry(plan[1]) == now + timedelta(days=11) and plan[3] == ""
     # ... or from now when it has lapsed.
     past = (now - timedelta(days=3)).isoformat()
-    assert parse_membership_expiry(extended_expiry(DELUXE_MEMBERSHIP, True, past, 7, now)) == now + timedelta(days=7)
+    plan = extend_membership(DELUXE_MEMBERSHIP, past, True, "", DELUXE_MEMBERSHIP, 7, now=now)
+    assert parse_membership_expiry(plan[1]) == now + timedelta(days=7)
+
+
+def _days(plan, now):
+    return tuple(
+        (parse_membership_expiry(value) - now) / timedelta(days=1) if value else None
+        for value in (plan[1], plan[3])
+    )
+
+
+def test_premium_time_is_paused_while_deluxe_runs():
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    at = lambda days: (now + timedelta(days=days)).isoformat()
+    # Premium under a 10-day Deluxe starts when Deluxe ends.
+    plan = extend_membership(DELUXE_MEMBERSHIP, at(10), True, "", PREMIUM_MEMBERSHIP, 14, now=now)
+    assert plan[0] == DELUXE_MEMBERSHIP and _days(plan, now) == (10, 24)
+    # More Deluxe pushes the paused Premium back by as much.
+    plan = extend_membership(*plan[:4], DELUXE_MEMBERSHIP, 3, now=now)
+    assert plan[0] == DELUXE_MEMBERSHIP and _days(plan, now) == (13, 27)
+    # More Premium adds to the paused time.
+    plan = extend_membership(*plan[:4], PREMIUM_MEMBERSHIP, 1, now=now)
+    assert _days(plan, now) == (13, 28)
+    # Deluxe over a running Premium pauses the 5 days it has left.
+    plan = extend_membership(PREMIUM_MEMBERSHIP, at(5), True, at(5), DELUXE_MEMBERSHIP, 3, now=now)
+    assert plan[0] == DELUXE_MEMBERSHIP and _days(plan, now) == (3, 8)
+    # Premium on a running Premium, and on nothing.
+    plan = extend_membership(PREMIUM_MEMBERSHIP, at(5), True, at(5), PREMIUM_MEMBERSHIP, 7, now=now)
+    assert plan[0] == PREMIUM_MEMBERSHIP and _days(plan, now) == (12, 12)
+    plan = extend_membership(DELUXE_MEMBERSHIP, at(-1), True, "", PREMIUM_MEMBERSHIP, 7, now=now)
+    assert plan[0] == PREMIUM_MEMBERSHIP and _days(plan, now) == (7, 7)
+    # Deluxe that ended with Premium left: Premium has been running since.
+    assert premium_handover(DELUXE_MEMBERSHIP, at(-1), True, at(4), now=now) == (PREMIUM_MEMBERSHIP, at(4), True)
+    assert premium_handover(DELUXE_MEMBERSHIP, at(1), True, at(4), now=now) == (DELUXE_MEMBERSHIP, at(1), True)
+    assert premium_handover(DELUXE_MEMBERSHIP, at(-2), True, at(-1), now=now) == (DELUXE_MEMBERSHIP, at(-2), True)
+    plan = extend_membership(DELUXE_MEMBERSHIP, at(-1), True, at(4), DELUXE_MEMBERSHIP, 2, now=now)
+    assert _days(plan, now) == (2, 6)
 
 
 def test_using_a_deluxe_teaser_consumes_it_and_extends_deluxe():
@@ -87,6 +131,113 @@ def test_using_a_deluxe_teaser_consumes_it_and_extends_deluxe():
         assert parse_membership_expiry(session.gameplay_membership_expires_at) - before == timedelta(days=7)
     finally:
         case.doCleanups()
+
+
+def _use_teaser(template_id, *, membership_type, expires_at, running_effect=None):
+    """Use one teaser; return the session and the StatusEffect entries sent."""
+    case = achievement_fixtures.AchievementServiceTests()
+    case.setUp()
+    try:
+        return _run_teaser(case, template_id, membership_type, expires_at, running_effect)
+    finally:
+        case.doCleanups()
+
+
+def _run_teaser(case, template_id, membership_type, expires_at, running_effect):
+    server, session = case.server, case.session
+    session.gameplay_inventory = InventoryInfo(
+        items=[ItemInfo(item_id=51, template_id=template_id, amount=1)], storage_slots={51: 0},
+    )
+    session.gameplay_next_item_id = 52
+    session.gameplay_presence_ready = True
+    session.gameplay_membership_type = membership_type
+    session.gameplay_membership_expires_at = expires_at
+    session.gameplay_membership_active = True
+    if running_effect is not None:
+        effect = membership_status_effect(
+            DEFAULT_STATIC_DB_PATH, running_effect, instance_id=7, actor_id=1, expires_at=expires_at,
+        )
+        session.gameplay_persistent_status_effects[7] = effect
+    payload, _ = encode_inventory_item_action(InventoryItemAction(51, 0x13, 0, 0, 0))
+    server._handle_inventory_item_action(session, payload)
+    commands = [command for data, bits, _ in session.recorder.messages if data[0] == 0x85
+                for command in decode_server_command_batch(data, bits)]
+    entries = [entry for command in commands if command.command_id == STATUS_EFFECT_COMMAND
+               for entry in command.value.entries]
+    return server, session, commands, entries
+
+
+def _effect_id(name):
+    return load_status_runtime_catalog(DEFAULT_STATIC_DB_PATH).effect_ids[name]
+
+
+def test_teaser_tiers_and_durations():
+    assert teaser_membership("premium_teaser_two_weeks_consumable_7d") == (PREMIUM_MEMBERSHIP, 14)
+    assert teaser_membership("deluxe_teaser_three_days_consumable_7d") == (DELUXE_MEMBERSHIP, 3)
+    assert teaser_membership("premium_teaser_one_year") == (PREMIUM_MEMBERSHIP, 365)
+    assert teaser_membership("dailylogin_lootbox_premium") is None
+
+
+# FAILURE: the Deluxe buff and its time only changed after re-entering a map.
+def test_a_deluxe_teaser_renews_the_running_deluxe_buff_at_once():
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
+    _server, session, commands, entries = _use_teaser(
+        "deluxe_teaser_three_days_consumable_7d", membership_type=DELUXE_MEMBERSHIP,
+        expires_at=expires_at, running_effect=DELUXE_MEMBERSHIP,
+    )
+    assert MEMBERSHIP_UPDATE_COMMAND in [command.command_id for command in commands]
+    # Renewed in place: the client refuses a second one-stack Deluxe.
+    [entry] = entries
+    assert (entry.effect_id, entry.instance_id) == (_effect_id("Deluxe"), 7)
+    assert entry.update_timing and not entry.has_details
+    assert entry.total_duration == pytest.approx(13 * 86400 * 25, abs=25 * 60)
+    assert session.gameplay_persistent_status_effects[7].total_duration == entry.total_duration
+
+
+def test_a_deluxe_teaser_replaces_a_premium_buff_with_deluxe():
+    expires_at = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
+    _server, session, _commands, entries = _use_teaser(
+        "deluxe_teaser_one_day", membership_type=PREMIUM_MEMBERSHIP,
+        expires_at=expires_at, running_effect=PREMIUM_MEMBERSHIP,
+    )
+    added, removed = entries
+    assert added.effect_id == _effect_id("Deluxe") and added.has_details and added.instance_id != 7
+    assert (removed.effect_id, removed.instance_id) == (_effect_id("Premium"), 7)
+    assert not removed.has_details and not removed.update_timing
+    assert [effect.effect_id for effect in session.gameplay_persistent_status_effects.values()] == [
+        _effect_id("Deluxe")]
+
+
+def test_a_premium_teaser_grants_premium_to_a_lapsed_account():
+    lapsed = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    _server, session, _commands, entries = _use_teaser(
+        "premium_teaser_two_weeks_consumable_7d", membership_type=DELUXE_MEMBERSHIP, expires_at=lapsed,
+    )
+    assert not session.gameplay_inventory.items
+    assert session.gameplay_membership_type == PREMIUM_MEMBERSHIP
+    remaining = parse_membership_expiry(session.gameplay_membership_expires_at) - datetime.now(timezone.utc)
+    assert timedelta(days=13, hours=23) < remaining <= timedelta(days=14)
+    [added] = entries
+    assert added.effect_id == _effect_id("Premium") and added.has_details
+
+
+# A Premium plan is paused while Deluxe runs and resumes when Deluxe ends.
+def test_a_premium_teaser_under_deluxe_adds_premium_time_after_deluxe():
+    deluxe = (datetime.now(timezone.utc) + timedelta(days=10)).isoformat()
+    _server, session, commands, _entries = _use_teaser(
+        "premium_teaser_two_weeks_consumable_7d", membership_type=DELUXE_MEMBERSHIP,
+        expires_at=deluxe, running_effect=DELUXE_MEMBERSHIP,
+    )
+    assert not session.gameplay_inventory.items
+    assert (session.gameplay_membership_type, session.gameplay_membership_expires_at) == (DELUXE_MEMBERSHIP, deluxe)
+    premium = parse_membership_expiry(session.gameplay_membership_premium_expires_at)
+    assert premium == parse_membership_expiry(deluxe) + timedelta(days=14)
+    # Premium first: the client takes the last update as the current plan.
+    updates = [command.value for command in commands if command.command_id == MEMBERSHIP_UPDATE_COMMAND]
+    assert [(update.membership_type, update.active) for update in updates] == [
+        (PREMIUM_MEMBERSHIP, True), (DELUXE_MEMBERSHIP, True)]
+    assert (updates[0].expires_at.year, updates[0].expires_at.month, updates[0].expires_at.day) == (
+        premium.year, premium.month, premium.day)
 
 
 # FAILURE: Lydia's Grace ("It can be used at level N") opened to nothing at

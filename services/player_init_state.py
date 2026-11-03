@@ -25,7 +25,7 @@ from dso_server.gameplay.premium_bags import reconcile_premium_bags
 from dso_server.gameplay.stickerbook_state import (
     costume_status_effect_wire_ids,
 )
-from dso_server.protocol.membership_protocol import membership_is_active
+from dso_server.protocol.membership_protocol import membership_is_active, premium_handover
 from dso_server.protocol.inventory_codec import (
     BOOTSTRAP_ITEM_ID,
     BOOTSTRAP_ITEM_TEMPLATE,
@@ -144,6 +144,7 @@ class PlayerInitializationState:
     membership_type: int = 0
     membership_expires_at: str = ""
     membership_active: bool = False
+    membership_premium_expires_at: str = ""
     membership_status_effect_ids: frozenset = frozenset()
     mount_ride: Any = None
     persistent_status_effects: dict = field(default_factory=dict)
@@ -927,6 +928,15 @@ class PlayerInitializationStateService:
             bool(persisted_state.membership_active)
             if persisted_state is not None else True
         )
+        membership_premium_expires_at = (
+            str(persisted_state.membership_premium_expires_at)
+            if persisted_state is not None else ""
+        )
+        # Premium paused under a Deluxe that ended while offline runs again.
+        membership_type, membership_expires_at, membership_active = premium_handover(
+            membership_type, membership_expires_at, membership_active,
+            membership_premium_expires_at,
+        )
         membership_active = membership_is_active(
             membership_type, membership_active, membership_expires_at,
         )
@@ -1357,6 +1367,7 @@ class PlayerInitializationStateService:
         state.membership_type = membership_type
         state.membership_expires_at = membership_expires_at
         state.membership_active = membership_active
+        state.membership_premium_expires_at = membership_premium_expires_at
         state.membership_status_effect_ids = membership_effect_ids
         state.mount_ride = mount_ride
         state.persistent_status_effects = persistent_status_effects
@@ -1537,6 +1548,9 @@ class PlayerInitializationStateService:
             s.gameplay_membership_type = state.membership_type
             s.gameplay_membership_expires_at = state.membership_expires_at
             s.gameplay_membership_active = state.membership_active
+            s.gameplay_membership_premium_expires_at = (
+                state.membership_premium_expires_at
+            )
             s.gameplay_membership_status_effect_ids = (
                 state.membership_status_effect_ids
             )
