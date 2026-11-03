@@ -261,6 +261,128 @@ def test_explosiveshot_point_explosion_does_not_hit_distant_monsters(combat):
     assert hit_ids == {301}
 
 
+@pytest.mark.parametrize("offset,damaged,marked", [
+    (2.0, True, True), (6.0, False, True), (13.0, False, False),
+])
+def test_marking_wave_marks_around_the_explosion_without_widening_it(
+        combat, wearer, offset, damaged, marked):
+    """Explosion: 3.5 m. Marking Wave: "marks all enemies in a radius of 10
+    meters around the explosion". Its 10 m aura once became the arrow's
+    splash and carried the explosion as well."""
+    import sqlite3
+    from dso_server.protocol.gameplay_protocol import StatusEffectEntry
+    with sqlite3.connect("data/db/static.db4") as db:
+        talent = db.execute("SELECT rowid - 1 FROM _Template_StatusEffect "
+                            "WHERE Id='ranger_talent_explosiveshot_mark'").fetchone()[0]
+    wearer.gameplay_combat_state = combat
+    wearer.gameplay_monster_encounter = combat.encounter
+    wearer.gameplay_remote_actor_id = 1
+    wearer.gameplay_persistent_status_effects[100] = StatusEffectEntry(
+        talent, 100, 0, 0, 0, 0, 0, 0, 0, False, False, True, False)
+    victim, other = combat.encounter.actor_ids[:2]
+    for actor, position in ((victim, (0.0, 2.0, -10.0)), (other, (offset, 2.0, -10.0))):
+        combat.monster_positions[actor] = position
+        combat.monster_last_published_positions[actor] = position
+        combat.monster_health[actor] = 10000
+    pending = combat.start_bullet_skill_hits(
+        BulletSkill(0, skill_id("explosiveshot"), 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0),
+        combat.encounter.coordinate_frame.world_to_wire((0.0, 2.0, 0.0)),
+        source_actor_id=1, now=100.0, eligible_actor_ids=(victim, other),
+        modifier_effect_ids=tuple(CharacterService._active_skill_modifier_sources(wearer)),
+        player_damage_range=(100.0, 100.0))
+    assert {p.target_actor_id for p in pending} == ({victim, other} if damaged else {victim})
+    assert all("debuff_cc_mark" not in {e.resource_id for e in p.victim_status_effects}
+               for p in pending)
+    with patch("time.perf_counter", return_value=max(p.due_at for p in pending) + 0.01), \
+            patch.object(CharacterService, "_start_monster_chase"), \
+            patch.object(CharacterService, "_dispatch_location_aura_applications") as sent, \
+            patch.object(CharacterService, "_dispatch_player_owned_resolutions") as dealt:
+        for value in pending:
+            CharacterService._resolve_player_projectile(
+                wearer, wearer.gameplay_chase_generation, 321, 1, value.impact_index)
+    assert not dealt.called
+    assert (combat.monster_health[other] < 10000) == damaged
+    assert ("debuff_cc_mark" in combat.monster_status_effects.get(other, {})) == marked
+    marks = {application.target_actor_id: {e.resource_id for e in application.status_effects}
+             for call in sent.call_args_list for application in call.args[1]}
+    assert marks[victim] == {"debuff_cc_mark"}
+    assert (marks.get(other) == {"debuff_cc_mark"}) == marked
+
+
+@pytest.mark.parametrize("offset,inside", [(2.0, True), (5.0, False)])
+def test_explosive_arrow_hits_then_explodes_as_its_own_hit(combat, wearer, offset, inside):
+    """"Arrow will explode shortly after hitting": the monsters inside the
+    3.5 m explosion take the arrow, then (DE:0.1) the explosion, not one
+    summed hit at the impact."""
+    wearer.gameplay_combat_state = combat
+    wearer.gameplay_monster_encounter = combat.encounter
+    wearer.gameplay_remote_actor_id = 1
+    victim, other = combat.encounter.actor_ids[:2]
+    for actor, position in ((victim, (0.0, 2.0, -10.0)), (other, (offset, 2.0, -10.0))):
+        combat.monster_positions[actor] = position
+        combat.monster_last_published_positions[actor] = position
+        combat.monster_health[actor] = 10000
+    pending = combat.start_bullet_skill_hits(
+        BulletSkill(0, skill_id("explosiveshot"), 0.0, 2000, 321, (0.0, 0.0, -1.0, 0.0), 0),
+        combat.encounter.coordinate_frame.world_to_wire((0.0, 2.0, 0.0)),
+        source_actor_id=1, now=100.0, eligible_actor_ids=(victim, other),
+        player_damage_range=(100.0, 100.0))
+    assert {p.target_actor_id for p in pending} == ({victim, other} if inside else {victim})
+    assert all("skill_explosiveshot_explosion_effect" not in {
+        e.resource_id for e in p.victim_status_effects} for p in pending)
+    with patch("time.perf_counter", return_value=max(p.due_at for p in pending) + 0.01), \
+            patch.object(CharacterService, "_start_monster_chase"):
+        for value in pending:
+            CharacterService._resolve_player_projectile(
+                wearer, wearer.gameplay_chase_generation, 321, 1, value.impact_index)
+    arrow = {actor: 10000 - combat.monster_health[actor] for actor in (victim, other)}
+    assert arrow[victim] > 0
+    assert (arrow[other] > 0) == inside
+    (timer,) = [t for key, t in wearer.gameplay_projectile_timers.items()
+                if key[0] == "bullet-explosion"]
+    assert timer.delay == pytest.approx(0.08)
+    with patch.object(CharacterService, "_dispatch_player_owned_resolutions") as dealt:
+        timer.callback(*timer.args, **timer.kwargs)
+    (explosion,) = [call.args[2] for call in dealt.call_args_list]
+    assert {r.target_actor_id for r in explosion} == ({victim, other} if inside else {victim})
+    for resolution in explosion:
+        assert resolution.damage > 0
+        assert {e.resource_id for e in resolution.victim_status_effects} == {
+            "skill_explosiveshot_explosion_effect"}
+        assert combat.monster_health[resolution.target_actor_id] == (
+            10000 - arrow[resolution.target_actor_id] - resolution.damage)
+
+
+def test_a_running_mark_is_renewed_rather_than_replaced(combat):
+    """AddEffect refuses a stack index at MaxStackSize: the mark's second
+    ADD (index 1) was dropped and its cleanup removed the running mark."""
+    import sqlite3
+    from types import SimpleNamespace
+    from dso_server.gameplay.local_combat_state import LocalCombatState
+    with sqlite3.connect("data/db/static.db4") as db:
+        mark, = LocalCombatState._load_victim_status_effects(db, "debuff_cc_mark,C:1.0,D:8.0")
+        burn, = LocalCombatState._load_victim_status_effects(db, "debuff_dot_burn,C:1.0,D:3.0")
+    s = SimpleNamespace(gameplay_next_status_effect_instance_id=10)
+    cache = {}
+
+    def apply(definition, now):
+        return CharacterService._advance_status_effect_instance(
+            s, cache, (7, int(definition.effect_id)), definition, actor_id=7,
+            source_actor_id=1, server_tick=int(now * 25), applied_at=now)
+
+    first, removed, _ = apply(mark, 100.0)
+    assert first.has_details and removed is None
+    again, removed, _ = apply(mark, 104.0)
+    assert removed is None
+    assert (again.instance_id, again.has_details, again.update_timing) == (
+        first.instance_id, False, True)
+    assert again.end_tick == int(104.0 * 25) + 200
+    # Below its cap a stacking effect still adds an occurrence.
+    apply(burn, 100.0)
+    second, removed, _ = apply(burn, 100.5)
+    assert second.has_details and second.stack_index == 1 and removed is not None
+
+
 def test_mightystab_explosion_talent_causes_area_damage_around_struck_target(combat):
     import sqlite3
     db = sqlite3.connect("data/db/static.db4")

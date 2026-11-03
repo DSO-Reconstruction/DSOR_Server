@@ -1757,6 +1757,11 @@ class InventoryMapService:
                 f"{action.item_id}/{action.action} could not open a fixed "
                 f"package or mapped chest: {exc}"
             )
+            # No loot table: tell the player why nothing happened.
+            if isinstance(exc, UnresolvedChestError):
+                callback = getattr(self, "system_chat_callback", None)
+                if callback is not None and character is not None:
+                    callback(character.character_id, UNRESOLVED_CHEST_MESSAGE)
             # The client may optimistically remove a right-clicked chest.
             # Send the authoritative inventory snapshot back when the server
             # rejects the open, so an unsupported/under-level chest is not

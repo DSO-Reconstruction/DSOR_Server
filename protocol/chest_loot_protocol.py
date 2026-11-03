@@ -65,6 +65,11 @@ _RARITY_HINT = re.compile(
 )
 _LEVEL_SUFFIX = re.compile(r"(?:^|_)Lv(\d+)$", re.IGNORECASE)
 _ADVENTURER_CHEST_LEVEL = re.compile(r"^levelchest_lvl_?(\d+)$", re.IGNORECASE)
+_LYDIAS_GRACE_LEVEL = re.compile(r"^ancestral_books_lv(\d+)$")
+# Andermant paid by each Lydia's Grace box, keyed by the box's level. No
+# client data ships the amounts; they scale with the level up to the
+# 100,000 of the last box.
+_LYDIAS_GRACE_ANDERMANT = {level: level * 1000 for level in range(10, 101, 10)}
 _RARITY_NAMES = {
     "common": "Common",
     "uncommon": "Uncommon",
@@ -113,6 +118,96 @@ _TOOLTIP_ITEM_ALIASES = {
 }
 
 
+UNRESOLVED_CHEST_MESSAGE = (
+    "This chest has not been implemented. "
+    "Please send a bug report with the expected chest contents."
+)
+
+
+class UnresolvedChestError(ValueError):
+    """No loot table or tooltip resolves the chest's contents."""
+
+
+# The containers a player knows as chests; consumables and eggs without
+# contents are not "chests that have not been implemented". Selective
+# chests never roll (roll_chest_contents).
+_CHEST_CATEGORIES = frozenset({
+    "LootGenItem", "LootGenItemAutoIdent", "LotteryTicket",
+})
+
+# Boxes whose chest_contents.json record is wrong, written from each box's
+# own description: the Thanksgiving records lost their first line, the
+# packages hold their offer bundle's text, the Undefeatable starter pack's
+# record drops its realm paths and the Epic tag, and the Dragan bag is named
+# like the skin it holds. ``{cls}`` is the player's class; ``{back}`` is the back
+# item family, a dwarf's banner or everyone else's cloak.
+# UNVERIFIED: "Bag Extension" names no item (the 7-slot Inventory Enhancer
+# is given), and "Pickaxes" has no count (5, as the Viscanium offers).
+_BAG_EXTENSION = "misc_bag_extension_no_droplevel_restriction"
+_AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
+    "thanksgiving_level_10_rewards": (("misc_resurrect_partymember_01", 5), (_BAG_EXTENSION, 1)),
+    "thanksgiving_level_20_rewards": (("lockpick", 30), (_BAG_EXTENSION, 1)),
+    "thanksgiving_level_30_rewards": (("lockpick", 70), (_BAG_EXTENSION, 1)),
+    "thanksgiving_level_40_rewards": (("thanksgiving_cloak_white_2023_{cls}", 1), ("lockpick", 100)),
+    "thanksgiving_level_50_rewards": (
+        ("money_rc", 200), ("crafting_stateobject_key", 1), ("scaling_dungeon_boss_key_01", 100),
+    ),
+    "thanksgiving_level_55_rewards": (("gem_block_f", 5), (_BAG_EXTENSION, 1)),
+    "thanksgiving_level_60_rewards": (
+        ("money_rc", 300), ("crafting_stateobject_key", 3), ("scaling_dungeon_boss_key_01", 100),
+    ),
+    "thanksgiving_level_65_rewards": (
+        ("ingredient_gem_dust", 5000), ("lockpick", 100), ("e_ful_01_teleport_01", 10),
+    ),
+    "thanksgiving_level_70_rewards": (
+        ("money_rc", 500), ("crafting_stateobject_key", 6), ("scaling_dungeon_boss_key_01", 100),
+    ),
+    "thanksgiving_level_75_rewards": (
+        ("buff_xp_100_03", 10), ("lockpick", 100), ("ingredient_gem_dust", 5000),
+    ),
+    "thanksgiving_level_80_rewards": (
+        ("money_rc", 1000), ("scaling_dungeon_boss_key_01", 100), ("mortis_key", 1),
+    ),
+    "thanksgiving_level_85_rewards": (
+        ("ingredient_gem_dust", 10000), ("lockpick", 100), ("e_new_01_teleport_01", 10),
+    ),
+    "thanksgiving_level_90_rewards": (
+        ("money_rc", 3000), ("scaling_dungeon_boss_key_01", 100), ("mortis_key", 2),
+    ),
+    "thanksgiving_level_95_rewards": (
+        ("thanksgiving_cloak_pruple_2023_{cls}", 1), ("scaling_dungeon_boss_key_01", 100),
+    ),
+    "thanksgiving_level_100_rewards": (
+        ("money_rc", 5000), ("lootbox_level_rallye_jewels_random", 1), ("mortis_key", 5),
+    ),
+    "e_bos_02_starterbox": (
+        ("e_bos_02_circus_teleport_01", 20), ("e_bos_02_chest_key", 5),
+        ("rc_ammunition_epic", 999), ("pet_nefertari_part_01", 1),
+        ("misc_resurrect_partymember_01", 5),
+    ),
+    "e_bos_starterbox": (
+        ("e_bos_02_circus_teleport_01", 20), ("e_bos_02_chest_key", 5),
+        ("ammunition_damage_epic", 999), ("misc_resurrect_partymember_01", 5),
+        ("pet_ingredient_feather_02", 20), ("pet_ingredient_crystal_03", 20),
+    ),
+    "e_ide_01_notification_package": (
+        ("generic_cot_teaser", 1), ("event_identify_drop_crystal_piece_01", 1),
+    ),
+    "e_ide_02_notification_package": (
+        ("e_ide_02_location_key", 1), ("e_ide_01_pickaxe_01", 5),
+        ("event_identify_drop_crystal_piece_01", 1),
+    ),
+    "e_ide_02_progress_package": (("event_identify_drop_crystal_piece_02", 40),),
+    "dragan_event_attire_skin": (("skin_{back}_unique_backitem_attire_dragan_01", 1),),
+}
+
+
+def _unresolved_contents(category: str, message: str) -> ValueError:
+    if str(category) in _CHEST_CATEGORIES:
+        return UnresolvedChestError(message)
+    return ValueError(message)
+
+
 @dataclass(frozen=True)
 class ChestReward:
     definition: PurchaseItemDefinition
@@ -158,6 +253,11 @@ def _positive_amount(value: Any, *, default: int = 1) -> int:
     if value is None or value == "":
         return default
     text = str(value).strip()
+    # "5/20/50x Lockpicks": alternatives without odds give the first, as
+    # tools/chest_contents_from_descriptions.py does.
+    first, _, alternatives = text.partition("/")
+    if alternatives and all(part.strip().isdigit() for part in alternatives.split("/")):
+        text = first.strip()
     if not text.isdigit():
         raise ValueError(f"reward amount {value!r} is not a positive integer")
     amount = int(text, 10)
@@ -213,8 +313,8 @@ def _load_index(path: str | Path) -> dict[str, tuple[dict[str, Any], ...]]:
 
 
 def _inventory_record(
-    records: tuple[dict[str, Any], ...], box_template_id: str,
-) -> dict[str, Any]:
+    records: tuple[dict[str, Any], ...],
+) -> dict[str, Any] | None:
     """Choose the item record, not a same-named offer/stickerbook alias."""
 
     preferred_sources = (
@@ -229,9 +329,7 @@ def _inventory_record(
     for record in reversed(records):
         if str(record.get("category") or "") in _INVENTORY_CONTAINER_CATEGORIES:
             return record
-    raise ValueError(
-        f"mapping {box_template_id!r} is not an inventory container"
-    )
+    return None
 
 
 def _definition(
@@ -664,7 +762,9 @@ def _tooltip_entries(
                 f"tooltip reward {entry.get('text')!r} has unknown mode"
             )
     if not guaranteed and not chance and not unweighted and unresolved:
-        raise unresolved[0]
+        raise _unresolved_contents(
+            str(record.get("category") or ""), str(unresolved[0]),
+        ) from unresolved[0]
     return guaranteed, chance, saw_choose, unweighted
 
 
@@ -972,6 +1072,85 @@ def _adventurer_chest_contents(
     )
 
 
+def _authored_chest_contents(
+    static_database_path: str | Path,
+    box_definition: PurchaseItemDefinition,
+    *,
+    player_level: int,
+    class_name: str,
+) -> ChestContents | None:
+    """Give one of the boxes in ``_AUTHORED_CHEST_CONTENTS``."""
+
+    authored = _AUTHORED_CHEST_CONTENTS.get(box_definition.template_id)
+    if authored is None:
+        return None
+    if int(player_level) < int(box_definition.required_level):
+        raise ValueError(
+            f"container {box_definition.template_id!r} requires level "
+            f"{int(box_definition.required_level)}"
+        )
+    class_name = str(class_name)
+    rewards = []
+    for template_id, amount in authored:
+        if "{cls}" in template_id and not class_name:
+            raise ValueError(
+                f"class-specific container {box_definition.template_id!r} "
+                "requires a valid player class"
+            )
+        template_id = template_id.format(
+            cls=class_name, back="dwarf" if class_name == "dwarf" else "all",
+        )
+        rewards.append(ChestReward(_definition(static_database_path, template_id), amount))
+    return ChestContents(
+        box_template_id=box_definition.template_id,
+        source="authored_chest_contents",
+        rewards=tuple(rewards),
+        used_tooltip_mapping=False,
+    )
+
+
+def _lydias_grace_contents(
+    static_database_path: str | Path,
+    box_definition: PurchaseItemDefinition,
+    *,
+    player_level: int,
+) -> ChestContents | None:
+    """Pay one Lydia's Grace box and hand over the next box of the chain.
+
+    The ten ``ancestral_books_lv*`` boxes name server-side loot lists that no
+    client data ships; their descriptions only say the box "contains endless
+    money" and "can be used at level N". Each box pays its level's Andermant
+    plus the box ten levels up; the level 100 box ends the chain.
+    """
+
+    match = _LYDIAS_GRACE_LEVEL.fullmatch(box_definition.template_id)
+    if match is None:
+        return None
+    level = int(match.group(1))
+    andermant = _LYDIAS_GRACE_ANDERMANT.get(level)
+    if andermant is None:
+        return None
+    # RequiredLevel is the client's own gate and matches the description.
+    required_level = max(level, int(box_definition.required_level))
+    if int(player_level) < required_level:
+        raise ValueError(
+            f"container {box_definition.template_id!r} requires level "
+            f"{required_level}"
+        )
+    rewards = [ChestReward(_definition(static_database_path, "money_rc"), andermant)]
+    if level + 10 in _LYDIAS_GRACE_ANDERMANT:
+        rewards.append(ChestReward(
+            _definition(static_database_path, f"ancestral_books_lv{level + 10}"),
+            1,
+        ))
+    return ChestContents(
+        box_template_id=box_definition.template_id,
+        source="lydias_grace_chain",
+        rewards=tuple(rewards),
+        used_tooltip_mapping=False,
+    )
+
+
 def roll_chest_contents(
     static_database_path: str | Path,
     box_template_id: str,
@@ -990,6 +1169,25 @@ def roll_chest_contents(
             f"item {box_template_id!r} is category "
             f"{box_definition.item_category!r}, not an inventory container"
         )
+    # The client opens these in its selection widget (SelectWishingWellMsg,
+    # services/seasonal_activities.py); a roll would pick for the player.
+    if box_definition.item_category == "Selective":
+        raise ValueError(
+            f"selective container {box_template_id!r} requires a client "
+            "reward selection"
+        )
+    # chest_contents.json lists the Lydia's Grace boxes with nothing in them.
+    lydias_grace = _lydias_grace_contents(
+        static_database_path, box_definition, player_level=player_level,
+    )
+    if lydias_grace is not None:
+        return lydias_grace
+    authored = _authored_chest_contents(
+        static_database_path, box_definition,
+        player_level=player_level, class_name=class_name,
+    )
+    if authored is not None:
+        return authored
     # A box whose loot list is server-side only and that chest_contents.json
     # lacks or cannot resolve: what its description lists, or the category
     # it names (tools/chest_contents_from_descriptions.py).
@@ -1068,10 +1266,17 @@ def roll_chest_contents(
                 rewards=(equipment_reward,),
                 used_tooltip_mapping=False,
             )
-        raise ValueError(
-            f"inventory container {box_template_id!r} has no JSON mapping"
+        raise _unresolved_contents(
+            box_definition.item_category,
+            f"inventory container {box_template_id!r} has no JSON mapping",
         )
-    record = _inventory_record(records, box_template_id)
+    record = _inventory_record(records)
+    if record is None:
+        # Only an offer bundle or wishing well row shares the box's name.
+        raise _unresolved_contents(
+            box_definition.item_category,
+            f"mapping {box_template_id!r} is not an inventory container",
+        )
     required_level = max(1, int(record.get("required_level") or 1))
     if int(player_level) < required_level:
         raise ValueError(
@@ -1136,8 +1341,9 @@ def roll_chest_contents(
                 rewards=(rune_reward,),
                 used_tooltip_mapping=False,
             )
-        raise ValueError(
-            f"inventory container {box_template_id!r} has no resolvable rewards"
+        raise _unresolved_contents(
+            box_definition.item_category,
+            f"inventory container {box_template_id!r} has no resolvable rewards",
         )
 
     selected = list(guaranteed)
@@ -1307,6 +1513,8 @@ __all__ = [
     "ChestOpenMutation",
     "ChestReward",
     "DEFAULT_CHEST_CONTENTS_MAP",
+    "UNRESOLVED_CHEST_MESSAGE",
+    "UnresolvedChestError",
     "open_mapped_chest",
     "roll_chest_contents",
 ]
