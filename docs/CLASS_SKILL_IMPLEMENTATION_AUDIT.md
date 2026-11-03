@@ -188,7 +188,7 @@ every skill and talent combination.
 | `HeavyShot` | Projectile timing, impact/explosion, and effects verified. |
 | `PositionBombShot` | Ground-target projectile/area impact and effects verified. |
 | `Mine` | Location trigger, explosion, and effects verified. |
-| `Grenade` | Projectile travel, explosion, and effects verified. |
+| `Grenade` | Projectile travel verified. The explosion (`skill_grenade_damage_aura`, DE 1.2 s after the landing, Explosive Dwarf 0.6 s) was missing until 2026-11-03: the landing dealt its damage at once and the client never got the aura that plays `dwarf_grenade_explode`. Now armed at the cast for the landing point (`point_bullet_explosions`), published visual only, its receivers landed once at the fuse's end. Not yet confirmed in game. |
 | `Trail` | Location trail, repeated effects, and expiry verified. |
 | `TurretCombat` | Stationary summon, authored delay/lifetime, targeting, attacks, aura, and range despawn verified. |
 | `TurretTesla` | Stationary summon, authored delay/lifetime, area attacks/effects, aura, and range despawn verified. |

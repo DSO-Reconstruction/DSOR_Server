@@ -21,7 +21,9 @@ from dso_server.gameplay.local_monster_state import load_local_monster_encounter
 from dso_server.gameplay.player_combat_stats import (
     CombatModifier, calculate_player_combat_stats,
 )
-from dso_server.gameplay.player_skill_timing import player_skill_timing_state
+from dso_server.gameplay.player_skill_timing import (
+    player_skill_timing_state, reserve_player_skill_timing,
+)
 from dso_server.gameplay.pvp_match_state import (
     MATCH_MODE_BEST_OF_3_1V1, MatchParticipant, MatchPhase, PVPMatch,
 )
@@ -954,17 +956,44 @@ def test_each_two_handed_final_blow_shortens_running_cooldowns(ranger):
     ranger.gameplay_inventory.equipment_slots = {1: (5, 6)}
     learn_rank(ranger, TWO_HAND_KILL, 40)
     kill = kill_of(ranger.gameplay_combat_state.encounter.actor_ids[0])
-    cooldowns = player_skill_timing_state(ranger).cooldowns
+    timing = player_skill_timing_state(ranger)
     now = time.perf_counter()
-    cooldowns["skill03"] = now + 100.0
+    # A 100 s cooldown half run. -1.25% at rank 1 and -0.25% per rank after
+    # it: 11% at rank 40, of the whole 100 s as the client takes it, not of
+    # the 50 s left (that left the server's deadline after the client's).
+    timing.cooldowns["skill03"] = now + 50.0
+    timing.cooldown_totals["skill03"] = 100.0
     dispatch_kill_talents(ranger, (kill,))
-    # -1.25% at rank 1 and -0.25% per rank after it: 11% at rank 40.
-    assert cooldowns["skill03"] - now == pytest.approx(89.0, abs=0.1)
+    assert timing.cooldowns["skill03"] - now == pytest.approx(39.0, abs=0.1)
 
     ranger.gameplay_runtime_status_effects.clear()
-    cooldowns["skill03"] = now + 100.0
+    timing.cooldowns["skill03"] = now + 50.0
     dispatch_kill_talents(ranger, (kill, kill, kill))
-    assert cooldowns["skill03"] - now == pytest.approx(100.0 * 0.89 ** 3, abs=0.1)
+    assert timing.cooldowns["skill03"] - now == pytest.approx(17.0, abs=0.1)
+    # A fifth is more than is left: the cooldown ends.
+    ranger.gameplay_runtime_status_effects.clear()
+    dispatch_kill_talents(ranger, (kill, kill))
+    assert "skill03" not in timing.cooldowns
+
+
+def test_a_two_handed_kill_cuts_the_cooldown_a_cast_started(ranger, combat):
+    """The whole length comes from the cast itself, through the real gate."""
+    ranger.gameplay_inventory.equipment_slots = {1: (5, 6)}
+    learn_rank(ranger, TWO_HAND_KILL, 60)
+    geometry = combat._load_player_skill_geometry(skill_id("explosiveshot"))
+    assert geometry.cooldown_seconds > 0
+    now = time.perf_counter()
+    reserve_player_skill_timing(ranger, geometry, now=now - 1.0)
+    timing = player_skill_timing_state(ranger)
+    key = geometry.cooldown_category.casefold()
+    before = timing.cooldowns[key] - now
+    dispatch_kill_talents(
+        ranger, (kill_of(ranger.gameplay_combat_state.encounter.actor_ids[0]),),
+    )
+    # 16% at rank 60, of the authored cooldown.
+    assert before - (timing.cooldowns[key] - now) == pytest.approx(
+        0.16 * geometry.cooldown_seconds, abs=0.05,
+    )
 
 
 # Dwarf turrets, through the real cast and summon services.

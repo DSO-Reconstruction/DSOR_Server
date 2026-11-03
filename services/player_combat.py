@@ -687,6 +687,21 @@ class PlayerCombatService(PlayerCastTimingService):
                 attack_speed_multiplier=skill_speed_multiplier,
                 modifier_sources=modifier_effect_ids, cast_started_at=now,
             )
+        if (
+            runtime_cast
+            and entity_plan is not None
+            and target_position_wire is not None
+            and position is not None
+            and source_actor_id is not None
+        ):
+            CharacterService._schedule_point_bullet_landing(
+                s, combat, entity_plan, skill,
+                player_position=position,
+                target_position=target_position_wire,
+                owner_actor_id=int(source_actor_id),
+                player_damage_range=player_damage_range,
+                cast_started_at=now,
+            )
         phase.mark("trail")
         for timer in timers:
             timer.start()

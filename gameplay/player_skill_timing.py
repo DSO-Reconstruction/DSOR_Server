@@ -34,6 +34,10 @@ class PlayerSkillTimingState:
     cooldowns: dict[str, float] = field(default_factory=dict)
     cast_ready_at: float = 0.0
     cast_category: str = ""
+    # Each running cooldown's whole length in seconds, as the client keeps
+    # it: ActiveCoolDown moves a cooldown by a share of it. Missing (a
+    # restored save) reads as what is left.
+    cooldown_totals: dict[str, float] = field(default_factory=dict)
 
 
 def _finite(value, default=0.0):
@@ -101,6 +105,7 @@ class SkillTimingReservation:
     category: str
     previous_cooldown: float
     cooldown: float
+    previous_total: float | None
     previous_cast_ready_at: float
     cast_ready_at: float
     previous_cast_category: str
@@ -119,6 +124,7 @@ def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
     with session.flow_lock:
         state = player_skill_timing_state(session)
         previous_cooldown = state.cooldowns.get(category, 0.0)
+        previous_total = state.cooldown_totals.get(category)
         previous_ready = state.cast_ready_at
         previous_category = state.cast_category
         force = geometry.force_execution and category != previous_category
@@ -134,18 +140,23 @@ def reserve_player_skill_timing(session, geometry, speed=1.0, *, now=None):
         # Authored escape/charge skills can interrupt recovery. Their own
         # cooldown still gates the interrupt, and their recovery starts now.
         ready = (now if force else max(now, previous_ready)) + frames / TICKS_PER_SECOND
-        cooldown = max(now, previous_cooldown) + max(
-            0.0, _finite(geometry.cooldown_seconds)
-        )
+        length = max(0.0, _finite(geometry.cooldown_seconds))
+        cooldown = max(now, previous_cooldown) + length
         state.cast_ready_at = ready
         state.cast_category = category
         state.cooldowns = {
             key: deadline for key, deadline in state.cooldowns.items() if deadline > now
         }
+        state.cooldown_totals = {
+            key: total for key, total in state.cooldown_totals.items()
+            if key in state.cooldowns
+        }
         if cooldown > now:
             state.cooldowns[category] = cooldown
+            state.cooldown_totals[category] = length
         return SkillTimingReservation(
-            state, category, previous_cooldown, cooldown, previous_ready, ready, previous_category,
+            state, category, previous_cooldown, cooldown, previous_total,
+            previous_ready, ready, previous_category,
         )
 
 
@@ -163,6 +174,10 @@ def rollback_player_skill_timing(session, reservation):
                 state.cooldowns[reservation.category] = reservation.previous_cooldown
             else:
                 state.cooldowns.pop(reservation.category, None)
+            if reservation.previous_total is not None:
+                state.cooldown_totals[reservation.category] = reservation.previous_total
+            else:
+                state.cooldown_totals.pop(reservation.category, None)
 
 
 def timing_actor_variables(initial_values, instructions):
@@ -236,21 +251,52 @@ def apply_skill_cooldown_effect_locked(session, definition, database_path, *, no
             for category in arguments:
                 key = category.split("#", 1)[0].strip().casefold()
                 changed |= state.cooldowns.pop(key, None) is not None
+                state.cooldown_totals.pop(key, None)
         elif modifier.kind == "activecooldown" and len(arguments) >= 3:
             amount = resolve_modifier_value(arguments[0], getattr(definition, "values", ()), variables)
-            if amount is None or not math.isfinite(amount):
+            if amount is None or not math.isfinite(amount) or not amount:
                 continue
+            relative = arguments[1].casefold() == "relative"
             for category in arguments[2:]:
                 key = category.split("#", 1)[0].strip().casefold()
                 remaining = max(0.0, state.cooldowns.get(key, 0.0) - now)
-                if not remaining:
-                    continue
-                updated = max(0.0, remaining * max(0.0, 1.0 + amount)
-                              if arguments[1].casefold() == "relative" else remaining + amount)
+                updated, total = _active_cooldown(
+                    remaining, state.cooldown_totals.get(key), amount, relative,
+                )
                 if updated != remaining:
                     changed = True
                     if updated:
                         state.cooldowns[key] = now + updated
+                        if total is not None:
+                            state.cooldown_totals[key] = total
                     else:
                         state.cooldowns.pop(key, None)
+                        state.cooldown_totals.pop(key, None)
     return changed
+
+
+def _active_cooldown(remaining, total, amount, relative):
+    """One category under ``ActiveCoolDown``, as the client applies it.
+
+    ``Game::ActiveCoolDown::Apply`` (0x1408d666c, Feb 2026 client) moves a
+    running cooldown by the amount's share of the cooldown's whole length
+    (0x140135854), not of what is left: Lifetime Thief's 16% takes 3.2 s off
+    any 20 s cooldown, wherever it stands. Taking it from the remainder freed
+    the client's button before the server's deadline, and the server refused
+    the cast. An absolute amount is seconds. A rise stops at the whole length;
+    a positive amount on an idle category starts a cooldown of that many
+    seconds, relative or not. Without a known length (a cooldown restored
+    from a save) the remainder stands in and nothing caps a rise.
+    Returns the new remaining seconds and the length, None when unknown.
+    """
+    magnitude = abs(amount)
+    if not remaining:
+        return (magnitude, magnitude) if amount > 0 else (0.0, None)
+    if total is not None:
+        total = max(remaining, total)
+    step = magnitude * (remaining if total is None else total) if relative else magnitude
+    if amount < 0:
+        return max(0.0, remaining - step), total
+    if total is None:
+        return remaining + step, None
+    return min(total, remaining + step), total

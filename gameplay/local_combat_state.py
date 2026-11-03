@@ -29,6 +29,7 @@ from dso_server.gameplay.navigation_shapes import (
 from dso_server.gameplay.combat_entities import (
     CombatEntity,
     ORBITING_MOTION_TYPES,
+    _area_reach,
     bullet_flight_reach,
     shape_radius,
     plan_entity_skill,
@@ -340,6 +341,9 @@ MONSTER_TELEPORT_TOLERANCE = max(
     1.0, float(os.getenv('DSO_MONSTER_TELEPORT_TOLERANCE', '1.5'))
 )
 SERVER_TICKS_PER_SECOND = 25.0
+# The lease of an aura hosted by a summon without a LifeTime. The summon's
+# expiry removes the aura sooner; a day only has to outlast any play session.
+PERMANENT_SUMMON_AURA_LEASE_TICKS = round(24 * 3600 * SERVER_TICKS_PER_SECOND)
 # (database file, revision, effect column, trigger) -> frozen definitions.
 _VICTIM_EFFECT_CACHE: dict[tuple, tuple] = {}
 # id(source) -> (source, semantic key). A geared character brings ~470
@@ -945,6 +949,25 @@ class MonsterCombatant:
     # NoTurnStaticStrategy statue traps (gameplay/map_hazards.py) shoot along
     # their authored facing whenever a player is near, never at the player.
     fixed_direction: bool = False
+
+
+def _reported_monster_damage(
+    monster: MonsterCombatant,
+    previous_health: int,
+    current_health: int,
+    damage: int,
+) -> int:
+    """The damage a hit reports after ``_monster_health_after_damage``.
+
+    What it took, except from a training dummy: that one reports the whole
+    hit, as a direct hit does. A lethal hit resets it to full health, so
+    ``previous - current`` came out as 0 at full health and sent no Hit: a
+    Bomb explosion stronger than the doll showed nothing.
+    """
+
+    if str(monster.template_id).casefold().startswith("damage_doll"):
+        return max(0, int(damage))
+    return int(previous_health) - int(current_health)
 
 
 def _monster_health_after_damage(
@@ -4416,6 +4439,7 @@ class LocalCombatState:
         managed_aura: bool = False,
         source_actor_id: int | None = None,
         follows_owner: bool = False,
+        visual_only: bool = False,
         now: float | None = None,
     ) -> tuple[PlayerLocationVisual, ...]:
         """Create location visuals and return the live snapshot.
@@ -4424,6 +4448,14 @@ class LocalCombatState:
         location effect whenever the collection changes.  Keeping this state
         in the shared map combat object also lets late entrants receive the
         same authored visual lifecycle.
+
+        A ``visual_only`` effect gives its receivers nothing (its caller
+        lands them, as a bomb's explosion) and keeps its authored duration:
+        a D:0 explosion ends a tick after it starts, which is when the
+        client plays its Done sequence. Retail sends one that way ahead of
+        its start (capture_20261028_003151: ``frost_explosion_death_knight_
+        aura`` 116 ticks early, expiring on its start tick); the tick kept
+        here stops the snapshot sweeping an undelayed one before it is sent.
         """
 
         current_time = time.perf_counter() if now is None else float(now)
@@ -4440,7 +4472,7 @@ class LocalCombatState:
                 instance_id + 1
             ) & 0xFFFFFFFF
             duration_ticks = max(
-                10 if definition.aura_radius > 0.0 else 1,
+                10 if definition.aura_radius > 0.0 and not visual_only else 1,
                 int(definition.duration_ticks),
             )
             starts_tick = (
@@ -4454,8 +4486,12 @@ class LocalCombatState:
             # the warrior ("spawn toujours sous moi", 2026-10-21).
             ox, oy, oz = definition.offset
             cos_yaw, sin_yaw = math.cos(float(yaw)), math.sin(float(yaw))
-            visual_receivers = aura_receivers
-            if not visual_receivers and definition.aura_radius > 0.0:
+            visual_receivers = () if visual_only else aura_receivers
+            if (
+                not visual_receivers
+                and not visual_only
+                and definition.aura_radius > 0.0
+            ):
                 with closing(sqlite3.connect(
                     f"file:{self.encounter.static_database_path.as_posix()}?mode=ro",
                     uri=True,
@@ -4593,7 +4629,11 @@ class LocalCombatState:
                 continue
             if visual.managed_aura and visual.definition.aura_targets.casefold() == "summoner":
                 position = (player_positions or {}).get(visual.owner_actor_id)
-                if position is not None and self._distance(visual.position, position) <= radius:
+                # Measured from the summon hosting it, which may move: Bond of
+                # Friends' wolf runs with its ranger, far from where it came.
+                host = self.player_summons.get(visual.source_actor_id)
+                centre = host.position if host is not None else visual.position
+                if position is not None and self._distance(centre, position) <= radius:
                     for effect in visual.receiver_status_effects:
                         key = (visual.owner_actor_id, effect.effect_id)
                         old = owner_auras.get(key)
@@ -4688,7 +4728,7 @@ class LocalCombatState:
                             attacker_actor_id=int(visual.owner_actor_id),
                             current_health=current,
                             maximum_health=monster.maximum_health,
-                            damage=previous - current,
+                            damage=_reported_monster_damage(monster, previous, current, damage),
                             killed=killed,
                             position=self.monster_positions[actor_id],
                             server_tick=int(server_tick) & 0xFFFFFFFF,
@@ -6618,14 +6658,80 @@ class LocalCombatState:
         Heavy Shot deal their hit, then author an explosion around it with a
         delay (DE 0.1 / 0.2 s). Each impact carried that explosion as well,
         so its damage landed inside the hit, as one number, at once.
+        A thrown point bullet explodes where it lands instead
+        (``point_bullet_explosions``).
         """
 
-        if geometry.damage_modifier <= 0.0:
+        if (
+            geometry.damage_modifier <= 0.0
+            or geometry.skill_type.casefold() == "rangedtargetpoint"
+        ):
             return ()
         return tuple(
             effect for effect in geometry.location_visual_effects
             if effect.chance >= 1.0 and effect.trigger == "hit"
             and effect.delay_ticks > 0 and effect.aura_radius > 0.0
+        )
+
+    @staticmethod
+    def point_bullet_explosions(
+        geometry: PlayerSkillGeometry,
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """A thrown bomb's explosions, set off where it lands after a delay.
+
+        The dwarf's Bomb (``Grenade``, RangedTargetPoint, DamageModifier 0)
+        deals nothing itself. Its bullet lands (``dwarf_grenade_impact``, the
+        fuse) and ``skill_grenade_damage_aura`` (D:0, DE:1.2, 2.5 m) goes off
+        there 1.2 s later; that aura's Done/Stop sequence
+        ``dwarf_grenade_explode`` is the explosion the client draws. Explosive
+        Dwarf halves the delay and swaps the impact sequence together (``DE:
+        -0.5<relative`` + ``SkillSequence:impact,Grenade,
+        dwarf_grenade_impact_fast``), so the delay runs from the landing. The
+        aura was never published and every monster near the landing took its
+        damage at once, with no explosion. Frozen Master adds the frost
+        explosion and its vfx the same way. A partial chance is the caller's
+        roll.
+        """
+
+        if geometry.skill_type.casefold() != "rangedtargetpoint":
+            return ()
+        return tuple(
+            effect for effect in geometry.location_visual_effects
+            if effect.chance > 0.0 and effect.trigger == "hit"
+            and effect.delay_ticks > 0 and effect.aura_radius > 0.0
+        )
+
+    def point_bullet_landing(
+        self,
+        plan,
+        player_position: tuple[float, float, float],
+        target_position: tuple[float, float, float],
+    ) -> tuple[tuple[float, float, float], float] | None:
+        """Where (world) and how long after the cast a point bullet lands.
+
+        The same flight that times its impacts at the point
+        (``combat_entities.plan_entity_skill``). None when the point lies
+        beyond the skill's range, which that plan refuses too.
+        """
+
+        frame = self.encounter.coordinate_frame
+        geometry = plan.geometry
+        origin = frame.wire_to_world(player_position)
+        point = frame.wire_to_world(target_position)
+        reach = max(geometry.attack_range, geometry.projectile_range)
+        if reach > 0.0 and math.hypot(
+            point[0] - origin[0], point[2] - origin[2]
+        ) > reach + PLAYER_PROJECTILE_COLLISION_RADIUS:
+            return None
+        travel = max(
+            0.0,
+            math.dist(origin, point)
+            - plan.forward_offset
+            - max(0.0, geometry.projectile_radius),
+        )
+        velocity = plan.projectile_velocity
+        return point, plan.emit_delay + (
+            travel / velocity if velocity > 1e-6 else 0.0
         )
 
     def explode_player_location_aura(
@@ -6645,9 +6751,12 @@ class LocalCombatState:
     ]:
         """Land a delayed bullet explosion once on every enemy inside it.
 
-        The client draws the explosion itself where its bullet struck, so it
-        is not a published location visual (that drew a second one): only
-        its receivers are applied here, as hits of their own.
+        The client draws an arrow's explosion itself where its bullet struck,
+        so it is not a published location visual (that drew a second one);
+        a bomb's is published at its landing, visual only. Only the
+        receivers are applied here, as hits of their own. It reaches as the
+        client's radius query does (``combat_entities._area_reach``), as the
+        bomb's damage at its landing did.
         """
 
         current_time = time.perf_counter() if now is None else float(now)
@@ -6656,9 +6765,10 @@ class LocalCombatState:
         applications = []
         for actor_id in tuple(self.living_actor_ids):
             monster = self.monsters[actor_id]
-            if self._distance(
-                position, self.monster_positions[actor_id]
-            ) > radius + max(0.0, monster.collision_radius):
+            if _area_reach(CombatEntity(
+                actor_id, self.monster_positions[actor_id],
+                monster.collision_radius, target_radius=monster.target_radius,
+            ), position, radius) is None:
                 continue
             if not self.monster_hostile_to_player(actor_id, owner_actor_id):
                 continue
@@ -6699,7 +6809,7 @@ class LocalCombatState:
                     attacker_actor_id=int(owner_actor_id),
                     current_health=current,
                     maximum_health=monster.maximum_health,
-                    damage=previous - current,
+                    damage=_reported_monster_damage(monster, previous, current, damage),
                     killed=killed,
                     position=self.monster_positions[actor_id],
                     server_tick=int(server_tick) & 0xFFFFFFFF,
@@ -7123,6 +7233,9 @@ class LocalCombatState:
         duration_ticks = modified_duration(
             current.duration_ticks, metadata.get("D", metadata.get("DP"))
         )
+        # Explosive Dwarf: ``modLE,Grenade,skill_grenade_damage_aura,
+        # DE:-0.5<relative`` halves the bomb's fuse.
+        delay_ticks = modified_duration(current.delay_ticks, metadata.get("DE"))
         pvp_duration_ticks = current.pvp_duration_ticks
         if pvp_duration_ticks is not None or "DP" in metadata:
             pvp_duration_ticks = max(0, modified_duration(
@@ -7152,6 +7265,7 @@ class LocalCombatState:
             current,
             chance=max(0.0, min(1.0, chance)),
             duration_ticks=max(0, duration_ticks),
+            delay_ticks=max(0, delay_ticks),
             pvp_duration_ticks=pvp_duration_ticks,
             values=tuple(values),
             trigger=(
@@ -11135,6 +11249,7 @@ class LocalCombatState:
             for effect in (
                 *self.hit_placed_location_auras(skill.skill_index, geometry),
                 *self.delayed_bullet_explosions(geometry),
+                *self.point_bullet_explosions(geometry),
             )
         }
         placed_children = frozenset().union(*map(
@@ -11964,7 +12079,7 @@ class LocalCombatState:
                 attacker_actor_id=int(owner_actor_id),
                 current_health=current,
                 maximum_health=monster.maximum_health,
-                damage=previous - current,
+                damage=_reported_monster_damage(monster, previous, current, damage),
                 killed=killed,
                 position=position,
                 server_tick=int(server_tick) & 0xFFFFFFFF,
@@ -12161,7 +12276,7 @@ class LocalCombatState:
         )
 
     def player_status_minion_auras(self, monster_template_id: str):
-        """Resolve permanent auras of finite status-created actors.
+        """Resolve the permanent auras of player summons.
 
         Cached per template: the static database does not change while the
         server runs, and this is asked at every summon spawn.
@@ -12179,12 +12294,26 @@ class LocalCombatState:
                 "SELECT PermanentStatusEffect, LifeTime FROM _Template_Monster WHERE Id=?",
                 (monster_template_id,),
             ).fetchone()
-            if row is None or float(row[1] or 0) <= 0:
+            if row is None:
                 return ()
+            lifetime = float(row[1] or 0)
             result = []
             for root in self._load_victim_status_effects(db, str(row[0] or "")):
                 if root.aura_targets.casefold() not in {"enemies", "summoner"}:
                     continue
+                if lifetime <= 0:
+                    # A summon without a LifeTime stays until it dies or is
+                    # replaced: Bond of Friends' wolf "does not despawn
+                    # anymore" and gives its ranger +25% damage within 20 m
+                    # (skill_packofwolves_big_minion_damage_buff_aura). Its
+                    # aura leaves with it (expire_player_summon), so it holds
+                    # for good, not for the authored one-second renewal. Only
+                    # its summoner's auras: lasting monster templates also
+                    # escort the player (map companions), and their enemy
+                    # auras were never applied.
+                    if root.aura_targets.casefold() != "summoner":
+                        continue
+                    root = replace(root, duration_ticks=PERMANENT_SUMMON_AURA_LEASE_TICKS)
                 aura = db.execute("SELECT AuraEffectId FROM _Template_StatusEffect WHERE Id=?", (root.resource_id,)).fetchone()
                 if aura is None:
                     # A status effect the database lacks has no aura to apply.
@@ -13436,7 +13565,7 @@ class LocalCombatState:
                         attacker_actor_id=actor_id,
                         current_health=current,
                         maximum_health=target.maximum_health,
-                        damage=previous - current,
+                        damage=_reported_monster_damage(target, previous, current, bullet_damage),
                         killed=killed,
                         position=self.monster_positions[target.actor_id],
                         server_tick=attack.impact_tick,
@@ -13531,7 +13660,7 @@ class LocalCombatState:
                     attacker_actor_id=actor_id,
                     current_health=current,
                     maximum_health=target.maximum_health,
-                    damage=previous - current,
+                    damage=_reported_monster_damage(target, previous, current, damage),
                     killed=killed,
                     position=self.monster_positions[target_actor_id],
                     server_tick=strike.impact_tick,

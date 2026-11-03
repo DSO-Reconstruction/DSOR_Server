@@ -289,6 +289,67 @@ def test_resource_helper_false_after_debit_does_not_release_timing(combat):
     assert s.gameplay_player_skill_timing.cast_ready_at > 100
 
 
+def test_active_cooldown_takes_its_share_of_the_whole_cooldown_as_the_client_does():
+    """Game::ActiveCoolDown::Apply (0x1408d666c): a relative amount is a share
+    of the cooldown's whole length, an absolute one seconds; a rise stops at
+    the whole length; an idle category only starts one for a positive amount.
+    """
+    s = session()
+    s.gameplay_player_skill_timing = PlayerSkillTimingState(
+        {"skill01": 105, "skill12": 105, "skill13": 105, "skill14": 105}, 0,
+        cooldown_totals={"skill01": 20, "skill12": 20, "skill13": 20},
+    )
+    aura = effect("mage_singularity_buff_cdreduction_aura_effect", values=(-0.25,))
+    assert apply_skill_cooldown_effect(s, aura, DEFAULT_STATIC_DB_PATH, now=100, tick=True)
+    # 25% of 20 s off the 5 s left: the cooldown is over, not at 3.75 s.
+    assert "skill01" not in s.gameplay_player_skill_timing.cooldowns
+    assert "skill01" not in s.gameplay_player_skill_timing.cooldown_totals
+
+    def apply(program, values=(), *, at=100):
+        definition = effect("mage_meteor_cd_reduction", values=values)
+        with patch(
+            "dso_server.gameplay.player_skill_timing.load_status_modifier_catalog",
+        ) as catalog:
+            catalog.return_value = SimpleNamespace(
+                definitions={definition.effect_id: SimpleNamespace(
+                    start_modifiers=(parse_modifier(program),), tick_modifiers=(),
+                    max_stack_size=1,
+                )},
+                actor_variables={},
+            )
+            return apply_skill_cooldown_effect(s, definition, DEFAULT_STATIC_DB_PATH, now=at)
+
+    cooldowns = s.gameplay_player_skill_timing.cooldowns
+    assert apply("ActiveCoolDown:0.5,relative,Skill12")
+    assert cooldowns["skill12"] == 115        # +10 s, under the 20 s length
+    assert apply("ActiveCoolDown:0.5,relative,Skill12")
+    assert cooldowns["skill12"] == 120        # stops at the whole length
+    assert apply("ActiveCoolDown:-2,absolute,Skill13")
+    assert cooldowns["skill13"] == 103
+    # No known length (restored from a save): the remainder stands in.
+    assert apply("ActiveCoolDown:-0.5,relative,Skill14")
+    assert cooldowns["skill14"] == 102.5
+    assert apply("ActiveCoolDown:3,absolute,Skill15")
+    assert cooldowns["skill15"] == 103        # idle: starts a 3 s cooldown
+    assert s.gameplay_player_skill_timing.cooldown_totals["skill15"] == 3
+    assert not apply("ActiveCoolDown:-0.5,relative,Skill16")
+
+
+def test_a_cast_records_the_length_its_cooldown_runs(combat):
+    s = session()
+    _, geometry = skill(combat, "frozenorb")
+    key = geometry.cooldown_category.casefold()
+    reservation = reserve_player_skill_timing(s, geometry, now=100)
+    assert s.gameplay_player_skill_timing.cooldown_totals[key] == geometry.cooldown_seconds
+    rollback_player_skill_timing(s, reservation)
+    assert key not in s.gameplay_player_skill_timing.cooldown_totals
+    reserve_player_skill_timing(s, geometry, now=100)
+    # Ended cooldowns drop their length with them.
+    later = 101 + geometry.cooldown_seconds
+    reserve_player_skill_timing(s, replace(geometry, cooldown_category="Skill99"), now=later)
+    assert key not in s.gameplay_player_skill_timing.cooldown_totals
+
+
 def test_rollback_does_not_undo_concurrent_status_reset(combat):
     s = session()
     _, geometry = skill(combat, "frozenorb")
