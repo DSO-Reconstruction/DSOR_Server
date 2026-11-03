@@ -116,7 +116,7 @@ class SpecTests(unittest.TestCase):
             self.catalog, DEFAULT_STATIC_DB_PATH, now=NOW, player_level=50
         )
         entry = event_status_entry(spec, instance_id=77, actor_id=1)
-        self.assertEqual(entry.field_04, 77)
+        self.assertEqual(entry.instance_id, 77)
         self.assertTrue(entry.has_details)
         multiplier = active_xp_gain_multiplier(
             DEFAULT_STATIC_DB_PATH,
@@ -176,7 +176,7 @@ class InitializationTests(unittest.TestCase):
         self.assertEqual(entry.values[0], 0.25)
         self.assertEqual(
             session.gameplay_event_status_effect_instance_ids,
-            frozenset({entry.field_04}),
+            frozenset({entry.instance_id}),
         )
         multiplier = active_xp_gain_multiplier(
             DEFAULT_STATIC_DB_PATH,

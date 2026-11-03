@@ -21,10 +21,10 @@ from dso_server.gameplay.local_monster_state import load_local_monster_encounter
 def effect(resource_id, *, values=()):
     database = prime_player_combat_database(DEFAULT_STATIC_DB_PATH)
     return StatusEffectEntry(
-        effect_id=database.status_effect_ids[resource_id], field_04=100,
-        field_0c=0, field_14=25, field_08=0, field_18=0, field_10=25,
-        field_1c=100, field_20=1, field_25=False, field_26=False,
-        field_39=True, has_details=True, values=values,
+        effect_id=database.status_effect_ids[resource_id], instance_id=100,
+        end_tick=0, tick_interval=25, start_tick=0, stack_index=0, total_duration=25,
+        source_level=100, source_actor_id=1, update_timing=False, stacked=False,
+        permanent=True, has_details=True, values=values,
     )
 
 

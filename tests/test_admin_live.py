@@ -154,7 +154,7 @@ def test_limited_movement_bonus_remains_enabled_in_cms(cms, online):
     server, session = online
     assert server._set_admin_effect(session, "speed", True)
     entry = next(iter(session.gameplay_persistent_status_effects.values()))
-    session.gameplay_persistent_status_effects[entry.field_04] = replace(
+    session.gameplay_persistent_status_effects[entry.instance_id] = replace(
         entry, values=(1.0, 0.0, 0.0, 0.0, 5.0),
     )
     cookie, csrf = login(cms)

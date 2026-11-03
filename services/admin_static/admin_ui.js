@@ -276,10 +276,14 @@ export function characterTable(rows, ownerColumn = false) {
     `<code class="resource">${esc(c.map_id)}</code>`, status(c.online ? "Online" : "Offline", c.online ? "good" : ""), esc(date(c.saved_at))
   ]), "No characters are tied to this account.");
 }
+export function bookingGrants(booking) {
+  if (booking.kind !== "batch") return `<code class="resource">${esc(booking.resource)}</code>`;
+  return JSON.parse(booking.resource).map(grant => `${esc(grant.kind === "currency" ? human(grant.resource) : grant.resource)} × ${esc(grant.amount)}`).join("<br>");
+}
 export function bookingTable(rows) {
   return table(["Booking", "Character", "Resource", "Quantity", "State", "Created", "By"], rows.map(b => [
     link("#" + b.id, `bookings/${b.id}`), link(b.character_id, `characters/${b.character_id}`),
-    `<code class="resource">${esc(b.resource)}</code><span class="sub">${esc(b.reason)}</span>`, esc(b.amount),
+    `${bookingGrants(b)}<span class="sub">${esc(b.reason)}</span>`, esc(b.amount),
     status(b.error ? "Pending · needs attention" : human(b.status), b.error ? "bad" : b.status === "delivered" ? "good" : ""),
     esc(date(b.created_at)), esc(b.actor)
   ]));

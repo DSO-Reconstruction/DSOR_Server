@@ -640,14 +640,14 @@ incorrect. Reversing the client handler and decoding all 509 status entries in
 the retail mage capture established the actual lifecycle:
 
 - `has_details=true` constructs a new effect; retail allocates a fresh instance
-  id on every application and never sets `field_25` on those records;
-- the zero-based running-resource occurrence in `field_18` advances
+  id on every application and never sets `update_timing` on those records;
+- the zero-based running-resource occurrence in `stack_index` advances
   monotonically and is not gated or clamped by `MaxStackSize` (retail advances
   it even for `MaxStackSize=1`); this is also what distinguishes a detailed
   replacement from the still-live occurrence it supersedes;
-- a separate no-details record with `field_25=false` removes every superseded
+- a separate no-details record with `update_timing=false` removes every superseded
   instance id, leaving only the newest replacement active;
-- `field_20` is the attacking/causing actor, not the victim; and
+- `source_actor_id` is the attacking/causing actor, not the victim; and
 - retail orders Hit, the associated StatusEffect transitions, and Kill in one
   mixed reliable 0x85 transaction.
 
@@ -658,7 +658,7 @@ status packet in front of the Hit packet. Victim, socket/item-set, self, aura,
 and entity senders now use fresh-id replacement plus no-details cleanup. Combat
 delivery uses the captured Hit -> StatusEffect -> Kill transaction order.
 
-The first implementation still reset `field_18` to zero whenever the static
+The first implementation still reset `stack_index` to zero whenever the static
 database row declared `MaxStackSize=1`. That is not retail behavior: a fresh
 instance id with the same running occurrence is rejected by the client as an
 already-present actor effect, after which the valid old-instance cleanup makes

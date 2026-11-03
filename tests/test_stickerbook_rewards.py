@@ -210,9 +210,9 @@ def _effect(resource, instance):
         "SELECT rowid FROM _Template_StatusEffect WHERE Id=?", (resource,),
     ).fetchone()
     return StatusEffectEntry(
-        effect_id=row[0] - 1, field_04=instance, field_0c=0, field_14=25, field_08=0,
-        field_18=0, field_10=0, field_1c=100, field_20=1, field_25=False, field_26=False,
-        field_39=True, has_details=True,
+        effect_id=row[0] - 1, instance_id=instance, end_tick=0, tick_interval=25, start_tick=0,
+        stack_index=0, total_duration=0, source_level=100, source_actor_id=1, update_timing=False, stacked=False,
+        permanent=True, has_details=True,
     )
 
 
@@ -298,9 +298,9 @@ def test_a_saved_character_gains_the_rewards_it_was_missing():
     entered = reconcile(COLLECTED_PETS, saved.effects, saved.next_instance_id)
     assert len(entered.effects) == 3
     assert len(entered.status_effect.entries) == 2
-    assert len({entry.field_04 for entry in entered.effects.values()}) == 3
-    # The client keeps each as its own instance and, with this bit clear, ignores field_18.
-    assert not any(entry.field_26 for entry in entered.effects.values())
+    assert len({entry.instance_id for entry in entered.effects.values()}) == 3
+    # The client keeps each as its own instance and, with this bit clear, ignores stack_index.
+    assert not any(entry.stacked for entry in entered.effects.values())
 
 
 def test_collection_effects_are_permanent():
@@ -317,7 +317,7 @@ def test_a_save_with_the_one_second_duration_goes_back_to_permanent():
         )
 
     saved = reconcile(COLLECTED_PETS, {}, 1).effects
-    timed = {key: replace(entry, field_10=25) for key, entry in saved.items()}
+    timed = {key: replace(entry, total_duration=25) for key, entry in saved.items()}
     restored = reconcile(COLLECTED_PETS, timed, 100).effects
     assert len(restored) == 3
-    assert {entry.field_10 for entry in restored.values()} == {0}
+    assert {entry.total_duration for entry in restored.values()} == {0}

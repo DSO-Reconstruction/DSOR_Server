@@ -24,6 +24,10 @@ from dso_server.protocol.pvp_match_protocol import (
     MATCH_MODE_LAST_MAN_STANDING_8FFA,
 )
 from dso_server.gameplay.player_skill_timing import reset_player_skill_timing
+from dso_server.gameplay.status_modifier_runtime import (
+    evaluate_active_status_modifiers, load_status_modifier_catalog,
+    snapshot_player_modifier_sources,
+)
 
 from dso_server.gameplay.map_status_effects import (
     map_status_effect_definitions,
@@ -147,6 +151,12 @@ class BattlegroundService(BattlegroundObjectiveService):
             CharacterService._clear_battleground_round_effects(self, session)
             CharacterService._restore_battleground_health(self, session)
             CharacterService._send_battleground_effects(self, session)
+            # The round clear took Nimble's attack speed with the rest.
+            from dso_server.services.talent_events import dispatch_talent_event
+            dispatch_talent_event(
+                session, "enterpvp",
+                server_tick=int(session.gameplay_chase_server_tick),
+            )
         CharacterService._broadcast_round_message(self, match, 28, match.round_index + 1)
         self._broadcast_match_info(match)
         # C3 changes the match phase; Message(5, seconds) draws the digits.
@@ -251,11 +261,11 @@ class BattlegroundService(BattlegroundObjectiveService):
                 instance_id = s.gameplay_next_status_effect_instance_id
                 s.gameplay_next_status_effect_instance_id += 1
                 entry = StatusEffectEntry(
-                    effect_id=definition.effect_id, field_04=instance_id,
-                    field_08=tick, field_0c=(tick + duration) & 0xFFFFFFFF,
-                    field_10=duration, field_14=SERVER_TICKS_PER_SECOND,
-                    field_18=0, field_1c=100, field_20=LOCAL_PLAYER_ACTOR_ID,
-                    field_25=False, field_26=False, field_39=False,
+                    effect_id=definition.effect_id, instance_id=instance_id,
+                    start_tick=tick, end_tick=(tick + duration) & 0xFFFFFFFF,
+                    total_duration=duration, tick_interval=SERVER_TICKS_PER_SECOND,
+                    stack_index=0, source_level=100, source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False, stacked=False, permanent=False,
                     has_details=True, values=definition.values,
                 )
                 entries.append(entry)
@@ -354,7 +364,7 @@ class BattlegroundService(BattlegroundObjectiveService):
                 setattr(s, attribute, None)
                 if entry is None:
                     continue
-                instance_id = int(entry.field_04)
+                instance_id = int(entry.instance_id)
                 current = s.gameplay_persistent_status_effects.pop(
                     instance_id, entry,
                 )
@@ -365,7 +375,7 @@ class BattlegroundService(BattlegroundObjectiveService):
             for entry in tuple(getattr(
                 s, "gameplay_mercenary_aura_status_effects", ()
             )):
-                instance_id = int(entry.field_04)
+                instance_id = int(entry.instance_id)
                 current = s.gameplay_persistent_status_effects.pop(
                     instance_id, entry,
                 )
@@ -381,8 +391,8 @@ class BattlegroundService(BattlegroundObjectiveService):
         if not removed:
             return
         value = StatusEffect(False, tuple(replace(
-            entry, has_details=False, values=(), field_25=False,
-            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
         ) for entry in removed.values()))
         server._send_pvp(s, encode_status_effect_batch(
             value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -419,8 +429,8 @@ class BattlegroundService(BattlegroundObjectiveService):
         if not entries:
             return
         value = StatusEffect(False, tuple(replace(
-            entry, has_details=False, values=(), field_25=False,
-            field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+            entry, has_details=False, values=(), update_timing=False,
+            permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
         ) for entry in entries))
         server._send_pvp(s, encode_status_effect_batch(
             value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -519,8 +529,8 @@ class BattlegroundService(BattlegroundObjectiveService):
             timer.cancel()
         if removed:
             value = StatusEffect(False, tuple(replace(
-                entry, has_details=False, values=(), field_25=False,
-                field_39=False, field_38=False, field_3c=0xFF, shape_values=(),
+                entry, has_details=False, values=(), update_timing=False,
+                permanent=False, field_38=False, field_3c=0xFF, shape_values=(),
             ) for entry in removed))
             server._send_pvp(s, encode_status_effect_batch(
                 value, actor_id=LOCAL_PLAYER_ACTOR_ID,
@@ -839,7 +849,11 @@ class BattlegroundService(BattlegroundObjectiveService):
             if session is None:
                 continue
             won = entry.team == winning_team
-            honor = entry.honor_earned(rounds, match_won=won)
+            # Crowd Favorite: "increases your Honor Points ... after each battle".
+            honor = evaluate_active_status_modifiers(
+                load_status_modifier_catalog(server.static_database_path),
+                snapshot_player_modifier_sources(session),
+            ).honor_gain.apply(entry.honor_earned(rounds, match_won=won))
             total = int(getattr(session, "gameplay_honor_points", 0))
             if credit:
                 with session.flow_lock:

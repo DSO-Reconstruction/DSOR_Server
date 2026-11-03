@@ -378,6 +378,9 @@ def _apply_terminal_health(s, instructions, *, server_tick, publication, expecte
                 current += value * maximum if args[1].casefold() == "relative" else value
         current = max(0, min(maximum, round(current)))
         health[0] = current
+        from dso_server.services.talent_events import dispatch_talent_event, spare_player
+        death_saved = current == 0 and spare_player(s, combat, actor_id)
+        current = int(health[0])
     with s.flow_lock:
         if s.gameplay_chase_generation != expected_generation or s.gameplay_combat_state is not combat:
             return
@@ -387,6 +390,8 @@ def _apply_terminal_health(s, instructions, *, server_tick, publication, expecte
         else:
             resource = 0
     publication.append(("health", ActorStatsUpdate(current, resource)))
+    if death_saved:
+        dispatch_talent_event(s, "nohealth", server_tick=int(server_tick))
     if current == 0:
         CharacterService._notify_player_death(s, expected_generation=expected_generation)
         with s.flow_lock:

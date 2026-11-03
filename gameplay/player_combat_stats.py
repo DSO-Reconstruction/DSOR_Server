@@ -117,6 +117,11 @@ class PlayerCombatStats:
     movement_speed: float = 5.0
     movement_bonus_speed: float = 0.0
     mount_duration_scale: float = 1.0
+    # ``DamagePermeabilityPvP``: the share of a player's damage that gets
+    # through (Steadfastness, Cyanite Shield).
+    pvp_damage_permeability: float = 1.0
+    # ``StatusEffectGroupDuration:...,relative,Disabled`` (Defiance).
+    stun_duration_scale: float = 1.0
 
     def incoming_damage_multiplier(self, damage_type: str) -> float:
         """Return the level-scaled mitigation multiplier for one element."""
@@ -893,6 +898,17 @@ def _status_group_duration_scale(
     return max(0.0, 1.0 + total)
 
 
+def _pvp_damage_permeability(instructions, variables) -> float:
+    total = 0.0
+    for instruction in instructions:
+        if instruction.modifier.kind.casefold() != "damagepermeabilitypvp":
+            continue
+        amount = _resolved_range(instruction, variables)
+        if amount is not None:
+            total += sum(amount) / 2.0
+    return max(0.0, 1.0 + total)
+
+
 def _scopes(arguments: tuple[str, ...]) -> frozenset[str]:
     try:
         return _cached_scopes(tuple(arguments))
@@ -1051,7 +1067,7 @@ def _status_instructions(
             continue
         if hasattr(source, "effect_id"):
             effect_id = int(source.effect_id)
-            # ``field_18`` is also the wire occurrence/generation used when
+            # ``stack_index`` is also the wire occurrence/generation used when
             # an active effect is replaced. It is not an unbounded gameplay
             # multiplier: max-one effects may advance it on every refresh.
             # Clamp it to the authored status stack limit before applying the
@@ -1059,7 +1075,7 @@ def _status_instructions(
             # the Wisdom damage ranks.
             stack_count = min(
                 database.status_effect_max_stack_sizes.get(effect_id, 1),
-                max(1, int(getattr(source, "field_18", 0)) + 1),
+                max(1, int(getattr(source, "stack_index", 0)) + 1),
             )
             details = tuple(
                 float(value) for value in getattr(source, "values", ())
@@ -2052,7 +2068,7 @@ def _uncached_combat_modifier_signature(
         )
     if hasattr(source, "effect_id"):
         effect_id = int(source.effect_id)
-        occurrence = int(getattr(source, "field_18", 0))
+        occurrence = int(getattr(source, "stack_index", 0))
         effective_stack = max(1, occurrence + 1)
         if database is not None:
             effective_stack = min(
@@ -2919,6 +2935,10 @@ def _calculate_player_combat_stats(
         rift_force_echo_multiplier=max(0.0, rift_force_echo_multiplier),
         mount_duration_scale=_status_group_duration_scale(
             combined, variables, "mount"
+        ),
+        pvp_damage_permeability=_pvp_damage_permeability(combined, variables),
+        stun_duration_scale=_status_group_duration_scale(
+            combined, variables, "disabled"
         ),
     )
 

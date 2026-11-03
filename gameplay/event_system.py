@@ -703,7 +703,7 @@ class EventCatalog:
                 if modifier.target_item_id != item_id:
                     continue
                 stack_count = min(
-                    max(1, int(getattr(effect, 'field_18', 0)) + 1),
+                    max(1, int(getattr(effect, 'stack_index', 0)) + 1),
                     max(1, int(modifier.max_stack_size)),
                 )
                 raw = modifier.value.strip()
@@ -1623,17 +1623,17 @@ def event_status_entry(
 
     return StatusEffectEntry(
         effect_id=int(spec.effect_id),
-        field_04=int(instance_id),
-        field_0c=0,
-        field_14=0,
-        field_08=0,
-        field_18=0,
-        field_10=0,
-        field_1c=100,
-        field_20=int(actor_id),
-        field_25=False,
-        field_26=False,
-        field_39=True,
+        instance_id=int(instance_id),
+        end_tick=0,
+        tick_interval=0,
+        start_tick=0,
+        stack_index=0,
+        total_duration=0,
+        source_level=100,
+        source_actor_id=int(actor_id),
+        update_timing=False,
+        stacked=False,
+        permanent=True,
         has_details=True,
         values=tuple(float(value) for value in spec.values),
     )

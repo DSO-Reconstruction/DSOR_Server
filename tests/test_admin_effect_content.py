@@ -116,22 +116,22 @@ def test_new_templates_have_icons_independent_ids_and_no_unrelated_gameplay(bund
 @pytest.mark.parametrize("preset", ADMIN_EFFECTS.values(), ids=ADMIN_EFFECTS.keys())
 def test_restore_migrates_only_admin_signature_and_deduplicates(preset):
     catalog = SimpleNamespace(effect_ids={preset["resource"]: 99, preset["legacy_resource"]: 55})
-    entry = StatusEffectEntry(effect_id=55, field_04=10, field_08=8000, field_14=0,
-                              field_0c=0, field_10=0, field_18=0, field_1c=100,
-                              field_20=1, field_25=False, field_26=False, field_39=True, has_details=True,
+    entry = StatusEffectEntry(effect_id=55, instance_id=10, start_tick=8000, tick_interval=0,
+                              end_tick=0, total_duration=0, stack_index=0, source_level=100,
+                              source_actor_id=1, update_timing=False, stacked=False, permanent=True, has_details=True,
                               values=preset["legacy_values"])
-    timed = replace(entry, field_04=11, field_10=125)
-    native = replace(entry, field_04=12, values=(0.1, 0, 0, 0, 0))
-    talent = replace(entry, field_04=13, field_26=True)
-    ending = replace(entry, field_04=14, field_0c=9000)
-    entries = {e.field_04: e for e in (entry, timed, native, talent, ending)}
+    timed = replace(entry, instance_id=11, total_duration=125)
+    native = replace(entry, instance_id=12, values=(0.1, 0, 0, 0, 0))
+    talent = replace(entry, instance_id=13, stacked=True)
+    ending = replace(entry, instance_id=14, end_tick=9000)
+    entries = {e.instance_id: e for e in (entry, timed, native, talent, ending)}
     restored = restore_admin_effects(entries, catalog)
     assert restored[10].effect_id == 99 and restored[10].values == preset["values"]
-    assert restored[10].field_08 == 0 and restored[10].field_14 == 25
+    assert restored[10].start_tick == 0 and restored[10].tick_interval == 25
     assert all(restored[i] is entries[i] for i in (11, 12, 13, 14))
-    dedicated = replace(restored[10], field_04=20, field_08=8000)
+    dedicated = replace(restored[10], instance_id=20, start_tick=8000)
     entries[20] = dedicated
     restored = restore_admin_effects(entries, catalog)
-    assert 10 not in restored and restored[20].field_08 == 0
+    assert 10 not in restored and restored[20].start_tick == 0
     assert len(restored) == len(entries) - 1
     assert restore_admin_effects(entries, SimpleNamespace(effect_ids={})) == entries

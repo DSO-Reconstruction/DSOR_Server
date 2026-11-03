@@ -728,7 +728,7 @@ helpers; their partial-send recovery is not covered by the NPC/exit retry fix.
   whether direct gameplay through 2190 is still an intended supported mode.
   If so, share dispatch instead of maintaining divergent lists. This does not
   imply the normal map-service route lacks those features.
-- **Other retained commands:** currency conversion, glyph removal, vouchers,
+- **Other retained commands:** currency conversion, glyph removal,
   payment/promotional calendars, and spectator commands need a current UI or
   capture-backed use case. A registered class alone is insufficient evidence.
 - **`niwalk` skill rows:** 26 rows exist in current data, but that does not

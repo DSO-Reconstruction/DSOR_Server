@@ -47,8 +47,8 @@ ADMIN_EFFECTS = {
 def matching_effects(entries, effect_id, values):
     return tuple(entry for entry in entries
                  if entry.effect_id == effect_id and entry.has_details
-                 and entry.field_10 == 0 and entry.field_0c == 0
-                 and not entry.field_26 and tuple(entry.values) == values)
+                 and entry.total_duration == 0 and entry.end_tick == 0
+                 and not entry.stacked and tuple(entry.values) == values)
 
 
 def matching_admin_effects(entries, effect_id, preset):
@@ -111,10 +111,10 @@ def restore_admin_effects(entries, catalog):
         # Prefer the dedicated instance if a save contains both versions.
         for index, entry in enumerate(current + legacy):
             if index:
-                restored.pop(entry.field_04, None)
+                restored.pop(entry.instance_id, None)
             else:
-                restored[entry.field_04] = replace(
+                restored[entry.instance_id] = replace(
                     entry, effect_id=effect_id, values=preset["values"],
-                    field_08=0, field_0c=0, field_14=25, field_20=1,
+                    start_tick=0, end_tick=0, tick_interval=25, source_actor_id=1,
                 )
     return restored

@@ -86,8 +86,8 @@ class RespawnProtocolTests(unittest.TestCase):
                              [0x13A, 0x80, 0x71, 0x4F, 0x4F, 0x7B, 0x6D, 0x4F, 0x4F, 0x7B])
             self.assertEqual(commands[0][1].amount, cost)
             self.assertEqual(commands[6][1], 0)
-            self.assertEqual(commands[7][1].entries[0].field_10, animation_ticks)
-            self.assertEqual(commands[8][1].entries[0].field_10, protection_ticks)
+            self.assertEqual(commands[7][1].entries[0].total_duration, animation_ticks)
+            self.assertEqual(commands[8][1].entries[0].total_duration, protection_ticks)
             self.assertEqual(commands[5][1].health_points, 113663)
             self.assertEqual(commands[5][1].resource_points, 100)
 
@@ -707,7 +707,7 @@ class RespawnServiceTests(unittest.TestCase):
                 s.gameplay_revive_movement_until = time.perf_counter() - 1
                 # Advance just the animation effect; protection must remain.
                 instance, (entry, _) = min(
-                    s.gameplay_runtime_status_effects.items(), key=lambda item: item[1][0].field_10
+                    s.gameplay_runtime_status_effects.items(), key=lambda item: item[1][0].total_duration
                 )
                 s.gameplay_runtime_status_effects[instance] = (entry, time.perf_counter() - 1)
                 self.assertFalse(self.server._player_victim_feature_locked(s, "movement"))

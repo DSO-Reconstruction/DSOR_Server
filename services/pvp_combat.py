@@ -299,8 +299,8 @@ class PVPCombatService:
             viewer.send_reliable_ordered(
                 encode_status_effect_batch(
                     StatusEffect(False, tuple(replace(
-                        entry, has_details=False, values=(), field_25=False,
-                        field_39=False, field_38=False, field_3c=0xFF,
+                        entry, has_details=False, values=(), update_timing=False,
+                        permanent=False, field_38=False, field_3c=0xFF,
                         shape_values=(),
                     ) for entry in removed)),
                     actor_id=actor_id,
@@ -431,6 +431,7 @@ class PVPCombatService:
             for definition in definitions
         )
         combat = s.gameplay_combat_state
+        definitions = CharacterService._defiance_durations(s, combat, definitions)
         blocked = CharacterService._player_status_immunity_groups(s)
         evaluation = getattr(
             s, "gameplay_socket_effect_evaluation", None
@@ -472,6 +473,145 @@ class PVPCombatService:
         )
 
     @staticmethod
+    def _defiance_durations(s: Session, combat, definitions) -> tuple:
+        """Defiance: "decreases all stunning effects" in an official arena.
+
+        A stun is read from its own lock: the talent names the ``Disabled``
+        group, and ``debuff_cc_stun`` itself is not in it.
+        """
+
+        features = getattr(combat, "status_effect_disabled_features", None)
+        character = getattr(s, "gameplay_character", None)
+        if (
+            features is None or character is None or not definitions
+            or getattr(s, "gameplay_match", None) is None
+            or not any(
+                {"movement", "regularskills"} <= features(int(value.effect_id))
+                for value in definitions
+            )
+        ):
+            return tuple(definitions)
+        scale = calculate_player_combat_stats(
+            combat.encounter.static_database_path, cache_owner=s,
+            class_name=CLASS_NAMES.get(int(character.class_id), "mage"),
+            level=max(1, int(character.level)),
+            inventory=s.gameplay_inventory,
+            modifier_sources=CharacterService._active_skill_modifier_sources(s),
+        ).stun_duration_scale
+        if scale >= 1.0:
+            return tuple(definitions)
+        return tuple(
+            replace(value, duration_ticks=max(1, round(value.duration_ticks * scale)))
+            if {"movement", "regularskills"} <= features(int(value.effect_id))
+            else value
+            for value in definitions
+        )
+
+    @staticmethod
+    def _schedule_pvp_ground_strike(
+            s: Session, combat, aura, receivers, *, position, damage_range,
+            server_tick: int, delay: float = 0.0) -> None:
+        """Land a talent's ground aura on the enemy players inside it.
+
+        ``apply_player_location_auras`` walks monsters only, and an arena has
+        none: a death blast or Second Chance's stun drew and touched nobody.
+        The strike is once, at the aura's start. Its receivers' DoTs and slows
+        then run as any PvP effect does.
+        """
+
+        receivers = tuple(
+            value for value in receivers if value.resource_id != "empty_effect"
+        )
+        if (
+            not receivers or float(aura.aura_radius) <= 0.0
+            or not getattr(s, "gameplay_pvp_enabled", False)
+            or s.gameplay_presence_callback is None
+        ):
+            return
+        arguments = (
+            combat, aura, receivers, tuple(position), tuple(damage_range),
+            int(server_tick),
+        )
+        if delay <= 1e-6:
+            CharacterService._strike_pvp_ground_aura(
+                s, s.gameplay_chase_generation, None, *arguments,
+            )
+            return
+        key = ("pvp-ground-strike", int(aura.effect_id), int(server_tick))
+        with s.flow_lock:
+            timer = s.gameplay_deadline_timer(
+                float(delay), CharacterService._strike_pvp_ground_aura,
+                args=(s, s.gameplay_chase_generation, key, *arguments),
+            )
+            timer.daemon = True
+            old = s.gameplay_projectile_timers.pop(key, None)
+            s.gameplay_projectile_timers[key] = timer
+        if old is not None:
+            old.cancel()
+        timer.start()
+
+    @staticmethod
+    def _strike_pvp_ground_aura(
+            s: Session, generation: int, timer_key, combat, aura, receivers,
+            position, damage_range, server_tick: int) -> None:
+        with s.flow_lock:
+            if timer_key is not None:
+                s.gameplay_projectile_timers.pop(timer_key, None)
+            if not s.connected or generation != s.gameplay_chase_generation:
+                return
+        average = sum(damage_range) * 0.5
+        radius = float(aura.aura_radius)
+        source_actor_id = int(
+            s.gameplay_remote_actor_id
+            or CharacterService._remote_actor_id(s.gameplay_character.character_id)
+        )
+        frame = combat.encounter.coordinate_frame
+        for actor_id, wire_position, target in tuple(
+            s.gameplay_presence_callback(s, ("combat_targets",)) or ()
+        ):
+            if (
+                target is s
+                or not CharacterService._pvp_target_is_hostile(s, target)
+                or combat._distance(frame.wire_to_world(wire_position), position) > radius
+            ):
+                continue
+            target_character = target.gameplay_character
+            target_stats = calculate_player_combat_stats(
+                combat.encounter.static_database_path, cache_owner=target,
+                class_name=CLASS_NAMES.get(
+                    int(getattr(target_character, "class_id", 0)), "mage"
+                ),
+                level=max(1, int(getattr(target_character, "level", 1))),
+                inventory=target.gameplay_inventory,
+                modifier_sources=CharacterService._active_skill_modifier_sources(target),
+            )
+            damage = int(math.ceil(sum(
+                (average * coefficient if relative else coefficient)
+                * CharacterService._pvp_damage_type_multiplier(target_stats, damage_type)
+                for receiver in receivers
+                for coefficient, damage_type, relative in (
+                    combat._status_damage_programs(receiver, ticks=False)
+                )
+            )))
+            key = ("pvp-ground-hit", int(aura.effect_id), int(actor_id), int(server_tick))
+            pending = SimpleNamespace(
+                round_token=CharacterService._pvp_round_token(s),
+                combat=combat, target_session=target, target_is_summon=False,
+                target_actor_id=int(actor_id), source_actor_id=source_actor_id,
+                skill_index=0, cast_id=int(server_tick) & 0xFFFFFF,
+                projectile_index=0, impact_index=0,
+                server_tick=int(server_tick) & 0xFFFFFFFF,
+                position=wire_position, damage=damage, rift_damage=0,
+                victim_status_effects=receivers, user_status_effects=(),
+                frost_hit=False, damage_type="Physical",
+                player_damage_range=tuple(float(value) for value in damage_range),
+                critical_hit=False, blocked=False,
+            )
+            with s.flow_lock:
+                s.gameplay_pending_pvp_hits[key] = pending
+            CharacterService._resolve_pvp_skill_hit(s, generation, key)
+
+    @staticmethod
     def _active_pvp_victim_modifier_sources(
             target: Session, *, actor_id=LOCAL_PLAYER_ACTOR_ID) -> tuple[object, ...]:
         """Return live debuffs installed on the target player's actor."""
@@ -507,7 +647,9 @@ class PVPCombatService:
         return sum(
             stats.incoming_damage_multiplier(name) * weight
             for name, weight in weighted
-        ) / max(1e-9, total)
+        ) / max(1e-9, total) * float(
+            getattr(stats, "pvp_damage_permeability", 1.0)
+        )
 
     @staticmethod
     def _snapshot_pvp_skill_targets(s: Session, combat, *, skill_index=None, modifier_sources=()):
@@ -702,6 +844,10 @@ class PVPCombatService:
                     for token in ("frost", "freeze", "frozen")
                 )
             )
+            stunned_test = getattr(combat, "status_sources_are_stunned", None)
+            stunned_hit = bool(
+                stunned_test(victim_sources) if stunned_test is not None else False
+            )
             impact_effects = {
                 effect.resource_id: effect
                 for effect in impact_status_effects(
@@ -717,6 +863,7 @@ class PVPCombatService:
                     frost_hit=frost_hit,
                     marked_hit=bool(status_group_test(victim_sources, ("mark",)))
                     if status_group_test is not None else False,
+                    stunned_hit=stunned_hit,
                 )
             }
             # Only the hit half of the caster column belongs to an impact.
@@ -738,6 +885,7 @@ class PVPCombatService:
                     frost_hit=frost_hit,
                     marked_hit=bool(status_group_test(victim_sources, ("mark",)))
                     if status_group_test is not None else False,
+                    stunned_hit=stunned_hit,
                 )
             )
             key = (
@@ -758,6 +906,10 @@ class PVPCombatService:
                     0x52494654, int(skill.cast_id), int(source_actor_id),
                     actor_id, int(skill.skill_index), projectile_index,
                 ),
+            )
+            hit_damage += CharacterService._pvp_stunned_hit_damage(
+                combat, impact_effects.values(), player_damage_range,
+                target_stats,
             )
             pending = SimpleNamespace(
                 round_token=CharacterService._pvp_round_token(s),
@@ -812,6 +964,30 @@ class PVPCombatService:
                 old.cancel()
             timers.append(timer)
         return tuple(timers)
+
+    @staticmethod
+    def _pvp_stunned_hit_damage(
+            combat, effects, player_damage_range, target_stats) -> int:
+        """Strategic Advantage's share of base damage on a stunned player.
+
+        The monster path adds it through ``status_effect_immediate_damage``;
+        a player's status effects run no Start damage of their own.
+        """
+
+        average = sum(player_damage_range) * 0.5
+        total = 0.0
+        for effect in effects:
+            if normalize_socket_trigger(effect.trigger) != "hitstunned":
+                continue
+            for coefficient, damage_type, relative in (
+                combat._status_damage_programs(effect, ticks=False)
+            ):
+                total += (
+                    average * coefficient if relative else coefficient
+                ) * CharacterService._pvp_damage_type_multiplier(
+                    target_stats, damage_type
+                )
+        return int(math.ceil(total))
 
     @staticmethod
     def _pvp_lethal_damage_allowed(source: Session, target: Session) -> bool:
@@ -882,6 +1058,10 @@ class PVPCombatService:
         )
         if not target_is_summon and int(pending.damage) > 0:
             CharacterService._cancel_pending_logout(target, "attacked in PvP")
+        from dso_server.services.talent_events import (
+            dispatch_incoming_hit, dispatch_kill_talents, dispatch_talent_event,
+            route_talent_user_effects, spare_player,
+        )
         with pending.combat.lock:
             pools = pending.combat.player_summon_health if target_is_summon else pending.combat.player_health
             health = pools.get(pending.target_actor_id)
@@ -895,6 +1075,11 @@ class PVPCombatService:
                 return
             killed = lethal_allowed and current <= 0
             health[0] = current
+            death_saved = killed and not target_is_summon and spare_player(
+                target, pending.combat, pending.target_actor_id
+            )
+            if death_saved:
+                current, killed = int(health[0]), False
             if not target_is_summon:
                 pending.combat.note_player_attacked(pending.target_actor_id, now=time.perf_counter())
             if target_is_summon and not killed:
@@ -918,16 +1103,39 @@ class PVPCombatService:
                     max(0, damage), max(0, int(pending.rift_damage))
                 ),
                 pre_hit_health=int(previous),
+                death_saved=death_saved,
             )
         with target.flow_lock:
             if not target_is_summon and target.gameplay_inventory is not None:
                 target.gameplay_inventory.health_points = float(current)
         if not target_is_summon and damage > 0:
             CharacterService._cancel_respawn_protection(s)
+        # Publishing the Kill clears the victim's effects, its mark with them.
+        status_group_test = getattr(
+            pending.combat, "status_sources_have_group", None
+        )
+        target_marked = (
+            killed and not target_is_summon and status_group_test is not None
+            and bool(status_group_test(
+                CharacterService._active_pvp_victim_modifier_sources(
+                    target, actor_id=LOCAL_PLAYER_ACTOR_ID
+                ),
+                ("mark",),
+            ))
+        )
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(
                 s, ("pvp_combat_resolution", resolution)
             )
+        if not target_is_summon:
+            dispatch_incoming_hit(target, resolution)
+            dispatch_kill_talents(
+                s, (replace(resolution, target_marked=target_marked),),
+            )
+            if killed:
+                dispatch_talent_event(
+                    s, "killplayer", server_tick=int(pending.server_tick),
+                )
         if match_opponents and s.gameplay_match_callback is not None:
             s.gameplay_match_callback(s, ("match_damage", damage))
             if killed:
@@ -987,7 +1195,10 @@ class PVPCombatService:
             )
         CharacterService._send_player_skill_status_effects(
             s,
-            pending.user_status_effects,
+            route_talent_user_effects(
+                s, pending.user_status_effects,
+                server_tick=int(pending.server_tick),
+            ),
             server_tick=int(pending.server_tick),
             label="player-pvp-impact-status-effects",
         )
@@ -1018,7 +1229,7 @@ class PVPCombatService:
             if running is None:
                 continue
             entry, expires_at = running
-            if int(entry.field_20) != int(pending.source_actor_id):
+            if int(entry.source_actor_id) != int(pending.source_actor_id):
                 continue
             program = pending.combat.monster_status_damage_program(definition)
             if program is None:
@@ -1039,7 +1250,7 @@ class PVPCombatService:
                 relative=bool(relative),
                 interval=float(interval),
                 expires_at=float(expires_at),
-                instance_id=int(entry.field_04),
+                instance_id=int(entry.instance_id),
             )
             key = (
                 "pvp-status-damage",
@@ -1097,8 +1308,8 @@ class PVPCombatService:
         )
         if not any(
             int(entry.effect_id) == int(state.definition.effect_id)
-            and int(entry.field_04) == int(state.instance_id)
-            and int(entry.field_20) == int(state.source_actor_id)
+            and int(entry.instance_id) == int(state.instance_id)
+            and int(entry.source_actor_id) == int(state.source_actor_id)
             for entry in victim_sources
         ):
             return
@@ -1136,6 +1347,9 @@ class PVPCombatService:
         lethal_allowed = target_is_summon or CharacterService._pvp_lethal_damage_allowed(s, target)
         if not target_is_summon and requested_damage > 0:
             CharacterService._cancel_pending_logout(target, "attacked in PvP")
+        from dso_server.services.talent_events import (
+            dispatch_incoming_hit, dispatch_talent_event, spare_player,
+        )
         with combat.lock:
             pools = combat.player_summon_health if target_is_summon else combat.player_health
             health = pools.get(state.target_actor_id)
@@ -1147,6 +1361,12 @@ class PVPCombatService:
             if damage <= 0:
                 return
             health[0] = current
+            death_saved = (
+                lethal_allowed and current <= 0 and not target_is_summon
+                and spare_player(target, combat, state.target_actor_id)
+            )
+            if death_saved:
+                current = int(health[0])
             if not target_is_summon:
                 combat.note_player_attacked(state.target_actor_id, now=time.perf_counter())
         with target.flow_lock:
@@ -1169,11 +1389,18 @@ class PVPCombatService:
             skill_index=state.skill_index,
             source_actor_id=state.source_actor_id,
             periodic_damage=True,
+            death_saved=death_saved,
         )
         if s.gameplay_presence_callback is not None:
             s.gameplay_presence_callback(
                 s, ("pvp_combat_resolution", resolution)
             )
+        if not target_is_summon:
+            dispatch_incoming_hit(target, resolution)
+            if resolution.killed:
+                dispatch_talent_event(
+                    s, "killplayer", server_tick=int(resolution.server_tick),
+                )
         if match_opponents and s.gameplay_match_callback is not None:
             s.gameplay_match_callback(s, ("match_damage", damage))
             if resolution.killed:

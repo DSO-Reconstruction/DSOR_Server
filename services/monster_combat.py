@@ -587,18 +587,18 @@ class MonsterCombatService(
         duration = int(transition.duration_ticks)
         entry = StatusEffectEntry(
             effect_id=int(transition.effect_id),
-            field_04=int(transition.instance_id),
-            field_0c=(start_tick + duration) & 0xFFFFFFFF,
-            field_14=25,
-            field_08=start_tick,
-            field_18=0,
-            field_10=duration,
-            field_1c=100,
-            field_20=int(transition.actor_id),
-            # Detailed constructs; no-details + field_25=false removes.
-            field_25=False,
-            field_26=False,
-            field_39=False,
+            instance_id=int(transition.instance_id),
+            end_tick=(start_tick + duration) & 0xFFFFFFFF,
+            tick_interval=25,
+            start_tick=start_tick,
+            stack_index=0,
+            total_duration=duration,
+            source_level=100,
+            source_actor_id=int(transition.actor_id),
+            # Detailed constructs; no-details + update_timing=false removes.
+            update_timing=False,
+            stacked=False,
+            permanent=False,
             has_details=bool(transition.active),
             values=(
                 (0.0, 0.0, 0.0, 0.0, 0.0)
@@ -814,7 +814,7 @@ class MonsterCombatService(
             )
             seen_statuses = set()
             for entry, expires_at in active_statuses_by_actor[actor_id]:
-                status_key = (int(entry.field_04), int(entry.effect_id))
+                status_key = (int(entry.instance_id), int(entry.effect_id))
                 if status_key in seen_statuses:
                     continue
                 seen_statuses.add(status_key)
@@ -848,7 +848,7 @@ class MonsterCombatService(
                 if enemy_aura is not None:
                     player_status_enemy_auras.append((
                         int(actor_id), world_position,
-                        int(entry.field_04), int(entry.effect_id),
+                        int(entry.instance_id), int(entry.effect_id),
                         tuple(getattr(entry, "values", ())), status_expiry,
                     ))
 
@@ -1026,6 +1026,7 @@ class MonsterCombatService(
                         actor_id: combat.encounter.coordinate_frame.wire_to_world(position)
                         for actor_id, position, _viewer in combat_targets
                     },
+                    hostile_player_actor_ids_by_owner=summon_context[0],
                 ))
                 movements = tuple(movements)
                 attacks = tuple(attacks)
@@ -1111,7 +1112,10 @@ class MonsterCombatService(
                         periodic_monster_resolutions.extend(monster_ticks)
                         periodic_owner_resolutions.extend(owner_ticks)
                 hostile_resolutions.extend(periodic_owner_resolutions)
-                hostile_resolutions = tuple(hostile_resolutions)
+                from dso_server.services.talent_events import spare_lethal_hits
+                hostile_resolutions = spare_lethal_hits(
+                    combat, combat_targets, hostile_resolutions
+                )
                 reflected_resolutions = tuple(
                     reflected
                     for hostile in hostile_resolutions
@@ -1153,6 +1157,9 @@ class MonsterCombatService(
                     hostile_player_actor_ids_by_owner=summon_context[0],
                     player_damage_multipliers=summon_context[1],
                     lethal_player_actor_ids_by_owner=summon_context[2],
+                )
+                pvp_summon_resolutions = spare_lethal_hits(
+                    combat, combat_targets, pvp_summon_resolutions
                 )
                 (
                     location_aura_resolutions,
@@ -1359,6 +1366,7 @@ class MonsterCombatService(
                     resolutions,
                 )
         mark_phase(s, "socket-status-updates")
+        from dso_server.services.talent_events import dispatch_incoming_hit
         for resolution in resolutions:
             target_session = target_sessions.get(
                 int(resolution.target_actor_id)
@@ -1396,6 +1404,7 @@ class MonsterCombatService(
                     server_tick=int(resolution.server_tick),
                     event_seed=int(resolution.attacker_actor_id),
                 )
+                dispatch_incoming_hit(target_session, resolution)
         mark_phase(s, "console-attacks")
         if attacks and (
             VERBOSE_PACKET_LOGGING

@@ -123,21 +123,21 @@ def player_summon_aura_entry(
     duration_ticks = SUMMON_AURA_REFRESH_TICKS
     return StatusEffectEntry(
         effect_id=int(definition.effect_id),
-        field_04=(
+        instance_id=(
             _aura_instance_id(actor_id, ordinal)
             if instance_id is None
             else int(instance_id) & 0xFFFFFFFF
         ),
-        field_0c=(start_tick + duration_ticks) & 0xFFFFFFFF,
-        field_14=SERVER_TICKS_PER_SECOND,
-        field_08=start_tick,
-        field_18=0,
-        field_10=duration_ticks,
-        field_1c=100,
-        field_20=int(owner_actor_id),
-        field_25=False,
-        field_26=False,
-        field_39=False,
+        end_tick=(start_tick + duration_ticks) & 0xFFFFFFFF,
+        tick_interval=SERVER_TICKS_PER_SECOND,
+        start_tick=start_tick,
+        stack_index=0,
+        total_duration=duration_ticks,
+        source_level=100,
+        source_actor_id=int(owner_actor_id),
+        update_timing=False,
+        stacked=False,
+        permanent=False,
         has_details=True,
         values=(0.0, 0.0, 0.0, 0.0, 0.0),
         field_38=True,

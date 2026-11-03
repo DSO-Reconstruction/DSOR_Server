@@ -62,14 +62,14 @@ class ConsumableService:
 
         return replace(
             entry,
-            field_0c=int(server_tick) & 0xFFFFFFFF,
-            field_14=SERVER_TICKS_PER_SECOND,
-            field_08=int(server_tick) & 0xFFFFFFFF,
-            field_10=0,
-            field_20=LOCAL_PLAYER_ACTOR_ID,
-            field_25=False,
-            field_26=False,
-            field_39=True,
+            end_tick=int(server_tick) & 0xFFFFFFFF,
+            tick_interval=SERVER_TICKS_PER_SECOND,
+            start_tick=int(server_tick) & 0xFFFFFFFF,
+            total_duration=0,
+            source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            update_timing=False,
+            stacked=False,
+            permanent=True,
             has_details=False,
             values=(),
             field_38=False,
@@ -169,6 +169,25 @@ class ConsumableService:
             CharacterService._request_account_save(
                 s, "consumable status expired"
             )
+
+    @staticmethod
+    def _schedule_timed_status_expiry(s: Session, instance_id: int) -> None:
+        """End a finite persistent effect no consumable program owns."""
+
+        instance_id = int(instance_id)
+        with s.flow_lock:
+            expires_at = s.gameplay_timed_status_effect_expiries.get(instance_id)
+            if expires_at is None:
+                return
+            timer_key = ('consumable-expire', instance_id)
+            timer = s.gameplay_deadline_timer(
+                max(0.0, float(expires_at) - time.time()),
+                CharacterService._expire_consumable_status,
+                args=(s, s.gameplay_chase_generation, timer_key, instance_id),
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        timer.start()
 
     @staticmethod
     def _tick_consumable_health(
@@ -286,7 +305,7 @@ class ConsumableService:
                 int(character.progression_u32), int(points[0])
             )
             stack_count = min(
-                max(1, int(entry.field_18) + 1),
+                max(1, int(entry.stack_index) + 1),
                 max(1, int(definition.max_stack_size)),
             )
             active_status_effects = snapshot_active_status_entries(
@@ -489,6 +508,7 @@ class ConsumableService:
         now_epoch = time.time()
         restored = []
         expired = []
+        unowned = []
         with s.flow_lock:
             for instance_id, expires_at in tuple(
                 s.gameplay_timed_status_effect_expiries.items()
@@ -507,6 +527,7 @@ class ConsumableService:
                     entry.effect_id, tuple(entry.values)
                 )
                 if definition is None:
+                    unowned.append(int(instance_id))
                     continue
                 remaining_ticks = max(
                     1,
@@ -529,6 +550,8 @@ class ConsumableService:
             CharacterService._schedule_consumable_timers(
                 s, instance_id, definition
             )
+        for instance_id in unowned:
+            CharacterService._schedule_timed_status_expiry(s, instance_id)
 
     @staticmethod
     def _install_instant_status_entry(
@@ -595,7 +618,7 @@ class ConsumableService:
         )
         stack_index = min(
             (
-                int(previous_same.field_18) + 1
+                int(previous_same.stack_index) + 1
                 if previous_same is not None else 0
             ),
             max(0, int(definition.max_stack_size) - 1),
@@ -627,7 +650,7 @@ class ConsumableService:
                         * SERVER_TICKS_PER_SECOND
                     )),
                 )
-                end_tick = int(previous_entry.field_0c) & 0xFFFFFFFF
+                end_tick = int(previous_entry.end_tick) & 0xFFFFFFFF
             elif previous_runtime is not None and previous_runtime[1] is not None:
                 preserved_runtime_expiry = float(previous_runtime[1])
                 duration_ticks = max(
@@ -637,22 +660,22 @@ class ConsumableService:
                         * SERVER_TICKS_PER_SECOND
                     )),
                 )
-                end_tick = int(previous_entry.field_0c) & 0xFFFFFFFF
+                end_tick = int(previous_entry.end_tick) & 0xFFFFFFFF
         instance_id = int(s.gameplay_next_status_effect_instance_id)
         s.gameplay_next_status_effect_instance_id += 1
         entry = StatusEffectEntry(
             effect_id=int(definition.effect_id),
-            field_04=instance_id,
-            field_0c=end_tick,
-            field_14=SERVER_TICKS_PER_SECOND,
-            field_08=int(server_tick) & 0xFFFFFFFF,
-            field_18=stack_index,
-            field_10=duration_ticks,
-            field_1c=100,
-            field_20=LOCAL_PLAYER_ACTOR_ID,
-            field_25=False,
-            field_26=bool(stack_index > 0),
-            field_39=False,
+            instance_id=instance_id,
+            end_tick=end_tick,
+            tick_interval=SERVER_TICKS_PER_SECOND,
+            start_tick=int(server_tick) & 0xFFFFFFFF,
+            stack_index=stack_index,
+            total_duration=duration_ticks,
+            source_level=100,
+            source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            update_timing=False,
+            stacked=bool(stack_index > 0),
+            permanent=False,
             has_details=True,
             values=tuple(definition.values),
         )
@@ -969,7 +992,7 @@ class ConsumableService:
             )
             stack_index = min(
                 (
-                    int(previous_same.field_18) + 1
+                    int(previous_same.stack_index) + 1
                     if previous_same is not None else 0
                 ),
                 max(0, int(definition.max_stack_size) - 1),
@@ -978,18 +1001,18 @@ class ConsumableService:
             s.gameplay_next_status_effect_instance_id += 1
             entry = StatusEffectEntry(
                 effect_id=definition.effect_id,
-                field_04=instance_id,
-                field_0c=(server_tick + definition.duration_ticks)
+                instance_id=instance_id,
+                end_tick=(server_tick + definition.duration_ticks)
                 & 0xFFFFFFFF,
-                field_14=SERVER_TICKS_PER_SECOND,
-                field_08=server_tick,
-                field_18=stack_index,
-                field_10=definition.duration_ticks,
-                field_1c=100,
-                field_20=LOCAL_PLAYER_ACTOR_ID,
-                field_25=False,
-                field_26=bool(stack_index > 0),
-                field_39=False,
+                tick_interval=SERVER_TICKS_PER_SECOND,
+                start_tick=server_tick,
+                stack_index=stack_index,
+                total_duration=definition.duration_ticks,
+                source_level=100,
+                source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                update_timing=False,
+                stacked=bool(stack_index > 0),
+                permanent=False,
                 has_details=True,
                 values=definition.values,
             )

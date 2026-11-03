@@ -180,8 +180,12 @@ class PlayerSummonService:
             callback(s, ("player_summon_spawn", spawn))
         else:
             CharacterService._send_player_summon_spawn_to(s, spawn)
+        from dso_server.services.talent_events import talent_minion_auras
         for summon in spawn.actors:
-            for aura, receivers in combat.player_status_minion_auras(summon.definition.monster_template_id):
+            for aura, receivers in (
+                *combat.player_status_minion_auras(summon.definition.monster_template_id),
+                *talent_minion_auras(s, summon),
+            ):
                 CharacterService._publish_player_location_visuals(
                     s, combat, (aura,), position=summon.position,
                     yaw=summon.yaw, server_tick=spawn_server_tick,
@@ -250,8 +254,16 @@ class PlayerSummonService:
             inventory=inventory,
             modifier_sources=modifier_sources,
         )
+        # ``Minion:`` lines of one effect are one group: each row's own cap
+        # made Fiery Vengeance's four bombs replace each other down to one.
+        group_sizes = {}
+        for monster_id, amount, _offset in specs:
+            group_sizes[monster_id] = group_sizes.get(monster_id, 0) + int(amount)
         prepared_definitions = tuple(
-            (ordinal, definition)
+            (ordinal, replace(
+                definition,
+                limit=max(int(definition.limit), group_sizes[monster_id]),
+            ))
             for ordinal, (monster_id, amount, offset) in enumerate(specs)
             for definition in (
                 load_socket_minion_definition(
@@ -585,11 +597,23 @@ class PlayerSummonService:
             location_visuals = (
                 combat.expire_player_location_visuals_matching(
                     summon.owner_actor_id,
-                    tuple(
-                        effect.resource_id
-                        for effect in (
-                            summon.definition.location_visual_effects
-                        )
+                    (
+                        *(
+                            effect.resource_id
+                            for effect in (
+                                summon.definition.location_visual_effects
+                            )
+                        ),
+                        # What the actor hosts goes with it: a turret shot
+                        # down early must not leave its aura ring behind.
+                        *(
+                            visual.definition.resource_id
+                            for visual in getattr(
+                                combat, "player_location_visuals", {}
+                            ).values()
+                            if getattr(visual, "source_actor_id", None)
+                            == int(actor_id)
+                        ),
                     ),
                     cast_id=summon.cast_id,
                 )
@@ -598,6 +622,9 @@ class PlayerSummonService:
                 actor_id, land_fired_bullets=timer_key == lifetime_key,
             ):
                 return
+        if timer_key[0] == "pvp-summon-kill":
+            from dso_server.services.talent_events import dispatch_minion_destroyed
+            dispatch_minion_destroyed(s, summon)
 
         committed = False
         old_discard_timer = None

@@ -131,7 +131,7 @@ def stacks(s):
     result = Counter()
     for entry, _expires in s.gameplay_runtime_status_effects.values():
         name = effect_name(entry.effect_id)
-        result[name] = max(result[name], int(entry.field_18) + 1)
+        result[name] = max(result[name], int(entry.stack_index) + 1)
     return result
 
 
@@ -274,7 +274,7 @@ def test_ranger_jewel_explodes_around_the_victim_with_three_burns(sets, sockets,
     assert all(r.damage > 0 for r in struck)
     assert combat.monster_health[far] == far_health
     transactions = CharacterService._victim_effect_command_transactions(s, struck[:1])
-    burns = [entry.field_18 + 1 for commands in transactions for command in commands
+    burns = [entry.stack_index + 1 for commands in transactions for command in commands
              for entry in command.value.entries
              if entry.has_details and effect_name(entry.effect_id) == "debuff_dot_burn"]
     assert burns == [1, 2, 3]

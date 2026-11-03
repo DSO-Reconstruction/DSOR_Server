@@ -183,9 +183,9 @@ def test_real_twentieth_cny_stack_starts_hidden_skill_effect_once(sets, wearer):
                    if entry.effect_id == followup.effect_id]
         assert len(matches) == (1 if index >= 19 else 0)
         if index == 19:
-            occurrence = matches[0].field_04
+            occurrence = matches[0].instance_id
         if index == 20:
-            assert matches[0].field_04 == occurrence
+            assert matches[0].instance_id == occurrence
     assert any(definition.resource_id == stack.resource_id
                for definition in wearer.gameplay_item_set_programs.values())
     # An unrelated equipment refresh must preserve still-equipped skill procs.

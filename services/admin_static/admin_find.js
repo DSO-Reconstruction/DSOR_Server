@@ -1,6 +1,6 @@
 import { $, esc, api, classes, debounce, hasSession } from "./admin_ui.js";
 
-const shortcuts = [["Create account", "#accounts/new"], ["New booking", "#bookings/new"], ["Add event", "#events/new"],
+const shortcuts = [["Create account", "#accounts/new"], ["New booking", "#bookings/new"], ["New bonus code", "#bonus-codes/new"], ["Add event", "#events/new"],
   ["Season Pass rewards", "#season-pass/rewards"], ["Season Pass missions", "#season-pass/missions"]];
 const sources = [
   ["Characters", "characters", c => [c.name, `#characters/${c.character_id}`, `${classes[c.class_id] ?? c.class_id} · Level ${c.level} · ${c.owner || "Unclaimed"}`]],

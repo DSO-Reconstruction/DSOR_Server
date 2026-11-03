@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.gameplay.local_combat_state import PLAYER_HUNTING_MINION_STRIKES
 from dso_server.gameplay.pvp_match_state import MatchPhase
 
 
@@ -219,6 +220,16 @@ class SummonPVPService:
                 owner_session.gameplay_presence_callback(
                     owner_session, ("pvp_combat_resolution", resolution)
                 )
+            striker = combat.player_summons.get(int(resolution.attacker_actor_id))
+            if (
+                striker is not None and
+                striker.definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES
+            ):
+                # ``pvp_sucide``: a bomb goes off once.
+                CharacterService._expire_player_summon(
+                    owner_session, owner_session.gameplay_chase_generation,
+                    ("player-summon-spent", striker.actor_id), striker.actor_id,
+                )
             if match_opponents and owner_session.gameplay_match_callback is not None:
                 owner_session.gameplay_match_callback(
                     owner_session, ("match_damage", int(resolution.damage))
@@ -228,7 +239,14 @@ class SummonPVPService:
                         owner_session, ("match_kill", target_session)
                     )
             if resolution.killed:
+                from dso_server.services.talent_events import dispatch_talent_event
+                dispatch_talent_event(
+                    owner_session, "killplayer",
+                    server_tick=int(resolution.server_tick),
+                )
                 continue
+            from dso_server.services.talent_events import dispatch_incoming_hit
+            dispatch_incoming_hit(target_session, resolution)
             CharacterService._schedule_pvp_status_damage(
                 owner_session,
                 owner_session.gameplay_chase_generation,

@@ -1,6 +1,6 @@
 import { $, esc, human, date, api, href, link, navigate, status, table, facts, stats, section,
   tabs, toolbar, bindSearch, pager, formError, confirmAction, notice, tree,
-  characterTable, bookingTable } from "./admin_ui.js";
+  characterTable, bookingTable, bookingGrants } from "./admin_ui.js";
 
 const names = {status: "Status", accounts: "Accounts", characters: "Characters", bookings: "Bookings", items: "Item catalog", sessions: "Sessions", audit: "Audit log"};
 const query = params => new URLSearchParams({limit: 50, ...params});
@@ -259,12 +259,12 @@ function socketRanges(item) {
 export async function bookingPage(route) {
   const b = await api(`/api/bookings/${route.parts[1]}`);
   const result = {
-    title: `Booking #${b.id}`, description: `${human(b.status)} · ${b.kind === "currency" ? "Currency" : "Item"} grant`,
+    title: `Booking #${b.id}`, description: `${human(b.status)} · ${b.kind === "batch" ? "Batch" : b.kind === "currency" ? "Currency" : "Item"} grant`,
     breadcrumbs: [["Bookings", "bookings"], [`#${b.id}`]],
     actions: link("New booking", "bookings/new", {account_id: b.account_id, character_id: b.character_id}, "button secondary"),
     html: `<div class="columns">${section("Recipient and grant", facts([
       ["Account", link(b.account.username, `accounts/${b.account_id}`)], ["Character", link(b.character?.name || b.character_id, `characters/${b.character_id}`)],
-      ["Resource", b.kind === "item" ? link(b.resource, `items/${encodeURIComponent(b.resource)}`, {}, "resource mono") : esc(human(b.resource))],
+      ["Resource", b.kind === "item" ? link(b.resource, `items/${encodeURIComponent(b.resource)}`, {}, "resource mono") : b.kind === "batch" ? bookingGrants(b) : esc(human(b.resource))],
       ["Quantity", b.amount], ["Reason", esc(b.reason)]
     ]))}${section("Delivery", facts([
       ["Status", status(human(b.status), b.status === "delivered" ? "good" : b.error ? "bad" : "")],

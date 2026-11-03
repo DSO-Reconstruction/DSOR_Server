@@ -279,7 +279,7 @@ class LifecycleService:
                     active=True,
                 ).entries[0]
                 s.gameplay_persistent_status_effects[
-                    mount_effect.field_04
+                    mount_effect.instance_id
                 ] = mount_effect
             service = GAMEPLAY_SERVICE_NAME.encode('ascii')
             s.send_reliable_ordered(

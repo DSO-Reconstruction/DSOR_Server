@@ -678,9 +678,9 @@ def _collector_effect_definitions_cached(
         definitions = []
         # One entry per reward: two subgroups earning the same +3% HP bonus
         # add up to +6%. The client keeps each as its own instance and, with
-        # field_26 clear, never reads field_18. Retail numbers the entries of
+        # stacked clear, never reads stack_index. Retail numbers the entries of
         # one effect 0..n-1; here they stay 0, because the server reads
-        # field_18 as a stack count.
+        # stack_index as a stack count.
         for reward_id in sorted(
             reward_id for _subgroup, _threshold, reward_id, _amount
             in _reached_collection_rewards(database, owned_resource_ids)
@@ -699,7 +699,7 @@ def _collector_effect_definitions_cached(
                     # Stickerbook rewards are derived from permanent
                     # collection progress. The database's one-second
                     # duration is only a template default. These entries use
-                    # field_0c=0, which the client reserves for permanent
+                    # end_tick=0, which the client reserves for permanent
                     # effects, so they must also carry a zero duration rather
                     # than an inconsistent one-second timer.
                     0,
@@ -815,18 +815,18 @@ def reconcile_collector_effects(
     for wire_id in sorted(known_wire_ids | desired_by_wire.keys()):
         existing = sorted(
             existing_by_wire.get(wire_id, ()),
-            key=lambda value: int(value.field_04),
+            key=lambda value: int(value.instance_id),
         )
         desired = desired_by_wire.get(wire_id, ())
         keep_count = min(len(existing), len(desired))
         for previous in existing[keep_count:]:
-            effects.pop(int(previous.field_04), None)
+            effects.pop(int(previous.instance_id), None)
             transitions.append(replace(
                 previous,
-                field_10=0,
-                field_18=0,
-                field_25=False,
-                field_39=False,
+                total_duration=0,
+                stack_index=0,
+                update_timing=False,
+                permanent=False,
                 has_details=False,
                 values=(),
                 field_38=False,
@@ -837,20 +837,20 @@ def reconcile_collector_effects(
             existing[:keep_count], desired[:keep_count]
         ):
             if (
-                int(previous.field_10) == int(definition.duration_ticks)
-                and int(previous.field_20) == int(actor_id)
+                int(previous.total_duration) == int(definition.duration_ticks)
+                and int(previous.source_actor_id) == int(actor_id)
             ):
                 # Retained collector buffs are already live. Advancing only
                 # their start tick and resending the same detailed iid is a
                 # duplicate client-side ADD, not a refresh.
                 continue
-            effects.pop(int(previous.field_04), None)
+            effects.pop(int(previous.instance_id), None)
             transitions.append(replace(
                 previous,
-                field_10=0,
-                field_18=0,
-                field_25=False,
-                field_39=False,
+                total_duration=0,
+                stack_index=0,
+                update_timing=False,
+                permanent=False,
                 has_details=False,
                 values=(),
                 field_38=False,
@@ -860,17 +860,17 @@ def reconcile_collector_effects(
             next_instance_id = max(1, int(next_instance_id))
             replacement = StatusEffectEntry(
                 effect_id=int(definition.wire_id),
-                field_04=next_instance_id,
-                field_0c=0,
-                field_14=25,
-                field_08=int(server_tick) & 0xFFFFFFFF,
-                field_18=0,
-                field_10=int(definition.duration_ticks),
-                field_1c=100,
-                field_20=int(actor_id),
-                field_25=False,
-                field_26=False,
-                field_39=True,
+                instance_id=next_instance_id,
+                end_tick=0,
+                tick_interval=25,
+                start_tick=int(server_tick) & 0xFFFFFFFF,
+                stack_index=0,
+                total_duration=int(definition.duration_ticks),
+                source_level=100,
+                source_actor_id=int(actor_id),
+                update_timing=False,
+                stacked=False,
+                permanent=True,
                 has_details=True,
                 values=(),
             )
@@ -882,17 +882,17 @@ def reconcile_collector_effects(
             next_instance_id = max(1, int(next_instance_id))
             entry = StatusEffectEntry(
                 effect_id=int(definition.wire_id),
-                field_04=next_instance_id,
-                field_0c=0,
-                field_14=25,
-                field_08=int(server_tick) & 0xFFFFFFFF,
-                field_18=0,
-                field_10=int(definition.duration_ticks),
-                field_1c=100,
-                field_20=int(actor_id),
-                field_25=False,
-                field_26=False,
-                field_39=True,
+                instance_id=next_instance_id,
+                end_tick=0,
+                tick_interval=25,
+                start_tick=int(server_tick) & 0xFFFFFFFF,
+                stack_index=0,
+                total_duration=int(definition.duration_ticks),
+                source_level=100,
+                source_actor_id=int(actor_id),
+                update_timing=False,
+                stacked=False,
+                permanent=True,
                 has_details=True,
                 values=(),
             )
@@ -917,17 +917,17 @@ def sticker_status_entry(
 ) -> StatusEffectEntry:
     return StatusEffectEntry(
         effect_id=int(definition.status_effect_wire_id),
-        field_04=int(instance_id),
-        field_0c=0,
-        field_14=0,
-        field_08=int(start_tick) & 0xFFFFFFFF,
-        field_18=0,
-        field_10=int(definition.duration_ticks),
-        field_1c=100,
-        field_20=int(actor_id),
-        field_25=False,
-        field_26=False,
-        field_39=True,
+        instance_id=int(instance_id),
+        end_tick=0,
+        tick_interval=0,
+        start_tick=int(start_tick) & 0xFFFFFFFF,
+        stack_index=0,
+        total_duration=int(definition.duration_ticks),
+        source_level=100,
+        source_actor_id=int(actor_id),
+        update_timing=False,
+        stacked=False,
+        permanent=True,
         has_details=bool(active),
         values=definition.values if active else (),
     )

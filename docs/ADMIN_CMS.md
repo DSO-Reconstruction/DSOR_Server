@@ -34,6 +34,7 @@ CMS roles do not change in-game character powers or name colors.
 | Accounts | Account detail pages with owned characters, settings, scoped sessions and bookings; rename, reset password, enable/disable login and manage CMS access |
 | Characters | Full pages for overview, searchable inventory containers, item details, progression, structured state, live effects/map transfers, bookings and raw diagnostics |
 | Bookings | Full-page recipient selection, template search, equipment configuration and review; inspect delivery history/errors and cancel pending grants |
+| Bonus codes | Create codes that book a fixed reward to whoever redeems them in the shop; limit, expire or disable them and inspect every redemption |
 | Events | Search global event templates, start new runs, deactivate or reactivate retained runs, inspect settings and audit history |
 | Season Pass | Start, reschedule, end or resume seasons; edit each level's experience and free/gold/red rewards; write rewards into client databases; list missions |
 | Item catalog | Search actual static database templates and start item bookings |
@@ -114,6 +115,32 @@ the reward. Delivery also checks that character ownership has not changed.
 New characters start without a mount and discover travel destinations by visiting
 maps. Authored `UnlockingQuest` requirements grant access when the quest is turned
 in. Existing collection ownership and discovered maps are preserved.
+
+## Bonus codes
+
+A bonus code books a fixed reward to the character that redeems it. Players enter
+codes in the game's cash shop under **Redeem voucher**, the client's stock
+`Voucher` category. It needs no client or static database change.
+
+Build the reward like a batch booking, from any mix of currencies and items. Codes
+are 3 to 32 letters, digits, hyphens or underscores, and match in either case;
+**Generate** suggests a random one without look-alike characters. Each account can
+redeem a code once, on any of its characters. The total redemption limit and the
+expiry are optional. The code's page changes them, disables or re-enables the code
+and lists every redemption with its booking.
+
+Claiming a code and creating its booking are one `accounts.sqlite3` commit, so
+concurrent players cannot pass the limit and a failed claim leaves nothing behind.
+After that it is an ordinary booking under **Bookings** (administrator `bonus code`,
+reason `Bonus code <CODE>`): delivered immediately when the character is ready,
+otherwise at its next map entry, and open to retry or cancellation. Cancelling the
+booking does not give the account its redemption back.
+
+The client shows the server's text as is, so these messages are English in every
+client language. Unknown, disabled and expired codes all answer "not valid". After
+ten of those in ten minutes an account's attempts are refused until the window
+passes. A code whose reward no longer validates, for example because a static.db4
+update removed a template, answers "not eligible" and is not used up.
 
 ## Live character actions
 
@@ -231,7 +258,7 @@ See [SEASON_PASS.md](SEASON_PASS.md) for the packets and progress rules.
 | `DSO_ADMIN_HOST` | `127.0.0.1` | Dedicated bind address; `0.0.0.0` enables network access |
 | `DSO_ADMIN_PORT` | `8081` | Dedicated HTTP port; must differ from the account HTTP port |
 | `DSO_ADMIN_SECURE_COOKIE` | `0` | Set `1` when serving the CMS through HTTPS |
-| `DSO_ACCOUNT_REGISTRY` | `data/db/accounts.sqlite3` | Shared game accounts, CMS roles, bookings and audit |
+| `DSO_ACCOUNT_REGISTRY` | `data/db/accounts.sqlite3` | Shared game accounts, CMS roles, bookings, bonus codes and audit |
 | `DSO_PLAYER_DATABASE` | `data/db/players.sqlite3` | Shared saved character state |
 | `DSO_SEASON_PASS_CONFIG` | `data/season_pass.json` | Season Pass reward edits |
 | `DSO_CLIENT_STATIC_DB` | Not set | Client `static.db4` files that receive Season Pass reward edits (`;`-separated on Windows) |

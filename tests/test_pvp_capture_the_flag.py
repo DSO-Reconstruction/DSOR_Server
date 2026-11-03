@@ -198,14 +198,14 @@ class CaptureTheFlagMatchTests(unittest.TestCase):
         for session in self.sessions:
             self.assertNotIn(blue_item, session.gameplay_world_loot)
         effect = self.carrier_effects(carrier)[BLUE]
-        self.assertIn(effect.field_04, carrier.gameplay_persistent_status_effects)
+        self.assertIn(effect.instance_id, carrier.gameplay_persistent_status_effects)
         self.assertAlmostEqual(effect.values[0], -0.3, places=5)
         self.move(carrier, self.layout.home(RED))
         self.assertEqual(self.match.objective.captures, [0, 1])
         self.assertEqual(self.flags[BLUE].status, FLAG_AT_BASE)
         self.assertNotEqual(self.flags[BLUE].item_id, blue_item)
         self.assertNotIn(BLUE, self.carrier_effects(carrier))
-        self.assertNotIn(effect.field_04, carrier.gameplay_persistent_status_effects)
+        self.assertNotIn(effect.instance_id, carrier.gameplay_persistent_status_effects)
         entry = self.match.participant(carrier.gameplay_character.character_id)
         self.assertEqual(entry.flag_captures, 1)
         carrier.recorder.messages.clear()

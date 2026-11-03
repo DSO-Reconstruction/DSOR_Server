@@ -351,6 +351,33 @@ _SOURCE_KEY_CACHE_MAXIMUM = 65536
 # Instructions ``_expand_status_modifier_instructions`` scans for nested
 # ActorStatusEffect programs; later positions are never expanded.
 _STATUS_EXPANSION_WINDOW = 256
+# An ``ActorStatusEffect`` rule with one of these ``ON:`` waits for something
+# its wearer does or suffers, which no cast is: services/talent_events raises
+# them. Read as part of a skill, a rule's payload went on for good. Second
+# Chance halved every cooldown from the moment it was bought, and Final
+# Supernova put its death blast's 1000% base damage on every spell.
+_WEARER_EVENT_TRIGGERS = frozenset({
+    "die", "disabled", "enterpvp", "hitblocked", "kill1hand", "kill2hand",
+    "killmarked", "killplayer", "lowhealth", "nohealth",
+})
+
+
+# The minions that hunt players, with what their one strike deals. Summons
+# otherwise chase monsters only, and an arena has none. Fiery Vengeance's bombs
+# author no damage (``dwarf_BombExplode`` is 0): the 600% is the trait's tooltip.
+PLAYER_HUNTING_MINION_STRIKES = {"dwarf_bomb": 6.0}
+
+
+def _waits_for_wearer_event(arguments: tuple[str, ...]) -> bool:
+    return any(
+        name.strip().casefold() == "on"
+        and value.strip().casefold() in _WEARER_EVENT_TRIGGERS
+        for name, _separator, value in (
+            token.partition(":") for token in arguments[2:]
+        )
+    )
+
+
 _FROZEN_SOURCE_TYPES: dict[type, bool] = {}
 _FIRST = itemgetter(0)
 _SECOND = itemgetter(1)
@@ -1531,6 +1558,11 @@ class DamageResolution:
     cast_id: int = 0
     rift_damage: int = 0
     pre_hit_health: int | None = None
+    # A lethal DoT tick clears its target's effects before the kill is
+    # dispatched; every other final blow can still read them there.
+    target_marked: bool = False
+    # A talent turned this lethal blow into a heal (HealOnDeath, On:NoHealth).
+    death_saved: bool = False
 
 
 class _MonsterOccupancy:
@@ -4048,7 +4080,7 @@ class LocalCombatState:
                 continue
             if hasattr(source, "effect_id"):
                 effect_id = int(source.effect_id)
-                stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+                stack_count = max(1, int(getattr(source, "stack_index", 0)) + 1)
                 details = tuple(
                     float(value) for value in getattr(source, "values", ())
                 )
@@ -5727,6 +5759,7 @@ class LocalCombatState:
         server_tick: int,
         now: float | None = None,
         player_positions: dict[int, tuple[float, float, float]] | None = None,
+        hostile_player_actor_ids_by_owner=None,
     ) -> tuple[MonsterMovement, ...]:
         '''Move mobile player minions toward nearby hostile actors.'''
 
@@ -5774,23 +5807,35 @@ class LocalCombatState:
                 continue
             owner = (player_positions or {}).get(summon.owner_actor_id)
             follows = bool(getattr(definition, "follows_owner", False))
-            candidates = tuple(
-                (
-                    self._distance(
-                        summon.position, self.monster_positions[target_id]
-                    ),
-                    target_id,
+            target_positions = self.monster_positions
+            if definition.monster_template_id in PLAYER_HUNTING_MINION_STRIKES:
+                target_positions = player_positions or {}
+                candidates = tuple(
+                    (self._distance(summon.position, target_positions[target_id]), target_id)
+                    for target_id in (hostile_player_actor_ids_by_owner or {}).get(
+                        summon.owner_actor_id, ()
+                    )
+                    if target_id in target_positions
+                    and self.player_health.get(target_id, [0])[0] > 0
                 )
-                for target_id in self.living_actor_ids
-                if target_id not in self.returning_home_actor_ids
-                and (not follows or owner is None or
-                     self._distance(owner, self.monster_positions[target_id]) <= definition.aggro_range)
-            )
+            else:
+                candidates = tuple(
+                    (
+                        self._distance(
+                            summon.position, self.monster_positions[target_id]
+                        ),
+                        target_id,
+                    )
+                    for target_id in self.living_actor_ids
+                    if target_id not in self.returning_home_actor_ids
+                    and (not follows or owner is None or
+                         self._distance(owner, self.monster_positions[target_id]) <= definition.aggro_range)
+                )
             nearest = min(candidates) if candidates else None
             geometry = self._load_player_skill_geometry(definition.attack_skill_database_index)
             if nearest is not None and (definition.aggro_range <= 0.0 or nearest[0] <= definition.aggro_range):
                 distance, target_actor_id = nearest
-                target = self.monster_positions[target_actor_id]
+                target = target_positions[target_actor_id]
                 # Within its attack's reach it stops, follower or not: a
                 # ranged summon shoots from where it stands instead of
                 # walking up to 2 m of its target.
@@ -6854,6 +6899,8 @@ class LocalCombatState:
             cursor += 1
             if kind.casefold() != "actorstatuseffect" or len(arguments) < 2:
                 continue
+            if _waits_for_wearer_event(arguments):
+                continue
             effect_id = self._status_effect_ids.get(
                 self._clean_modifier_token(arguments[1])
             )
@@ -7038,7 +7085,7 @@ class LocalCombatState:
             return (
                 "effect",
                 int(getattr(source, "effect_id", -1)),
-                int(getattr(source, "field_18", 0)),
+                int(getattr(source, "stack_index", 0)),
                 tuple(float(value) for value in getattr(source, "values", ())),
             )
         if hasattr(source, "kind") and hasattr(source, "arguments"):
@@ -7060,7 +7107,7 @@ class LocalCombatState:
 
         A source may be a wire ``StatusEffectEntry``, a legacy integer effect
         id, or an already parsed item-set modifier. Status-effect stack values
-        matter: rank ten is one effect with ``field_18 == 9``, not ten ids.
+        matter: rank ten is one effect with ``stack_index == 9``, not ten ids.
         """
 
         if not modifier_sources:
@@ -7313,6 +7360,8 @@ class LocalCombatState:
                     normalized_kind == "actorstatuseffect"
                     and len(arguments) >= 2
                 ):
+                    if _waits_for_wearer_event(arguments):
+                        continue
                     operation = arguments[0].casefold()
                     encoded = ",".join(arguments[1:])
                     if operation.endswith("le"):
@@ -7502,7 +7551,14 @@ class LocalCombatState:
                     elif normalized_kind in {
                         "resourcecost", "additionalskillcost"
                     }:
-                        scaled = amount * max(1, int(stack_count))
+                        # A talent rank moves the variable, not the operand:
+                        # A Handful of Resources is -1.25% only at rank 1.
+                        ranked = resolve_modifier_value(
+                            arguments[0], details, cooldown_variables
+                        )
+                        scaled = (
+                            amount if ranked is None else ranked
+                        ) * max(1, int(stack_count))
                         if operation.casefold() == "relative":
                             cost_relative += scaled
                         else:
@@ -7593,19 +7649,27 @@ class LocalCombatState:
                             impact_count = max(1, int(row[4] or 1))
                     continue
 
-                if (
-                    normalized_kind != "skillstatuseffect"
-                    or len(arguments) < 3
-                    or not self._skill_scope_matches(
-                        geometry, (arguments[1],)
-                    )
+                if normalized_kind != "skillstatuseffect" or len(arguments) < 3:
+                    continue
+                # Several skills can share one rule: Will to Survive authors
+                # ``addUE,warshout,frenzyshout,warrior_healing_talent,C:1.0``.
+                # The effect is the last bare token before the parameters.
+                effect_index = next(
+                    (
+                        index for index, token in enumerate(arguments)
+                        if ":" in token
+                    ),
+                    len(arguments),
+                ) - 1
+                if effect_index < 2 or not self._skill_scope_matches(
+                    geometry, tuple(arguments[1:effect_index])
                 ):
                     continue
                 operation = arguments[0].casefold()
-                encoded = ",".join(arguments[2:])
+                encoded = ",".join(arguments[effect_index:])
                 if (
                     operation == "addle"
-                    and arguments[2].split(",", 1)[0].casefold()
+                    and arguments[effect_index].split(",", 1)[0].casefold()
                     == "jewel_bonus_xmas_aura"
                 ):
                     # Socket impact dispatch owns the chance roll and target
@@ -7929,7 +7993,7 @@ class LocalCombatState:
             else:
                 instructions = ((source_kind, source_arguments, 1, ()),)
         elif effect_id is not None:
-            stack_count = max(1, int(getattr(source, "field_18", 0)) + 1)
+            stack_count = max(1, int(getattr(source, "stack_index", 0)) + 1)
             details = tuple(
                 float(value) for value in getattr(source, "values", ())
             )
@@ -8292,6 +8356,21 @@ class LocalCombatState:
             )
             for source in tuple(sources)
             if int(getattr(source, "effect_id", -1)) >= 0
+        )
+
+    def status_sources_are_stunned(self, sources) -> bool:
+        """HitStunned's victim test: an active effect of the ``Stun`` group.
+
+        ``debuff_cc_stun_immunity`` carries that group as well, and it is what
+        keeps a target from being stunned.
+        """
+
+        return any(
+            "stun" in groups and "stunimmunity" not in groups
+            for groups in map(
+                self._status_groups_for_effect,
+                (int(getattr(source, "effect_id", -1)) for source in tuple(sources)),
+            )
         )
 
     def _monster_actions_disabled(
@@ -11529,6 +11608,9 @@ class LocalCombatState:
                         skill_index=state.skill_index,
                         source_actor_id=state.source_actor_id,
                         periodic_damage=True,
+                        target_marked=killed and self.monster_has_status_group(
+                            actor_id, ("mark",), now=current_time
+                        ),
                     )
                 )
                 previous = current
@@ -11962,7 +12044,7 @@ class LocalCombatState:
         if hasattr(source, "effect_id"):
             return (
                 int(source.effect_id),
-                max(1, int(getattr(source, "field_18", 0)) + 1),
+                max(1, int(getattr(source, "stack_index", 0)) + 1),
                 tuple(
                     float(value)
                     for value in getattr(source, "values", ())
@@ -12882,7 +12964,10 @@ class LocalCombatState:
                     ) * 0.5 * self._monster_skill_damage_multiplier(actor_id, now=current_time)
                     damage = max(0, int(round(
                         base_damage
-                        * max(0.0, pending.geometry.damage_modifier)
+                        * max(0.0, PLAYER_HUNTING_MINION_STRIKES.get(
+                            summon.definition.monster_template_id,
+                            pending.geometry.damage_modifier,
+                        ))
                         * max(
                             0.0,
                             float(player_damage_multipliers.get(
@@ -13198,6 +13283,7 @@ class LocalCombatState:
         low_health: bool = False,
         frost_hit: bool = False,
         marked_hit: bool = False,
+        stunned_hit: bool = False,
         blocked: bool = False,
         event: str = "",
     ) -> bool:
@@ -13225,6 +13311,8 @@ class LocalCombatState:
             return False
         if trigger == "hitmarked" and not marked_hit:
             return False
+        if trigger == "hitstunned" and not stunned_hit:
+            return False
         if trigger == "hitblocked" and not blocked:
             return False
         if trigger == "lowhealth" and not low_health:
@@ -13238,7 +13326,8 @@ class LocalCombatState:
         if trigger not in {
             "", "hit", "skillstart", "immediate", "immediatemanaged",
             "kill", "hitcritical", "hitlowhealth", "hitfrost",
-            "hitblocked", "hitmarked", "lowhealth", "pickuphealthglobe", "revive120",
+            "hitblocked", "hitmarked", "hitstunned", "lowhealth",
+            "pickuphealthglobe", "revive120",
         } and not trigger.startswith("maxstacksize"):
             return False
         if definition.chance <= 0.0:
@@ -13531,6 +13620,12 @@ class LocalCombatState:
         marked_hit = self.monster_has_status_group(
             monster.actor_id, ("mark",), now=current_time
         )
+        # So does HitStunned: a stunning shot does not cash in its own stun.
+        stunned_hit = self.status_sources_are_stunned(
+            self._active_monster_modifier_sources(
+                monster.actor_id, now=current_time
+            )
+        )
         preliminary_effects = tuple(
             definition
             for definition in pending.victim_status_effects
@@ -13544,6 +13639,7 @@ class LocalCombatState:
                 killed=False,
                 critical_hit=critical_hit,
                 marked_hit=marked_hit,
+                stunned_hit=stunned_hit,
                 low_health=(
                     max(0, previous - damage)
                     <= max(1, round(monster.maximum_health / 3.0))
@@ -13592,6 +13688,7 @@ class LocalCombatState:
                 killed=killed,
                 critical_hit=critical_hit,
                 marked_hit=marked_hit,
+                stunned_hit=stunned_hit,
                 low_health=(
                     current
                     <= max(1, round(monster.maximum_health / 3.0))

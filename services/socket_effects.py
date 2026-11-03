@@ -79,11 +79,11 @@ class SocketEffectService:
                     timers.append(timer)
                 removed_entries.append(replace(
                     entry,
-                    field_0c=int(server_tick) & 0xFFFFFFFF,
-                    field_10=0,
-                    field_25=False,
-                    field_26=False,
-                    field_39=False,
+                    end_tick=int(server_tick) & 0xFFFFFFFF,
+                    total_duration=0,
+                    update_timing=False,
+                    stacked=False,
+                    permanent=False,
                     has_details=False,
                     values=(),
                     field_38=False,
@@ -126,8 +126,13 @@ class SocketEffectService:
                 server_tick=int(server_tick),
                 event_seed=int(event_seed),
             )
+            if int(current_health) > 0:
+                from dso_server.services.talent_events import dispatch_talent_event
+                dispatch_talent_event(s, "lowhealth", server_tick=int(server_tick))
         elif previous and not low_health:
             from dso_server.services.item_set_events import stop_item_set_condition
+            from dso_server.services.talent_events import end_held_talent_effects
+            end_held_talent_effects(s, "notlowhealth")
             try:
                 CharacterService._stop_socket_event_effects(
                     s, "lowhealth", server_tick=int(server_tick)
@@ -810,7 +815,7 @@ class SocketEffectService:
                 )
                 if (
                     running is not None
-                    and int(running[1].field_18) + 1
+                    and int(running[1].stack_index) + 1
                     >= int(definition.max_stack_size)
                 ):
                     chained = (

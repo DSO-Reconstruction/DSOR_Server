@@ -44,9 +44,9 @@ def effect(resource_id):
         "SELECT rowid-1 FROM _Template_StatusEffect WHERE Id=?", (resource_id,),
     ).fetchone()
     return StatusEffectEntry(
-        effect_id=row[0], field_04=1, field_0c=0, field_14=25, field_08=0, field_18=0,
-        field_10=0, field_1c=100, field_20=1, field_25=False, field_26=False,
-        field_39=True, has_details=True, values=(0.5,),
+        effect_id=row[0], instance_id=1, end_tick=0, tick_interval=25, start_tick=0, stack_index=0,
+        total_duration=0, source_level=100, source_actor_id=1, update_timing=False, stacked=False,
+        permanent=True, has_details=True, values=(0.5,),
     )
 
 

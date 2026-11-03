@@ -96,14 +96,14 @@ def test_delayed_impacts_do_not_reapply_frost_from_one_cast():
     assert len(first[0]) == 1 and second == ((),)
     third = CharacterServer._victim_effect_command_transactions(s, (replace(hit, cast_id=43),),
                                                               include_item_set_procs=False)
-    assert third[0][0].value.entries[0].field_18 == 1
+    assert third[0][0].value.entries[0].stack_index == 1
 
 
 def test_finite_zero_duration_is_repaired_without_changing_permanent_or_removal():
     base = StatusEffectEntry(1,2,100,25,100,0,0,100,1,False,False,False,True)
-    assert base.field_10 == 1 and base.field_0c == 101
-    assert replace(base, field_0c=0, field_10=0).field_10 == 0
-    assert replace(base, has_details=False, field_10=0).field_10 == 0
+    assert base.total_duration == 1 and base.end_tick == 101
+    assert replace(base, end_tick=0, total_duration=0).total_duration == 0
+    assert replace(base, has_details=False, total_duration=0).total_duration == 0
 
 
 def test_counted_zero_template_has_explicit_client_expiry(monkeypatch):
@@ -127,7 +127,7 @@ def test_counted_zero_template_has_explicit_client_expiry(monkeypatch):
     for tick in (100,105):
         CharacterServer._send_player_skill_status_effects(s, (definition,), server_tick=tick, label='test')
     entry = next(e for e, expiry in s.gameplay_runtime_status_effects.values())
-    assert entry.field_26 and entry.field_39 and entry.field_10 == 125
+    assert entry.stacked and entry.permanent and entry.total_duration == 125
     assert len(timers) == 1 and timers[0].started and timers[0].delay == 5
     timers[0].callback(*timers[0].args)
     assert not s.gameplay_runtime_status_effects
