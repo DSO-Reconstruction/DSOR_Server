@@ -57,7 +57,7 @@ def test_membership_requires_paid_active_unexpired_tier(tier, enabled, offset, e
     assert (inventory.extra_storage_size, inventory.extra_bank_storage_size) == (
         (28, 40) if expected else (0, 0)
     )
-    assert (inventory.storage_size, inventory.bank_storage_size) == (224, 270)
+    assert (inventory.storage_size, inventory.bank_storage_size) == (224, 280)
 
 
 @pytest.mark.parametrize("storage_name,last_slot", [("extra_storage_slots", 27), ("extra_bank_storage_slots", 39)])
@@ -330,7 +330,6 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
         saved.talent_categories = tuple(TalentCategorySelection(0, (), ()) for _ in range(4))
         saved.inventory = decode_inventory_info(*encode_bootstrap_inventory_info(class_name="mage"))
         saved.inventory.storage_size = len(saved.inventory.storage_slots)
-        saved.inventory.bank_storage_size = 0
         saved.inventory.extra_storage_size = 28
         saved.inventory.extra_bank_storage_size = 40
         extra_inventory = copy.deepcopy(saved.inventory.items[-1])
@@ -340,6 +339,13 @@ def test_login_reconciles_membership_before_serializing_inventory(tier, expiry, 
         saved.inventory.items.extend((extra_inventory, extra_bank))
         saved.inventory.extra_storage_slots = {500: 0}
         saved.inventory.extra_bank_storage_slots = {501: 0}
+        # Login opens the full bank, so fill it to push the premium bank
+        # item into overflow.
+        for slot in range(280):
+            filler = copy.deepcopy(extra_inventory)
+            filler.item_id = 1000 + slot
+            saved.inventory.items.append(filler)
+            saved.inventory.bank_storage_slots[filler.item_id] = slot
         server.account_store.put(saved, flush=True)
         session = _session(50778, 42, "PremiumLogin")
         session.gameplay_character = server.character_selection.active_character
@@ -373,3 +379,19 @@ def test_offline_reward_allocator_reserves_hidden_item_ids():
     assert result.inventory.items[0].item_id == 501
     assert result.next_item_id == 502
     assert result.inventory.premium_inventory_overflow[0].item_id == 500
+
+
+def test_login_repair_opens_the_full_bank():
+    from dso_server.gameplay.skin_unlocks import repair_skin_source_inventory
+    from dso_server.protocol.gameplay_commands import LOCAL_INVENTORY_CAPACITIES
+
+    # Saves from the 53-extension capture had 270 slots: a 30-slot last bag.
+    inventory = InventoryInfo(
+        items=[ItemInfo(1, template_id="item_1")],
+        bank_storage_upgrade=53, bank_storage_size=270, bank_storage_slots={1: 269},
+    )
+    repair_skin_source_inventory(inventory, static_database_path=DEFAULT_STATIC_DB_PATH, class_name="mage")
+    assert (inventory.bank_storage_upgrade, inventory.bank_storage_size) == (55, 280) == (
+        LOCAL_INVENTORY_CAPACITIES[1], LOCAL_INVENTORY_CAPACITIES[3]
+    )
+    assert inventory.bank_storage_slots == {1: 269}

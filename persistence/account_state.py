@@ -426,10 +426,10 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
         ingredient_bag_templates=[str(value) for value in document.get("ingredient_bag_templates", ())],
         storage_upgrade=int(document.get("storage_upgrade", 30)),
         bank_storage_upgrade=int(
-            document.get("bank_storage_upgrade", 53)
+            document.get("bank_storage_upgrade", 55)
         ),
         storage_size=int(document.get("storage_size", 224)),
-        bank_storage_size=int(document.get("bank_storage_size", 270)),
+        bank_storage_size=int(document.get("bank_storage_size", 280)),
         extra_bank_storage_size=int(
             document.get("extra_bank_storage_size", 0)
         ),
