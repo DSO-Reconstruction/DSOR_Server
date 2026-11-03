@@ -3301,16 +3301,13 @@ def credit_currency_drop(
         value = int(state.currency_type) + amount
         if value > 0xFFFFFFFF:
             raise ValueError("Andermant balance overflows uint32")
-        return CurrencyChanged(
-            value, state.amount, state.values, state.delta, True
-        )
+        # Keep wallet_base so the shared account wallet commits the delta.
+        return replace(state, currency_type=value, notify=True)
     if drop.item.template_id in GOLD_ITEM_TEMPLATES:
         value = int(state.amount) + amount
         if value > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("gold balance overflows uint64")
-        return CurrencyChanged(
-            state.currency_type, value, state.values, state.delta, True
-        )
+        return replace(state, amount=value, notify=True)
     raise ValueError(f"item {drop.item.template_id!r} is not a direct currency")
 
 

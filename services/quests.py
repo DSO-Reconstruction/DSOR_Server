@@ -2905,6 +2905,8 @@ class QuestService:
                 _log(f"currency reward failed: {exc}")
                 return
             s.gameplay_currency_state = updated
+            # The setter commits Andermant to the shared account wallet.
+            updated = s.gameplay_currency_state
         self._send_quest_commands(s, (ServerCommand(
             CURRENCY_CHANGED_COMMAND, updated, LOCAL_PLAYER_ACTOR_ID,
         ),), label="quest-currency")
