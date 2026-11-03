@@ -1875,7 +1875,9 @@ class WorldService:
                     # new XP instead of waiting for a map change/relogin.
                     ServerCommand(
                         TALENT_SELECTION_INFO_COMMAND,
-                        TalentSelectionInfo(0, tuple(talent_categories)),
+                        CharacterService._client_talent_selection_info(
+                            s, TalentSelectionInfo(0, tuple(talent_categories)),
+                        ),
                         0,
                     ),
                 ),

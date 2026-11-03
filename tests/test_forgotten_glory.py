@@ -316,8 +316,11 @@ def test_quick_shot_proc_unlocks_only_the_owners_turret_ice_shot(quiet):
             now=clock.value, server_tick=500,
             player_positions={s.gameplay_remote_actor_id: turret.position},
         )
+        # The turret's own despawn aura holds its despawn effect beside it.
         assert [(a.target_actor_id, [d.resource_id for d in a.status_effects])
-                for a in applications] == [
+                for a in applications
+                if "skill_turretcombat_minion_despawn_effect" not in
+                {d.resource_id for d in a.status_effects}] == [
             (turret.actor_id, ["item_pw_sigrismarr_dwarf_turret_bonus_effect_t2"])]
         assert not combat.monster_status_effects.get(victim)
         picks = []
@@ -335,6 +338,62 @@ def test_quick_shot_proc_unlocks_only_the_owners_turret_ice_shot(quiet):
         assert ice[0] == 0 and len(ice) >= 2
         assert all((later - earlier) * 0.6 >= 1.5 - 1e-6 for earlier, later in zip(ice, ice[1:]))
         assert "minionskill_combatturret" in picks
+
+
+def test_quick_shot_bullet_rolls_the_turret_ice_shot_at_its_hit(sets, sockets, quiet):
+    """"60% chance that hits with Quick Shot cause your currently active
+    Mechanical Turrets to fire 3 additional ice bullets": a Quick Shot bullet
+    placed only full-chance location auras, so the C:0.6 rule never fired,
+    and each impact carried the turret-only effect onto the monster."""
+    from dso_server.protocol.combat_protocol import BulletSkill
+    clock = turrets.Clock()
+    with patch("time.perf_counter", clock):
+        s = wearer(sets, sockets, "dwarf")
+        combat = s.gameplay_combat_state
+        s.gameplay_monster_encounter = combat.encounter
+        owner = s.gameplay_remote_actor_id
+        victim, *rest = combat.encounter.actor_ids
+        x, y, z = combat.monster_positions[victim]
+        combat.monster_last_published_positions[victim] = (x, y, z)
+        combat.monster_health[victim] = 100000
+        turret = turrets.cast(s, "TurretCombat", turrets.anchor(s), 7001)
+        index = skill("SimpleShot")
+        sources = tuple(CharacterService._active_skill_modifier_sources(s))
+        geometry = combat._modified_player_skill_geometry(
+            combat._load_player_skill_geometry(index), sources)
+        (aura,) = [e for e in geometry.location_visual_effects
+                   if e.resource_id == "item_pw_sigrismarr_dwarf_turret_bonus_aura_t2"]
+        rolls = {cast_id: LocalCombatState._effect_applies(aura, cast_id=cast_id, killed=False)
+                 for cast_id in range(300, 400)}
+        assert 0.45 < sum(rolls.values()) / len(rolls) < 0.75
+        given = {}
+        for cast_id in (min(c for c, hit in rolls.items() if hit),
+                        min(c for c, hit in rolls.items() if not hit)):
+            combat.monster_status_effects.pop(turret.actor_id, None)
+            pending = combat.start_bullet_skill_hits(
+                BulletSkill(0, index, 0.0, 2000, cast_id, (0.0, 0.0, -1.0, 0.0), 0),
+                combat.encounter.coordinate_frame.world_to_wire((x, y, z + 8.0)),
+                source_actor_id=owner, now=clock.value, eligible_actor_ids=(victim,),
+                modifier_effect_ids=sources, player_damage_range=(100.0, 100.0))
+            assert [p.target_actor_id for p in pending] == [victim]
+            assert all("item_pw_sigrismarr_dwarf_turret_bonus_effect_t2" not in
+                       {e.resource_id for e in p.victim_status_effects} for p in pending)
+            clock.value = max(p.due_at for p in pending) + 0.01
+            with patch.object(CharacterService, "_dispatch_location_aura_applications") as sent:
+                for value in pending:
+                    CharacterService._resolve_player_projectile(
+                        s, s.gameplay_chase_generation, cast_id, owner, value.impact_index)
+            given[rolls[cast_id]] = (
+                [(a.target_actor_id, [e.resource_id for e in a.status_effects])
+                 for call in sent.call_args_list for a in call.args[1]],
+                combat.unlocked_summon_skill(turret.actor_id, now=clock.value),
+            )
+            assert "item_pw_sigrismarr_dwarf_turret_bonus_effect_t2" not in (
+                combat.monster_status_effects.get(victim) or {})
+        assert given[True] == (
+            [(turret.actor_id, ["item_pw_sigrismarr_dwarf_turret_bonus_effect_t2"])],
+            skill("dwarf_CombatTowerTurret_Ice"))
+        assert given[False] == ([], None)
 
 
 def test_ranger_bonus_frees_an_explosive_arrow_still_cooling_down(sets, sockets, quiet):
