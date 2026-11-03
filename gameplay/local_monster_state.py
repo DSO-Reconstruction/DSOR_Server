@@ -2746,8 +2746,10 @@ def _area_template_pool(
     )
 
 
-def _promote_monsters_to_champions(static_database_path, monsters, indices):
-    """Apply the authored champion rank factors to selected runtime actors."""
+def _promote_monsters_to_rank(
+    static_database_path, monsters, indices, target_rank: str,
+):
+    """Apply authored rank factors to selected runtime actors."""
     indices = tuple(dict.fromkeys(
         int(index) for index in indices
         if 0 <= int(index) < len(monsters)
@@ -2763,7 +2765,7 @@ def _promote_monsters_to_champions(static_database_path, monsters, indices):
     from dataclasses import replace
     for index in indices:
         original = result[index]
-        rank = 'Rank_champion'
+        rank = target_rank
         old, new = factors[original.rank], factors[rank]
         ratios = {2: new[0]/old[0], 8: new[0]/old[0], 11: new[1]/old[1], 12: new[2]/old[2]}
         ratios.update({i: new[3]/old[3] for i in range(20, 26)})
@@ -2775,23 +2777,107 @@ def _promote_monsters_to_champions(static_database_path, monsters, indices):
     return tuple(result)
 
 
-def _ensure_dungeon_elites(static_database_path, monsters, *, fixed_monster_count=0):
-    """Distribute at least ten ranked enemies through a scaling dungeon."""
-    elite_ranks = {'Rank_champion', 'Rank_leader', 'Rank_leader_no_entchantments'}
-    needed = max(0, 10 - sum(m.rank in elite_ranks for m in monsters))
-    candidates = [i for i, m in enumerate(monsters)
-                  if i >= fixed_monster_count and m.rank == 'Rank_monster']
+def _promote_monsters_to_champions(static_database_path, monsters, indices):
+    """Apply the authored champion rank factors to selected runtime actors."""
+    return _promote_monsters_to_rank(
+        static_database_path, monsters, indices, 'Rank_champion',
+    )
+
+
+def _ensure_dungeon_elites(
+    static_database_path,
+    monsters,
+    *,
+    fixed_monster_count=0,
+    scaling_difficulty=0,
+    monster_level=None,
+):
+    """Distribute Guardian, Champion, and Leader enemies scaling with dungeon difficulty."""
+    diff = max(0, int(scaling_difficulty))
+    candidates = [
+        i for i, m in enumerate(monsters)
+        if i >= fixed_monster_count and m.rank == 'Rank_monster'
+    ]
     # Some dungeons are entirely authored SpawnPoints. Their identities stay
     # intact; changing rank does not break template-based quest objectives.
-    candidates += [i for i, m in enumerate(monsters)
-                   if i < fixed_monster_count and m.rank == 'Rank_monster']
-    if not needed or not candidates:
+    candidates += [
+        i for i, m in enumerate(monsters)
+        if i < fixed_monster_count and m.rank == 'Rank_monster'
+    ]
+    if not candidates:
         return monsters
-    count = min(needed, len(candidates))
-    selected = [candidates[int((n + .5) * len(candidates) / count)] for n in range(count)]
-    return _promote_monsters_to_champions(
-        static_database_path, monsters, selected
+
+    if diff == 0:
+        if monster_level is not None:
+            # Scaled level entry baseline: at least ten ranked enemies.
+            elite_ranks = {'Rank_champion', 'Rank_leader', 'Rank_leader_no_entchantments'}
+            needed = max(0, 10 - sum(m.rank in elite_ranks for m in monsters))
+            if needed and candidates:
+                count = min(needed, len(candidates))
+                selected = [candidates[int((n + .5) * len(candidates) / count)] for n in range(count)]
+                return _promote_monsters_to_champions(static_database_path, monsters, selected)
+        return monsters
+
+    # Scale target ranks with map difficulty (Painful=1 up to Bloodshed=8+)
+    target_leaders = max(1, 1 + round(diff * 1.2))
+    target_champions = max(2, 3 + round(diff * 2.8))
+    target_guardians = max(3, 5 + round(diff * 3.5))
+
+    # Level-scaled instances ensure at least ten champions/leaders baseline
+    if monster_level is not None:
+        target_champions = max(target_champions, 10)
+
+    # Cap total promoted elites so regular monsters remain present
+    max_total = max(1, int(len(candidates) * 0.55))
+    total_requested = target_leaders + target_champions + target_guardians
+    if total_requested > max_total:
+        scale = max_total / total_requested
+        target_leaders = max(1, int(target_leaders * scale))
+        target_champions = max(1, int(target_champions * scale))
+        target_guardians = max(1, int(target_guardians * scale))
+
+    current_leaders = sum(
+        m.rank in ('Rank_leader', 'Rank_leader_no_entchantments')
+        for m in monsters
     )
+    current_champions = sum(m.rank == 'Rank_champion' for m in monsters)
+    current_guardians = sum(m.rank == 'Rank_guardian' for m in monsters)
+
+    needed_leaders = max(0, target_leaders - current_leaders)
+    needed_champions = max(0, target_champions - current_champions)
+    needed_guardians = max(0, target_guardians - current_guardians)
+
+    result_monsters = list(monsters)
+
+    # 1. Promote Leaders:
+    if needed_leaders > 0 and candidates:
+        count = min(needed_leaders, len(candidates))
+        selected = [candidates[int((n + 0.5) * len(candidates) / count)] for n in range(count)]
+        result_monsters = list(_promote_monsters_to_rank(
+            static_database_path, tuple(result_monsters), selected, 'Rank_leader'
+        ))
+        selected_set = set(selected)
+        candidates = [c for c in candidates if c not in selected_set]
+
+    # 2. Promote Champions:
+    if needed_champions > 0 and candidates:
+        count = min(needed_champions, len(candidates))
+        selected = [candidates[int((n + 0.5) * len(candidates) / count)] for n in range(count)]
+        result_monsters = list(_promote_monsters_to_rank(
+            static_database_path, tuple(result_monsters), selected, 'Rank_champion'
+        ))
+        selected_set = set(selected)
+        candidates = [c for c in candidates if c not in selected_set]
+
+    # 3. Promote Guardians:
+    if needed_guardians > 0 and candidates:
+        count = min(needed_guardians, len(candidates))
+        selected = [candidates[int((n + 0.5) * len(candidates) / count)] for n in range(count)]
+        result_monsters = list(_promote_monsters_to_rank(
+            static_database_path, tuple(result_monsters), selected, 'Rank_guardian'
+        ))
+
+    return tuple(result_monsters)
 
 
 def _navigation_for_map(
@@ -3053,10 +3139,17 @@ def _load_dynamic_monster_encounter(
                 )
         elif (
             not fixed_rows
+            and not (
+                SPAWN_AREA_MONSTERS_ENABLED
+                and include_spawn_areas
+                and encounter_policy.permits_density_population
+            )
+            and encounter_policy.area_type.casefold() not in ('closedpve', 'openpve')
             and encounter_policy.map_type.casefold() != 'event'
-            # Grimmagstone has no ungated fixed mobs. Its fixed rows belong
-            # to ritual waves, Raazghul, or seasonal events; density areas
-            # provide the ordinary population. Never bypass those gates.
+            # Grimmagstone and scaling dungeons have no ungated fixed mobs.
+            # Their fixed rows belong to ritual waves, Raazghul, map leaders,
+            # or seasonal events; density areas provide the ordinary
+            # population. Never bypass those gates.
             and str(map_id).casefold() != 'pw001_grimmagstone_01_dun'
         ):
             fixed_rows = all_fixed_rows
@@ -3804,10 +3897,16 @@ def _load_dynamic_monster_encounter(
     if not monsters:
         return None
 
-    if (monster_level is not None and encounter_policy.area_type.casefold() == 'closedpve'
+    if ((monster_level is not None or scaling_difficulty > 0)
+            and encounter_policy.area_type.casefold() == 'closedpve'
             and not encounter_policy.is_boss_room):
-        monsters = list(_ensure_dungeon_elites(static_database_path, tuple(monsters),
-                                             fixed_monster_count=fixed_monster_count))
+        monsters = list(_ensure_dungeon_elites(
+            static_database_path,
+            tuple(monsters),
+            fixed_monster_count=fixed_monster_count,
+            scaling_difficulty=scaling_difficulty,
+            monster_level=monster_level,
+        ))
 
     grouped_monsters = _group_dynamic_monsters(tuple(monsters))
     spawn_groups = tuple(
