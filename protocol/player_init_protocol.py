@@ -2310,7 +2310,7 @@ def build_local_player_init_commands(
     notifications: tuple[NotificationEntry, ...] = (),
     activity_signin_calendar: ActivitySigninCalendar | None = None,
     item_customizations: tuple[ItemCustomization, ...] = (),
-    membership_update: MembershipUpdate | None = None,
+    membership_update: MembershipUpdate | tuple[MembershipUpdate, ...] | None = None,
     event_update: EventUpdate | None = None,
     event_progress_info: EventProgressInfo | None = None,
     event_participation_info: EventParticipationInfo | None = None,
@@ -2489,11 +2489,17 @@ def build_local_player_init_commands(
     commands = [
         ServerCommand(NEW_PLAYER_COMMAND, new_player, None),
     ]
-    if membership_update is not None:
+    # Premium and Deluxe each have their own update, the current plan last.
+    membership_updates = (
+        () if membership_update is None
+        else membership_update if isinstance(membership_update, tuple)
+        else (membership_update,)
+    )
+    for update in membership_updates:
         commands.append(
             ServerCommand(
                 MEMBERSHIP_UPDATE_COMMAND,
-                membership_update,
+                update,
                 actor_id,
             )
         )
@@ -2703,7 +2709,7 @@ def build_local_player_init_commands(
     )
     expected_command_count = (
         91 + len(map_entity_commands)
-        + int(membership_update is not None)
+        + len(membership_updates)
         + int(has_variation_info)
     )
     if len(commands) != expected_command_count:

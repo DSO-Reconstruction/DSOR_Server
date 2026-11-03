@@ -9,7 +9,11 @@ from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.player_init_protocol import ItemCustomization
 
-MAX_BANK_STORAGE_SLOTS = 270
+# Seven bank bags of 40 slots (BagButton..BagButton6 in bankwindow.bxml):
+# default_player's 10 slots at BankStorageUpgrade 1, plus five per
+# extension (_Globals BankExtensionSlotAmount), full at upgrade 55.
+MAX_BANK_STORAGE_SLOTS = 280
+MAX_BANK_STORAGE_UPGRADE = 55
 
 
 def load_skin_unlock_customizations(
@@ -82,9 +86,10 @@ def repair_skin_source_inventory(
     source_templates = {str(row[2]) for row in rows if row[2]}
     # The client asserts when bank storage exceeds its fixed native limit.
     # Repair any capacity/allocation written by the earlier implementation.
-    inventory.bank_storage_size = min(
-        max(0, int(inventory.bank_storage_size)), MAX_BANK_STORAGE_SLOTS
-    )
+    # The server sells no bank extensions, so every character gets the full
+    # bank; saves from the 53-extension capture had a 30-slot last bag.
+    inventory.bank_storage_size = MAX_BANK_STORAGE_SLOTS
+    inventory.bank_storage_upgrade = MAX_BANK_STORAGE_UPGRADE
     inventory.bank_storage_slots = {
         item_id: slot
         for item_id, slot in inventory.bank_storage_slots.items()

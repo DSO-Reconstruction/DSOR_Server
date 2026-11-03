@@ -227,6 +227,8 @@ class AccountState:
     membership_type: int = DELUXE_MEMBERSHIP
     membership_expires_at: str = field(default_factory=default_deluxe_expiry)
     membership_active: bool = True
+    # Premium paused under Deluxe; see protocol/membership_protocol.py.
+    membership_premium_expires_at: str = ""
     game_currencies: dict[str, int] = field(
         default_factory=normalize_game_currency_balances
     )
@@ -424,10 +426,10 @@ def _inventory_from_document(document: dict) -> InventoryInfo:
         ingredient_bag_templates=[str(value) for value in document.get("ingredient_bag_templates", ())],
         storage_upgrade=int(document.get("storage_upgrade", 30)),
         bank_storage_upgrade=int(
-            document.get("bank_storage_upgrade", 53)
+            document.get("bank_storage_upgrade", 55)
         ),
         storage_size=int(document.get("storage_size", 224)),
-        bank_storage_size=int(document.get("bank_storage_size", 270)),
+        bank_storage_size=int(document.get("bank_storage_size", 280)),
         extra_bank_storage_size=int(
             document.get("extra_bank_storage_size", 0)
         ),
@@ -815,6 +817,7 @@ def _state_to_document(
             "type": int(state.membership_type),
             "expires_at": str(state.membership_expires_at),
             "active": bool(state.membership_active),
+            "premium_expires_at": str(state.membership_premium_expires_at),
         },
         "recipe_book_resources": list(state.recipe_book_resources),
         "rune_trinket_unlocked_slots": list(state.rune_trinket_unlocked_slots),
@@ -1079,6 +1082,9 @@ def _state_from_document(document: dict) -> AccountState:
         membership_active=bool(
             membership_document.get("active", True)
         ),
+        membership_premium_expires_at=str(
+            membership_document.get("premium_expires_at", "")
+        ),
         game_currencies=normalize_game_currency_balances(
             currencies.get("game", {})
         ),
@@ -1122,6 +1128,8 @@ def _state_from_document(document: dict) -> AccountState:
     if state.membership_type not in (0, 1, 2):
         raise ValueError("persisted membership type is invalid")
     parse_membership_expiry(state.membership_expires_at)
+    if state.membership_premium_expires_at:
+        parse_membership_expiry(state.membership_premium_expires_at)
     release_locked_rune_trinkets(state.inventory, {
         *state.rune_trinket_unlocked_slots,
         *(

@@ -969,6 +969,7 @@ class Session:
         self.gameplay_membership_type = DELUXE_MEMBERSHIP
         self.gameplay_membership_expires_at = default_deluxe_expiry()
         self.gameplay_membership_active = True
+        self.gameplay_membership_premium_expires_at = ""
         self.gameplay_membership_status_effect_ids = frozenset()
         self.gameplay_premium_bag_timer = None
         self.gameplay_premium_bag_deadline = None

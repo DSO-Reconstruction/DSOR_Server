@@ -53,6 +53,7 @@ from dso_server.protocol.combat_protocol import (
 )
 from dso_server.protocol.gameplay_protocol import (
     NewMonsterServerCommand,
+    StatusEffectEntry,
     StatusEffectServerCommand,
 )
 from dso_server.gameplay.local_monster_state import (
@@ -2143,6 +2144,10 @@ class LocalCombatState:
         # ActorVariable instructions -> timing_actor_variables result (read
         # only by resolve_modifier_value).
         self._geometry_actor_variables: dict[tuple, dict[str, float]] = {}
+        # _talent_ranked_sources: talent rank effects, read on first use, and
+        # the re-ranked entries, kept so their ids stay memo keys.
+        self._skill_talent_rank_effect_ids: dict[str, tuple] | None = None
+        self._talent_ranked_entries: dict[tuple, tuple] = {}
         self._user_effect_location_auras_cache = {}
         self._victim_location_children_cache = {}
         self._location_aura_child_ids_cache = {}
@@ -4064,6 +4069,7 @@ class LocalCombatState:
         instructions: list[
             tuple[str, tuple[str, ...], int, tuple[float, ...]]
         ] = []
+        modifier_sources = self._talent_ranked_sources(tuple(modifier_sources))
         explicit_effect_ids = frozenset(
             int(source.effect_id)
             for source in modifier_sources
@@ -6586,6 +6592,9 @@ class LocalCombatState:
         10 m ``skill_explosiveshot_mark_aura``: taken for the splash, it gave
         every monster 10 m around the explosion the arrow's hit and the 3.5 m
         explosion, and its placed aura dealt that explosion a second time.
+        One with a partial chance is placed when its roll passes (Forgotten
+        Glory's 60% Quick Shot turret aura); every impact carried its
+        turret-only child onto the monster instead.
         """
 
         authored = self._load_player_skill_geometry(int(skill_index))
@@ -6595,7 +6604,7 @@ class LocalCombatState:
         }
         return tuple(
             effect for effect in geometry.location_visual_effects
-            if effect.chance >= 1.0 and effect.trigger == "hit"
+            if effect.chance > 0.0 and effect.trigger == "hit"
             and effect.chance > chances.get(effect.resource_id, 0.0)
         )
 
@@ -7263,6 +7272,9 @@ class LocalCombatState:
             if GEOMETRY_MISS_LOG:
                 _GEOMETRY_MISS_LOG.record("identity hit", started)
             return remembered[2]
+        # Identity entries keep the sources as given, which keeps their ids.
+        given_sources = modifier_sources
+        modifier_sources = self._talent_ranked_sources(modifier_sources)
         # The entry holds the geometry, so its id stays unique; hashing the
         # whole frozen geometry on every lookup cost more than the id does.
         # Every source is usually memoized already; reading the memo with
@@ -7281,7 +7293,7 @@ class LocalCombatState:
         entry = self._modified_player_geometry_cache.get(cache_key)
         if entry is not None and entry[0] is geometry:
             self._remember_modified_geometry(
-                identity, geometry, modifier_sources, entry[1]
+                identity, geometry, given_sources, entry[1]
             )
             if GEOMETRY_MISS_LOG:
                 _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
@@ -7382,7 +7394,7 @@ class LocalCombatState:
                     entry = self._modified_player_geometry_cache.get(cache_key)
                     if entry is not None and entry[0] is geometry:
                         self._remember_modified_geometry(
-                            identity, geometry, modifier_sources, entry[1]
+                            identity, geometry, given_sources, entry[1]
                         )
                         if GEOMETRY_MISS_LOG:
                             _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
@@ -7415,7 +7427,7 @@ class LocalCombatState:
                     geometry, entry[1],
                 )
                 self._remember_modified_geometry(
-                    identity, geometry, modifier_sources, entry[1]
+                    identity, geometry, given_sources, entry[1]
                 )
                 if GEOMETRY_MISS_LOG:
                     _GEOMETRY_MISS_LOG.resolved(geometry, source_keys)
@@ -7990,7 +8002,7 @@ class LocalCombatState:
             self._geometry_instruction_cache, instruction_key, geometry, result
         )
         self._remember_modified_geometry(
-            identity, geometry, modifier_sources, result
+            identity, geometry, given_sources, result
         )
         if GEOMETRY_MISS_LOG:
             _GEOMETRY_MISS_LOG.miss(
@@ -8127,13 +8139,10 @@ class LocalCombatState:
             int(source.effect_id) if hasattr(source, "effect_id") else None
         )
         if hasattr(source, "kind") and hasattr(source, "arguments"):
+            # TalentLevelBonus never gets here: _talent_ranked_sources folds
+            # it into the talent's rank first.
             source_kind, source_arguments = _source_kind_arguments(source)
-            if source_kind.casefold() == "talentlevelbonus":
-                instructions = self._talent_level_bonus_instructions(
-                    database, source_arguments
-                )
-            else:
-                instructions = ((source_kind, source_arguments, 1, ()),)
+            instructions = ((source_kind, source_arguments, 1, ()),)
         elif effect_id is not None:
             stack_count = max(1, int(getattr(source, "stack_index", 0)) + 1)
             details = tuple(
@@ -8230,42 +8239,139 @@ class LocalCombatState:
             )
         return expansion
 
-    def _talent_level_bonus_instructions(
-        self, database, arguments: tuple[str, ...],
-    ) -> tuple:
-        """TalentLevelBonus:<levels>,<talent>: the talent's StartModifiers."""
+    def _talent_ranked_sources(
+        self, sources: tuple[object, ...],
+    ) -> tuple[object, ...]:
+        """Sources with equipment ``TalentLevelBonus`` folded into the ranks.
 
-        if len(arguments) < 2:
-            return ()
-        try:
-            bonus_levels = max(0, int(round(float(arguments[0]))))
-        except ValueError:
-            bonus_levels = 0
-        talent_id = self._clean_modifier_token(arguments[1])
-        row = database.execute(
-            "SELECT StackStatusEffectId FROM "
-            "_Template_SkillTalent WHERE Id=? LIMIT 1",
-            (talent_id,),
-        ).fetchone()
-        status_id = str(row[0] or "") if row else ""
-        effect_row = database.execute(
-            "SELECT StartModifiers FROM "
-            "_Template_StatusEffect WHERE Id=? LIMIT 1",
-            (status_id,),
-        ).fetchone()
-        if not bonus_levels or effect_row is None:
-            return ()
-        return tuple(
-            (
-                kind.strip(),
-                tuple(value.strip() for value in arguments.split(",")),
-                bonus_levels,
-                (),
-            )
-            for raw in str(effect_row[0] or "").split(";")
-            for kind, separator, arguments in (raw.partition(":"),)
-            if separator
-        )
+        ``TalentLevelBonus:5,dwarf_HeavyShot_talent`` (the dwarf's premium
+        trader rifle) adds five ranks to the talent, as the client's own
+        ``TalentLevelBonus::Apply`` (0x1408e9760) adds bonus ranks to the
+        selection: the talent's rank effect runs at base + bonus ranks. Only a talent's
+        ``StackStatusEffectId`` was read, so a skill talent, whose ranks are
+        its base effect alone (``skill_HeavyShot_lvl``), gained nothing.
+        Running the bonus as a second copy of the program would be wrong
+        where the rank names a resource: ``TrapOnHit`` lays
+        ``dwarf_mine<rank>``.
+
+        An unlearned talent runs at its bonus ranks (the client selects it
+        with bonus ranks only), except beside a learned talent of its
+        ``GroupId``, which the client never selects together (the elemental
+        masteries). ``_Template_Talents`` (Wisdom, group) bonuses stay out:
+        their rules belong to services.talent_events, not to a cast.
+        """
+
+        bonuses: dict[str, int] = {}
+        kept = []
+        for source in sources:
+            if hasattr(source, "kind") and hasattr(source, "arguments"):
+                kind, arguments = _source_kind_arguments(source)
+                if kind.casefold() == "talentlevelbonus":
+                    try:
+                        levels = int(round(float(arguments[0])))
+                    except (IndexError, ValueError):
+                        levels = 0
+                    talent = (
+                        self._clean_modifier_token(arguments[1]).casefold()
+                        if len(arguments) >= 2 else ""
+                    )
+                    if levels > 0 and talent:
+                        bonuses[talent] = bonuses.get(talent, 0) + levels
+                    continue
+            kept.append(source)
+        if len(kept) == len(sources):
+            return sources
+        talents = self._skill_talent_rank_effects()
+        positions: dict[int, int] = {}
+        for position, source in enumerate(kept):
+            if hasattr(source, "effect_id") and hasattr(source, "stack_index"):
+                positions.setdefault(int(source.effect_id), position)
+
+        def rank(effects) -> int:
+            base_id, stack_id, _group = effects
+            if base_id not in positions:
+                return 0
+            if stack_id is None:
+                return int(kept[positions[base_id]].stack_index) + 1
+            stack = positions.get(stack_id)
+            return 1 + (0 if stack is None else int(kept[stack].stack_index) + 1)
+
+        def set_rank_entry(effect_id: int, stack_index: int) -> None:
+            position = positions.get(effect_id)
+            original = None if position is None else kept[position]
+            if original is not None and int(original.stack_index) == stack_index:
+                return
+            key = (id(original), effect_id, stack_index)
+            interned = self._talent_ranked_entries.get(key)
+            if interned is None or interned[0] is not original:
+                entry = (
+                    replace(original, stack_index=stack_index,
+                            stacked=stack_index > 0)
+                    if original is not None
+                    else StatusEffectEntry(
+                        effect_id=effect_id, instance_id=0, end_tick=0,
+                        tick_interval=25, start_tick=0,
+                        stack_index=stack_index, total_duration=25,
+                        source_level=100, source_actor_id=0,
+                        update_timing=False, stacked=stack_index > 0,
+                        permanent=True, has_details=True,
+                    )
+                )
+                if len(self._talent_ranked_entries) >= 1024:
+                    self._talent_ranked_entries.clear()
+                interned = self._talent_ranked_entries[key] = (original, entry)
+            if position is None:
+                positions[effect_id] = len(kept)
+                kept.append(interned[1])
+            else:
+                kept[position] = interned[1]
+
+        for talent, levels in bonuses.items():
+            effects = talents.get(talent)
+            if effects is None:
+                continue
+            base_rank = rank(effects)
+            base_id, stack_id, group = effects
+            if not base_rank and group and any(
+                other[2] == group and rank(other)
+                for name, other in talents.items() if name != talent
+            ):
+                continue
+            total = base_rank + levels
+            if stack_id is None:
+                set_rank_entry(base_id, total - 1)
+                continue
+            set_rank_entry(base_id, 0)
+            if total >= 2:
+                set_rank_entry(stack_id, total - 2)
+        return tuple(kept)
+
+    def _skill_talent_rank_effects(self) -> dict[str, tuple]:
+        """``_Template_SkillTalent`` id -> (base, distinct stack or None,
+        GroupId) wire ids, the way TalentDatabase.status_effect_entries
+        sends a rank."""
+
+        if self._skill_talent_rank_effect_ids is None:
+            effects = {}
+            with _static_read_connection(
+                self.encounter.static_database_path
+            ) as database:
+                rows = database.execute(
+                    "SELECT Id, BaseStatusEffectId, StackStatusEffectId, "
+                    "GroupId FROM _Template_SkillTalent"
+                ).fetchall()
+            for talent, base, stack, group in rows:
+                base_id = self._status_effect_ids.get(str(base or ""))
+                if base_id is None:
+                    continue
+                stack_id = self._status_effect_ids.get(str(stack or ""))
+                effects[str(talent).casefold()] = (
+                    int(base_id),
+                    None if stack_id in (None, base_id) else int(stack_id),
+                    str(group or "").casefold(),
+                )
+            self._skill_talent_rank_effect_ids = effects
+        return self._skill_talent_rank_effect_ids
 
     def _geometry_instruction_key(self, database, instruction: tuple) -> tuple:
         """An instruction as far as the geometry loop can observe it.
