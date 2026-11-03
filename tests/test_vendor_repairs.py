@@ -218,6 +218,28 @@ def test_shared_wallet_keeps_other_currencies_character_owned(wallets):
     assert (result.gold,result.draken,result.badge_of_honor)==(b.currency.gold,b.currency.draken,b.currency.badge_of_honor)
 
 
+def test_quest_and_pickup_andermant_reach_the_shared_wallet(wallets):
+    # Regression: these credits rebuilt CurrencyChanged without wallet_base, so
+    # the client showed the reward and the next map load restored the old balance.
+    from dso_server.protocol.world_loot_protocol import ANDERMANT_ITEM_TEMPLATE, WorldLootDrop, credit_currency_drop
+    from dso_server.services.quests import QuestService
+    store,_=wallets
+    s=Session(("127.0.0.1",101),_FakeSocket())
+    s.gameplay_character=SimpleNamespace(character_id=101)
+    s.gameplay_currency_store=store
+    s.gameplay_currency_state=store.get(101).currency
+    sent=[]
+    quests=SimpleNamespace(_send_quest_commands=lambda _s,commands,**_k: sent.extend(commands))
+    QuestService._quest_credit_currency(quests,s,gold=300,andermant=25)
+    assert (sent[-1].value.andermant,sent[-1].value.gold) == (2025,1300)
+    saved=store.get(101); saved.currency=s.gameplay_currency_state
+    store.put(saved,flush=True)
+    assert (store.get(101).currency.andermant,store.get(101).currency.gold) == (2025,1300)
+    drop=WorldLootDrop(ItemInfo(1,template_id=ANDERMANT_ITEM_TEMPLATE,amount=5),"Currency","All")
+    s.gameplay_currency_state=credit_currency_drop(s.gameplay_currency_state,drop)
+    assert store.get(102).currency.andermant == 2030
+
+
 def test_new_player_bootstrap_reads_account_balance_for_an_unplayed_alt(wallets):
     from dso_server.services.player_init_state import PlayerInitializationStateService, PlayerInitializationState
     store,registry=wallets

@@ -244,20 +244,18 @@ def _credit_currency(
     template_id: str,
     amount: int,
 ) -> CurrencyChanged:
+    # replace() keeps wallet_base: without it the shared account wallet sees
+    # no Andermant delta and the next map load restores the old balance.
     if template_id == "money_rc":
         new_value = int(state.currency_type) + amount
         if new_value > 0xFFFFFFFF:
             raise ValueError("premium currency reward overflows uint32")
-        return CurrencyChanged(
-            new_value, state.amount, state.values, state.delta, True
-        )
+        return replace(state, currency_type=new_value, notify=True)
     if template_id == "money_vc_gold":
         new_value = int(state.amount) + amount
         if new_value > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("gold currency reward overflows uint64")
-        return CurrencyChanged(
-            state.currency_type, new_value, state.values, state.delta, True
-        )
+        return replace(state, amount=new_value, notify=True)
     raise ValueError(
         f"unsupported direct currency reward template {template_id!r}"
     )
