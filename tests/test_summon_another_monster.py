@@ -15,15 +15,22 @@ talent and the count from the set: either alone adds nothing.
 
 from __future__ import annotations
 
+from dataclasses import replace
 import sqlite3
 
 import pytest
 
-from dso_server.gameplay.local_combat_state import LocalCombatState
+from dso_server.gameplay.local_combat_state import (
+    PERMANENT_SUMMON_AURA_LEASE_TICKS, LocalCombatState,
+)
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+from dso_server.gameplay.player_combat_stats import calculate_player_combat_stats
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.protocol.gameplay_protocol import StatusEffectEntry
+from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.item_set_protocol import ItemSetDatabase
+from dso_server.protocol.socket_minion_protocol import load_socket_minion_definition
+from dso_server.services import talent_events
 from dso_server.services.base import CharacterService
 from dso_server.tests import test_map_events as map_fixtures
 
@@ -150,3 +157,139 @@ def test_the_resolved_cast_publishes_both_companions(map_world):
         )
     # Neither companion has a lifetime, so no expiry timer was armed.
     assert not any(key[0] == "player-summon-expire" for key in s.gameplay_projectile_timers)
+
+
+# Bond of Friends' wolf hosts skill_packofwolves_big_minion_damage_buff_aura
+# (PermanentStatusEffect, AuraTargets Summoner, 20 m): "you will get 25%
+# increased damage as long as the wolf is active" (skill_t_packofwolves_dmg_buff).
+# The wolf has no LifeTime, and the aura loader skipped every such template.
+
+WOLF_BUFF = "skill_packofwolves_big_minion_damage_buff_effect"
+
+
+def _summon_wild_pack(s, modifier_sources):
+    combat = s.gameplay_combat_state
+    owner = s.gameplay_remote_actor_id
+    definition = combat.player_summon_definition(WILD_PACK, modifier_sources=modifier_sources)
+    position = s.gameplay_monster_encounter.coordinate_frame.wire_to_world(
+        s.gameplay_last_move.relative_position
+    )
+    CharacterService._resolve_player_summon(
+        s, s.gameplay_chase_generation, ("player-summon", owner, 1),
+        definition, owner, tuple(position), 0.0, 60, 100, (10.0, 20.0), (),
+    )
+    return [x for x in combat.player_summons.values() if x.owner_actor_id == owner]
+
+
+def _pulse(s, position):
+    """One map tick's ground-aura pass: the owner's live effect names."""
+    combat = s.gameplay_combat_state
+    actor = s.gameplay_remote_actor_id
+    with combat.lock:
+        _hits, applications = combat.apply_player_location_auras(
+            server_tick=int(s.gameplay_chase_server_tick),
+            player_positions={actor: tuple(position)},
+        )
+    CharacterService._dispatch_location_aura_applications({actor: s}, applications)
+    names = {wire_id: name for name, wire_id in combat._status_effect_ids.items()}
+    return {names[entry.effect_id] for entry in talent_events._live_sources(s)}
+
+
+def _move(combat, summon, position):
+    combat.player_summons[summon.actor_id] = replace(
+        combat.player_summons[summon.actor_id], position=tuple(position),
+    )
+
+
+def _away(position, metres):
+    return (position[0] + metres, position[1], position[2])
+
+
+def test_the_lasting_wolf_gives_its_ranger_a_quarter_more_damage(map_world):
+    s = map_world.session
+    combat = s.gameplay_combat_state
+    (wolf,) = _summon_wild_pack(s, (BOND_OF_FRIENDS,))
+    assert wolf.definition.monster_template_id == BIG_WOLF
+    assert WOLF_BUFF in _pulse(s, _away(wolf.position, 5.0))
+
+    def damage(sources):
+        stats = calculate_player_combat_stats(
+            DEFAULT_STATIC_DB_PATH, class_name="ranger", level=60,
+            inventory=InventoryInfo(), modifier_sources=tuple(sources),
+        )
+        return stats.minimum_damage, stats.maximum_damage
+
+    plain = damage(())
+    buffed = damage(
+        entry for entry in talent_events._live_sources(s)
+        if entry.effect_id == combat._status_effect_ids[WOLF_BUFF]
+    )
+    assert buffed == pytest.approx((plain[0] * 1.25, plain[1] * 1.25), rel=0.01)
+
+    # Beyond the aura's 20 m the buff goes; back inside it returns.
+    assert WOLF_BUFF not in _pulse(s, _away(wolf.position, 25.0))
+    assert WOLF_BUFF in _pulse(s, _away(wolf.position, 15.0))
+
+
+def test_the_aura_moves_with_the_wolf(map_world):
+    s = map_world.session
+    combat = s.gameplay_combat_state
+    (wolf,) = _summon_wild_pack(s, (BOND_OF_FRIENDS,))
+    spawn = wolf.position
+    # The wolf follows its ranger 40 m from where it appeared.
+    _move(combat, wolf, _away(spawn, 40.0))
+    assert WOLF_BUFF in _pulse(s, _away(spawn, 42.0))
+    # Standing on the spawn spot without the wolf gives nothing.
+    assert WOLF_BUFF not in _pulse(s, spawn)
+
+
+def test_the_buff_leaves_with_the_wolf(map_world):
+    s = map_world.session
+    combat = s.gameplay_combat_state
+    (wolf,) = _summon_wild_pack(s, (BOND_OF_FRIENDS,))
+    assert WOLF_BUFF in _pulse(s, wolf.position)
+    with combat.lock:
+        combat.expire_player_summon(wolf.actor_id)
+    assert WOLF_BUFF not in _pulse(s, wolf.position)
+
+
+def test_three_temporary_wolves_give_no_damage_buff(map_world):
+    s = map_world.session
+    wolves = _summon_wild_pack(s, ())
+    assert {x.definition.monster_template_id for x in wolves} == {WOLF}
+    assert WOLF_BUFF not in _pulse(s, wolves[0].position)
+
+
+def test_a_lasting_summon_hosts_only_its_summoners_auras(combat):
+    (aura, receivers), = combat.player_status_minion_auras(BIG_WOLF)
+    assert aura.resource_id == "skill_packofwolves_big_minion_damage_buff_aura"
+    assert aura.duration_ticks == PERMANENT_SUMMON_AURA_LEASE_TICKS
+    assert [x.resource_id for x in receivers] == [WOLF_BUFF]
+    # A lasting monster template's enemy aura (a map companion's mark) stays off.
+    assert combat.player_status_minion_auras("a0300_normal_s_gen_meanie_summoner") == ()
+
+
+def test_a_shadow_soul_does_not_host_its_buffs_a_second_time(map_world):
+    s = map_world.session
+    combat = s.gameplay_combat_state
+    soul = "mercenary_ancient_watcher"
+    # Its template does carry a Summoner aura; the owner already has its buffs.
+    assert combat.player_status_minion_auras(soul)
+    definition = replace(
+        load_socket_minion_definition(DEFAULT_STATIC_DB_PATH, soul, 1, (0.0, 0.0, 0.0, 0.0)),
+        category="mercenary", amount=1, limit=1, lifetime_seconds=0.0,
+        owner_despawn_range=float("inf"), follows_owner=True,
+    )
+    owner = s.gameplay_remote_actor_id
+    position = s.gameplay_monster_encounter.coordinate_frame.wire_to_world(
+        s.gameplay_last_move.relative_position
+    )
+    CharacterService._resolve_player_summon(
+        s, s.gameplay_chase_generation, ("mercenary-summon", owner, 1),
+        definition, owner, tuple(position), 0.0, 60, 100, (10.0, 20.0), (),
+    )
+    (summon,) = [x for x in combat.player_summons.values() if x.owner_actor_id == owner]
+    assert not [
+        v for v in combat.player_location_visuals.values()
+        if v.source_actor_id == summon.actor_id
+    ]
