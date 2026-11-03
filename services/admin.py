@@ -44,11 +44,13 @@ from dso_server.services.accounts import FailureThrottle
 from dso_server.services.admin_bonus_codes import BonusCodeAdministration
 from dso_server.services.admin_bookings import BookingDelivery, CURRENCIES
 from dso_server.services.admin_items import item_catalog, item_metadata
+from dso_server.services.admin_item_editor import ItemEditor
 from dso_server.services.admin_live import (
     LiveAdministration, map_catalog, ready, state_token,
 )
 from dso_server.services.admin_events import EventAdministration, EventScheduleConflict
 from dso_server.services.admin_season_pass import SeasonPassAdministration, SeasonPassConflict
+from dso_server.services.base import CharacterService
 from dso_server.services.admin_loot import LootRateAdministration, LootRateConflict
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
@@ -1351,6 +1353,109 @@ class AdminService:
         return {"ok": True, "item_id": item_id, "template_id": item.template_id,
                 "amount": item.amount, "online": target is not None}
 
+    def _item_for_edit(self, cid, item_id):
+        """The item and its inventory, from the live session when online.
+
+        Live inventories are copy-on-write, so the reference taken under
+        flow_lock stays consistent once released; its id detects a commit
+        made in between.
+        """
+        if type(item_id) is not int or item_id <= 0:
+            raise ValueError("item ID must be a positive integer")
+        profile = self.store.get_profile(cid)
+        if profile is None or self.registry.character_owner(cid) is None:
+            raise ValueError("character must exist and belong to an account")
+        online = cid in self.online_characters()
+        target = self.live.find(cid) if online else None
+        if online and target is None:
+            raise ValueError("character is changing maps or initializing; try again shortly")
+        state = token = None
+        if target is None:
+            state = self.store.get(cid)
+            if state is None:
+                raise ValueError("character must enter the game once before inventory can be changed")
+            inventory = state.inventory
+        else:
+            server, session = target
+            with session.flow_lock:
+                if not ready(session, cid):
+                    raise ValueError("character must be fully loaded into a map")
+                inventory = session.gameplay_inventory
+            token = id(inventory)
+        item = next((entry for entry in owned_inventory_items(inventory)
+                     if int(entry.item_id) == item_id), None)
+        if item is None:
+            raise ValueError("selected item is no longer in this character's inventory")
+        editor = ItemEditor(self.static_database_path, item, CLASS_NAMES.get(profile.class_id, "mage"))
+        return editor, target, state, inventory, token
+
+    def item_editor(self, cid, item_id, draft=None):
+        editor, target, _, inventory, _ = self._item_for_edit(cid, item_id)
+        item = editor.item if draft is None else editor.apply(draft)
+        return {**editor.document(item), "online": target is not None,
+                "equipped": item_id in inventory.equipment_slots}
+
+    def edit_character_item(self, cid, item_id, changes, actor, reason):
+        """Save enchantment, enchantment-tier and base-roll changes on one item."""
+        editor, target, state, inventory, token = self._item_for_edit(cid, item_id)
+        before = editor.item
+        if isinstance(changes, dict) and changes.get("base_target") is not None:
+            raise ValueError("preview a base roll target first, then save the seed it picked")
+        item = editor.finish(editor.apply(changes))
+        summary = lambda value: {
+            "base_enchantment_tier": value.base_enchantment_tier, "base_seed": value.field_18,
+            "enchantments": [{"template_id": e.template_id, "value": e.value, "tier": e.tier,
+                              "kind": e.kind} for e in value.enchantments]}
+        if summary(item) == summary(before):
+            raise ValueError("no changes to save")
+        inventory = clone_inventory_info(inventory)
+        for name in ("items", "premium_inventory_overflow", "premium_storage_overflow"):
+            setattr(inventory, name, [clone_item_info(item) if int(entry.item_id) == item_id else entry
+                                      for entry in getattr(inventory, name)])
+        inventory.changed_item_ids = []
+        inventory.item_id_replacements = {}
+        inventory.field_1e0 = False
+        equipped = item_id in inventory.equipment_slots
+        if target is None:
+            from dataclasses import replace as replace_state
+            self.store.put(replace_state(state, inventory=inventory), flush=True)
+        else:
+            server, session = target
+            # The same full InventoryInfo a socket purchase sends: the client
+            # replaces the item's record in place under its existing id.
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(INVENTORY_INFO_COMMAND, clone_inventory_info(inventory), inventory.actor_id),
+            ), include_terminator=True)
+
+            def commit():
+                if not server.is_session_current(session):
+                    raise ValueError("character session changed; refresh and retry")
+                with session.flow_lock:
+                    if not ready(session, cid):
+                        raise ValueError("character must remain fully loaded in a map")
+                    if getattr(session, "gameplay_inventory_rewards_in_progress", 0):
+                        raise ValueError("character inventory is being updated; try again shortly")
+                    if id(session.gameplay_inventory) != token:
+                        return False
+                    session.gameplay_inventory = inventory
+                if equipped:
+                    CharacterService._refresh_player_combat_vitals(session)
+                PlayerPersistenceService._persist_gameplay_session(
+                    server, session, reason="CMS inventory item edited", flush=True
+                )
+                session.send_reliable_ordered_split(
+                    packet, total_bit_length=packet_bits, label_prefix="admin-inventory-item-edit",
+                )
+                return True
+            if not call_admin_command(server.admin_commands, commit, session=session):
+                raise ValueError("character inventory changed; refresh and try again")
+        self.repository.audit(actor.username, "character.inventory.item.edit", cid, {
+            "item_id": item_id, "template_id": item.template_id, "before": summary(before),
+            "after": summary(item), "online": target is not None, "reason": reason,
+        })
+        return {"ok": True, "item_id": item_id, "template_id": item.template_id,
+                "online": target is not None, "equipped": equipped}
+
     def get(self, path, query, account, session):
         search = str(query.get("q", ""))[:100].casefold()
         if path == "/api/me":
@@ -1398,6 +1503,19 @@ class AdminService:
             if self.store.get_profile(cid) is None:
                 raise AdminError(404, "character not found")
             return self.live.inspect(cid)
+        if path.startswith("/api/characters/") and path.endswith("/editor"):
+            parts = path.strip("/").split("/")
+            if len(parts) != 6 or parts[3] != "inventory":
+                raise AdminError(404, "item editor not found")
+            cid, item_id = int(parts[2]), int(parts[4])
+            if self.store.get_profile(cid) is None:
+                raise AdminError(404, "character not found")
+            draft = query.get("draft")
+            if draft is not None:
+                if len(draft) > 8000:
+                    raise ValueError("item draft is too large")
+                draft = json.loads(draft)
+            return self.item_editor(cid, item_id, draft)
         if path.startswith("/api/characters/"):
             cid = int(path.rsplit("/", 1)[1])
             profile = self.store.get_profile(cid)
@@ -1648,6 +1766,11 @@ class AdminService:
                 if self.store.get_profile(cid) is None or self.registry.character_owner(cid) is None:
                     raise AdminError(404, "owned character not found")
                 return self.delete_character_item(cid, item_id, account, reason)
+            if len(parts) == 6 and parts[3] == "inventory" and parts[5] == "edit":
+                cid, item_id = int(parts[2]), int(parts[4])
+                if self.store.get_profile(cid) is None or self.registry.character_owner(cid) is None:
+                    raise AdminError(404, "owned character not found")
+                return self.edit_character_item(cid, item_id, payload.get("changes"), account, reason)
             if len(parts) != 4:
                 raise AdminError(404, "action not found")
             cid = int(parts[2])

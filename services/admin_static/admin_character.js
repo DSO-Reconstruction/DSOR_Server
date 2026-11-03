@@ -426,8 +426,10 @@ export async function characterPage(route) {
       ["Game admin privileges", status(p.admin_privileges ? "Granted" : "Not granted", p.admin_privileges ? "good" : "")],
       ["Admin name colour", p.admin_name_color ? "Yes" : "No"]
     ])) + section("Membership and PvP", facts([
-      ["Membership", s?.membership?.active ? (s.membership.type === 2 ? "Deluxe" : `Type ${s.membership.type}`) : "Inactive"],
-      ["Membership expires", esc(date(s?.membership?.expires_at))], ["PvP enabled", s?.pvp_enabled ? "Yes" : "No"],
+      ["Membership", s?.membership?.active ? ({1: "Premium", 2: "Deluxe"}[s.membership.type] || `Type ${s.membership.type}`) : "Inactive"],
+      ["Membership expires", esc(date(s?.membership?.expires_at))],
+      ["Premium expires", s?.membership?.premium_expires_at ? esc(date(s.membership.premium_expires_at)) : "None"],
+      ["PvP enabled", s?.pvp_enabled ? "Yes" : "No"],
       ["Honor points", esc(s?.honor_points ?? 0)], ["Wins / losses", `${s?.pvp_matches_won ?? 0} / ${s?.pvp_matches_lost ?? 0}`],
       ["Kills / deaths", `${s?.pvp_kills ?? 0} / ${s?.pvp_deaths ?? 0}`], ["Title", esc(s?.achievement_title || "None")]
     ])) + '</div>';
@@ -449,7 +451,7 @@ export async function characterPage(route) {
   } else if (!s) {
     result.html += '<p class="empty">This character has not saved gameplay state yet.</p>';
   } else if (tab === "inventory") {
-    if (route.parts[3]) return inventoryItemPage(result, route, data);
+    if (route.parts[3]) return await inventoryItemPage(result, route, data);
     const inventory = s.inventory, all = inventory.items || [];
     const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
       (inventory.premium_storage_overflow || []).length;
@@ -559,7 +561,7 @@ function bindRaw(saved) {
   apply();
 }
 
-function inventoryItemPage(result, route, data) {
+async function inventoryItemPage(result, route, data) {
   const inventory = data.state.inventory;
   const item = inventory.items.find(i => String(i.item_id) === route.parts[3]);
   if (!item) throw new Error("This item is no longer present in the saved inventory.");
@@ -577,9 +579,19 @@ function inventoryItemPage(result, route, data) {
     ["Gold value (VC)", esc(item.stack_vc_value)], ["Glyph value", esc(item.glyph_value)],
     ["Created", esc((item.created_at || []).join(" / "))]
   ])) + '</div>';
-  result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Origin level", "Rarity"], (item.enchantments || []).map(e => [
+  // The editor reads the live item when the character is online, so a failure
+  // here (changing maps, say) leaves the rest of the page usable. Its module is
+  // imported here, not statically: a server started before the file existed
+  // refuses it, and a static import would blank the whole CMS.
+  let editor = null, editorError = "", editorModule = null;
+  try {
+    editorModule = await import("./admin_item_editor.js");
+    editor = await api(`/api/characters/${data.profile.character_id}/inventory/${item.item_id}/editor`);
+  } catch (error) { editorError = editorModule ? error.message : "restart the server to load the editor"; }
+  if (editor?.editable) result.html += editorModule.itemEditorSection(editor);
+  else result.html += section("Enchantments", table(["Enchantment", "Roll quality", "Tier", "Origin level", "Rarity"], (item.enchantments || []).map(e => [
     `<code class="resource">${esc(e.template_id)}</code>`, `${(e.value * 100).toFixed(1)}%`, e.tier, e.origin_item_level, esc(rarities[e.kind] ?? e.kind)
-  ]), "No enchantments on this item."));
+  ]), "No enchantments on this item.") + (editorError ? `<p class="error-text">Stats editor unavailable: ${esc(editorError)}</p>` : ""));
   result.html += section("Sockets", table(["Socket", "Content"], Array.from({length: item.socket_count}, (_, index) => [index + 1,
     item.socketed_templates[index] ? link(item.socketed_templates[index], `items/${encodeURIComponent(item.socketed_templates[index])}`, {}, "resource mono") : '<span class="muted">Empty</span>'
   ]), "This item has no sockets."));
@@ -589,6 +601,9 @@ function inventoryItemPage(result, route, data) {
     </fieldset>
     <p id="inventory-item-delete-error" class="error-text" role="alert"></p>
     <div class="form-actions"><button type="submit" class="danger">Delete item ${item.item_id}</button></div></form>`);
-  result.mount = () => bindInventoryItemDelete(data.profile.character_id, item);
+  result.mount = () => {
+    bindInventoryItemDelete(data.profile.character_id, item);
+    if (editor?.editable) editorModule.bindItemEditor(editor, data.profile.character_id);
+  };
   return result;
 }
