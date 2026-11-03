@@ -3,13 +3,15 @@
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+from dso_server.persistence import readonly_db
 
 
 def _tesla(offset):
     encounter = load_local_monster_encounter(DEFAULT_STATIC_DB_PATH, "b1201_pve", include_spawn_areas=False)
     state = LocalCombatState(encounter, player_actor_id=1, player_health=1000)
-    definition = next(state.player_summon_definition(i) for i in range(4000)
-                      if getattr(state.player_summon_definition(i), "skill_resource_id", "") == "TurretTesla")
+    (index,) = readonly_db.connect(DEFAULT_STATIC_DB_PATH).execute(
+        "SELECT rowid-1 FROM _Template_Skill WHERE Id='TurretTesla'").fetchone()
+    definition = state.player_summon_definition(index)
     target = encounter.actor_ids[0]
     position = state.monster_positions[target]
     spawn = state.spawn_player_summon(

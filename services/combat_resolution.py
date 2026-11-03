@@ -721,10 +721,11 @@ class CombatResolutionService:
         every application, then removes the superseded detailed instance with
         a no-details record. ``stack_index`` is a monotonically increasing,
         zero-based occurrence for a running resource. It advances on every
-        replacement, including resources whose authored ``MaxStackSize`` is
-        one. Retail relies on that occurrence to distinguish the new detailed
-        ADD from the old cleanup; resetting it to zero makes the client reject
-        the replacement and the cleanup then removes the only visible effect.
+        replacement below ``MaxStackSize``. Retail relies on that occurrence
+        to distinguish the new detailed ADD from the old cleanup; resetting it
+        to zero makes the client reject the replacement and the cleanup then
+        removes the only visible effect. An occurrence at ``MaxStackSize`` is
+        refused as well, so at the cap the running instance is renewed.
         """
 
         duration = max(0, int(definition.duration_ticks))
@@ -754,10 +755,17 @@ class CombatResolutionService:
         instance_id = int(s.gameplay_next_status_effect_instance_id)
         s.gameplay_next_status_effect_instance_id += 1
         start_tick = int(server_tick) & 0xFFFFFFFF
-        if causer_stack and previous is not None and stack_index == previous.stack_index:
+        if previous is not None and (
+            (causer_stack and stack_index == previous.stack_index)
+            or stack_index >= max(1, int(definition.max_stack_size))
+        ):
             # At the authored cap there is no new stack. Native no-details
             # update_timing refreshes the existing instance; another ADD followed
             # by cleanup can delete the capped effect when ADD is rejected.
+            # AddEffect refuses an explicit index at or above MaxStackSize
+            # (docs/SHADOW_SOUL_EFFECTS.md), so a second ranger mark (index 1,
+            # MaxStackSize 1) was dropped and the cleanup then removed the
+            # mark still running: marks vanished before their 8 s.
             refreshed = replace(
                 previous,
                 start_tick=start_tick,
@@ -1584,20 +1592,23 @@ class CombatResolutionService:
                 )
                 capped_refresh = (
                     previous is not None
-                    and definition.resource_id in {
-                        "skill_frostwind_buff_iceball_damage",
-                        "skill_frostwind_buff_frostnova_damage",
-                        "skill_mightystab_buff_attackspeed",
-                    }
-                    and previous.stack_index >= definition.max_stack_size - 1
+                    and int(definition.effect_id) not in force_fresh_effect_ids
+                    and (
+                        stack_index <= int(previous.stack_index)
+                        or stack_index >= max(1, int(definition.max_stack_size))
+                    )
                 )
                 if capped_refresh:
                     # At the cap the client rejects another counted ADD with
                     # the same index. Removing the old occurrence afterwards
                     # then erases the visible buff. Refresh its existing id.
+                    # Forgotten Glory's one-stack Old Glory is re-applied by
+                    # every target a piercing Thicket of Thorns reaches later:
+                    # the bonus vanished a quarter second after it appeared.
                     instance_id = int(previous_id)
                     entry = replace(entry, instance_id=instance_id,
-                                    stack_index=previous.stack_index)
+                                    stack_index=previous.stack_index,
+                                    stacked=previous.stacked)
                 wire_entry = (
                     replace(entry, update_timing=True, has_details=False, values=())
                     if capped_refresh else entry
@@ -1813,6 +1824,10 @@ class CombatResolutionService:
     @staticmethod
     def _expire_counted_status(s, generation, entry):
         with s.flow_lock:
+            running = s.gameplay_runtime_status_effects.get(entry.instance_id)
+            if running is not None and running[0] != entry:
+                # Renewed in place under the same id: its own timer ends it.
+                return
             s.gameplay_projectile_timers.pop(('runtime-effect-expire', entry.instance_id), None)
             if not s.connected or generation != s.gameplay_chase_generation:
                 return

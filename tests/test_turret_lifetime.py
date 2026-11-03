@@ -1,14 +1,16 @@
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.gameplay.local_combat_state import LocalCombatState
 from dso_server.gameplay.local_monster_state import load_local_monster_encounter
+from dso_server.persistence import readonly_db
 
 
 def _definition(state, skill_resource_id):
-    for index in range(4000):
-        definition = state.player_summon_definition(index)
-        if definition is not None and definition.skill_resource_id == skill_resource_id:
-            return definition
-    raise AssertionError(skill_resource_id)
+    (index,) = readonly_db.connect(DEFAULT_STATIC_DB_PATH).execute(
+        "SELECT rowid-1 FROM _Template_Skill WHERE Id=?", (skill_resource_id,),
+    ).fetchone()
+    definition = state.player_summon_definition(index)
+    assert definition is not None and definition.skill_resource_id == skill_resource_id
+    return definition
 
 
 def test_summon_visualizer_bounds_turret_lifetime():

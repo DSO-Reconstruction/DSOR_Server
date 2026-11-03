@@ -242,11 +242,13 @@ def test_replaced_timed_set_effect_ignores_its_canceled_expiry_callback(sets, pl
     old_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", old_entry.instance_id)]
     kill(wearer, (definition,))
     new_entry, _ = running(wearer)[definition.resource_id]
-    assert new_entry.instance_id != old_entry.instance_id
+    # One stack: renewed in place (the client refuses a second ADD).
+    assert new_entry.instance_id == old_entry.instance_id
     old_timer.cancel.assert_called_once()
     old_timer.function(*old_timer.args)
     assert running(wearer)[definition.resource_id][0] == new_entry
     new_timer = wearer.gameplay_projectile_timers[("item-set-program-expire", new_entry.instance_id)]
+    assert new_timer is not old_timer
     new_timer.function(*new_timer.args)
     assert definition.resource_id not in running(wearer)
 

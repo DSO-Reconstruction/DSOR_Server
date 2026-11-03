@@ -154,7 +154,7 @@ def _adjust_owner_group_durations(s, path, bonus, generation, now) -> None:
                     old.append(previous)
                 timer = s.gameplay_deadline_timer(
                     max(0.0, target - now), _expire_item_set_program,
-                    args=(s, generation, int(instance_id)),
+                    args=(s, generation, int(instance_id), target),
                 )
                 s.gameplay_projectile_timers[key] = timer
                 timers.append(timer)

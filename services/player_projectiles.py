@@ -26,16 +26,18 @@ def location_effect_waits_for_hit(visual, geometry) -> bool:
 
 
 def _location_effect_follows_hit(
-    visual, geometry, travel_distance, authored_chance,
+    visual, geometry, travel_distance, authored_chance, *, projectile=False,
 ) -> bool:
     """Does a skill's location effect start at the monster it just hit?
 
-    A bullet lands only the effect a talent switched on at its impact.
+    A bullet lands only the effect a talent switched on at its impact
+    (``LocalCombatState.hit_placed_location_auras``), also on a monster it
+    struck point-blank, with no travel left.
     """
 
     if visual.chance < 1.0 or normalize_socket_trigger(visual.trigger) != "hit":
         return False
-    if travel_distance > 0.0:
+    if projectile or travel_distance > 0.0:
         return visual.chance > authored_chance
     return location_effect_waits_for_hit(visual, geometry)
 
@@ -92,6 +94,82 @@ class PlayerProjectileService:
                 hit_position, damage_range,
             ))
         return tuple(events)
+
+    @staticmethod
+    def _schedule_bullet_explosion(
+            s: Session, combat, explosion, receivers, *,
+            position, owner_actor_id: int, cast_id: int, skill_index: int,
+            player_damage_range, server_tick: int) -> None:
+        """Set off a bullet's explosion its authored delay after the hit.
+
+        Explosive Arrow hits, then explodes 0.1 s later: the monsters inside
+        take the arrow and, afterwards, the explosion as a hit of its own
+        (``LocalCombatState.delayed_bullet_explosions``).
+        """
+
+        delay_seconds = explosion.delay_ticks / SERVER_TICKS_PER_SECOND
+        timer_key = (
+            "bullet-explosion", int(owner_actor_id), int(cast_id),
+            int(explosion.effect_id),
+        )
+        with s.flow_lock:
+            generation = s.gameplay_chase_generation
+            old_timer = s.gameplay_projectile_timers.pop(timer_key, None)
+            timer = s.gameplay_deadline_timer(
+                delay_seconds,
+                CharacterService._resolve_bullet_explosion,
+                args=(s, generation, timer_key, combat, explosion, tuple(receivers)),
+                kwargs={
+                    "position": tuple(position),
+                    "owner_actor_id": int(owner_actor_id),
+                    "skill_index": int(skill_index),
+                    "player_damage_range": tuple(player_damage_range),
+                    "server_tick": (
+                        int(server_tick) + int(explosion.delay_ticks)
+                    ) & 0xFFFFFFFF,
+                },
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        if old_timer is not None:
+            old_timer.cancel()
+        timer.start()
+
+    @staticmethod
+    def _resolve_bullet_explosion(
+            s: Session, generation: int, timer_key, combat, explosion,
+            receivers, *, position, owner_actor_id: int, skill_index: int,
+            player_damage_range, server_tick: int) -> None:
+        with s.flow_lock:
+            s.gameplay_projectile_timers.pop(timer_key, None)
+            if (
+                not s.connected
+                or generation != s.gameplay_chase_generation
+                or s.gameplay_combat_state is not combat
+            ):
+                return
+        with combat.lock:
+            resolutions, applications = combat.explode_player_location_aura(
+                explosion, receivers, position=position,
+                owner_actor_id=owner_actor_id, skill_index=skill_index,
+                player_damage_range=player_damage_range,
+                server_tick=server_tick,
+            )
+        owners = {int(owner_actor_id): s}
+        # A damaging hit carries its effects; only the others need sending.
+        struck = {int(resolution.target_actor_id) for resolution in resolutions}
+        applications = tuple(
+            application for application in applications
+            if int(application.target_actor_id) not in struck
+        )
+        if applications:
+            CharacterService._dispatch_location_aura_applications(
+                owners, applications
+            )
+        if resolutions:
+            CharacterService._dispatch_player_owned_resolutions(
+                combat, owners, resolutions
+            )
 
     @staticmethod
     def _resolve_player_projectile_group(
@@ -619,6 +697,7 @@ class PlayerProjectileService:
                             if _location_effect_follows_hit(
                                 v, skill_geometry, pending.travel_distance,
                                 unmod_chances.get(v.resource_id, 0.0),
+                                projectile=pending.projectile_velocity > 0.0,
                             )
                         )
                         if hit_location_visuals:
@@ -631,6 +710,12 @@ class PlayerProjectileService:
                                 if aura_key in triggered_hit_auras:
                                     continue
                                 triggered_hit_auras.add(aura_key)
+                                # Only its own children: Marking Wave's 10 m
+                                # mark aura also dealt Explosive Arrow's
+                                # explosion to everything it reached.
+                                own_children = combat.location_aura_child_ids(
+                                    visual_def.resource_id
+                                )
                                 CharacterService._schedule_player_location_visuals(
                                     s,
                                     combat,
@@ -641,23 +726,70 @@ class PlayerProjectileService:
                                     owner_actor_id=int(source_actor_id),
                                     cast_id=int(pending.cast_id ^ pending.impact_index),
                                     delay_seconds=0.0,
-                                    receiver_status_effects=hit_location_receivers,
+                                    receiver_status_effects=tuple(
+                                        e for e in hit_location_receivers
+                                        if e.resource_id in own_children
+                                    ),
                                     source_skill_index=int(pending.skill_index),
                                     player_damage_range=(
                                         pending.player_minimum_damage,
                                         pending.player_maximum_damage,
                                     ),
                                 )
-                                loc_resolutions, _ = combat.apply_player_location_auras(
+                                loc_resolutions, loc_applications = combat.apply_player_location_auras(
                                     now=time.perf_counter(),
                                     server_tick=int(resolution.server_tick),
                                 )
+                                # A receiver that deals no damage (Marking
+                                # Wave's mark) has no resolution to carry it.
+                                # Without player positions this pass also
+                                # "ends" owners' own ground buffs; the next
+                                # tick restores those, so only monsters'.
+                                monster_applications = tuple(
+                                    a for a in loc_applications
+                                    if not a.remove
+                                    and int(a.target_actor_id) in combat.monsters
+                                )
+                                if monster_applications:
+                                    CharacterService._dispatch_location_aura_applications(
+                                        {int(source_actor_id): s},
+                                        monster_applications,
+                                    )
                                 if loc_resolutions:
                                     CharacterService._dispatch_player_owned_resolutions(
                                         combat,
                                         {int(source_actor_id): s},
                                         loc_resolutions,
                                     )
+                        for explosion in (
+                            combat.delayed_bullet_explosions(skill_geometry)
+                            if pending.projectile_velocity > 0.0 else ()
+                        ):
+                            aura_key = (pending.cast_id, explosion.resource_id)
+                            if aura_key in triggered_hit_auras:
+                                continue
+                            triggered_hit_auras.add(aura_key)
+                            own_children = combat.location_aura_child_ids(
+                                explosion.resource_id
+                            )
+                            CharacterService._schedule_bullet_explosion(
+                                s,
+                                combat,
+                                explosion,
+                                tuple(
+                                    e for e in skill_geometry.location_status_effects
+                                    if e.chance >= 1.0 and e.resource_id in own_children
+                                ),
+                                position=resolution.position,
+                                owner_actor_id=int(source_actor_id),
+                                cast_id=int(pending.cast_id),
+                                skill_index=int(pending.skill_index),
+                                player_damage_range=(
+                                    pending.player_minimum_damage,
+                                    pending.player_maximum_damage,
+                                ),
+                                server_tick=int(resolution.server_tick),
+                            )
             dispatches.append(
                 (resolution, resolution_label, loot_generation)
             )

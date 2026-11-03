@@ -2145,6 +2145,7 @@ class LocalCombatState:
         self._geometry_actor_variables: dict[tuple, dict[str, float]] = {}
         self._user_effect_location_auras_cache = {}
         self._victim_location_children_cache = {}
+        self._location_aura_child_ids_cache = {}
         self._summon_aura_strike_cache = {}
         runtime_catalog = load_status_runtime_catalog(
             encounter.static_database_path
@@ -6573,6 +6574,147 @@ class LocalCombatState:
         self._victim_location_children_cache[resource_id] = result
         return result
 
+    def hit_placed_location_auras(
+        self, skill_index: int, geometry: PlayerSkillGeometry,
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """A bullet's location auras that its hit lands, each on its own.
+
+        A modifier switched each of them on (a talent, an ammunition). The
+        hit places it at the impact with only its own AuraEffectId children
+        (services.player_projectiles), so it is neither the bullet's splash
+        nor part of every impact. Marking Wave turns on Explosive Arrow's
+        10 m ``skill_explosiveshot_mark_aura``: taken for the splash, it gave
+        every monster 10 m around the explosion the arrow's hit and the 3.5 m
+        explosion, and its placed aura dealt that explosion a second time.
+        """
+
+        authored = self._load_player_skill_geometry(int(skill_index))
+        chances = {
+            effect.resource_id: effect.chance
+            for effect in (authored.location_visual_effects if authored else ())
+        }
+        return tuple(
+            effect for effect in geometry.location_visual_effects
+            if effect.chance >= 1.0 and effect.trigger == "hit"
+            and effect.chance > chances.get(effect.resource_id, 0.0)
+        )
+
+    @staticmethod
+    def delayed_bullet_explosions(
+        geometry: PlayerSkillGeometry,
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """A bullet's own explosions that go off a moment after its hit.
+
+        Explosive Arrow ("Arrow will explode shortly after hitting") and
+        Heavy Shot deal their hit, then author an explosion around it with a
+        delay (DE 0.1 / 0.2 s). Each impact carried that explosion as well,
+        so its damage landed inside the hit, as one number, at once.
+        """
+
+        if geometry.damage_modifier <= 0.0:
+            return ()
+        return tuple(
+            effect for effect in geometry.location_visual_effects
+            if effect.chance >= 1.0 and effect.trigger == "hit"
+            and effect.delay_ticks > 0 and effect.aura_radius > 0.0
+        )
+
+    def explode_player_location_aura(
+        self,
+        aura: VictimStatusEffectDefinition,
+        receivers: tuple[VictimStatusEffectDefinition, ...],
+        *,
+        position: tuple[float, float, float],
+        owner_actor_id: int,
+        skill_index: int,
+        player_damage_range: tuple[float, float],
+        server_tick: int,
+        now: float | None = None,
+    ) -> tuple[
+        tuple[DamageResolution, ...],
+        tuple[PlayerSupportApplication, ...],
+    ]:
+        """Land a delayed bullet explosion once on every enemy inside it.
+
+        The client draws the explosion itself where its bullet struck, so it
+        is not a published location visual (that drew a second one): only
+        its receivers are applied here, as hits of their own.
+        """
+
+        current_time = time.perf_counter() if now is None else float(now)
+        radius = max(0.0, float(aura.aura_radius))
+        resolutions = []
+        applications = []
+        for actor_id in tuple(self.living_actor_ids):
+            monster = self.monsters[actor_id]
+            if self._distance(
+                position, self.monster_positions[actor_id]
+            ) > radius + max(0.0, monster.collision_radius):
+                continue
+            if not self.monster_hostile_to_player(actor_id, owner_actor_id):
+                continue
+            definitions = self.accepted_monster_status_effects(
+                actor_id, tuple(receivers), now=current_time
+            )
+            if not definitions:
+                continue
+            self._record_monster_status_effects(
+                actor_id,
+                definitions,
+                now=current_time,
+                source_actor_id=int(owner_actor_id),
+                player_damage_range=player_damage_range,
+                skill_index=int(skill_index),
+            )
+            applications.append(
+                PlayerSupportApplication(
+                    source_actor_id=int(owner_actor_id),
+                    target_actor_id=int(actor_id),
+                    server_tick=int(server_tick) & 0xFFFFFFFF,
+                    status_effects=definitions,
+                )
+            )
+            damage, hit_tags = self.status_effect_immediate_damage(
+                actor_id, definitions, player_damage_range, now=current_time
+            )
+            previous = self.monster_health.get(actor_id, 0)
+            if damage <= 0 or previous <= 0:
+                continue
+            current, killed = _monster_health_after_damage(
+                monster, previous, damage
+            )
+            self.monster_health[actor_id] = current
+            resolutions.append(
+                DamageResolution(
+                    target_actor_id=actor_id,
+                    attacker_actor_id=int(owner_actor_id),
+                    current_health=current,
+                    maximum_health=monster.maximum_health,
+                    damage=previous - current,
+                    killed=killed,
+                    position=self.monster_positions[actor_id],
+                    server_tick=int(server_tick) & 0xFFFFFFFF,
+                    hit_tags=hit_tags,
+                    skill_index=int(skill_index),
+                    victim_status_effects=definitions,
+                    source_actor_id=int(owner_actor_id),
+                )
+            )
+        return tuple(resolutions), tuple(applications)
+
+    def location_aura_child_ids(self, resource_id: str) -> frozenset[str]:
+        """The AuraEffectId children a location aura gives its receivers."""
+
+        cached = self._location_aura_child_ids_cache.get(resource_id)
+        if cached is None:
+            with _static_read_connection(self.encounter.static_database_path) as database:
+                cached = frozenset(
+                    effect.resource_id
+                    for effect in self._load_location_aura_effects(database, resource_id)
+                )
+            self._location_aura_child_ids_cache[resource_id] = cached
+        return cached
+
     def player_summon_aura_strikes(
         self, geometry: PlayerSkillGeometry,
     ) -> tuple[tuple[
@@ -10761,6 +10903,10 @@ class LocalCombatState:
             static_reach=(self._bullet_static_reach(geometry.start_offset)
                           if projectile and geometry.static_collision else None),
             caster_radius=_player_shape_radius(),
+            hit_placed=frozenset(
+                effect.resource_id
+                for effect in self.hit_placed_location_auras(skill_index, geometry)
+            ) if projectile else frozenset(),
         )
 
     def _monster_shot_blocked(self, definition, start, target) -> bool:
@@ -10876,6 +11022,22 @@ class LocalCombatState:
         if plan is None:
             return ()
         geometry = plan.geometry
+        # The hit lands these auras with their own children; an impact that
+        # carried them as well applied them twice, and up to their radius.
+        placed = {
+            effect.resource_id
+            for effect in (
+                *self.hit_placed_location_auras(skill.skill_index, geometry),
+                *self.delayed_bullet_explosions(geometry),
+            )
+        }
+        placed_children = frozenset().union(*map(
+            self.location_aura_child_ids, placed,
+        )).difference(*(
+            self.location_aura_child_ids(effect.resource_id)
+            for effect in geometry.location_visual_effects
+            if effect.chance > 0.0 and effect.resource_id not in placed
+        ))
         current_time = time.perf_counter() if now is None else float(now)
         emit_delay = plan.emit_delay
         effective_projectile_velocity = plan.projectile_velocity
@@ -10918,7 +11080,9 @@ class LocalCombatState:
                     now=current_time,
                 ),
             )
-            impact_effects = impact_status_effects(target_geometry, projectile=True)
+            impact_effects = impact_status_effects(
+                target_geometry, projectile=True, placed=placed_children,
+            )
             pending = PendingPlayerHit(
                 cast_id=int(skill.cast_id),
                 target_actor_id=target.actor_id,

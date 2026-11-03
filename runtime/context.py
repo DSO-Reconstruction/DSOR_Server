@@ -341,6 +341,8 @@ from dso_server.protocol.loot_protocol import (
 )
 from dso_server.protocol.chest_loot_protocol import (
     DEFAULT_CHEST_CONTENTS_MAP,
+    UNRESOLVED_CHEST_MESSAGE,
+    UnresolvedChestError,
     open_mapped_chest,
     roll_chest_contents,
 )

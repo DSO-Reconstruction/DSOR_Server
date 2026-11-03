@@ -232,7 +232,7 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
                      projectile, explicit_targets=(), point=None,
                      attack_speed=1.0, impact_delay=0.0, area_radius=0.0,
                      require_explicit_target=False, range_tolerance=0.6,
-                     static_reach=None, caster_radius=0.0):
+                     static_reach=None, caster_radius=0.0, hit_placed=frozenset()):
     """Produce one ordered impact plan across all eligible entity types.
 
     ``static_reach(start, end)`` returns how far a bullet flies from ``start``
@@ -240,6 +240,9 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     stops it. It applies to bullets with ``static_collision`` only.
     ``caster_radius`` is the caster's own ActorShapeId radius, which the
     client's actor-targeted test subtracts as well as the target's.
+    ``hit_placed`` names the location effects a bullet's hit lands as auras
+    of their own (``LocalCombatState.hit_placed_location_auras``); they do
+    not widen its splash.
     """
     entities = tuple({e.actor_id: e for e in entities}.values())
     explicit = tuple(dict.fromkeys(int(v) for v in explicit_targets if int(v) != 0))
@@ -378,7 +381,7 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
         effect.aura_radius for effect in (
             *geometry.location_status_effects, *geometry.location_visual_effects,
             *geometry.bullet_death_effects,
-        ) if effect.chance >= 1.0
+        ) if effect.chance >= 1.0 and effect.resource_id not in hit_placed
     ), default=0.0))
     if (static_reach is None or point is not None
             or not getattr(geometry, "static_collision", False)
@@ -499,9 +502,15 @@ def plan_entity_skill(geometry, entities, *, origin, direction,
     return EntitySkillPlan(geometry, tuple(impacts), emit, velocity, offset)
 
 
-def impact_status_effects(geometry, *, projectile, additional=()):
-    """Assemble the authored receiver effects before trigger/immunity policy."""
-    effects = (*geometry.victim_status_effects, *geometry.location_status_effects)
+def impact_status_effects(geometry, *, projectile, additional=(), placed=frozenset()):
+    """Assemble the authored receiver effects before trigger/immunity policy.
+
+    ``placed`` location children arrive with an aura of their own instead.
+    """
+    effects = (*geometry.victim_status_effects, *(
+        effect for effect in geometry.location_status_effects
+        if effect.resource_id not in placed
+    ))
     if projectile:
         effects += (*geometry.bullet_location_effects, *geometry.bullet_death_effects)
     return tuple({effect.resource_id: effect for effect in (*effects, *additional)}.values())

@@ -162,7 +162,8 @@ def accepted_item_set_programs(s, applied, *, server_tick):
                 timer = s.gameplay_deadline_timer(
                     definition.duration_ticks / SERVER_TICKS_PER_SECOND,
                     _expire_item_set_program,
-                    args=(s, generation, int(instance_id)),
+                    args=(s, generation, int(instance_id),
+                          s.gameplay_runtime_status_effects[instance_id][1]),
                 )
                 s.gameplay_projectile_timers[key] = timer
             else:
@@ -234,12 +235,17 @@ def _apply_delayed_child(s, generation, key, definition, server_tick):
         label="item-set-delayed-child")
 
 
-def _expire_item_set_program(s, generation, instance_id):
+def _expire_item_set_program(s, generation, instance_id, lease=None):
     with s.flow_lock:
         if generation != s.gameplay_chase_generation or not s.connected:
             return
         definition = getattr(s, "gameplay_item_set_programs", {}).get(instance_id)
         if definition is None:
+            return
+        running = s.gameplay_runtime_status_effects.get(instance_id)
+        if lease is not None and running is not None and running[1] != lease:
+            # A one-stack bonus is renewed under its id (Old Glory on every
+            # Thicket target); only the renewal's own timer may end it.
             return
     stop_item_set_effects(s, (definition.effect_id,), server_tick=s.gameplay_chase_server_tick,
                          reason="done", expected_instance_id=instance_id,

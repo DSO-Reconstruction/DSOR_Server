@@ -29,6 +29,16 @@ ITEM_TABLE = "_Template_Item"
 # by itself (GameItem::IsUsableByPlayersLevel), so a server-side change alone
 # would never reach the server: new characters start with these stones.
 ITEM_PATCHES = {"item_rune_extension_stone": {"RequiredLevel": 1}}
+# StartModifiers appended to stock status effects, for the same reason.
+# Forgotten Glory's ranger bonus ("Explosive Arrow does not have cooldown")
+# authors only CoolDown:-1.0. The client keeps a category's cooldown as the
+# end tick set by the cast (GameActor::GetCoolDown 0x1401357c8, checked by
+# SkillValidator::Validate 0x140a1a9b4), which a CoolDown modifier never
+# shortens: an arrow still cooling down stayed locked through the bonus.
+# The reset is authored as the dwarf's Herald bonus authors its own.
+STATUS_MODIFIER_ADDITIONS = {
+    "bgh_ranger_bonus_heredur": "ActiveCoolDown:-1.0,relative,Skill07#~;ActorCoolDownReset:Skill07#~;",
+}
 
 
 def readonly(path):
@@ -57,10 +67,19 @@ def check_client_content(server, client):
                 + ",".join("?" for _ in ITEM_PATCHES) + ")", tuple(ITEM_PATCHES),
             )
         } if ITEM_TABLE in schemas[0] else set()
+        patched_effects = {
+            row[0] for row in source.execute(
+                f"SELECT rowid FROM {TABLE} WHERE Id IN ("
+                + ",".join("?" for _ in STATUS_MODIFIER_ADDITIONS) + ")",
+                tuple(STATUS_MODIFIER_ADDITIONS),
+            )
+        } if TABLE in schemas[0] else set()
         for table in schemas[0]:
             sql = f"SELECT rowid, * FROM {quoted(table)} ORDER BY rowid"
             rows = {row[0]: row for row in source.execute(sql)}
             for row in target.execute(sql):
+                if table == TABLE and row[0] in patched_effects:
+                    continue
                 if table == ITEM_TABLE and row[0] in patched_items:
                     continue
                 if rows.get(row[0]) != row:
@@ -114,6 +133,11 @@ def patch_database(db):
             db.execute(f"UPDATE {quoted(ITEM_TABLE)} SET "
                        + ",".join(f"{quoted(name)}=?" for name in values) + " WHERE Id=?",
                        [*values.values(), item_id])
+    for effect_id, addition in STATUS_MODIFIER_ADDITIONS.items():
+        db.execute(f"UPDATE {TABLE} SET StartModifiers=rtrim(COALESCE(StartModifiers, ''), ';') "
+                   "|| CASE WHEN COALESCE(StartModifiers, '')='' THEN '' ELSE ';' END || ? "
+                   "WHERE Id=? AND instr(COALESCE(StartModifiers, ''), ?)=0",
+                   (addition, effect_id, addition))
     installed = {}
     for row in desired_effects(db):
         existing = db.execute(f"SELECT rowid FROM {TABLE} WHERE Id=?", (row["Id"],)).fetchone()
