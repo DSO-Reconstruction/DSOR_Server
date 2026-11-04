@@ -1795,6 +1795,10 @@ class WorldService:
                         max_stack_size=item_definition.max_stack_size,
                         next_item_id=int(s.gameplay_next_item_id),
                         reserved_item_ids=tuple(s.gameplay_world_loot),
+                        # Only templates live in the Ingredient Bag catalogue
+                        # may be sent through that client-side tab. Inactive
+                        # herb/ore rows have no client bag entry and crash its
+                        # IngredientBagUtil lookup if force-classified here.
                         ingredient_bag=item_definition.ingredient_bag,
                     )
                     response_packet, response_bits = (
