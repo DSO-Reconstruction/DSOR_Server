@@ -1321,6 +1321,10 @@ class PlayerSupportApplication:
     server_tick: int
     status_effects: tuple[VictimStatusEffectDefinition, ...]
     remove: bool = False
+    # (current, maximum, recovered) of the heal this support tick applied, for
+    # the target's HealingSelf number (Hit). FAILURE: the tree healed silently,
+    # "j'ai pas ma vie qui est ecrite cb j'en gagne".
+    healed: tuple[int, int, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -13596,16 +13600,24 @@ class LocalCombatState:
             ):
                 continue
             self.last_player_summon_support_at[actor_id] = current_time
-            self.heal_player_relative(
+            before = self.player_health.get(
+                summon.owner_actor_id, [0, 0]
+            )[0]
+            current, maximum = self.heal_player_relative(
                 summon.owner_actor_id, definition.heal_fraction
             )
-            if definition.support_status_effects:
+            recovered = max(0, int(current) - int(before))
+            if definition.support_status_effects or recovered:
                 support_applications.append(
                     PlayerSupportApplication(
                         actor_id,
                         summon.owner_actor_id,
                         int(server_tick) & 0xFFFFFFFF,
                         definition.support_status_effects,
+                        healed=(
+                            (int(current), int(maximum), recovered)
+                            if recovered else None
+                        ),
                     )
                 )
         return tuple(damage_resolutions), tuple(support_applications)

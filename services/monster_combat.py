@@ -1320,12 +1320,23 @@ class MonsterCombatService(
                                 label="player-summon-causer-status-effects",
                             )
                     continue
-                CharacterService._send_player_skill_status_effects(
-                    target_session,
-                    application.status_effects,
-                    server_tick=application.server_tick,
-                    label="player-summon-support-status-effects",
-                )
+                if application.status_effects:
+                    CharacterService._send_player_skill_status_effects(
+                        target_session,
+                        application.status_effects,
+                        server_tick=application.server_tick,
+                        label="player-summon-support-status-effects",
+                    )
+                if application.healed is not None:
+                    current, maximum, recovered = application.healed
+                    CharacterService._send_player_heal_transition(
+                        target_session,
+                        current_health=current,
+                        maximum_health=maximum,
+                        recovered=recovered,
+                        server_tick=application.server_tick,
+                        label="player-summon-support-heal",
+                    )
 
         if summon_aura_refreshes:
             with _post_commit_step("summon-aura-refreshes"):
