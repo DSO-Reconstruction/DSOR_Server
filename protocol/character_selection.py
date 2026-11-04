@@ -138,7 +138,11 @@ NEW_CHARACTER_QUICKBAR_SKILL_SLOTS = {
         "SimpleShot", "Flamethrower", "SteamConductor", "HeavyShot",
         "HoverJump", "Grenade", "TurretCombat", "PositionBombShot",
     ),
-    CLASS_IDS["niwalk"]: (),
+    # services/niwalk_content.py: the spells installed into static.db4.
+    CLASS_IDS["niwalk"]: (
+        "zero_slicedice", "zero_bladecut_off", "move_shoulderdash", "move_flashbang",
+        "sacrifice_cut", "trickery_gasbomb", "sacrifice_vial", "crowd_glassdagger",
+    ),
 }
 
 
