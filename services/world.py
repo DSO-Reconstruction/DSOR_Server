@@ -1541,6 +1541,9 @@ class WorldService:
         restored_resource = None
         with s.flow_lock:
             candidate_drop = s.gameplay_world_loot.get(int(item_id))
+            candidate_announced = (
+                int(item_id) in s.gameplay_announced_world_item_ids
+            )
             candidate_combat = s.gameplay_combat_state
             candidate_inventory = s.gameplay_inventory
             candidate_generation = s.gameplay_chase_generation
@@ -1551,6 +1554,21 @@ class WorldService:
             modifier_sources = snapshot_player_modifier_sources(s)
         if candidate_drop is None:
             return False
+        if not candidate_announced:
+            if not automatic:
+                return False
+            with s.flow_lock:
+                if (
+                    int(item_id) not in s.gameplay_world_loot
+                    or int(item_id)
+                    in s.gameplay_announced_world_item_ids
+                ):
+                    return False
+                s.gameplay_announced_world_item_ids.add(int(item_id))
+            # Auto-pickup may run while ordinary vicinity announcements are
+            # deferred by a full reliable queue. Register this item first so
+            # the following DiscardItem cannot target an unknown GameItem.
+            CharacterService._send_world_loot_batch(s, (candidate_drop,))
         event_collectible = bool(
             event_catalog is not None
             and event_catalog.is_event_collectible(
