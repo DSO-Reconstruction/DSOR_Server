@@ -346,6 +346,10 @@ SERVER_TICKS_PER_SECOND = 25.0
 PERMANENT_SUMMON_AURA_LEASE_TICKS = round(24 * 3600 * SERVER_TICKS_PER_SECOND)
 # (database file, revision, effect column, trigger) -> frozen definitions.
 _VICTIM_EFFECT_CACHE: dict[tuple, tuple] = {}
+# (database file, revision, location aura column) -> frozen receiver effects.
+_LOCATION_AURA_CACHE: dict[tuple, tuple] = {}
+# (database file, revision, aura column, trigger) -> frozen creator/causer children.
+_AURA_OWNER_CACHE: dict[tuple, tuple] = {}
 # id(source) -> (source, semantic key). A geared character brings ~470
 # modifier sources to every cast -- status entries, item-set, socket and
 # per-item combat modifiers, all frozen and the same objects cast after cast
@@ -6424,6 +6428,34 @@ class LocalCombatState:
         database: sqlite3.Connection,
         value: str,
     ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """Cached ``_load_location_aura_effects_uncached`` for resident content.
+
+        Each uncached call runs one query per aura and child effect. SQLite
+        releases the GIL for every query, and taking it back waits up to the
+        5 ms switch interval while another thread is busy, so under a full
+        Parallel World wave a 0.015 ms call took ~37 ms: one per frozen
+        victim's frost explosion, and several per skill-geometry miss.
+        """
+
+        path = resident_content.database_path(database)
+        revision = resident_content.revision(path) if path else None
+        if revision is None:
+            return cls._load_location_aura_effects_uncached(database, value)
+        key = (path, revision, str(value or ""))
+        cached = _LOCATION_AURA_CACHE.get(key)
+        if cached is None:
+            cached = cls._load_location_aura_effects_uncached(database, value)
+            if len(_LOCATION_AURA_CACHE) >= 8192:
+                _LOCATION_AURA_CACHE.pop(next(iter(_LOCATION_AURA_CACHE)), None)
+            _LOCATION_AURA_CACHE[key] = cached
+        return cached
+
+    @classmethod
+    def _load_location_aura_effects_uncached(
+        cls,
+        database: sqlite3.Connection,
+        value: str,
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
         """Resolve a location aura into the receiver effects it applies.
 
         The location effect itself is hosted by the predicted ground skill,
@@ -6881,6 +6913,38 @@ class LocalCombatState:
 
     @classmethod
     def _load_aura_owner_effects(
+        cls,
+        database: sqlite3.Connection,
+        value: str,
+        *,
+        default_trigger: str = "hit",
+    ) -> tuple[VictimStatusEffectDefinition, ...]:
+        """Cached ``_load_aura_owner_effects_uncached`` for resident content.
+
+        Item-set procs resolve these on the gameplay threads; like
+        ``_load_location_aura_effects`` each uncached call queried once per
+        aura and child, and every query waited for the GIL under load.
+        """
+
+        path = resident_content.database_path(database)
+        revision = resident_content.revision(path) if path else None
+        if revision is None:
+            return cls._load_aura_owner_effects_uncached(
+                database, value, default_trigger=default_trigger,
+            )
+        key = (path, revision, str(value or ""), default_trigger)
+        cached = _AURA_OWNER_CACHE.get(key)
+        if cached is None:
+            cached = cls._load_aura_owner_effects_uncached(
+                database, value, default_trigger=default_trigger,
+            )
+            if len(_AURA_OWNER_CACHE) >= 8192:
+                _AURA_OWNER_CACHE.pop(next(iter(_AURA_OWNER_CACHE)), None)
+            _AURA_OWNER_CACHE[key] = cached
+        return cached
+
+    @classmethod
+    def _load_aura_owner_effects_uncached(
         cls,
         database: sqlite3.Connection,
         value: str,

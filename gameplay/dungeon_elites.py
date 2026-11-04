@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 
 from dso_server.paths import DEFAULT_DUNGEON_ELITES_CONFIG_PATH
+from dso_server.runtime import file_revisions
 
 
 TARGET_KEYS = ("leaders", "champions", "guardians")
@@ -49,12 +50,14 @@ def _read_document(path: str, modified_ns: int, size: int) -> dict:
 
 
 def _config_signature() -> tuple[str, int, int] | None:
-    path = Path(DEFAULT_DUNGEON_ELITES_CONFIG_PATH)
-    try:
-        stat = path.stat()
-    except OSError:
+    # Read on every encounter load while the session's input gate is held;
+    # the observed revision is re-checked in the background instead of a
+    # stat() and resolve() each time, and the CMS writer invalidates it.
+    key = str(DEFAULT_DUNGEON_ELITES_CONFIG_PATH)
+    revision = file_revisions.observed_revision(key)
+    if revision is None:
         return None
-    return (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+    return (str(file_revisions.resolved_path(key)), *revision)
 
 
 def elite_config_revision() -> tuple[str, int, int]:
