@@ -29,6 +29,7 @@ from dso_server.gameplay.season_pass import (
     season_pass_reward_set, write_season_pass_rewards,
 )
 from dso_server.paths import DEFAULT_SEASON_PASS_CONFIG_PATH
+from dso_server.runtime import file_revisions
 from dso_server.services.admin_items import item_catalog
 
 
@@ -84,6 +85,8 @@ class SeasonPassAdministration:
                 raise SeasonPassConflict("the Season Pass configuration changed; refresh and try again")
             os.replace(temporary, self.config_path)
             temporary = None
+            # Gameplay reads the last observed revision; take the save at once.
+            file_revisions.invalidate(self.config_path)
         except OSError as exc:
             raise ValueError(f"could not save the Season Pass configuration: {exc}") from exc
         finally:

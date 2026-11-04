@@ -10,7 +10,7 @@ import sqlite3
 from types import MappingProxyType
 from typing import Mapping
 
-from dso_server.runtime import resident_content
+from dso_server.runtime import file_revisions, resident_content
 from dso_server.paths import DEFAULT_SEASON_PASS_CONFIG_PATH
 from dso_server.persistence.readonly_db import connect
 
@@ -243,11 +243,13 @@ def load_season_pass_overrides(
     path: str | Path | None = None,
 ) -> Mapping[str, Mapping[int, Mapping[str, object]]]:
     path = Path(path or DEFAULT_SEASON_PASS_CONFIG_PATH)
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
+    # Season Pass progress reads this on every kill; a stat() per lookup
+    # released the GIL and waited for it again on the gameplay threads. The
+    # CMS writer invalidates the revision, so its saves still apply at once.
+    revision = file_revisions.observed_revision(path)
+    if revision is None:
         return MappingProxyType({})
-    return _load_overrides(str(path), stat.st_mtime_ns, stat.st_size)
+    return _load_overrides(str(path), *revision)
 
 
 @lru_cache(maxsize=4)

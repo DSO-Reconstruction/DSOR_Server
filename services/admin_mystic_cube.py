@@ -22,6 +22,7 @@ from dso_server.gameplay.mystic_cube_config import (
     valid_drop_chance,
 )
 from dso_server.paths import DEFAULT_MYSTIC_CUBE_CONFIG_PATH
+from dso_server.runtime import file_revisions
 
 
 class MysticCubeConfigConflict(ValueError):
@@ -69,6 +70,8 @@ class MysticCubeAdministration:
                 )
             os.replace(temporary, self.config_path)
             temporary = None
+            # Loot reads the last observed revision; take the save at once.
+            file_revisions.invalidate(self.config_path)
         except OSError as exc:
             raise ValueError(f"could not save mystic cube settings: {exc}") from exc
         finally:
