@@ -12,9 +12,11 @@ from unittest.mock import Mock, patch
 import pytest
 
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
+from dso_server.protocol import chest_loot_protocol
 from dso_server.protocol import seasonal_activity_protocol as seasonal_proto
 from dso_server.protocol.chest_loot_protocol import (
-    UNRESOLVED_CHEST_MESSAGE, UnresolvedChestError, _AUTHORED_CHEST_CONTENTS, roll_chest_contents,
+    UNRESOLVED_CHEST_MESSAGE, UnresolvedChestError, _AUTHORED_CHEST_CONTENTS,
+    _AUTHORED_ROLL_CHESTS, _AUTHORED_WEIGHTED_CHESTS, _authored_reward_template, roll_chest_contents,
 )
 from dso_server.protocol.seasonal_activity_protocol import load_wishing_well_definitions
 from dso_server.protocol.commerce_protocol import load_purchase_item_definition
@@ -242,25 +244,28 @@ def test_a_premium_teaser_under_deluxe_adds_premium_time_after_deluxe():
 
 # FAILURE: Lydia's Grace ("It can be used at level N") opened to nothing at
 # any level: its loot lists are server-side only and missing.
+# Each opening levels the box by 10 and pays Polished Dragon Scales; the
+# level 100 opening also pays the Statue of Abundance.
 @pytest.mark.parametrize("level", range(10, 101, 10))
-def test_lydias_grace_pays_andermant_and_the_next_box_from_its_level(level):
+def test_lydias_grace_pays_scales_and_the_next_box_from_its_level(level):
     box = f"ancestral_books_lv{level}"
     assert load_purchase_item_definition(DEFAULT_STATIC_DB_PATH, box).required_level == level
     with pytest.raises(ValueError, match=f"requires level {level}"):
         roll_chest_contents(DEFAULT_STATIC_DB_PATH, box, player_level=level - 1, class_name="mage")
     contents = roll_chest_contents(DEFAULT_STATIC_DB_PATH, box, player_level=level, class_name="mage")
-    expected = [("money_rc", level * 1000)]
-    if level < 100:
-        expected.append((f"ancestral_books_lv{level + 10}", 1))
-    assert [(r.definition.template_id, r.amount) for r in contents.rewards] == expected
+    following = (
+        f"ancestral_books_lv{level + 10}" if level < 100 else "wealth_stone_carving"
+    )
+    assert [(r.definition.template_id, r.amount) for r in contents.rewards] == [
+        ("polished_squama", 1), (following, 1)]
 
 
-@pytest.mark.parametrize("box,player_level,andermant,next_box", [
-    ("ancestral_books_lv10", 10, 10_000, "ancestral_books_lv20"),
-    ("ancestral_books_lv90", 95, 90_000, "ancestral_books_lv100"),
-    ("ancestral_books_lv100", 100, 100_000, None),
+@pytest.mark.parametrize("box,player_level,next_box", [
+    ("ancestral_books_lv10", 10, "ancestral_books_lv20"),
+    ("ancestral_books_lv90", 95, "ancestral_books_lv100"),
+    ("ancestral_books_lv100", 100, "wealth_stone_carving"),
 ])
-def test_using_lydias_grace_credits_andermant_and_grants_the_next_box(box, player_level, andermant, next_box):
+def test_using_lydias_grace_grants_its_scales_and_the_next_box(box, player_level, next_box):
     case = achievement_fixtures.AchievementServiceTests()
     case.setUp()
     try:
@@ -274,9 +279,9 @@ def test_using_lydias_grace_credits_andermant_and_grants_the_next_box(box, playe
         payload, _ = encode_inventory_item_action(InventoryItemAction(51, 0x13, 0, 0, 0))
         with patch.object(CharacterServer, "_persist_gameplay_session", return_value=False):
             server._handle_inventory_item_action(session, payload)
-        assert session.gameplay_currency_state.andermant == 500 + andermant
+        assert session.gameplay_currency_state.andermant == 500
         templates = [item.template_id for item in session.gameplay_inventory.items]
-        assert templates == ([next_box] if next_box else [])
+        assert templates == ["polished_squama", next_box]
     finally:
         case.doCleanups()
 
@@ -430,6 +435,287 @@ def test_alternative_amounts_give_the_first_and_every_listed_reward_can_drop(box
         assert len(rewards) == 1
         drawn.add(rewards[0])
     assert drawn == listed
+
+
+# FAILURE: "lucky bag 2024, ancestor's treasure map, crafting chest
+# içerikleri yok". Their retail contents sit in the descriptions, which
+# chest_contents_descriptions.json could not parse (a corrupted bullet,
+# percentages the generator never reads).
+LUCKY_BAG_2024 = {
+    ("item_lootbox_glitter_clover", 1), ("ingredient_rune_resistance_ice_fire_light", 1),
+    ("jewel_buff_lords_magic", 1), ("jewel_boss_gem_drop_common", 1),
+    ("jewel_ingredient_find_common", 1), ("premium_teaser_one_month", 6),
+    ("lootbox_level_rallye_jewels_random", 1), ("money_rc", 5000),
+    ("community_coins", 100), ("community_coins", 50), ("community_coins", 40), ("community_coins", 20),
+    ("mortis_key", 2), ("ce_darkforce_key", 2), ("pw_enter_locked_difficulty_key", 40),
+}
+LUCKY_BAG_2024_COMMON = {
+    ("lootbox_level_rallye_jewels_random", 1), ("money_rc", 5000),
+    ("community_coins", 100), ("community_coins", 50), ("community_coins", 40), ("community_coins", 20),
+    ("mortis_key", 2), ("ce_darkforce_key", 2), ("pw_enter_locked_difficulty_key", 40),
+}
+LUCKY_BAG_2024_COIN_AMOUNTS = {20, 40, 50, 100}
+
+
+def test_lucky_bag_2024_draws_one_reward_at_its_retail_odds():
+    table = _AUTHORED_WEIGHTED_CHESTS["item_lootbox_lucky_bag_2024"]
+    assert sum(chance for _template_id, _amount, chance in table) == pytest.approx(100.0)
+    drawn: dict[tuple[str, int], int] = {}
+    coins = 0
+    coin_amounts = set()
+    for seed in range(1000):
+        [reward] = _rewards("item_lootbox_lucky_bag_2024", level=60, seed=seed)
+        drawn[reward] = drawn.get(reward, 0) + 1
+        if reward[0] == "community_coins":
+            coins += 1
+            coin_amounts.add(reward[1])
+    assert set(drawn) <= LUCKY_BAG_2024
+    # Community Coin is 66.5% of the draw, a random 100/50/40/20.
+    assert 0.60 < coins / 1000 < 0.73
+    assert coin_amounts == LUCKY_BAG_2024_COIN_AMOUNTS
+    assert LUCKY_BAG_2024_COMMON <= set(drawn)
+
+
+# "Consumed when used" for the stated currency.
+@pytest.mark.parametrize("box,expected", [
+    ("perforated_dragon_scale", [("money_vc_gold", 5)]),
+    ("perforated_dragon_bone", [("money_vc_gold", 10)]),
+    ("perforated_dragon_tooth", [("money_rc", 100)]),
+    ("motley_glass_plate", [("community_coins", 10)]),
+    ("motley_glass_bowl", [("community_coins", 50)]),
+    ("three_hole_bone_flute", [("e_chr_2012_event_currency", 20)]),
+    ("five_hole_bone_flute", [("e_chr_2012_event_currency", 100)]),
+    ("seven_hole_bone_flute", [("e_chr_2012_event_currency", 500)]),
+])
+def test_treasure_map_relics_exchange_for_their_described_currency(box, expected):
+    assert _rewards(box, level=1) == expected
+
+
+# "Once open, it gives you a 100% chance for a complete Dragon Stone."
+def test_dragon_crystal_box_gives_one_ancestors_soul():
+    assert _rewards("dragon_crystal_box", level=1) == [("e_bgh_ancestors_soul", 1)]
+
+
+# "Use it to get 5 to 15 random Andermants."
+def test_polished_dragon_scale_exchanges_for_five_to_fifteen_andermant():
+    amounts = set()
+    for seed in range(200):
+        [reward] = _rewards("polished_squama", level=1, seed=seed)
+        assert reward[0] == "money_rc"
+        amounts.add(reward[1])
+    assert amounts == set(range(5, 16))
+
+
+# "You have a chance to receive one of the following items" (eight mounts,
+# the odds are not stated): one of the eight per opening.
+FOOLS_LUCKY_GIFT_MOUNTS = {
+    ("mythical_mount_skeleton_dragon_01_3d", 1),
+    ("epicmount_ghost_02_1d", 1),
+    ("epicmount_ghost_01_1d", 1),
+    ("epicmount_wealth_ston_doll_1d", 1),
+    ("epicmount_ghost_bone_horse_1d", 1),
+    ("epicmount_ghost_bone_monoceros_1d", 1),
+    ("epicmount_valentines_day_chair_1d", 1),
+    ("epicmount_chaos_dragon_01_1d", 1),
+}
+
+
+def test_fools_lucky_gift_draws_one_of_its_eight_mounts():
+    table = _AUTHORED_WEIGHTED_CHESTS["event_fools_lucky_gift"]
+    assert sum(chance for _template_id, _amount, chance in table) == pytest.approx(100.0)
+    drawn = set()
+    for seed in range(400):
+        [reward] = _rewards("event_fools_lucky_gift", level=1, seed=seed)
+        drawn.add(reward)
+    assert drawn == FOOLS_LUCKY_GIFT_MOUNTS
+
+
+def test_fools_lucky_gift_is_consumed_for_one_mount():
+    opened = _open_chest("event_fools_lucky_gift", level=1, seed=11)
+    assert "event_fools_lucky_gift" not in opened["templates"]
+    assert len(opened["templates"]) == 1
+    assert (opened["templates"][0], 1) in FOOLS_LUCKY_GIFT_MOUNTS
+
+
+IMMORTAL_RELIC_BONUS = {
+    (("ancestors_molten_chest", 1),),
+    (("season_pass_chest", 1),),
+    (("e_cny_boss_essence_04", 1999),),
+    (("ce2024_black_dragon_mount", 1),),
+    # The package's own offer: 10 Challenge Pass + 10 Blue Dragon Package.
+    (("endlesstower_key", 10), ("ce2024_blue_dragon_mount", 10)),
+}
+
+
+def test_immortal_relic_chest_pays_its_fixed_rewards_and_one_bonus():
+    drawn = set()
+    for seed in range(400):
+        rewards = _rewards("immortal_relic_chest", level=1, seed=seed)
+        assert rewards[:2] == [("event_fools_lucky_gift", 1), ("item_season_pass_experience", 5)]
+        drawn.add(tuple(rewards[2:]))
+    assert drawn == IMMORTAL_RELIC_BONUS
+
+
+ANCESTOR_TREASURE_MAP = {
+    ("perforated_dragon_scale", 1), ("perforated_dragon_bone", 1), ("perforated_dragon_tooth", 1),
+    ("motley_glass_plate", 1), ("motley_glass_bowl", 1), ("motley_glass_cup", 1),
+    ("three_hole_bone_flute", 1), ("five_hole_bone_flute", 1), ("seven_hole_bone_flute", 1),
+    ("e_bgh_ancestors_soul", 1), ("ancestral_books_lv10", 1),
+    ("horn_of_harvest_lv60", 1), ("golden_goose_Lv60", 1), ("magic_lamp_1_filthy_1", 1),
+    ("magic_dragon_egg_fossil", 1), ("dragon_blood_box", 1), ("dragon_crystal_box", 1),
+    ("money_rc", 1000), ("money_rc", 2000), ("money_rc", 4000), ("money_rc", 6000),
+    ("money_rc", 8000), ("money_rc", 10000),
+}
+
+
+def test_ancestor_treasure_map_rolls_every_listed_reward_independently():
+    assert [
+        entry for entry in _AUTHORED_ROLL_CHESTS["ancestor_treasure_map"] if entry[2] == 100.0
+    ] == [("perforated_dragon_scale", 1, 100.0), ("money_rc", 2000, 100.0)]
+    drawn = set()
+    for seed in range(600):
+        rewards = _rewards("ancestor_treasure_map", level=60, seed=seed)
+        assert ("perforated_dragon_scale", 1) in rewards
+        assert ("money_rc", 2000) in rewards
+        drawn.update(rewards)
+    assert drawn <= ANCESTOR_TREASURE_MAP
+    assert {
+        ("perforated_dragon_scale", 1), ("perforated_dragon_bone", 1), ("perforated_dragon_tooth", 1),
+        ("motley_glass_plate", 1), ("three_hole_bone_flute", 1), ("five_hole_bone_flute", 1),
+        ("ancestral_books_lv10", 1), ("golden_goose_Lv60", 1), ("dragon_blood_box", 1),
+        ("money_rc", 1000), ("money_rc", 4000),
+    } <= drawn
+
+
+@pytest.mark.parametrize("placeholder,player_level,expected", [
+    ("@harvest_horn", 5, "horn_of_harvest_lv20"),
+    ("@harvest_horn", 59, "horn_of_harvest_lv40"),
+    ("@harvest_horn", 100, "horn_of_harvest_lv100"),
+    ("@golden_goose", 1, "golden_goose_Lv50"),
+    ("@golden_goose", 73, "golden_goose_Lv70"),
+    ("@golden_goose", 100, "golden_goose_Lv95"),
+])
+def test_ancestor_level_scaled_rewards_follow_the_players_level(placeholder, player_level, expected):
+    assert _authored_reward_template(
+        placeholder, player_level=player_level, rng=random.Random(0),
+    ) == expected
+
+
+def test_ancestor_treasure_map_opens_and_credits_its_guaranteed_andermant():
+    case = achievement_fixtures.AchievementServiceTests()
+    case.setUp()
+    try:
+        server, session = case.server, case.session
+        session.gameplay_character.level = 60
+        session.gameplay_inventory = InventoryInfo(
+            items=[ItemInfo(item_id=51, template_id="ancestor_treasure_map", amount=1)],
+            storage_slots={51: 0},
+        )
+        session.gameplay_next_item_id = 52
+        session.gameplay_currency_state = CurrencyChanged(0, 0, (0, 0, 0), 0, False)
+        payload, _ = encode_inventory_item_action(InventoryItemAction(51, 0x13, 0, 0, 0))
+        with patch.object(CharacterServer, "_persist_gameplay_session", return_value=False):
+            server._handle_inventory_item_action(session, payload)
+        assert session.gameplay_currency_state.andermant >= 2000
+        templates = [item.template_id for item in session.gameplay_inventory.items]
+        assert "ancestor_treasure_map" not in templates
+        assert "perforated_dragon_scale" in templates
+    finally:
+        case.doCleanups()
+
+
+def _open_chest(box, *, level=60, seed=None):
+    """Open one chest on a fresh account; return the resulting inventory facts."""
+    case = achievement_fixtures.AchievementServiceTests()
+    case.setUp()
+    try:
+        server, session = case.server, case.session
+        session.gameplay_character.level = level
+        session.gameplay_inventory = InventoryInfo(
+            items=[ItemInfo(item_id=51, template_id=box, amount=1)], storage_slots={51: 0},
+        )
+        session.gameplay_next_item_id = 52
+        session.gameplay_currency_state = CurrencyChanged(0, 0, (0, 0, 0), 0, False)
+        payload, _ = encode_inventory_item_action(InventoryItemAction(51, 0x13, 0, 0, 0))
+        patches = [patch.object(CharacterServer, "_persist_gameplay_session", return_value=False)]
+        if seed is not None:
+            patches.append(patch.object(
+                chest_loot_protocol.random, "SystemRandom", lambda: random.Random(seed),
+            ))
+        for active in patches:
+            active.start()
+        try:
+            server._handle_inventory_item_action(session, payload)
+        finally:
+            for active in reversed(patches):
+                active.stop()
+        inventory = session.gameplay_inventory
+        by_id = {item.item_id: item.template_id for item in inventory.items}
+        return {
+            "gold": session.gameplay_currency_state.gold,
+            "andermant": session.gameplay_currency_state.andermant,
+            "templates": [item.template_id for item in inventory.items],
+            "bagged": {by_id[item_id] for item_id in inventory.ingredient_bag_item_ids},
+            "stored": [by_id[item_id] for item_id in inventory.storage_slots],
+        }
+    finally:
+        case.doCleanups()
+
+
+def test_a_dragon_scale_exchange_credits_gold_and_consumes_the_scale():
+    opened = _open_chest("perforated_dragon_scale")
+    assert opened["gold"] == 5
+    assert opened["templates"] == []
+
+
+def test_a_polished_dragon_scale_is_consumed_for_andermant():
+    opened = _open_chest("polished_squama", seed=3)
+    assert 5 <= opened["andermant"] <= 15
+    assert opened["templates"] == []
+
+
+def test_dragon_crystal_box_is_consumed_and_its_soul_is_bagged():
+    opened = _open_chest("dragon_crystal_box", level=1)
+    assert opened["templates"] == ["e_bgh_ancestors_soul"]
+    assert opened["bagged"] == {"e_bgh_ancestors_soul"}
+    assert not opened["stored"]
+
+
+def test_chest_rewards_registered_in_the_ingredient_bag_are_stored_there():
+    opened = _open_chest("crafting_quest_reward_box", level=10)
+    assert opened["bagged"] == set(opened["templates"])
+    assert "crafting_stateobject_key" in opened["bagged"]
+    assert any(template.startswith("basic_ingredient_") for template in opened["bagged"])
+    assert not opened["stored"]
+
+
+@pytest.mark.parametrize("bagged_seed,template_id", [
+    # The 2024 Lucky Bag rewards the client keeps in the ingredient bag.
+    (0, "ce_darkforce_key"),
+    (6, "mortis_key"),
+    (139, "ingredient_rune_resistance_ice_fire_light"),
+])
+def test_lucky_bag_bag_items_are_delivered_to_the_ingredient_bag(
+    bagged_seed, template_id,
+):
+    assert _rewards(
+        "item_lootbox_lucky_bag_2024", level=60, seed=bagged_seed,
+    ) == [(template_id, 2 if template_id in {"ce_darkforce_key", "mortis_key"} else 1)]
+    opened = _open_chest("item_lootbox_lucky_bag_2024", seed=bagged_seed)
+    assert opened["templates"] == [template_id]
+    assert opened["bagged"] == {template_id}
+    assert not opened["stored"]
+
+
+def test_the_crafting_chest_holds_a_basic_ingredient_and_a_multitool():
+    ingredients = set()
+    for seed in range(50):
+        rewards = _rewards("crafting_quest_reward_box", level=10, seed=seed)
+        assert [amount for _template_id, amount in rewards] == [1, 1]
+        assert rewards[1] == ("crafting_stateobject_key", 1)
+        assert rewards[0][0].startswith("basic_ingredient_")
+        ingredients.add(rewards[0][0])
+    assert len(ingredients) > 1
 
 
 @pytest.mark.parametrize("box", sorted(_selective_items()))
