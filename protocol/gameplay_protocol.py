@@ -550,10 +550,10 @@ MOVE_ITEM_STORAGE_OPERATIONS = {
 # ``MergeStack``: the moved item's id and, as the one argument, the id of the
 # stack it joins; the operation names the storage of that stack.
 MERGE_STACK_OPERATIONS = {
-    0x0D: "storage_58",
-    0x0E: "storage_80",
-    0x0F: "storage_a8",
-    0x10: "storage_d0",
+    0x0D: "storage_slots",
+    0x0E: "extra_storage_slots",
+    0x0F: "bank_storage_slots",
+    0x10: "extra_bank_storage_slots",
 }
 
 SPLIT_STACK_OPERATIONS = {

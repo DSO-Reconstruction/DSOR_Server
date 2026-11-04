@@ -19,7 +19,7 @@ def test_trinkets_drop_common_on_every_difficulty():
             trinkets.extend(drop for drop in result.drops
                             if drop.item_category in ENCHANTMENT_FREE_TRINKET_CATEGORIES)
     assert trinkets
-    assert {drop.item.field_08 for drop in trinkets} == {0}
+    assert {drop.item.rarity for drop in trinkets} == {0}
 
 
 def test_rarity_boxes_above_common_hold_no_trinket():

@@ -9,13 +9,13 @@ from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuil
 
 
 def _inventory():
-    a = ItemInfo(item_id=10, template_id="ammunition_damage_epic", amount=30, field_30=300)
-    b = ItemInfo(item_id=11, template_id="ammunition_damage_epic", amount=50, field_30=500)
-    return InventoryInfo(items=[a, b], storage_58={10: 0, 11: 1})
+    a = ItemInfo(item_id=10, template_id="ammunition_damage_epic", amount=30, stack_vc_value=300)
+    b = ItemInfo(item_id=11, template_id="ammunition_damage_epic", amount=50, stack_vc_value=500)
+    return InventoryInfo(items=[a, b], storage_slots={10: 0, 11: 1})
 
 
 def test_the_merge_operations_name_the_four_storages():
-    assert MERGE_STACK_OPERATIONS == {0x0D: "storage_58", 0x0E: "storage_80", 0x0F: "storage_a8", 0x10: "storage_d0"}
+    assert MERGE_STACK_OPERATIONS == {0x0D: "storage_slots", 0x0E: "extra_storage_slots", 0x0F: "bank_storage_slots", 0x10: "extra_bank_storage_slots"}
 
 
 def test_a_whole_stack_joins_the_other():
@@ -23,9 +23,9 @@ def test_a_whole_stack_joins_the_other():
     assert builder.merge_stacks(10, 11, 50000) == 30
     mutation = builder.finish()
     items = mutation.inventory.items
-    assert [(i.amount, i.field_30) for i in items] == [(80, 800)]
-    assert 10 not in mutation.inventory.storage_58 and 11 not in mutation.inventory.storage_58
-    assert list(mutation.inventory.storage_58.values()) == [1]
+    assert [(i.amount, i.stack_vc_value) for i in items] == [(80, 800)]
+    assert 10 not in mutation.inventory.storage_slots and 11 not in mutation.inventory.storage_slots
+    assert list(mutation.inventory.storage_slots.values()) == [1]
 
 
 def test_only_what_fits_under_the_stack_limit_moves():

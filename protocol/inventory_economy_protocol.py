@@ -830,7 +830,7 @@ class InventoryMutationBuilder:
         Both stacks keep the identity transition every partial-stack mutation
         uses: a changed stack is republished under a fresh id (new->old in the
         replacements), an emptied source is removed.  The stack's selling value
-        (``field_30``) follows its amount.
+        (``stack_vc_value``) follows its amount.
         """
 
         source = self.item(item_id)
@@ -844,16 +844,16 @@ class InventoryMutationBuilder:
         moved = min(int(source.amount), int(max_stack) - int(target.amount))
         if moved <= 0:
             raise ValueError(f"stack {target_id} is already full")
-        unit = int(target.field_30) // max(1, int(target.amount))
+        unit = int(target.stack_vc_value) // max(1, int(target.amount))
         target.amount = int(target.amount) + moved
-        target.field_30 = unit * int(target.amount)
+        target.stack_vc_value = unit * int(target.amount)
         self.rekey_item(target_id)
-        source_unit = int(source.field_30) // max(1, int(source.amount))
+        source_unit = int(source.stack_vc_value) // max(1, int(source.amount))
         left = int(source.amount) - moved
         self.consume(item_id, moved)
         if left:
-            self.item(self.next_item_id - 1).field_30 = source_unit * left
-            self.changed_items[-1].field_30 = source_unit * left
+            self.item(self.next_item_id - 1).stack_vc_value = source_unit * left
+            self.changed_items[-1].stack_vc_value = source_unit * left
         return moved
 
     def move_item(
