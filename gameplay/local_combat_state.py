@@ -1595,6 +1595,10 @@ class DamageResolution:
     target_marked: bool = False
     # A talent turned this lethal blow into a heal (HealOnDeath, On:NoHealth).
     death_saved: bool = False
+    # Preserve the cast's critical stats for delayed hit effects such as
+    # Explosive Shot's victim-hosted BGH explosion.
+    critical_hit_chance: float = 0.0
+    critical_damage_multiplier: float = 2.0
 
 
 class _MonsterOccupancy:
@@ -6780,6 +6784,9 @@ class LocalCombatState:
         skill_index: int,
         player_damage_range: tuple[float, float],
         server_tick: int,
+        cast_id: int = 0,
+        critical_hit_chance: float = 0.0,
+        critical_damage_multiplier: float = 2.0,
         now: float | None = None,
     ) -> tuple[
         tuple[DamageResolution, ...],
@@ -6829,8 +6836,19 @@ class LocalCombatState:
                     status_effects=definitions,
                 )
             )
+            critical_hit = (
+                deterministic_combat_roll(
+                    0x4558504C, int(cast_id), int(owner_actor_id),
+                    int(actor_id), int(skill_index), int(aura.effect_id),
+                ) < max(0.0, min(1.0, float(critical_hit_chance)))
+            )
+            critical_multiplier = (
+                max(1.0, float(critical_damage_multiplier))
+                if critical_hit else 1.0
+            )
             damage, hit_tags = self.status_effect_immediate_damage(
-                actor_id, definitions, player_damage_range, now=current_time
+                actor_id, definitions, player_damage_range, now=current_time,
+                critical_multiplier=critical_multiplier,
             )
             previous = self.monster_health.get(actor_id, 0)
             if damage <= 0 or previous <= 0:
@@ -6853,6 +6871,10 @@ class LocalCombatState:
                     skill_index=int(skill_index),
                     victim_status_effects=definitions,
                     source_actor_id=int(owner_actor_id),
+                    critical_hit=critical_hit,
+                    cast_id=int(cast_id),
+                    critical_hit_chance=float(critical_hit_chance),
+                    critical_damage_multiplier=float(critical_damage_multiplier),
                 )
             )
         return tuple(resolutions), tuple(applications)
@@ -11974,6 +11996,7 @@ class LocalCombatState:
         player_damage_range: tuple[float, float],
         *,
         now: float,
+        critical_multiplier: float = 1.0,
     ) -> tuple[int, tuple[int, ...]]:
         """Resolve authored impact/explosion damage carried by effects."""
 
@@ -11993,7 +12016,9 @@ class LocalCombatState:
                 for value in damage_type_ids(damage_type):
                     if value not in damage_types:
                         damage_types.append(value)
-        return max(0, int(math.ceil(total))), tuple(damage_types)
+        return max(
+            0, int(math.ceil(total * max(1.0, float(critical_multiplier))))
+        ), tuple(damage_types)
 
     def resolve_due_monster_status_damage(
         self,
@@ -12090,6 +12115,9 @@ class LocalCombatState:
         player_damage_range: tuple[float, float],
         server_tick: int,
         skill_index: int = 0,
+        cast_id: int = 0,
+        critical_hit_chance: float = 0.0,
+        critical_damage_multiplier: float = 2.0,
         now: float | None = None,
     ) -> tuple[DamageResolution, ...]:
         """Apply receiver children of a victim-hosted aura around its host.
@@ -12128,8 +12156,19 @@ class LocalCombatState:
             applied = self.accepted_monster_status_effects(
                 actor_id, tuple(receivers), now=current_time
             )
+            critical_hit = (
+                deterministic_combat_roll(
+                    0x4558504C, int(cast_id), int(owner_actor_id),
+                    int(actor_id), int(skill_index), int(aura.effect_id),
+                ) < max(0.0, min(1.0, float(critical_hit_chance)))
+            )
+            critical_multiplier = (
+                max(1.0, float(critical_damage_multiplier))
+                if critical_hit else 1.0
+            )
             damage, damage_types = self.status_effect_immediate_damage(
                 actor_id, applied, player_damage_range, now=current_time,
+                critical_multiplier=critical_multiplier,
             )
             current, killed = _monster_health_after_damage(
                 monster, previous, max(0, int(damage))
@@ -12155,6 +12194,10 @@ class LocalCombatState:
                 skill_index=int(skill_index),
                 victim_status_effects=applied,
                 source_actor_id=int(owner_actor_id),
+                critical_hit=critical_hit,
+                cast_id=int(cast_id),
+                critical_hit_chance=float(critical_hit_chance),
+                critical_damage_multiplier=float(critical_damage_multiplier),
             ))
         return tuple(results)
 
@@ -14231,6 +14274,8 @@ class LocalCombatState:
             critical_hit=critical_hit,
             rift_damage=rift_damage,
             pre_hit_health=previous,
+            critical_hit_chance=pending.critical_hit_chance,
+            critical_damage_multiplier=pending.critical_damage_multiplier,
         )
 
     def apply_bullet_skill(

@@ -102,7 +102,9 @@ class PlayerProjectileService:
     def _schedule_bullet_explosion(
             s: Session, combat, explosion, receivers, *,
             position, owner_actor_id: int, cast_id: int, skill_index: int,
-            player_damage_range, server_tick: int) -> None:
+            player_damage_range, server_tick: int,
+            critical_hit_chance: float = 0.0,
+            critical_damage_multiplier: float = 2.0) -> None:
         """Set off a bullet's explosion its authored delay after the hit.
 
         Explosive Arrow hits, then explodes 0.1 s later: the monsters inside
@@ -125,8 +127,11 @@ class PlayerProjectileService:
                 kwargs={
                     "position": tuple(position),
                     "owner_actor_id": int(owner_actor_id),
+                    "cast_id": int(cast_id),
                     "skill_index": int(skill_index),
                     "player_damage_range": tuple(player_damage_range),
+                    "critical_hit_chance": float(critical_hit_chance),
+                    "critical_damage_multiplier": float(critical_damage_multiplier),
                     "server_tick": (
                         int(server_tick) + int(explosion.delay_ticks)
                     ) & 0xFFFFFFFF,
@@ -142,7 +147,9 @@ class PlayerProjectileService:
     def _resolve_bullet_explosion(
             s: Session, generation: int, timer_key, combat, explosion,
             receivers, *, position, owner_actor_id: int, skill_index: int,
-            player_damage_range, server_tick: int) -> None:
+            player_damage_range, server_tick: int, cast_id: int = 0,
+            critical_hit_chance: float = 0.0,
+            critical_damage_multiplier: float = 2.0) -> None:
         with s.flow_lock:
             s.gameplay_projectile_timers.pop(timer_key, None)
             if (
@@ -156,6 +163,9 @@ class PlayerProjectileService:
                 explosion, receivers, position=position,
                 owner_actor_id=owner_actor_id, skill_index=skill_index,
                 player_damage_range=player_damage_range,
+                cast_id=cast_id,
+                critical_hit_chance=critical_hit_chance,
+                critical_damage_multiplier=critical_damage_multiplier,
                 server_tick=server_tick,
             )
         owners = {int(owner_actor_id): s}
@@ -924,6 +934,10 @@ class PlayerProjectileService:
                                 player_damage_range=(
                                     pending.player_minimum_damage,
                                     pending.player_maximum_damage,
+                                ),
+                                critical_hit_chance=pending.critical_hit_chance,
+                                critical_damage_multiplier=(
+                                    pending.critical_damage_multiplier
                                 ),
                                 server_tick=int(resolution.server_tick),
                             )
