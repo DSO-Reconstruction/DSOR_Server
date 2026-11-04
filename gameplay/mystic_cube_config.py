@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 
 from dso_server.paths import DEFAULT_MYSTIC_CUBE_CONFIG_PATH
+from dso_server.runtime import file_revisions
 
 
 MAX_DIFFICULTY = 9
@@ -75,12 +76,15 @@ def _read_document(path: str, modified_ns: int, size: int) -> dict:
 
 
 def _config_signature() -> tuple[str, int, int] | None:
-    path = Path(DEFAULT_MYSTIC_CUBE_CONFIG_PATH)
-    try:
-        stat = path.stat()
-    except OSError:
+    # Every member kill rolls the cube chance. A stat() and resolve() per
+    # roll released the GIL and waited for it again on the gameplay threads;
+    # the observed revision is re-checked in the background instead, and the
+    # CMS writer invalidates it so a save applies at once.
+    key = str(DEFAULT_MYSTIC_CUBE_CONFIG_PATH)
+    revision = file_revisions.observed_revision(key)
+    if revision is None:
         return None
-    return (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+    return (str(file_revisions.resolved_path(key)), *revision)
 
 
 def _config_document() -> dict:

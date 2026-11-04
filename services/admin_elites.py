@@ -19,6 +19,7 @@ from dso_server.gameplay.dungeon_elites import (
     normalize_config,
 )
 from dso_server.paths import DEFAULT_DUNGEON_ELITES_CONFIG_PATH
+from dso_server.runtime import file_revisions
 from dso_server.services.admin_live import map_catalog
 
 
@@ -67,6 +68,8 @@ class DungeonEliteAdministration:
                 )
             os.replace(temporary, self.config_path)
             temporary = None
+            # Encounter loads read the last observed revision; take the save at once.
+            file_revisions.invalidate(self.config_path)
         except OSError as exc:
             raise ValueError(f"could not save dungeon elite counts: {exc}") from exc
         finally:
