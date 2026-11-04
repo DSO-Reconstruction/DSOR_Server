@@ -35,3 +35,7 @@ DEFAULT_SEASON_PASS_CONFIG_PATH = Path(
 DEFAULT_LOOT_RATES_CONFIG_PATH = Path(
     os.getenv("DSO_LOOT_RATES_CONFIG") or DATA_ROOT / "loot_rates.json"
 )
+# CMS-edited Guardian/Champion/Leader population targets for dungeon instances.
+DEFAULT_DUNGEON_ELITES_CONFIG_PATH = Path(
+    os.getenv("DSO_DUNGEON_ELITES_CONFIG") or DATA_ROOT / "dungeon_elites.json"
+)

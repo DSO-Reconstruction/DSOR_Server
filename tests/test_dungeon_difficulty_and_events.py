@@ -3,9 +3,26 @@
 from collections import Counter
 import pytest
 
+from dso_server.gameplay import dungeon_elites
+from dso_server.gameplay.dungeon_elites import elite_targets
+from dso_server.gameplay.local_monster_state import (
+    clear_monster_encounter_cache, load_local_monster_encounter,
+)
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
-from dso_server.gameplay.local_monster_state import load_local_monster_encounter
 from dso_server.protocol.gameplay_protocol import NewMonsterServerCommand
+
+
+@pytest.fixture(autouse=True)
+def default_elite_config(tmp_path, monkeypatch):
+    # Keep the shipped defaults under test even when the operator has a CMS
+    # configuration on the machine.
+    monkeypatch.setattr(
+        dungeon_elites, "DEFAULT_DUNGEON_ELITES_CONFIG_PATH",
+        tmp_path / "dungeon_elites.json",
+    )
+    clear_monster_encounter_cache()
+    yield
+    clear_monster_encounter_cache()
 
 
 def _get_encounter_monsters(map_id: str, scaling_difficulty: int = 0, active_event_flags: frozenset[str] = frozenset()):
@@ -48,20 +65,15 @@ def test_active_event_monsters_spawn_when_event_flag_is_set():
 
 
 @pytest.mark.parametrize("diff", [0, 1, 2, 3, 4, 6, 8])
-def test_dungeon_elite_ranks_scale_with_difficulty(diff):
-    """Guardians, Champions, and Leaders must increase in numbers as map difficulty increases."""
+def test_dungeon_elite_ranks_match_configured_counts(diff):
+    """Each elite rank must spawn exactly the number the configuration asks for."""
     monsters = _get_encounter_monsters("a0406_dun", scaling_difficulty=diff)
     ranks = Counter(m.rank for m in monsters)
+    targets = elite_targets("a0406_dun", diff)
 
-    if diff == 0:
-        # On Normal difficulty, no extra difficulty-promoted leaders or guardians
-        assert ranks["Rank_leader"] == 0
-        assert ranks["Rank_guardian"] == 0
-    else:
-        # On difficulty > 0, Guardians, Champions, and Leaders must all be present
-        assert ranks["Rank_leader"] >= 1
-        assert ranks["Rank_champion"] >= 2
-        assert ranks["Rank_guardian"] >= 3
+    assert ranks["Rank_leader"] == targets["leaders"]
+    assert ranks["Rank_champion"] == targets["champions"]
+    assert ranks["Rank_guardian"] == targets["guardians"]
 
     # Total monsters should remain roughly consistent without overflowing
     assert 140 <= len(monsters) <= 200
@@ -70,25 +82,12 @@ def test_dungeon_elite_ranks_scale_with_difficulty(diff):
 def test_dungeon_elite_counts_are_monotonically_increasing():
     """Higher difficulty tiers must have greater or equal counts of elites than lower tiers."""
     prev_total_elites = -1
-    prev_guardians = -1
-    prev_champions = -1
-    prev_leaders = -1
 
-    for diff in [1, 2, 3, 4, 6, 8]:
+    for diff in [0, 1, 2, 3, 4, 6, 8]:
         monsters = _get_encounter_monsters("a0406_dun", scaling_difficulty=diff)
         ranks = Counter(m.rank for m in monsters)
-
-        leaders = ranks["Rank_leader"]
-        champions = ranks["Rank_champion"]
-        guardians = ranks["Rank_guardian"]
-        total_elites = leaders + champions + guardians
-
-        assert leaders >= prev_leaders, f"Leaders at diff {diff} ({leaders}) < diff {diff-1} ({prev_leaders})"
-        assert champions >= prev_champions, f"Champions at diff {diff} ({champions}) < diff {diff-1} ({prev_champions})"
-        assert guardians >= prev_guardians, f"Guardians at diff {diff} ({guardians}) < diff {diff-1} ({prev_guardians})"
-        assert total_elites > prev_total_elites, f"Total elites at diff {diff} should strictly increase"
-
-        prev_leaders = leaders
-        prev_champions = champions
-        prev_guardians = guardians
+        total_elites = (
+            ranks["Rank_leader"] + ranks["Rank_champion"] + ranks["Rank_guardian"]
+        )
+        assert total_elites > prev_total_elites
         prev_total_elites = total_elites
