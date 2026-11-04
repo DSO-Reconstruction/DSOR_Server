@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import closing
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from dso_server.protocol.inventory_codec import (
     ItemInfo,
     RUNE_SLOT_ACHIEVEMENTS,
     RUNE_TRINKET_EXTRA_SLOTS,
+    free_inventory_location,
     owned_inventory_items,
     release_locked_rune_trinkets,
 )
@@ -1243,10 +1245,128 @@ class AccountStateStore:
         raw_states, raw_profiles = self._database.load_documents()
         self.warnings.extend(self._database.warnings)
         self._load_database_documents(raw_states, raw_profiles)
+        self._repair_inactive_ingredient_bag_items(static_database_path)
         self._complete_rune_slot_achievements(static_database_path)
         self.account_registry = None
         self.account_wallets = self._database.load_wallets()
         self.account_achievements = self._database.load_account_achievements()
+
+    def _repair_inactive_ingredient_bag_items(
+        self, static_database_path: str | Path,
+    ) -> None:
+        """Move saved items with no live client bag entry into regular storage.
+
+        An inactive ``_Template_IngredientBag`` row has no tab/slot mapping in
+        the client. Keeping its template in the Ingredient Bag arrays makes
+        ``IngredientBagUtil::GetIngredientBagEntryById`` assert during login.
+        Preserve the item and make the destination valid before NewPlayer is
+        built.
+        """
+
+        path = Path(static_database_path)
+        if not self.states or not path.is_file():
+            return
+        try:
+            with closing(sqlite3.connect(
+                f"file:{path.resolve().as_posix()}?mode=ro", uri=True,
+            )) as database:
+                live_templates = {
+                    str(row[0]) for row in database.execute(
+                        "SELECT ItemTemplateId FROM _Template_IngredientBag "
+                        "WHERE COALESCE(IsLive, 0)=1 "
+                        "AND COALESCE(ItemTemplateId, '')<>''"
+                    )
+                }
+        except sqlite3.Error as exc:
+            self.warnings.append(
+                f"could not validate Ingredient Bag entries: {exc}"
+            )
+            return
+
+        repaired_characters = 0
+        moved_items = 0
+        for character_id, state in self.states.items():
+            inventory = state.inventory
+            items_by_id = {
+                int(item.item_id): item for item in inventory.items
+            }
+            retained_ids = []
+            changed = any(
+                template not in live_templates
+                for template in inventory.ingredient_bag_templates
+            )
+            for item_id in inventory.ingredient_bag_item_ids:
+                item_id = int(item_id)
+                item = items_by_id.get(item_id)
+                if item is not None and item.template_id in live_templates:
+                    retained_ids.append(item_id)
+                    continue
+
+                changed = True
+                if item is None:
+                    continue
+                already_allocated = (
+                    item_id in inventory.equipment_slots
+                    or item_id in inventory.storage_slots
+                    or item_id in inventory.extra_storage_slots
+                    or item_id in inventory.bank_storage_slots
+                    or item_id in inventory.extra_bank_storage_slots
+                )
+                if not already_allocated:
+                    location = free_inventory_location(inventory)
+                    if location is None:
+                        for storage_name, size in (
+                            ("bank_storage_slots", inventory.bank_storage_size),
+                            ("extra_bank_storage_slots", inventory.extra_bank_storage_size),
+                        ):
+                            used = set(getattr(inventory, storage_name).values())
+                            slot = next(
+                                (index for index in range(max(0, int(size)))
+                                 if index not in used),
+                                None,
+                            )
+                            if slot is not None:
+                                location = (storage_name, slot)
+                                break
+                    if location is None:
+                        # Keep the item serialized and out of the invalid bag
+                        # index. The warning makes a full-storage case visible
+                        # for manual recovery without blocking character login.
+                        self.warnings.append(
+                            f"character {character_id} has no free slot to "
+                            f"relocate invalid Ingredient Bag item {item_id}"
+                        )
+                    else:
+                        storage_name, slot = location
+                        getattr(inventory, storage_name)[item_id] = slot
+                        moved_items += 1
+
+            if not changed:
+                continue
+            inventory.ingredient_bag_item_ids = retained_ids
+            inventory.ingredient_bag_templates = list(dict.fromkeys(
+                template for template in inventory.ingredient_bag_templates
+                if template in live_templates
+            ))
+            for item_id in retained_ids:
+                item = items_by_id.get(item_id)
+                if (
+                    item is not None
+                    and item.template_id not in inventory.ingredient_bag_templates
+                ):
+                    inventory.ingredient_bag_templates.append(item.template_id)
+            inventory.changed_item_ids = []
+            inventory.item_id_replacements = {}
+            repaired_characters += 1
+            self._database.queue_state(character_id, state)
+
+        if repaired_characters:
+            self._database.flush()
+            print(
+                "[PlayerDatabase] repaired invalid Ingredient Bag entries "
+                f"for {repaired_characters} character(s); "
+                f"relocated {moved_items} item(s)"
+            )
 
     def _complete_rune_slot_achievements(
         self, static_database_path: str | Path
