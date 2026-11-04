@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.protocol.inventory_codec import owned_inventory_items
 from dso_server.gameplay.status_modifier_runtime import (
     apply_status_drop_amounts,
     snapshot_active_status_entries,
@@ -64,7 +65,6 @@ class LootPresenceService:
 
         with session.flow_lock:
             map_id = str(session.gameplay_map or "")
-            session_next_item_id = int(session.gameplay_next_item_id)
             event_map_id = str(
                 getattr(
                     session,
@@ -211,36 +211,74 @@ class LootPresenceService:
             len(generation.drops),
             int(generation.next_item_id),
         )
-        with self.gameplay_world_lock:
-            first_item_id = max(
-                session_next_item_id,
-                int(self.gameplay_world_next_item_ids.get(
-                    world_instance_key, RUNTIME_ITEM_ID_BASE
-                )),
+        with session.flow_lock:
+            session_next_item_id = int(session.gameplay_next_item_id)
+            inventory = session.gameplay_inventory
+            occupied_indices = {
+                int(item.item_id) & GAME_ITEM_INDEX_MASK
+                for item in owned_inventory_items(inventory)
+            } if inventory is not None else set()
+            occupied_indices.update(
+                int(item_id) & GAME_ITEM_INDEX_MASK
+                for item_id in session.gameplay_world_loot
             )
-            next_item_id = first_item_id + reservation_size
-            self.gameplay_world_next_item_ids[
-                world_instance_key
-            ] = next_item_id
-            # Retain a physical-map aggregate for diagnostics and legacy
-            # introspection. Allocations read only the exact tuple key above.
-            self.gameplay_world_next_item_ids[map_id] = max(
-                int(self.gameplay_world_next_item_ids.get(
-                    map_id,
-                    RUNTIME_ITEM_ID_BASE,
-                )),
-                next_item_id,
+            occupied_indices.update(
+                int(item_id) & GAME_ITEM_INDEX_MASK
+                for item_id in session.gameplay_announced_world_item_ids
             )
-        for offset, drop in enumerate(generation.drops):
-            drop.item.item_id = first_item_id + offset
+            with self.gameplay_world_lock:
+                first_item_id = max(
+                    session_next_item_id,
+                    int(self.gameplay_world_next_item_ids.get(
+                        world_instance_key, RUNTIME_ITEM_ID_BASE
+                    )),
+                )
+                item_ids = []
+                candidate = first_item_id
+                for _drop in generation.drops:
+                    while (
+                        candidate & GAME_ITEM_INDEX_MASK
+                    ) in occupied_indices:
+                        candidate += 1
+                    if candidate > 0xFFFFFFFF:
+                        raise ValueError(
+                            "client item-id space is exhausted"
+                        )
+                    item_ids.append(candidate)
+                    occupied_indices.add(
+                        candidate & GAME_ITEM_INDEX_MASK
+                    )
+                    candidate += 1
+                next_item_id = max(
+                    candidate,
+                    first_item_id + reservation_size,
+                )
+                self.gameplay_world_next_item_ids[
+                    world_instance_key
+                ] = max(
+                    int(self.gameplay_world_next_item_ids.get(
+                        world_instance_key, RUNTIME_ITEM_ID_BASE
+                    )),
+                    next_item_id,
+                )
+                # Retain a physical-map aggregate for diagnostics and legacy
+                # introspection. Allocations read only the exact tuple key above.
+                self.gameplay_world_next_item_ids[map_id] = max(
+                    int(self.gameplay_world_next_item_ids.get(
+                        map_id,
+                        RUNTIME_ITEM_ID_BASE,
+                    )),
+                    next_item_id,
+                )
+                session.gameplay_next_item_id = max(
+                    session_next_item_id,
+                    next_item_id,
+                )
+        for drop, item_id in zip(generation.drops, item_ids):
+            drop.item.item_id = item_id
         try:
             generation = replace(generation, next_item_id=next_item_id)
         except TypeError:
             # Lightweight protocol tests use SimpleNamespace generations.
             generation.next_item_id = next_item_id
-        with session.flow_lock:
-            session.gameplay_next_item_id = max(
-                int(session.gameplay_next_item_id),
-                next_item_id,
-            )
         return generation

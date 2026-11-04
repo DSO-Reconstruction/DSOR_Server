@@ -129,6 +129,19 @@ class PlayerInitializationService(
         s.gameplay_scaling_difficulty = state.map_access.scaling_difficulty
         CharacterService._select_dungeon_instance(self, s, state.map_access)
         CharacterService._resolve_initialization_inventory(self, state, s)
+        if state.previous_client_item_ids:
+            # Drop old registrations before any destination-map command can
+            # introduce new GameItems that reuse their low-16-bit indexes.
+            packet, packet_bits = encode_discard_item_batch(
+                state.previous_client_item_ids,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+            )
+            CharacterService._send_world_loot_state_batch(
+                s,
+                packet,
+                packet_bits,
+                label="map-initialization-discard-previous-items",
+            )
         # Persistent effects use NewPlayer's actor-variable payload while
         # deriving their concrete values. Re-encode after vitality resolution
         # so the outgoing snapshot still observes hub restoration.

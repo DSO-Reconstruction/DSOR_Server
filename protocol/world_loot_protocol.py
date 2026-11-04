@@ -3478,6 +3478,12 @@ def add_world_drop_to_inventory(
     replacements: dict[int, int] = {}
     remaining = max(1, int(stored.amount))
     maximum = max(1, int(max_stack_size))
+    occupied_indices = {
+        int(item.item_id) & 0xFFFF for item in inventory.items
+    }
+    occupied_indices.update(
+        int(item_id) & 0xFFFF for item_id in reserved_item_ids
+    )
     for old_item in tuple(inventory.items):
         in_destination = (
             int(old_item.item_id) in inventory.ingredient_bag_item_ids
@@ -3505,12 +3511,16 @@ def add_world_drop_to_inventory(
             + [int(stored.item_id), int(next_item_id) - 1]
             + [int(value) for value in reserved_item_ids]
         ) + 1
+        while (new_id & 0xFFFF) in occupied_indices:
+            new_id += 1
+        if new_id > 0xFFFFFFFF:
+            raise ValueError("client item-id space is exhausted")
         reserved_item_ids = (*reserved_item_ids, new_id)
+        occupied_indices.add(new_id & 0xFFFF)
         replacement = replace(
             old_item,
             item_id=new_id,
             amount=int(old_item.amount) + added,
-            field_18=new_id & 0xFFFF,
             stack_vc_value=(
                 (int(old_item.stack_vc_value) // max(1, int(old_item.amount)))
                 * (int(old_item.amount) + added)

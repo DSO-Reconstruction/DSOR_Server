@@ -126,6 +126,7 @@ class PlayerInitializationState:
     # Inventory.
     inventory: Any = None
     rekeyed_next_item_id: int | None = None
+    previous_client_item_ids: tuple[int, ...] = ()
 
     # NewPlayer.
     game_currency_balances: Any = None
@@ -490,6 +491,28 @@ class PlayerInitializationStateService:
 
         character = state.character
         persisted_state = state.persisted_state
+        if session is not None:
+            with session.flow_lock:
+                previous_ids = {
+                    int(item_id)
+                    for item_id in getattr(
+                        session,
+                        "gameplay_announced_world_item_ids",
+                        (),
+                    )
+                }
+                previous_inventory = getattr(
+                    session, "gameplay_inventory", None
+                )
+                if previous_inventory is not None:
+                    previous_ids.update(
+                        int(item.item_id)
+                        for item in previous_inventory.items
+                        if int(item.item_id) > 0
+                    )
+                state.previous_client_item_ids = tuple(
+                    sorted(item_id for item_id in previous_ids if item_id > 0)
+                )
         # An equipment allocation (InventoryAllocation type 1) is the native
         # client trigger for RebuildInventoryUI.  That event constructs the
         # complete FixedArray<UI::Slot> before InventoryWidget can be opened.
@@ -605,9 +628,19 @@ class PlayerInitializationStateService:
         )
         rekeyed_next_item_id = None
         if persisted_state is not None:
+            # Keep the connection's item-id high-water mark across map
+            # instances. The client GameItem manager indexes by the low 16
+            # bits, so starting a new instance at the persisted inventory
+            # counter can reuse an index that is still registered from the
+            # map we just left.
+            session_next_item_id = (
+                int(getattr(session, "gameplay_next_item_id", 0) or 0)
+                if session is not None else 0
+            )
             inventory_next_item_id = max(
                 RUNTIME_ITEM_ID_BASE,
                 int(persisted_state.next_item_id),
+                session_next_item_id,
                 max(
                     (int(item.item_id) for item in owned_inventory_items(inventory)),
                     default=RUNTIME_ITEM_ID_BASE - 1,
