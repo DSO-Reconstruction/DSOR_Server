@@ -39,3 +39,7 @@ DEFAULT_LOOT_RATES_CONFIG_PATH = Path(
 DEFAULT_DUNGEON_ELITES_CONFIG_PATH = Path(
     os.getenv("DSO_DUNGEON_ELITES_CONFIG") or DATA_ROOT / "dungeon_elites.json"
 )
+# CMS-edited Mystic Cube drop chance and contents weights.
+DEFAULT_MYSTIC_CUBE_CONFIG_PATH = Path(
+    os.getenv("DSO_MYSTIC_CUBE_CONFIG") or DATA_ROOT / "mystic_cube.json"
+)

@@ -28,6 +28,10 @@ import sqlite3
 from typing import Any
 
 from dso_server.runtime import resident_content
+from dso_server.gameplay.mystic_cube_config import (
+    CONTENT_KEYS,
+    cube_content_weights,
+)
 from dso_server.paths import DEFAULT_CHEST_CONTENTS_MAP, DESCRIPTION_CHEST_CONTENTS_MAP
 
 from dso_server.protocol.commerce_protocol import (
@@ -40,6 +44,7 @@ from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.inventory_economy_protocol import (
     InventoryMutationBuilder,
     credit_currency_template,
+    credit_fixed_currency,
     refresh_inventory_economy_values,
 )
 from dso_server.protocol.player_init_protocol import CurrencyChanged
@@ -135,6 +140,95 @@ _CHEST_CATEGORIES = frozenset({
     "LootGenItem", "LootGenItemAutoIdent", "LotteryTicket",
 })
 
+
+@dataclass(frozen=True)
+class _MysticCubeTier:
+    """Authored payout and gem ladder for one Mystic Cube tier."""
+
+    gold: int
+    glyph: int
+    wisdom: int
+    gem_ranks: tuple[str, ...]
+
+
+# One weighted choice per cube (Integer boundaries, total 100):
+# unique 15, class set 22, gold 15, Ancient Wisdom 15, Glyph 15, gem 15,
+# andermant 3.
+_MYSTIC_CUBE_TIERS = {
+    "mystic_cube_common": _MysticCubeTier(19, 99, 5, ("a", "b", "c")),
+    "mystic_cube_uncommon": _MysticCubeTier(50, 199, 5, ("b", "c", "d")),
+    "mystic_cube_magic": _MysticCubeTier(199, 299, 10, ("d", "e", "f")),
+    "mystic_cube_rare": _MysticCubeTier(499, 499, 15, ("d", "e", "f", "g", "h")),
+    "mystic_cube_epic": _MysticCubeTier(999, 999, 20, ("e", "f", "g", "h", "i", "j")),
+}
+_MYSTIC_CUBE_ANDERMANT = 999
+_MYSTIC_CUBE_SHARED_UNIQUES = (
+    "pet_fat_demon",             # Horned Fire Gnome
+    "pet_raptor_01",             # Little Raptor
+    "pet_rooster",               # Fire Rooster
+    "pet_fennec",                # Fennec
+    "emote_psy",                 # Dracanian Style
+    "costume_skeleton_02",       # Glowing Bone Man Costume
+    "costume_skeleton_03",       # Armored Skeleton Costume
+    "epicmount_rocket_02",       # Firework Rocket
+    "epicmount_indian_rhino_01", # Rash Rhino
+    "epicmount_scorpion_01",     # Black War Scorpion
+    "epicmount_jumong_horse_01", # The Legendary King's War Horse
+)
+# The premium trader's three uniques, one set per class.
+_MYSTIC_CUBE_PREMIUM_UNIQUES = {
+    "warrior": (
+        "warrior_unique_2h_mace_premium_01",
+        "warrior_unique_lh_shield_premium_01",
+        "warrior_unique_shoulders_premium_01",
+    ),
+    "ranger": (
+        "ranger_unique_2h_bow_premium_01",
+        "ranger_unique_lh_offensequiver_premium_01",
+        "ranger_unique_shoulders_premium_01",
+    ),
+    "mage": (
+        "mage_unique_2h_staff_premium_01",
+        "mage_unique_lh_book_premium_01",
+        "mage_unique_shoulders_premium_01",
+    ),
+    "dwarf": (
+        "dwarf_unique_2h_rifle_premium_01",
+        "dwarf_unique_lh_wrench_premium_01",
+        "dwarf_unique_shoulders_premium_01",
+    ),
+}
+_MYSTIC_CUBE_SET_PIECES = {
+    "warrior": (
+        "warrior_unique_amulet_mysticcube_set_02",
+        "warrior_unique_ring_mysticcube_set_02",
+        "warrior_unique_weaponmodifier_mysticcube_set_02",
+        "warrior_unique_rh_mace_mysticcube_set_02",
+        "warrior_unique_lh_shield_mysticcube_set_02",
+    ),
+    "ranger": (
+        "ranger_unique_amulet_mysticcube_set_02",
+        "ranger_unique_ring_mysticcube_set_02",
+        "ranger_unique_weaponmodifier_mysticcube_set_02",
+        "ranger_unique_rh_longbow_mysticcube_set_02",
+        "ranger_unique_lh_defensequiver_mysticcube_set_02",
+    ),
+    "mage": (
+        "mage_unique_amulet_mysticcube_set_02",
+        "mage_unique_ring_mysticcube_set_02",
+        "mage_unique_weaponmodifier_mysticcube_set_02",
+        "mage_unique_rh_staff_mysticcube_set_02",
+        "mage_unique_lh_orb_mysticcube_set_02",
+    ),
+    "dwarf": (
+        "dwarf_unique_amulet_mysticcube_set_02",
+        "dwarf_unique_ring_mysticcube_set_02",
+        "dwarf_unique_weaponmodifier_mysticcube_set_02",
+        "dwarf_unique_rh_pistol_mysticcube_set_02",
+        "dwarf_unique_lh_absorber_mysticcube_set_02",
+    ),
+}
+
 # Boxes whose chest_contents.json record is wrong, written from each box's
 # own description: the Thanksgiving records lost their first line, the
 # packages hold their offer bundle's text, the Undefeatable starter pack's
@@ -215,6 +309,10 @@ class ChestReward:
     item_level: int | None = None
     rarity: int | None = None
     appearance: str = ""
+    # Authored rewards that must bypass the template-name mapping: "glyph"
+    # credits the client's Glyph of Power field, "wisdom" is applied to the
+    # Knowledge progression by the caller.
+    fixed_currency: str = ""
 
 
 @dataclass(frozen=True)
@@ -236,6 +334,7 @@ class ChestOpenMutation:
     delta: InventoryInfo
     final: InventoryInfo
     next_item_id: int
+    wisdom_amount: int = 0
 
 
 @dataclass(frozen=True)
@@ -1109,6 +1208,97 @@ def _authored_chest_contents(
     )
 
 
+def _mystic_cube_contents(
+    static_database_path: str | Path,
+    box_definition: PurchaseItemDefinition,
+    *,
+    player_level: int,
+    class_name: str,
+    rng: random.Random,
+) -> ChestContents | None:
+    """Roll one Mystic Cube: a single weighted category, never a stack.
+
+    The database authors the cube tiers but not their contents, so the table
+    below is the authority for both payout and gem ranks.
+    """
+
+    tier = _MYSTIC_CUBE_TIERS.get(box_definition.template_id)
+    if tier is None:
+        return None
+    if int(player_level) < int(box_definition.required_level):
+        raise ValueError(
+            f"container {box_definition.template_id!r} requires level "
+            f"{int(box_definition.required_level)}"
+        )
+    class_name = str(class_name).casefold()
+    if class_name not in _MYSTIC_CUBE_SET_PIECES:
+        raise ValueError(
+            f"mystic cube {box_definition.template_id!r} requires a valid "
+            "player class"
+        )
+
+    weights = cube_content_weights(box_definition.template_id)
+    roll = rng.randrange(100)
+    cumulative = 0
+    category = CONTENT_KEYS[-1]
+    for key in CONTENT_KEYS:
+        cumulative += weights[key]
+        if roll < cumulative:
+            category = key
+            break
+
+    if category == "unique":
+        pool = (
+            _MYSTIC_CUBE_SHARED_UNIQUES
+            + _MYSTIC_CUBE_PREMIUM_UNIQUES[class_name]
+        )
+        reward = ChestReward(
+            _definition(static_database_path, rng.choice(pool)), 1
+        )
+    elif category == "set":
+        reward = ChestReward(
+            _definition(
+                static_database_path,
+                rng.choice(_MYSTIC_CUBE_SET_PIECES[class_name]),
+            ),
+            1,
+        )
+    elif category == "gold":
+        reward = ChestReward(
+            _definition(static_database_path, "money_vc_gold"),
+            int(tier.gold),
+        )
+    elif category == "wisdom":
+        reward = ChestReward(
+            _definition(static_database_path, "money_gc"),
+            int(tier.wisdom),
+            fixed_currency="wisdom",
+        )
+    elif category == "glyph":
+        reward = ChestReward(
+            _definition(static_database_path, "money_uc_no_auto_use"),
+            int(tier.glyph),
+            fixed_currency="glyph",
+        )
+    elif category == "gem":
+        rank = rng.choice(tier.gem_ranks)
+        family = rng.choice(_STANDARD_GEM_FAMILIES)
+        reward = ChestReward(
+            _definition(static_database_path, f"gem_{family}_{rank}"), 1
+        )
+    else:
+        reward = ChestReward(
+            _definition(static_database_path, "money_rc"),
+            _MYSTIC_CUBE_ANDERMANT,
+        )
+    return ChestContents(
+        box_template_id=box_definition.template_id,
+        source="mystic_cube",
+        rewards=(reward,),
+        used_tooltip_mapping=False,
+    )
+
+
 def _lydias_grace_contents(
     static_database_path: str | Path,
     box_definition: PurchaseItemDefinition,
@@ -1182,6 +1372,15 @@ def roll_chest_contents(
     )
     if lydias_grace is not None:
         return lydias_grace
+    mystic_cube = _mystic_cube_contents(
+        static_database_path,
+        box_definition,
+        player_level=player_level,
+        class_name=class_name,
+        rng=rng or random.SystemRandom(),
+    )
+    if mystic_cube is not None:
+        return mystic_cube
     authored = _authored_chest_contents(
         static_database_path, box_definition,
         player_level=player_level, class_name=class_name,
@@ -1417,7 +1616,22 @@ def open_mapped_chest(
     updated_game_currencies = dict(game_currencies)
     game_updates: dict[str, GameCurrencyChanged] = {}
     fixed_currency_changed = False
+    wisdom_amount = 0
     for reward in contents.rewards:
+        if reward.fixed_currency == "wisdom":
+            wisdom_amount += int(reward.amount)
+            continue
+        if reward.fixed_currency == "glyph":
+            updated_currency = credit_fixed_currency(
+                updated_currency, glyph=int(reward.amount)
+            )
+            fixed_currency_changed = True
+            continue
+        if reward.fixed_currency:
+            raise ValueError(
+                f"unknown fixed currency {reward.fixed_currency!r} on "
+                f"container {contents.box_template_id!r}"
+            )
         credit = credit_currency_template(
             static_database_path,
             updated_currency,
@@ -1505,6 +1719,7 @@ def open_mapped_chest(
         delta=mutation.delta,
         final=mutation.final,
         next_item_id=mutation.next_item_id,
+        wisdom_amount=wisdom_amount,
     )
 
 

@@ -55,6 +55,9 @@ from dso_server.services.admin_loot import LootRateAdministration, LootRateConfl
 from dso_server.services.admin_elites import (
     DungeonEliteAdministration, EliteConfigConflict,
 )
+from dso_server.services.admin_mystic_cube import (
+    MysticCubeAdministration, MysticCubeConfigConflict,
+)
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
@@ -122,6 +125,7 @@ class AdminService:
         self.season_pass = SeasonPassAdministration(self)
         self.loot_rates = LootRateAdministration(self)
         self.dungeon_elites = DungeonEliteAdministration(self)
+        self.mystic_cube = MysticCubeAdministration(self)
         self.bonus_codes = BonusCodeAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
@@ -1597,6 +1601,8 @@ class AdminService:
                 query=query.get("q", ""),
                 map_id=query.get("map_id", ""),
             )
+        if path == "/api/mystic-cube":
+            return self.mystic_cube.overview()
         if path == "/api/currencies":
             return {"currencies": list(CURRENCIES)}
         if path.startswith("/api/items/"):
@@ -1668,6 +1674,11 @@ class AdminService:
             try:
                 return self.dungeon_elites.update(account.username, reason, payload)
             except EliteConfigConflict as exc:
+                raise AdminError(409, str(exc)) from exc
+        if path == "/api/mystic-cube":
+            try:
+                return self.mystic_cube.update(account.username, reason, payload)
+            except MysticCubeConfigConflict as exc:
                 raise AdminError(409, str(exc)) from exc
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")

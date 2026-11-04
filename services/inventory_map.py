@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 
@@ -1604,6 +1606,7 @@ class InventoryMapService:
                 s, action.item_id, item.template_id,
             ):
                 return
+            wisdom_points = None
             try:
                 contents = load_payment_package_contents(
                     self.static_database_path,
@@ -1702,6 +1705,23 @@ class InventoryMapService:
                 receipt_grants,
                 next_item_id=mutation.next_item_id,
             )
+            if getattr(mutation, "wisdom_amount", 0):
+                with s.flow_lock:
+                    points = tuple(s.gameplay_talent_category_points)
+                    maximum = max(0, int(s.gameplay_wisdom_maximum_xp))
+                    talent_categories = copy.deepcopy(
+                        s.gameplay_talent_categories
+                    )
+                if len(points) != 4 or maximum <= 0:
+                    raise ValueError(
+                        "wisdom progression state is unavailable"
+                    )
+                wisdom_points = (
+                    int(points[0]),
+                    min(maximum, int(points[1]) + int(mutation.wisdom_amount)),
+                    int(points[2]),
+                    int(points[3]),
+                )
             commands = [
                 ServerCommand(
                     INVENTORY_INFO_COMMAND,
@@ -1747,6 +1767,24 @@ class InventoryMapService:
                     LOCAL_PLAYER_ACTOR_ID,
                 ),
             ))
+            if wisdom_points is not None:
+                commands.extend((
+                    ServerCommand(
+                        TALENT_CATEGORY_POINTS_INFO_COMMAND,
+                        TalentCategoryPointsInfo(0xFF, wisdom_points),
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                    ServerCommand(
+                        TALENT_SELECTION_INFO_COMMAND,
+                        CharacterService._client_talent_selection_info(
+                            s,
+                            TalentSelectionInfo(
+                                0, tuple(talent_categories)
+                            ),
+                        ),
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                ))
             packet, packet_bits = encode_server_command_batch(
                 tuple(commands),
                 include_terminator=True,
@@ -1797,6 +1835,8 @@ class InventoryMapService:
             s.gameplay_inventory = mutation.inventory
             s.gameplay_game_currencies = game_currencies
             s.gameplay_next_item_id = receipt_next_item_id
+            if wisdom_points is not None:
+                s.gameplay_talent_category_points = wisdom_points
         CharacterService._persist_gameplay_session(
             self, s, reason=f'{route_name} opened', flush=True
         )
