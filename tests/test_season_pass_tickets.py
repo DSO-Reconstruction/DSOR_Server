@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from dso_server.gameplay.season_pass import (
+    SEASON_PASS_EXPERIENCE_ITEM, SEASON_PASS_NO_SEASON_EXPERIENCE_MESSAGE,
     SEASON_PASS_NO_SEASON_MESSAGE, SEASON_PASS_TICKETS, SeasonPassCatalog,
     load_season_pass_catalog, season_pass_state_for_season, season_pass_ticket_types,
 )
@@ -117,6 +118,43 @@ def test_the_first_row_opens_on_the_tracks_a_ticket_paid_for(player):
         GET_SEASON_PASS_AWARD_COMMAND, award_ids=(1, 101, 201, 2),
     ), state, catalog)
     assert set(session.gameplay_season_pass["claimed_awards"]) == {1, 201}
+
+
+def test_an_experience_item_adds_one_hundred_and_is_consumed(player):
+    server, session, _ = player
+    catalog = load_season_pass_catalog(server.static_database_path)
+    before = int((getattr(session, "gameplay_season_pass", None) or {}).get(
+        "experience", 0))
+    session.send_reliable_ordered_split = Mock()
+    _use(server, session, add_item(session, SEASON_PASS_EXPERIENCE_ITEM))
+    state = session.gameplay_season_pass
+    assert state["experience"] == before + 100
+    assert state["level"] == catalog.level_for_experience(before + 100)
+    assert _stack(session, SEASON_PASS_EXPERIENCE_ITEM) is None
+    (call,) = [
+        call for call in session.send_reliable_ordered_split.call_args_list
+        if call.kwargs.get("label_prefix") == "season-pass-experience-used"
+    ]
+    commands = decode_server_command_batch(
+        call.args[0], call.kwargs["total_bit_length"],
+    )
+    (result,) = [command.value for command in commands
+                 if getattr(command.value, "pass_types", None) is not None]
+    assert (result.field_20, result.field_24) == (
+        state["level"], before + 100)
+
+
+def test_an_experience_item_is_kept_while_no_season_runs_and_the_player_is_told(player):
+    server, session, _ = player
+    server.system_chat_callback = Mock()
+    _use(server, session, add_item(session, SEASON_PASS_EXPERIENCE_ITEM), season=None)
+    assert _stack(session, SEASON_PASS_EXPERIENCE_ITEM).amount == 1
+    assert not int((getattr(session, "gameplay_season_pass", None) or {}).get(
+        "experience", 0))
+    server.system_chat_callback.assert_called_once_with(
+        session.gameplay_character.character_id,
+        SEASON_PASS_NO_SEASON_EXPERIENCE_MESSAGE,
+    )
 
 
 def test_a_ticket_is_kept_while_no_season_runs_and_the_player_is_told(player):

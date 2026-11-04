@@ -109,6 +109,108 @@ class InventoryMapService:
         )
         return True
 
+    def _activate_season_pass_experience_item(
+            self, s: Session, item_id: int, template_id: str) -> bool:
+        from dso_server.gameplay.season_pass import (
+            SEASON_PASS_EXPERIENCE_ITEM,
+            SEASON_PASS_EXPERIENCE_PER_ITEM,
+            SEASON_PASS_NO_SEASON_EXPERIENCE_MESSAGE,
+            season_pass_state_for_season,
+        )
+        if str(template_id).casefold() != SEASON_PASS_EXPERIENCE_ITEM:
+            return False
+        # "Upon use, you will receive Season Pass Experience *100." Without a
+        # running season there is nowhere to put it, so the item waits.
+        season = CharacterService._season_pass_season(self)
+        if season is None:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] kept Season Pass Experience "
+                f"{template_id!r}: no season is running"
+            )
+            callback = getattr(self, "system_chat_callback", None)
+            if callback is not None and s.gameplay_character is not None:
+                callback(
+                    s.gameplay_character.character_id,
+                    SEASON_PASS_NO_SEASON_EXPERIENCE_MESSAGE,
+                )
+            return True
+
+        from dso_server.protocol.inventory_economy_protocol import InventoryMutationBuilder
+        from dso_server.protocol.player_init_protocol import (
+            INVENTORY_INFO_COMMAND,
+            SEASON_PASS_REWARDS_INFO_RESULT_COMMAND,
+            SeasonPassRewardsInfoResult,
+            ServerCommand,
+            encode_server_command_batch,
+        )
+
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            if inventory is None or s.gameplay_character is None:
+                raise ValueError("player inventory is not initialized")
+            item = next((entry for entry in inventory.items
+                         if int(entry.item_id) == int(item_id)), None)
+            if item is None or str(item.template_id).casefold() != str(template_id).casefold():
+                raise ValueError("Season Pass Experience is no longer in inventory")
+            catalog = CharacterService._season_pass_catalog(self)
+            state = season_pass_state_for_season(
+                getattr(s, "gameplay_season_pass", None) or {}, season,
+            )
+            maximum_experience = int(catalog.level_thresholds[-1][1])
+            experience = min(
+                maximum_experience,
+                int(state["experience"]) + SEASON_PASS_EXPERIENCE_PER_ITEM,
+            )
+            if experience == int(state["experience"]):
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] kept Season Pass Experience "
+                    f"{template_id!r}: already at the final level"
+                )
+                return True
+
+            builder = InventoryMutationBuilder(
+                inventory, s.gameplay_next_item_id,
+            )
+            builder.consume(int(item_id), 1)
+            mutation = builder.finish()
+            state["experience"] = experience
+            state["level"] = catalog.level_for_experience(experience)
+            result = SeasonPassRewardsInfoResult(
+                int(state["level"]), experience,
+                tuple(state["pass_types"]), tuple(state["claimed_awards"]),
+            )
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, mutation.delta,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+                ServerCommand(
+                    SEASON_PASS_REWARDS_INFO_RESULT_COMMAND, result, 0,
+                ),
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, mutation.final,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = mutation.next_item_id
+            s.gameplay_season_pass = state
+
+        s.send_reliable_ordered_split(
+            packet,
+            total_bit_length=packet_bits,
+            track=True,
+            label_prefix="season-pass-experience-used",
+        )
+        CharacterService._request_account_save(
+            s, "Season Pass Experience used", flush=True,
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] used Season Pass Experience "
+            f"{template_id!r}; level={state['level']} xp={experience}"
+        )
+        return True
+
     def _handle_inventory_sort(
             self, s: Session, action, inventory) -> None:
         """Sort the active inventory page reported by operation 0x19.
@@ -1603,6 +1705,10 @@ class InventoryMapService:
                     f"inventory item {action.item_id} does not exist"
                 )
             if self._activate_season_pass_item(
+                s, action.item_id, item.template_id,
+            ):
+                return
+            if self._activate_season_pass_experience_item(
                 s, action.item_id, item.template_id,
             ):
                 return
