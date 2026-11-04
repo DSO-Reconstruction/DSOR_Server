@@ -211,3 +211,10 @@ def test_encoders_refuse_mismatched_requests():
         rp.encode_parallel_world_page(
             request, tuple(ParallelWorldRow("x", i, (0, 0, 0, 0)) for i in range(11)),
             start=0, total=11)
+
+
+def test_every_class_tab_asks_with_0xff():
+    """The reconstruction client's "every class" tab: 0xFF, never a class."""
+    assert decode_ranking_request(overall_list(class_id=0xFF)).class_id == rp.ALL_CLASSES
+    assert decode_ranking_request(pw_list(class_id=0xFF)).class_id == rp.ALL_CLASSES
+    assert decode_ranking_request(overall_list(class_id=4)).class_id == 4

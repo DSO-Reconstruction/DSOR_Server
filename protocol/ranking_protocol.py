@@ -55,7 +55,7 @@ are ranking-server inputs and are never accepted from a game client.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from dso_server.protocol.character_selection import BitReader, BitWriter
 from dso_server.protocol.command_ids import UNAVAILABLE_COMMAND_ID, command_id
@@ -148,6 +148,10 @@ MAX_RANKING_PAGE_SIZE = 10  # The client's table allocates exactly ten UI rows.
 # and never appears on the wire.
 RANKING_CLASSES = range(5)
 ALL_CLASSES = -1
+# This reconstruction's client keeps the layouts' "every class" tab, which the
+# 261 client never fills: it asks for every class with 0xFF, a value no class
+# has, read here as ALL_CLASSES.
+WIRE_ALL_CLASSES = 0xFF
 PARALLEL_WORLD_BOARDS = range(9)   # enum8 -1..8 at +0x30 (0x140aa6db8).
 PVE_BOARD_TYPES = range(2)         # enum8 -1..1: 0 solo, 1 group (0x140aa6df0).
 # Sort buttons of the PW table: rank score, time, monster and boss points.
@@ -258,6 +262,8 @@ def decode_ranking_request(payload: bytes, bit_length: int | None = None) -> Ran
         value = RankingRequest(command, class_id=class_id, board=0)
     else:  # GetHighScoreRankGroupDataCommand carries no fields.
         value = RankingRequest(command, board=0)
+    if value.class_id == WIRE_ALL_CLASSES:
+        value = replace(value, class_id=ALL_CLASSES)
     if value.class_id not in RANKING_CLASSES and value.class_id != ALL_CLASSES:
         raise ValueError("invalid ranking class filter")
     if command in PVE_LIST_COMMANDS | PVE_LOCAL_COMMANDS:
