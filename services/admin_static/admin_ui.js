@@ -63,28 +63,58 @@ export function table(headers, rows, empty = "No records found.") {
   return `<div class="table-wrap"${scroller}><table><thead><tr>${headers.map(v => `<th scope="col">${esc(v)}</th>`).join("")}</tr></thead>
     <tbody>${rows.map(row => `<tr>${row.map(v => `<td>${v ?? "—"}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
+// Modern collection views use one readable record per card; the same row data
+// still feeds the compact table in classic mode.
+export function recordCards(headers, rows, empty = "No records found.") {
+  if (!rows.length) return `<div class="empty">${esc(empty)}</div>`;
+  const hasActions = headers.length > 1 && ["", "Action", "Actions"].includes(headers.at(-1));
+  const stateIndex = headers.findIndex(label => label === "State" || label === "Presence");
+  const fields = headers.map((label, index) => ({label, index}))
+    .filter(({index}) => index !== 0 && index !== stateIndex && !(hasActions && index === headers.length - 1));
+  return `<div class="record-grid">${rows.map(row => `<article class="record-card">
+    <header class="record-card-title">
+      <div data-record-value="0">${row[0] ?? "—"}</div>
+      ${stateIndex > 0 ? `<div class="record-card-state" data-record-value="${stateIndex}">${row[stateIndex] ?? "—"}</div>` : ""}
+    </header>
+    ${fields.length ? `<dl>${fields.map(({label, index}) => `<div><dt>${esc(label)}</dt><dd data-record-value="${index}">${row[index] ?? "—"}</dd></div>`).join("")}</dl>` : ""}
+    ${hasActions ? `<footer class="record-card-actions" data-record-value="${headers.length - 1}"${row.at(-1) ? "" : " hidden"}>${row.at(-1) ?? ""}</footer>` : ""}
+  </article>`).join("")}</div>`;
+}
+export function collectionRecords(headers, rows, empty = "No records found.") {
+  return isLegacyInterface() ? table(headers, rows, empty) : recordCards(headers, rows, empty);
+}
 // A table whose rows are all in the page, with an instant filter above it.
 // facets are [label, column, url parameter]: a select of that column's values.
 // bindFilters wires these up after every render.
-export function filteredTable(id, label, headers, rows, {facets = [], empty} = {}) {
+export function filteredTable(id, label, headers, rows, {facets = [], empty, cards = false} = {}) {
   if (!rows.length) return table(headers, rows, empty);
   return `<div class="filtered" data-param="${esc(id)}"><div class="toolbar" role="search" aria-label="${esc(label)}">
       <input id="filter-${esc(id)}" type="search" aria-label="${esc(label)}" placeholder="${esc(label)}" maxlength="100" autocomplete="off" spellcheck="false">
       ${facets.map(([name, column, param]) => `<select id="filter-${esc(param)}" aria-label="${esc(name)}" data-name="${esc(name)}" data-column="${column}" data-param="${esc(param)}"></select>`).join("")}
       <span class="spacer"></span><span class="list-count"></span></div>
-    ${table(headers, rows)}
+    ${cards ? collectionRecords(headers, rows) : table(headers, rows)}
     <div class="empty" hidden>Nothing matches this filter. <button type="button" class="text-button">Clear filter</button></div></div>`;
 }
 export function bindFilters(root) {
   for (const box of root.querySelectorAll(".filtered")) {
     const input = box.querySelector("input"), selects = [...box.querySelectorAll("select")];
     const count = box.querySelector(".list-count"), none = box.querySelector(":scope > .empty");
-    const rows = [...box.querySelector("tbody").rows], text = rows.map(row => row.textContent.toLowerCase());
-    const cell = (row, select) => row.cells[select.dataset.column].textContent.trim();
+    const grid = box.querySelector(":scope > .record-grid");
+    const rows = grid ? [...grid.children] : [...box.querySelector("tbody").rows];
+    const values = rows.map(row => grid
+      ? [...row.querySelectorAll("[data-record-value]")]
+          .sort((a, b) => Number(a.dataset.recordValue) - Number(b.dataset.recordValue))
+          .map(cell => cell.textContent.trim())
+      : [...row.cells].map(cell => cell.textContent.trim()));
+    const text = values.map(cells => cells.join(" ").toLowerCase());
+    const cell = (index, select) => values[index][select.dataset.column];
     const {params} = routeInfo();
     for (const select of selects) {
-      const counts = {};
-      for (const row of rows) counts[cell(row, select)] = (counts[cell(row, select)] || 0) + 1;
+      const counts = Object.create(null);
+      for (let index = 0; index < rows.length; index++) {
+        const value = cell(index, select);
+        counts[value] = (counts[value] || 0) + 1;
+      }
       select.innerHTML = `<option value="">${esc(select.dataset.name)}: all (${rows.length})</option>` + Object.keys(counts).sort()
         .map(value => `<option value="${esc(value)}">${esc(value)} (${counts[value]})</option>`).join("");
       select.value = params[select.dataset.param] || "";
@@ -95,13 +125,13 @@ export function bindFilters(root) {
       const terms = input.value.toLowerCase().split(/\s+/).filter(Boolean);
       let shown = 0;
       rows.forEach((row, index) => {
-        const match = terms.every(term => text[index].includes(term)) && selects.every(select => !select.value || cell(row, select) === select.value);
+        const match = terms.every(term => text[index].includes(term)) && selects.every(select => !select.value || cell(index, select) === select.value);
         row.hidden = !match;
         if (match) shown++;
       });
       const filtering = terms.length || selects.some(select => select.value);
       count.textContent = filtering ? `${shown} of ${rows.length}` : `${rows.length} total`;
-      box.querySelector(".table-wrap").hidden = !shown;
+      (grid || box.querySelector(".table-wrap")).hidden = !shown;
       none.hidden = !!shown;
       rememberParams({[box.dataset.param]: input.value, ...Object.fromEntries(selects.map(select => [select.dataset.param, select.value]))});
       return filtering && `${shown} of ${rows.length} shown`;
@@ -151,7 +181,8 @@ export function sectionNav(route) {
     const mark = () => {
       const tops = headings.map(heading => heading.getBoundingClientRect().top);
       const ended = scrollY + innerHeight >= document.documentElement.scrollHeight - 2;
-      const current = ended ? headings.length - 1 : tops.reduce((best, top, index) => top <= 150 && top > tops[best] + 1 ? index : best, 0);
+      const readingLine = parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) || 150;
+      const current = ended ? headings.length - 1 : tops.reduce((best, top, index) => top <= readingLine && top > tops[best] + 1 ? index : best, 0);
       [...nav.children].forEach((anchor, index) => {
         if (index === current) anchor.setAttribute("aria-current", "location"); else anchor.removeAttribute("aria-current");
       });
@@ -170,6 +201,32 @@ export function stats(rows) {
 }
 export function section(title, html, extra = "") {
   return `<section class="section"><div class="section-heading"><h2>${esc(title)}</h2>${extra}</div>${html}</section>`;
+}
+const interfaceKey = accountId => `dso-admin-ui-mode:${accountId}`;
+
+export function readInterfacePreference(accountId) {
+  if (accountId == null) return "modern";
+  try { return localStorage.getItem(interfaceKey(accountId)) === "legacy" ? "legacy" : "modern"; }
+  catch { return "modern"; }
+}
+
+export function saveInterfacePreference(mode) {
+  localStorage.setItem(interfaceKey(window.dsoAdminAccountId), mode);
+}
+
+export function isLegacyInterface() {
+  return document.documentElement.dataset.interface === "legacy";
+}
+
+export function collectionPanel(title, content, footer = "", count = null, description = "Browse and manage CMS records.") {
+  if (isLegacyInterface()) return content + footer;
+  const countMarkup = count == null ? "" : `<span class="collection-count"><strong>${esc(Number(count).toLocaleString())}</strong><small>records</small></span>`;
+  return `<section class="collection-panel" aria-label="${esc(title)} records">
+    <header class="collection-panel-head"><div><h2>${esc(title)}</h2><p>${esc(description)}</p></div>${countMarkup}</header>
+    ${content}${footer ? `<footer class="collection-panel-foot">${footer}</footer>` : ""}</section>`;
+}
+export function collectionWorkspace(tools, panel) {
+  return isLegacyInterface() ? tools + panel : `<div class="collection-workspace"><div class="collection-tools">${tools}</div>${panel}</div>`;
 }
 export function tabs(entries, active) {
   return `<nav class="tabs" aria-label="Page sections">${entries.map(([label, path, params = {}, count]) =>
@@ -270,21 +327,33 @@ export function tree(value) {
     `<details><summary>${esc(human(k))} <small>(${Object.keys(v).length})</small></summary>${tree(v)}</details>`).join("")}</div>`;
 }
 export function characterTable(rows, ownerColumn = false) {
-  return table(["Character", ...(ownerColumn ? ["Account"] : []), "Class", "Level", "Map", "Presence", "Last saved"], rows.map(c => [
+  return table(characterHeaders(ownerColumn), characterRows(rows, ownerColumn), "No characters are tied to this account.");
+}
+export function characterHeaders(ownerColumn = false) { return ["Character", ...(ownerColumn ? ["Account"] : []), "Class", "Level", "Map", "Presence", "Last saved"]; }
+export function characterRows(rows, ownerColumn = false) { return rows.map(c => [
     link(c.name, `characters/${c.character_id}`) + `<span class="sub">${c.character_id}</span>`,
     ...(ownerColumn ? [esc(c.owner || "Unclaimed")] : []), esc(classes[c.class_id] || c.class_id), esc(c.level),
     `<code class="resource">${esc(c.map_id)}</code>`, status(c.online ? "Online" : "Offline", c.online ? "good" : ""), esc(date(c.saved_at))
-  ]), "No characters are tied to this account.");
-}
+  ]); }
 export function bookingGrants(booking) {
   if (booking.kind !== "batch") return `<code class="resource">${esc(booking.resource)}</code>`;
   return JSON.parse(booking.resource).map(grant => `${esc(grant.kind === "currency" ? human(grant.resource) : grant.resource)} × ${esc(grant.amount)}`).join("<br>");
 }
 export function bookingTable(rows) {
-  return table(["Booking", "Character", "Resource", "Quantity", "State", "Created", "By"], rows.map(b => [
+  return table(bookingHeaders(), bookingRows(rows));
+}
+export function bookingHeaders() { return ["Booking", "Character", "Resource", "Quantity", "State", "Created", "By"]; }
+export function bookingRows(rows) { return rows.map(b => [
     link("#" + b.id, `bookings/${b.id}`), link(b.character_id, `characters/${b.character_id}`),
     `${bookingGrants(b)}<span class="sub">${esc(b.reason)}</span>`, esc(b.amount),
     status(b.error ? "Pending · needs attention" : human(b.status), b.error ? "bad" : b.status === "delivered" ? "good" : ""),
     esc(date(b.created_at)), esc(b.actor)
-  ]));
+  ]); }
+
+export function mapWorkspace(directory, editor) {
+  if (isLegacyInterface()) return directory + editor;
+  return `<div class="map-workspace">
+    <aside aria-label="Map directory">${directory}</aside>
+    <div class="map-workspace-editor">${editor}</div>
+  </div>`;
 }

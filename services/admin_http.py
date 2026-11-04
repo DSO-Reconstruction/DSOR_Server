@@ -12,7 +12,9 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from dso_server.persistence.account_registry import AccountRegistryError
-from dso_server.services.admin import AdminError
+from dso_server.services.admin import (
+    ADMIN_REMEMBER_SECONDS, ADMIN_SESSION_SECONDS, AdminError,
+)
 
 
 ASSETS = Path(__file__).with_name("admin_static")
@@ -85,7 +87,8 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _cookie(self, token, max_age=14400):
-        return (f"{self.service.cookie_name}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={max_age}"
+        lifetime = f"; Max-Age={max_age}" if max_age is not None else ""
+        return (f"{self.service.cookie_name}={token}; Path=/; HttpOnly; SameSite=Strict{lifetime}"
                 + ("; Secure" if self.service.secure_cookie else ""))
 
     def _token(self):
@@ -129,17 +132,20 @@ class AdminRequestHandler(BaseHTTPRequestHandler):
             path = parsed.path
             self._origin()
             assets = {"/": ("index.html", "text/html"), "/admin.css": ("admin.css", "text/css")}
-            for name in ("admin.js", "admin_ui.js", "admin_find.js", "admin_pages.js", "admin_character.js", "admin_item_editor.js", "admin_booking.js", "admin_live.js", "admin_events.js", "admin_shops.js", "admin_season_pass.js", "admin_loot.js", "admin_elites.js", "admin_mystic_cube.js", "admin_bonus_codes.js"):
+            for name in ("admin.js", "admin_ui.js", "admin_find.js", "admin_pages.js", "admin_character.js", "admin_item_editor.js", "admin_booking.js", "admin_live.js", "admin_events.js", "admin_shops.js", "admin_season_pass.js", "admin_loot.js", "admin_elites.js", "admin_mystic_cube.js", "admin_bonus_codes.js", "admin_control.js"):
                 assets["/" + name] = (name, "text/javascript")
+            assets["/admin_legacy.css"] = ("admin_legacy.css", "text/css")
             if not write and path in assets:
                 name, kind = assets[path]
                 self._send(200, (ASSETS / name).read_bytes(), kind + "; charset=utf-8")
                 return
             if write and path == "/api/login":
                 payload = self._json()
+                remember = payload.get("remember") is True
                 token, document = self.service.login(payload.get("username"), payload.get("password"),
-                                                     self.client_address[0])
-                self._send(200, document, cookie=self._cookie(token))
+                                                     self.client_address[0], remember=remember)
+                max_age = ADMIN_REMEMBER_SECONDS if remember else ADMIN_SESSION_SECONDS
+                self._send(200, document, cookie=self._cookie(token, max_age=max_age))
                 return
             token = self._token()
             account, session = self.service.authenticate(token)

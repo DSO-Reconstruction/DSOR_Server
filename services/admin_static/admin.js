@@ -1,4 +1,4 @@
-import { $, esc, api, setSession, hasSession, routeInfo, link, navigate, notice, announce, bindConfirmation, bindFilters, sectionNav } from "./admin_ui.js";
+import { $, readInterfacePreference, esc, api, setSession, hasSession, routeInfo, link, navigate, notice, announce, bindConfirmation, bindFilters, sectionNav } from "./admin_ui.js";
 import { bindQuickFind } from "./admin_find.js";
 import { listPage, accountPage, itemPage, bookingPage, auditPage } from "./admin_pages.js";
 import { characterPage } from "./admin_character.js";
@@ -10,32 +10,38 @@ import { lootRatesPage } from "./admin_loot.js";
 import { dungeonElitesPage } from "./admin_elites.js";
 import { mysticCubePage } from "./admin_mystic_cube.js";
 import { bonusCodesPage, bonusCodePage, newBonusCodePage } from "./admin_bonus_codes.js";
+import { settingsPage, serverControlPage } from "./admin_control.js";
 
 let generation = 0, shownPath = null;
-const THEME_STORAGE_KEY = "dso-admin-theme";
-function applyTheme(theme) {
-  const selected = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = selected;
-  const toggle = $("#theme-toggle");
-  if (toggle) {
-    toggle.textContent = selected === "dark" ? "Light theme" : "Dark theme";
-    toggle.setAttribute("aria-pressed", String(selected === "dark"));
+function applyInterface(accountId) {
+  const mode = readInterfacePreference(accountId);
+  const classic = mode === "legacy";
+  const footer = $("#classic-session"), toolbar = $(".global-tools");
+  const identity = $(".console-session"), refresh = $("#refresh"), logout = $("#logout");
+  footer.hidden = !classic;
+  if (classic) {
+    footer.append(identity, logout);
+    $("#page-actions").after(refresh);
+  } else {
+    toolbar.append(identity, refresh, logout);
+  }
+  if (mode === "legacy") {
+    $("#admin-style").href = "/admin_legacy.css";
+    document.documentElement.dataset.interface = "legacy";
+  } else {
+    $("#admin-style").href = "/admin.css";
+    delete document.documentElement.dataset.interface;
   }
 }
-let savedTheme = null;
-try { savedTheme = localStorage.getItem(THEME_STORAGE_KEY); } catch {}
-applyTheme(savedTheme || document.documentElement.dataset.theme);
-$("#theme-toggle").addEventListener("click", () => {
-  const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-  applyTheme(next);
-  try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch {}
-});
 
 function signedOut() {
   generation++;
   shownPath = null;
   setSession("");
   $("#app").hidden = true;
+  delete window.dsoAdminAccountId;
+  applyInterface(null);
+  $("#identity").textContent = "";
   $("#login-view").hidden = false;
   $("#confirmation").close();
   $("#quick-find").close();
@@ -59,6 +65,7 @@ function restoreField(field) {
 }
 function markCurrentPage(path) {
   const links = [...document.querySelectorAll(".sidebar nav a")];
+  for (const link of links) { const label = link.textContent.trim(); link.setAttribute("aria-label", label); link.title = label; }
   const current = links.filter(a => path === a.hash.slice(1) || path.startsWith(a.hash.slice(1) + "/"))
     .sort((a, b) => b.hash.length - a.hash.length)[0];
   for (const a of links) {
@@ -68,6 +75,8 @@ function markCurrentPage(path) {
 }
 function signedIn(data) {
   setSession(data.csrf);
+  window.dsoAdminAccountId = data.account.account_id;
+  applyInterface(data.account.account_id);
   $("#identity").textContent = data.account.username;
   $("#login-view").hidden = true;
   $("#app").hidden = false;
@@ -87,7 +96,9 @@ async function render() {
   try {
     let result;
     const [name, id] = route.parts;
-    if (name === "npc-shops") result = id ? await npcShopPage(route) : await npcShopsPage(route);
+    if (name === "server-control" && !id) result = await serverControlPage();
+    else if (name === "settings" && !id) result = settingsPage();
+    else if (name === "npc-shops") result = id ? await npcShopPage(route) : await npcShopsPage(route);
     else if (name === "events") result = id === "new" ? await newEventPage(route) : id ? await eventPage(route) : await eventsPage(route);
     else if (name === "season-pass") result = await seasonPassPage(route);
     else if (name === "loot-rates") result = await lootRatesPage(route);
@@ -146,7 +157,15 @@ $("#login-form").addEventListener("submit", async event => {
   event.preventDefault();
   const form = event.target, button = form.querySelector("button");
   button.disabled = true; $("#login-error").textContent = "";
-  try { const data = await api("/api/login", Object.fromEntries(new FormData(form))); form.reset(); signedIn(data); }
+  try {
+    const formData = new FormData(form);
+    const data = await api("/api/login", {
+      username: formData.get("username"),
+      password: formData.get("password"),
+      remember: formData.has("remember"),
+    });
+    form.reset(); signedIn(data);
+  }
   catch (error) { $("#login-error").textContent = error.message; }
   finally { button.disabled = false; }
 });

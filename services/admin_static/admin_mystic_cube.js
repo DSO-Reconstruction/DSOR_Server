@@ -1,4 +1,4 @@
-import { $, esc, api, table, confirmAction, notice, formError } from "./admin_ui.js";
+import { $, esc, api, table, confirmAction, notice, formError, isLegacyInterface } from "./admin_ui.js";
 
 function percentInput(name, value, label) {
   return `<input name="${esc(name)}" type="number" min="0" max="100" step="0.01" value="${esc(value)}" aria-label="${esc(label)}" required>`;
@@ -40,18 +40,19 @@ function tierTable(data) {
 }
 
 function renderContent(data) {
-  return `<form id="mystic-cube-form" class="form-page">
-    <fieldset class="form-section"><legend>Cube drop chance</legend>
+  const layout = isLegacyInterface() ? "" : " cube-workspace";
+  return `<form id="mystic-cube-form" class="form-page${layout}">
+    <fieldset class="form-section cube-drops"><legend>Cube drop chance</legend>
       <p class="help">Each kill by a Premium or Deluxe member rolls this chance once. The cube tier follows the map difficulty. Values are percentages and apply immediately, with no restart.</p>
       <div class="form-grid"><label>Default<small>Fallback for a difficulty without its own value</small>${percentInput("drop-chance-default", data.default, "Default drop chance")}</label></div>
       ${difficultyTable(data)}
     </fieldset>
-    <fieldset class="form-section"><legend>Cube contents</legend>
+    <fieldset class="form-section cube-weights"><legend>Cube contents</legend>
       <p class="help">Every cube contains exactly one reward. The default weights must total 100%.</p>
       <div class="form-grid">${weightGrid(data, "weights", data.contents.default)}</div>
       <p class="muted" id="mystic-cube-default-total">Total: 100%</p>
     </fieldset>
-    <fieldset class="form-section"><legend>Per-tier content overrides</legend>
+    <fieldset class="form-section cube-overrides"><legend>Per-tier content overrides</legend>
       <p class="help">Optional. An enabled tier replaces the default weights for that cube type; every enabled row must total 100%.</p>
       ${tierTable(data)}
     </fieldset>

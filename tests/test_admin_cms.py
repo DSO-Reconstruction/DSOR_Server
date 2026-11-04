@@ -107,6 +107,26 @@ def test_cookie_csrf_origin_logout_and_login_do_not_create_game_sessions(cms):
     assert "HttpOnly" in headers["Set-Cookie"] and "SameSite=Strict" in headers["Set-Cookie"]
 
 
+def test_remembered_admin_session_survives_a_cms_restart(cms):
+    status, _, headers = request(cms, "POST", "/api/login",
+        {"username": "Operator", "password": "secret123", "remember": True})
+    assert status == 200
+    cookie = headers["Set-Cookie"]
+    assert "Max-Age=2592000" in cookie
+    token = cookie.split(";", 1)[0].split("=", 1)[1]
+
+    cms.service.stop()
+    restarted = AdminService(registry=cms.registry, store=cms.store,
+        static_database_path=DEFAULT_STATIC_DB_PATH, port=0)
+    account, session = restarted.authenticate(token)
+    assert account.username == "Operator"
+    assert session["expires_at"] > time.time()
+
+    restarted.post("/api/logout", {}, account, token)
+    with pytest.raises(AdminError):
+        restarted.authenticate(token)
+
+
 def test_cross_origin_login_and_form_posts_are_rejected(cms):
     data = {"username": "Operator", "password": "secret123"}
     assert request(cms, "POST", "/api/login", data, headers={"Origin": "null"})[0] == 403

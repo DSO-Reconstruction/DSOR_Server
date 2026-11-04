@@ -1,4 +1,4 @@
-import { $, esc, human, date, api, link, navigate, status, table, facts, section, toolbar, bindSearch, pager, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, human, date, api, link, navigate, status, table, collectionRecords, isLegacyInterface, facts, section, toolbar, bindSearch, pager, collectionPanel, collectionWorkspace, formError, notice, confirmAction } from "./admin_ui.js";
 import { grantEditor, mountGrantEditor } from "./admin_booking.js";
 
 // No I, O, 0 or 1. Thirty-two symbols, so a random byte maps without bias.
@@ -35,11 +35,33 @@ export async function bonusCodesPage(route) {
     title: "Bonus codes", description: "Codes players redeem under Redeem voucher in the shop. Each one books a fixed reward to the character that redeems it.",
     breadcrumbs: [["Administration", "status"], ["Bonus codes"]],
     actions: link("New bonus code", "bonus-codes/new", {}, "button"),
-    html: toolbar(route, "Search codes and notes") + table(["Code", "Reward", "Redeemed", "State", "Expires", "Note"], data.rows.map(code => [
-      link(code.code, `bonus-codes/${code.id}`, {}, "mono"), reward(code), esc(redemptions(code)), stateLabel(code),
-      code.expires_at ? esc(date(code.expires_at)) : "Never", esc(code.note)
-    ]), "No bonus codes yet.") + pager(data, route),
-    mount: () => bindSearch(route)
+    html: collectionWorkspace(toolbar(route, "Search codes and notes"), collectionPanel("Voucher registry",
+      collectionRecords(["Code", "Reward", "Redeemed", "State", "Expires", "Note", "Actions"], data.rows.map(code => [
+        link(code.code, `bonus-codes/${code.id}`, {}, "mono"), reward(code), esc(redemptions(code)), stateLabel(code),
+        code.expires_at ? esc(date(code.expires_at)) : "Never", esc(code.note),
+        `<button type="button" class="${code.enabled ? "danger" : "secondary"} bonus-code-toggle" data-toggle-bonus-code="${code.id}" data-enabled="${code.enabled}" aria-label="${code.enabled ? "Disable" : "Enable"} bonus code ${esc(code.code)}">${code.enabled ? "Disable" : "Enable"}</button>`
+      ]), "No bonus codes yet."), pager(data, route), data.total, "Rewards redeemed by players in the shop.")),
+    mount() {
+      bindSearch(route);
+      $("#content").addEventListener("click", async event => {
+        const button = event.target.closest("[data-toggle-bonus-code]");
+        if (!button || !button.isConnected) return;
+        const enabled = button.dataset.enabled === "true";
+        const code = data.rows.find(row => String(row.id) === button.dataset.toggleBonusCode);
+        if (!code) return;
+        button.disabled = true;
+        try {
+          const reason = await confirmAction(enabled ? "Disable this code?" : "Enable this code?",
+            enabled ? `${code.code} stops working. Rewards already redeemed are not affected.` : `${code.code} can be redeemed again.`,
+            enabled ? "Disable code" : "Enable code");
+          if (reason === null) return;
+          await api(`/api/bonus-codes/${code.id}`, {changes: {enabled: !enabled}, reason});
+          notice(`Bonus code ${code.code} ${enabled ? "disabled" : "enabled"}.`);
+          window.dispatchEvent(new Event("reload-page"));
+        } catch (error) { notice(error.message, true); }
+        finally { if (button.isConnected) button.disabled = false; }
+      });
+    }
   };
 }
 
@@ -94,22 +116,29 @@ export async function bonusCodePage(route) {
       window.dispatchEvent(new Event("reload-page"));
     } catch (error) { formError(error); } finally { button.disabled = false; }
   };
+  const overview = `<div class="columns">${section("Reward", facts(code.grants.map(grant => [grant.kind === "currency" ? "Currency" : "Item",
+        `${esc(grant.kind === "currency" ? human(grant.resource) : grant.name)} × ${esc(Number(grant.amount).toLocaleString())}${grant.kind === "item" ? `<span class="sub mono">${esc(grant.resource)}</span>` : ""}`])))}
+      ${section("Status", facts([["State", stateLabel(code)], ["Redeemed", esc(redemptions(code))],
+        ["Expires", code.expires_at ? esc(date(code.expires_at)) : "Never"], ["Created", esc(date(code.created_at))], ["Administrator", esc(code.actor)]]))}</div>`;
+  const limits = section("Limits", `<form id="bonus-code-limits" class="form-page">${limitFields(code)}
+        <p id="form-error" class="error-text" role="alert"></p>
+        <div class="form-actions"><button id="toggle-code" type="button" class="secondary">${code.enabled ? "Disable code" : "Enable code"}</button><button type="submit">Save limits</button></div></form>`);
+  const history = section("Redemptions", table(["Redeemed", "Account", "Character", "Booking", "Delivery"], code.history.rows.map(row => [
+        esc(date(row.created_at)), link(row.username || row.account_id, `accounts/${row.account_id}`),
+        link(row.character_name || row.character_id, `characters/${row.character_id}`), link("#" + row.booking_id, `bookings/${row.booking_id}`),
+        status(row.booking_error ? "Pending · needs attention" : human(row.booking_status), row.booking_error ? "bad" : row.booking_status === "delivered" ? "good" : "")
+      ]), "Nobody has redeemed this code yet.") + pager(code.history, route));
+  const layout = isLegacyInterface() ? overview + limits + history
+    : `<div class="voucher-workspace">
+        <div class="voucher-workspace-summary">${overview}</div>
+        <div class="voucher-workspace-limits">${limits}</div>
+        <div class="voucher-workspace-history">${history}</div>
+      </div>`;
   return {
     title: code.code, description: `${code.grants.length} ${code.grants.length === 1 ? "reward" : "rewards"} · ${code.max_redemptions === 1 ? "Single use" : redemptions(code) + " redeemed"}`,
     breadcrumbs: [["Bonus codes", "bonus-codes"], [code.code]],
     actions: link("New bonus code", "bonus-codes/new", {}, "button secondary"),
-    html: `<div class="columns">${section("Reward", facts(code.grants.map(grant => [grant.kind === "currency" ? "Currency" : "Item",
-        `${esc(grant.kind === "currency" ? human(grant.resource) : grant.name)} × ${esc(Number(grant.amount).toLocaleString())}${grant.kind === "item" ? `<span class="sub mono">${esc(grant.resource)}</span>` : ""}`])))}
-      ${section("Status", facts([["State", stateLabel(code)], ["Redeemed", esc(redemptions(code))],
-        ["Expires", code.expires_at ? esc(date(code.expires_at)) : "Never"], ["Created", esc(date(code.created_at))], ["Administrator", esc(code.actor)]]))}</div>` +
-      section("Limits", `<form id="bonus-code-limits" class="form-page">${limitFields(code)}
-        <p id="form-error" class="error-text" role="alert"></p>
-        <div class="form-actions"><button id="toggle-code" type="button" class="secondary">${code.enabled ? "Disable code" : "Enable code"}</button><button type="submit">Save limits</button></div></form>`) +
-      section("Redemptions", table(["Redeemed", "Account", "Character", "Booking", "Delivery"], code.history.rows.map(row => [
-        esc(date(row.created_at)), link(row.username || row.account_id, `accounts/${row.account_id}`),
-        link(row.character_name || row.character_id, `characters/${row.character_id}`), link("#" + row.booking_id, `bookings/${row.booking_id}`),
-        status(row.booking_error ? "Pending · needs attention" : human(row.booking_status), row.booking_error ? "bad" : row.booking_status === "delivered" ? "good" : "")
-      ]), "Nobody has redeemed this code yet.") + pager(code.history, route)),
+    html: layout,
     mount() {
       const form = $("#bonus-code-limits");
       form.addEventListener("submit", event => {
