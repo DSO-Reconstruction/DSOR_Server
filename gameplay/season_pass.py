@@ -41,6 +41,14 @@ SEASON_PASS_NO_SEASON_MESSAGE = (
     "No Season Pass season is running right now. "
     "Your pass was not used, so you can use it when the next season starts."
 )
+# "Upon use, you will receive Season Pass Experience *100."
+SEASON_PASS_EXPERIENCE_ITEM = "item_season_pass_experience"
+SEASON_PASS_EXPERIENCE_PER_ITEM = 100
+SEASON_PASS_NO_SEASON_EXPERIENCE_MESSAGE = (
+    "No Season Pass season is running right now. "
+    "Your Season Pass Experience was not used, so you can use it when the "
+    "next season starts."
+)
 
 
 @dataclass(frozen=True)
