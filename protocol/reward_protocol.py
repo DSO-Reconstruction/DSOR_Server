@@ -275,17 +275,32 @@ def ocp_booking_completed_key(instance_guid: bytes) -> str:
 def ocp_booking_notification_payload(
     reward: OCPBookingReward, instance_guid: bytes
 ) -> dict[str, object]:
+    return ocp_booking_notification_payloads((reward,), instance_guid)
+
+
+def ocp_booking_notification_payloads(
+    rewards: tuple[OCPBookingReward, ...], instance_guid: bytes
+) -> dict[str, object]:
+    """Build one OCP booking notification containing one or more rewards.
+
+    Serialize templates, amounts, and rarities as aligned semicolon-separated
+    values so the notification describes one reward package.
+    """
+
     guid = bytes(instance_guid)
     if len(guid) != 16:
         raise ValueError('OCP booking GUID must contain 16 bytes')
+    values = tuple(rewards)
+    if not values:
+        raise ValueError('OCP booking notification must contain a reward')
     transaction_id = int.from_bytes(guid[:4], 'little') & 0x7FFFFFFF
     return {
         'ingameTransactionId': transaction_id or 1,
-        'templates': reward.item_id,
-        'amounts': str(reward.amount),
-        'rarities': (
-            'None' if reward.item_id == 'characterStyleEdit'
-            else reward.rarity
+        'templates': ';'.join(str(reward.item_id) for reward in values),
+        'amounts': ';'.join(str(reward.amount) for reward in values),
+        'rarities': ';'.join(
+            'None' if reward.item_id == 'characterStyleEdit' else reward.rarity
+            for reward in values
         ),
         # The client routes this authored package id to its special
         # CharacterStyleEdit booking UI. addItems must remain true: false is

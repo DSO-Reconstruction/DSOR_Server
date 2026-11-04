@@ -24,7 +24,7 @@ from dso_server.protocol.pvp_match_protocol import (
 from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.reward_protocol import (
     NOTIFICATION_COMMAND, OCP_BOOKING_NOTIFICATION_KIND, OCP_BOOKING_NOTIFICATION_VALUES,
-    OCPBookingReward, ocp_booking_notification_payload,
+    OCPBookingReward, ocp_booking_notification_payloads,
 )
 from dso_server.protocol.skill_book_protocol import experience_commands
 from dso_server.runtime.admin_commands import AdminCommandQueue, call_admin_command
@@ -140,18 +140,21 @@ def booking_packet(after, booking, mutation, details=None):
         template = _CURRENCY_TEMPLATES[resource]
         commands.append(ServerCommand(CURRENCY_CHANGED_COMMAND, replace(after.currency, notify=True), 1))
         notifications.append((template, booking["amount"], "Common"))
-    notification_entries = []
-    for index, (template, amount, rarity) in enumerate(notifications):
-        # Keep each grant visible as an individual notification while sharing
-        # the booking's durable idempotency receipt.
-        guid_id = booking["id"] if index == 0 else (booking["id"] * 64 + index) & 0xFFFFFFFFFFFFFFFF
-        guid = BOOKING_GUID_PREFIX + guid_id.to_bytes(8, "big")
-        payload = ocp_booking_notification_payload(OCPBookingReward("cms", template, amount, rarity), guid)
+    notification_entries = ()
+    if notifications:
+        # Batch bookings and bonus-code grants share one receipt and one native
+        # reward window. Keep template, amount, and rarity values aligned.
+        guid = BOOKING_GUID_PREFIX + booking["id"].to_bytes(8, "big")
+        rewards = tuple(
+            OCPBookingReward("cms", template, amount, rarity)
+            for template, amount, rarity in notifications
+        )
+        payload = ocp_booking_notification_payloads(rewards, guid)
         # The grant has already been committed. Acknowledging this notice must
         # never trigger another credit or require the player to accept a reward.
-        payload["ingameTransactionId"] = ((booking["id"] + index) & 0x7FFFFFFF) or 1
-        notification_entries.append(make_notification_entry(
-            OCP_BOOKING_NOTIFICATION_KIND, guid, OCP_BOOKING_NOTIFICATION_VALUES, payload))
+        payload["ingameTransactionId"] = (booking["id"] & 0x7FFFFFFF) or 1
+        notification_entries = (make_notification_entry(
+            OCP_BOOKING_NOTIFICATION_KIND, guid, OCP_BOOKING_NOTIFICATION_VALUES, payload),)
     commands.append(ServerCommand(NOTIFICATION_COMMAND, Notification(1, tuple(notification_entries)), 0))
     return encode_server_command_batch(tuple(commands), include_terminator=True)
 
