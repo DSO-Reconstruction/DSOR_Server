@@ -57,6 +57,11 @@ from dso_server.gameplay.fractured_planes_layout import (
     tower_density_templates,
 )
 from dso_server.gameplay.map_hazards import is_map_hazard
+from dso_server.gameplay.dungeon_elites import (
+    elite_config_revision,
+    elite_targets,
+    include_event_maps,
+)
 from dso_server.gameplay.pathengine_navigation import (
     NavigationError,
     NavigationRoute,
@@ -1166,6 +1171,74 @@ def _load_monster_template_values(
     )
 
 
+@lru_cache(maxsize=1)
+def _monster_rank_ids(static_database_path: Path) -> frozenset[str]:
+    with _open_read_only(static_database_path) as database:
+        rows = database.execute("SELECT Id FROM _Template_MonsterRanks")
+        return frozenset(str(row[0]).casefold() for row in rows)
+
+
+@lru_cache(maxsize=64)
+def _monster_rank_factors(
+    static_database_path: Path,
+    rank_id: str,
+) -> tuple[float, float, float, float]:
+    with _open_read_only(static_database_path) as database:
+        row = database.execute(
+            """
+            SELECT HealthPointsFactor, MinDamageFactor,
+                   MaxDamageFactor, ResistanceFactor
+            FROM _Template_MonsterRanks WHERE Id=? LIMIT 1
+            """,
+            (rank_id,),
+        ).fetchone()
+    if row is None:
+        return (1.0, 1.0, 1.0, 1.0)
+    return tuple(float(value) for value in row)
+
+
+@lru_cache(maxsize=2048)
+def _monster_character_set(
+    static_database_path: Path,
+    template_id: str,
+) -> str:
+    with _open_read_only(static_database_path) as database:
+        row = database.execute(
+            "SELECT CharacterSet FROM _Template_Monster WHERE Id=? LIMIT 1",
+            (template_id,),
+        ).fetchone()
+    return str(row[0] or "") if row is not None else ""
+
+
+_ELITE_RANK_FAMILIES = ("champion", "leader", "guardian")
+
+
+@lru_cache(maxsize=256)
+def _map_type(static_database_path: Path, map_id: str) -> str:
+    with _open_read_only(static_database_path) as database:
+        row = database.execute(
+            "SELECT MapType FROM _Template_MapTemplate WHERE MapTemplate=? LIMIT 1",
+            (str(map_id),),
+        ).fetchone()
+    return str(row[0] or "").casefold() if row is not None else ""
+
+
+def _elite_rank_override(rank: str, character_set: str) -> bool:
+    """Whether a spawn must carry the NewMonster rank-override flag.
+
+    The client ignores the wire rank unless this flag is set, and setting it
+    also appends ``_Template_MonsterRanks.CharacterSetSuffix`` (``_miniboss``)
+    to the actor. That suffix is what gives Guardians, Champions and Leaders
+    their rank marker; without the flag they spawn as ordinary-looking mobs.
+    Templates whose character set already carries the suffix must not set it
+    twice.
+    """
+    family = str(rank or "").removeprefix("Rank_").casefold()
+    if not any(name in family for name in _ELITE_RANK_FAMILIES):
+        return False
+    return not str(character_set or "").casefold().endswith("_miniboss")
+
+
 @lru_cache(maxsize=64)
 def _load_monster_scaling_factors(
     static_database_path: Path,
@@ -1222,6 +1295,7 @@ def _load_monster(
     scaling_difficulty: int = 0,
     coefficient_stats: bool = False,
     non_targetable: bool = False,
+    rank_override: str = "",
 ) -> NewMonster:
     (
         hit_points,
@@ -1238,6 +1312,29 @@ def _load_monster(
         resistance_factor,
     ) = _load_monster_template_values(
         static_database_path, str(template_id)
+    )
+    # Authored SpawnPoint rows carry their own Rank column. Some maps place a
+    # Guardian/Champion/Leader row on a template authored as Rank_monster, so
+    # the spawn row is the authority there. Boss and other already-ranked
+    # templates keep their own rank: event maps label their boss rows
+    # Rank_leader while the template is Rank_boss, and demoting that boss
+    # removed it from the encounter.
+    if (
+        rank_override
+        and str(rank_override).casefold()
+        in _monster_rank_ids(Path(static_database_path))
+        and str(rank).removeprefix("Rank_").casefold() in ("monster", "add", "")
+    ):
+        rank = str(rank_override)
+        (
+            health_factor,
+            min_factor,
+            max_factor,
+            resistance_factor,
+        ) = _monster_rank_factors(Path(static_database_path), rank)
+    elite_flag = _elite_rank_override(
+        rank,
+        _monster_character_set(Path(static_database_path), str(template_id)),
     )
     health_curve = 1.0
     shield_curve = 1.0
@@ -1395,7 +1492,7 @@ def _load_monster(
         field_d8=0,
         field_dc=True,
         field_e0=0xFFFFFFFF,
-        field_e4=False,
+        field_e4=elite_flag,
         rank=str(rank),
         field_f0="",
         actor_id=actor_id,
@@ -2746,12 +2843,19 @@ def _area_template_pool(
     )
 
 
-def _promote_monsters_to_champions(static_database_path, monsters, indices):
-    """Apply the authored champion rank factors to selected runtime actors."""
+def _set_monster_rank(
+    static_database_path, monsters, indices, target_rank: str,
+):
+    """Move selected runtime actors to ``target_rank`` with its rank factors.
+
+    The same scaling serves promotion (ordinary to elite) and demotion (elite
+    to ordinary) because both directions use the ratio of the two rank rows.
+    """
+    target = str(target_rank)
     indices = tuple(dict.fromkeys(
         int(index) for index in indices
         if 0 <= int(index) < len(monsters)
-        and monsters[int(index)].rank == 'Rank_monster'
+        and str(monsters[int(index)].rank).casefold() != target.casefold()
     ))
     if not indices:
         return tuple(monsters)
@@ -2760,38 +2864,104 @@ def _promote_monsters_to_champions(static_database_path, monsters, indices):
             'SELECT Id, HealthPointsFactor, MinDamageFactor, MaxDamageFactor, ResistanceFactor '
             'FROM _Template_MonsterRanks')}
     result = list(monsters)
-    from dataclasses import replace
+    fallback = factors.get('Rank_monster') or (0.5, 0.5, 0.5, 0.2)
+    new = factors.get(target) or fallback
     for index in indices:
         original = result[index]
-        rank = 'Rank_champion'
-        old, new = factors[original.rank], factors[rank]
-        ratios = {2: new[0]/old[0], 8: new[0]/old[0], 11: new[1]/old[1], 12: new[2]/old[2]}
-        ratios.update({i: new[3]/old[3] for i in range(20, 26)})
+        old = factors.get(original.rank) or fallback
+        ratios = {
+            2: new[0] / old[0], 8: new[0] / old[0],
+            11: new[1] / old[1], 12: new[2] / old[2],
+        }
+        ratios.update({kind: new[3] / old[3] for kind in range(20, 26)})
         stats = tuple(replace(stat, value=stat.value * ratios.get(stat.kind, 1))
                       for stat in original.stats)
-        result[index] = replace(original, stats=stats, rank=rank,
-                                field_88=round(original.field_88 * new[0]/old[0]),
-                                field_90=round(original.field_90 * new[0]/old[0]))
+        result[index] = replace(
+            original,
+            stats=stats,
+            rank=target,
+            field_e4=_elite_rank_override(
+                target,
+                _monster_character_set(
+                    Path(static_database_path), str(original.template_id)
+                ),
+            ),
+            field_88=round(original.field_88 * new[0] / old[0]),
+            field_90=round(original.field_90 * new[0] / old[0]),
+        )
     return tuple(result)
 
 
-def _ensure_dungeon_elites(static_database_path, monsters, *, fixed_monster_count=0):
-    """Distribute at least ten ranked enemies through a scaling dungeon."""
-    elite_ranks = {'Rank_champion', 'Rank_leader', 'Rank_leader_no_entchantments'}
-    needed = max(0, 10 - sum(m.rank in elite_ranks for m in monsters))
-    candidates = [i for i, m in enumerate(monsters)
-                  if i >= fixed_monster_count and m.rank == 'Rank_monster']
-    # Some dungeons are entirely authored SpawnPoints. Their identities stay
-    # intact; changing rank does not break template-based quest objectives.
-    candidates += [i for i, m in enumerate(monsters)
-                   if i < fixed_monster_count and m.rank == 'Rank_monster']
-    if not needed or not candidates:
-        return monsters
-    count = min(needed, len(candidates))
-    selected = [candidates[int((n + .5) * len(candidates) / count)] for n in range(count)]
-    return _promote_monsters_to_champions(
-        static_database_path, monsters, selected
+def _promote_monsters_to_champions(static_database_path, monsters, indices):
+    """Apply the authored champion rank factors to selected runtime actors."""
+    return _set_monster_rank(
+        static_database_path, monsters, indices, 'Rank_champion',
     )
+
+
+_ELITE_TARGET_RANKS = (
+    ('leaders', 'Rank_leader'),
+    ('champions', 'Rank_champion'),
+    ('guardians', 'Rank_guardian'),
+)
+
+
+def _ensure_dungeon_elites(
+    static_database_path,
+    monsters,
+    *,
+    map_id="",
+    scaling_difficulty=0,
+):
+    """Hold each elite rank at the count configured for this dungeon tier.
+
+    Authored elite rows and difficulty-promoted ones are treated the same:
+    excess actors are demoted to ordinary monsters and shortfalls are filled
+    from the normal pool, so a map never shows more rank auras than the CMS
+    setting asks for. Event maps keep their authored wave composition unless
+    the CMS enables capping there.
+    """
+    if (
+        _map_type(Path(static_database_path), str(map_id)) == 'event'
+        and not include_event_maps()
+    ):
+        return tuple(monsters)
+    targets = elite_targets(str(map_id), scaling_difficulty)
+    result = list(monsters)
+    candidates = [
+        index for index, monster in enumerate(result)
+        if str(monster.rank).casefold() in ('rank_monster', 'monster')
+    ]
+    for key, rank in _ELITE_TARGET_RANKS:
+        target = max(0, int(targets.get(key, 0)))
+        current = [
+            index for index, monster in enumerate(result)
+            if str(monster.rank).casefold() == rank.casefold()
+        ]
+        if len(current) > target:
+            # Keep a spread across the map rather than the first N actors.
+            keep = (
+                {current[int((ordinal + 0.5) * len(current) / target)]
+                 for ordinal in range(target)}
+                if target else set()
+            )
+            result = list(_set_monster_rank(
+                static_database_path, tuple(result),
+                (index for index in current if index not in keep),
+                'Rank_monster',
+            ))
+        elif len(current) < target and candidates:
+            count = min(target - len(current), len(candidates))
+            selected = [
+                candidates[int((ordinal + 0.5) * len(candidates) / count)]
+                for ordinal in range(count)
+            ]
+            result = list(_set_monster_rank(
+                static_database_path, tuple(result), selected, rank,
+            ))
+            used = set(selected)
+            candidates = [index for index in candidates if index not in used]
+    return tuple(result)
 
 
 def _navigation_for_map(
@@ -2950,6 +3120,7 @@ def _load_dynamic_monster_encounter(
             if template_id:
                 all_fixed_rows.append((
                     row_id, transform, template_id, event_set,
+                    str(_rank or ""),
                 ))
         all_fixed_rows = tuple(all_fixed_rows)
         # Tier-only rows: the bloody sludges exist in every dungeon's table
@@ -3053,10 +3224,17 @@ def _load_dynamic_monster_encounter(
                 )
         elif (
             not fixed_rows
+            and not (
+                SPAWN_AREA_MONSTERS_ENABLED
+                and include_spawn_areas
+                and encounter_policy.permits_density_population
+            )
+            and encounter_policy.area_type.casefold() not in ('closedpve', 'openpve')
             and encounter_policy.map_type.casefold() != 'event'
-            # Grimmagstone has no ungated fixed mobs. Its fixed rows belong
-            # to ritual waves, Raazghul, or seasonal events; density areas
-            # provide the ordinary population. Never bypass those gates.
+            # Grimmagstone and scaling dungeons have no ungated fixed mobs.
+            # Their fixed rows belong to ritual waves, Raazghul, map leaders,
+            # or seasonal events; density areas provide the ordinary
+            # population. Never bypass those gates.
             and str(map_id).casefold() != 'pw001_grimmagstone_01_dun'
         ):
             fixed_rows = all_fixed_rows
@@ -3161,6 +3339,7 @@ def _load_dynamic_monster_encounter(
         max_navigation_snap_distance: float = 2.0,
         authored_yaw: float = 0.0,
         hazard: bool = False,
+        rank_override: str = "",
     ) -> bool:
         keep_story_boss_at_authored_position = (
             str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
@@ -3290,6 +3469,7 @@ def _load_dynamic_monster_encounter(
                 non_targetable=hazard or is_tower_hardware(
                     static_database_path, map_id, template_id
                 ),
+                rank_override=rank_override,
             )
         except ValueError:
             return False
@@ -3326,7 +3506,10 @@ def _load_dynamic_monster_encounter(
         hazard_spawn_positions = set()
         for rows in row_sets:
             before = len(monsters)
-            for _row_id, raw_transform, raw_template_id, _event_set in rows:
+            for (
+                _row_id, raw_transform, raw_template_id, _event_set,
+                authored_rank,
+            ) in rows:
                 try:
                     position = _spawn_position(bytes(raw_transform))
                 except (TypeError, ValueError):
@@ -3376,6 +3559,7 @@ def _load_dynamic_monster_encounter(
                     actor_id = FRACTURED_PLANES_BOSS_ACTOR_ID
                 placed = append_monster(
                     template_id, actor_id, position,
+                    rank_override=str(authored_rank or ""),
                     authored_yaw=math.atan2(
                         struct.unpack("<16f", bytes(raw_transform))[8],
                         struct.unpack("<16f", bytes(raw_transform))[0],
@@ -3804,11 +3988,14 @@ def _load_dynamic_monster_encounter(
     if not monsters:
         return None
 
-    if (monster_level is not None and encounter_policy.area_type.casefold() == 'closedpve'
+    if (encounter_policy.area_type.casefold() == 'closedpve'
             and not encounter_policy.is_boss_room):
-        monsters = list(_ensure_dungeon_elites(static_database_path, tuple(monsters),
-                                             fixed_monster_count=fixed_monster_count))
-
+        monsters = list(_ensure_dungeon_elites(
+            static_database_path,
+            tuple(monsters),
+            map_id=map_id,
+            scaling_difficulty=scaling_difficulty,
+        ))
     grouped_monsters = _group_dynamic_monsters(tuple(monsters))
     spawn_groups = tuple(
         _spawn_group(static_database_path, group)
@@ -3940,6 +4127,7 @@ def _load_cached_monster_encounter(
         monster_level,
         scaling_difficulty,
         normalized_event_flags,
+        elite_config_revision(),
         _spawn_component_key(static_database_path, map_id, player_position),
     )
     while True:

@@ -52,6 +52,9 @@ from dso_server.services.admin_events import EventAdministration, EventScheduleC
 from dso_server.services.admin_season_pass import SeasonPassAdministration, SeasonPassConflict
 from dso_server.services.base import CharacterService
 from dso_server.services.admin_loot import LootRateAdministration, LootRateConflict
+from dso_server.services.admin_elites import (
+    DungeonEliteAdministration, EliteConfigConflict,
+)
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
@@ -118,6 +121,7 @@ class AdminService:
         self.events = EventAdministration(self)
         self.season_pass = SeasonPassAdministration(self)
         self.loot_rates = LootRateAdministration(self)
+        self.dungeon_elites = DungeonEliteAdministration(self)
         self.bonus_codes = BonusCodeAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
@@ -1588,6 +1592,11 @@ class AdminService:
                 query=query.get("q", ""),
                 access_id=query.get("access_id", ""),
             )
+        if path == "/api/dungeon-elites":
+            return self.dungeon_elites.overview(
+                query=query.get("q", ""),
+                map_id=query.get("map_id", ""),
+            )
         if path == "/api/currencies":
             return {"currencies": list(CURRENCIES)}
         if path.startswith("/api/items/"):
@@ -1654,6 +1663,11 @@ class AdminService:
             try:
                 return self.loot_rates.update(account.username, reason, payload)
             except LootRateConflict as exc:
+                raise AdminError(409, str(exc)) from exc
+        if path == "/api/dungeon-elites":
+            try:
+                return self.dungeon_elites.update(account.username, reason, payload)
+            except EliteConfigConflict as exc:
                 raise AdminError(409, str(exc)) from exc
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")
