@@ -164,6 +164,54 @@ TOP_MAP_DIFFICULTIES = frozenset((8, 9))
 # a rank closer than this to the end of the gem ladder.
 MONSTER_GEM_RANK_REDUCTION = 5
 BEST_MONSTER_GEM_CHANCE = 0.05
+CRAFTING_DUNGEON_ACCESS_PREFIX = "b1205_crafting_dun"
+CRAFTING_DUNGEON_LEADER_TEMPLATE = "b1205_ingredient_leader_cerberus_01"
+CRAFTING_DUNGEON_JEWEL_TEMPLATE = "jewel_ingredient_find_common"
+CRAFTING_DUNGEON_MOUNT_TEMPLATES = (
+    "epicmount_lizard_crafting_01",
+    "epicmount_lizard_crafting_02",
+)
+CRAFTING_DUNGEON_JEWEL_DROP_CHANCE = 0.05
+CRAFTING_DUNGEON_MOUNT_DROP_CHANCE = 0.15
+
+
+def _is_crafting_dungeon_access(map_access_id: str) -> bool:
+    access_id = str(map_access_id).casefold()
+    return (
+        access_id == CRAFTING_DUNGEON_ACCESS_PREFIX
+        or access_id.startswith(CRAFTING_DUNGEON_ACCESS_PREFIX + "_")
+    )
+
+
+def _roll_crafting_dungeon_special_rewards(
+    map_access_id: str,
+    monster_template_id: str,
+    listed_reward_ids,
+    rng,
+    *,
+    force_drops: bool = False,
+) -> tuple[str, ...]:
+    """Roll Glowing Cave's leader-only jewel and mount rewards."""
+
+    if (
+        not _is_crafting_dungeon_access(map_access_id)
+        or str(monster_template_id).casefold()
+        != CRAFTING_DUNGEON_LEADER_TEMPLATE
+    ):
+        return ()
+    listed = {str(value).casefold() for value in listed_reward_ids}
+    rewards = []
+    jewel = CRAFTING_DUNGEON_JEWEL_TEMPLATE
+    if jewel in listed and (
+        force_drops or rng.random() < CRAFTING_DUNGEON_JEWEL_DROP_CHANCE
+    ):
+        rewards.append(jewel)
+    for mount in CRAFTING_DUNGEON_MOUNT_TEMPLATES:
+        if mount.casefold() in listed and (
+            force_drops or rng.random() < CRAFTING_DUNGEON_MOUNT_DROP_CHANCE
+        ):
+            rewards.append(mount)
+    return tuple(rewards)
 
 
 @dataclass(frozen=True)
@@ -2517,6 +2565,10 @@ def generate_monster_loot(
                 class_name,
                 equipment_item_level,
             )
+            crafting_special_reward_ids = frozenset((
+                CRAFTING_DUNGEON_JEWEL_TEMPLATE,
+                *CRAFTING_DUNGEON_MOUNT_TEMPLATES,
+            )) if _is_crafting_dungeon_access(map_access_id) else frozenset()
             region_uniques = _region_unique_definitions(
                 database,
                 map_access_id,
@@ -2575,6 +2627,8 @@ def generate_monster_loot(
                         "DefaultRarity"
                     ) or ""
                 ).casefold() not in {"unique", "set"}
+                and definition.template_id.casefold()
+                not in crafting_special_reward_ids
             )
             if direct_candidates and (
                 force_drops
@@ -2588,6 +2642,32 @@ def generate_monster_loot(
                     equipment_item_level,
                     "",
                     _rarity_index(row.get("DefaultRarity"), 0),
+                ))
+
+            # The Glowing Cave's authored Possible Rewards include one
+            # Ingredient Hunter jewel and two crafting lizard mounts. Retail
+            # preview data names the items but contains no server-side odds;
+            # roll the jewel at its configured special rate and each listed
+            # mount independently at 15% from Cerberus only, outside the
+            # ordinary difficulty curves.
+            special_reward_ids = _roll_crafting_dungeon_special_rewards(
+                map_access_id,
+                profile.template_id,
+                (definition.template_id for definition in listed_rewards),
+                generator,
+                force_drops=force_drops,
+            )
+            for template_id in special_reward_ids:
+                reward_row = database.items_by_id.get(template_id)
+                if reward_row is None:
+                    continue
+                reward = _loot_definition_from_row(reward_row)
+                specifications.append((
+                    reward,
+                    1,
+                    equipment_item_level,
+                    "",
+                    _rarity_index(reward_row.get("DefaultRarity"), 0),
                 ))
 
             gem_bounds = next((

@@ -9,6 +9,7 @@ request on its own are sent.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass, replace
 from typing import Any
@@ -35,6 +36,16 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.protocol.skill_book_protocol import skill_book_snapshot
 from dso_server.gameplay.skin_unlocks import load_skin_unlock_customizations
 from dso_server.gameplay.stickerbook_state import stickerbook_info_entries
+from dso_server.gameplay.local_map_state import (
+    CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
+    CRAFTING_DUNGEON_MAP_ID,
+)
+
+
+def _crafting_dungeon_leader_present_from_roll(roll: int) -> bool:
+    """Map one uniformly distributed byte to the dungeon's exact 50/50 roll."""
+
+    return (int(roll) & 0xFF) < 128
 
 
 @dataclass
@@ -78,6 +89,22 @@ class PlayerInitializationWorldService:
             ).active_event_flags(),
             *map_access.event_set_flags,
         })
+        if str(gameplay_map).casefold() == CRAFTING_DUNGEON_MAP_ID:
+            # Each solo dungeon instance gets one stable 50/50 leader roll.
+            # Hashing the private instance id keeps late/reconnecting members
+            # on the same outcome without sharing a cached map-wide decision.
+            instance_id = str(getattr(s, "gameplay_instance_id", "") or "")
+            if not instance_id:
+                instance_id = str(
+                    getattr(character, "character_id", 0)
+                ) + ":" + str(getattr(s, "gameplay_map_access_id", ""))
+            leader_roll = hashlib.sha256(
+                instance_id.encode("utf-8")
+            ).digest()[0]
+            if _crafting_dungeon_leader_present_from_roll(leader_roll):
+                active_event_flags |= frozenset({
+                    CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
+                })
         try:
             active_event_flags |= frozenset(
                 CharacterService._quest_reveal_flags(self, s, gameplay_map)
