@@ -67,6 +67,26 @@ CLASS_IDS = {
 }
 CLASS_NAMES = {value: key for key, value in CLASS_IDS.items()}
 
+# The Night Walker (niwalk) is playable, but this content export authors
+# nothing class-specific for it: no ``niwalk_default_equipment`` start
+# equipment, no niwalk gear, no niwalk quests or quest signals (only quest
+# rewards name it). Until it does, content chosen by class -- start and
+# bootstrap equipment, quest chains, signal rules, loot -- treats a niwalk as
+# a warrior. Anything authored for the niwalk itself still wins where both
+# exist (quest rewards). Stats, skills and the anim set stay the niwalk's.
+CONTENT_CLASS_FALLBACKS = {"niwalk": "warrior"}
+# The niwalk's base animation set, indexed by ``gender == 1``: the AnimSet of
+# _Template_PlayerCharacter's character_human_{male,female}_niwalk (the
+# player template's is niwalk_off). It has no per-armament variants.
+NIWALK_ANIMATION_SETS = ("niwalk_off", "niwalk_female_off")
+
+
+def content_class_name(class_name: str) -> str:
+    """The class whose authored content ``class_name`` uses."""
+
+    name = str(class_name or "")
+    return CONTENT_CLASS_FALLBACKS.get(name.casefold(), name)
+
 # Retail character ids visible in captures are input fixtures, not identities
 # owned by the localhost service.  Locally configured and newly created
 # characters live in an explicit server-controlled namespace.

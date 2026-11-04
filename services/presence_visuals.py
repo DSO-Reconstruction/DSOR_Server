@@ -11,6 +11,7 @@ from dso_server.protocol.gameplay_protocol import (
 from dso_server.gameplay.combat_entities import projectile_emit_delay, shifted_skill_phases
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.protocol.character_selection import NIWALK_ANIMATION_SETS
 from dso_server.gameplay.player_summon_lifecycle import player_summon_preparation_batch
 
 
@@ -703,11 +704,16 @@ class PresenceVisualService:
         has_two_hand = any(
             5 in slots and 6 in slots for slots in allocations
         )
+        class_id = int(character.class_id)
+        female = int(character.gender) == 1
+        if class_id == 4:
+            # The niwalk has one base set per body, armed or not:
+            # _Template_PlayerCharacter's character_human_{male,female}_niwalk
+            # AnimSet (the player template's is niwalk_off too).
+            return NIWALK_ANIMATION_SETS[female]
         if not has_right_hand:
             return fallback
 
-        class_id = int(character.class_id)
-        female = int(character.gender) == 1
         if class_id in (0, 1):
             class_name = "warrior" if class_id == 0 else "mage"
             gender_part = "_female" if female else ""
@@ -727,8 +733,6 @@ class PresenceVisualService:
             if has_left_hand:
                 return f"dwarf{gender_part}_1h_weapon_shield"
             return f"dwarf{gender_part}_1h_weapon"
-        if class_id == 4:
-            return "niwalk_female_1h" if female else "niwalk_1h"
         return fallback
 
     def _remote_equipment_visuals(

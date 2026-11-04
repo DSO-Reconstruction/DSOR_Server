@@ -30,6 +30,7 @@ from typing import Iterable, Mapping
 
 from dso_server.runtime import resident_content
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
+from dso_server.protocol.character_selection import content_class_name
 from dso_server.gameplay.prop_loot import has_prop_loot
 from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
@@ -280,7 +281,9 @@ class SignalRule:
             return False
         if self.max_level and player_level > self.max_level:
             return False
-        if self.classes and class_name.casefold() not in self.classes:
+        if self.classes and not self.classes.intersection((
+            class_name.casefold(), content_class_name(class_name).casefold(),
+        )):
             return False
         if self.player_amount > 0 and player_count < self.player_amount:
             return False

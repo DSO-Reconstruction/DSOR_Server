@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.protocol.character_selection import NIWALK_ANIMATION_SETS
 from dso_server.gameplay.player_summon_lifecycle import player_summon_preparation_batch
 from dso_server.services.presence_movement import relayed_player_move
 
@@ -80,6 +81,8 @@ class PresenceService:
             animation_set = (
                 "dwarf_1h_weapon"
                 if int(character.class_id) == 3
+                else NIWALK_ANIMATION_SETS[int(character.gender) == 1]
+                if int(character.class_id) == 4
                 else "male"
             )
         template_row = int(session.gameplay_template_row_index or 0)

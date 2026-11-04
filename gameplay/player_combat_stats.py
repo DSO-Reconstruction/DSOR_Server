@@ -27,6 +27,13 @@ from dso_server.runtime import resident_content
 from dso_server.protocol.inventory_codec import active_equipment_slots
 from dso_server.gameplay.item_random import deterministic_base_enchantment_rolls
 
+# The niwalk's blood (ResourceNiwalk) plays like the warrior's rage for now:
+# filled by hits (each skill's ResourceGain) and draining out of combat. The
+# niwalk's _Template_Player row instead regenerates it like mana (Absolute
+# 3/s, no delay), so it takes the warrior's recovery: -5% of the pool per
+# second, 5 s after the last spend or hit. Both pools are 100 (BaseMana).
+RAGE_LIKE_RESOURCE_CLASSES = {"niwalk": "warrior"}
+
 
 @dataclass(frozen=True)
 class CombatModifier:
@@ -461,6 +468,11 @@ def _load_static_database(
             )
             for row in player_rows
         }
+        for class_key, source_key in RAGE_LIKE_RESOURCE_CLASSES.items():
+            if source_key in player_resource_recovery:
+                player_resource_recovery[class_key] = (
+                    player_resource_recovery[source_key]
+                )
         player_class_health_factors = {
             str(row["CharClass"]).casefold(): max(
                 0.0, float(row["ClassHitpointsFactor"] or 1.0)

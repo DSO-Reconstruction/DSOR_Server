@@ -19,6 +19,7 @@ from dso_server.protocol.character_selection import (
     CLASS_NAMES,
     CLIENT_SKILL_MANAGER_ROW_OFFSET,
     NEW_CHARACTER_QUICKBAR_SKILL_SLOTS,
+    content_class_name,
     CharacterSelection,
     CharacterSelectionError,
     EquipmentRecord,
@@ -180,11 +181,19 @@ class StaticGameDatabase:
             raise CharacterSelectionError(f"unknown class id {class_id}")
 
         with closing(self._connect()) as connection:
-            row = connection.execute(
-                'SELECT "CharGenItems" FROM "_Template_StartEquipment" '
-                'WHERE "Id"=? LIMIT 1',
-                (f"{class_name}_default_equipment",),
-            ).fetchone()
+            row = None
+            # No ``niwalk_default_equipment`` row exists: the niwalk starts
+            # in the warrior's (protocol/character_selection.py).
+            for name in dict.fromkeys(
+                (class_name, content_class_name(class_name))
+            ):
+                row = connection.execute(
+                    'SELECT "CharGenItems" FROM "_Template_StartEquipment" '
+                    'WHERE "Id"=? LIMIT 1',
+                    (f"{name}_default_equipment",),
+                ).fetchone()
+                if row is not None:
+                    break
             if row is None:
                 raise CharacterSelectionError(
                     f"no start-equipment template for class {class_name!r}"

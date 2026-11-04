@@ -16,7 +16,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Iterable
 
-from dso_server.protocol.character_selection import BitReader, BitWriter
+from dso_server.protocol.character_selection import (
+    BitReader,
+    BitWriter,
+    content_class_name,
+)
 
 
 INVENTORY_INFO_COMMAND = command_id("Commands::InventoryInfoCommand", 0x0054)
@@ -990,7 +994,13 @@ def encode_bootstrap_inventory_info(
     """
 
     try:
-        core_templates = _CLASS_CORE_EQUIPMENT[class_name]
+        # The niwalk has no crafted base gear of its own; it wears the
+        # warrior's (protocol/character_selection.py).
+        core_templates = _CLASS_CORE_EQUIPMENT[
+            class_name
+            if class_name in _CLASS_CORE_EQUIPMENT
+            else content_class_name(class_name)
+        ]
     except KeyError as exc:
         raise ValueError(
             f"unsupported bootstrap inventory class {class_name!r}"

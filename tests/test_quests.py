@@ -771,7 +771,7 @@ class QuestServiceTests(unittest.TestCase):
 
     def _prepare_vithrandir_objective(self, *, reveal=True, prerequisites=True, class_id=0):
         self.session.gameplay_character.class_id = class_id
-        quest_id = "a0001-start-tutorial-02-" + ("w", "m", "r", "d")[class_id]
+        quest_id = "a0001-start-tutorial-02-" + ("w", "m", "r", "d", "w")[class_id]
         self.session.gameplay_quest_log.clear()
         progress = QuestProgress(quest_id)
         self.session.gameplay_quest_log[quest_id] = progress
@@ -814,7 +814,8 @@ class QuestServiceTests(unittest.TestCase):
         self.assertEqual(self.xp_awards, [175])
 
     def test_encounter_packet_alone_completes_vithrandir_for_each_class(self):
-        for class_id in range(4):
+        # The niwalk (4) plays the warrior's tutorial.
+        for class_id in range(5):
             with self.subTest(class_id=class_id):
                 _quest_id, progress, npc = self._prepare_vithrandir_objective(class_id=class_id)
                 self.server._on_char_op(
@@ -866,7 +867,7 @@ class QuestServiceTests(unittest.TestCase):
             s, map_id=s.gameplay_map, initial_flags=frozenset(),
             monster_level=None, scaling_difficulty=0, fresh_instance=True,
         )
-        quest_id = "a0001-start-tutorial-03-" + ("w", "m", "r", "d")[class_id]
+        quest_id = "a0001-start-tutorial-03-" + ("w", "m", "r", "d", "w")[class_id]
         s.gameplay_quest_log[quest_id] = QuestProgress(quest_id)
         self.server._on_map_entered(s)
         return s, quest_id
@@ -874,7 +875,8 @@ class QuestServiceTests(unittest.TestCase):
     def test_tutorial_three_map_entry_keeps_the_original_vithrandir_for_every_class(self):
         # Retail 16:05:34.550 travels to the hub, then 16:05:40.213 sends
         # NPCRequest/Encounter for actor 65536; task/state updates follow.
-        for class_id in range(4):
+        # The niwalk (4) plays the warrior's tutorial.
+        for class_id in range(5):
             with self.subTest(class_id=class_id):
                 s, quest_id = self._enter_start_hub(class_id)
                 live = self.server._active_npc_definitions(s)

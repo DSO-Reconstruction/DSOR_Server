@@ -395,7 +395,7 @@ def test_boxes_with_a_broken_mapping_give_their_described_contents(box, class_na
 @pytest.mark.parametrize("box", sorted(_AUTHORED_CHEST_CONTENTS))
 def test_every_written_box_opens_for_every_class_from_its_level(box):
     level = load_purchase_item_definition(DEFAULT_STATIC_DB_PATH, box).required_level
-    for class_name in ("warrior", "mage", "ranger", "dwarf"):
+    for class_name in ("warrior", "mage", "ranger", "dwarf", "niwalk"):
         assert _rewards(box, level=level, class_name=class_name)
     if level > 1:
         with pytest.raises(ValueError, match=f"requires level {level}"):

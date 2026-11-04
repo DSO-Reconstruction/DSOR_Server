@@ -34,6 +34,7 @@ from dso_server.gameplay.mystic_cube_config import (
 )
 from dso_server.paths import DEFAULT_CHEST_CONTENTS_MAP, DESCRIPTION_CHEST_CONTENTS_MAP
 
+from dso_server.protocol.character_selection import content_class_name
 from dso_server.protocol.commerce_protocol import (
     OFFER_RARITY_IDS,
     PurchaseItemDefinition,
@@ -1352,6 +1353,8 @@ def roll_chest_contents(
 ) -> ChestContents:
     """Resolve and roll one mapped inventory chest without mutating state."""
 
+    # A niwalk opens a class box as a warrior (it wears the warrior's gear).
+    class_name = content_class_name(class_name)
     box_template_id = str(box_template_id)
     box_definition = _definition(static_database_path, box_template_id)
     if box_definition.item_category not in _INVENTORY_CONTAINER_CATEGORIES:
@@ -1604,6 +1607,7 @@ def open_mapped_chest(
 ) -> ChestOpenMutation:
     """Atomically consume one chest and materialize its already-rolled loot."""
 
+    class_name = content_class_name(class_name)
     builder = InventoryMutationBuilder(inventory, next_item_id)
     consumed = builder.consume(item_id, 1)
     if consumed.template_id != contents.box_template_id:

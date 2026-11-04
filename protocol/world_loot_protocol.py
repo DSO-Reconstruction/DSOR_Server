@@ -31,7 +31,11 @@ import sqlite3
 
 from dso_server.persistence import static_schema_compat as compat
 from dso_server.paths import DEFAULT_LOOT_RATES_CONFIG_PATH
-from dso_server.protocol.character_selection import BitReader, BitWriter
+from dso_server.protocol.character_selection import (
+    BitReader,
+    BitWriter,
+    content_class_name,
+)
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND,
     InventoryInfo,
@@ -2352,6 +2356,8 @@ def generate_monster_loot(
     transaction or full item-table scan.
     """
 
+    # A niwalk is dropped warrior gear, which it wears.
+    class_name = content_class_name(class_name)
     generator = rng if rng is not None else random.Random()
     database = prime_world_loot_cache(static_database_path)
     try:

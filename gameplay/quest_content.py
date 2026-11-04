@@ -28,6 +28,7 @@ from types import MappingProxyType
 from typing import Iterable, Mapping
 import xml.etree.ElementTree as ET
 from dso_server.runtime import resident_content
+from dso_server.protocol.character_selection import content_class_name
 from dso_server.gameplay.status_modifier_runtime import ModifierAmounts
 from dso_server.runtime.file_revisions import observed_revision
 
@@ -306,7 +307,8 @@ class QuestDefinition:
             return True
         if wanted.startswith("not"):
             return actual != wanted[3:]
-        return actual == wanted
+        # No quest is authored for the niwalk: it follows the warrior's.
+        return wanted in {actual, content_class_name(actual).casefold()}
 
     def accepts_level(self, level: int) -> bool:
         level = int(level)
@@ -335,6 +337,12 @@ class QuestDefinition:
 
     def rewards_for_class(self, class_name: str) -> tuple[QuestReward, ...]:
         actual = str(class_name or "").casefold()
+        # A class without rewards of its own here (the niwalk on a warrior
+        # quest) takes its content class's; its own win where both exist.
+        if not any(
+            reward.class_name.casefold() == actual for reward in self.rewards
+        ):
+            actual = content_class_name(actual).casefold()
         return tuple(
             reward for reward in self.rewards
             if not reward.class_name or reward.class_name.casefold() == actual
