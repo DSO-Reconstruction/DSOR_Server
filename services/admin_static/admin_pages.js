@@ -4,8 +4,102 @@ import { $, esc, human, date, api, href, link, navigate, status, table, facts, s
 
 const names = {status: "Status", accounts: "Accounts", characters: "Characters", bookings: "Bookings", items: "Item catalog", sessions: "Sessions", audit: "Audit log"};
 const query = params => new URLSearchParams({limit: 50, ...params});
-const accountTabs = id => [["Characters", `accounts/${id}`], ["Settings", `accounts/${id}/settings`], ["Sessions", `accounts/${id}/sessions`], ["Bookings", `accounts/${id}/bookings`]];
+const accountTabs = id => [["Characters", `accounts/${id}`], ["Membership", `accounts/${id}/membership`], ["Currencies", `accounts/${id}/currencies`], ["Settings", `accounts/${id}/settings`], ["Sessions", `accounts/${id}/sessions`], ["Bookings", `accounts/${id}/bookings`]];
 
+const membershipName = m => !m ? "No saved state" : m.active ? ({1: "Premium", 2: "Deluxe"}[m.type] || "Active") : "Inactive";
+const membershipExpiry = m => m?.expires_at ? date(m.expires_at) : "—";
+
+function accountMembershipPage(id, account, characters) {
+  const allOffline = characters.every(character => !character.online);
+  const allSaved = characters.length > 0 && characters.length === account.character_ids.length && characters.every(character => character.has_state);
+  const enabled = allOffline && allSaved;
+  const rows = characters.map(character => [
+    link(character.name, `characters/${character.character_id}`),
+    membershipName(character.membership), membershipExpiry(character.membership),
+    character.membership?.premium_expires_at ? date(character.membership.premium_expires_at) : "—",
+    character.online ? status("Online", "bad") : status("Offline", "good"),
+  ]);
+  const form = section("Edit account membership", `<form id="account-membership-form" class="form-page">
+    <fieldset class="form-section" ${enabled ? "" : "disabled"}><legend>Premium and Deluxe</legend><div class="form-grid">
+      <label>Plan<select name="tier"><option value="1">Premium</option><option value="2">Deluxe</option></select></label>
+      <label>Duration in days<input name="days" type="number" min="1" max="3650" step="1" value="30" required></label>
+    </div><p class="help">Grants or extends the selected plan for every character on this account. Removing Deluxe resumes remaining Premium time.</p></fieldset>
+    <p id="membership-error" class="error-text" role="alert"></p>
+    <div class="form-actions"><button type="submit" name="action" value="grant" ${enabled ? "" : "disabled"}>Grant / extend</button><button type="submit" class="danger" name="action" value="remove" ${enabled ? "" : "disabled"}>Remove selected plan</button></div>
+    ${!allOffline ? '<p class="help">Sign out all characters on this account before editing membership.</p>' : ""}
+    ${!allSaved ? '<p class="help">Every character must have a saved gameplay state before account membership can be edited.</p>' : ""}</form>`);
+  return section("Character memberships", table(["Character", "Plan", "Expires", "Premium after Deluxe", "Presence"], rows)) + form;
+}
+
+function bindAccountMembership(id, account) {
+  const form = $("#account-membership-form");
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = event.submitter, action = button?.value;
+    if (!action) return;
+    const values = new FormData(form), tier = Number(values.get("tier")), days = Number(values.get("days"));
+    const plan = tier === 1 ? "Premium" : "Deluxe";
+    button.disabled = true;
+    try {
+      if (action === "grant" && (!Number.isInteger(days) || days < 1 || days > 3650)) throw new Error("Duration must be a whole number from 1 to 3650 days.");
+      const summary = action === "grant" ? `grant ${plan} for ${days} days to all characters on ${account.username}` : `remove ${plan} from all characters on ${account.username}`;
+      const reason = await confirmAction("Change account membership?", `${summary}. All characters must be offline.`, action === "grant" ? "Grant membership" : "Remove membership");
+      if (reason === null) return;
+      const result = await api(`/api/accounts/${id}/membership`, {tier, action, days, reason});
+      notice(`${plan} updated for ${result.characters_updated} character(s).`);
+      window.dispatchEvent(new Event("reload-page"));
+    } catch (error) { const target = $("#membership-error"); if (target) target.textContent = error.message; else notice(error.message, true); }
+    finally { button.disabled = false; }
+  });
+}
+
+const fixedCurrencyFields = [
+  ["andermant", "Andermant"], ["gold", "Gold", true], ["badge_of_honor", "Badge of Honor"],
+  ["legacy_progression", "Legacy progression"], ["draken", "Draken"], ["glyph_of_power", "Glyphs of Power", true],
+];
+
+function accountCurrenciesPage(id, characters) {
+  const allOffline = characters.every(character => !character.online);
+  return characters.map(character => {
+    const enabled = character.has_state && allOffline;
+    const fields = fixedCurrencyFields.map(([key, label, wide]) => `<label>${label}<input name="${key}" type="${wide ? "text" : "number"}" ${wide ? 'inputmode="numeric" maxlength="20" pattern="[0-9]+"' : 'min="0" max="4294967295" step="1"'} value="${esc(character.currencies?.[key] ?? 0)}" required></label>`).join("");
+    const additional = Object.entries(character.additional_currencies || {}).map(([key, value]) => `<label>${esc(human(key))}<input name="game:${esc(key)}" type="text" inputmode="numeric" maxlength="20" pattern="[0-9]+" value="${esc(value)}" required></label>`).join("");
+    return section(esc(character.name), `<form class="account-currency-form" data-character-id="${character.character_id}">
+      <fieldset class="form-section" ${enabled ? "" : "disabled"}><legend>Currencies</legend><div class="form-grid">${fields}</div><p class="help">Andermant is shared by all characters on this account.</p></fieldset>
+      <fieldset class="form-section" ${enabled ? "" : "disabled"}><legend>Additional currencies</legend><div class="form-grid">${additional}</div></fieldset>
+      ${!character.has_state ? '<p class="help">This character has no saved gameplay state yet.</p>' : ""}${!allOffline ? '<p class="help">Sign out all characters on this account before editing currencies.</p>' : ""}
+      <p class="error-text" role="alert"></p><div class="form-actions"><button type="submit" ${enabled ? "" : "disabled"}>Save currencies</button></div></form>`);
+  }).join("") || '<p class="empty">This account has no characters.</p>';
+}
+
+function bindAccountCurrencies(id) {
+  document.querySelectorAll(".account-currency-form").forEach(form => form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]'), values = new FormData(form), changes = {additional_currencies: {}};
+    for (const [key, value] of values.entries()) {
+      if (key.startsWith("game:")) changes.additional_currencies[key.slice(5)] = String(value);
+      else changes[key] = ["gold", "glyph_of_power"].includes(key) ? String(value) : Number(value);
+    }
+    button.disabled = true;
+    try {
+      for (const [key, value] of Object.entries(changes)) {
+        if (key === "additional_currencies") continue;
+        if (["gold", "glyph_of_power"].includes(key)) {
+          if (!/^\d{1,20}$/.test(value) || BigInt(value) > 18446744073709551615n) throw new Error(`${human(key)} must be a whole number from 0 to 18,446,744,073,709,551,615.`);
+        } else if (!Number.isSafeInteger(value) || value < 0 || value > 4294967295) throw new Error(`${human(key)} must be a whole number from 0 to 4,294,967,295.`);
+      }
+      for (const [key, value] of Object.entries(changes.additional_currencies)) {
+        if (!/^\d{1,20}$/.test(value) || BigInt(value) > 18446744073709551615n) throw new Error(`${human(key)} must be a valid non-negative whole number.`);
+      }
+      const characterId = Number(form.dataset.characterId);
+      const reason = await confirmAction("Save character currencies?", `Update the saved balances for character ${characterId}.`, "Save currencies");
+      if (reason === null) return;
+      await api(`/api/accounts/${id}/currencies`, {character_id: characterId, changes, reason});
+      notice("Character currencies saved."); window.dispatchEvent(new Event("reload-page"));
+    } catch (error) { const target = form.querySelector('[role="alert"]'); if (target) target.textContent = error.message; else notice(error.message, true); }
+    finally { button.disabled = false; }
+  }));
+}
 export async function listPage(route) {
   const name = route.parts[0];
   const data = await api(`/api/${name}?${query(route.params)}`);
@@ -139,6 +233,12 @@ export async function accountPage(route) {
         finally { button.disabled = false; }
       });
     };
+  } else if (tab === "membership") {
+    result.html += accountMembershipPage(id, a, data.characters);
+    result.mount = () => bindAccountMembership(id, a);
+  } else if (tab === "currencies") {
+    result.html += accountCurrenciesPage(id, data.characters);
+    result.mount = () => bindAccountCurrencies(id);
   } else if (tab === "settings") {
     result.html += `<form id="account-form" class="form-page">
       <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
