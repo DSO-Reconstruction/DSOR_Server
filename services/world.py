@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from functools import lru_cache
 import threading
 import time
 
@@ -16,10 +17,11 @@ from dso_server.gameplay.fractured_planes_layout import is_tower_hardware
 from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS, boss_entrance_presentation, load_map_encounter_policy,
 )
+from dso_server.gameplay.stickerbook_state import load_cosmetic_definition
 from dso_server.services import movement_validation
 from dso_server.gameplay.status_modifier_runtime import (
     evaluate_active_status_modifiers, load_status_modifier_catalog,
-    snapshot_player_modifier_sources,
+    parse_modifier_program, snapshot_player_modifier_sources,
 )
 
 _PERSISTENT_SCRIPTED_ACTORS = frozenset({
@@ -32,6 +34,22 @@ _PERSISTENT_SCRIPTED_ACTORS = frozenset({
 # geometry was designed around. Ordinary monsters keep the normal vicinity
 # radius; these are announced map-wide and never culled.
 _TOWER_MECHANISM_VISIBILITY_RADIUS = 100000.0
+# Ground loot that is auto-collected on approach. Ores and herbs monsters
+# drop are IngredientItem and reach a little further than the rest. A pet
+# that advertises AutoPickupModifier sweeps its own categories wider still.
+AUTO_PICKUP_RADIUS = 2.5
+AUTO_PICKUP_INGREDIENT_RADIUS = 3.5
+PET_AUTO_PICKUP_RADIUS = 4.5
+PET_AUTO_PICKUP_INGREDIENT_RADIUS = 5.5
+# Loot categories swept up from every player on approach. Keys reach world
+# loot only as event Loot-list drops (christmas sugar beets) and amphorae,
+# authored to auto-pick-up; retail auto-picked amphora Draken
+# (NoAutoUseCurrency) into the bag too. Pets widen this through their own
+# ``AutoPickupModifier`` (gems, jewels, runes, loot boxes).
+AUTO_PICKUP_CATEGORIES = frozenset({
+    'Currency', 'InstantConsumable', 'Key',
+    'NoAutoUseCurrency', 'IngredientItem', 'ItemCurrency',
+})
 _FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
 _FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
 _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
@@ -87,6 +105,31 @@ _REWRITE_HISTORY_QUEST_MOB_TEMPLATES = frozenset({
     "c2303_normal_g_lobster_q_rewritehistory_03",
     "c2303_normal_g_lobster_q_rewritehistory_03_scale",
 })
+
+
+@lru_cache(maxsize=256)
+def _pet_auto_pickup_categories(resource_id: str) -> frozenset[str]:
+    """Loot categories the active pet's ``AutoPickupModifier`` enables."""
+
+    if not resource_id:
+        return frozenset()
+    definition = load_cosmetic_definition(DEFAULT_STATIC_DB_PATH, resource_id)
+    if definition is None:
+        return frozenset()
+    return frozenset(
+        modifier.arguments[0]
+        for modifier in parse_modifier_program(definition.start_modifiers)
+        if modifier.kind == 'autopickupmodifier' and modifier.arguments
+    )
+
+
+def _auto_pickup_radius(category: str, pet_categories: frozenset[str]) -> float:
+    """Reach of one automatic pickup; a collecting pet sweeps wider."""
+    if category in pet_categories:
+        return (PET_AUTO_PICKUP_INGREDIENT_RADIUS
+                if category == 'IngredientItem' else PET_AUTO_PICKUP_RADIUS)
+    return (AUTO_PICKUP_INGREDIENT_RADIUS
+            if category == 'IngredientItem' else AUTO_PICKUP_RADIUS)
 
 
 @contextmanager
@@ -1921,23 +1964,26 @@ class WorldService:
             player_position = encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
+            pet_categories = _pet_auto_pickup_categories(
+                str(getattr(s, 'gameplay_active_pet', '') or '')
+            )
             item_ids = tuple(
                 item_id
                 for item_id, drop in s.gameplay_world_loot.items()
                 if (
-                    drop.auto_pick_up == 'All'
-                    # Keys reach world loot only as event Loot-list drops
-                    # (christmas sugar beets) and amphorae, authored to
-                    # auto-pick-up. Retail auto-picked amphora Draken
-                    # (NoAutoUseCurrency) into the bag too.
-                    and drop.item_category in {
-                        'Currency', 'InstantConsumable', 'Key',
-                        'NoAutoUseCurrency', 'IngredientItem', 'ItemCurrency',
-                    }
+                    (
+                        drop.item_category in pet_categories
+                        or (
+                            drop.auto_pick_up == 'All'
+                            and drop.item_category in AUTO_PICKUP_CATEGORIES
+                        )
+                    )
                     and math.hypot(
                         drop.item.ground_position[0] - player_position[0],
                         drop.item.ground_position[2] - player_position[2],
-                    ) <= 2.5
+                    ) <= _auto_pickup_radius(
+                        drop.item_category, pet_categories,
+                    )
                 )
             )
         for item_id in item_ids:
