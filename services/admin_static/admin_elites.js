@@ -1,4 +1,4 @@
-import { $, esc, api, section, table, debounce, confirmAction, notice, formError } from "./admin_ui.js";
+import { $, esc, api, section, table, debounce, confirmAction, notice, formError, mapWorkspace } from "./admin_ui.js";
 
 const MAX_TARGET = 200;
 
@@ -94,10 +94,10 @@ export async function dungeonElitesPage() {
   }
 
   function renderContent() {
-    return section("Search map", `<form id="elite-map-search" class="toolbar" role="search">
+    return mapWorkspace(section("Search map", `<form id="elite-map-search" class="toolbar" role="search">
         <input name="q" type="search" aria-label="Search maps" placeholder="Map ID or type (e.g. c2301, Standard)" maxlength="100" autocomplete="off">
         <button type="submit" class="secondary">Search</button>
-      </form><div id="elite-map-results">${mapResults(data)}</div>`) +
+      </form><div id="elite-map-results">${mapResults(data)}</div>`),
       `<form id="dungeon-elites-form" class="form-page">
         <fieldset class="form-section"><legend>Counts by difficulty</legend>
           <p class="help">Each dungeon instance holds exactly these counts per elite rank. Extra authored elites are demoted to ordinary monsters and missing ones are promoted from the normal pool. Set 0 to remove a rank from dungeons.</p>
@@ -110,7 +110,7 @@ export async function dungeonElitesPage() {
         </fieldset>
         <p id="form-error" class="error-text" role="alert"></p>
         <div class="form-actions"><button type="submit">Save elite counts</button></div>
-      </form>`;
+      </form>`);
   }
 
   async function searchMaps(query) {

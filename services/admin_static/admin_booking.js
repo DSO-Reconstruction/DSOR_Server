@@ -1,4 +1,4 @@
-import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, searchAsYouType, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, human, classes, rarities, api, link, navigate, table, facts, section, searchAsYouType, formError, notice, confirmAction, isLegacyInterface } from "./admin_ui.js";
 
 const requestId = () => Array.from(crypto.getRandomValues(new Uint8Array(24)), v => v.toString(16).padStart(2, "0")).join("");
 
@@ -18,7 +18,7 @@ export async function newBookingPage(route) {
     title: "New booking", description: "Choose a recipient, configure the grant, then review it before booking.",
     breadcrumbs: account ? [["Accounts", "accounts"], [account.account.username, `accounts/${account.account.account_id}`],
       ...(character ? [[character.name, `characters/${character.character_id}`]] : []), ["New booking"]] : [["Bookings", "bookings"], ["New booking"]],
-    html: `<div class="form-page"><form id="booking-form">
+    html: `<div class="form-page${isLegacyInterface() ? "" : " booking-workspace"}"><form id="booking-form">
       <fieldset class="form-section"><legend>1. Recipient</legend>
         <div id="selected-account"></div>
         <div id="account-picker"><label>Find account</label><div class="toolbar"><input id="account-search" aria-label="Find account" placeholder="Username or account ID" maxlength="100"><button id="find-account" type="button" class="secondary">Find account</button></div><div id="account-results" class="picker-results"></div></div>
@@ -159,8 +159,17 @@ export async function newBookingPage(route) {
           ["Enchantment tier", options.enchantment_tier], ["Roll quality", options.roll_quality == null ? "Random" : options.roll_quality + "%"]);
         $("#booking-review").innerHTML = section("Review booking", facts(rows)) +
           '<p class="muted">This grant is delivered immediately when the character is ready online, or queued for their next game entry.</p><p id="review-error" class="error-text" role="alert"></p><div class="form-actions"><button id="edit-booking" class="secondary">Back to editing</button><button id="queue-booking">Create booking</button></div>';
-        form.hidden = true; $("#booking-review").hidden = false;
-        $("#edit-booking").addEventListener("click", () => { form.hidden = false; $("#booking-review").hidden = true; });
+        const review = $("#booking-review");
+        form.hidden = isLegacyInterface();
+        form.inert = true;
+        review.hidden = false;
+        $("#edit-booking").addEventListener("click", () => {
+          form.hidden = false;
+          form.inert = false;
+          review.hidden = true;
+          form.querySelector('button[type="submit"]').focus();
+        });
+        $("#edit-booking").focus({preventScroll: true});
         $("#queue-booking").addEventListener("click", async event => {
           const button = event.target; button.disabled = true; $("#edit-booking").disabled = true;
           try {
@@ -401,7 +410,7 @@ export async function batchBookingPage(route) {
     title: "Batch booking", description: "Add multiple items or currencies to one delivery.",
     breadcrumbs: account ? [["Accounts", "accounts"], [account.account.username, `accounts/${account.account.account_id}`],
       ...(character ? [[character.name, `characters/${character.character_id}`]] : []), ["Batch booking"]] : [["Bookings", "bookings"], ["Batch booking"]],
-    html: `<div class="form-page"><form id="batch-form">
+    html: `<div class="form-page${isLegacyInterface() ? "" : " booking-workspace"}"><form id="batch-form">
       <fieldset class="form-section"><legend>1. Recipient</legend>
         <div id="selected-account"></div>
         <div id="account-picker"><label>Find account</label><div class="toolbar"><input id="account-search" aria-label="Find account" placeholder="Username or account ID" maxlength="100"><button id="find-account" type="button" class="secondary">Find account</button></div><div id="account-results" class="picker-results"></div></div>
@@ -484,8 +493,17 @@ export async function batchBookingPage(route) {
         rows.push(["Grants", itemList]);
         $("#batch-review").innerHTML = section("Review batch booking", facts(rows)) +
           '<p class="muted">All grants are delivered together when the character is ready online, or queued for their next game entry.</p><p id="review-error" class="error-text" role="alert"></p><div class="form-actions"><button id="edit-batch" class="secondary">Back to editing</button><button id="queue-batch">Create batch booking</button></div>';
-        form.hidden = true; $("#batch-review").hidden = false;
-        $("#edit-batch").addEventListener("click", () => { form.hidden = false; $("#batch-review").hidden = true; });
+        const review = $("#batch-review");
+        form.hidden = isLegacyInterface();
+        form.inert = true;
+        review.hidden = false;
+        $("#edit-batch").addEventListener("click", () => {
+          form.hidden = false;
+          form.inert = false;
+          review.hidden = true;
+          form.querySelector('button[type="submit"]').focus();
+        });
+        $("#edit-batch").focus({preventScroll: true});
         $("#queue-batch").addEventListener("click", async event => {
           const button = event.target; button.disabled = true; $("#edit-batch").disabled = true;
           try {

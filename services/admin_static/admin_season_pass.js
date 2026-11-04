@@ -1,4 +1,4 @@
-import { $, esc, date, api, link, navigate, status, table, filteredTable, facts, stats, section, tabs,
+import { $, esc, date, api, link, navigate, status, table, filteredTable, facts, stats, section, tabs, collectionPanel,
   searchAsYouType, formError, notice, confirmAction } from "./admin_ui.js";
 import { endingControls, bindEnding, readEnding, endingDescription, refreshMessage } from "./admin_events.js";
 
@@ -105,12 +105,12 @@ async function rewardsTab(result) {
   const data = await api("/api/season-pass/rewards");
   result.description = `${data.rows.length} levels · ${data.reward_set === "alternate" ? "2026 alternate reward set" : "standard reward set"}`;
   result.html += '<p class="help">The Gold track needs a Gold ticket (pass type 1, or 3 for double rewards), the Red track a Red ticket (2, or 4 for double). Experience is the total needed to reach the level. Edited values are marked; the rest come from static.db4.</p>';
-  result.html += filteredTable("q", "Filter by level or reward", ["Level", "Experience", ...tracks.map(([, label]) => label), ""], data.rows.map(row => [
-    `<strong>${row.level}</strong>`,
+  result.html += collectionPanel("Reward ladder", filteredTable("q", "Filter by level or reward", ["Level", "Experience", ...tracks.map(([, label]) => label), ""], data.rows.map(row => [
+    `<strong>Level ${row.level}</strong>`,
     Number(row.exp).toLocaleString() + (row.exp !== row.static_exp ? '<span class="edited-mark">edited</span>' : ""),
     ...tracks.map(([key]) => reward(row.tracks[key]) + (row.tracks[key].edited ? '<span class="edited-mark">edited</span>' : "")),
     link("Edit", `season-pass/rewards/${row.level}`, {}, "button secondary")
-  ]));
+  ]), {cards: true}), "", data.rows.length, "Experience thresholds and rewards across the free, gold, and red tracks.");
   result.html += databaseSection(data.databases);
   result.mount = bindSync;
   return result;
@@ -189,10 +189,11 @@ async function missionsTab(result) {
   const data = await api("/api/season-pass/missions");
   result.description = `${data.rows.length} missions from static.db4`;
   result.html += '<p class="help">Missions count only while a season runs. Completing one adds its experience once per season.</p>' +
-    filteredTable("q", "Filter missions", ["Mission", "Category", "Objective", "Target", "Condition", "Experience"], data.rows.map(m => [
+    collectionPanel("Mission catalogue", filteredTable("q", "Filter missions", ["Mission", "Category", "Objective", "Target", "Condition", "Experience"], data.rows.map(m => [
       esc(m.mission_id), esc(m.category), esc(m.objective), Number(m.target).toLocaleString(),
       [m.special && `<code>${esc(m.special)}</code>`, m.difficulty && m.difficulty !== "Any" && `Difficulty ${esc(m.difficulty)}+`].filter(Boolean).join(" · ") || "—",
-      Number(m.exp).toLocaleString()]), {facets: [["Category", 1, "category"]], empty: "This static database has no Season Pass missions."});
+      Number(m.exp).toLocaleString()]), {cards: true, facets: [["Category", 1, "category"]], empty: "This static database has no Season Pass missions."}),
+      "", data.rows.length, "Mission objectives loaded from the client static database.");
   return result;
 }
 

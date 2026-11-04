@@ -1,8 +1,8 @@
-import { $, esc, human, date, api, href, link, navigate, status, table, facts, stats, section,
+import { $, isLegacyInterface, esc, human, date, api, href, link, navigate, status, table, facts, stats, section, collectionPanel, collectionWorkspace,
   tabs, toolbar, bindSearch, pager, formError, confirmAction, notice, tree,
-  characterTable, bookingTable, bookingGrants } from "./admin_ui.js";
+  characterTable, characterHeaders, characterRows, bookingTable, bookingHeaders, bookingRows, bookingGrants, recordCards, collectionRecords } from "./admin_ui.js";
 
-const names = {status: "Status", accounts: "Accounts", characters: "Characters", bookings: "Bookings", items: "Item catalog", sessions: "Sessions", audit: "Audit log"};
+const names = {status: "Overview", accounts: "Accounts", characters: "Characters", bookings: "Bookings", items: "Item catalog", sessions: "Sessions", audit: "Audit log"};
 const query = params => new URLSearchParams({limit: 50, ...params});
 const accountTabs = id => [["Characters", `accounts/${id}`], ["Membership", `accounts/${id}/membership`], ["Currencies", `accounts/${id}/currencies`], ["Settings", `accounts/${id}/settings`], ["Sessions", `accounts/${id}/sessions`], ["Bookings", `accounts/${id}/bookings`]];
 
@@ -105,32 +105,78 @@ export async function listPage(route) {
   const data = await api(`/api/${name}?${query(route.params)}`);
   const result = {title: names[name], breadcrumbs: [["Administration", "status"], [names[name]]], mount: () => bindSearch(route)};
   if (name === "status") {
-    result.description = "Service health and current activity.";
-    result.html = stats([["Accounts", data.accounts], ["Characters", data.characters], ["Online", data.online_characters], ["Pending bookings", data.bookings.pending || 0], ["Uptime", Math.floor(data.uptime_seconds / 3600) + "h " + Math.floor(data.uptime_seconds % 3600 / 60) + "m"]]) +
-      section("Services", table(["Service", "Port", "State", "Connections"], data.services.map(s => [esc(s.name), s.port, status(s.running ? "Running" : "Stopped", s.running ? "good" : "bad"), s.connections ?? "—"]))) +
-      '<div class="columns">' + section("Booking delivery", facts([["Pending", esc(data.bookings.pending || 0)], ["Delivered", esc(data.bookings.delivered || 0)], ["Cancelled", esc(data.bookings.cancelled || 0)]]), link("View bookings", "bookings")) +
-      section("Runtime", tree(data.watchdog || {})) + '</div>';
-    if (data.warnings.length) result.html += section("Persistence warnings", table(["Warning"], data.warnings.map(w => [esc(w)])));
+    result.description = "Realm activity, service health, and operational queues.";
+    if (isLegacyInterface()) {
+      result.actions = link("Server control", "server-control", {}, "button");
+      result.description = "Service health and current activity.";
+      result.html = stats([["Accounts", data.accounts], ["Characters", data.characters], ["Online", data.online_characters], ["Pending bookings", data.bookings.pending || 0], ["Uptime", Math.floor(data.uptime_seconds / 3600) + "h " + Math.floor(data.uptime_seconds % 3600 / 60) + "m"]]) +
+        section("Services", table(["Service", "Port", "State", "Connections"], data.services.map(s => [esc(s.name), s.port, status(s.running ? "Running" : "Stopped", s.running ? "good" : "bad"), s.connections ?? "—"]))) +
+        '<div class="columns">' + section("Booking delivery", facts([["Pending", esc(data.bookings.pending || 0)], ["Delivered", esc(data.bookings.delivered || 0)], ["Cancelled", esc(data.bookings.cancelled || 0)]]), link("View bookings", "bookings")) +
+        section("Runtime", tree(data.watchdog || {})) + '</div>';
+      if (data.warnings.length) result.html += section("Persistence warnings", table(["Warning"], data.warnings.map(w => [esc(w)])));
+      return result;
+    }
+    const audit = await api("/api/audit?limit=5").catch(() => null);
+    const recentActivity = audit?.rows?.length
+      ? `<ol class="realm-activity">${audit.rows.map(entry => `<li>
+          ${link(human(entry.action), `audit/${entry.id}`)}
+          <small>${esc(entry.actor)} · ${esc(date(entry.created_at))}</small>
+        </li>`).join("")}</ol>`
+      : `<p class="muted">${audit ? "No administrator activity yet." : "Recent activity is unavailable."}</p>`;
+    const gameOnline = data.services.some(s => !["Admin HTTP", "Admin CMS"].includes(s.name) && s.running);
+    const serviceHealth = data.services.length ? Math.round(data.services.filter(s => s.running).length / data.services.length * 100) : 0;
+    const serviceTiles = data.services.map(service => `<article class="service-tile ${service.running ? "service-up" : "service-down"}"><div class="service-tile-head"><span class="service-mark" aria-hidden="true">${service.running ? "✦" : "—"}</span><strong>${esc(service.name)}</strong>${status(service.running ? "Running" : "Stopped", service.running ? "good" : "bad")}</div><code>${service.port == null ? "HTTP service" : `Port ${esc(service.port)}`}</code><small>${service.connections == null ? "Administrative endpoint" : `${esc(service.connections)} active connection(s)`}</small></article>`).join("");
+    const quickActions = `<div class="quick-actions">${link("Create account", "accounts/new")}${link("Prepare a player grant", "bookings/new")}${link("Create bonus code", "bonus-codes/new")}${link("Manage live events", "events")}</div>`;
+    const uptime = Math.floor(data.uptime_seconds / 3600) + "h " + Math.floor(data.uptime_seconds % 3600 / 60) + "m";
+    result.html = `<div class="realm-board">
+      <section class="realm-feature">
+        <div class="realm-feature-copy">
+          <p class="realm-eyebrow"><span aria-hidden="true"></span> LIVE STATUS</p>
+          <h2>Realm Overview</h2>
+          <p class="realm-feature-summary">A live view of the world, its services, and the people in it.</p>
+          ${link("Open server controls", "server-control", {}, "button")}
+        </div>
+        <span class="realm-feature-mark" aria-hidden="true">DSO</span>
+      </section>
+      <section class="realm-vitals"><h2>Server status</h2>
+        ${status(gameOnline ? "Game services online" : "Game services offline", gameOnline ? "good" : "bad")}
+        <div class="realm-health">
+          <svg viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="realm-health-track" cx="50" cy="50" r="44"/>
+            <circle class="realm-health-value" cx="50" cy="50" r="44" pathLength="100" stroke-dasharray="${serviceHealth} 100" transform="rotate(-90 50 50)"/>
+          </svg>
+          <div><strong>${serviceHealth}%</strong><small>services running</small></div>
+        </div>
+        <p>Uptime <strong>${esc(uptime)}</strong></p>
+      </section>
+      <aside class="realm-operations">${section("Quick actions", quickActions)}${section("Recent activity", recentActivity, link("Audit log", "audit"))}${section("Runtime telemetry", tree(data.watchdog || {}))}</aside>
+      <div class="realm-metrics">${stats([["Players online", data.online_characters], ["Accounts", data.accounts], ["Characters", data.characters], ["Pending grants", data.bookings.pending || 0]])}</div>
+      <div class="realm-services">${section("Realm services", `<div class="service-grid">${serviceTiles}</div>`)}
+        ${section("Grant ledger", facts([["Awaiting delivery", esc(data.bookings.pending || 0)], ["Delivered", esc(data.bookings.delivered || 0)], ["Cancelled", esc(data.bookings.cancelled || 0)]]), link("Open ledger", "bookings"))}
+        ${data.warnings.length ? section("Persistence warnings", table(["Warning"], data.warnings.map(w => [esc(w)]))) : ""}
+      </div>
+    </div>`;
     return result;
   }
-  let rows = "";
+  let rows = "", headers = [];
   let extra = "";
   let searchHint = "Search " + names[name].toLowerCase();
   if (name === "accounts") {
     result.description = "Open an account to manage access and inspect its characters.";
     result.actions = link("Create account", "accounts/new", {}, "button");
-    rows = table(["Account", "ID", "Access", "State", "Characters", "Last login", "Created"], data.rows.map(a => [
+    headers = ["Account", "ID", "Access", "State", "Characters", "Last login", "Created"];
+    rows = data.rows.map(a => [
       link(a.username, `accounts/${a.account_id}`), a.account_id, a.admin ? "Administrator" : "Player",
       status(a.disabled ? "Disabled" : "Active", a.disabled ? "bad" : "good"), a.character_ids.length,
       esc(date(a.last_login_at)), esc(date(a.created_at))
-    ]));
+    ]);
   } else if (name === "characters") {
     result.description = "Find a character by name, ID, or account.";
-    rows = characterTable(data.rows, true);
+    headers = characterHeaders(true); rows = characterRows(data.rows, true);
   } else if (name === "bookings") {
     result.description = "Queued grants and their delivery history.";
     result.actions = link("New booking", "bookings/new", {}, "button");
-    rows = bookingTable(data.rows);
+    headers = bookingHeaders(); rows = bookingRows(data.rows);
   } else if (name === "items") {
     result.description = "Game item templates. Open a template to inspect its properties and book it.";
     searchHint = "Search by in-game name, category, or template ID";
@@ -145,21 +191,38 @@ export async function listPage(route) {
       $("#item-category").addEventListener("change", event => navigate(route.path, {...route.params, category: event.target.value, offset: ""}));
       $("#item-sort").addEventListener("change", event => navigate(route.path, {...route.params, sort: event.target.value, offset: ""}));
     };
-    rows = table(["Name", "Template", "Category", "Rarity", "Required level", "Stack limit"], data.rows.map(i => [
+    headers = ["Name", "Template", "Category", "Rarity", "Required level", "Stack limit"];
+    rows = data.rows.map(i => [
       esc(i.name),
       link(i.template_id, `items/${encodeURIComponent(i.template_id)}`, route.params, "resource mono"),
       esc(i.category), esc(i.rarity), esc(i.required_level), esc(i.max_stack_size)
-    ]));
+    ]);
   } else if (name === "sessions") {
     result.description = "Issued game login sessions. Open the account to revoke its sessions.";
-    rows = sessionTable(data.rows);
+    headers = ["Account", "Address", "Issued", "Expires"];
+    rows = data.rows.map(s => [link(s.username, `accounts/${s.account_id}/sessions`), esc(s.client_ip), esc(date(s.issued_at)), esc(date(s.expires_at))]);
   } else if (name === "audit") {
     result.description = "Administrator actions, recorded with a reason and target.";
-    rows = table(["Entry", "Time", "Administrator", "Action", "Target", "Reason"], data.rows.map(a => [
+    headers = ["Entry", "Time", "Administrator", "Action", "Target", "Reason"];
+    rows = data.rows.map(a => [
       link("#" + a.id, `audit/${a.id}`), esc(date(a.created_at)), esc(a.actor), esc(a.action), esc(a.target), esc(a.details.reason || "—")
-    ]));
+    ]);
   }
-  result.html = toolbar(route, searchHint, extra) + rows + pager(data, route);
+  const entryCount = Number(data.total ?? data.rows.length);
+  const classicList = toolbar(route, searchHint, extra) + table(headers, rows) + pager(data, route);
+  const directoryViews = ["accounts", "characters"].includes(name);
+  const modernRecords = directoryViews ? recordCards(headers, rows) : table(headers, rows);
+  const modernList = `<div class="collection-workspace">
+    <section class="collection-panel ${directoryViews ? "collection-directory" : "collection-ledger"}" aria-label="${esc(names[name])} records">
+      <header class="collection-toolbar">
+        ${toolbar(route, searchHint, extra)}
+        <p class="collection-total"><strong>${esc(entryCount.toLocaleString())}</strong> ${entryCount === 1 ? "record" : "records"}</p>
+      </header>
+      ${modernRecords}
+      <footer class="collection-panel-foot">${pager(data, route)}</footer>
+    </section>
+  </div>`;
+  result.html = isLegacyInterface() ? classicList : modernList;
   return result;
 }
 
@@ -180,17 +243,26 @@ export async function accountPage(route) {
     html: tabs(accountTabs(id), route.path)
   };
   if (tab === "characters") {
-    result.html += stats([["Characters", data.characters.length], ["Online", data.characters.filter(c => c.online).length], ["Created", date(a.created_at)], ["Last login", date(a.last_login_at)]]) +
-      section("Characters", characterTable(data.characters)) +
-      section("Launch game", `<div class="form-grid"><label>Client language<select id="launch-language"><option value="en">English</option><option value="tr">Turkish</option></select></label><div class="form-actions"><button id="launch-account" type="button">Start game as ${esc(a.username)}</button></div></div><p class="help">Starts the game client on this computer using a fresh session for this account. The account must be enabled, and the client must be installed here. Existing sessions for this account are revoked.</p><p id="launch-error" class="error-text" role="alert"></p>`);
+    const metrics = stats([["Characters", data.characters.length], ["Online", data.characters.filter(c => c.online).length], ["Created", date(a.created_at)], ["Last login", date(a.last_login_at)]]);
+    const launch = section("Launch game", `<div class="form-grid"><label>Client language<select id="launch-language"><option value="en">English</option><option value="tr">Turkish</option></select></label><div class="form-actions"><button id="launch-account" type="button">Start game as ${esc(a.username)}</button></div></div><p class="help">Starts the game client on this computer using a fresh session for this account. The account must be enabled, and the client must be installed here. Existing sessions for this account are revoked.</p><p id="launch-error" class="error-text" role="alert"></p>`);
     const copyAccounts = await api("/api/accounts?limit=100");
-    result.html += section("Copy characters to an account", `<form id="copy-characters-form" class="form-page">
+    const copy = section("Copy characters to an account", `<form id="copy-characters-form" class="form-page">
       <fieldset class="form-section"><legend>Select characters</legend><div class="form-stack">${data.characters.map(c => `<label class="check"><input type="checkbox" name="copy-character" value="${c.character_id}"><span>${esc(c.name)} · Level ${c.level} · ID ${c.character_id}</span></label><label>Copied character name<input name="copy-name-${c.character_id}" value="${esc(c.name.slice(0, 26) + "_copy")}" maxlength="32" required></label>`).join("") || '<p class="empty">This account has no characters with saved profiles.</p>'}</div></fieldset>
       <fieldset class="form-section"><legend>Destination account</legend><div class="form-grid"><label>Destination<select id="copy-destination"><option value="new">Create a new account</option>${copyAccounts.rows.map(row => `<option value="${row.account_id}">${esc(row.username)} · ${row.account_id}</option>`).join("")}</select></label>
         <label id="copy-username-label">New username<input id="copy-username" minlength="3" maxlength="24" autocomplete="off"></label><label id="copy-password-label">Initial password<input id="copy-password" type="password" minlength="6" maxlength="256" autocomplete="new-password"></label>
       </div><p class="help">Copies saved profile and gameplay data. Selected characters must be offline. Shared account currency uses the destination account's wallet.</p></fieldset>
       <p id="copy-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit">Copy selected characters</button></div></form>`);
-    if (data.missing_character_ids.length) result.html += `<p class="muted">Missing character profiles: ${esc(data.missing_character_ids.join(", "))}</p>`;
+    const missing = data.missing_character_ids.length
+      ? `<p class="muted">Missing character profiles: ${esc(data.missing_character_ids.join(", "))}</p>` : "";
+    if (isLegacyInterface()) {
+      result.html += metrics + section("Characters", characterTable(data.characters)) + launch + copy + missing;
+    } else {
+      const roster = collectionRecords(characterHeaders(), characterRows(data.characters), "No characters are tied to this account.");
+      result.html += `<div class="account-workspace">
+        <div class="account-roster">${metrics}${section("Character roster", roster + missing)}</div>
+        <aside aria-label="Account operations">${launch}${copy}</aside>
+      </div>`;
+    }
     result.mount = () => {
       $("#launch-account").addEventListener("click", async event => {
       const button = event.currentTarget; button.disabled = true;
@@ -240,7 +312,7 @@ export async function accountPage(route) {
     result.html += accountCurrenciesPage(id, data.characters);
     result.mount = () => bindAccountCurrencies(id);
   } else if (tab === "settings") {
-    result.html += `<form id="account-form" class="form-page">
+    const profileForm = `<form id="account-form" class="form-page">
       <fieldset class="form-section"><legend>Identity</legend><div class="form-grid">
         <label>Username<input name="username" value="${esc(a.username)}" required minlength="3" maxlength="24" autocomplete="off"></label>
         <label>New password<input name="password" type="password" minlength="6" maxlength="256" autocomplete="new-password"><small>Leave empty to keep the current password.</small></label>
@@ -251,8 +323,10 @@ export async function accountPage(route) {
         <p class="help">Changes revoke issued login sessions. An already connected game client remains connected until it leaves.</p>
       </div></fieldset>
       <p id="form-error" class="error-text" role="alert"></p>
-      <div class="form-actions"><button type="submit">Save changes</button></div></form>` +
-      `<form id="delete-account-form" class="form-page"><h2>Delete account</h2><p class="help">Permanently removes this account, its character records and saved character data. Characters must be offline. This cannot be undone.</p><p id="delete-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="danger">Delete account</button></div></form>`;
+      <div class="form-actions"><button type="submit">Save changes</button></div></form>`;
+    const deleteForm = `<form id="delete-account-form" class="form-page"><h2>Delete account</h2><p class="help">Permanently removes this account, its character records and saved character data. Characters must be offline. This cannot be undone.</p><p id="delete-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="danger">Delete account</button></div></form>`;
+    result.html += isLegacyInterface() ? profileForm + deleteForm
+      : `<div class="detail-workspace"><div>${profileForm}</div><aside aria-label="Account deletion">${deleteForm}</aside></div>`;
     result.mount = () => {
       $("#account-form").addEventListener("submit", async event => {
       event.preventDefault(); const form = event.target, button = form.querySelector("button[type=submit]");
@@ -284,8 +358,14 @@ export async function accountPage(route) {
     };
   } else if (tab === "sessions") {
     const sessions = await api(`/api/sessions?${query({...route.params, account_id: id})}`);
-    result.html += section("Game login sessions", sessionTable(sessions.rows)) + pager(sessions, route) +
-      `<form id="revoke-form" class="form-page"><h2>Revoke all sessions</h2><p class="muted">Signs this account out of the CMS and prevents reuse of issued game login tokens. Current game connections are not disconnected.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="secondary">Revoke sessions</button></div></form>`;
+    const revoke = `<form id="revoke-form" class="form-page"><h2>Revoke all sessions</h2><p class="muted">Signs this account out of the CMS and prevents reuse of issued game login tokens. Current game connections are not disconnected.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button type="submit" class="secondary">Revoke sessions</button></div></form>`;
+    const list = sessionTable(sessions.rows), pagination = pager(sessions, route);
+    result.html += isLegacyInterface()
+      ? section("Game login sessions", list) + pagination + revoke
+      : `<div class="detail-workspace">
+          ${collectionPanel("Game login sessions", list, pagination, sessions.total, "Issued game login tokens for this account.")}
+          <aside aria-label="Session controls">${revoke}</aside>
+        </div>`;
     result.mount = () => $("#revoke-form").addEventListener("submit", async event => {
       event.preventDefault(); const button = event.target.querySelector("button"); button.disabled = true;
       try {
@@ -297,7 +377,9 @@ export async function accountPage(route) {
     });
   } else if (tab === "bookings") {
     const bookings = await api(`/api/bookings?${query({...route.params, account_id: id})}`);
-    result.html += toolbar(route, "Search this account's bookings") + bookingTable(bookings.rows) + pager(bookings, route);
+    result.html += collectionWorkspace(toolbar(route, "Search this account's bookings"),
+      collectionPanel("Booking history", collectionRecords(bookingHeaders(), bookingRows(bookings.rows)), pager(bookings, route), bookings.total,
+        "Rewards and delivery state for this account."));
     result.mount = () => bindSearch(route);
   } else throw new Error("Account page not found.");
   return result;
@@ -327,21 +409,29 @@ function newAccountPage() {
 export async function itemPage(route) {
   const id = decodeURIComponent(route.parts.slice(1).join("/"));
   const item = await api(`/api/items/${encodeURIComponent(id)}`);
-  return {
-    title: item.name, description: `${id} · ${item.category} · ${item.equipment ? "Equipment" : "Stack item"}`,
-    breadcrumbs: [["Item catalog", "items", route.params], [item.name]],
-    actions: item.bookable ? link("Book item", "bookings/new", {template: id, account_id: route.params.account_id, character_id: route.params.character_id}, "button") : "",
-    html: `<div class="columns">${section("Template", facts([
+  const template = section("Template", facts([
       ["Name", esc(item.name)], ["Template ID", `<code class="resource mono">${esc(id)}</code>`],
       ["Internal name", esc(item.template_name || "—")],
       ["Category", esc(item.category)], ["Default rarity", esc(item.rarity_name)], ["Required level", item.required_level],
       ["Stack limit", item.max_stack_size], ["Destination", esc(item.destination)], ["Classes", esc(item.classes.join(", ") || "All classes")],
       ["Slots", esc(item.slot_types.join(", ") || "None")]
-    ]))}${section("Booking controls", item.equipment ? facts([
+    ]));
+  const booking = section("Booking controls", item.equipment ? facts([
       ["Item level", `${item.min_level}–${item.max_level}`], ["Rarities", esc(item.rarities.map(r => r.name).join(", "))],
       ["Sockets", "Limited by item level and template"], ["Enchantments", "Generated using the game's equipment rules"], ["Roll quality", "Random or a fixed percentage"]
-    ]) : `<p>${item.bookable ? "Only stack size can be set for this item." : "This template cannot be booked as an inventory item. Use a currency booking where applicable."}</p>`)}</div>` +
-    (item.equipment ? section("Socket limits", table(["Level range", "Maximum sockets"], socketRanges(item).map(r => [r.range, r.limit]))) : "")
+    ]) : `<p>${item.bookable ? "Only stack size can be set for this item." : "This template cannot be booked as an inventory item. Use a currency booking where applicable."}</p>`);
+  const sockets = (item.equipment ? section("Socket limits", table(["Level range", "Maximum sockets"], socketRanges(item).map(r => [r.range, r.limit]))) : "");
+  const html = isLegacyInterface()
+    ? `<div class="columns">${template}${booking}</div>${sockets}`
+    : `<div class="detail-workspace">
+        <div>${template}${sockets}</div>
+        <aside aria-label="Booking options">${booking}</aside>
+      </div>`;
+  return {
+    title: item.name, description: `${id} · ${item.category} · ${item.equipment ? "Equipment" : "Stack item"}`,
+    breadcrumbs: [["Item catalog", "items", route.params], [item.name]],
+    actions: item.bookable ? link("Book item", "bookings/new", {template: id, account_id: route.params.account_id, character_id: route.params.character_id}, "button") : "",
+    html
   };
 }
 
@@ -358,21 +448,25 @@ function socketRanges(item) {
 
 export async function bookingPage(route) {
   const b = await api(`/api/bookings/${route.parts[1]}`);
+  const grant = section("Recipient and grant", facts([
+      ["Account", link(b.account.username, `accounts/${b.account_id}`)], ["Character", link(b.character?.name || b.character_id, `characters/${b.character_id}`)],
+      ["Resource", b.kind === "item" ? link(b.resource, `items/${encodeURIComponent(b.resource)}`, {}, "resource mono") : b.kind === "batch" ? bookingGrants(b) : esc(human(b.resource))],
+      ["Quantity", b.amount], ["Reason", esc(b.reason)]
+    ]));
+  const delivery = section("Delivery", facts([
+      ["Status", status(human(b.status), b.status === "delivered" ? "good" : b.error ? "bad" : "")],
+      ["Created", esc(date(b.created_at))], ["Administrator", esc(b.actor)], ["Delivered", esc(date(b.delivered_at))], ["Delivery issue", esc(b.error || "None")]
+    ]));
+  const equipment = (Object.keys(b.options).length ? section("Equipment configuration", tree(b.options)) : "");
+  let controls = "";
   const result = {
     title: `Booking #${b.id}`, description: `${human(b.status)} · ${b.kind === "batch" ? "Batch" : b.kind === "currency" ? "Currency" : "Item"} grant`,
     breadcrumbs: [["Bookings", "bookings"], [`#${b.id}`]],
     actions: link("New booking", "bookings/new", {account_id: b.account_id, character_id: b.character_id}, "button secondary"),
-    html: `<div class="columns">${section("Recipient and grant", facts([
-      ["Account", link(b.account.username, `accounts/${b.account_id}`)], ["Character", link(b.character?.name || b.character_id, `characters/${b.character_id}`)],
-      ["Resource", b.kind === "item" ? link(b.resource, `items/${encodeURIComponent(b.resource)}`, {}, "resource mono") : b.kind === "batch" ? bookingGrants(b) : esc(human(b.resource))],
-      ["Quantity", b.amount], ["Reason", esc(b.reason)]
-    ]))}${section("Delivery", facts([
-      ["Status", status(human(b.status), b.status === "delivered" ? "good" : b.error ? "bad" : "")],
-      ["Created", esc(date(b.created_at))], ["Administrator", esc(b.actor)], ["Delivered", esc(date(b.delivered_at))], ["Delivery issue", esc(b.error || "None")]
-    ]))}</div>` + (Object.keys(b.options).length ? section("Equipment configuration", tree(b.options)) : "")
+    html: ""
   };
   if (b.status === "pending") {
-    result.html += `<form id="cancel-form" class="form-page"><h2>Pending booking actions</h2><p class="muted">Retry delivery if the character is ready online. Otherwise, this booking remains queued for their next game entry. You can cancel it before it is applied.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button id="retry-booking" type="button">Retry live delivery</button><button class="secondary" type="submit">Cancel booking</button></div></form>`;
+    controls = `<form id="cancel-form" class="form-page"><h2>Pending booking actions</h2><p class="muted">Retry delivery if the character is ready online. Otherwise, this booking remains queued for their next game entry. You can cancel it before it is applied.</p><p id="form-error" class="error-text" role="alert"></p><div class="form-actions"><button id="retry-booking" type="button">Retry live delivery</button><button class="secondary" type="submit">Cancel booking</button></div></form>`;
     result.mount = () => {
       $("#retry-booking").addEventListener("click", async event => {
         const button = event.target;
@@ -396,12 +490,28 @@ export async function bookingPage(route) {
       });
     };
   }
+  result.html = isLegacyInterface()
+    ? `<div class="columns">${grant}${delivery}</div>${equipment}${controls}`
+    : `<div class="detail-workspace">
+        <div>${grant}${equipment}</div>
+        <aside aria-label="Delivery and booking actions">${delivery}${controls}</aside>
+      </div>`;
   return result;
 }
 
 export async function auditPage(route) {
   const a = await api(`/api/audit/${route.parts[1]}`);
-  return {title: `Audit entry #${a.id}`, description: a.action, breadcrumbs: [["Audit log", "audit"], [`#${a.id}`]],
-    html: '<div class="columns">' + section("Action", facts([["Administrator", esc(a.actor)], ["Time", esc(date(a.created_at))], ["Action", esc(a.action)], ["Target", esc(a.target)]])) +
-      section("Recorded changes", tree(a.details)) + '</div>'};
+  const details = a.details || {};
+  const metadata = [["Administrator", esc(a.actor)], ["Time", esc(date(a.created_at))], ["Action", esc(a.action)], ["Target", esc(a.target)]];
+  const changes = section("Recorded changes", tree(details));
+  const html = isLegacyInterface()
+    ? `<div class="columns">${section("Action", facts(metadata))}${changes}</div>`
+    : `<div class="audit-workspace">
+        <aside aria-label="Audit summary">${section("Action", facts([...metadata, ["Reason", esc(details.reason || "—")]]))}</aside>
+        <div>${changes}</div>
+      </div>`;
+  return {
+    title: `Audit entry #${a.id}`, description: a.action,
+    breadcrumbs: [["Audit log", "audit"], [`#${a.id}`]], html
+  };
 }

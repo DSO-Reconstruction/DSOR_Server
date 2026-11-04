@@ -71,6 +71,8 @@ from dso_server.services.player_progression import player_level_range, player_le
 
 
 DEFAULT_ADMIN_PORT = 8081
+ADMIN_SESSION_SECONDS = 4 * 3600
+ADMIN_REMEMBER_SECONDS = 30 * 24 * 3600
 # The NewPlayer administrator flags stored on a character profile.
 GAME_PRIVILEGES = frozenset({"admin_privileges", "admin_name_color"})
 IDENTITY_FIELDS = frozenset({"name", "level", "gender"})
@@ -166,7 +168,7 @@ class AdminService:
     def account_document(self, account):
         return {**account.to_document(), "admin": self.is_admin(account)}
 
-    def login(self, username, password, address):
+    def login(self, username, password, address, remember=False):
         # Serialize credential checks so concurrent guesses cannot bypass the limit.
         with self._lock:
             if self.throttle.blocked(address):
@@ -183,21 +185,33 @@ class AdminService:
             self.throttle.clear(address)
             now = time.time()
             self._sessions = {key: value for key, value in self._sessions.items() if value["expires_at"] > now}
-            if len(self._sessions) >= 2048:
+            if not remember and len(self._sessions) >= 2048:
                 raise AdminError(503, "admin session capacity reached")
             token = secrets.token_urlsafe(32)
+            stamp = self.repository.credential_stamp(account.account_id)
+            if stamp is None:
+                raise AdminError(401, "administrator account is no longer available")
             session = {"account_id": account.account_id, "csrf": secrets.token_urlsafe(32),
-                       "expires_at": now + 4 * 3600,
-                       "stamp": self.repository.credential_stamp(account.account_id)}
-            self._sessions[token] = session
+                       "expires_at": now + (ADMIN_REMEMBER_SECONDS if remember else ADMIN_SESSION_SECONDS),
+                       "stamp": stamp}
+            if remember:
+                if not self.repository.save_remembered_session(token, session, now):
+                    raise AdminError(503, "remembered admin session capacity reached")
+            else:
+                self._sessions[token] = session
             self.repository.audit(account.username, "admin.login", account.account_id, {"address": address})
             return token, {"account": self.account_document(account), "csrf": session["csrf"]}
 
     def authenticate(self, token):
         with self._lock:
             session = self._sessions.get(token)
+            remembered = session is None and bool(token)
+            if remembered:
+                session = self.repository.remembered_session(token)
             if session is None or session["expires_at"] <= time.time():
                 self._sessions.pop(token, None)
+                if remembered and session is not None:
+                    self.repository.forget_session(token)
                 raise AdminError(401, "sign in with an administrator account")
             try:
                 account = self.registry.account_by_id(session["account_id"])
@@ -207,6 +221,8 @@ class AdminService:
                 allowed = False
             if not allowed:
                 self._sessions.pop(token, None)
+                if remembered:
+                    self.repository.forget_session(token)
                 raise AdminError(401, "administrator session is no longer valid")
             return account, session
 
@@ -214,6 +230,7 @@ class AdminService:
         with self._lock:
             self._sessions = {key: value for key, value in self._sessions.items()
                               if value["account_id"] != account_id}
+            self.repository.forget_account_sessions(account_id)
 
     def _refresh_open_npc_shops(self, shop_id):
         """Refresh cached offers for players currently viewing this shop."""
@@ -465,6 +482,74 @@ class AdminService:
                 "bookings": booking_counts, "services": services,
                 "warnings": list(self.store.warnings),
                 "watchdog": app.stall_watchdog.statistics() if app is not None else None}
+
+    def server_control_status(self):
+        app = self.application
+        services = []
+        if app is not None:
+            for service in app.services:
+                threads = getattr(service, "_threads", ())
+                services.append({"name": service.service_name, "port": service.port,
+                                 "running": bool(threads) and all(t.is_alive() for t in threads),
+                                 "connections": len(service.session_snapshot())})
+            if app.accounts is not None:
+                services.append({"name": "Account HTTP", "port": app.accounts.port,
+                                 "running": bool(app.accounts._thread and app.accounts._thread.is_alive())})
+        services.append({"name": "Admin CMS", "port": self.port,
+                         "running": bool(self._thread and self._thread.is_alive())})
+        available = bool(app is not None and app._started and not app._stop_event.is_set())
+        can_start = bool(app is not None and app._cms_manager_mode
+                          and not app._started and not app._stop_event.is_set()
+                          and not app._start_server_pending)
+        maintenance = app.maintenance.snapshot() if app is not None else None
+        return {"available": available, "can_start": can_start,
+                "services": services, "maintenance": maintenance}
+
+    def control_server(self, action, payload, account, reason):
+        app = self.application
+        if action == "start":
+            if app is None or not app._cms_manager_mode or app._started or app._start_server_pending:
+                raise AdminError(409, "the game server cannot be started from this CMS process")
+            self.repository.audit(account.username, "server.start", "server", {"reason": reason})
+            app._start_server_pending = True
+            timer = threading.Timer(0.75, app._start_server_requested.set)
+            timer.daemon = True
+            timer.start()
+            return {"ok": True, "starting": True}
+        if app is None or not app._started or app._stop_event.is_set():
+            raise AdminError(409, "server controls are available only from the running game server CMS")
+        if action == "maintenance":
+            minutes = payload.get("minutes")
+            if type(minutes) is not int or not 1 <= minutes <= 1440:
+                raise ValueError("maintenance minutes must be an integer from 1 to 1440")
+            app.maintenance.schedule(minutes)
+            self.repository.audit(account.username, "server.maintenance.schedule", "server", {
+                "minutes": minutes, "reason": reason,
+            })
+            return {"ok": True, "minutes": minutes, "restarts": False}
+        if action == "restart":
+            minutes = payload.get("minutes")
+            if type(minutes) is not int or not 0 <= minutes <= 1440:
+                raise ValueError("restart minutes must be an integer from 0 to 1440")
+            self.repository.audit(account.username, "server.restart.schedule", "server", {
+                "minutes": minutes, "reason": reason,
+            })
+            app._restart_requested = True
+            try:
+                app.maintenance.schedule(minutes)
+            except Exception:
+                app._restart_requested = False
+                raise
+            return {"ok": True, "minutes": minutes, "restarts": True}
+        if action == "stop":
+            self.repository.audit(account.username, "server.stop", "server", {"reason": reason})
+            app.maintenance.schedule(0)
+            return {"ok": True, "restarts": False}
+        if action == "shutdown":
+            self.repository.audit(account.username, "server.shutdown", "server", {"reason": reason})
+            app._stop_event.set()
+            return {"ok": True, "restarts": False}
+        raise AdminError(404, "server control action not found")
 
     def character_summary(self, profile, *, owner=None, online=None, include_economy=False):
         online = self.online_characters() if online is None else online
@@ -1664,6 +1749,8 @@ class AdminService:
             return {"account": self.account_document(account), "csrf": session["csrf"]}
         if path == "/api/status":
             return self.status()
+        if path == "/api/server-control":
+            return self.server_control_status()
         if path == "/api/accounts":
             return page([self.account_document(a) for a in self.registry.accounts()
                          if search in a.username.casefold() or search in str(a.account_id)], query)
@@ -1855,8 +1942,12 @@ class AdminService:
         if path == "/api/logout":
             with self._lock:
                 self._sessions.pop(token, None)
+                self.repository.forget_session(token)
             return {"ok": True}
         reason = reason_from(payload)
+        if path.startswith("/api/server-control/"):
+            action = path.rsplit("/", 1)[-1]
+            return self.control_server(action, payload, account, reason)
         if path == "/api/accounts":
             return self.create_account(payload.get("username"), payload.get("password"), account, reason)
         if path == "/api/loot-rates":
