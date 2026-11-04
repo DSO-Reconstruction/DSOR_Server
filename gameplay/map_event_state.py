@@ -32,6 +32,8 @@ from dso_server.runtime import resident_content
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
 from dso_server.gameplay.prop_loot import has_prop_loot
 from dso_server.gameplay.local_map_state import (
+    CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
+    CRAFTING_DUNGEON_MAP_ID,
     LOCAL_PROP_ID_BASE,
     active_client_instance_guid_overrides,
     effective_event_set_declarations,
@@ -144,6 +146,38 @@ _CHEST_TIER_MARKERS = ("_epic_", "_rare_", "_magic_")
 # Odds of a stacked amphora spot showing each variant, by keys per use:
 # free small, one-key normal, five-key golden (not from retail data).
 _CHEST_VARIANT_WEIGHTS = {0: 50, 1: 40, 5: 10}
+# Dungeons author many possible herb and ore spawn points, but a run should
+# expose only a changing subset. Keep the selected count within this range of
+# the authored candidates so every run has a useful amount without lighting
+# up every location at once.
+DUNGEON_RESOURCE_MIN_FRACTION = 0.20
+DUNGEON_RESOURCE_MAX_FRACTION = 0.40
+
+
+def _dungeon_resource_category(definition: MapPropDefinition) -> str:
+    """Return the gatherable resource category for an authored spawn prop."""
+
+    template = str(definition.template_id or "").casefold()
+    instance = str(definition.instance_id or "").casefold()
+    if (
+        definition.kind == "scene"
+        and instance == "ingredient_tree_01"
+        and template == "ingredient_tree_01"
+    ):
+        return "herb"
+    if (
+        definition.kind == "scene"
+        and instance == "ingredient_geode_01"
+        and template == "ingredient_geode_01"
+    ):
+        return "ore"
+    if definition.kind != "spawn":
+        return ""
+    if template.startswith("herb_"):
+        return "herb"
+    if template.startswith("ore_") or template == "ingredient_geode_01":
+        return "ore"
+    return ""
 
 # Authored per-difficulty reward chests in the parallel-world boss arenas.
 PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS = frozenset({
@@ -624,6 +658,11 @@ class MapPropDefinition:
 
         if self.workbench or self.signal_referenced or self.quest_switch_id:
             return True
+        # Gatherable StateObjectSpawnPoints use the retail MAIN_ herb/ore loot
+        # lists, which are not chest tables in prop_loot.json. They still need
+        # PropInfo so the client instantiates the authored harvesting node.
+        if _dungeon_resource_category(self):
+            return True
         # Fractured Planes uses an otherwise plain scene rift as a clickable
         # map transition. Its EventSet controls when it appears; it still
         # needs a server prop id so PropInteraction can fire the map signal.
@@ -1008,6 +1047,7 @@ class MapEventContent:
     spawn_rows: tuple[GatedSpawnRow, ...]
     props: tuple[MapPropDefinition, ...]
     trigger_volumes: tuple[TriggerVolumeDefinition, ...]
+    is_dungeon: bool = False
     # difficulty tier -> (uncommon, magic, rare, epic) percentages
     chest_tier_chances: Mapping[int, tuple[int, int, int, int]] = field(
         default_factory=dict
@@ -1279,11 +1319,24 @@ def _load_map_event_content(
         template_keys: dict[str, tuple[str, int]] = {}
         quest_controlled_templates: set[str] = set()
         chest_tier_chances: dict[int, tuple[int, int, int, int]] = {}
+        is_dungeon = False
         try:
             static_path = Path(database_path)
             with sqlite3.connect(
                 f"file:{static_path.as_posix()}?mode=ro", uri=True
             ) as static_database:
+                try:
+                    map_type = static_database.execute(
+                        "SELECT AreaType FROM _Template_MapTemplate "
+                        "WHERE lower(COALESCE(MapTemplate, ''))=? LIMIT 1",
+                        (map_key(map_id),),
+                    ).fetchone()
+                    is_dungeon = bool(
+                        map_type
+                        and str(map_type[0] or "").casefold() == "closedpve"
+                    )
+                except sqlite3.Error:
+                    is_dungeon = False
                 try:
                     for row in static_database.execute(
                         "SELECT Id, COALESCE(Uncommon, 0), COALESCE(Magic, 0), "
@@ -1324,6 +1377,7 @@ def _load_map_event_content(
             templates = {}
             template_keys = {}
             quest_controlled_templates = set()
+            is_dungeon = False
 
         props = []
         prop_actor_base = local_prop_actor_base(database_path, map_id)
@@ -1583,6 +1637,7 @@ def _load_map_event_content(
         spawn_rows=tuple(spawn_rows),
         props=tuple(props),
         trigger_volumes=tuple(volumes),
+        is_dungeon=is_dungeon,
         chest_tier_chances=MappingProxyType(chest_tier_chances),
     )
 
@@ -1705,11 +1760,18 @@ class MapEventRuntime:
     fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
     generation: int = 0
+    _selected_dungeon_resource_prop_ids: frozenset[int] = field(
+        default_factory=frozenset, init=False, repr=False,
+    )
 
     def __post_init__(self) -> None:
         self.initial_flags = frozenset(
             str(value).casefold() for value in self.initial_flags
         )
+        if self.content.is_dungeon:
+            self._selected_dungeon_resource_prop_ids = (
+                self._select_dungeon_resource_props()
+            )
         self.enabled_event_sets = set(
             self.content.enabled_event_set_rows(self.initial_flags)
         )
@@ -1893,8 +1955,20 @@ class MapEventRuntime:
         plain chest preferred over its treasure-goblin twin.  The roll is
         stable per instance and location so every joiner sees the same chest.
         Stacked scene amphorae are reduced by ``_select_chest_variants``.
+        Dungeon herbs and ores are reduced to this instance's shared random
+        subset before the other prop selections run.
         """
 
+        if self.content.is_dungeon:
+            definitions = tuple(
+                definition for definition in definitions
+                if not (
+                    definition.always_present
+                    and _dungeon_resource_category(definition)
+                    and definition.prop_id
+                    not in self._selected_dungeon_resource_prop_ids
+                )
+            )
         selected = []
         locations = []
         for definition in self._select_chest_variants(definitions):
@@ -2001,6 +2075,54 @@ class MapEventRuntime:
                 if selected_position is not None else chosen
             )
         return tuple(selected)
+
+    def _select_dungeon_resource_props(self) -> frozenset[int]:
+        """Choose a shared herb and ore subset for this dungeon instance."""
+
+        if (
+            map_key(self.map_id) == CRAFTING_DUNGEON_MAP_ID
+            and CRAFTING_DUNGEON_LEADER_PRESENT_FLAG.casefold()
+            in self.initial_flags
+        ):
+            # On leader runs the retail resource nodes are absent; they are
+            # the alternative encounter for runs where Cerberus does not spawn.
+            return frozenset()
+
+        candidates: dict[str, list[MapPropDefinition]] = {
+            "herb": [],
+            "ore": [],
+        }
+        for definition in self.content.props:
+            if not definition.always_present:
+                continue
+            category = _dungeon_resource_category(definition)
+            if category:
+                candidates[category].append(definition)
+
+        selected: set[int] = set()
+        for category, values in candidates.items():
+            values.sort(key=lambda definition: definition.prop_id)
+            if not values:
+                continue
+            minimum = max(
+                1, math.ceil(len(values) * DUNGEON_RESOURCE_MIN_FRACTION),
+            )
+            maximum = min(
+                len(values),
+                max(
+                    minimum,
+                    math.ceil(len(values) * DUNGEON_RESOURCE_MAX_FRACTION),
+                ),
+            )
+            roll = random.Random(
+                f"{self.instance_id}:{self.map_id}:resources:{category}"
+            )
+            count = roll.randint(minimum, maximum)
+            selected.update(
+                definition.prop_id
+                for definition in roll.sample(values, count)
+            )
+        return frozenset(selected)
 
     def _space_close_bloodshed_chests(
             self, definitions: Iterable[MapPropDefinition],

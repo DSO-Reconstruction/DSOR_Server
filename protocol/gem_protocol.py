@@ -42,6 +42,7 @@ ITEM_INFO_COMMAND = command_id("Commands::ItemUpdateCommand", 0x0030)
 EQUIPMENT_GEM_CATEGORY = "EquipmentGem"
 EQUIPMENT_JEWEL_CATEGORY = "EquipmentJewel"
 EQUIPMENT_RUNE_CATEGORY = "EquipmentRune"
+UNIVERSAL_INGREDIENT_HUNTER_JEWEL = "jewel_ingredient_find_common"
 SOCKET_CATEGORY_BY_CONTAINER = {
     "JewelTrinket": EQUIPMENT_JEWEL_CATEGORY,
     "RuneTrinket": EQUIPMENT_RUNE_CATEGORY,
@@ -141,6 +142,17 @@ def _validate_socket_content(
     definition = load_purchase_item_definition(
         static_database_path, socket_item.template_id
     )
+    # The Ingredient Hunter jewel's client tooltip explicitly lists all
+    # equipment as valid targets. Its static ItemCategory is EquipmentJewel,
+    # while ordinary equipment sockets default to EquipmentGem; allow this
+    # one universal jewel through that category gate and retain the normal
+    # empty-socket/index checks in insert_gem.
+    if (
+        definition.item_category == EQUIPMENT_JEWEL_CATEGORY
+        and str(socket_item.template_id).casefold()
+        == UNIVERSAL_INGREDIENT_HUNTER_JEWEL
+    ):
+        return definition.item_category
     required = _required_socket_category(
         static_database_path, container
     )

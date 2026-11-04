@@ -63,6 +63,7 @@ from dso_server.gameplay.map_event_state import (
     GatedSpawnRow,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
     deduplicate_parallel_world_gatekeeper_rows,
+    _dungeon_resource_category,
     WIRE_PROP_OPERATION,
     MapEventRuntime,
     MapLocalEventDefinition,
@@ -174,6 +175,62 @@ _MORTIS_MIRROR_ATTACK_TEMPLATES = {
     "ranger": "uniskel_e_anniversary_helios_guardian_ranger_01_1_template",
     "dwarf": "uniskel_dwarf_e_ks_infested_leader_dwarf_1_template",
 }
+
+GATHERABLE_MULTITOOL_TEMPLATE = "crafting_stateobject_key"
+GATHERABLE_BROKEN_MULTITOOL_TEMPLATE = "crafting_stateobject_key_broken"
+GATHERABLE_AUTO_PICKUP_DELAY_SECONDS = 0.8
+
+
+def _multitool_resource_category(definition) -> str:
+    """Category of an authored herb/ore node that consumes a Multitool."""
+
+    category = _dungeon_resource_category(definition)
+    loot_list = str(definition.loot_list_id or "").casefold()
+    instance_id = str(definition.instance_id or "").casefold()
+    if category == "herb" and (
+        loot_list.startswith("main_herb_ingredient")
+        or (
+            instance_id == "ingredient_tree_01"
+            and loot_list == "chest_lootlist_ingredient_tree"
+        )
+    ):
+        return category
+    if category == "ore" and (
+        loot_list.startswith("main_ore_ingredient")
+        or (
+            instance_id == "ingredient_geode_01"
+            and loot_list == "chest_lootlist_ingredient_geode"
+        )
+    ):
+        return category
+    return ""
+
+
+@lru_cache(maxsize=4)
+def _gatherable_ingredient_templates(
+    static_database_path: str, category: str, rarity_tier: int,
+) -> tuple[str, ...]:
+    """Live herb/ore templates for the selected map difficulty band."""
+
+    prefix = f"{str(category).casefold()}_ingredient_"
+    path = Path(static_database_path).resolve()
+    try:
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True,
+        )) as database:
+            rows = database.execute(
+                "SELECT ItemTemplateId FROM _Template_IngredientBag "
+                "WHERE COALESCE(IsLive, 0)=1 "
+                "AND lower(COALESCE(ItemTemplateId, '')) LIKE ? "
+                "AND IngredientBagRarity=? "
+                "ORDER BY ItemTemplateId",
+                (prefix + "%", f"Rarity_{int(rarity_tier):02d}"),
+            ).fetchall()
+    except sqlite3.Error:
+        return ()
+    return tuple(sorted({
+        str(row[0]).strip() for row in rows if str(row[0] or "").strip()
+    }))
 
 
 @lru_cache(maxsize=64)
@@ -1684,6 +1741,25 @@ class MapEventService:
                 state.definition.prop_id: state
                 for state in runtime.published_props()
             }
+            if (
+                map_key(runtime.map_id) == "b1205_crafting_dun"
+                and "server_b1205_crafting_leader_present"
+                not in runtime.initial_flags
+            ):
+                # These two harvesting nodes failed to materialize on some
+                # client map builds when PropInfo referenced the scene GUID.
+                # A zero GUID makes the client instantiate the authored prop
+                # template at the supplied transform, while preserving the
+                # same server prop ids used by PropInteraction.
+                for prop_id, state in tuple(states_by_id.items()):
+                    if str(state.definition.instance_id).casefold() not in {
+                        "ingredient_tree_01", "ingredient_geode_01",
+                    }:
+                        continue
+                    states_by_id[prop_id] = PropRuntimeState(
+                        replace(state.definition, instance_guid=ZERO_GUID),
+                        state.state,
+                    )
             if map_key(runtime.map_id) == "pw205_helios_dun":
                 # Retail gates these reusable stones behind a quest-phase
                 # EventSet. They are ordinary map resources and must remain
@@ -3698,6 +3774,136 @@ class MapEventService:
         CharacterService._request_account_save(s, "chest key spent")
         return True
 
+    def _use_gatherable_multitool(self, s: Session) -> bool:
+        """Exchange one Multitool for a Broken Multitool on a resource node."""
+
+        try:
+            broken_definition = load_purchase_item_definition(
+                self.static_database_path,
+                GATHERABLE_BROKEN_MULTITOOL_TEMPLATE,
+            )
+        except (AttributeError, OSError, ValueError, sqlite3.Error) as exc:
+            _log(f"cannot load Broken Multitool definition: {type(exc).__name__}: {exc}")
+            return False
+        with s.flow_lock:
+            inventory = s.gameplay_inventory
+            if inventory is None:
+                return False
+            builder = InventoryMutationBuilder(inventory, s.gameplay_next_item_id)
+            try:
+                builder.consume_template(
+                    GATHERABLE_MULTITOOL_TEMPLATE, 1, preserve_item_ids=True,
+                )
+                builder.add_item(broken_definition, 1, item_level=1)
+            except ValueError as exc:
+                _log(f"cannot exchange gatherable Multitool: {exc}")
+                return False
+            mutation = builder.finish()
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = max(
+                int(s.gameplay_next_item_id), int(mutation.next_item_id),
+            )
+        packet, packet_bits = encode_server_command_batch(tuple(
+            ServerCommand(INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID)
+            for record in (mutation.delta, mutation.final)
+        ), include_terminator=True)
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="gatherable-multitool-inventory",
+        )
+        CharacterService._request_account_save(s, "gatherable Multitool used")
+        return True
+
+    def _spawn_gatherable_drop(
+        self, s: Session, definition, template_id: str, amount: int = 1,
+    ) -> bool:
+        """Spawn one authored gatherable ingredient as world loot."""
+
+        try:
+            item_definition = load_purchase_item_definition(
+                self.static_database_path, template_id,
+            )
+            if not item_definition.ingredient_bag:
+                _log(f"gatherable template {template_id!r} is not an Ingredient Bag item")
+                return False
+            with s.flow_lock:
+                character = s.gameplay_character
+                encounter = s.gameplay_monster_encounter
+                last_move = s.gameplay_last_move
+                origin = tuple(float(value) for value in definition.position)
+                if encounter is not None and last_move is not None:
+                    origin = encounter.coordinate_frame.wire_to_world(
+                        last_move.relative_position
+                    )
+                level = max(1, int(getattr(character, "level", 1) or 1))
+            position = chest_drop_positions(origin, 1)[0]
+            item = _new_item(
+                item_definition, 0, max(1, min(10, int(amount))), level,
+            )
+            item.ground_position = position
+            # Show the spawned material briefly, then let the normal automatic
+            # pickup path collect it into its Ingredient Bag destination.
+            drop = WorldLootDrop(item, item_definition.item_category, "All")
+        except (OSError, ValueError, sqlite3.Error, TypeError) as exc:
+            _log(f"cannot build gatherable drop {template_id!r}: {type(exc).__name__}: {exc}")
+            return False
+
+        instance_key = CharacterService._gameplay_instance_key(s)
+        map_id = str(s.gameplay_map or "")
+        with self.gameplay_world_lock:
+            counters = getattr(self, "gameplay_world_next_item_ids", None)
+            if counters is None:
+                counters = self.gameplay_world_next_item_ids = {}
+            with s.flow_lock:
+                item_id = max(
+                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
+                    int(counters.get(instance_key, RUNTIME_ITEM_ID_BASE)),
+                )
+                counters[instance_key] = item_id + 1
+                counters[map_id] = max(item_id + 1, int(counters.get(map_id, RUNTIME_ITEM_ID_BASE)))
+                item.item_id = item_id
+                item.field_18 = item_id & 0xFFFF
+                s.gameplay_world_loot[item_id] = drop
+                s.gameplay_next_item_id = max(
+                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
+                    item_id + 1,
+                )
+        CharacterService._reconcile_world_loot_visibility(
+            s, label="gatherable-resource-drop",
+        )
+        with s.flow_lock:
+            generation = int(s.gameplay_chase_generation)
+        try:
+            timer = s.gameplay_deadline_timer(
+                GATHERABLE_AUTO_PICKUP_DELAY_SECONDS,
+                self._auto_pickup_gatherable_drop,
+                args=(s, item_id, generation),
+            )
+            timer.daemon = True
+            timer.start()
+        except (AttributeError, RuntimeError) as exc:
+            _log(f"cannot schedule gatherable auto-pickup: {type(exc).__name__}: {exc}")
+        _log(f"spawned gatherable ingredient {template_id!r} as ground loot")
+        return True
+
+    @staticmethod
+    def _auto_pickup_gatherable_drop(
+        s: Session, item_id: int, generation: int,
+    ) -> None:
+        """Run delayed pickup only while the same drop and map are active."""
+
+        with s.flow_lock:
+            if (
+                int(s.gameplay_chase_generation) != int(generation)
+                or int(item_id) not in s.gameplay_world_loot
+            ):
+                return
+        # This delayed callback belongs to one gatherable drop the player
+        # just created by interacting with the node. Pick up that exact item
+        # through the normal inventory flow after it has been visible briefly;
+        # relying on a later movement scan can strand it if the player does
+        # not move again after the prop interaction.
+        CharacterService._pickup_world_item(s, int(item_id), automatic=True)
+
     @staticmethod
     def _restore_prop_for_viewer(s: Session, definition, *, label: str) -> None:
         """Put a prop the client already opened back to its active state."""
@@ -4247,6 +4453,18 @@ class MapEventService:
                     ) not in runtime.individual_prop_usage
                 )
             )
+            gatherable_first_use = bool(
+                keyed is not None
+                and _multitool_resource_category(keyed.definition)
+                and keyed.state == PROP_STATE_ACTIVE
+                and (
+                    not keyed.definition.individual_usage
+                    or (
+                        _individual_prop_player_id(s),
+                        int(keyed.definition.prop_id),
+                    ) not in runtime.individual_prop_usage
+                )
+            )
         if keyed_first_use:
             missing = self._prop_keys_missing(s, keyed.definition)
             if missing:
@@ -4258,6 +4476,70 @@ class MapEventService:
                     f"prop {keyed.definition.instance_id!r} needs "
                     f"{keyed.definition.key_amount}x {keyed.definition.key_id!r}; "
                     f"player is {missing} short"
+                )
+                return
+        gatherable_template = ""
+        if gatherable_first_use:
+            category = _multitool_resource_category(keyed.definition)
+            with s.flow_lock:
+                map_difficulty = max(
+                    0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+                )
+            # The ten retail difficulties are paired into the five ingredient
+            # rarity bands: Normal/Painful through Bloodshed/PW Bloodshed.
+            rarity_tier = min(5, map_difficulty // 2 + 1)
+            candidates = _gatherable_ingredient_templates(
+                str(self.static_database_path), category, rarity_tier,
+            )
+            if (
+                category == "herb"
+                and str(keyed.definition.instance_id).casefold()
+                == "ingredient_tree_01"
+            ):
+                candidates = tuple(sorted(set((
+                    *candidates,
+                    *_gatherable_ingredient_templates(
+                        str(self.static_database_path), "yarn", rarity_tier,
+                    ),
+                ))))
+            with s.flow_lock:
+                inventory = s.gameplay_inventory
+                carried_multitools = sum(
+                    int(item.amount) for item in getattr(inventory, "items", ())
+                    if item.template_id == GATHERABLE_MULTITOOL_TEMPLATE
+                )
+            if carried_multitools < 1:
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="gatherable-multitool-missing",
+                )
+                _log(
+                    f"gatherable prop {keyed.definition.instance_id!r} needs "
+                    f"1x {GATHERABLE_MULTITOOL_TEMPLATE!r}"
+                )
+                return
+            if not candidates:
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="gatherable-rewards-unavailable",
+                )
+                _log(
+                    f"no live {category!r} Ingredient Bag templates found "
+                    f"for map difficulty {map_difficulty} (rarity {rarity_tier})"
+                )
+                return
+            gatherable_template = random.SystemRandom().choice(candidates)
+            try:
+                gatherable_definition = load_purchase_item_definition(
+                    self.static_database_path, gatherable_template,
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(f"cannot load gatherable item: {type(exc).__name__}: {exc}")
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="gatherable-rewards-unavailable",
+                )
+                return
+            if not gatherable_definition.ingredient_bag:
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="gatherable-rewards-unavailable",
                 )
                 return
         with runtime.lock:
@@ -4330,6 +4612,22 @@ class MapEventService:
                         live.state = PROP_STATE_ACTIVE
             self._restore_prop_for_viewer(s, definition, label="prop-key-missing")
             return
+        if flipped and gatherable_template and not self._use_gatherable_multitool(s):
+            # A concurrent inventory change may have consumed the last tool
+            # after the preflight check. Restore the node so no reward is lost.
+            with runtime.lock:
+                if definition.individual_usage:
+                    runtime.individual_prop_usage.discard((
+                        _individual_prop_player_id(s), int(definition.prop_id),
+                    ))
+                else:
+                    live = runtime.props.get(int(definition.prop_id))
+                    if live is not None:
+                        live.state = PROP_STATE_ACTIVE
+            self._restore_prop_for_viewer(
+                s, definition, label="gatherable-multitool-missing",
+            )
+            return
         _log(
             f"prop {definition.instance_id!r} (id {definition.prop_id}, "
             f"operation {request.operation!r}) used; state now {state.state}"
@@ -4367,7 +4665,12 @@ class MapEventService:
                 (packet, packet_bits), track=True, label="prop-update"
             )
             _send_prop_info(viewer, (state,), label="prop-update-info")
-        if flipped and (definition.loot_list_id or definition.chest_id):
+        if flipped and gatherable_template:
+            self._spawn_gatherable_drop(
+                s, definition, gatherable_template,
+                random.SystemRandom().randint(1, 10),
+            )
+        elif flipped and (definition.loot_list_id or definition.chest_id):
             self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
             self._grant_stonekeep_miller_ammunition(s, runtime, definition)
