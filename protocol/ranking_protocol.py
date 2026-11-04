@@ -138,7 +138,16 @@ FILTER_GUILD = 0x04
 FILTER_PLAYER_PAGE = 0x10
 UNRANKED = 0xFFFFFFFF
 MAX_RANKING_PAGE_SIZE = 10  # The client's table allocates exactly ten UI rows.
-ALL_CLASSES = 4
+# The class byte is always one real class, warrior 0 .. niwalk 4. The 261
+# client has no "all classes" filter: LeaderBoardWidget keeps the class at
+# +0x2a8, starts it at the local player's class on show (0x14032b08c) and sets
+# it only from its class dropdown (0x140327ffc) or a row's class; the dispatcher
+# 0x14032b714 passes it to every request builder unchanged. 4 is the niwalk,
+# not "all" (it was, colliding with the niwalk). ALL_CLASSES is this server's
+# own sentinel for the boards without a class field (the local-rank queries)
+# and never appears on the wire.
+RANKING_CLASSES = range(5)
+ALL_CLASSES = -1
 PARALLEL_WORLD_BOARDS = range(9)   # enum8 -1..8 at +0x30 (0x140aa6db8).
 PVE_BOARD_TYPES = range(2)         # enum8 -1..1: 0 solo, 1 group (0x140aa6df0).
 # Sort buttons of the PW table: rank score, time, monster and boss points.
@@ -244,12 +253,12 @@ def decode_ranking_request(payload: bytes, bit_length: int | None = None) -> Ran
         value = RankingRequest(command, context=context, board=0, board_type=board_type)
     elif command == GET_HIGH_SCORE_RANK_ALL_DATA_COMMAND:
         class_id = _signed32(reader.read_uint32_le())
-        if class_id not in range(ALL_CLASSES + 1):
+        if class_id not in RANKING_CLASSES:
             raise ValueError("invalid high-score class filter")
         value = RankingRequest(command, class_id=class_id, board=0)
     else:  # GetHighScoreRankGroupDataCommand carries no fields.
         value = RankingRequest(command, board=0)
-    if value.class_id not in range(ALL_CLASSES + 1):
+    if value.class_id not in RANKING_CLASSES and value.class_id != ALL_CLASSES:
         raise ValueError("invalid ranking class filter")
     if command in PVE_LIST_COMMANDS | PVE_LOCAL_COMMANDS:
         if value.board_type not in PVE_BOARD_TYPES:

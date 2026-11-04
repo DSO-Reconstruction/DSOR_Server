@@ -55,7 +55,7 @@ def header(command):
     return b"\x8b" + struct.pack("<H", command)
 
 
-def pw_list(board_id=0, board_type=0, *, class_id=4, sort=0, flags=1, start=0):
+def pw_list(board_id=0, board_type=0, *, class_id=0, sort=0, flags=1, start=0):
     return (header(rp.PARALLEL_WORLD_USER_RANKING_INFO_COMMAND)
             + struct.pack("<IIIH", start, 10, 0, flags) + bytes((board_id, class_id, sort, board_type)))
 
@@ -64,7 +64,7 @@ def pw_local(board_id=0, board_type=0):
     return header(rp.PARALLEL_WORLD_LOCAL_USER_RANKING_INFO_COMMAND) + struct.pack("<I", 0) + bytes((board_id, board_type))
 
 
-def overall_list(board_type=0, class_id=4):
+def overall_list(board_type=0, class_id=0):
     return (header(rp.OVERALL_USER_RANKING_INFO_COMMAND)
             + struct.pack("<IIIH", 0, 10, 0, 1) + bytes((class_id, board_type)))
 
@@ -352,9 +352,11 @@ def test_a_shared_instance_records_both_players_on_the_group_board(pw):
         clock.value += 100
     kill(server, friend, "pw003_mob", 5)
     kill(server, session, "boss_grimmag")
+    # Each class has its own board (there is no "all classes" filter).
     total, rows = read_pw_page(dispatch(pw_list(0, 1)))
-    assert total == 2 and {row[0] for row in rows} == {"Online", "Friend"}
-    assert read_pw_page(dispatch(pw_list(0, 1, class_id=2)))[1][0][0] == "Friend"
+    assert total == 1 and rows[0][0] == "Online"
+    total, rows = read_pw_page(dispatch(pw_list(0, 1, class_id=2)))
+    assert total == 1 and rows[0][0] == "Friend"
     assert read_pw_page(dispatch(pw_list(0, 0)))[1] == []
 
 
@@ -384,14 +386,14 @@ def test_overall_pve_rank_sums_authored_points_per_board_place(pw):
     scores.improve_score("pw.2.1", "all", 1, score=5, stats=(5, 0, 0, 0, 1, 1, 1, 5))
     points = CATALOG.overall_points_for_place
     assert (points(1), points(2), points(3)) == (150, 125, 100)   # Authored table.
-    assert read_overall_page(dispatch(overall_list(0))) == (3, [
+    # Points come from the place on the whole board; the list shows one class.
+    assert read_overall_page(dispatch(overall_list(0, class_id=1))) == (2, [
         ("Player3", points(3) + points(1), 0),
         ("Player1", points(1), 1),
-        ("Player2", points(2), 2),
     ])
-    assert read_overall_page(dispatch(overall_list(1))) == (1, [("Player1", points(1), 0)])
+    assert read_overall_page(dispatch(overall_list(0))) == (1, [("Player2", points(2), 0)])
+    assert read_overall_page(dispatch(overall_list(1, class_id=1))) == (1, [("Player1", points(1), 0)])
     assert read_local_rank(dispatch(overall_local(0))) == 0xFFFFFFFF
-    assert [row[0] for row in read_overall_page(dispatch(overall_list(0, class_id=1)))[1]] == ["Player3", "Player1"]
 
 
 def test_pve_season_boards_replace_the_all_time_view_while_active(pw):
@@ -430,9 +432,10 @@ def test_high_score_lists_rank_floor_then_remaining_time(board, monkeypatch):
     server._ranking_record_fractured_planes_floor(session, 11, 400.0)   # Worse floor: ignored.
     command = rp.GET_HIGH_SCORE_RANK_ALL_DATA_COMMAND
     session.current_message_bit_length = 56
-    class_id, rows = read_high_score(dispatch(header(command) + struct.pack("<i", 4)), all_data=True)
-    assert class_id == 4
-    assert rows == [("Player3", 30, 5), ("Player2", 12, 95), ("Online", 12, 41), ("Player1", 12, 40)]
+    class_id, rows = read_high_score(dispatch(header(command) + struct.pack("<i", 0)), all_data=True)
+    assert (class_id, rows) == (0, [("Online", 12, 41)])
+    # 4 is the Night Walker's list, not every class's.
+    assert read_high_score(dispatch(header(command) + struct.pack("<i", 4)), all_data=True) == (4, [])
     class_id, rows = read_high_score(dispatch(header(command) + struct.pack("<i", 1)), all_data=True)
     assert (class_id, [row[0] for row in rows]) == (1, ["Player3", "Player1"])
     if rp.GET_HIGH_SCORE_RANK_GROUP_DATA_COMMAND != UNAVAILABLE_COMMAND_ID:

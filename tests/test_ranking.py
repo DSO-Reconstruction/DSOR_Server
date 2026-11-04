@@ -29,7 +29,7 @@ RECORDED_LIST = bytes.fromhex("8bf000ffffffff0a00000000000000110000")
 RECORDED_LOCAL = bytes.fromhex("8bf40000000000")
 
 
-def request_bytes(command=LIST, *, start=0, count=10, flags=1, class_id=4, board=4, column=0):
+def request_bytes(command=LIST, *, start=0, count=10, flags=1, class_id=0, board=4, column=0):
     data = b"\x8b" + struct.pack("<H", command)
     if command == DETAIL:
         data += bytes([board])
@@ -168,12 +168,23 @@ def test_recorded_dispatch_includes_offline_scores_and_live_overlay(board):
     assert struct.unpack_from("<I", local, 7)[0] == 2
 
 
-def test_ties_are_stable_and_all_classes_filter_is_supported(board):
+def test_ties_are_stable_within_the_requested_class(board):
     _, session, store, dispatch = board
-    add(store, 1, 75, name="First", class_id=3)
-    add(store, 2, 75, name="Second", class_id=1)
+    add(store, 1, 75, name="First")
+    add(store, 2, 75, name="Second")
+    add(store, 3, 900, name="Dwarf", class_id=3)
     result = read_page(dispatch(request_bytes()))
     assert [row[0] for row in result.rows] == ["First", "Second", "Online"]
+
+
+def test_class_four_is_the_niwalk_board_not_every_class(board):
+    # The client has no "all classes" filter; 4 is the Night Walker.
+    _, session, store, dispatch = board
+    add(store, 1, 80, name="Walker", class_id=4)
+    add(store, 2, 90, name="Dwarf", class_id=3)
+    result = read_page(dispatch(request_bytes(class_id=4)))
+    assert [row[0] for row in result.rows] == ["Walker"]
+    assert result.class_id == 4
 
 
 def test_player_centered_paging_and_bounded_page_size(board):
