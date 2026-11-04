@@ -99,6 +99,8 @@ KINGSCITY_MAP_ID = "a0200_kingscity"
 PARALLEL_WORLDS_HUB_MAP_ID = "pw000_hub"
 TUTORIAL_DUNGEON_MAP_ID = "a0001_start_tutorial_dun"
 TUTORIAL_CULTIST_EVENT_FLAG = "a0001_start_dun_undead_mage_01"
+CRAFTING_DUNGEON_MAP_ID = "b1205_crafting_dun"
+CRAFTING_DUNGEON_LEADER_PRESENT_FLAG = "server_b1205_crafting_leader_present"
 BASELINE_MAP_EVENT_FLAGS = {
     # These are permanent account/world unlocks on the local development
     # realm, not rotating game events.  Keeping them explicit makes Gnob,
@@ -115,6 +117,10 @@ BASELINE_MAP_EVENT_FLAGS = {
     # event set. Enable it on every entry so the stone is present before the
     # client renders the map's interactive objects.
     "g0001_beach_01_dun": frozenset({"g0001_travelstone"}),
+    # The Glowing Cave entrance is authored on the crafting hub behind this
+    # permanent map-local event. Keep the portal visible by default; its
+    # Broken Multitool access requirement remains defined by the map data.
+    "b1200_hub": frozenset({"b1200_activate_exit_to_b1205"}),
     # The classic Parallel Worlds hub authors each chapter portal behind a
     # permanent, map-local EventSet. Keep all of those entrances available
     # alongside Grimmagstone so every chapter can be played through locally.

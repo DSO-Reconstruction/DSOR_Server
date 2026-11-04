@@ -32,6 +32,8 @@ from dso_server.runtime import resident_content
 from dso_server.runtime.file_revisions import observed_revision, resolved_path
 from dso_server.gameplay.prop_loot import has_prop_loot
 from dso_server.gameplay.local_map_state import (
+    CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
+    CRAFTING_DUNGEON_MAP_ID,
     LOCAL_PROP_ID_BASE,
     active_client_instance_guid_overrides,
     effective_event_set_declarations,
@@ -155,9 +157,22 @@ DUNGEON_RESOURCE_MAX_FRACTION = 0.40
 def _dungeon_resource_category(definition: MapPropDefinition) -> str:
     """Return the gatherable resource category for an authored spawn prop."""
 
+    template = str(definition.template_id or "").casefold()
+    instance = str(definition.instance_id or "").casefold()
+    if (
+        definition.kind == "scene"
+        and instance == "ingredient_tree_01"
+        and template == "ingredient_tree_01"
+    ):
+        return "herb"
+    if (
+        definition.kind == "scene"
+        and instance == "ingredient_geode_01"
+        and template == "ingredient_geode_01"
+    ):
+        return "ore"
     if definition.kind != "spawn":
         return ""
-    template = str(definition.template_id or "").casefold()
     if template.startswith("herb_"):
         return "herb"
     if template.startswith("ore_") or template == "ingredient_geode_01":
@@ -2063,6 +2078,15 @@ class MapEventRuntime:
 
     def _select_dungeon_resource_props(self) -> frozenset[int]:
         """Choose a shared herb and ore subset for this dungeon instance."""
+
+        if (
+            map_key(self.map_id) == CRAFTING_DUNGEON_MAP_ID
+            and CRAFTING_DUNGEON_LEADER_PRESENT_FLAG.casefold()
+            in self.initial_flags
+        ):
+            # On leader runs the retail resource nodes are absent; they are
+            # the alternative encounter for runs where Cerberus does not spawn.
+            return frozenset()
 
         candidates: dict[str, list[MapPropDefinition]] = {
             "herb": [],

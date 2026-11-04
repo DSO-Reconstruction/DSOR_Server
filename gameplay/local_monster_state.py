@@ -35,6 +35,8 @@ from dso_server.protocol.gameplay_protocol import (
     StatusEffectServerCommand,
 )
 from dso_server.gameplay.local_map_state import (
+    CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
+    CRAFTING_DUNGEON_MAP_ID,
     MapCoordinateFrame,
     _enabled_event_set_ids,
     active_local_map_event_flags,
@@ -3123,6 +3125,18 @@ def _load_dynamic_monster_encounter(
                     str(_rank or ""),
                 ))
         all_fixed_rows = tuple(all_fixed_rows)
+        if str(map_id).casefold() == CRAFTING_DUNGEON_MAP_ID and (
+            CRAFTING_DUNGEON_LEADER_PRESENT_FLAG.casefold()
+            not in active_local_map_event_flags(map_id, active_event_flags)
+        ):
+            # Retail alternates between Cerberus and the ingredient nodes for
+            # each Glowing Cave run. The instance's leader roll is passed as a
+            # server-only flag so this cached population remains per instance.
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if str(row[2]).casefold()
+                != "b1205_ingredient_leader_cerberus_01"
+            )
         # Tier-only rows: the bloody sludges exist in every dungeon's table
         # without an EventSet but belong to Bloodshed (tier 8) alone.
         from dso_server.gameplay.map_event_state import (

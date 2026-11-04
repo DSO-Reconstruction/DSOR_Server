@@ -186,9 +186,22 @@ def _multitool_resource_category(definition) -> str:
 
     category = _dungeon_resource_category(definition)
     loot_list = str(definition.loot_list_id or "").casefold()
-    if category == "herb" and loot_list.startswith("main_herb_ingredient"):
+    instance_id = str(definition.instance_id or "").casefold()
+    if category == "herb" and (
+        loot_list.startswith("main_herb_ingredient")
+        or (
+            instance_id == "ingredient_tree_01"
+            and loot_list == "chest_lootlist_ingredient_tree"
+        )
+    ):
         return category
-    if category == "ore" and loot_list.startswith("main_ore_ingredient"):
+    if category == "ore" and (
+        loot_list.startswith("main_ore_ingredient")
+        or (
+            instance_id == "ingredient_geode_01"
+            and loot_list == "chest_lootlist_ingredient_geode"
+        )
+    ):
         return category
     return ""
 
@@ -1728,6 +1741,25 @@ class MapEventService:
                 state.definition.prop_id: state
                 for state in runtime.published_props()
             }
+            if (
+                map_key(runtime.map_id) == "b1205_crafting_dun"
+                and "server_b1205_crafting_leader_present"
+                not in runtime.initial_flags
+            ):
+                # These two harvesting nodes failed to materialize on some
+                # client map builds when PropInfo referenced the scene GUID.
+                # A zero GUID makes the client instantiate the authored prop
+                # template at the supplied transform, while preserving the
+                # same server prop ids used by PropInteraction.
+                for prop_id, state in tuple(states_by_id.items()):
+                    if str(state.definition.instance_id).casefold() not in {
+                        "ingredient_tree_01", "ingredient_geode_01",
+                    }:
+                        continue
+                    states_by_id[prop_id] = PropRuntimeState(
+                        replace(state.definition, instance_guid=ZERO_GUID),
+                        state.state,
+                    )
             if map_key(runtime.map_id) == "pw205_helios_dun":
                 # Retail gates these reusable stones behind a quest-phase
                 # EventSet. They are ordinary map resources and must remain
@@ -3781,7 +3813,9 @@ class MapEventService:
         CharacterService._request_account_save(s, "gatherable Multitool used")
         return True
 
-    def _spawn_gatherable_drop(self, s: Session, definition, template_id: str) -> bool:
+    def _spawn_gatherable_drop(
+        self, s: Session, definition, template_id: str, amount: int = 1,
+    ) -> bool:
         """Spawn one authored gatherable ingredient as world loot."""
 
         try:
@@ -3802,7 +3836,9 @@ class MapEventService:
                     )
                 level = max(1, int(getattr(character, "level", 1) or 1))
             position = chest_drop_positions(origin, 1)[0]
-            item = _new_item(item_definition, 0, 1, level)
+            item = _new_item(
+                item_definition, 0, max(1, min(10, int(amount))), level,
+            )
             item.ground_position = position
             # Show the spawned material briefly, then let the normal automatic
             # pickup path collect it into its Ingredient Bag destination.
@@ -3861,11 +3897,12 @@ class MapEventService:
                 or int(item_id) not in s.gameplay_world_loot
             ):
                 return
-            last_move = s.gameplay_last_move
-        if last_move is not None:
-            CharacterService._pickup_nearby_auto_loot(
-                s, last_move.relative_position,
-            )
+        # This delayed callback belongs to one gatherable drop the player
+        # just created by interacting with the node. Pick up that exact item
+        # through the normal inventory flow after it has been visible briefly;
+        # relying on a later movement scan can strand it if the player does
+        # not move again after the prop interaction.
+        CharacterService._pickup_world_item(s, int(item_id), automatic=True)
 
     @staticmethod
     def _restore_prop_for_viewer(s: Session, definition, *, label: str) -> None:
@@ -4454,6 +4491,17 @@ class MapEventService:
             candidates = _gatherable_ingredient_templates(
                 str(self.static_database_path), category, rarity_tier,
             )
+            if (
+                category == "herb"
+                and str(keyed.definition.instance_id).casefold()
+                == "ingredient_tree_01"
+            ):
+                candidates = tuple(sorted(set((
+                    *candidates,
+                    *_gatherable_ingredient_templates(
+                        str(self.static_database_path), "yarn", rarity_tier,
+                    ),
+                ))))
             with s.flow_lock:
                 inventory = s.gameplay_inventory
                 carried_multitools = sum(
@@ -4618,7 +4666,10 @@ class MapEventService:
             )
             _send_prop_info(viewer, (state,), label="prop-update-info")
         if flipped and gatherable_template:
-            self._spawn_gatherable_drop(s, definition, gatherable_template)
+            self._spawn_gatherable_drop(
+                s, definition, gatherable_template,
+                random.SystemRandom().randint(1, 10),
+            )
         elif flipped and (definition.loot_list_id or definition.chest_id):
             self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
