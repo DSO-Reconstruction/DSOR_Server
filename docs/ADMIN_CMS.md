@@ -5,6 +5,31 @@ The game application starts a separate HTTP admin service at
 Run the server normally with `py -3.12-64 run.py` (or `python run.py`).
 The CMS has no third-party dependencies or frontend build step.
 
+## CMS interface and server controls
+
+The redesigned CMS uses a dark charcoal base with cool teal accents. Its modern
+layout uses grouped navigation, a global operations header, and an asymmetric realm dashboard with a live
+service-health ring, service tiles, a grant ledger, and a quick-action rail.
+Account and character directories use record cards; high-density ledgers such
+as bookings and audit history stay tabular inside the new workspaces. The
+attached game-dashboard images inform this composition, not their colors. The
+CMS interface remains English.
+
+**CMS settings** lets each browser switch back to the labeled classic sidebar
+and table-first directories; this preference is stored locally per CMS account
+in that browser. Both layouts use the dark Drakensang palette. Existing page
+modules keep their original actions and data flows in either layout.
+
+The CMS launcher opens **Server control** in manager mode. **Start game server**
+switches the same process into the full game server, keeping the CMS attached to
+the authoritative player state. A maintenance countdown notifies active players
+and returns the CMS to manager mode when it reaches zero. **Restart server**
+relaunches the game services after the countdown. **Stop server** sends a
+zero-minute maintenance signal; **Shut down now** stops immediately without
+that notice. Both return to the CMS manager, where the game can be started again.
+When the CMS is launched inside a normal game server process, stop and shutdown
+end that process as usual.
+
 ## Administrator access
 
 Sign in with the same username and password used by the game launcher.
@@ -268,11 +293,15 @@ See [SEASON_PASS.md](SEASON_PASS.md) for the packets and progress rules.
 For remote use, put the CMS behind an HTTPS reverse proxy and set
 `DSO_ADMIN_SECURE_COOKIE=1`; forward the original Host header. The backend
 listener remains HTTP. With plain HTTP, passwords and cookies travel unencrypted.
-The CMS uses four-hour, HttpOnly, SameSite=Strict cookies, checks account access
-on every request, rate-limits failed logins, and requires a CSRF token plus
-same-origin requests for writes. It never accepts the account API's service token
-or game session GUID as CMS credentials. CMS sessions expire on process restart.
-No passwords, password hashes, or game bearer tokens are returned by CMS APIs.
+The CMS uses four-hour, HttpOnly, SameSite=Strict cookies by default. The login
+form's **Remember me on this browser** option keeps that CMS session for 30 days
+across CMS process restarts. The database stores only a hash of the random CMS
+session token, never the password; signing out or changing account credentials
+revokes the remembered session. The CMS checks account access on every request,
+rate-limits failed logins, and requires a CSRF token plus same-origin requests
+for writes. It never accepts the account API's service token or game session
+GUID as CMS credentials. No passwords, password hashes, or game bearer tokens
+are returned by CMS APIs.
 
 Stopping the game server stops and drains the CMS before closing shared stores.
 Use the CMS within the game application so bookings share its authoritative state;

@@ -1,7 +1,8 @@
+import { isLegacyInterface } from "./admin_ui.js";
 import { livePage } from "./admin_live.js";
 import { $, esc, human, date, classes, rarities, api, link, navigate, status, table, filteredTable, facts,
-  section, tabs, toolbar, bindSearch, pager, tree, valueView, valueList, bookingTable, formError, notice,
-  announce, rememberParams, routeInfo, confirmAction } from "./admin_ui.js";
+  section, tabs, toolbar, bindSearch, pager, tree, valueView, valueList, bookingTable, collectionPanel, collectionWorkspace, formError, notice,
+  announce, rememberParams, routeInfo, confirmAction, collectionRecords, bookingHeaders, bookingRows } from "./admin_ui.js";
 
 const containers = {equipment_slots: "Equipment", storage_slots: "Inventory", extra_storage_slots: "Extra inventory", bank_storage_slots: "Bank", extra_bank_storage_slots: "Extra bank"};
 const slots = {0: "Helmet", 1: "Shoulders", 2: "Torso", 3: "Gloves", 4: "Boots", 5: "Main hand", 6: "Off hand", 7: "Back"};
@@ -418,7 +419,7 @@ export async function characterPage(route) {
   };
   if (tab === "live") return livePage(result, id);
   if (tab === "overview") {
-    result.html += '<div class="columns">' + section("Character", facts([
+    const summary = section("Character", facts([
       ["Account", data.account ? link(data.account.username, `accounts/${data.account.account_id}`) : "Unclaimed"],
       ["Character ID", p.character_id], ["Class", esc(classes[p.class_id] || p.class_id)], ["Level", p.level],
       ["Presence", status(data.online ? "Online" : "Offline", data.online ? "good" : "")],
@@ -432,21 +433,31 @@ export async function characterPage(route) {
       ["PvP enabled", s?.pvp_enabled ? "Yes" : "No"],
       ["Honor points", esc(s?.honor_points ?? 0)], ["Wins / losses", `${s?.pvp_matches_won ?? 0} / ${s?.pvp_matches_lost ?? 0}`],
       ["Kills / deaths", `${s?.pvp_kills ?? 0} / ${s?.pvp_deaths ?? 0}`], ["Title", esc(s?.achievement_title || "None")]
-    ])) + '</div>';
-    result.html += identitySection(p, data.level_range) + privilegeSection(p);
+    ]));
+    let tools = identitySection(p, data.level_range) + privilegeSection(p);
+    let snapshot = "";
     result.mount = () => { bindIdentity(p, id, data.level_range); bindPrivileges(p, id); };
     if (s) {
-      result.html += wisdomSection(data.wisdom);
-      result.html += honorSection(s.honor_points ?? 0);
+      tools += wisdomSection(data.wisdom);
+      tools += honorSection(s.honor_points ?? 0);
       result.mount = () => { bindIdentity(p, id, data.level_range); bindWisdom(data.wisdom, id); bindHonor(s.honor_points ?? 0, id); bindPrivileges(p, id); };
       const balances = {...s.currencies}; delete balances.game;
-      result.html += '<div class="columns">' + section("Currencies", table(["Currency", "Balance"], Object.entries(balances).map(([k, v]) => [esc(human(k)), esc(v)]))) +
+      snapshot = '<div class="columns">' + section("Currencies", table(["Currency", "Balance"], Object.entries(balances).map(([k, v]) => [esc(human(k)), esc(v)]))) +
         section("Additional currencies", table(["Currency", "Balance"], Object.entries(s.currencies.game || {}).map(([k, v]) => [esc(human(k)), esc(v)]))) + '</div>';
-      result.html += `<p class="help">Values reflect the saved snapshot above. ${data.online ? "This character is online; values can change between saves." : ""}</p>`;
-    } else result.html += '<p class="empty">No saved gameplay state. This character must enter the game first.</p>';
+      snapshot += `<p class="help">Values reflect the saved snapshot above. ${data.online ? "This character is online; values can change between saves." : ""}</p>`;
+    }
+    result.html += isLegacyInterface()
+      ? `<div class="columns">${summary}</div>${tools}${snapshot}`
+      : `<div class="character-workspace">
+          <div class="character-editors">${tools}${snapshot}</div>
+          <aside aria-label="Character summary">${summary}</aside>
+        </div>`;
+    if (!s) result.html += '<p class="empty">No saved gameplay state. This character must enter the game first.</p>';
   } else if (tab === "bookings") {
     const bookings = await api(`/api/bookings?${new URLSearchParams({...route.params, character_id: id})}`);
-    result.html += toolbar(route, "Search this character's bookings") + bookingTable(bookings.rows) + pager(bookings, route);
+    result.html += collectionWorkspace(toolbar(route, "Search this character's bookings"),
+      collectionPanel("Booking history", collectionRecords(bookingHeaders(), bookingRows(bookings.rows)), pager(bookings, route), bookings.total,
+        `Rewards and delivery state for ${p.name}.`));
     result.mount = () => bindSearch(route);
   } else if (!s) {
     result.html += '<p class="empty">This character has not saved gameplay state yet.</p>';
@@ -455,14 +466,24 @@ export async function characterPage(route) {
     const inventory = s.inventory, all = inventory.items || [];
     const itemCount = all.length + (inventory.premium_inventory_overflow || []).length +
       (inventory.premium_storage_overflow || []).length;
-    result.html += `<p class="muted">${itemCount} owned item records · ${Object.keys(inventory.storage_slots || {}).length} / ${inventory.storage_size} inventory slots · ${Object.keys(inventory.bank_storage_slots || {}).length} / ${inventory.bank_storage_size} bank slots</p>` +
-      filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
+    const inventorySlots = `${Object.keys(inventory.storage_slots || {}).length} / ${inventory.storage_size}`;
+    const bankSlots = `${Object.keys(inventory.bank_storage_slots || {}).length} / ${inventory.bank_storage_size}`;
+    const items = filteredTable("q", "Filter by template or item ID", ["Item", "Location", "Slot", "Rarity", "Level", "Stack", "Sockets"], all.map(item => {
         const where = location(item, inventory);
         return [link(item.template_id, `${root}/inventory/${item.item_id}`, route.params, "resource mono") + `<span class="sub">Item ${item.item_id}</span>`,
           esc(where.name), esc(where.slot), esc(rarities[item.rarity] ?? item.rarity), esc(item.item_level), esc(item.amount),
           `${(item.socketed_templates || []).filter(Boolean).length} / ${item.socket_count}`];
-      }), {facets: [["Location", 1, "container"], ["Rarity", 3, "rarity"]], empty: "This character has no items."}) +
-      inventoryCopySection(id, itemCount);
+      }), {facets: [["Location", 1, "container"], ["Rarity", 3, "rarity"]], empty: "This character has no items."});
+    const copy = inventoryCopySection(id, itemCount);
+    result.html += isLegacyInterface()
+      ? `<p class="muted">${itemCount} owned item records · ${inventorySlots} inventory slots · ${bankSlots} bank slots</p>${items}${copy}`
+      : `<div class="inventory-workspace">
+          ${section("Owned items", items)}
+          <aside aria-label="Inventory capacity and actions">
+            ${section("Storage", facts([["Owned item records", itemCount], ["Inventory slots", inventorySlots], ["Bank slots", bankSlots]]))}
+            ${copy}
+          </aside>
+        </div>`;
     result.mount = () => bindInventoryCopy(id);
   } else if (tab === "progression") {
     result.html += '<div class="columns">' + section("Progression", facts([

@@ -33,6 +33,15 @@ class AdminRepository:
                         ON DELETE CASCADE,
                     enabled INTEGER NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS admin_remembered_sessions (
+                    token_hash TEXT PRIMARY KEY,
+                    account_id INTEGER NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+                    csrf TEXT NOT NULL,
+                    expires_at REAL NOT NULL,
+                    stamp TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS admin_remembered_sessions_account
+                    ON admin_remembered_sessions(account_id);
                 CREATE TABLE IF NOT EXISTS admin_audit (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     created_at REAL NOT NULL,
@@ -82,6 +91,39 @@ class AdminRepository:
             columns = {row[1] for row in self.db.execute("PRAGMA table_info(admin_bookings)")}
             if "options" not in columns:
                 self.db.execute("ALTER TABLE admin_bookings ADD COLUMN options TEXT NOT NULL DEFAULT '{}'")
+
+    @staticmethod
+    def remembered_token_hash(token):
+        return hashlib.sha256(token.encode()).hexdigest()
+
+    def save_remembered_session(self, token, session, now):
+        with self.transaction():
+            self.db.execute("DELETE FROM admin_remembered_sessions WHERE expires_at <= ?", (now,))
+            if self.db.execute("SELECT COUNT(*) FROM admin_remembered_sessions").fetchone()[0] >= 2048:
+                return False
+            self.db.execute(
+                "INSERT INTO admin_remembered_sessions(token_hash,account_id,csrf,expires_at,stamp) VALUES(?,?,?,?,?)",
+                (self.remembered_token_hash(token), session["account_id"], session["csrf"],
+                 session["expires_at"], session["stamp"]),
+            )
+            return True
+
+    def remembered_session(self, token):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT account_id,csrf,expires_at,stamp FROM admin_remembered_sessions WHERE token_hash=?",
+                (self.remembered_token_hash(token),),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def forget_session(self, token):
+        with self.lock:
+            self.db.execute("DELETE FROM admin_remembered_sessions WHERE token_hash=?",
+                            (self.remembered_token_hash(token),))
+
+    def forget_account_sessions(self, account_id):
+        with self.lock:
+            self.db.execute("DELETE FROM admin_remembered_sessions WHERE account_id=?", (account_id,))
 
     @staticmethod
     def booking_document(row):

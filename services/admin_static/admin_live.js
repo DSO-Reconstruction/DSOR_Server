@@ -1,9 +1,11 @@
-import { $, esc, api, table, facts, section, searchAsYouType, formError, notice, confirmAction } from "./admin_ui.js";
+import { $, esc, api, table, facts, section, searchAsYouType, formError, notice, confirmAction, isLegacyInterface } from "./admin_ui.js";
 
 export async function livePage(result, id) {
   const live = await api(`/api/characters/${id}/live`);
   result.html += `<p class="help">${live.ready ? `Current map: <code>${esc(live.map_id)}</code>. Status effects and map transfers apply immediately.` : "The character must be online and fully loaded into a map to use these actions."}</p>`;
-  result.html += `<form id="live-form" class="form-page">
+  const classic = isLegacyInterface();
+  result.html += `<form id="live-form" class="form-page${classic ? "" : " live-workspace"}">
+    ${classic ? "" : '<div class="live-effects">'}
     ${section("Admin status effects", '<p class="muted">These effects persist across map changes and logins until disabled. Existing copies are not stacked.</p>' +
       table(["Effect", "Current state", ""], live.effects.map(effect => [
         `<strong>${esc(effect.label)}</strong><span class="sub">${esc(effect.description)}</span>`,
@@ -11,13 +13,15 @@ export async function livePage(result, id) {
         `<button type="button" class="secondary" data-effect="${esc(effect.id)}" data-enabled="${!effect.enabled}" ${!live.ready || !effect.available ? "disabled" : ""}>${effect.enabled ? "Disable" : "Enable"}</button>`])))}
     ${section("Map access", `<p class="muted">Unlock all travel destinations and quest-gated map access for this character. The grant persists; change maps or relog to refresh the travel menu. Event availability still applies.</p>
       <button id="unlock-maps" type="button" class="secondary" ${!live.ready || live.all_maps_unlocked ? "disabled" : ""}>${live.all_maps_unlocked ? "All maps unlocked" : "Unlock all maps"}</button>`)}
+    ${classic ? "" : '</div><div class="live-transfer">'}
     ${section("Change map", `<p class="muted">Force a transfer to the selected map's normal entry point. This bypasses travel costs and event access restrictions.</p>
       <label for="map-query">Find destination</label><div class="toolbar"><input id="map-query" placeholder="Map ID or type" maxlength="100" ${!live.ready ? "disabled" : ""}><button id="find-map" type="button" class="secondary" ${!live.ready ? "disabled" : ""}>Search maps</button></div>
       <div id="map-results" class="picker-results"></div><div id="map-selection" class="selection" hidden></div>
       <div class="form-grid"><label>Scaling difficulty<input name="scaling_difficulty" type="number" min="0" max="100" step="1" value="0" ${!live.ready ? "disabled" : ""}><small>0 uses normal scaling. Map access variants also carry their own difficulty.</small></label></div>`)}
-    <p class="help">Every action asks for a reason, recorded with the administrator and character in the audit log.</p>
+    ${classic ? "" : "</div>"}
+    <div class="live-actions"><p class="help">Every action asks for a reason, recorded with the administrator and character in the audit log.</p>
     <p id="form-error" class="error-text" role="alert"></p>
-    <div class="form-actions"><button id="refresh-live" type="button" class="secondary">Refresh status</button><button id="teleport" type="submit" disabled>Change map</button></div>
+    <div class="form-actions"><button id="refresh-live" type="button" class="secondary">Refresh status</button><button id="teleport" type="submit" disabled>Change map</button></div></div>
   </form>`;
   result.mount = () => {
     const form = $("#live-form"); let destination = null, generation = 0, busy = false;

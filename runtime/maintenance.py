@@ -72,6 +72,15 @@ class MaintenanceShutdown:
             self._timer.start()
         print(f"[Maintenance] server shutdown scheduled in {minutes} minute(s)")
 
+    def snapshot(self) -> dict:
+        """Return the current maintenance countdown for the CMS status view."""
+        with self._lock:
+            remaining = (max(0.0, self._deadline - self._clock())
+                         if self._deadline is not None and not self._expired and not self._closed
+                         else None)
+            return {"remaining_seconds": remaining, "scheduled": remaining is not None,
+                    "expired": self._expired}
+
     def notify_session(self, session) -> None:
         """Send the remaining countdown after this map's PlayerReady bundle."""
 

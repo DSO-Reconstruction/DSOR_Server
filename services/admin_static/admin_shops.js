@@ -1,5 +1,5 @@
 import { $, esc, api, link, navigate, table, section, facts, stats, tabs, toolbar,
-  bindSearch, searchAsYouType, pager, formError, confirmAction, notice } from "./admin_ui.js";
+  bindSearch, searchAsYouType, pager, collectionPanel, collectionWorkspace, collectionRecords, isLegacyInterface, formError, confirmAction, notice } from "./admin_ui.js";
 
 const query = params => new URLSearchParams({limit: 50, ...params});
 const priceFields = [
@@ -20,13 +20,14 @@ export async function npcShopsPage(route) {
     title: "NPC shops",
     description: "Inspect shop inventories, create client-supported tabs, add items, edit prices, and remove CMS offers.",
     breadcrumbs: [["Administration", "status"], ["NPC shops"]],
-    html: toolbar(route, "Search by shop ID, NPC, or profession") +
-      table(["Shop", "NPCs", "Static + CMS offers", "Current categories", "Selling"], data.rows.map(shop => [
+    html: collectionWorkspace(toolbar(route, "Search by shop ID, NPC, or profession"), collectionPanel("Shop directory",
+      collectionRecords(["Shop", "NPCs", "Static + CMS offers", "Current categories", "Selling"], data.rows.map(shop => [
         link(shop.shop_id, `npc-shops/${encodeURIComponent(shop.shop_id)}`, {}, "resource mono"),
         shop.npcs.map(npc => `<span>${esc(npc.npc_id)}${npc.profession ? ` <small>· ${esc(npc.profession)}</small>` : ""}</span>`).join("<br>"),
         esc(shop.offer_count), esc(shop.offer_categories || "—"),
         shop.player_can_sell ? "Yes" : "No"
-      ]), "No NPC shops matched this search.") + pager(data, route),
+      ]), "No NPC shops matched this search."), pager(data, route), data.total,
+      "Browse NPC inventories and their game-facing offer categories.")),
     mount: () => bindSearch(route)
   };
 }
@@ -67,20 +68,31 @@ export async function npcShopPage(route) {
   const categoryFilter = `<select id="offer-category" aria-label="Category"><option value="">All categories</option>${data.categories.map(c =>
     `<option value="${esc(c.category_id)}" ${route.params.category === String(c.category_id) ? "selected" : ""}>${esc(c.category_name)} (${esc(c.offer_count ?? "—")})</option>`).join("")}</select>`;
   const views = {
-    offers: () => editForm + toolbar(route, "Search offers by item, offer ID, or category", categoryFilter) +
-      table(["Item", "Template / offer", "Category", "Amount", "Price", "Action"], offerRows, "This NPC shop has no matching offers.") + pager(data, route),
+    offers: () => editForm + collectionWorkspace(toolbar(route, "Search offers by item, offer ID, or category", categoryFilter),
+      collectionPanel("Shop offers", collectionRecords(["Item", "Template / offer", "Category", "Amount", "Price", "Action"], offerRows,
+        "This NPC shop has no matching offers."), pager(data, route), data.total, "Static and CMS offers with their current prices.")),
     add: () => addForm || '<p class="muted">Create a category tab first; offers are sold from a tab.</p>',
     categories: () => stats([["NPCs", shop.npcs.length], ["Offers", data.offer_total ?? data.total], ["Can sell items", shop.player_can_sell ? "Yes" : "No"]]) +
       section("Shop categories", categoryTable) + categoryForm +
       section("NPCs using this shop", facts(shop.npcs.map(npc => [npc.npc_id, `${npc.profession || "NPC"} · ${npc.shop_loca_id || "No shop label"}`])))
   };
   if (!views[tab]) throw new Error("NPC shop page not found.");
+  const view = views[tab]();
+  const context = section("Shop profile", facts([
+    ["Shop ID", `<code class="resource">${esc(shopId)}</code>`],
+    ["NPCs", shop.npcs.length],
+    ["Offers", data.offer_total ?? data.total],
+    ["Category tabs", data.categories.length],
+    ["Players can sell", shop.player_can_sell ? "Yes" : "No"]
+  ]));
+  const workspace = isLegacyInterface() || tab === "categories" ? view
+    : `<div class="shop-workspace"><div>${view}</div><aside aria-label="Shop profile">${context}</aside></div>`;
   const result = {
     title: shopId,
     description: "NPC shop inventory and pricing. Saved changes refresh players who currently have this shop open.",
     breadcrumbs: [["NPC shops", "npc-shops"], [shopId]],
     actions: link("Back to NPC shops", "npc-shops", {}, "button secondary"),
-    html: tabs([["Offers", root, {}, data.offer_total ?? data.total], ["Add item", `${root}/add`], ["Categories and NPCs", `${root}/categories`]], tab === "offers" ? root : `${root}/${tab}`) + views[tab]()
+    html: tabs([["Offers", root, {}, data.offer_total ?? data.total], ["Add item", `${root}/add`], ["Categories and NPCs", `${root}/categories`]], tab === "offers" ? root : `${root}/${tab}`) + workspace
   };
   result.mount = () => {
     bindSearch(route);

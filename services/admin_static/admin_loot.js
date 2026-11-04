@@ -1,4 +1,4 @@
-import { $, esc, api, section, table, debounce, confirmAction, notice, formError } from "./admin_ui.js";
+import { $, esc, api, section, table, debounce, confirmAction, notice, formError, mapWorkspace } from "./admin_ui.js";
 
 const categories = [
   ["map_reward", "Listed map items"],
@@ -39,10 +39,10 @@ function renderContent(data) {
   const selectedLabel = selected
     ? `${selected.map_id || selected.access_group} · Difficulty ${selected.difficulty} · ${selected.access_id}`
     : "No map difficulty selected";
-  return section("Search map and difficulty", `<form id="loot-map-search" class="toolbar">
+  return mapWorkspace(section("Search map and difficulty", `<form id="loot-map-search" class="toolbar">
     <input name="q" aria-label="Search maps" placeholder="Map name or access ID (e.g. pw002)" maxlength="100" value="${esc(data.query || "")}">
     <button type="submit" class="secondary">Search</button>
-  </form><div id="loot-map-results">${mapResults(data)}</div>`) +
+  </form><div id="loot-map-results">${mapResults(data)}</div>`),
     `<form id="loot-rates-form" class="form-page">
       <fieldset class="form-section"><legend>Global default rates</legend>
         <p class="help">These rates apply to all maps unless that map/difficulty has an override. The map's difficulty drop modifiers still scale the selected rate. Set 0% to disable a reward category.</p>
@@ -50,11 +50,11 @@ function renderContent(data) {
       </fieldset>
       <fieldset class="form-section"><legend>Map and difficulty override</legend>
         <p class="muted">${esc(selectedLabel)}</p>
-        ${selected ? `<p class="help">Enter a percentage to override only this access row. Leave a field blank to inherit the global default.</p><div class="form-grid">${overrides.map(row => row[0]).join("")}</div>` : '<p class="help">Choose a result above to edit this map difficulty. Global defaults can be saved without selecting a map.</p>'}
+        ${selected ? `<p class="help">Enter a percentage to override only this access row. Leave a field blank to inherit the global default.</p><div class="form-grid">${overrides.map(row => row[0]).join("")}</div>` : '<p class="help">Choose a map from the search results to edit this map difficulty. Global defaults can be saved without selecting a map.</p>'}
       </fieldset>
       <p id="form-error" class="error-text" role="alert"></p>
       <div class="form-actions"><button type="submit">Save loot rates</button></div>
-    </form>`;
+    </form>`);
 }
 
 export async function lootRatesPage() {

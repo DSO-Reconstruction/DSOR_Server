@@ -31,6 +31,14 @@ from dso_server.persistence.admin_registry import AdminRepository
 from dso_server.persistence.npc_shop_overrides import NpcShopOverrideStore
 from dso_server.protocol.character_selection import CLASS_NAMES
 from dso_server.protocol.character_selection import CharacterRecord
+from dso_server.protocol.membership_protocol import (
+    DELUXE_MEMBERSHIP, NO_MEMBERSHIP, PREMIUM_MEMBERSHIP,
+    extend_membership, membership_is_active, parse_membership_expiry, premium_handover,
+)
+from dso_server.protocol.currency_protocol import (
+    GAME_CURRENCY_DEFINITIONS, named_game_currency_balances,
+    normalize_game_currency_balances,
+)
 from dso_server.protocol.inventory_codec import (
     INVENTORY_INFO_COMMAND, clone_inventory_info, clone_item_info,
     free_inventory_location, owned_inventory_items,
@@ -63,6 +71,8 @@ from dso_server.services.player_progression import player_level_range, player_le
 
 
 DEFAULT_ADMIN_PORT = 8081
+ADMIN_SESSION_SECONDS = 4 * 3600
+ADMIN_REMEMBER_SECONDS = 30 * 24 * 3600
 # The NewPlayer administrator flags stored on a character profile.
 GAME_PRIVILEGES = frozenset({"admin_privileges", "admin_name_color"})
 IDENTITY_FIELDS = frozenset({"name", "level", "gender"})
@@ -158,7 +168,7 @@ class AdminService:
     def account_document(self, account):
         return {**account.to_document(), "admin": self.is_admin(account)}
 
-    def login(self, username, password, address):
+    def login(self, username, password, address, remember=False):
         # Serialize credential checks so concurrent guesses cannot bypass the limit.
         with self._lock:
             if self.throttle.blocked(address):
@@ -175,21 +185,33 @@ class AdminService:
             self.throttle.clear(address)
             now = time.time()
             self._sessions = {key: value for key, value in self._sessions.items() if value["expires_at"] > now}
-            if len(self._sessions) >= 2048:
+            if not remember and len(self._sessions) >= 2048:
                 raise AdminError(503, "admin session capacity reached")
             token = secrets.token_urlsafe(32)
+            stamp = self.repository.credential_stamp(account.account_id)
+            if stamp is None:
+                raise AdminError(401, "administrator account is no longer available")
             session = {"account_id": account.account_id, "csrf": secrets.token_urlsafe(32),
-                       "expires_at": now + 4 * 3600,
-                       "stamp": self.repository.credential_stamp(account.account_id)}
-            self._sessions[token] = session
+                       "expires_at": now + (ADMIN_REMEMBER_SECONDS if remember else ADMIN_SESSION_SECONDS),
+                       "stamp": stamp}
+            if remember:
+                if not self.repository.save_remembered_session(token, session, now):
+                    raise AdminError(503, "remembered admin session capacity reached")
+            else:
+                self._sessions[token] = session
             self.repository.audit(account.username, "admin.login", account.account_id, {"address": address})
             return token, {"account": self.account_document(account), "csrf": session["csrf"]}
 
     def authenticate(self, token):
         with self._lock:
             session = self._sessions.get(token)
+            remembered = session is None and bool(token)
+            if remembered:
+                session = self.repository.remembered_session(token)
             if session is None or session["expires_at"] <= time.time():
                 self._sessions.pop(token, None)
+                if remembered and session is not None:
+                    self.repository.forget_session(token)
                 raise AdminError(401, "sign in with an administrator account")
             try:
                 account = self.registry.account_by_id(session["account_id"])
@@ -199,6 +221,8 @@ class AdminService:
                 allowed = False
             if not allowed:
                 self._sessions.pop(token, None)
+                if remembered:
+                    self.repository.forget_session(token)
                 raise AdminError(401, "administrator session is no longer valid")
             return account, session
 
@@ -206,6 +230,7 @@ class AdminService:
         with self._lock:
             self._sessions = {key: value for key, value in self._sessions.items()
                               if value["account_id"] != account_id}
+            self.repository.forget_account_sessions(account_id)
 
     def _refresh_open_npc_shops(self, shop_id):
         """Refresh cached offers for players currently viewing this shop."""
@@ -458,14 +483,98 @@ class AdminService:
                 "warnings": list(self.store.warnings),
                 "watchdog": app.stall_watchdog.statistics() if app is not None else None}
 
-    def character_summary(self, profile, *, owner=None, online=None):
+    def server_control_status(self):
+        app = self.application
+        services = []
+        if app is not None:
+            for service in app.services:
+                threads = getattr(service, "_threads", ())
+                services.append({"name": service.service_name, "port": service.port,
+                                 "running": bool(threads) and all(t.is_alive() for t in threads),
+                                 "connections": len(service.session_snapshot())})
+            if app.accounts is not None:
+                services.append({"name": "Account HTTP", "port": app.accounts.port,
+                                 "running": bool(app.accounts._thread and app.accounts._thread.is_alive())})
+        services.append({"name": "Admin CMS", "port": self.port,
+                         "running": bool(self._thread and self._thread.is_alive())})
+        available = bool(app is not None and app._started and not app._stop_event.is_set())
+        can_start = bool(app is not None and app._cms_manager_mode
+                          and not app._started and not app._stop_event.is_set()
+                          and not app._start_server_pending)
+        maintenance = app.maintenance.snapshot() if app is not None else None
+        return {"available": available, "can_start": can_start,
+                "services": services, "maintenance": maintenance}
+
+    def control_server(self, action, payload, account, reason):
+        app = self.application
+        if action == "start":
+            if app is None or not app._cms_manager_mode or app._started or app._start_server_pending:
+                raise AdminError(409, "the game server cannot be started from this CMS process")
+            self.repository.audit(account.username, "server.start", "server", {"reason": reason})
+            app._start_server_pending = True
+            timer = threading.Timer(0.75, app._start_server_requested.set)
+            timer.daemon = True
+            timer.start()
+            return {"ok": True, "starting": True}
+        if app is None or not app._started or app._stop_event.is_set():
+            raise AdminError(409, "server controls are available only from the running game server CMS")
+        if action == "maintenance":
+            minutes = payload.get("minutes")
+            if type(minutes) is not int or not 1 <= minutes <= 1440:
+                raise ValueError("maintenance minutes must be an integer from 1 to 1440")
+            app.maintenance.schedule(minutes)
+            self.repository.audit(account.username, "server.maintenance.schedule", "server", {
+                "minutes": minutes, "reason": reason,
+            })
+            return {"ok": True, "minutes": minutes, "restarts": False}
+        if action == "restart":
+            minutes = payload.get("minutes")
+            if type(minutes) is not int or not 0 <= minutes <= 1440:
+                raise ValueError("restart minutes must be an integer from 0 to 1440")
+            self.repository.audit(account.username, "server.restart.schedule", "server", {
+                "minutes": minutes, "reason": reason,
+            })
+            app._restart_requested = True
+            try:
+                app.maintenance.schedule(minutes)
+            except Exception:
+                app._restart_requested = False
+                raise
+            return {"ok": True, "minutes": minutes, "restarts": True}
+        if action == "stop":
+            self.repository.audit(account.username, "server.stop", "server", {"reason": reason})
+            app.maintenance.schedule(0)
+            return {"ok": True, "restarts": False}
+        if action == "shutdown":
+            self.repository.audit(account.username, "server.shutdown", "server", {"reason": reason})
+            app._stop_event.set()
+            return {"ok": True, "restarts": False}
+        raise AdminError(404, "server control action not found")
+
+    def character_summary(self, profile, *, owner=None, online=None, include_economy=False):
         online = self.online_characters() if online is None else online
         state = self.store.get(profile.character_id)
-        return {"character_id": profile.character_id, "name": profile.name,
-                "class_id": profile.class_id, "level": profile.level,
-                "map_id": online.get(profile.character_id, state.map_id if state else profile.map_id),
-                "online": profile.character_id in online, "owner": owner,
-                "saved_at": state.saved_at if state else None, "has_state": state is not None}
+        result = {"character_id": profile.character_id, "name": profile.name,
+                  "class_id": profile.class_id, "level": profile.level,
+                  "map_id": online.get(profile.character_id, state.map_id if state else profile.map_id),
+                  "online": profile.character_id in online, "owner": owner,
+                  "saved_at": state.saved_at if state else None, "has_state": state is not None}
+        if include_economy:
+            result.update({
+                "membership": ({"type": state.membership_type, "active": state.membership_active,
+                                "expires_at": state.membership_expires_at,
+                                "premium_expires_at": state.membership_premium_expires_at}
+                               if state else None),
+                "currencies": ({
+                    "andermant": state.currency.andermant, "gold": state.currency.gold,
+                    "badge_of_honor": state.currency.badge_of_honor,
+                    "legacy_progression": state.currency.legacy_progression,
+                    "draken": state.currency.draken, "glyph_of_power": state.currency.glyph_of_power,
+                } if state else None),
+                "additional_currencies": (named_game_currency_balances(state.game_currencies)
+                                          if state else None),
+            })
+        return result
 
     def set_privileges(self, cid, changes, account, reason):
         """Grant or revoke the NewPlayer administrator flags for one character.
@@ -514,6 +623,176 @@ class AdminService:
                    "chat_sessions": chat_sessions, "gameplay_sessions": gameplay_sessions}
         self.repository.audit(account.username, "character.privileges", cid, details)
         return {"ok": True, "chat_sessions": chat_sessions, "gameplay_sessions": gameplay_sessions}
+
+    @staticmethod
+    def _membership_state(state, tier, action, days, now):
+        """Build one saved character's updated membership without publishing it."""
+        current_type = int(state.membership_type)
+        current_expiry = str(state.membership_expires_at)
+        active = membership_is_active(current_type, state.membership_active, current_expiry, now=now)
+        premium_expiry = str(state.membership_premium_expires_at or "")
+        current_type, current_expiry, active = premium_handover(
+            current_type, current_expiry, active, premium_expiry, now=now,
+        )
+        before = {"type": current_type, "active": active, "expires_at": current_expiry,
+                  "premium_expires_at": premium_expiry}
+
+        if action == "grant":
+            updated = extend_membership(
+                current_type, current_expiry, active, premium_expiry, tier, days, now=now,
+            )
+            current_type, current_expiry, active, premium_expiry = updated
+        elif tier == PREMIUM_MEMBERSHIP:
+            if current_type == DELUXE_MEMBERSHIP and active:
+                if not premium_expiry or not membership_is_active(
+                    PREMIUM_MEMBERSHIP, True, premium_expiry, now=now,
+                ):
+                    return state, before, False
+                premium_expiry = ""
+            elif current_type == PREMIUM_MEMBERSHIP and active:
+                current_type, current_expiry, active, premium_expiry = (
+                    NO_MEMBERSHIP, now.isoformat(), False, "",
+                )
+            else:
+                return state, before, False
+        else:
+            if current_type != DELUXE_MEMBERSHIP or not active:
+                return state, before, False
+            if premium_expiry and membership_is_active(
+                PREMIUM_MEMBERSHIP, True, premium_expiry, now=now,
+            ):
+                remaining = parse_membership_expiry(premium_expiry) - parse_membership_expiry(current_expiry)
+                if remaining.total_seconds() > 0:
+                    current_type, current_expiry, active = (
+                        PREMIUM_MEMBERSHIP, (now + remaining).isoformat(), True,
+                    )
+                    premium_expiry = current_expiry
+                else:
+                    current_type, current_expiry, active, premium_expiry = (
+                        NO_MEMBERSHIP, now.isoformat(), False, "",
+                    )
+            else:
+                current_type, current_expiry, active, premium_expiry = (
+                    NO_MEMBERSHIP, now.isoformat(), False, "",
+                )
+
+        updated_state = replace(
+            state, membership_type=current_type, membership_expires_at=current_expiry,
+            membership_active=active, membership_premium_expires_at=premium_expiry,
+        )
+        after = {"type": current_type, "active": active, "expires_at": current_expiry,
+                 "premium_expires_at": premium_expiry}
+        return updated_state, {"before": before, "after": after}, True
+
+    def set_membership(self, account_id, tier, action, days, actor, reason):
+        """Apply a Premium/Deluxe change to every saved character on an account."""
+        if type(tier) is not int or tier not in (PREMIUM_MEMBERSHIP, DELUXE_MEMBERSHIP):
+            raise ValueError("membership must be Premium or Deluxe")
+        if not isinstance(action, str) or action not in {"grant", "remove"}:
+            raise ValueError("membership action must be grant or remove")
+        if action == "grant" and (type(days) is not int or not 1 <= days <= 3650):
+            raise ValueError("membership duration must be an integer from 1 to 3650 days")
+        target = self.registry.account_by_id(account_id)
+        character_ids = tuple(int(cid) for cid in target.character_ids)
+        if not character_ids:
+            raise ValueError("this account has no characters")
+        online = self.online_characters()
+        active = [cid for cid in character_ids if cid in online]
+        if active:
+            raise ValueError("all characters on this account must be offline before changing membership")
+        states = {cid: self.store.get(cid) for cid in character_ids}
+        missing = [cid for cid, state in states.items() if state is None]
+        if missing:
+            raise ValueError("all characters must have a saved gameplay state before account membership can be edited")
+        now = datetime.now(timezone.utc)
+        updates, noops = {}, []
+        for cid, state in states.items():
+            updated, detail, changed = self._membership_state(state, tier, action, days, now)
+            if changed:
+                updates[cid] = updated
+            else:
+                noops.append(cid)
+        if not updates:
+            raise ValueError(f"none of this account's characters has an active {('Premium' if tier == PREMIUM_MEMBERSHIP else 'Deluxe')} membership to remove")
+        for saved in updates.values():
+            self.store.put(saved)
+        self.store.flush()
+        details = {
+            "account_id": account_id,
+            "plan": "Premium" if tier == PREMIUM_MEMBERSHIP else "Deluxe",
+            "action": action, "days": days if action == "grant" else None,
+            "characters_updated": list(updates), "characters_unchanged": noops,
+            "reason": reason,
+        }
+        self.repository.audit(actor.username, f"account.membership.{action}", account_id, details)
+        return {"ok": True, "characters_updated": len(updates), "characters_unchanged": len(noops)}
+
+    def set_character_currencies(self, account_id, cid, changes, actor, reason):
+        """Edit one account character's saved currencies from its account page."""
+        if type(cid) is not int or cid <= 0:
+            raise ValueError("character ID must be a positive integer")
+        target = self.registry.account_by_id(account_id)
+        if cid not in target.character_ids:
+            raise AdminError(404, "character does not belong to this account")
+        if not isinstance(changes, dict) or not changes:
+            raise ValueError("choose at least one currency to edit")
+        online = self.online_characters()
+        if any(character_id in online for character_id in target.character_ids):
+            raise ValueError("all characters on this account must be offline before changing currencies")
+        state = self.store.get(cid)
+        if state is None:
+            raise ValueError("character must enter the game before currencies can be edited")
+
+        fixed = {"andermant", "gold", "badge_of_honor", "legacy_progression", "draken", "glyph_of_power"}
+        if set(changes) - fixed - {"additional_currencies"}:
+            raise ValueError("unknown currency field")
+        currency = state.currency
+        fixed_values = {
+            "andermant": currency.andermant, "gold": currency.gold,
+            "badge_of_honor": currency.badge_of_honor,
+            "legacy_progression": currency.legacy_progression,
+            "draken": currency.draken, "glyph_of_power": currency.glyph_of_power,
+        }
+        for key in fixed.intersection(changes):
+            value = changes[key]
+            maximum = 0xFFFFFFFFFFFFFFFF if key in {"gold", "glyph_of_power"} else 0xFFFFFFFF
+            if key in {"gold", "glyph_of_power"} and isinstance(value, str) and value.isascii() and value.isdecimal():
+                value = int(value)
+            if type(value) is not int or not 0 <= value <= maximum:
+                raise ValueError(f"{key} must be a whole number from 0 to {maximum:,}")
+            fixed_values[key] = value
+        game_currencies = dict(state.game_currencies)
+        if "additional_currencies" in changes:
+            requested = changes["additional_currencies"]
+            if not isinstance(requested, dict):
+                raise ValueError("additional_currencies must be an object")
+            permitted = {definition.name for definition in GAME_CURRENCY_DEFINITIONS}
+            wire_names = {definition.wire_id: definition.name for definition in GAME_CURRENCY_DEFINITIONS}
+            permitted.update(wire_names)
+            if set(requested) - permitted:
+                raise ValueError("unknown additional currency")
+            named = named_game_currency_balances(game_currencies)
+            for key, value in requested.items():
+                if isinstance(value, str) and value.isascii() and value.isdecimal():
+                    value = int(value)
+                if type(value) is not int or not 0 <= value <= 0xFFFFFFFFFFFFFFFF:
+                    raise ValueError(f"{key} must be a whole number from 0 to 18,446,744,073,709,551,615")
+                named[wire_names.get(key, key)] = value
+            game_currencies = normalize_game_currency_balances(named)
+
+        updated_currency = replace(
+            currency,
+            currency_type=fixed_values["andermant"], amount=fixed_values["gold"],
+            values=(fixed_values["badge_of_honor"], fixed_values["legacy_progression"],
+                    fixed_values["draken"]), delta=fixed_values["glyph_of_power"],
+            wallet_base=currency.andermant,
+        )
+        saved = replace(state, currency=updated_currency, game_currencies=game_currencies)
+        self.store.put(saved, flush=True)
+        self.repository.audit(actor.username, "account.character.currencies", cid, {
+            "account_id": account_id, "changes": changes, "reason": reason,
+        })
+        return {"ok": True, "character_id": cid}
 
     def level_range(self, class_id):
         """The levels this class can hold, or None when it has no authored XP table."""
@@ -1470,13 +1749,15 @@ class AdminService:
             return {"account": self.account_document(account), "csrf": session["csrf"]}
         if path == "/api/status":
             return self.status()
+        if path == "/api/server-control":
+            return self.server_control_status()
         if path == "/api/accounts":
             return page([self.account_document(a) for a in self.registry.accounts()
                          if search in a.username.casefold() or search in str(a.account_id)], query)
         if path.startswith("/api/accounts/"):
             target = self.registry.account_by_id(int(path.rsplit("/", 1)[1]))
             online = self.online_characters()
-            characters = [self.character_summary(p, owner=target.username, online=online)
+            characters = [self.character_summary(p, owner=target.username, online=online, include_economy=True)
                           for cid in target.character_ids if (p := self.store.get_profile(cid)) is not None]
             return {"account": self.account_document(target), "characters": characters,
                     "missing_character_ids": [cid for cid in target.character_ids
@@ -1661,8 +1942,12 @@ class AdminService:
         if path == "/api/logout":
             with self._lock:
                 self._sessions.pop(token, None)
+                self.repository.forget_session(token)
             return {"ok": True}
         reason = reason_from(payload)
+        if path.startswith("/api/server-control/"):
+            action = path.rsplit("/", 1)[-1]
+            return self.control_server(action, payload, account, reason)
         if path == "/api/accounts":
             return self.create_account(payload.get("username"), payload.get("password"), account, reason)
         if path == "/api/loot-rates":
@@ -1766,6 +2051,16 @@ class AdminService:
             account_id = int(parts[2])
             if len(parts) == 4 and parts[3] == "revoke":
                 self.repository.revoke_sessions(account.username, account_id, reason)
+            elif len(parts) == 4 and parts[3] == "membership":
+                return self.set_membership(
+                    account_id, payload.get("tier"), payload.get("action"),
+                    payload.get("days"), account, reason,
+                )
+            elif len(parts) == 4 and parts[3] == "currencies":
+                return self.set_character_currencies(
+                    account_id, payload.get("character_id"), payload.get("changes"),
+                    account, reason,
+                )
             elif len(parts) == 4 and parts[3] == "delete":
                 return self.delete_account(account_id, account, reason)
             elif len(parts) == 4 and parts[3] == "launch":

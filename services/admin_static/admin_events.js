@@ -1,5 +1,5 @@
 import { $, esc, date, api, link, navigate, status, table, facts, stats, section, toolbar,
-  bindSearch, searchAsYouType, pager, formError, notice, confirmAction, tree } from "./admin_ui.js";
+  bindSearch, searchAsYouType, pager, collectionPanel, collectionWorkspace, collectionRecords, isLegacyInterface, formError, notice, confirmAction, tree } from "./admin_ui.js";
 
 const stateLabel = state => ({active: "Active", upcoming: "Upcoming", expired: "Inactive"}[state] || state);
 export const refreshMessage = (action, result) => `${action} ${result.refresh.updated} online ${result.refresh.updated === 1 ? "character" : "characters"} updated.${result.refresh.deferred ? ` ${result.refresh.deferred} could not refresh now; their next map entry will load the change.` : ""}`;
@@ -185,10 +185,10 @@ export async function eventsPage(route) {
     title: "Events", description: "Manage active game events and retained event runs.", breadcrumbs: [["Administration", "status"], ["Events"]],
     actions: link("Add event", "events/new", {}, "button"),
     html: stats([["Active", data.counts.active], ["Upcoming", data.counts.upcoming], ["Inactive", data.counts.expired]]) +
-      toolbar(route, "Search event name, template or ID", filter) +
-      (anySelectable ? `<div class="selection batch-bar"><label class="check"><input type="checkbox" id="select-events">Select all inactive events on this page</label>
-        <span><span id="selected-count" class="muted">None selected</span> <button type="button" id="activate-selected" disabled>Activate selected</button></span></div>` : "") +
-      table(["Event", "Instance", "State", "Start", "End", "Levels", ""], data.rows.map(event => [
+      collectionWorkspace(toolbar(route, "Search event name, template or ID", filter),
+        collectionPanel("Event registry", (anySelectable ? `<div class="selection batch-bar"><label class="check"><input type="checkbox" id="select-events">Select all inactive events on this page</label>
+        <span><span id="selected-count" class="muted" role="status">None selected</span> <button type="button" id="activate-selected" disabled>Activate selected</button></span></div>` : "") +
+      collectionRecords(["Event", "Instance", "State", "Start", "End", "Levels", ""], data.rows.map(event => [
         (selectable(event) ? `<label class="row-select"><input type="checkbox" data-select-event="${event.event_id}" aria-label="Select ${esc(event.name)}"></label>` : "") +
         link(event.name, `events/${event.event_id}`, route.params) + `<span class="sub mono">${esc(event.template_id)}</span>` +
         (event.manageable && event.state === "expired" && running.has(event.template_id) ? '<span class="sub">Another run of this event is active</span>' : ""),
@@ -196,7 +196,8 @@ export async function eventsPage(route) {
         esc(date(event.starts_at)), event.mode === "active" ? "Until deactivated" : esc(date(event.ends_at)),
         `${event.min_level}–${event.max_level}`,
         event.manageable && event.state !== "expired" ? `<button type="button" class="secondary" data-deactivate="${event.event_id}">Deactivate</button>` : ""
-      ]), "No events match this search.") + pager(data, route) + refreshHelp,
+      ]), "No events match this search.") + refreshHelp, pager(data, route), data.total,
+        "Active and retained event runs. Selected inactive events can be restarted.")),
     mount() {
       bindSearch(route);
       $("#event-state").addEventListener("change", event => navigate(route.path, {...route.params, state: event.target.value, offset: 0}));
@@ -239,18 +240,21 @@ export async function eventPage(route) {
   const result = {
     title: event.name, description: `${event.template_id} · Event instance ${event.event_id}`,
     breadcrumbs: [["Events", "events", route.params], [`#${event.event_id}`]],
-    html: '<div class="columns">' + section("Event", facts([
+    html: ""
+  };
+  const summary = section("Event", facts([
       ["State", status(stateLabel(event.state), event.state === "active" ? "good" : "")],
       ["Instance ID", event.event_id], ["Template", `<code>${esc(event.template_id)}</code>`],
       ["Levels", `${event.min_level}–${event.max_level}`], ["Start", esc(date(event.starts_at))],
       ["End", event.mode === "active" ? "Until deactivated" : esc(date(event.ends_at))]
-    ])) + section("Content", facts([
+    ]));
+  const content = section("Content", facts([
       ["Event map", esc(event.map_id || "Defined by event travel items")],
       ["Travel destination", esc(event.teleport_target || "None")],
       ["Status effects", esc(event.status_effects.join(", ") || "None")],
       ["Progress bars", esc(event.progress_bars.join(", ") || "None")]
-    ])) + '</div>' + section("Run configuration", tree(event.config))
-  };
+    ]));
+  const configuration = section("Run configuration", tree(event.config));
   if (event.manageable) {
     const hasEnding = enable || event.state === "active";
     result.html += `<form id="event-action" class="form-page"><h2>${enable ? "Activate event" : "Manage event"}</h2>
@@ -280,6 +284,13 @@ export async function eventPage(route) {
       });
     };
   } else result.html += '<p class="muted">This map-local or client-owned event is managed by the game.</p>';
+  const management = result.html;
+  result.html = isLegacyInterface()
+    ? `<div class="columns">${summary}${content}</div>${configuration}${management}`
+    : `<div class="event-workspace">
+        <div>${management}${content}${configuration}</div>
+        <aside aria-label="Event schedule">${summary}</aside>
+      </div>`;
   return result;
 }
 

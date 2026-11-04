@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 import traceback
@@ -382,6 +383,10 @@ class ServerApplication:
         )
         self._stop_event = threading.Event()
         self._started = False
+        self._restart_requested = False
+        self._cms_manager_mode = _environment_flag("DSO_CMS_MANAGER", False)
+        self._start_server_requested = threading.Event()
+        self._start_server_pending = False
         self.maintenance = MaintenanceShutdown(
             (self.login, self.characters), self._stop_event.set,
         )
@@ -657,6 +662,13 @@ def main() -> None:
         signal.signal(signal.SIGTERM, request_stop)
         signal.signal(signal.SIGINT, request_stop)
     application.serve_forever()
+    if application._restart_requested:
+        original_argv = getattr(sys, "orig_argv", None)
+        arguments = original_argv[1:] if original_argv else sys.argv
+        os.execv(sys.executable, [sys.executable, *arguments])
+    if application._cms_manager_mode:
+        cms_launcher = Path(__file__).resolve().parent / "run_cms.py"
+        os.execv(sys.executable, [sys.executable, "-u", str(cms_launcher)])
 
 
 __all__ = [
