@@ -8,9 +8,36 @@ from dso_server.gameplay.status_modifier_runtime import (
     snapshot_active_status_entries,
 )
 from dso_server.runtime.transport import Session
+from dso_server.protocol.membership_protocol import (
+    PREMIUM_MEMBERSHIP,
+    membership_is_active,
+)
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
 )
+
+
+def mystic_cube_drop_is_eligible(session: Session) -> bool:
+    """Premium and Deluxe each grant the Mystic Cube drop on their own.
+
+    The stored Premium expiry is absolute and already excludes the Deluxe
+    pause, so checking it directly is enough.
+    """
+
+    return membership_is_active(
+        int(getattr(session, 'gameplay_membership_type', 0)),
+        bool(getattr(session, 'gameplay_membership_active', False)),
+        str(getattr(session, 'gameplay_membership_expires_at', '') or ''),
+    ) or membership_is_active(
+        PREMIUM_MEMBERSHIP,
+        True,
+        str(
+            getattr(
+                session, 'gameplay_membership_premium_expires_at', '',
+            )
+            or ''
+        ),
+    )
 
 
 class LootPresenceService:
@@ -66,6 +93,10 @@ class LootPresenceService:
             map_difficulty = max(
                 int(session.gameplay_map_difficulty),
                 int(getattr(session, 'gameplay_scaling_difficulty', 0)),
+            )
+            # Premium and Deluxe each grant the cube drop on their own.
+            member_mystic_cube_eligible = mystic_cube_drop_is_eligible(
+                session
             )
             socket_evaluation = session.gameplay_socket_effect_evaluation
             event_participation = dict(
@@ -144,6 +175,7 @@ class LootPresenceService:
             rng=generator,
             force_drops=FORCE_LOOT_DROPS_FOR_TESTING,
             wisdom_eligible=wisdom_eligible,
+            member_mystic_cube_eligible=member_mystic_cube_eligible,
             map_difficulty=map_difficulty,
             map_access_id=map_access_id,
             extra_boss_gems=int(

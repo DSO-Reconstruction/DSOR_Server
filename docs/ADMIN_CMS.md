@@ -37,6 +37,7 @@ CMS roles do not change in-game character powers or name colors.
 | Bonus codes | Create codes that book a fixed reward to whoever redeems them in the shop; limit, expire or disable them and inspect every redemption |
 | Events | Search global event templates, start new runs, deactivate or reactivate retained runs, inspect settings and audit history |
 | Season Pass | Start, reschedule, end or resume seasons; edit each level's experience and free/gold/red rewards; write rewards into client databases; list missions |
+| Mystic cubes | Tune the member-only cube drop chance per difficulty and the contents weights, with optional per-tier overrides |
 | Item catalog | Search actual static database templates and start item bookings |
 | Sessions | Inspect issued game sessions and revoke all login sessions for an account |
 | Audit log | Search durable actor, action, target, reason and change history |
@@ -261,6 +262,7 @@ See [SEASON_PASS.md](SEASON_PASS.md) for the packets and progress rules.
 | `DSO_ACCOUNT_REGISTRY` | `data/db/accounts.sqlite3` | Shared game accounts, CMS roles, bookings, bonus codes and audit |
 | `DSO_PLAYER_DATABASE` | `data/db/players.sqlite3` | Shared saved character state |
 | `DSO_SEASON_PASS_CONFIG` | `data/season_pass.json` | Season Pass reward edits |
+| `DSO_MYSTIC_CUBE_CONFIG` | `data/mystic_cube.json` | Mystic Cube drop chance and contents edits |
 | `DSO_CLIENT_STATIC_DB` | Not set | Client `static.db4` files that receive Season Pass reward edits (`;`-separated on Windows) |
 
 For remote use, put the CMS behind an HTTPS reverse proxy and set

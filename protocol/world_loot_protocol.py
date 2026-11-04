@@ -51,6 +51,10 @@ from dso_server.protocol.currency_protocol import (
 )
 from dso_server.protocol.player_init_protocol import CurrencyChanged
 from dso_server.gameplay.item_economy_values import equipment_melt_value, item_stack_vc_value
+from dso_server.gameplay.mystic_cube_config import (
+    DEFAULT_DROP_CHANCE_PERCENT,
+    cube_drop_chance,
+)
 
 
 NEW_ITEM_COMMAND = command_id("Commands::NewItemCommand", 0x002D)
@@ -65,6 +69,22 @@ GOLD_ITEM_TEMPLATES = frozenset(("money_vc", "money_vc_gold"))
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
+# Mystic Cubes drop from members only, at a flat rate per kill that is
+# deliberately independent of the map's drop and stack scaling. The CMS
+# configuration supplies the effective rate; this constant is the default.
+MYSTIC_CUBE_DROP_CHANCE = DEFAULT_DROP_CHANCE_PERCENT / 100.0
+MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY = (
+    "mystic_cube_common",      # 0 Normal
+    "mystic_cube_common",      # 1 Painful
+    "mystic_cube_uncommon",    # 2 Excruciating
+    "mystic_cube_uncommon",    # 3 Fatal
+    "mystic_cube_magic",       # 4 Infernal
+    "mystic_cube_magic",       # 5 Parallel World Infernal
+    "mystic_cube_rare",        # 6 Merciless
+    "mystic_cube_rare",        # 7 Parallel World Merciless
+    "mystic_cube_epic",        # 8 Bloodshed
+    "mystic_cube_epic",        # 9 Parallel World Bloodshed
+)
 # Healing spheres: the authored rank lists drop them at 1% (monster), 5%
 # (add), 20% (guardian), 35% (champion) and 50% (leader), so a fight almost
 # never produced one. Server policy floors every globe roll: a normal monster
@@ -2278,6 +2298,14 @@ def _scatter_positions(
     return tuple(positions)
 
 
+def mystic_cube_template_for_difficulty(map_difficulty: int) -> str:
+    """Pick the cube tier for a runtime map difficulty (0..9)."""
+
+    ladder = MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY
+    index = max(0, min(len(ladder) - 1, int(map_difficulty)))
+    return ladder[index]
+
+
 def generate_monster_loot(
     static_database_path: str | Path,
     template_id: str,
@@ -2290,6 +2318,7 @@ def generate_monster_loot(
     rng: random.Random | None = None,
     force_drops: bool = False,
     wisdom_eligible: bool = False,
+    member_mystic_cube_eligible: bool = False,
     map_difficulty: int = 0,
     map_access_id: str = "",
     extra_boss_gems: int = 0,
@@ -2782,6 +2811,37 @@ def generate_monster_loot(
                 "",
                 EQUIPMENT_RARITIES.index(rarity_name)
                 if rarity_name in EQUIPMENT_RARITIES else 0,
+            ))
+
+        # Members-only Mystic Cube: one independent flat roll per kill. The
+        # tier follows the runtime difficulty, never the drop-rate curve.
+        if member_mystic_cube_eligible and (
+            force_drops
+            or generator.random() < cube_drop_chance(map_difficulty)
+        ):
+            cube_template = mystic_cube_template_for_difficulty(
+                map_difficulty
+            )
+            cube_row = database.items_by_id.get(cube_template)
+            if cube_row is None:
+                raise ValueError(
+                    f"mystic cube {cube_template!r} is not an item"
+                )
+            cube_rarity = str(
+                cube_row.get("DefaultRarity") or "Common"
+            )
+            specifications.append((
+                LootItemDefinition(
+                    cube_template,
+                    "LootGenItem",
+                    str(cube_row.get("AutoPickUp") or "None"),
+                    "0", "0", "",
+                ),
+                1,
+                1,
+                "",
+                EQUIPMENT_RARITIES.index(cube_rarity)
+                if cube_rarity in EQUIPMENT_RARITIES else 0,
             ))
 
         # Apply the database's map-difficulty stack curve in one final pass so

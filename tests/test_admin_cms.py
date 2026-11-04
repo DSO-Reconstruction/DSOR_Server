@@ -191,11 +191,31 @@ def test_pages_catalog_and_snapshot_are_available_without_bearer_tokens(cms):
         assert "session_id" not in json.dumps(data) and "password_hash" not in json.dumps(data)
     status, detail, _ = request(cms, "GET", "/api/characters/42", cookie=cookie)
     assert status == 200 and detail["state"]["currencies"]["andermant"] == 100
-    for asset in ["/", "/admin.js", "/admin.css"]:
+    for asset in ["/", "/admin.js", "/admin.css", "/admin_mystic_cube.js"]:
         status, body, headers = request(cms, "GET", asset)
         assert status == 200 and body
         assert "script-src 'self'" in headers["Content-Security-Policy"]
     assert request(cms, "GET", "/api/accounts?limit=100000", cookie=cookie)[0] == 400
+
+
+def test_mystic_cube_settings_round_trip(cms, tmp_path):
+    cms.service.mystic_cube.config_path = tmp_path / "mystic_cube.json"
+    cookie, csrf = login(cms)
+    status, data, _ = request(cms, "GET", "/api/mystic-cube", cookie=cookie)
+    assert status == 200 and len(data["difficulties"]) == 10
+
+    difficulties = {str(entry["tier"]): entry["drop_chance"] for entry in data["difficulties"]}
+    payload = {
+        "revision": data["revision"],
+        "drop_chance": {"default": 3, "difficulties": difficulties},
+        "contents": {"default": dict(data["contents"]["default"]), "tiers": {}},
+        "reason": "test cube rates",
+    }
+    status, saved, _ = request(cms, "POST", "/api/mystic-cube", payload, cookie, csrf)
+    assert status == 200 and saved["ok"] is True
+    assert (tmp_path / "mystic_cube.json").exists()
+    status, stale, _ = request(cms, "POST", "/api/mystic-cube", payload, cookie, csrf)
+    assert status == 409, stale
 
 
 def test_booking_idempotency_and_persistence_after_restart(cms):

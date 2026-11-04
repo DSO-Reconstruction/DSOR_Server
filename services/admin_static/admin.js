@@ -8,6 +8,7 @@ import { npcShopsPage, npcShopPage } from "./admin_shops.js";
 import { seasonPassPage } from "./admin_season_pass.js";
 import { lootRatesPage } from "./admin_loot.js";
 import { dungeonElitesPage } from "./admin_elites.js";
+import { mysticCubePage } from "./admin_mystic_cube.js";
 import { bonusCodesPage, bonusCodePage, newBonusCodePage } from "./admin_bonus_codes.js";
 
 let generation = 0, shownPath = null;
@@ -91,6 +92,7 @@ async function render() {
     else if (name === "season-pass") result = await seasonPassPage(route);
     else if (name === "loot-rates") result = await lootRatesPage(route);
     else if (name === "dungeon-elites") result = await dungeonElitesPage(route);
+    else if (name === "mystic-cube") result = await mysticCubePage(route);
     else if (name === "bonus-codes") result = id === "new" ? await newBonusCodePage(route) : id ? await bonusCodePage(route) : await bonusCodesPage(route);
     else if (name === "bookings" && id === "new") result = await newBookingPage(route);
     else if (name === "bookings" && id === "batch") result = await batchBookingPage(route);
