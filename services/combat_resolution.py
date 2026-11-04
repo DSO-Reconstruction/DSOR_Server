@@ -1188,7 +1188,10 @@ class CombatResolutionService:
             delay = int(definition.delay_ticks) / float(SERVER_TICKS_PER_SECOND)
             arguments = (s, s.gameplay_chase_generation, combat, definition, target,
                          int(resolution.server_tick) + int(definition.delay_ticks),
-                         int(resolution.skill_index), tuple(resolution.position))
+                         int(resolution.skill_index), tuple(resolution.position),
+                         int(resolution.cast_id),
+                         float(resolution.critical_hit_chance),
+                         float(resolution.critical_damage_multiplier))
             if delay <= 1e-6:
                 CharacterService._apply_receiver_hosted_aura(*arguments)
                 continue
@@ -1296,7 +1299,10 @@ class CombatResolutionService:
     @staticmethod
     def _apply_receiver_hosted_aura(s: Session, generation, combat, definition,
                                     host_actor_id, server_tick, skill_index,
-                                    fallback_position, timer_key=None) -> None:
+                                    fallback_position, cast_id=0,
+                                    critical_hit_chance=0.0,
+                                    critical_damage_multiplier=2.0,
+                                    timer_key=None) -> None:
         with s.flow_lock:
             if timer_key is not None and s.gameplay_projectile_timers.pop(timer_key, None) is None:
                 return
@@ -1330,6 +1336,9 @@ class CombatResolutionService:
                 owner_actor_id, centre, definition, receivers,
                 player_damage_range=damage_range,
                 server_tick=int(server_tick), skill_index=int(skill_index),
+                cast_id=int(cast_id),
+                critical_hit_chance=float(critical_hit_chance),
+                critical_damage_multiplier=float(critical_damage_multiplier),
             )
         if int(definition.duration_ticks) <= 0:
             # The host shows a zero-duration aura for one tick so the client
