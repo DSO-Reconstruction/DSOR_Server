@@ -53,15 +53,18 @@ def test_inactive_event_monsters_do_not_spawn_in_dungeons():
 
 
 def test_active_event_monsters_spawn_when_event_flag_is_set():
-    """Event-gated monsters should spawn when the corresponding event flag is active."""
-    # When stellar gold event is active
-    monsters = _get_encounter_monsters(
-        "a0406_dun",
-        scaling_difficulty=0,
-        active_event_flags=frozenset({"stellar_gold_event_01"}),
-    )
-    templates = {m.template_id for m in monsters}
-    assert any("gold" in t for t in templates)
+    """Event-gated monsters should spawn when the corresponding event flag is active.
+
+    a0406_dun authors its Stellar Gold monsters on MapVariation tiers 1-10
+    only, so a difficulty-1 instance shows them and the Normal (tier 0) one
+    does not. Before fixed rows were gated by tier, every instance showed all
+    ten tiers of them stacked on the same spots.
+    """
+    flags = frozenset({"stellar_gold_event_01"})
+    scaled = _get_encounter_monsters("a0406_dun", scaling_difficulty=1, active_event_flags=flags)
+    assert any("gold" in m.template_id for m in scaled)
+    normal = _get_encounter_monsters("a0406_dun", scaling_difficulty=0, active_event_flags=flags)
+    assert not any("gold" in m.template_id for m in normal)
 
 
 @pytest.mark.parametrize("diff", [0, 1, 2, 3, 4, 6, 8])
