@@ -31,34 +31,33 @@ class MonsterTickContextService:
                 previous_at = now
             elapsed = max(0.0, min(0.5, now - previous_at))
             previous_server_tick = int(s.gameplay_chase_server_tick)
-            anchor = getattr(s, "gameplay_chase_clock_anchor", None)
-            if (
-                anchor is None
-                or anchor[0] != generation
-                or anchor[1] is not combat
-            ):
-                anchor = (generation, combat, previous_at, previous_server_tick)
-            # Quantize total wall time once. Rounding each interval (and
-            # forcing at least one tick) made delayed/early tick pairs run
-            # faster than the client clock, accumulating seconds of lead.
-            ticks = int(
-                max(0.0, now - anchor[2]) * SERVER_TICKS_PER_SECOND + 1e-7
-            )
-            server_tick = (anchor[3] + ticks) & 0xFFFFFFFF
-            clock_advance = (previous_server_tick - server_tick) & 0xFFFFFFFF
-            if 0 < clock_advance < 0x80000000:
-                # A fresh client Move advanced the clock since the anchor.
-                server_tick = previous_server_tick
-                anchor = (generation, combat, now, server_tick)
             return SimpleNamespace(
                 last_move=s.gameplay_last_move,
                 character=s.gameplay_character,
                 remote_actor_id=s.gameplay_remote_actor_id,
                 elapsed=elapsed,
                 previous_server_tick=previous_server_tick,
-                clock_anchor=anchor,
-                server_tick=server_tick,
+                server_tick=MonsterTickContextService._next_session_tick(
+                    previous_server_tick, now
+                ),
             )
+
+    @staticmethod
+    def _next_session_tick(current: int, now: float | None = None) -> int:
+        """Advance a session's game tick to the server clock, never back.
+
+        Every client was given ``server_clock_tick`` at map entry, so monster
+        commands stamped with it suit all viewers alike. The tick used to be
+        learned from the owner's moves: a client whose clock ran ahead pulled
+        every monster ahead of the other viewers' clocks, and the map started
+        at tick 0 until its owner's first move. A tick already ahead holds
+        until the clock reaches it.
+        """
+
+        clock = server_clock_tick(now)
+        if ((clock - int(current)) & 0xFFFFFFFF) < 0x80000000:
+            return clock
+        return int(current) & 0xFFFFFFFF
 
     @staticmethod
     def _commit_monster_tick_owner(
@@ -79,14 +78,13 @@ class MonsterTickContextService:
             ):
                 return False
             s.gameplay_chase_last_at = now
-            # Movement can advance this clock during the combat transaction.
-            # Never overwrite that newer client-derived value.
+            # A move can advance this clock during the combat transaction.
+            # Never step it back.
             if (
-                int(s.gameplay_chase_server_tick)
-                == int(snapshot.previous_server_tick)
-            ):
+                (int(snapshot.server_tick) - int(s.gameplay_chase_server_tick))
+                & 0xFFFFFFFF
+            ) < 0x80000000:
                 s.gameplay_chase_server_tick = int(snapshot.server_tick)
-                s.gameplay_chase_clock_anchor = snapshot.clock_anchor
             return True
 
     @staticmethod

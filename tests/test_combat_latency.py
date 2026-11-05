@@ -1,8 +1,10 @@
 """Regressions drawn from the ExamplePlayer live lag report."""
 from types import SimpleNamespace
+import time
 import unittest
 from unittest.mock import patch
 
+from dso_server.runtime.context import server_clock_tick, server_time
 from dso_server.runtime.gameplay_scheduler import GameplayDeadlineScheduler
 
 from dso_server.services.character_server import CharacterServer
@@ -18,58 +20,57 @@ class MonsterClockTests(unittest.TestCase):
         self.session.gameplay_chase_last_at = 100.0
         self.session.gameplay_chase_server_tick = 1000
 
-    def tick(self, now):
-        snapshot = CharacterServer._snapshot_monster_tick_owner(
-            self.session, 0, self.combat, now=now,
-        )
+    def tick(self, now, clock):
+        with patch("dso_server.services.monster_tick_context.server_clock_tick",
+                   return_value=clock):
+            snapshot = CharacterServer._snapshot_monster_tick_owner(
+                self.session, 0, self.combat, now=now,
+            )
         self.assertTrue(CharacterServer._commit_monster_tick_owner(
             self.session, 0, self.combat, snapshot, now=now,
         ))
         return snapshot
 
-    def test_jitter_does_not_make_the_clock_run_faster_than_wall_time(self):
-        for cycle in range(1000):
-            self.tick(100.0 + cycle * 0.08 + 0.061)
-            self.tick(100.0 + (cycle + 1) * 0.08)
-        self.assertEqual(self.session.gameplay_chase_server_tick, 3000)
+    def test_the_tick_is_the_server_clock_every_client_was_given(self):
+        snapshot = self.tick(100.04, 1042)
+        self.assertEqual(snapshot.server_tick, 1042)
+        self.assertEqual(self.session.gameplay_chase_server_tick, 1042)
 
-    def test_fast_followup_does_not_invent_another_tick(self):
-        self.tick(100.04)
-        self.tick(100.041)
-        self.assertEqual(self.session.gameplay_chase_server_tick, 1001)
+    def test_the_real_clock_is_server_time_in_40_ms_ticks(self):
+        before = server_time()
+        tick = server_clock_tick()
+        after = server_time()
+        self.assertLessEqual(before // 40, tick)
+        self.assertLessEqual(tick, after // 40)
+        now = time.perf_counter()
+        self.assertLessEqual(abs(server_clock_tick(now) - server_clock_tick()), 1)
 
-    def test_clock_uses_full_elapsed_time_while_physics_step_is_capped(self):
-        snapshot = self.tick(102.0)
+    def test_a_tick_already_ahead_holds_until_the_clock_reaches_it(self):
+        self.session.gameplay_chase_server_tick = 1010
+        self.assertEqual(self.tick(100.04, 1005).server_tick, 1010)
+        self.assertEqual(self.tick(100.08, 1011).server_tick, 1011)
+
+    def test_physics_step_is_capped_while_the_clock_uses_wall_time(self):
+        snapshot = self.tick(102.0, 1050)
         self.assertEqual(snapshot.server_tick, 1050)
         self.assertEqual(snapshot.elapsed, 0.5)
 
     def test_unsigned_tick_wraparound(self):
         self.session.gameplay_chase_server_tick = 0xFFFFFFFE
-        self.tick(100.16)
+        self.tick(100.16, 2)
         self.assertEqual(self.session.gameplay_chase_server_tick, 2)
 
-    def test_client_advance_during_simulation_is_not_overwritten(self):
-        snapshot = CharacterServer._snapshot_monster_tick_owner(
-            self.session, 0, self.combat, now=100.04,
-        )
-        self.session.gameplay_chase_server_tick = 1010
+    def test_advance_during_simulation_is_not_stepped_back(self):
+        with patch("dso_server.services.monster_tick_context.server_clock_tick",
+                   return_value=1001):
+            snapshot = CharacterServer._snapshot_monster_tick_owner(
+                self.session, 0, self.combat, now=100.04,
+            )
+        self.session.gameplay_chase_server_tick = 1003
         CharacterServer._commit_monster_tick_owner(
             self.session, 0, self.combat, snapshot, now=100.04,
         )
-        self.assertEqual(self.session.gameplay_chase_server_tick, 1010)
-        self.tick(100.08)
-        self.tick(100.12)
-        self.assertLessEqual(self.session.gameplay_chase_server_tick, 1012)
-
-    def test_new_map_generation_does_not_inherit_old_clock_anchor(self):
-        self.tick(101.0)
-        self.session.gameplay_chase_generation = 1
-        self.session.gameplay_chase_server_tick = 200
-        self.session.gameplay_chase_last_at = 500.0
-        snapshot = CharacterServer._snapshot_monster_tick_owner(
-            self.session, 1, self.combat, now=500.04,
-        )
-        self.assertEqual(snapshot.server_tick, 201)
+        self.assertEqual(self.session.gameplay_chase_server_tick, 1003)
 
 
 class ImpactDeadlineTests(unittest.TestCase):

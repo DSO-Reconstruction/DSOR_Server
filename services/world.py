@@ -11,7 +11,7 @@ from dso_server.protocol.consumable_protocol import load_instant_consumable_defi
 from dso_server.protocol.world_loot_protocol import inventory_loot_text_type
 
 from dso_server.runtime.context import *
-from dso_server.runtime import progression_queue
+from dso_server.runtime import latency_stats, progression_queue
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.fractured_planes_layout import is_tower_hardware
 from dso_server.gameplay.boss_encounter_policy import (
@@ -683,10 +683,11 @@ class WorldService:
                         frame.world_to_wire(s.gameplay_spawn_position),
                         0.0, 0.0, 0.0, move.start_tick, 0,
                     )
-                # Keep learning the client clock even while its position is
+                # Keep the session tick current even while the position is
                 # locked, so subsequent round effects use a current tick.
-                if ((int(move.start_tick) - int(s.gameplay_chase_server_tick)) & 0xFFFFFFFF) < 0x80000000:
-                    s.gameplay_chase_server_tick = move.start_tick
+                s.gameplay_chase_server_tick = CharacterService._next_session_tick(
+                    s.gameplay_chase_server_tick
+                )
                 revive_lock_until = float(
                     getattr(s, "gameplay_revive_movement_until", 0.0)
                 )
@@ -770,10 +771,14 @@ class WorldService:
                         ),
                         frame,
                     )
-            if ((int(move.start_tick) - int(s.gameplay_chase_server_tick)) & 0xFFFFFFFF) < 0x80000000:
-                s.gameplay_chase_server_tick = move.start_tick
+            # The session tick follows the server clock every client was
+            # given at map entry; a client's own move ticks no longer set it.
+            s.gameplay_chase_server_tick = CharacterService._next_session_tick(
+                s.gameplay_chase_server_tick
+            )
         if refusal is not None:
             CharacterService._accept_gameplay_state_command(s, 0x005F)
+            latency_stats.count("move refused", latency_stats.session_label(s))
             if correction is not None:
                 stopped, frame = correction
                 print(

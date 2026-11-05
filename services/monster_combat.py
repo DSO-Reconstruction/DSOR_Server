@@ -460,15 +460,6 @@ class MonsterCombatService(
             # not invalidate in-flight casts; only lifecycle paths bump it.
             generation = s.gameplay_chase_generation
             s.gameplay_chase_last_at = time.perf_counter()
-            if s.gameplay_last_move is not None:
-                client_tick = int(s.gameplay_last_move.start_tick)
-                if (
-                    (client_tick - int(s.gameplay_chase_server_tick))
-                    & 0xFFFFFFFF
-                ) < 0x80000000:
-                    # A stationary player's last Move may predate many map
-                    # ticks. Restarting must not rewind movement/attack time.
-                    s.gameplay_chase_server_tick = client_tick
             timer = _FixedRateChaseLoop(s, generation)
             s.gameplay_chase_timer = timer
         try:

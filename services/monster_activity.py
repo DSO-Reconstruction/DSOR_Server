@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 from dso_server.runtime.context import *
+from dso_server.runtime import latency_stats
 from dso_server.runtime.transport import Session
 
 
 class MonsterActivityService:
     @staticmethod
     def _record_delivered_monster_movements(
-            s: Session, combat, commands, *, repeat_stops: bool = False) -> None:
+            s: Session, combat, commands, *, repeat_stops: bool = False,
+            count_expiries: bool = False) -> None:
         """Remember transforms whose datagram was submitted for this viewer.
 
         With ``repeat_stops`` the stops among them (sent unreliable) are armed
         for re-sending, in this same lock section: the map worker's per-viewer
         session-lock count is a measured budget (PERFORMANCE.md section 11.5).
+        With ``count_expiries`` a walking sample that follows one whose
+        horizon already ran out counts as a segment expiry: the client stood
+        that monster still in between, the stop-go the 18-tick horizon exists
+        to prevent. Resyncs and attack frames only restart the horizon.
         """
 
         delivered = {
@@ -27,6 +33,7 @@ class MonsterActivityService:
             if combat is not None and int(command.actor_id) in combat.monsters
         }
         now = time.perf_counter()
+        expired = []
         with s.flow_lock:
             if combat is not None and s.gameplay_combat_state is not combat:
                 return
@@ -34,10 +41,21 @@ class MonsterActivityService:
             if repeat_stops and s.gameplay_monster_stop_repeat_combat is not combat:
                 repeats.clear()
                 s.gameplay_monster_stop_repeat_combat = combat
+            segment_ends = s.gameplay_monster_segment_ends
+            if s.gameplay_monster_segment_combat is not combat:
+                segment_ends.clear()
+                s.gameplay_monster_segment_combat = combat
             for command in commands:
                 # Any newer transform (walking sample, attack frame, resync)
                 # supersedes a stop still being repeated.
                 repeats.pop(int(command.actor_id), None)
+                ran_out_at = segment_ends.pop(int(command.actor_id), None)
+                if command.value.scalar_byte and command.value.duration_ticks:
+                    if count_expiries and ran_out_at is not None and now > ran_out_at:
+                        expired.append(now - ran_out_at)
+                    segment_ends[int(command.actor_id)] = (
+                        now + int(command.value.duration_ticks) / SERVER_TICKS_PER_SECOND
+                    )
                 if (
                     repeat_stops
                     and MONSTER_STOP_REPEAT_SECONDS
@@ -64,6 +82,11 @@ class MonsterActivityService:
                     if actor_id in spawned
                 }
             )
+        if expired:
+            label = latency_stats.session_label(s)
+            for gap in expired:
+                latency_stats.record("monster segment gap", gap)
+                latency_stats.count("monster segment expired", label)
 
     @staticmethod
     def _send_monster_movement_batches(
@@ -98,6 +121,11 @@ class MonsterActivityService:
                         # origin. A retained chase/idle sample must not arrive
                         # afterwards and replace the attack animation.
                         pending.pop(actor_id, None)
+                # A monster back in view starts a new horizon, not an expiry.
+                segment_ends = s.gameplay_monster_segment_ends
+                for actor_id in tuple(segment_ends):
+                    if actor_id not in visible:
+                        del segment_ends[actor_id]
             queued = tuple(pending.values())
         # Reliable stops (legacy) are submitted first, so subsequent sequenced
         # movement is stamped after these essential boundaries. Never promote
@@ -125,24 +153,43 @@ class MonsterActivityService:
                 if sent is None:
                     return
                 CharacterService._record_delivered_monster_movements(
-                    s, combat, batch, repeat_stops=not reliable
+                    s, combat, batch, repeat_stops=not reliable,
+                    count_expiries=True,
                 )
+
+    @staticmethod
+    def _next_monster_heartbeat(s: Session, now: float) -> float | None:
+        """This viewer's next idle-heartbeat instant, or None when disabled.
+
+        All of a viewer's standing monsters share it, so one due check covers
+        them all. Each viewer sits at its own phase of the 12-tick grid, so a
+        map's viewers do not all heartbeat in the same tick.
+        """
+
+        period = MONSTER_IDLE_HEARTBEAT_SECONDS
+        if period <= 0:
+            return None
+        phase = (int(s.addr[1]) % 12) * period / 12
+        return phase + (math.floor((now - phase) / period) + 1) * period
 
     @staticmethod
     def _send_monster_stop_repeats(s: Session, combat) -> int:
         """Re-send due stops; return how many commands went out.
 
-        A repeat is dropped once the monster is no longer visible to this
-        viewer, while its attack animation must not be overwritten, or when a
-        newer transform for it is already queued. Nothing is locked until a
-        deadline is due, and a due deadline is spent even if the outbound
-        lock is busy: repeats are redundancy, and the next one follows.
+        After its scheduled repeats a stop stays on the idle heartbeat. It is
+        dropped once the monster is no longer visible to this viewer, is dead,
+        moving or no longer where the stop put it, while its attack animation
+        must not be overwritten, or when a newer transform for it is already
+        queued. Nothing is locked until a deadline is due, and a due deadline
+        is spent even if the outbound lock is busy: repeats are redundancy,
+        and the next one follows.
         """
 
         repeats = s.gameplay_monster_stop_repeats
         now = time.perf_counter()
         if not repeats or now < s.gameplay_monster_stop_repeat_next_at:
             return 0
+        heartbeat_at = CharacterService._next_monster_heartbeat(s, now)
         with s.flow_lock:
             if (
                 s.gameplay_monster_stop_repeat_combat is not combat
@@ -155,6 +202,11 @@ class MonsterActivityService:
             unblock_at = (
                 combat.monster_motion_unblock_at if combat is not None else {}
             )
+            # Plain reads of the map's dicts: a stale answer only costs one
+            # heartbeat, and combat.lock must not be taken under flow_lock.
+            health = getattr(combat, "monster_health", {})
+            moving = getattr(combat, "monster_moving", {})
+            positions = getattr(combat, "monster_positions", {})
             due = []
             next_at = math.inf
             for actor_id, (command, deadlines) in tuple(repeats.items()):
@@ -162,7 +214,23 @@ class MonsterActivityService:
                     actor_id not in visible
                     or now < unblock_at.get(actor_id, 0.0)
                     or actor_id in s.gameplay_pending_monster_movements
+                    or health.get(actor_id, 1) <= 0
+                    or moving.get(actor_id)
                 ):
+                    del repeats[actor_id]
+                    continue
+                position = positions.get(actor_id)
+                stopped_at = (
+                    combat.encounter.coordinate_frame.wire_to_world(
+                        command.value.relative_position
+                    )
+                    if position is not None else None
+                )
+                if position is not None and math.hypot(
+                    position[0] - stopped_at[0], position[2] - stopped_at[2],
+                ) > 0.5:
+                    # Moved by a path that sent no transform through here:
+                    # re-sending the old stop would pull it back.
                     del repeats[actor_id]
                     continue
                 if now >= deadlines[0]:
@@ -170,8 +238,10 @@ class MonsterActivityService:
                     while deadlines and now >= deadlines[0]:
                         deadlines.pop(0)
                     if not deadlines:
-                        del repeats[actor_id]
-                        continue
+                        if heartbeat_at is None:
+                            del repeats[actor_id]
+                            continue
+                        deadlines.append(heartbeat_at)
                 next_at = min(next_at, deadlines[0])
             s.gameplay_monster_stop_repeat_next_at = next_at
         sent = 0
