@@ -60,12 +60,16 @@ class BattlegroundMovementTests(unittest.TestCase):
                 self.server, self.match, self.match.info_generation, seconds=seconds,
             )
             for session, anchor in anchors.items():
-                CharacterService._handle_gameplay_move(session, self.payload(self.request(session, tick)))
+                # The session tick stays current while locked, from the server
+                # clock rather than the client's own move tick.
+                with patch("dso_server.services.monster_tick_context.server_clock_tick",
+                           return_value=tick + 7):
+                    CharacterService._handle_gameplay_move(session, self.payload(self.request(session, tick)))
                 held = session.gameplay_last_move
                 self.assertEqual(held.relative_position, anchor.relative_position)
                 self.assertEqual((held.scalar_byte, held.duration_ticks), (0, 0))
                 self.assertEqual(held.start_tick, tick)
-                self.assertEqual(session.gameplay_chase_server_tick, tick)
+                self.assertEqual(session.gameplay_chase_server_tick, tick + 7)
                 data, bits, label = session.recorder.messages[-1]
                 self.assertEqual(label, "player-locked-movement-correction")
                 transform, actor = decode_force_transform_batch(data, bits)

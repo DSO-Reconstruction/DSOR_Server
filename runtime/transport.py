@@ -18,6 +18,7 @@ from dso_server.runtime.concurrency import (
     SESSION_FLOW_DOMAIN,
     assert_no_state_locks_held,
 )
+from dso_server.runtime import latency_stats
 from dso_server.runtime.outbound import BoundedOutboundSender, OutboundCapacityError
 
 
@@ -846,6 +847,10 @@ class Session:
         self.gameplay_monster_stop_repeat_combat = None
         # Earliest re-send deadline, read without the lock on every tick.
         self.gameplay_monster_stop_repeat_next_at = float("inf")
+        # actor id -> perf_counter time the last walking segment sent to this
+        # viewer runs out (its duration is the client's dead-reckoning horizon).
+        self.gameplay_monster_segment_ends = {}
+        self.gameplay_monster_segment_combat = None
         self.gameplay_pending_monster_movement_combat = None
         self.gameplay_announced_monster_actor_ids = set()
         self.gameplay_announced_npc_actor_ids = set()
@@ -885,7 +890,6 @@ class Session:
         self.gameplay_chase_generation = 0
         self.gameplay_chase_last_at = None
         self.gameplay_chase_server_tick = 0
-        self.gameplay_chase_clock_anchor = None
         self.gameplay_last_heal_server_tick = 0
         self.gameplay_last_monster_attack_log_at = 0.0
         self.gameplay_projectile_timers = {}
@@ -1488,6 +1492,7 @@ class Session:
 
     def acknowledge(self, sequences):
         acknowledged = []
+        repaired = []
         recovered = None
         now = time.perf_counter()
         with self.pending_lock:
@@ -1510,7 +1515,13 @@ class Session:
                         self._sample_round_trip_locked(
                             max(0.0, now - float(item['first_sent_at']))
                         )
+                    elif item.get('first_sent_at') is not None:
+                        repaired.append((
+                            item['label'],
+                            now - float(item['first_sent_at']),
+                        ))
             backlog = len(self.pending_reliable)
+            round_trip = float(self.reliable_srtt_seconds or 0.0)
             if not backlog:
                 self.reliable_pending_started_at = None
             if (
@@ -1534,7 +1545,29 @@ class Session:
                 f"{duration:.3f}s; pending={backlog}, peak={peak}, "
                 f"max_ack={maximum_ack * 1000.0:.1f}ms"
             )
+        if repaired:
+            self._note_repaired_reliable(repaired, round_trip)
         return acknowledged
+
+    def _note_repaired_reliable(self, repaired, round_trip: float) -> None:
+        """Count the client's ordered-stream holds that a repair ended.
+
+        The client stops delivering a channel at its first missing ordered
+        frame. That hold lasts from when the lost copy would have arrived to
+        when the repair did: the first send to its ACK, less one round trip.
+        A channel 0 hold freezes moves, hits and monsters (the Phase 0 target
+        is under RTT + 50 ms); one on the meta lane only delays progress.
+        """
+
+        label = latency_stats.session_label(self)
+        for frame_label, since_first_send in repaired:
+            held = max(0.0, since_first_send - round_trip)
+            if reliable_channel_for(frame_label) == 0:
+                latency_stats.record("held stream (channel 0)", held)
+                if held > 0.05:
+                    latency_stats.count("held stream over 50 ms", label)
+            else:
+                latency_stats.record("held stream (meta lane)", held)
 
     def _sample_round_trip_locked(self, sample: float) -> None:
         """Fold one ACK round trip into the RFC 6298 estimator.

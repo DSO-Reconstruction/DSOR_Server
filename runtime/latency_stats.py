@@ -5,6 +5,8 @@ milliseconds. The slow-command warnings only show outliers above 50 ms; this
 keeps the distribution. ``record(kind, seconds)`` is cheap (one lock, a
 bounded sample ring per kind) and every ``DSO_LATENCY_REPORT_SECONDS`` (30)
 of activity one line per kind reports count, p50, p95, p99 and max.
+``count(kind, who)`` tallies netcode events (refused moves, frozen streams,
+expired movement segments) per session for the same report.
 ``DSO_LATENCY_REPORT_SECONDS=0`` disables reporting.
 """
 
@@ -42,6 +44,8 @@ _lock = threading.Lock()
 _samples: dict[str, deque] = {}
 _counts: dict[str, int] = {}
 _maxima: dict[str, float] = {}
+# kind -> session label -> events in this window
+_events: dict[str, dict[str, int]] = {}
 _window_started = time.perf_counter()
 
 
@@ -73,9 +77,7 @@ def record(kind: str, seconds: float) -> None:
     if REPORT_SECONDS <= 0:
         return
     seconds = max(0.0, float(seconds))
-    report = None
     now = time.perf_counter()
-    global _window_started
     with _lock:
         ring = _samples.get(kind)
         if ring is None:
@@ -84,14 +86,41 @@ def record(kind: str, seconds: float) -> None:
         _counts[kind] = _counts.get(kind, 0) + 1
         if seconds > _maxima.get(kind, 0.0):
             _maxima[kind] = seconds
-        if now - _window_started >= REPORT_SECONDS:
-            report = _snapshot_locked(now - _window_started)
-            _samples.clear()
-            _counts.clear()
-            _maxima.clear()
-            _window_started = now
+        report = _roll_locked(now)
     if report:
         print(report)
+
+
+def count(kind: str, who: str = "") -> None:
+    """Tally one event for session ``who`` in the current report window."""
+
+    if REPORT_SECONDS <= 0:
+        return
+    now = time.perf_counter()
+    with _lock:
+        per_session = _events.setdefault(kind, {})
+        per_session[who] = per_session.get(who, 0) + 1
+        report = _roll_locked(now)
+    if report:
+        print(report)
+
+
+def session_label(session) -> str:
+    address = getattr(session, "addr", None)
+    return f"{address[0]}:{address[1]}" if address else "?"
+
+
+def _roll_locked(now: float) -> str | None:
+    global _window_started
+    if now - _window_started < REPORT_SECONDS:
+        return None
+    report = _snapshot_locked(now - _window_started)
+    _samples.clear()
+    _counts.clear()
+    _maxima.clear()
+    _events.clear()
+    _window_started = now
+    return report
 
 
 def _percentile(ordered, fraction):
@@ -111,4 +140,13 @@ def _snapshot_locked(elapsed: float) -> str:
             f"{_percentile(ordered, 0.99) * 1000:7.2f} "
             f"{_maxima.get(kind, 0.0) * 1000:8.2f}  n={_counts.get(kind, 0)}"
         )
+    if _events:
+        lines.append("  events (total: busiest sessions):")
+        for kind in sorted(_events):
+            per_session = sorted(_events[kind].items(), key=lambda item: -item[1])
+            busiest = ", ".join(f"{who} {n}" for who, n in per_session[:4])
+            more = f", +{len(per_session) - 4} more" if len(per_session) > 4 else ""
+            lines.append(
+                f"  {kind:<28} {sum(n for _who, n in per_session):7d}: {busiest}{more}"
+            )
     return "\n".join(lines)
