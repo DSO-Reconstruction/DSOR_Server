@@ -3154,7 +3154,7 @@ def _load_dynamic_monster_encounter(
             """
             SELECT rowid, Transform, COALESCE(NpcId, ''),
                    COALESCE(EventSetRow, -1), COALESCE(_ID, ''),
-                   COALESCE(Rank, '')
+                   COALESCE(Rank, ''), COALESCE(ParentNodeIndex, 0)
             FROM _Instance_SpawnPoint
             WHERE COALESCE(AlliedToPlayer, 0)=0
               AND (
@@ -3169,7 +3169,11 @@ def _load_dynamic_monster_encounter(
             """
         ).fetchall())
         all_fixed_rows = []
-        for row_id, transform, npc_id, event_set, object_id, _rank in authored_fixed_rows:
+        fixed_row_parent_nodes = {}
+        for (
+            row_id, transform, npc_id, event_set, object_id, _rank,
+            parent_node,
+        ) in authored_fixed_rows:
             template_id = str(npc_id or "").strip()
             if not template_id:
                 template_id = _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES.get(
@@ -3201,7 +3205,47 @@ def _load_dynamic_monster_encounter(
                     row_id, transform, template_id, event_set,
                     str(_rank or ""),
                 ))
+                fixed_row_parent_nodes[int(row_id)] = int(parent_node or 0)
         all_fixed_rows = tuple(all_fixed_rows)
+        # Apply the MapVariation difficulty gate to fixed rows as well as
+        # event rows. Without it, maps whose MVR sidecar is missing load all
+        # authored tiers at the same positions. Mortis performs its own phase
+        # selection over those rows in the event path.
+        if str(map_id).casefold() != "pw214_mortis_boss":
+            from dso_server.gameplay.map_event_state import (
+                map_difficulty_variations, selected_variation_tier,
+            )
+            fixed_variations = map_difficulty_variations(
+                map_database_path(static_database_path, map_id)
+            )
+            fixed_tiers = {}
+            for row in all_fixed_rows:
+                variation = fixed_variations.get(
+                    fixed_row_parent_nodes.get(int(row[0]), 0)
+                )
+                if variation is not None:
+                    fixed_tiers.setdefault(variation[0], set()).add(variation[1])
+            selected_fixed_tiers = {
+                family: selected_variation_tier(tiers, scaling_difficulty)
+                for family, tiers in fixed_tiers.items()
+            }
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if (
+                    (variation := fixed_variations.get(
+                        fixed_row_parent_nodes.get(int(row[0]), 0)
+                    )) is None
+                    or selected_fixed_tiers.get(variation[0]) == variation[1]
+                )
+            )
+        # The normal gorgon group on Medusa is a separate tier-0 family from
+        # the scaling group. On scaled runs, the BOSS_spawn gorgons replace
+        # these four baseline actors instead of stacking on top of them.
+        if str(map_id).casefold() == "c2304_boss" and int(scaling_difficulty) > 0:
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if str(row[2]).casefold() != "c2303_normal_g_gen_gorgon"
+            )
         if str(map_id).casefold() == CRAFTING_DUNGEON_MAP_ID and (
             CRAFTING_DUNGEON_LEADER_PRESENT_FLAG.casefold()
             not in active_local_map_event_flags(map_id, active_event_flags)

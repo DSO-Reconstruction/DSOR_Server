@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
+import json
 import math
 from pathlib import Path
 import random
@@ -760,13 +761,53 @@ def prop_visible_to_player(
     return required == min(siblings) if siblings else True
 
 
+@lru_cache(maxsize=1)
+def _map_variation_catalog() -> Mapping[str, Mapping[int, tuple[int, int]]]:
+    """Compact MVR-derived mappings for installed maps without .mvr files."""
+
+    catalog_path = (
+        Path(__file__).resolve().parent.parent
+        / "data" / "catalogs" / "map_variations_fallback.json"
+    )
+    try:
+        payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return MappingProxyType({})
+    return MappingProxyType({
+        str(map_id).casefold(): MappingProxyType({
+            int(row[0]): (int(row[1]), int(row[2]))
+            for row in rows
+            if isinstance(row, list) and len(row) == 3
+        })
+        for map_id, rows in payload.items()
+        if isinstance(rows, list)
+    })
+
+
+def _fallback_map_variations(path: Path) -> dict[int, tuple[int, int]]:
+    map_id = Path(path).stem.casefold()
+    values = _map_variation_catalog().get(map_id)
+    if values:
+        return dict(values)
+    # Keep Medusa safe even when a trimmed deployment omits the catalog too.
+    if map_id == "c2304_boss":
+        return {
+            1640: (1639, 0),
+            **{
+                1675 + (tier - 1) * 6: (1674, tier)
+                for tier in range(1, 11)
+            },
+        }
+    return {}
+
+
 def _map_variations(path: Path) -> dict[int, tuple[int, int]]:
     """``MapVariation`` node index -> (family node, difficulty tier)."""
 
     try:
         root = ET.fromstring(resident_content.read_bytes(path.with_suffix(".mvr")))
     except (OSError, ET.ParseError):
-        return {}
+        return _fallback_map_variations(path)
     variations: dict[int, tuple[int, int]] = {}
     for node in root.iter("LevelNode"):
         if str(node.get("variationType", "")).strip() != "1":
@@ -794,7 +835,7 @@ def map_difficulty_variations(path: Path) -> Mapping[int, tuple[int, int]]:
     try:
         root = ET.fromstring(resident_content.read_bytes(Path(path).with_suffix(".mvr")))
     except (OSError, ET.ParseError):
-        return MappingProxyType({})
+        return MappingProxyType(_fallback_map_variations(path))
     result: dict[int, tuple[int, int]] = {}
 
     def walk(node, inherited) -> None:
