@@ -57,6 +57,25 @@ from dso_server.gameplay.local_monster_state import (
 )
 
 
+# The fixture map b1201_pve holds its two entrance gnomes (one spawn group
+# whose centre is the old encounter centre) and, since its authored monsters
+# are loaded beside the server-owned list (upstream #100), the ungated Hunted
+# Goods guardian about 40 m east. Pair tests are written for the gnomes.
+B1201_ENTRANCE_TEMPLATE = "b1201_s_gen_norsegnome"
+
+
+def entrance_pack(combat) -> tuple[int, int]:
+    """The two entrance gnomes of the b1201_pve fixture, in actor order."""
+
+    pack = tuple(
+        actor_id for actor_id in combat.encounter.actor_ids
+        if combat.monsters[actor_id].template_id == B1201_ENTRANCE_TEMPLATE
+    )
+    if len(pack) != 2:
+        raise AssertionError(f"expected the two entrance gnomes, got {pack}")
+    return pack
+
+
 class LocalCombatStateTests(unittest.TestCase):
     def test_point_two_percent_block_rolls_are_independent_per_impact(self):
         chance = 0.002
@@ -170,7 +189,10 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_bullet_cast_mutates_one_monster_and_produces_death(self):
         result = self.state.apply_bullet_skill(
-            self._cast(2000), self._wire(self.encounter.trigger_center)
+            self._cast(2000),
+            self._wire(self.encounter.group_for_actor(
+                entrance_pack(self.state)[0]
+            ).trigger_center),
         )
         self.assertIsNotNone(result)
         self.assertTrue(result.killed)
@@ -178,7 +200,13 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertEqual(result.damage, result.maximum_health)
         self.assertEqual(result.attacker_actor_id, 1)
         self.assertNotIn(result.target_actor_id, self.state.living_actor_ids)
-        self.assertEqual(len(self.state.living_actor_ids), 1)
+        # One gnome of the pair died; its partner (and the far guardian) live.
+        pack = entrance_pack(self.state)
+        self.assertIn(result.target_actor_id, pack)
+        self.assertEqual(
+            [actor for actor in pack if actor in self.state.living_actor_ids],
+            [actor for actor in pack if actor != result.target_actor_id],
+        )
 
     def test_fallback_navigation_supports_ground_loot_reachability(self):
         encounter = replace(
@@ -646,7 +674,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_conditional_xmas_aura_does_not_widen_ice_missile_hit(self):
         player_world = (0.0, 2.0, 0.0)
-        direct_actor, off_axis_actor = self.encounter.actor_ids
+        direct_actor, off_axis_actor = entrance_pack(self.state)
         self.state.monster_positions[direct_actor] = (0.0, 2.0, -8.0)
         self.state.monster_positions[off_axis_actor] = (4.0, 2.0, -8.0)
         modifier = CombatModifier(
@@ -692,7 +720,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_conditional_turret_aura_does_not_widen_simple_shot_hit(self):
         player_world = (0.0, 2.0, 0.0)
-        direct_actor, off_axis_actor = self.encounter.actor_ids
+        direct_actor, off_axis_actor = entrance_pack(self.state)
         self.state.monster_positions[direct_actor] = (0.0, 2.0, -8.0)
         self.state.monster_positions[off_axis_actor] = (4.0, 2.0, -8.0)
         modifier = CombatModifier(
@@ -727,7 +755,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_projectile_target_is_not_scheduled_twice_after_splash(self):
         player_world = (0.0, 2.0, 0.0)
-        first_actor, second_actor = self.encounter.actor_ids
+        first_actor, second_actor = entrance_pack(self.state)
         self.state.monster_positions[first_actor] = (0.0, 2.0, -8.0)
         self.state.monster_positions[second_actor] = (0.0, 2.0, -9.0)
         cast = BulletSkill(
@@ -1206,7 +1234,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_dwarf_flamethrower_uses_authored_sixty_degree_angle(self):
         player_world = (0.0, 2.0, 0.0)
-        front_actor, side_actor = self.encounter.actor_ids
+        front_actor, side_actor = entrance_pack(self.state)
         self.state.monster_positions[front_actor] = (0.0, 2.0, -5.0)
         self.state.monster_positions[side_actor] = (5.0, 2.0, 0.0)
 
@@ -1227,7 +1255,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_database_cone_width_is_a_forward_trapezoid(self):
         player_world = (0.0, 2.0, 0.0)
-        inside_actor, outside_actor = self.encounter.actor_ids
+        inside_actor, outside_actor = entrance_pack(self.state)
         self.state.monster_positions[inside_actor] = (2.0, 2.0, -8.0)
         self.state.monster_positions[outside_actor] = (7.0, 2.0, -8.0)
 
@@ -1248,7 +1276,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_scatter_shot_hits_full_cone_at_the_authored_hit_frame(self):
         player_world = (0.0, 2.0, 0.0)
-        hinted_actor, second_actor = self.encounter.actor_ids
+        hinted_actor, second_actor = entrance_pack(self.state)
         self.state.monster_positions[hinted_actor] = (
             -2.0, 2.0, -8.0
         )
@@ -1278,7 +1306,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_target_point_projectile_impacts_at_world_endpoint(self):
         player_world = (0.0, 2.0, 0.0)
-        endpoint_actor, ray_actor = self.encounter.actor_ids
+        endpoint_actor, ray_actor = entrance_pack(self.state)
         self.state.monster_positions[endpoint_actor] = (8.0, 2.0, 0.0)
         self.state.monster_positions[ray_actor] = (4.0, 2.0, 0.0)
         cast = BulletSkill(
@@ -1308,7 +1336,7 @@ class LocalCombatStateTests(unittest.TestCase):
     def test_explosive_arrow_uses_location_aura_explosion_radius(self):
         self.state._bullet_static_reach = lambda _offset: None
         player_world = (0.0, 2.0, 0.0)
-        direct_actor, splash_actor = self.encounter.actor_ids
+        direct_actor, splash_actor = entrance_pack(self.state)
         self.state.monster_positions[direct_actor] = (0.0, 2.0, -8.0)
         self.state.monster_positions[splash_actor] = (3.0, 2.0, -8.0)
         cast = BulletSkill(
@@ -1419,7 +1447,7 @@ class LocalCombatStateTests(unittest.TestCase):
 
     def test_actor_targeted_melee_hits_only_requested_actor(self):
         player_world = (0.0, 2.0, 0.0)
-        first_actor, target_actor = self.encounter.actor_ids
+        first_actor, target_actor = entrance_pack(self.state)
         self.state.monster_positions[first_actor] = (1.0, 2.0, 0.0)
         self.state.monster_positions[target_actor] = (1.2, 2.0, 0.0)
 
@@ -1992,7 +2020,7 @@ class LocalCombatStateTests(unittest.TestCase):
     def test_victim_mark_modifies_followup_damage_and_punch_through(self):
         self.state._bullet_static_reach = lambda _offset: None
         player_world = (0.0, 2.0, 0.0)
-        marked_actor, rear_actor = self.encounter.actor_ids
+        marked_actor, rear_actor = entrance_pack(self.state)
         self.state.monster_positions[marked_actor] = (4.0, 2.0, 0.0)
         self.state.monster_positions[rear_actor] = (7.0, 2.0, 0.0)
         markshot = self.state._load_player_skill_geometry(ranger_skill_id("markshot"))
@@ -2223,7 +2251,11 @@ class LocalCombatStateTests(unittest.TestCase):
             eligible_actor_ids={actor_id},
         )
 
-        self.assertEqual(movements, ())
+        # Only the prepared monster is under test: the far player stands
+        # next to the fixture's Hunted Goods guardian, which may react.
+        self.assertEqual(
+            [m for m in movements if m.actor_id == actor_id], []
+        )
         self.assertEqual(attacks, ())
         self.assertEqual(
             self.state.monster_positions[actor_id], monster.position
@@ -2431,7 +2463,10 @@ class LocalCombatStateTests(unittest.TestCase):
                 elapsed_seconds=0.12,
                 server_tick=tick,
             )
-        first, second = self.state.monster_positions.values()
+        first, second = (
+            self.state.monster_positions[actor]
+            for actor in entrance_pack(self.state)
+        )
         separation = self.state._distance(first, second)
         expected = self.encounter.capsule_radius * 2.0 + 0.15
         self.assertGreaterEqual(separation + 1e-6, expected)

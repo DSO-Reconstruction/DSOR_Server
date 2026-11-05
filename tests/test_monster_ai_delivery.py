@@ -135,7 +135,7 @@ class MonsterAITests(unittest.TestCase):
         self.wire = encounter.coordinate_frame.world_to_wire
 
     def test_each_pack_selects_its_own_visible_living_player(self):
-        first, second = self.combat.encounter.actor_ids
+        first, second = fixtures.entrance_pack(self.combat)
         self.combat.monster_positions[first] = (0.0, 0.0, 0.0)
         self.combat.monster_positions[second] = (100.0, 0.0, 0.0)
         self.combat.register_player(101, 100)
