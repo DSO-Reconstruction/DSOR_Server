@@ -577,6 +577,10 @@ class PlayerPersistenceService:
             achievement_catalog=None) -> bool:
         """Serialize session snapshots so older captures cannot win a race."""
 
+        if getattr(s, "debug_bot", False) is True:
+            # !debug_pvp bots (services/debug_pvp.py) are throwaway
+            # characters with no account behind them: never save one.
+            return False
         with s.flow_lock:
             persist_lock = getattr(s, "gameplay_persist_lock", None)
             if persist_lock is None:

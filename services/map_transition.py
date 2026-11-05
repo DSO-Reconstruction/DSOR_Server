@@ -340,6 +340,14 @@ class MapTransitionService:
             gameplay_switch: bool = False,
             scaling_difficulty: int = 0,
             fractured_planes_run: bool = False) -> bool:
+        if getattr(s, "debug_bot", False) is True:
+            # A !debug_pvp bot has no client to reconnect with; its
+            # controller brings it in on the destination itself.
+            from dso_server.services import debug_pvp
+            return debug_pvp.transfer_bot(
+                self, s, destination_map_id,
+                spawn_position=spawn_position, reason=reason,
+            )
         character = s.gameplay_character
         event_catalog = CharacterService._event_catalog(self)
         in_fractured_planes_run = bool(
