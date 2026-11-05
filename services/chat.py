@@ -202,6 +202,8 @@ class ChatServer(RakNetServer):
                 "!map <mapId> [difficulty] | !where | !speed [character name] | "
                 "!unlockmaps [character name] | !immortal [character name] | "
                 "!killmobs | !stress <amount> [templateId] | "
+                "!debug_pvp 1v1|tdm|ctf|fortress|ffa | "
+                "!debug_pvp open [bots] [mapId] | !debug_pvp stop | "
                 "!shutdown [minutes]",
             )
             return
@@ -295,6 +297,18 @@ class ChatServer(RakNetServer):
             self._send_system_message(
                 s, f"Spawned {spawned}x {template_id} around you. "
                 "!killmobs clears them.",
+            )
+            return
+        if command == "!debug_pvp":
+            from dso_server.services import debug_pvp
+            user_id = s.chat_user_id
+            self._send_system_message(
+                s, debug_pvp.handle_admin_command(
+                    gameplay_server, gameplay, arguments[1:],
+                    notify=lambda text: self.send_system_message_to_user(
+                        user_id, text
+                    ),
+                ),
             )
             return
         if command == "!where":

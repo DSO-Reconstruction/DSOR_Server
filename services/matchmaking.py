@@ -32,6 +32,7 @@ from dso_server.protocol.pvp_match_protocol import (
     MATCHMAKING_EVENT_JOINED_BY_GROUP_LEADER,
     QUEUE_KIND_GROUP,
     SUPPORTED_MATCH_MODES,
+    client_queue_for_mode,
 )
 
 from dso_server.gameplay.pvp_match_state import (
@@ -343,7 +344,7 @@ class MatchmakingService:
                 encode_matchmaking_info(MatchMakingInfo(
                     state=int(event),
                     server_tick=int(server_time() // 40) & 0xFFFFFFFF,
-                    match_mode=int(match_mode),
+                    match_mode=client_queue_for_mode(match_mode),
                     message="",
                 )),
                 label="pvp-queue-group-rejected",
@@ -446,7 +447,7 @@ class MatchmakingService:
         info = encode_matchmaking_info(MatchMakingInfo(
             state=int(event),
             server_tick=tick,
-            match_mode=entry.match_mode,
+            match_mode=client_queue_for_mode(entry.match_mode),
             message="",
         ))
         queue_info = encode_join_match_queue_info(JoinMatchQueueInfo(
@@ -514,7 +515,7 @@ class MatchmakingService:
                 server_tick=int(server_time() // 40) & 0xFFFFFFFF,
                 # Keep the mode so the client can clear the queue UI for the
                 # specific queue that was just cancelled.
-                match_mode=int(match_mode),
+                match_mode=client_queue_for_mode(match_mode),
                 message="",
             )),
             label="pvp-queue-left",
@@ -564,7 +565,9 @@ class MatchmakingService:
                     dialog_id=0,
                     battleground_id=match.match_id,
                     map_id=match.map_id,
-                    match_mode=match.match_mode,
+                    # The solo/team queue, not the server mode; see
+                    # client_queue_for_mode.
+                    match_mode=client_queue_for_mode(match.match_mode),
                 )),
                 label="pvp-join-battleground",
             )
@@ -753,7 +756,7 @@ class MatchmakingService:
                 encode_matchmaking_info(MatchMakingInfo(
                     state=MATCHMAKING_EVENT_ABORTED_BY_SERVER,
                     server_tick=int(server_time() // 40) & 0xFFFFFFFF,
-                    match_mode=match.match_mode,
+                    match_mode=client_queue_for_mode(match.match_mode),
                     message="",
                 )),
                 label="pvp-match-cancelled",
