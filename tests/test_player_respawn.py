@@ -222,8 +222,11 @@ class RespawnServiceTests(unittest.TestCase):
     def test_three_monster_deaths_and_captured_respawn_choices(self):
         s = self.session
         s.gameplay_map = "pw007_stonekeep_01_dun"
+        # Offered at difficulties 5, 7 and 9 only; its fixed monsters sit on
+        # those MapVariation tiers, so an unscaled load has none.
         encounter = load_local_monster_encounter(
-            DEFAULT_STATIC_DB_PATH, s.gameplay_map, include_spawn_areas=False
+            DEFAULT_STATIC_DB_PATH, s.gameplay_map, include_spawn_areas=False,
+            scaling_difficulty=5,
         )
         actor = s.gameplay_remote_actor_id
         combat = s.gameplay_combat_state = LocalCombatState(
