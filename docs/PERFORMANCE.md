@@ -1426,8 +1426,48 @@ Three Phase 0 items from the October netcode audit.
   client's ordered stream: first send to ACK, less one round trip),
   `monster segment gap` and `player segment gap` (how long an actor stood
   still for a viewer after its last segment ran out while it was still
-  moving). Per-session events: `move refused`, `held stream over 50 ms`,
+  moving). Per-session events: `move refused`, `held stream over RTT + 50 ms`,
   `monster segment expired`, `player segment expired`.
 
 Tests: `test_netcode_counters.py`, `test_monster_movement_loss.py`,
 `test_combat_latency.py`. Not yet measured in a two-client or loss run.
+
+## 17. Simulated loss and latency for netcode tests (2026-11-05)
+
+A localhost client never loses a datagram, so the audit's exit test (two
+clients at 1% loss, no freeze longer than one round trip + 50 ms, no monster
+stop-go) needs the loss made on purpose. `runtime/network_impairment.py` wraps
+every service socket right after it binds when any of these is set, and
+prints what it simulates at startup and how much it dropped at shutdown:
+
+| Variable | Effect |
+|---|---|
+| `DSO_NET_LOSS_PERCENT` | Share of datagrams dropped in each direction, 0-100 |
+| `DSO_NET_DELAY_MS` | Added to every datagram the server sends; the client's datagrams are not delayed, so this is the whole extra round trip |
+| `DSO_NET_JITTER_MS` | Uniform +/- spread on that delay; datagrams keep their order, as on one queueing path |
+
+All default to 0, which leaves the socket unwrapped. A typical exit-test run
+is `DSO_NET_LOSS_PERCENT=1`, `DSO_NET_DELAY_MS=60`, `DSO_NET_JITTER_MS=10`,
+two clients on one map for ten minutes of combat and running past each
+other. Read the result from the `[Latency]` events of section 16: `held
+stream over RTT + 50 ms` should stay near zero, and `monster segment expired`
+and `player segment expired` should not grow with the loss. The server's
+held-stream figures are an upper bound: a resend after a lost ACK counts
+although the client held nothing. A capture of the
+clients' UDP traffic can be compared with a retail capture for cadence,
+durations, resend gaps, stand-still time and estimated snaps.
+
+Test: `test_network_impairment.py`.
+
+First result (2026-11-05, two retail clients on one PC, 1% loss, 60 ms
++/- 10 ms, about 14.5 minutes with monsters walking for 10 of them; round trip
+from the clients' pings 66 ms): the clients' ordered streams were held for a
+median 61 ms and a 95th percentile of 70 ms, about one repair round trip. Seven
+holds across both clients went past RTT + 50 ms, the longest 163 ms: those are
+a loss whose NAK or repair was lost too, which the retransmission timeout
+covers. No monster stalled, no move was refused, and the largest monster
+correction was 1.8 m. The one player correction over 3 m happened off screen,
+at the 150 m relay radius: out of range the relay goes quiet, and the client
+walks the player on for its 18 ticks and then holds it until it is back.
+An earlier run with jitter that reordered datagrams NAKed every reorder and
+is not comparable.

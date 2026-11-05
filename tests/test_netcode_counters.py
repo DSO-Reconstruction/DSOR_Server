@@ -78,14 +78,15 @@ class HeldStreamTests(CounterTestCase):
             (("monster-skill", 0.35), ("achievement-progress", 0.4)), 0.1)
         self.assertIn(("held stream (channel 0)", 0.25), [
             (kind, round(value, 6)) for kind, value in self.records])
-        self.assertEqual(self.events, [("held stream over 50 ms", "127.0.0.1:40201")])
+        self.assertEqual(self.events, [("held stream over RTT + 50 ms", "127.0.0.1:40201")])
         self.assertIn("held stream (meta lane)", [kind for kind, _value in self.records])
 
-    def test_a_quick_repair_is_recorded_but_not_counted_as_a_freeze(self):
+    def test_a_repair_within_rtt_plus_50_ms_is_recorded_but_not_a_freeze(self):
         session = Session(("127.0.0.1", 40202), FakeSocket())
-        session._note_repaired_reliable((("monster-skill", 0.12),), 0.1)
+        # Held 120 ms: over a flat 50 ms, inside a 100 ms round trip + 50 ms.
+        session._note_repaired_reliable((("monster-skill", 0.12), ("monster-skill", 0.22)), 0.1)
         self.assertEqual(self.events, [])
-        self.assertEqual(len(self.records), 1)
+        self.assertEqual(len(self.records), 2)
 
 
 class PlayerSegmentExpiryTests(CounterTestCase):

@@ -19,6 +19,7 @@ from dso_server.runtime.concurrency import (
     assert_no_state_locks_held,
 )
 from dso_server.runtime import latency_stats
+from dso_server.runtime.network_impairment import impair_socket
 from dso_server.runtime.outbound import BoundedOutboundSender, OutboundCapacityError
 
 
@@ -1554,9 +1555,12 @@ class Session:
 
         The client stops delivering a channel at its first missing ordered
         frame. That hold lasts from when the lost copy would have arrived to
-        when the repair did: the first send to its ACK, less one round trip.
-        A channel 0 hold freezes moves, hits and monsters (the Phase 0 target
-        is under RTT + 50 ms); one on the meta lane only delays progress.
+        when the repair did, about the first send to its ACK less one round
+        trip. A channel 0 hold freezes moves, hits and monsters, and the
+        Phase 0 target is none longer than RTT + 50 ms; one on the meta lane
+        only delays progress. A resend after a lost ACK counts here too
+        although the client held nothing, so this is an upper bound; a capture
+        of the client's traffic shows its real holds.
         """
 
         label = latency_stats.session_label(self)
@@ -1564,8 +1568,8 @@ class Session:
             held = max(0.0, since_first_send - round_trip)
             if reliable_channel_for(frame_label) == 0:
                 latency_stats.record("held stream (channel 0)", held)
-                if held > 0.05:
-                    latency_stats.count("held stream over 50 ms", label)
+                if held > round_trip + 0.05:
+                    latency_stats.count("held stream over RTT + 50 ms", label)
             else:
                 latency_stats.record("held stream (meta lane)", held)
 
@@ -1894,6 +1898,7 @@ class RakNetServer:
             self.sock.close()
             self.sock = None
             raise
+        self.sock = impair_socket(self.sock, self.service_name)
         self.gameplay_deadline_scheduler.start()
         self._outbound_sender = BoundedOutboundSender(name=f"{self.service_name}-outbound")
         self._outbound_sender.start()
