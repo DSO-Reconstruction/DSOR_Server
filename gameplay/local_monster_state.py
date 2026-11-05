@@ -251,21 +251,58 @@ def map_monster_actor_base(
         load_map_encounter_policy,
     )
 
-    # Client scene spawners and boss room entrances can reserve 0x30000.
-    # To prevent colliding with client scene actors or NPC row 1 (0x10000 -> slot 0),
-    # all boss rooms and approach arenas use the secondary actor slot range (+ 0x1000).
+    normalized_map_id = str(map_id).casefold()
     is_boss = (
-        map_id.casefold() in APPROACH_BOSS_MAPS
+        normalized_map_id in APPROACH_BOSS_MAPS
         # These client scenes own ids in the ordinary 0x30000 range for
         # authored SpawnPoints. Keep server monsters in the secondary range,
         # as on boss arenas, so NewMonster cannot collide with them.
-        or map_id.casefold() in _CLIENT_SCENE_ACTOR_ID_MAPS
+        or normalized_map_id in _CLIENT_SCENE_ACTOR_ID_MAPS
         # Mühürlü Mezar's g0013 map family also uses client-owned scene actor
         # ids; keep its Toltac High Shamans in the server-only range.
-        or map_id.casefold().startswith("g0013_")
+        or normalized_map_id.startswith("g0013_")
         or load_map_encounter_policy(static_database_path, map_id).is_boss_room
     )
-    return LOCAL_MONSTER_ACTOR_BASE + (0x1000 if is_boss else 0)
+    scene_row = _map_scene_spawnpoint_max_rowid(
+        str(map_database_path(static_database_path, map_id))
+    )
+    # The client reserves 0x30000 + SpawnPoint row index for scene actors.
+    # Put server monsters after the entire authored range, rounded up to the
+    # next 0x1000 block. A minimum block also preserves known client scenes
+    # whose actor registration is not represented by a SpawnPoint row.
+    scene_offset = (
+        ((scene_row // 0x1000) + 1) * 0x1000
+        if scene_row > 0 else 0
+    )
+    if is_boss or is_tower_layout(map_id):
+        scene_offset = max(scene_offset, 0x1000)
+
+    base = LOCAL_MONSTER_ACTOR_BASE + scene_offset
+    reserved_actor_ids = set()
+    if normalized_map_id == TUTORIAL_GRIMMAG_MAP_ID:
+        reserved_actor_ids.add(TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID)
+    if normalized_map_id == FRACTURED_PLANES_BOSS_MAP_ID:
+        reserved_actor_ids.add(FRACTURED_PLANES_BOSS_ACTOR_ID)
+    while base in reserved_actor_ids:
+        base += 0x1000
+    return base
+
+
+@lru_cache(maxsize=512)
+def _map_scene_spawnpoint_max_rowid(map_database: str) -> int:
+    """Highest client scene actor slot reserved by this map's SpawnPoints."""
+
+    path = Path(map_database).resolve()
+    if not path.is_file():
+        return 0
+    try:
+        with sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True) as database:
+            row = database.execute(
+                "SELECT COALESCE(MAX(rowid), 0) FROM _Instance_SpawnPoint"
+            ).fetchone()
+    except sqlite3.Error:
+        return 0
+    return max(0, int(row[0] or 0)) if row else 0
 
 # Tower maps already register their first authored mechanism at 0x30000 on
 # some client builds. Keep every server-published actor on those layouts in a
@@ -463,6 +500,42 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
         # the Aether Tears quest. Its server-side SpawnList is not exported.
         "monster_eye_demon": (
             "ce2025_monster_eye_demon",
+        ),
+    },
+    # Hidden Village has unconditional wilderness/crypt density volumes, but
+    # its normal SpawnList registry is absent. Reuse only the rank-monster
+    # species authored by the same map's gated Reactivation quest rows.
+    "a0700_hidden_village_dun": {
+        "spawn_area_wilderness": (
+            "reactivation_normal_skeleton_warrior_01",
+            "reactivation_normal_undead_ripper_01",
+        ),
+        "spawn_area_crypt": (
+            "reactivation_normal_minispider_01",
+            "reactivation_normal_skeleton_warrior_01",
+            "reactivation_normal_undead_ripper_01",
+        ),
+    },
+    # The Khalys sewer map has six active sewerstream density volumes and no
+    # SpawnPoints. Its quest kill targets identify the four normal pool mobs.
+    "e_khs_01_dun_01": {
+        "sewerstream": (
+            "e_ks_01_sewers_normal_rat_01",
+            "e_ks_01_sewers_normal_thing_swamp_01",
+            "e_ks_01_sewers_normal_undead_ripper_01",
+            "e_ks_01_sewers_normal_leech_01",
+        ),
+    },
+    # Easter's unconditional general_spawn volume must be populated between
+    # scripted event waves. All five ordinary species are authored in its
+    # gated wave rows; the boss and invisible triggers are excluded.
+    "e_easter_dun_01": {
+        "general_spawn": (
+            "e_easter_01_dun_beastman_boar_01",
+            "e_easter_01_dun_beastman_stag_01",
+            "e_easter_01_dun_normal_beast_hound_01",
+            "e_easter_01_dun_normal_dragon_broodling_01",
+            "e_easter_01_dun_normal_troll_01",
         ),
     },
     # The Dragan fortress database has authored main-hall density areas with
@@ -2996,6 +3069,10 @@ def _navigation_for_map(
             # Cloud bridge connections are authored as very narrow PathEngine
             # portals. Keep every authored connection for player movement.
             "pw023_atlantis_above_water_01_dun": 0.0,
+            # Cooled Lava's entrance-to-western-chamber connection is narrower
+            # than 1 m. The default split the CooledLava03 Cyclops quest spawn
+            # into a component the player could reach through the authored map.
+            "c2102_dun": 0.8,
         }.get(str(map_id).casefold(), 1.0)
         return load_navigation_mesh(
             navigation_path, minimum_portal_width=portal_width,
@@ -3299,10 +3376,8 @@ def _load_dynamic_monster_encounter(
         tuple[int, int], list[tuple[float, float, float]]
     ] = {}
     used_actor_ids: set[int] = set()
-    actor_base = (
-        TOWER_MONSTER_ACTOR_BASE
-        if is_tower_layout(map_id)
-        else map_monster_actor_base(map_id, static_database_path=static_database_path)
+    actor_base = map_monster_actor_base(
+        map_id, static_database_path=static_database_path,
     )
     reserved_actor_ids = (
         ETERNAL_GROVE_RESERVED_ACTOR_IDS
@@ -3681,6 +3756,52 @@ def _load_dynamic_monster_encounter(
                     position,
                     resolve_projected_overlap=True,
                 )
+
+    if explicit_definition is not None:
+        # A recovered server-owned encounter list can supplement, but must
+        # not replace, active monsters authored directly in the map database.
+        # b1201_pve has a custom entrance list plus an ungated Hunted Goods
+        # guardian; skipping fixed_rows silently removed that quest target.
+        for (
+            _row_id, raw_transform, raw_template_id, _event_set,
+            authored_rank,
+        ) in fixed_rows:
+            try:
+                position = _spawn_position(bytes(raw_transform))
+            except (TypeError, ValueError):
+                continue
+            template_id, position = _eternal_grove_commander_replacement(
+                map_id, str(raw_template_id), position,
+            )
+            hazard = is_map_hazard(static_database_path, template_id)
+            actor_id = allocate_fixed_actor_id()
+            if (
+                str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
+                and str(raw_template_id).casefold()
+                == TUTORIAL_GRIMMAG_TEMPLATE_ID
+            ):
+                actor_id = TUTORIAL_GRIMMAG_RUNTIME_ACTOR_ID
+                position = TUTORIAL_GRIMMAG_ARENA_POSITION
+            elif (
+                str(map_id).casefold() == FRACTURED_PLANES_BOSS_MAP_ID
+                and str(raw_template_id).casefold()
+                == FRACTURED_PLANES_BOSS_TEMPLATE_ID
+            ):
+                actor_id = FRACTURED_PLANES_BOSS_ACTOR_ID
+            append_monster(
+                template_id,
+                actor_id,
+                position,
+                rank_override=str(authored_rank or ""),
+                authored_yaw=(
+                    math.atan2(
+                        struct.unpack("<16f", bytes(raw_transform))[8],
+                        struct.unpack("<16f", bytes(raw_transform))[0],
+                    )
+                    if is_tower_layout(map_id) or hazard else 0.0
+                ),
+                hazard=hazard,
+            )
 
     fixed_monster_count = len(monsters)
     authored_templates = tuple(

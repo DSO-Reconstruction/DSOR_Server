@@ -417,7 +417,11 @@ def _select_boss_spawn_candidates(
     override = _BOSS_TEMPLATE_OVERRIDES.get(str(map_id).casefold())
     if override and _is_concrete_boss(static_database_path, override):
         anchor = rows[0]
-        return ((anchor[0], anchor[1], override, -1),)
+        # Encounter rows can carry fields after EventSetRow (currently the
+        # authored rank). Preserve those fields when replacing the template;
+        # the monster loader consumes both the four-column legacy shape and
+        # the five-column SpawnPoint shape.
+        return ((*anchor[:3], -1, *anchor[4:]),)
     return rows
 
 

@@ -42,21 +42,30 @@ collision data contains a ground surface at Y=`-6`, matching the mob position.
 2. **Check whether the row is active.** Read `Rank`, `NpcId`, `EventSetRow`,
    and `Transform`. A nonnegative `EventSetRow` may require an active map
    event. A blank `NpcId` can mean a scripted spawn anchor rather than a mob.
-3. **Decode the authored transform.** `Transform` is a 4x4 little-endian
+   If the map uses a recovered explicit encounter list, confirm that the list
+   supplements active map rows instead of replacing them.
+3. **Check navigation reachability.** If the map entry supplies a player
+   component, compare `navigation.component_for_position(entry)` with the
+   target row. A target in another component is rejected before actor
+   allocation. Inspect narrow authored portals before treating it as a bad
+   spawn position; the map may need a lower `minimum_portal_width`.
+4. **Decode the authored transform.** `Transform` is a 4x4 little-endian
    float matrix; elements 12, 13, and 14 are world X, Y, and Z. Then inspect
    the final position in `LocalMonsterEncounter.spawn_batch`, because server
    grounding or overlap recovery can adjust it.
-4. **Compare the final Y against collision ground.** Use the map's `.map` and
+5. **Compare the final Y against collision ground.** Use the map's `.map` and
    `.col` data with `gameplay.map_collision_terrain.load_map_collision_terrain`
    and inspect `terrain.heights_at(final_position)`. Maps can have multiple
    surfaces at the same X/Z, so compare against the surface nearest the mob's
    reference Y rather than treating every lower surface as its floor.
-5. **Check actor ID allocation.** `gameplay.local_monster_state.map_monster_actor_base`
-   allocates server monsters. Some map scenes already use `0x30000` for
-   authored SpawnPoints. Add a map to `_CLIENT_SCENE_ACTOR_ID_MAPS` only after
-   confirming that its client scene owns that range. The secondary base is
-   `0x31000`; do not change every map's base speculatively.
-6. **Check the visibility and request path.** Normal monsters are discovered
+6. **Check actor ID allocation.** `gameplay.local_monster_state.map_monster_actor_base`
+   reads the map's highest `_Instance_SpawnPoint` row and starts server
+   monsters in the next `0x1000` block above the client scene actor range.
+   This is shared by initial encounters and runtime map-event spawns. Keep
+   `_CLIENT_SCENE_ACTOR_ID_MAPS` for legacy scenes whose client-owned actors
+   are not represented by SpawnPoint rows; ordinary maps no longer need a
+   hand-maintained entry.
+7. **Check the visibility and request path.** Normal monsters are discovered
    through movement and vicinity updates; they are not all necessarily sent
    in one packet when the map loads. Some clients announce an authored actor's
    vicinity but never send the follow-up `ActorRequest`. For affected authored
@@ -64,7 +73,7 @@ collision data contains a ground surface at Y=`-6`, matching the mob position.
    ID to prevent a duplicate request from creating it twice. Include the
    actor in the selection even if it was already announced, provided this
    viewer has not received its `NewMonster` yet.
-7. **Check runtime evidence.** The priority-spawn log should identify the map
+8. **Check runtime evidence.** The priority-spawn log should identify the map
    actor ID and final position, for example:
 
    ```text
@@ -79,13 +88,12 @@ collision data contains a ground surface at Y=`-6`, matching the mob position.
 
 ## Similar known case
 
-The small-crypt captain correction in commit `c8f50cc` uses the same two
-principles: allocate actors outside the client scene's `0x30000` range and
-proactively send the authored actor when it is near the viewer. Wildherz
-Caverns (`a0303_wildcave`) uses the same secondary actor range for Shaman
-Yachak. Keep these as map-specific registrations; a successful fix on one map
-does not establish another map's physical ID, template, spawn position, or
-client-owned actor ranges.
+The small-crypt captain correction in commit `c8f50cc` also showed why actor
+allocation and proactive publication are separate checks. The shared allocator
+now handles the scene-row range automatically; proactive `NewMonster` delivery
+still applies only to the confirmed authored actors that need it. A successful
+fix on one map does not establish another map's physical ID, template, spawn
+position, or vicinity behavior.
 
 ## Misty Ridge Great Gnome Shaman
 
@@ -97,6 +105,21 @@ ordinary 18.5-unit vicinity threshold controls when it is published. Its
 default actor ID was `0x30000`, the first slot potentially owned by the map
 scene. The map now allocates server monsters from `0x31000` and proactively
 sends this guardian before vicinity registration when it comes within range.
+
+## Cooled Lava quest Cyclops
+
+`c2102_dun` has an active `CooledLava03` Cyclops at `(-62, 5, -114)`. The
+default 1 m PathEngine portal cutoff put it in component 2137 while the map
+entry was in component 0, so encounter construction silently dropped this
+quest target even though its row and runtime template were valid. With the
+map's minimum portal width set to 0.8 m, both positions resolve to component 0;
+the encounter then includes the Cyclops at actor ID `0x31000` and the separate
+Satyr at `0x31001`.
+
+The `b1201_pve` map also has a recovered explicit entrance encounter. That
+list previously replaced, instead of supplementing, active map SpawnPoints;
+the Hunted Goods guardian was missing from the encounter. Explicit encounters
+now retain their custom actors and append the active authored population.
 
 ## Verification notes
 

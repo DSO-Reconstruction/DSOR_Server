@@ -17,21 +17,30 @@ for one map is not evidence that every map uses the same IDs.
 
 ## The fix
 
-For a map whose client scene reserves IDs in the ordinary monster range, start
-server monsters at `0x31000` instead. Register the exact physical map ID in
-`_CLIENT_SCENE_ACTOR_ID_MAPS` in `gameplay/local_monster_state.py`. The
-`map_monster_actor_base()` helper then returns the secondary base for that map;
-other maps keep the original `0x30000` base. Boss rooms and approach arenas
-also use the secondary base through their existing policy.
+`map_monster_actor_base()` now checks the physical map's
+`_Instance_SpawnPoint` table and starts server monsters at the next `0x1000`
+actor-ID block above the highest authored scene row. For example, a map with
+457 rows starts server monsters at `0x31000`; a map with more than 4096 rows
+gets a higher block. The same allocator is used for initial encounters and
+later map-event spawns, so the rule applies across maps instead of relying on
+an ever-growing list of quest-specific map IDs. The map data is read-only and
+the maximum row is cached per database path.
+
+Boss rooms and tower layouts retain a minimum offset for known client actors
+that are not represented by SpawnPoint rows. Explicit reservations for special
+actors such as tutorial bosses remain in place. `_CLIENT_SCENE_ACTOR_ID_MAPS`
+is retained for those legacy cases, but ordinary maps with authored scene rows
+no longer need to be listed there.
 
 The `g0013_` map family used by Mühürlü Mezar is currently routed to the
 secondary range so its Toltac High Shamans do not share the ordinary scene
 actor range. Keep any new map-specific rule narrow and based on evidence for
 that map.
 
-Do not shift every map to `0x31000` speculatively. Keep actor IDs stable within
-a map, and check that the selected range does not overlap other server actors
-or a reserved protocol range.
+The allocator must remain above all authored scene rows and preserve explicit
+reserved actor IDs. Keep actor IDs stable within a map, and check that the
+selected range does not overlap other server actors or a reserved protocol
+range.
 
 ## How to diagnose it
 
@@ -50,10 +59,10 @@ or a reserved protocol range.
    position/grounding, template graphics and status-effect modules, packet
    ordering, and the client's log. Invisible mobs have causes besides ID
    collisions.
-6. Add only the confirmed physical map to the map-specific secondary-range
-   rule. Then validate in the client that the mob renders, can be targeted, and
-   counts toward its quest. Keep the fix uncommitted until that live check is
-   confirmed.
+6. Use the shared allocator for authored scene-row collisions. Add a map
+   exception only when evidence shows a client-owned actor that is not
+   represented by a SpawnPoint row. Then validate in the client that the mob
+   renders, can be targeted, and counts toward its quest.
 
 ## Related fixes
 
