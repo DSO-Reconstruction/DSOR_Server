@@ -1517,6 +1517,9 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "a0407_boss": ("a0406_dun",),
     "a0503_dun": ("a0506_boss",),
     "a0506_boss": ("a0503_dun",),
+    # Loxley Caverns' Arachna's Refuge entrance is in the map exit table but
+    # absent from the loaded Canyon scene; materialize its active gate by GUID.
+    "a0500_canyon": ("a0503_dun",),
     "a0505_dun": ("a0600_dragonfortress",),
     "a0600_dragonfortress": (
         "a0505_dun",
