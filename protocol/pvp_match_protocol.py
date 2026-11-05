@@ -270,6 +270,34 @@ PLAYABLE_OBJECTIVE_MATCH_MODES = frozenset((
     MATCH_MODE_ASSAULT_THE_FORTRESS_5V5,
 ))
 
+# What the client's matchmaking side calls a "match mode" is a
+# ``Ranking::PvPLeaderBoard::PVPLeaderBoardId``: the solo queue (0) or the
+# team queue (1), ``NumPVPSeasonLeaderBoards`` being 2. MatchMakingInfo goes
+# to ``RankingManager::GetActiveBattlegroundForMatchMode`` (0x140a216c8 in the
+# 2026-11-04 installer client: ``cmp r8d, 1; jbe``, else a Nebula assertion
+# that kills the client) and so does the invitation, through
+# ``InvitationDialogWidget::AcceptInvitation`` and the joining-status widget.
+# The same client files every battleground id under one of the two
+# (0x1402f1342): 1v1 and last man standing are solo, the 5v5s are team.
+# These two commands therefore carry the queue, never the server's own five
+# modes; for 1v1 and 5v5 the numbers happen to coincide.
+CLIENT_QUEUE_SOLO = 0
+CLIENT_QUEUE_TEAM = 1
+CLIENT_QUEUE_FOR_MODE = {
+    MATCH_MODE_BEST_OF_3_1V1: CLIENT_QUEUE_SOLO,
+    MATCH_MODE_LAST_MAN_STANDING_8FFA: CLIENT_QUEUE_SOLO,
+    MATCH_MODE_BEST_OF_5_5V5: CLIENT_QUEUE_TEAM,
+    MATCH_MODE_CAPTURE_THE_FLAG_5V5: CLIENT_QUEUE_TEAM,
+    MATCH_MODE_ASSAULT_THE_FORTRESS_5V5: CLIENT_QUEUE_TEAM,
+}
+
+
+def client_queue_for_mode(match_mode: int) -> int:
+    """The solo/team queue id the client expects for a server match mode."""
+
+    return CLIENT_QUEUE_FOR_MODE.get(int(match_mode), int(match_mode))
+
+
 # Modes the queue accepts. A wire-valid mode outside this set is refused
 # rather than started, so the mode list matches what can be completed.
 SUPPORTED_MATCH_MODES = frozenset((
