@@ -90,12 +90,14 @@ class MonsterWorkerLifecycleTests(unittest.TestCase):
                     loop.cancel()
                     loop._thread.join(2.0)
 
-    def test_restarting_worker_preserves_forward_server_clock(self):
-        for clock_tick, client_tick, expected in (
-            (5000, 1900, 5000),
-            (1900, 5000, 5000),
-            (0xFFFFFFFE, 2, 2),
-            (2, 0xFFFFFFFE, 2),
+    def test_restarting_worker_does_not_take_the_clients_tick(self):
+        # The worker's next tick moves the clock to server_clock_tick; a
+        # restart must neither rewind it nor adopt the client's move tick.
+        for clock_tick, client_tick in (
+            (5000, 1900),
+            (1900, 5000),
+            (0xFFFFFFFE, 2),
+            (2, 0xFFFFFFFE),
         ):
             with self.subTest(clock_tick=clock_tick, client_tick=client_tick):
                 session = self.session()
@@ -106,7 +108,7 @@ class MonsterWorkerLifecycleTests(unittest.TestCase):
                 # Inspect the reservation before any tick advances the clock.
                 with patch.object(_FixedRateChaseLoop, "start"):
                     self.assertTrue(CharacterServer._start_monster_chase(session))
-                self.assertEqual(session.gameplay_chase_server_tick, expected)
+                self.assertEqual(session.gameplay_chase_server_tick, clock_tick)
 
     def test_reserved_worker_must_not_be_replaced_before_thread_start(self):
         session = self.session()

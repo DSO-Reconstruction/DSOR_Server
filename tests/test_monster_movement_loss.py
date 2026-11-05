@@ -1,5 +1,8 @@
 """Loss/ACK regressions for replaceable monster movement versus reliable events."""
+import time
+from types import SimpleNamespace
 import unittest
+from dso_server.runtime.context import MONSTER_IDLE_HEARTBEAT_SECONDS
 from dso_server.runtime.transport import Session, RakNetServer
 from dso_server.services.base import CharacterService
 from dso_server.tests.test_monster_ai_delivery import FakeSocket
@@ -62,10 +65,77 @@ class MonsterMovementLossTests(unittest.TestCase):
             self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), 1)
             repeated = self.frames()[-1]
             self.assertEqual(repeated["payload"], stop["payload"])
-        self.assertNotIn(101, self.session.gameplay_monster_stop_repeats)
         delivered = RakNetServer._queue_or_deliver_inbound_order_locked(self.receiver, repeated)
         commands = decode_move_batch(*delivered[0]).commands
         self.assertEqual(commands[0].value.scalar_byte, 0)
+        # The repeats are spent; the stop stays on the idle heartbeat.
+        _command, deadlines = self.session.gameplay_monster_stop_repeats[101]
+        self.assertEqual(len(deadlines), 1)
+        self.assertGreater(deadlines[0], time.perf_counter())
+        self.assertLessEqual(deadlines[0] - time.perf_counter(), MONSTER_IDLE_HEARTBEAT_SECONDS)
+
+    def test_a_standing_monster_is_refreshed_on_the_idle_heartbeat(self):
+        self.session.gameplay_spawned_monster_actor_ids.update((101, 202))
+        self.publish((self.move(101, tick=140, moving=False), self.move(202, tick=141, moving=False)))
+        stop = self.frames()[-1]
+        for repeat in range(6):
+            for _command, deadlines in self.session.gameplay_monster_stop_repeats.values():
+                deadlines[0] = 0.0
+            self.session.gameplay_monster_stop_repeat_next_at = 0.0
+            # Both monsters go out together in one datagram, every time.
+            self.assertEqual(CharacterService._send_monster_stop_repeats(self.session, None), 2)
+            self.assertEqual(self.frames()[-1]["payload"], stop["payload"])
+        # One shared deadline per viewer, so one due check covers them all.
+        deadlines = {tuple(d) for _c, d in self.session.gameplay_monster_stop_repeats.values()}
+        self.assertEqual(len(deadlines), 1)
+        self.assertEqual(self.session.gameplay_monster_stop_repeat_next_at, next(iter(deadlines))[0])
+
+    def test_heartbeat_phase_spreads_viewers_over_the_grid(self):
+        now = 1000.0
+        beats = {
+            CharacterService._next_monster_heartbeat(Session(("127.0.0.1", port), FakeSocket()), now)
+            for port in range(40100, 40112)
+        }
+        self.assertEqual(len(beats), 12)
+        for beat in beats:
+            self.assertGreater(beat, now)
+            self.assertLessEqual(beat - now, MONSTER_IDLE_HEARTBEAT_SECONDS + 1e-9)
+
+    def test_heartbeat_stops_for_a_dead_moving_or_displaced_monster(self):
+        frame = SimpleNamespace(wire_to_world=lambda wire: wire)
+        for change in ("dead", "moving", "displaced", "hidden"):
+            with self.subTest(change):
+                session = Session(("127.0.0.1", 40102), FakeSocket())
+                combat = SimpleNamespace(
+                    encounter=SimpleNamespace(coordinate_frame=frame),
+                    monsters={101: object()}, monster_motion_unblock_at={},
+                    monster_health={101: 100}, monster_moving={101: False},
+                    monster_positions={101: (5.6, 0.0, 0.0)},
+                )
+                session.gameplay_combat_state = combat
+                session.gameplay_spawned_monster_actor_ids.add(101)
+                CharacterService._send_monster_movement_batches(
+                    session, (self.move(tick=140, moving=False),), combat=combat)
+                session.gameplay_monster_stop_repeats[101][1][0] = 0.0
+                session.gameplay_monster_stop_repeat_next_at = 0.0
+                if change == "dead":
+                    combat.monster_health[101] = 0
+                elif change == "moving":
+                    combat.monster_moving[101] = True
+                elif change == "displaced":
+                    combat.monster_positions[101] = (9.0, 0.0, 0.0)
+                else:
+                    session.gameplay_spawned_monster_actor_ids.discard(101)
+                self.assertEqual(CharacterService._send_monster_stop_repeats(session, combat), 0)
+                self.assertNotIn(101, session.gameplay_monster_stop_repeats)
+        # Unchanged, the same set-up keeps repeating.
+        combat.monster_positions[101] = (5.6, 0.0, 0.0)
+        session.gameplay_spawned_monster_actor_ids.add(101)
+        CharacterService._send_monster_movement_batches(
+            session, (self.move(tick=150, moving=False),), combat=combat)
+        session.gameplay_monster_stop_repeats[101][1][0] = 0.0
+        session.gameplay_monster_stop_repeat_next_at = 0.0
+        self.assertEqual(CharacterService._send_monster_stop_repeats(session, combat), 1)
 
     def test_newer_movement_cancels_a_pending_stop_repeat(self):
         self.session.gameplay_spawned_monster_actor_ids.add(101)

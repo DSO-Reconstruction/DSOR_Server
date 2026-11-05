@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 
 from dso_server.runtime.context import *
+from dso_server.runtime import latency_stats
 from dso_server.runtime.transport import Session
 from dso_server.services.base import CharacterService
 
@@ -231,9 +232,13 @@ class PresenceMovementService:
         viewer.gameplay_move_echo_deferred = True
         commands = []
         commits = []
+        # Per command: how long its actor stood still for this viewer after
+        # its last segment ran out, or None.
+        gaps = []
         if viewer.gameplay_move_echo_sent is not viewer_move:
             commands.append(MoveServerCommand(viewer_move, LOCAL_PLAYER_ACTOR_ID))
             commits.append(None)
+            gaps.append(None)
         origin = viewer_move.relative_position
         present = set()
         for source, actor_id, move, relayed in entries:
@@ -263,6 +268,19 @@ class PresenceMovementService:
                         or elapsed >= standing_every
                     )
             if due:
+                # A moving player whose last segment ran out stood still for
+                # this viewer in between: the sender's moves came late.
+                gaps.append(
+                    (elapsed - REMOTE_PLAYER_MOVE_DURATION_TICKS)
+                    / SERVER_TICKS_PER_SECOND
+                    if (
+                        last is not None
+                        and relayed.scalar_byte
+                        and last_motion[0]
+                        and elapsed > REMOTE_PLAYER_MOVE_DURATION_TICKS
+                    )
+                    else None
+                )
                 commands.append(MoveServerCommand(relayed, actor_id))
                 commits.append(
                     (actor_id, (relayed.start_tick, tick, motion, position))
@@ -287,4 +305,11 @@ class PresenceMovementService:
                     viewer.gameplay_move_echo_sent = viewer_move
                 else:
                     state[commit[0]] = commit[1]
+            for gap in gaps[offset:offset + MONSTER_MOVEMENT_PACKET_BUDGET]:
+                if gap is not None:
+                    latency_stats.record("player segment gap", gap)
+                    latency_stats.count(
+                        "player segment expired",
+                        latency_stats.session_label(viewer),
+                    )
         return sent

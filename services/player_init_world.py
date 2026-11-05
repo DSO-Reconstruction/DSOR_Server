@@ -447,8 +447,7 @@ class PlayerInitializationWorldService:
             s.gameplay_chase_generation += 1
             s.gameplay_chase_timer = None
             s.gameplay_chase_last_at = None
-            s.gameplay_chase_server_tick = 0
-            s.gameplay_chase_clock_anchor = None
+            s.gameplay_chase_server_tick = server_clock_tick()
             s.gameplay_monster_encounter = monster_encounter
             previous_combat_state = s.gameplay_combat_state
             s.gameplay_combat_state = combat_state

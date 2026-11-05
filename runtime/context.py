@@ -861,6 +861,15 @@ MONSTER_STOP_REPEAT_SECONDS = tuple(
         if value.strip()
     )
 )
+# Retail keeps refreshing a standing monster every 480 ms. Once its repeats are
+# spent, a stopped monster stays on this heartbeat while the viewer sees it, so
+# a stop lost after the last repeat is repaired instead of never. One viewer's
+# heartbeats share a deadline: the map worker takes that viewer's session lock
+# once per heartbeat, not once per monster. 0 ends repeats after the last one.
+MONSTER_IDLE_HEARTBEAT_SECONDS = max(
+    0.0,
+    float(os.getenv('DSO_MONSTER_IDLE_HEARTBEAT_SECONDS', '0.48')),
+)
 # Spend the active essence's AmmoCost on every accepted cast. Off leaves
 # essences as permanent damage buffs, the behaviour before consumption landed.
 ESSENCE_CONSUMPTION_ENABLED = (
@@ -910,6 +919,22 @@ _SERVER_CLOCK_ORIGIN_NS = time.perf_counter_ns()
 
 def server_time():
     return (time.perf_counter_ns() - _SERVER_CLOCK_ORIGIN_NS) // 1_000_000
+
+def server_clock_tick(now: float | None = None) -> int:
+    """The game tick every client was given at map entry.
+
+    The map-entry time sync carries serverMs = ``server_time()`` and
+    worldStart 0, so from then on a client's tick is ``server_time() // 40``.
+    ``now`` is a ``time.perf_counter()`` reading for callers that hold one.
+    """
+
+    if now is None:
+        milliseconds = server_time()
+    else:
+        milliseconds = (
+            int(now * 1_000_000_000) - _SERVER_CLOCK_ORIGIN_NS
+        ) // 1_000_000
+    return (milliseconds // 40) & 0xFFFFFFFF
 
 def pack_addr(ip: str, port: int) -> bytes:
     raw_ip = socket.inet_aton(ip)

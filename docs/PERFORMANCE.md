@@ -1400,3 +1400,34 @@ once, unlike the timer path's `DSO_RELIABLE_RETRANSMIT_BURST_LIMIT`, so with
 a round trip over 100 ms a burst loss is re-sent whole into the receive
 window that dropped it. The retry interval is a fixed 250 ms, so a client
 with a longer round trip receives every reliable datagram at least twice.
+
+## 16. Map clock, idle heartbeat and netcode counters (2026-11-05)
+
+Three Phase 0 items from the October netcode audit.
+
+- **The map tick is the server clock.** The map-entry time sync gives every
+  client serverMs = `server_time()` and worldStart 0, so a client's tick is
+  `server_time() // 40` (`server_clock_tick`). Monster commands and the
+  session tick used to be learned from the owner's moves instead: a client
+  whose clock ran ahead pulled every monster ahead of the other viewers'
+  clocks, and a map started at tick 0 until its owner's first move. Now
+  `_next_session_tick` advances a session to the server clock and never
+  back; moves, worker restarts and map entry use the same rule.
+- **Standing monsters keep a 480 ms heartbeat**, as retail does. After its
+  three repeats (section 12 describes the older reliable stops) a stop is
+  re-sent every `DSO_MONSTER_IDLE_HEARTBEAT_SECONDS` (0.48; 0 turns it off)
+  while the viewer sees the monster. It is dropped once the monster dies,
+  moves, is displaced by a path that sent no transform, or leaves view. A
+  viewer's heartbeats share one deadline, at a per-viewer phase of the
+  12-tick grid, so the map worker takes that viewer's lock once per
+  heartbeat.
+- **Counters in the `[Latency]` report.** Timings: `held stream (channel 0)`
+  and `held stream (meta lane)` (how long a repaired reliable frame held the
+  client's ordered stream: first send to ACK, less one round trip),
+  `monster segment gap` and `player segment gap` (how long an actor stood
+  still for a viewer after its last segment ran out while it was still
+  moving). Per-session events: `move refused`, `held stream over 50 ms`,
+  `monster segment expired`, `player segment expired`.
+
+Tests: `test_netcode_counters.py`, `test_monster_movement_loss.py`,
+`test_combat_latency.py`. Not yet measured in a two-client or loss run.

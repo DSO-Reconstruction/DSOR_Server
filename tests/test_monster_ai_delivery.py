@@ -215,18 +215,22 @@ class MonsterAITests(unittest.TestCase):
         self.assertEqual(observed, [False])
         self.assertIn(self.actor, session.gameplay_spawned_monster_actor_ids)
 
-    def test_old_player_move_cannot_rewind_monster_publish_clock(self):
-        session = Session(("127.0.0.1", 40000), FakeSocket())
-        session.gameplay_chase_server_tick = 105
-        move = Move.from_values((0, 0, 0), 0, 0, 0, 100, 0)
-        with patch.object(world, "decode_move", return_value=move), \
-             patch.object(CharacterService, "_player_victim_feature_locked", return_value=False), \
-             patch.object(CharacterService, "_accept_gameplay_state_command"), \
-             patch.object(CharacterService, "_cull_distant_monster_groups"), \
-             patch.object(CharacterService, "_reconcile_world_loot_visibility"), \
-             patch.object(CharacterService, "_pickup_nearby_auto_loot"):
-            CharacterService._handle_gameplay_move(session, b"")
-        self.assertEqual(session.gameplay_chase_server_tick, 105)
+    def test_a_player_move_never_sets_or_rewinds_the_monster_publish_clock(self):
+        # (server clock, client move tick, expected session tick)
+        for clock, client_tick, expected in ((103, 100, 105), (103, 120, 105), (110, 100, 110)):
+            with self.subTest(clock=clock, client_tick=client_tick):
+                session = Session(("127.0.0.1", 40000), FakeSocket())
+                session.gameplay_chase_server_tick = 105
+                move = Move.from_values((0, 0, 0), 0, 0, 0, client_tick, 0)
+                with patch.object(world, "decode_move", return_value=move), \
+                     patch("dso_server.services.monster_tick_context.server_clock_tick", return_value=clock), \
+                     patch.object(CharacterService, "_player_victim_feature_locked", return_value=False), \
+                     patch.object(CharacterService, "_accept_gameplay_state_command"), \
+                     patch.object(CharacterService, "_cull_distant_monster_groups"), \
+                     patch.object(CharacterService, "_reconcile_world_loot_visibility"), \
+                     patch.object(CharacterService, "_pickup_nearby_auto_loot"):
+                    CharacterService._handle_gameplay_move(session, b"")
+                self.assertEqual(session.gameplay_chase_server_tick, expected)
 
     def test_route_budget_reaches_new_actors_while_old_goals_keep_changing(self):
         actors = tuple(range(80001, 80007))
