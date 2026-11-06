@@ -285,15 +285,18 @@ class EventLootEntry:
 
 @dataclass(frozen=True)
 class MapLootEntry:
-    """A map-owned drop from explicitly scoped monster templates or regions."""
+    """A map-owned drop scoped by monster templates, regions, or ranks."""
 
     loot: EventLootEntry
     monster_templates: frozenset[str]
     monster_regions: frozenset[str]
+    monster_ranks: frozenset[str] = frozenset()
     scale_chance_with_difficulty: bool = False
     scale_stack_amount_with_difficulty: bool = True
     difficulty_amounts: tuple[int, ...] = ()
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+    require_class_option: bool = False
+    require_inactive_events: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -735,6 +738,7 @@ class EventCatalog:
         map_aliases: Iterable[str] = (),
         map_difficulty: int = 0,
         privileged_difficulty_multiplier: float = 1.0,
+        now: datetime | None = None,
     ) -> tuple[MapLootDrop, ...]:
         """Roll authored drops belonging to these maps, independent of schedule."""
 
@@ -745,10 +749,19 @@ class EventCatalog:
         )
         template_id = str(monster_template_id).casefold()
         monster_regions = self.monster_regions.get(template_id, frozenset())
-        rank = _rank_class(monster_rank)
+        raw_rank = str(monster_rank).casefold()
+        rank = _rank_class(raw_rank)
+        active_templates = self.active_template_ids(now)
         result = []
         for current_map in current_maps:
             for entry in self.map_loot.get(current_map, ()):
+                if entry.require_inactive_events & active_templates:
+                    continue
+                if entry.monster_ranks and (
+                    raw_rank not in entry.monster_ranks
+                    and rank not in entry.monster_ranks
+                ):
+                    continue
                 if entry.monster_templates and template_id not in entry.monster_templates:
                     continue
                 if entry.monster_regions and not (
@@ -761,7 +774,10 @@ class EventCatalog:
                     and monster_level > loot.maximum_monster_level
                 ):
                     continue
-                chance = loot.chances.get(rank, loot.chances.get("monster", 0.0))
+                chance = loot.chances.get(
+                    raw_rank,
+                    loot.chances.get(rank, loot.chances.get("monster", 0.0)),
+                )
                 if entry.scale_chance_with_difficulty:
                     chance *= max(0.0, float(privileged_difficulty_multiplier))
                 if rng.random() >= min(1.0, chance):
@@ -775,12 +791,19 @@ class EventCatalog:
                     ]
                 else:
                     low, high = loot.amounts.get(
-                        rank, loot.amounts.get("monster", (1, 1))
+                        raw_rank,
+                        loot.amounts.get(rank, loot.amounts.get("monster", (1, 1))),
                     )
                     amount = rng.randint(low, high)
                 item_options = entry.item_options_by_class.get(
                     str(class_name).casefold(), ()
                 )
+                if (
+                    not item_options
+                    and entry.item_options_by_class
+                    and entry.require_class_option
+                ):
+                    continue
                 if not item_options and entry.item_options_by_class:
                     item_options = tuple(
                         item_id
@@ -1293,9 +1316,21 @@ def _map_loot_lists(
                 str(value).casefold()
                 for value in entry.get("monster_regions") or ()
             )
-            if not templates and not monster_regions:
+            monster_ranks = frozenset(
+                str(value).casefold()
+                for value in entry.get("ranks") or ()
+            )
+            inactive_event_values = entry.get("require_inactive_events") or ()
+            if isinstance(inactive_event_values, str):
+                inactive_event_values = (inactive_event_values,)
+            inactive_events = frozenset(
+                str(value).casefold()
+                for value in inactive_event_values
+                if str(value).strip()
+            )
+            if not templates and not monster_regions and not monster_ranks:
                 raise ValueError(
-                    f"map loot entry {item_id!r} needs monster or monster_regions scope"
+                    f"map loot entry {item_id!r} needs monster, region, or rank scope"
                 )
             parsed.append(MapLootEntry(
                 loot=EventLootEntry(
@@ -1311,6 +1346,7 @@ def _map_loot_lists(
                 ),
                 monster_templates=templates,
                 monster_regions=monster_regions,
+                monster_ranks=monster_ranks,
                 scale_chance_with_difficulty=bool(
                     entry.get("scale_chance_with_difficulty")
                 ),
@@ -1319,6 +1355,8 @@ def _map_loot_lists(
                 ),
                 difficulty_amounts=difficulty_amounts,
                 item_options_by_class=MappingProxyType(class_options),
+                require_class_option=bool(entry.get("require_class_option")),
+                require_inactive_events=inactive_events,
             ))
         result[_map_key(map_id)] = tuple(parsed)
     return result

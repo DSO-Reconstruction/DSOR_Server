@@ -1204,6 +1204,11 @@ class _OwnerPass:
         self.state.strikes = [item for item in self.state.strikes if item not in due]
         combat = self.combat
         for strike in due:
+            ammunition_types = frozenset().union(*(
+                combat._active_ammunition_types(summon.modifier_sources)
+                for summon in combat.player_summons.values()
+                if int(summon.owner_actor_id) == int(self.owner)
+            ))
             average = max(0.0, sum(strike.damage_range) * 0.5)
             for actor_id in tuple(combat.living_actor_ids):
                 monster = combat.monsters.get(actor_id)
@@ -1217,6 +1222,10 @@ class _OwnerPass:
                     continue
                 previous = combat.monster_health.get(actor_id, 0)
                 if previous <= 0:
+                    continue
+                if not combat._ammunition_can_hit(
+                    actor_id, ammunition_types,
+                ):
                     continue
                 total = 0.0
                 tags = []

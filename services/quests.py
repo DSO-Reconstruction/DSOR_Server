@@ -158,6 +158,11 @@ from dso_server.services.map_events import (
 )
 
 
+NEW_MOON_QUEST_PORTAL_EVENT_IDS = frozenset({
+    "e_new_02_witch_a_06_portal",
+    "e_new_02_witch_b_06_portal",
+})
+
 QUEST_LOG_PREFIX = f"[{GAMEPLAY_SERVICE_NAME}] quest:"
 
 
@@ -318,6 +323,18 @@ class QuestService:
     def _quest_catalog(self) -> QuestCatalog:
         path = getattr(self, "quests_path", None) or DEFAULT_QUESTS_PATH
         return load_quest_catalog(path)
+
+    def _newmoon_portals_available(self, map_id: str) -> bool:
+        if map_key(map_id) != "e_newmoon_blakborg_city_dun":
+            return True
+        try:
+            return "newmoon_event_02" in (
+                self._event_catalog().active_template_ids()
+            )
+        except Exception:
+            # If the schedule cannot be read, do not reopen seasonal portals
+            # from durable quest/discovery state.
+            return False
 
     def _quest_exit_reveal_flags(
         self, s: Session, map_id: str,
@@ -486,6 +503,8 @@ class QuestService:
                 if rule_accepts(rule):
                     restored.add(event.key)
                     break
+        if not self._newmoon_portals_available(map_id):
+            restored.difference_update(NEW_MOON_QUEST_PORTAL_EVENT_IDS)
         return frozenset(restored)
 
     def _quest_active_events(self, s: Session) -> frozenset[str]:
@@ -746,8 +765,14 @@ class QuestService:
             scheduled = _scheduled_event_ids(self.static_database_path)
         except (OSError, sqlite3.Error):
             scheduled = frozenset()
+        blocked_newmoon_portals = set()
+        if map_key(map_id) == "e_newmoon_blakborg_city_dun":
+            if not self._newmoon_portals_available(map_id):
+                blocked_newmoon_portals = NEW_MOON_QUEST_PORTAL_EVENT_IDS
         return frozenset(
-            flag for flag in flags if str(flag).casefold() not in scheduled
+            flag for flag in flags
+            if str(flag).casefold() not in scheduled
+            and str(flag).casefold() not in blocked_newmoon_portals
         )
 
     @staticmethod

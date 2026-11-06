@@ -47,6 +47,8 @@ class PropLootEntry:
     amount: tuple[int, int]
     per_level: tuple[float, float] | None
     stacks: int
+    map_id: str = ""
+    item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -75,6 +77,17 @@ def _range(value: object, name: str, *, minimum: float) -> tuple[float, float]:
 def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
     event_progress = bool(entry.get("event_progress"))
     item_id = str(entry.get("item") or "").strip()
+    raw_class_options = dict(entry.get("item_options_by_class") or {})
+    class_options = {}
+    for class_name, values in raw_class_options.items():
+        options = tuple(str(value) for value in values if str(value))
+        if not options:
+            raise ValueError(
+                f"prop loot class options for {class_name!r} cannot be empty"
+            )
+        class_options[str(class_name).casefold()] = options
+    if not item_id and class_options:
+        item_id = next(iter(class_options.values()))[0]
     if event_progress == bool(item_id):
         raise ValueError(
             f"prop loot list {list_id!r}: an entry names exactly one of "
@@ -92,6 +105,8 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         amount=(int(low), int(high)),
         per_level=per_level,
         stacks=max(1, int(entry.get("stacks", 1))),
+        map_id=str(entry.get("map") or "").strip().casefold(),
+        item_options_by_class=MappingProxyType(class_options),
     )
 
 
@@ -139,6 +154,9 @@ def roll_prop_loot(
     player_level: int,
     rng: random.Random,
     event_collectibles: Mapping[str, tuple[str, ...]],
+    class_name: str = "",
+    map_id: str = "",
+    map_aliases: Iterable[str] = (),
 ) -> tuple[tuple[str, int], ...]:
     """Roll one chest for one player.
 
@@ -148,8 +166,15 @@ def roll_prop_loot(
     """
 
     level = max(1, int(player_level))
+    current_maps = frozenset(
+        str(value).strip().casefold()
+        for value in (map_id, *map_aliases)
+        if str(value).strip()
+    )
     result = []
     for entry in entries:
+        if entry.map_id and entry.map_id not in current_maps:
+            continue
         if entry.event_id and entry.event_id not in event_collectibles:
             continue
         if entry.chance < 1.0 and rng.random() >= entry.chance:
@@ -161,7 +186,14 @@ def roll_prop_loot(
                 for item_id in collectibles
             )
         else:
-            items = (entry.item_id,)
+            class_options = entry.item_options_by_class
+            if class_options:
+                options = class_options.get(str(class_name).casefold(), ())
+                if not options:
+                    continue
+                items = (rng.choice(options),)
+            else:
+                items = (entry.item_id,)
         for item_id in items:
             for _stack in range(entry.stacks):
                 if entry.per_level is not None:

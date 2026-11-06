@@ -469,6 +469,17 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # The New Moon realm maps retain three champion-density areas each, but
+    # the client export omits their SpawnList membership. Their New Moon
+    # monster pool has one authored champion template; bind both list labels
+    # to it so these encounters produce the champion packs shown by the map
+    # layout instead of silently remaining empty.
+    "e_newmoon_blakborg_white_dun": {
+        "spawnlist": ("e_new_02_hg_champion_stonegolem_01",),
+    },
+    "e_newmoon_blakborg_black_dun": {
+        "Blakborg_Monster": ("e_new_02_hg_champion_stonegolem_01",),
+    },
     # The Immortals event's SpawnList registry is absent from static.db4.
     # These map lists explicitly name the Forlorns and Mindless Fiends needed
     # by the event's main-quest kill objectives.
