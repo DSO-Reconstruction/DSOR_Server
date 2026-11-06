@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timezone
+import math
 import sqlite3
+import time
 
 from dso_server.runtime.context import *
 from dso_server.runtime import progression_queue
@@ -1481,7 +1484,7 @@ class CustomizationService:
             )
 
     def _toggle_switchable_sticker(
-            self, s: Session, definition) -> None:
+            self, s: Session, definition, *, source_item=None) -> None:
         """Toggle a cosmetic, replacing only its own equipment/effect group."""
 
         if definition.kind not in {"costume", "pet", "decoration"}:
@@ -1536,6 +1539,35 @@ class CustomizationService:
             # Add the replacement first. Retail does the same for exclusive
             # effects so the actor never briefly falls back to its base skin.
             if current_resource != definition.resource_id:
+                expires_at = None
+                lifetime = max(
+                    0.0,
+                    float(getattr(definition, "item_lifetime_seconds", 0.0)),
+                )
+                if lifetime > 0.0 and source_item is not None:
+                    try:
+                        created = datetime(
+                            *(int(value) for value in source_item.created_at),
+                            tzinfo=timezone.utc,
+                        )
+                        expires_at = created.timestamp() + lifetime
+                    except (OverflowError, TypeError, ValueError):
+                        expires_at = None
+                remaining_ticks = None
+                if expires_at is not None:
+                    remaining_seconds = expires_at - time.time()
+                    if remaining_seconds <= 0.0:
+                        print(
+                            f"[{GAMEPLAY_SERVICE_NAME}] ignored expired "
+                            f"costume {definition.resource_id!r}"
+                        )
+                        return
+                    remaining_ticks = max(
+                        1,
+                        int(math.ceil(
+                            remaining_seconds * SERVER_TICKS_PER_SECOND
+                        )),
+                    )
                 last_move = s.gameplay_last_move
                 start_tick = (
                     (last_move.start_tick + 1) & 0xFFFFFFFF
@@ -1553,9 +1585,23 @@ class CustomizationService:
                     actor_id=LOCAL_PLAYER_ACTOR_ID,
                     active=True,
                 )
+                if remaining_ticks is not None:
+                    new_effect = replace(
+                        new_effect,
+                        end_tick=(
+                            int(start_tick) + remaining_ticks
+                        ) & 0xFFFFFFFF,
+                        tick_interval=SERVER_TICKS_PER_SECOND,
+                        total_duration=remaining_ticks,
+                        permanent=False,
+                    )
                 s.gameplay_persistent_status_effects[
                     new_instance_id
                 ] = new_effect
+                if expires_at is not None:
+                    s.gameplay_timed_status_effect_expiries[
+                        new_instance_id
+                    ] = expires_at
                 if decoration_group is not None:
                     s.gameplay_active_decorations[decoration_group] = (
                         definition.resource_id, new_instance_id,
@@ -1583,6 +1629,9 @@ class CustomizationService:
                 ):
                     continue
                 removed_effect = s.gameplay_persistent_status_effects.pop(
+                    int(old_effect.instance_id), None
+                )
+                s.gameplay_timed_status_effect_expiries.pop(
                     int(old_effect.instance_id), None
                 )
                 if removed_effect is None:

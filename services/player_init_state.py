@@ -1738,7 +1738,7 @@ class PlayerInitializationStateService:
                 ),
             ):
                 definition = (
-                    load_sticker_definition(
+                    load_cosmetic_definition(
                         self.static_database_path, resource_id
                     )
                     if resource_id

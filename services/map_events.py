@@ -2737,6 +2737,32 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
+            and frozenset(templates).intersection({
+                "e_ful_02_varholm_night_00_miniboss_werewolf_01",
+                "e_ful_02_varholm_night_01_miniboss_werewolf_01",
+                "e_ful_02_varholm_night_02_miniboss_werewolf_01",
+            })
+            and CharacterService._varholm_bloodmoon_portal_unlocked(self, s)
+        ):
+            # The extracted portal signal also requires the quest to remain
+            # accepted. A character who already completed the Vargulf task
+            # can still summon and kill Vargulf, but that ClientSignal no
+            # longer matches. Start the same authored portal event from this
+            # authoritative kill edge so the exit is materialized after the
+            # boss dies, never when a fresh map instance is entered.
+            portal_event = runtime.catalog.event(
+                "e_ful_02_bloodmoon_portal",
+            )
+            if portal_event is not None:
+                self._schedule_map_local_event_start(runtime, portal_event)
+                _log(
+                    "unlocked Bloodmoon portal after eligible Vargulf kill "
+                    f"on {runtime.map_id} for character "
+                    f"{getattr(s.gameplay_character, 'character_id', 0)}"
+                )
         self._unlock_parallel_world_boss_reward_chest(
             runtime, templates,
         )
@@ -5132,7 +5158,15 @@ class MapEventService:
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition) -> None:
         wave = definition.wave_label is not None
-        delay = max(5.0, definition.start_delay) if wave else definition.start_delay
+        if (
+            map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
+            and definition.key == "e_ful_02_vargulf_fight"
+        ):
+            # The Vial interaction is the summon action; retail's ten-second
+            # authored delay leaves the player waiting after the ritual.
+            delay = 0.0
+        else:
+            delay = max(5.0, definition.start_delay) if wave else definition.start_delay
         if delay <= 0.0:
             self._start_map_local_event(runtime, definition)
             return
@@ -5471,7 +5505,71 @@ class MapEventService:
             self._unpublish_event_props(runtime, sessions, transition.disabled_sets)
         if transition.enabled_sets:
             self._publish_event_props(runtime, sessions, transition.enabled_sets)
-            self._spawn_event_monsters(runtime, sessions, transition.enabled_sets)
+            extra_spawn_rows = ()
+            if (
+                transition.active
+                and map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
+                and transition.event.key == "e_ful_02_vargulf_fight"
+            ):
+                fight_set = next((
+                    int(row)
+                    for row in transition.enabled_sets
+                    if transition.event.key in (
+                        runtime.content.event_sets.get(int(row)).events
+                        if runtime.content.event_sets.get(int(row)) is not None
+                        else ()
+                    )
+                ), None)
+                spawn_path = map_database_path(
+                    self.static_database_path, runtime.map_id,
+                )
+                try:
+                    with closing(sqlite3.connect(
+                        f"file:{spawn_path.as_posix()}?mode=ro", uri=True,
+                    )) as database:
+                        spawnpoint = database.execute(
+                            """SELECT rowid, Transform FROM _Instance_SpawnPoint
+                               WHERE lower(COALESCE(_ID, ''))=?
+                               ORDER BY rowid LIMIT 1""",
+                            (
+                                "e_ful_02_varholm_night_00_miniboss_werewolf_01_spawnpoint",
+                            ),
+                        ).fetchone()
+                except (OSError, sqlite3.Error) as exc:
+                    _log(f"could not read Vargulf spawnpoint: {exc}")
+                    spawnpoint = None
+                if fight_set is not None and spawnpoint is not None:
+                    try:
+                        matrix = struct.unpack(
+                            "<16f", bytes(spawnpoint[1]),
+                        )
+                    except (TypeError, struct.error):
+                        matrix = ()
+                else:
+                    matrix = ()
+                if fight_set is not None and len(matrix) == 16:
+                    # The authored fight sets contain the ranged add waves but
+                    # no Vargulf SpawnPoint. Materialize the boss with the
+                    # first fight phase at the map's authored boss spawnpoint,
+                    # rather than at the altar prop. Attach it to the set so
+                    # the boss-death signal retires it with the adds.
+                    extra_spawn_rows = (GatedSpawnRow(
+                        -2_000_001,
+                        fight_set,
+                        "e_ful_02_varholm_night_00_miniboss_werewolf_01",
+                        tuple(float(value) for value in matrix[12:15]),
+                        math.atan2(float(matrix[8]), float(matrix[0])),
+                    ),)
+                else:
+                    _log(
+                        "could not add Vargulf boss spawn: missing fight "
+                        f"set or authored spawnpoint on {runtime.map_id} "
+                        f"(fight_set={fight_set}, spawnpoint={spawnpoint is not None})"
+                    )
+            self._spawn_event_monsters(
+                runtime, sessions, transition.enabled_sets,
+                extra_rows=extra_spawn_rows,
+            )
             self._spawn_event_npcs(runtime, sessions, transition.enabled_sets)
         if transition.enabled_sets or transition.disabled_sets:
             self._publish_map_exits(runtime, sessions)
@@ -5761,6 +5859,19 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            bloodmoon_portal_locked = (
+                map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
+                and not CharacterService._varholm_bloodmoon_portal_unlocked(
+                    self, viewer,
+                )
+            )
+            if bloodmoon_portal_locked:
+                viewer_definitions = tuple(
+                    definition for definition in viewer_definitions
+                    if not definition.exit_id.casefold().startswith(
+                        "varholm_to_bloodmoon_"
+                    )
+                )
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
@@ -5864,6 +5975,22 @@ class MapEventService:
                     for definition in previous_exits
                     if definition.event_set_row in disabled_rows
                     and definition.instance_guid not in active_guids
+                )
+            if bloodmoon_portal_locked:
+                # ExitInfo merges into the client cache, so an exit opened by
+                # another player on this shared map must be explicitly closed
+                # for this character rather than merely omitted on refresh.
+                exit_info_entries += tuple(
+                    ExitInfoEntry(
+                        definition.name,
+                        definition.destination_map_id,
+                        0,
+                        definition.instance_guid,
+                    )
+                    for definition in previous_exits
+                    if definition.exit_id.casefold().startswith(
+                        "varholm_to_bloodmoon_"
+                    )
                 )
             exit_info = ExitInfo(exit_info_entries)
             packet, packet_bits = encode_server_command_batch(

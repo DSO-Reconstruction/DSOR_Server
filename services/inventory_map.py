@@ -1537,7 +1537,8 @@ class InventoryMapService:
                 and cosmetic_definition.kind in {"costume", "pet", "decoration"}
             ):
                 CharacterService._toggle_switchable_sticker(
-                    self, s, cosmetic_definition
+                    self, s, cosmetic_definition,
+                    source_item=inventory_item,
                 )
                 print(
                     f"[{GAMEPLAY_SERVICE_NAME}] toggled "
@@ -1962,6 +1963,21 @@ class InventoryMapService:
                 f'{route_name}-open-{route_name}-open'
             ),
         )
+        # Opening an inventory chest grants its contents directly, so an
+        # event progress collectible never passes through world pickup's
+        # progress hook. Credit those rewards after the chest transaction has
+        # committed and its inventory packet has been sent.
+        event_catalog = getattr(s, "gameplay_event_catalog", None)
+        progress_callback = getattr(
+            s, "gameplay_event_progress_callback", None,
+        )
+        if event_catalog is not None and progress_callback is not None:
+            for reward in contents.rewards:
+                collectible_id = str(reward.definition.template_id)
+                if event_catalog.is_event_collectible(collectible_id):
+                    progress_callback(
+                        s, collectible_id, max(1, int(reward.amount)),
+                    )
         for achievement_packet, achievement_bits, achievement_label in deferred_achievement_packets:
             CharacterService._send_world_loot_state_batch(
                 s, achievement_packet, achievement_bits, label=achievement_label

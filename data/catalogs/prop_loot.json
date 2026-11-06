@@ -40,6 +40,18 @@
         {"item": "money_vc", "per_level": [2.8, 4.0]},
         {"event_progress": true, "amount": [1, 2]}
       ]
+    },
+    "CHEST_fullmoon_silvermine_barrel_main": {
+      "comment": "Moonsilver Mine silver barrels. The map contains 16 barrels; two Silver Pebbles per barrel yields 32 per full run, within the usual 24-35 range documented for opening all barrels.",
+      "entries": [
+        {"item": "e_ful_02_silverstone_01", "amount": [2, 2]}
+      ]
+    },
+    "STATE_fullmoon_vargulf_01_log_place_01": {
+      "comment": "Varholm's Vargulf introductory clue. Picking up this quest log starts e-ful-02-vargulf-01-n through the authored PlayerReceivedItem signal.",
+      "entries": [
+        {"item": "e_ful_02_vargulf_01_log_01", "amount": [1, 1]}
+      ]
     }
   },
   "aliases": {

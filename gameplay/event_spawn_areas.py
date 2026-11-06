@@ -32,6 +32,22 @@ _ORSHA_MACHINE_BABY_TEMPLATES = (
 )
 
 _EVENT_AREA_TEMPLATE_OVERRIDES = {
+    # Varholm's Full Moon night has three champion-rank areas, but the client
+    # export omits the server SpawnList registry that selects their actors.
+    # The quest kill objectives require these exact champion templates; using
+    # the ordinary night_01/night_02 fallback only creates normal werewolves.
+    ("e_fullmoon_varholm_dun", 138, 10): (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
+    ("e_fullmoon_varholm_dun", 138, 11): (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
+    ("e_fullmoon_varholm_dun", 138, 12): (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
     # Only area 21 is the final Demonic Miller encounter. Event set 3460 also
     # contains the five overlapping mill-wave areas; applying this override
     # to the event set as a whole spawned one boss in every wave location.
@@ -279,7 +295,16 @@ def event_area_spawn_rows(
                 ),
             )[:max(0, int(a_mighty_threat_max_adds))])
         if override:
-            positions = positions[:1]
+            champion_area = (
+                map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
+                and int(area.event_set_row) == 138
+                and int(area.row_id) in {10, 11, 12}
+            )
+            area_spawn_limit = (
+                max(1, int(area.min_champion_spawn), int(area.max_champion_spawn))
+                if champion_area else 1
+            )
+            positions = positions[:area_spawn_limit]
         for position in positions:
             if any((position[0]-p[0])**2 + (position[2]-p[2])**2 < 1.0 for p in occupied):
                 continue

@@ -1,5 +1,5 @@
 {
-  "note": "Contents of the loot lists named by _Template_Events.Loot. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance, scaled by EventDropChance, and an amount range [min, max]; a missing class uses monster's values. An entry with regions instead drops from every monster on maps of those regions (or monsters of them), unscaled: the event maps' own loot. An item containing {difficulty:02d} drops the map difficulty's variant.",
+  "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
   "loot_lists": {
     "e_chr_2012_loot_gen_minions": [
       {
@@ -35,6 +35,122 @@
         "regions": ["e_chr"],
         "chance": {"monster": 0.002, "elite": 0.015, "boss": 0.1},
         "amount": {"monster": [1, 1]}
+      }
+    ]
+  },
+  "map_loot": {
+    "e_fullmoon_varholm_blood_dun": [
+      {
+        "item": "e_ful_01_progress_item_01",
+        "comment": "Bloodmoon Bloodmage: guaranteed Full Moon progress. Bloodshed (difficulty 8) gives 1300; each lower difficulty tier gives 80% of the previous tier. Difficulty 9 uses the Bloodshed cap.",
+        "monsters": [
+          "e_ful_02_varholm_bloodmoon_00_leader_mage_01",
+          "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
+          "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
+        ],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1300, 1300]},
+        "amount_by_difficulty": [218, 273, 341, 426, 532, 666, 832, 1040, 1300],
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "warrior_unique_2h_sword2h_bloodmoon_set",
+        "comment": "Bloodmoon Bloodmage: 15% chance to drop one Bloodmoon set item for the killer's class.",
+        "monsters": [
+          "e_ful_02_varholm_bloodmoon_00_leader_mage_01",
+          "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
+          "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
+        ],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": [
+            "warrior_unique_2h_sword2h_bloodmoon_set",
+            "warrior_unique_amulet_bloodmoon_set",
+            "warrior_unique_belt_bloodmoon_set",
+            "warrior_unique_ring_bloodmoon_set"
+          ],
+          "mage": [
+            "mage_unique_2h_staff2h_bloodmoon_set",
+            "mage_unique_amulet_bloodmoon_set",
+            "mage_unique_belt_bloodmoon_set",
+            "mage_unique_ring_bloodmoon_set"
+          ],
+          "ranger": [
+            "ranger_unique_2h_bow_bloodmoon_set",
+            "ranger_unique_amulet_bloodmoon_set",
+            "ranger_unique_belt_bloodmoon_set",
+            "ranger_unique_ring_bloodmoon_set"
+          ],
+          "dwarf": [
+            "dwarf_unique_2h_rifle2h_bloodmoon_set",
+            "dwarf_unique_amulet_bloodmoon_set",
+            "dwarf_unique_belt_bloodmoon_set",
+            "dwarf_unique_ring_bloodmoon_set"
+          ]
+        },
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_fullmoon_varholm_dun": [
+      {
+        "item": "e_ful_01_silver_essence_01",
+        "comment": "Gnomes in Varholm drop 35-100 Silver Essences, independent of map difficulty.",
+        "monsters": [
+          "e_ful_02_varholm_day_normal_norsegnome_01",
+          "e_ful_02_varholm_day_champion_norsegnome_01",
+          "e_ful_02_varholm_norsegnome_unique_01",
+          "e_ful_02_varholm_norsegnome_unique_02",
+          "e_ful_02_varholm_norsegnome_unique_03",
+          "e_ful_02_varholm_norsegnome_unique_04"
+        ],
+        "chance": {"monster": 1.0, "elite": 1.0},
+        "amount": {"monster": [35, 100], "elite": [35, 100]},
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_ful_02_aconitum_01",
+        "comment": "Wolfsbane (Aconitum) for Jon Sunlair's repeatable quest. The source confirms the drop map, not its rate; the server baseline increases with map difficulty.",
+        "monster_regions": ["fullmoon", "fullmoonDay", "fullmoonLeader", "fullmoonVargulf", "ProgressMonster"],
+        "chance": {"monster": 0.10, "elite": 0.25, "boss": 0.50},
+        "amount": {"monster": [1, 1], "elite": [1, 1], "boss": [1, 1]},
+        "scale_chance_with_difficulty": true
+      },
+      {
+        "item": "e_ful_02_vargulf_claw_01",
+        "comment": "Vargulf's Claw drops from the Vargulf boss.",
+        "monsters": [
+          "e_ful_02_varholm_night_00_miniboss_werewolf_01",
+          "e_ful_02_varholm_night_01_miniboss_werewolf_01",
+          "e_ful_02_varholm_night_02_miniboss_werewolf_01"
+        ],
+        "chance": {"boss": 0.5},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": true
+      }
+    ],
+    "e_fullmoon_silvermine_dun": [
+      {
+        "item": "e_ful_01_silver_essence_01",
+        "comment": "Silver Mine gnomes drop 35-100 Silver Essences, independent of map difficulty. Silver Pebbles come from barrels, not monsters.",
+        "monsters": [
+          "e_ful_02_silvermine_bomber_norsegnome_01",
+          "e_ful_02_silvermine_champion_norsegnome_01",
+          "e_ful_02_silvermine_normal_norsegnome_01"
+        ],
+        "chance": {"monster": 1.0, "elite": 1.0},
+        "amount": {"monster": [35, 100], "elite": [35, 100]},
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_ful_02_silverstone_01",
+        "comment": "Geitir the Summoner drops a fixed stack of 30 Silver Pebbles, independent of difficulty.",
+        "monsters": [
+          "e_ful_02_silvermine_leader_soulless_norseman_01"
+        ],
+        "chance": {"elite": 1.0},
+        "amount": {"elite": [30, 30]},
+        "scale_stack_amount_with_difficulty": false
       }
     ]
   }

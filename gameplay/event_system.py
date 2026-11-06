@@ -40,6 +40,14 @@ from dso_server.runtime.file_revisions import observed_revision, resolved_path
 UINT32_MAX = 0xFFFFFFFF
 _CURRENCY_COLLECTIBLE_CATEGORIES = frozenset({"Currency", "NoAutoUseCurrency"})
 _DIFFICULTY_SUFFIX = re.compile(r"_diff_\d+$", re.IGNORECASE)
+YEAR_ROUND_MOON_EVENT_MAPS = frozenset({
+    "e_fullmoon_varholm_dun",
+    "e_newmoon_blakborg_city_dun",
+})
+YEAR_ROUND_MOON_TRAVEL_ITEMS = frozenset({
+    "e_ful_01_teleport_01",
+    "e_new_01_teleport_01",
+})
 _DROP_AMOUNT = re.compile(
     r"^DropAmount:([^,]+),(absolute|relative),([^#]+)", re.IGNORECASE
 )
@@ -275,6 +283,26 @@ class EventLootEntry:
         ]
 
 
+@dataclass(frozen=True)
+class MapLootEntry:
+    """A map-owned drop from explicitly scoped monster templates or regions."""
+
+    loot: EventLootEntry
+    monster_templates: frozenset[str]
+    monster_regions: frozenset[str]
+    scale_chance_with_difficulty: bool = False
+    scale_stack_amount_with_difficulty: bool = True
+    difficulty_amounts: tuple[int, ...] = ()
+    item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+
+
+@dataclass(frozen=True)
+class MapLootDrop:
+    item_id: str
+    amount: int
+    scale_stack_amount_with_difficulty: bool
+
+
 def _rank_class(rank_kind: str) -> str:
     rank = str(rank_kind).casefold()
     if rank in {"boss", "worldboss"}:
@@ -308,6 +336,7 @@ class EventCatalog:
     monster_regions: Mapping[str, frozenset[str]] = MappingProxyType({})
     # Loot list id -> entries; casefolded monster id -> EventDropChance.
     event_loot: Mapping[str, tuple[EventLootEntry, ...]] = MappingProxyType({})
+    map_loot: Mapping[str, tuple[MapLootEntry, ...]] = MappingProxyType({})
     monster_event_drop_chances: Mapping[str, float] = MappingProxyType({})
 
     def active_events(self, now: datetime | None = None) -> tuple[ScheduledEvent, ...]:
@@ -400,12 +429,16 @@ class EventCatalog:
     ) -> bool:
         if player_level < definition.required_level:
             return False
+        if definition.template_id.casefold() in YEAR_ROUND_MOON_TRAVEL_ITEMS:
+            return True
         if not definition.event_ids:
             return True
         active = self.active_template_ids(now)
         return bool(definition.event_ids & active)
 
     def map_available(self, map_id: str, now: datetime | None = None) -> bool:
+        if _map_key(map_id) in YEAR_ROUND_MOON_EVENT_MAPS:
+            return True
         requirements = self.event_map_requirements.get(_map_key(map_id))
         if not requirements:
             return True
@@ -687,6 +720,79 @@ class EventCatalog:
                 result.append((
                     entry.item_for_difficulty(map_difficulty),
                     rng.randint(low, high),
+                ))
+        return tuple(result)
+
+    def map_loot_drops(
+        self,
+        *,
+        map_id: str,
+        monster_template_id: str,
+        monster_rank: str,
+        monster_level: int,
+        rng: random.Random,
+        class_name: str = "",
+        map_aliases: Iterable[str] = (),
+        map_difficulty: int = 0,
+        privileged_difficulty_multiplier: float = 1.0,
+    ) -> tuple[MapLootDrop, ...]:
+        """Roll authored drops belonging to these maps, independent of schedule."""
+
+        current_maps = frozenset(
+            key
+            for key in (_map_key(map_id), *(_map_key(value) for value in map_aliases))
+            if key
+        )
+        template_id = str(monster_template_id).casefold()
+        monster_regions = self.monster_regions.get(template_id, frozenset())
+        rank = _rank_class(monster_rank)
+        result = []
+        for current_map in current_maps:
+            for entry in self.map_loot.get(current_map, ()):
+                if entry.monster_templates and template_id not in entry.monster_templates:
+                    continue
+                if entry.monster_regions and not (
+                    entry.monster_regions & monster_regions
+                ):
+                    continue
+                loot = entry.loot
+                if monster_level < loot.minimum_monster_level or (
+                    loot.maximum_monster_level
+                    and monster_level > loot.maximum_monster_level
+                ):
+                    continue
+                chance = loot.chances.get(rank, loot.chances.get("monster", 0.0))
+                if entry.scale_chance_with_difficulty:
+                    chance *= max(0.0, float(privileged_difficulty_multiplier))
+                if rng.random() >= min(1.0, chance):
+                    continue
+                if entry.difficulty_amounts:
+                    amount = entry.difficulty_amounts[
+                        max(0, min(
+                            int(map_difficulty),
+                            len(entry.difficulty_amounts) - 1,
+                        ))
+                    ]
+                else:
+                    low, high = loot.amounts.get(
+                        rank, loot.amounts.get("monster", (1, 1))
+                    )
+                    amount = rng.randint(low, high)
+                item_options = entry.item_options_by_class.get(
+                    str(class_name).casefold(), ()
+                )
+                if not item_options and entry.item_options_by_class:
+                    item_options = tuple(
+                        item_id
+                        for options in entry.item_options_by_class.values()
+                        for item_id in options
+                    )
+                result.append(MapLootDrop(
+                    rng.choice(item_options)
+                    if item_options
+                    else loot.item_for_difficulty(map_difficulty),
+                    amount,
+                    entry.scale_stack_amount_with_difficulty,
                 ))
         return tuple(result)
 
@@ -1116,6 +1222,108 @@ def _event_loot_lists(
     return result
 
 
+def _map_loot_lists(
+    path: str, item_rows: Mapping[str, Mapping[str, object]],
+) -> dict[str, tuple[MapLootEntry, ...]]:
+    """Parse drops tied to a map rather than a scheduled event."""
+
+    if not path:
+        return {}
+    document = json.loads(Path(path).read_text(encoding="utf-8"))
+    lists = document.get("map_loot") if isinstance(document, dict) else None
+    if not isinstance(lists, dict):
+        return {}
+    result = {}
+    for map_id, entries in lists.items():
+        if not isinstance(entries, list):
+            raise ValueError(f"map loot for {map_id!r} must be an array")
+        parsed = []
+        for entry in entries:
+            raw_class_options = dict(entry.get("item_options_by_class") or {})
+            class_options = {}
+            for class_name, values in raw_class_options.items():
+                options = tuple(str(value) for value in values if str(value))
+                if not options:
+                    raise ValueError(
+                        f"map loot class options for {class_name!r} cannot be empty"
+                    )
+                class_options[str(class_name).casefold()] = options
+            all_options = tuple(
+                item_id
+                for options in class_options.values()
+                for item_id in options
+            )
+            item_id = str(entry.get("item") or (all_options[0] if all_options else ""))
+            item = item_rows.get(item_id)
+            if item is None:
+                raise ValueError(f"map loot for {map_id!r} names unknown item {item_id!r}")
+            for option in all_options:
+                if option not in item_rows:
+                    raise ValueError(
+                        f"map loot for {map_id!r} names unknown item option {option!r}"
+                    )
+            chances = {
+                str(rank).casefold(): max(0.0, min(1.0, float(value)))
+                for rank, value in dict(entry.get("chance") or {}).items()
+            }
+            amounts = {}
+            for rank, value in dict(entry.get("amount") or {}).items():
+                low, high = (int(value[0]), int(value[-1])) if isinstance(
+                    value, list
+                ) else (int(value), int(value))
+                if not 1 <= low <= high:
+                    raise ValueError(
+                        f"map loot amount for {item_id!r} must be 1 <= min <= max"
+                    )
+                amounts[str(rank).casefold()] = (low, high)
+            difficulty_amounts = tuple(
+                int(value) for value in entry.get("amount_by_difficulty") or ()
+            )
+            if any(value < 1 for value in difficulty_amounts):
+                raise ValueError(
+                    f"map loot difficulty amounts for {item_id!r} must be positive"
+                )
+            if not chances:
+                raise ValueError(f"map loot entry {item_id!r} needs a chance")
+            templates = frozenset(
+                str(value).casefold()
+                for value in entry.get("monsters") or ()
+            )
+            monster_regions = frozenset(
+                str(value).casefold()
+                for value in entry.get("monster_regions") or ()
+            )
+            if not templates and not monster_regions:
+                raise ValueError(
+                    f"map loot entry {item_id!r} needs monster or monster_regions scope"
+                )
+            parsed.append(MapLootEntry(
+                loot=EventLootEntry(
+                    item_id=item_id,
+                    chances=MappingProxyType(chances),
+                    amounts=MappingProxyType(amounts),
+                    minimum_monster_level=max(
+                        1, int(item.get("MinDropLevel") or 1)
+                    ),
+                    maximum_monster_level=max(
+                        0, int(item.get("MaxDropLevel") or 0)
+                    ),
+                ),
+                monster_templates=templates,
+                monster_regions=monster_regions,
+                scale_chance_with_difficulty=bool(
+                    entry.get("scale_chance_with_difficulty")
+                ),
+                scale_stack_amount_with_difficulty=bool(
+                    entry.get("scale_stack_amount_with_difficulty", True)
+                ),
+                difficulty_amounts=difficulty_amounts,
+                item_options_by_class=MappingProxyType(class_options),
+            ))
+        result[_map_key(map_id)] = tuple(parsed)
+    return result
+
+
 def _authored_item_regions() -> dict[str, frozenset[str]]:
     """Parse data/catalogs/event_item_regions.json (see the note there).
 
@@ -1515,6 +1723,7 @@ def _load_catalog(
         }),
         monster_regions=MappingProxyType(monster_regions),
         event_loot=MappingProxyType(_event_loot_lists(loot_path, item_rows)),
+        map_loot=MappingProxyType(_map_loot_lists(loot_path, item_rows)),
         monster_event_drop_chances=MappingProxyType({
             str(monster_id).casefold(): min(1.0, float(chance))
             for monster_id, chance in monster_event_drop_rows
