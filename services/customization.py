@@ -43,6 +43,48 @@ class CustomizationService:
     """Equipment appearance, mounts, costumes, pets, and sticker-book interactions."""
 
     @staticmethod
+    def _select_mount_quickbar_shortcut(
+            s: Session, resource_id: str) -> bool:
+        """Bind the successfully summoned mount to the shared O shortcut."""
+
+        resource_id = str(resource_id).strip()
+        if not resource_id:
+            return False
+        with s.flow_lock:
+            quick_slots = s.gameplay_quick_slots
+            if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
+                return False
+            bars = list(quick_slots.quickbars)
+            changed = False
+            for bar_index, bar in enumerate(bars):
+                slots = list(bar)
+                if len(slots) < 17:
+                    slots.extend(
+                        QuickSlotInfo(0xFFFFFFFF, None)
+                        for _ in range(17 - len(slots))
+                    )
+                selected = QuickSlotInfo(2, resource_id)
+                if slots[8] != selected:
+                    slots[8] = selected
+                    changed = True
+                bars[bar_index] = tuple(slots)
+            if not changed:
+                return False
+            updated = QuickSlotsInfo(tuple(bars))
+            s.gameplay_quick_slots = updated
+
+        CharacterService._send_stickerbook_commands(
+            s,
+            (ServerCommand(
+                QUICK_SLOTS_INFO_COMMAND,
+                updated,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),),
+            label="mount-quickbar-shortcut",
+        )
+        return True
+
+    @staticmethod
     def _ensure_mercenary_quickbar_shortcut(
             s: Session, resource_id: str) -> bool:
         """Put an owned Shadow Soul in the first free sticker shortcut slot."""
@@ -833,6 +875,9 @@ class CustomizationService:
             s.gameplay_presence_callback(
                 s, ("status_effects", transitions)
             )
+        CharacterService._select_mount_quickbar_shortcut(
+            s, ride.definition.stickerbook_resource_id
+        )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] completed mount cast; applied "
             f"{ride.definition.mount_resource_id} to actor "
