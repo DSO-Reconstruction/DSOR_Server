@@ -49,16 +49,6 @@ from dso_server.protocol.prop_protocol import (
 )
 
 
-# These quest portals have no event requirement in quests.xml, but the
-# original signal rows also require the global New Moon event. Keep the
-# authored quest-accepted condition and lift only that seasonal gate so the
-# white/black quest maps are reachable for preparation outside the event.
-YEAR_ROUND_NEWMOON_QUEST_PORTAL_SIGNALS = frozenset({
-    "e_new_02_witch_06a_quest_end",
-    "e_new_02_witch_06b_quest_end",
-})
-
-
 # The client addresses props by the **low 16 bits** of the prop id only:
 # ``ClientPropManager::RegisterPropEntity`` (0x1402197c5) and the world's
 # prop lookup (0x1409ec90e) both ``movzx`` the id's low word before indexing
@@ -163,6 +153,15 @@ _CHEST_VARIANT_WEIGHTS = {0: 50, 1: 40, 5: 10}
 # up every location at once.
 DUNGEON_RESOURCE_MIN_FRACTION = 0.20
 DUNGEON_RESOURCE_MAX_FRACTION = 0.40
+NEW_MOON_RECALL_ALTAR_IDS = frozenset(
+    f"e_new_02_{realm}_recall_altar_{index:02d}"
+    for realm in ("karabossa", "magotina")
+    for index in range(1, 4)
+)
+NEW_MOON_CAULDRON_TEMPLATE_IDS = frozenset({
+    "e_new_02_pot_white_01",
+    "e_new_02_pot_black_01",
+})
 
 
 def _dungeon_resource_category(definition: MapPropDefinition) -> str:
@@ -412,13 +411,7 @@ class MapSignalCatalog:
         kind = str(event_type).casefold()
         fired = []
         for rule in self.rules_by_event_type.get(kind, ()):
-            candidate = (
-                replace(rule, events_running=())
-                if rule.signal_id.casefold()
-                in YEAR_ROUND_NEWMOON_QUEST_PORTAL_SIGNALS
-                else rule
-            )
-            if not candidate.accepts(
+            if not rule.accepts(
                 map_id=context.map_id,
                 running_events=context.running_events,
                 player_level=context.player_level,
@@ -431,7 +424,7 @@ class MapSignalCatalog:
             ):
                 continue
             if kind == "monsterseliminated":
-                listed = frozenset(candidate.params)
+                listed = frozenset(rule.params)
                 present = listed & context.present_templates
                 if (
                     not present
@@ -454,11 +447,11 @@ class MapSignalCatalog:
                 else:
                     if current_score < required_score:
                         continue
-            elif candidate.params and not (
-                frozenset(candidate.params) & context.params
+            elif rule.params and not (
+                frozenset(rule.params) & context.params
             ):
                 continue
-            fired.append(candidate)
+            fired.append(rule)
         return tuple(fired)
 
 
@@ -661,9 +654,19 @@ class MapPropDefinition:
         chests, shrines, quest altars -- open as before.
         """
 
+        new_moon_recall_altar = (
+            self.instance_id.casefold() in NEW_MOON_RECALL_ALTAR_IDS
+        )
+        new_moon_cauldron = (
+            self.template_id.casefold() in NEW_MOON_CAULDRON_TEMPLATE_IDS
+        )
         return bool(
             self.key_id and self.key_amount > 0
-            and has_prop_loot(self.loot_list_id or self.chest_id)
+            and (
+                has_prop_loot(self.loot_list_id or self.chest_id)
+                or new_moon_recall_altar
+                or new_moon_cauldron
+            )
         )
 
     @property
@@ -686,6 +689,17 @@ class MapPropDefinition:
         # map transition. Its EventSet controls when it appears; it still
         # needs a server prop id so PropInteraction can fire the map signal.
         if self.instance_id.casefold() == "fracturedplanes_rift":
+            return True
+        if self.instance_id.casefold() in NEW_MOON_RECALL_ALTAR_IDS:
+            return True
+        # New Moon's boss cauldrons are plain StateObjectSpawnPoints: their
+        # Fairy Wood cost and ammunition buff live in the StateObject template,
+        # not in a map signal, operation, or loot list. They still need a
+        # server prop id so the client can render them and PropInteraction can
+        # apply the cost/buff logic.
+        if self.kind == "spawn" and self.template_id.casefold() in {
+            "e_new_02_pot_white_01", "e_new_02_pot_black_01",
+        }:
             return True
         if self.always_present:
             # Retail published a scene amphora (PropInfo on approach) and

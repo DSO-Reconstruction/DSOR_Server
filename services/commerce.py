@@ -6,7 +6,10 @@ from dataclasses import replace
 from functools import partial
 import sqlite3
 
-from dso_server.gameplay.ocp_store import FULL_MOON_ATTIRE_PRODUCT_KEY
+from dso_server.gameplay.ocp_store import (
+    EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT,
+    EVENT_ATTIRE_PRODUCT_KEYS,
+)
 from dso_server.runtime.context import *
 from dso_server.runtime.admin_commands import track_inventory_reward
 from dso_server.runtime.transport import Session
@@ -358,23 +361,24 @@ class CommerceService:
         self._handle_simple_gameplay_command(s, payload, 0x010B)
         with s.flow_lock:
             character = s.gameplay_character
-        fullmoon_active = (
-            "fullmoon_event_02"
-            in CharacterService._event_catalog(self).active_template_ids()
+        active_events = set(
+            CharacterService._event_catalog(self).active_template_ids()
+        )
+        class_name = (
+            CLASS_NAMES.get(int(character.class_id), "").casefold()
+            if character is not None else ""
         )
         offers = LOCAL_OCP_OFFERS
-        if (
-            not fullmoon_active
-            or character is None
-            or CLASS_NAMES.get(int(character.class_id), "").casefold()
-            not in {"warrior", "mage", "ranger", "dwarf"}
-        ):
-            # Only advertise the Full Moon attire during its event, when the
-            # active character class can be resolved to its matching item.
-            offers = tuple(
-                offer for offer in offers
-                if offer.product_key != FULL_MOON_ATTIRE_PRODUCT_KEY
+        offers = tuple(
+            offer for offer in offers
+            if offer.product_key not in EVENT_ATTIRE_PRODUCT_KEYS
+            or (
+                character is not None
+                and class_name in {"warrior", "mage", "ranger", "dwarf"}
+                and EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT[offer.product_key]
+                in active_events
             )
+        )
         packet = encode_ocp_offer_batch(
             OCPOfferBatch(
                 offers,
@@ -433,13 +437,16 @@ class CommerceService:
 
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
         request = decode_ocp_booking_request(payload)
+        required_event = EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT.get(
+            request.offer_id
+        )
         if (
-            request.offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
-            and "fullmoon_event_02"
+            required_event is not None
+            and required_event
             not in CharacterService._event_catalog(self).active_template_ids()
         ):
             raise ValueError(
-                "Full Moon attire can only be purchased while its event is active"
+                "Event attire can only be purchased while its event is active"
             )
         with s.flow_lock:
             character = s.gameplay_character
@@ -460,7 +467,7 @@ class CommerceService:
             # and character selection changes before OCP confirmation arrives.
             claims[pending_key] = (
                 int(character.class_id) + 1
-                if request.offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
+                if request.offer_id in EVENT_ATTIRE_PRODUCT_KEYS
                 and character is not None
                 else 1
             )
@@ -770,7 +777,7 @@ class CommerceService:
             pending_key, offer_id, class_claim = pending
             purchased_class_id = (
                 int(class_claim) - 1
-                if offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
+                if offer_id in EVENT_ATTIRE_PRODUCT_KEYS
                 else int(class_claim)
             )
             reward = resolve_ocp_booking_reward(

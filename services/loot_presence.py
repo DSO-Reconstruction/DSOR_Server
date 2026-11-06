@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+
 from dso_server.runtime.context import *
 from dso_server.protocol.inventory_codec import owned_inventory_items
 from dso_server.gameplay.status_modifier_runtime import (
@@ -13,9 +15,16 @@ from dso_server.protocol.membership_protocol import (
     PREMIUM_MEMBERSHIP,
     membership_is_active,
 )
+from dso_server.gameplay.event_system import _map_key, _tokens
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
 )
+
+
+_BOSS_INGREDIENT_REGION_CACHE: dict[
+    tuple[str, tuple[int, int]], dict[str, frozenset[str]]
+] = {}
+_BOSS_INGREDIENT_REGION_CACHE_LOCK = Lock()
 
 
 def mystic_cube_drop_is_eligible(session: Session) -> bool:
@@ -43,6 +52,82 @@ def mystic_cube_drop_is_eligible(session: Session) -> bool:
 
 class LootPresenceService:
     """Allocate collision-free, character-bound drops for map occupants."""
+
+    @staticmethod
+    def _guaranteed_worldboss_ingredient(
+        loot_cache,
+        event_catalog,
+        *,
+        monster_template_id: str,
+        map_ids: tuple[str, ...],
+        map_difficulty: int,
+    ) -> tuple[str, int] | None:
+        """Return the difficulty-specific ingredient owned by this boss/map.
+
+        Ingredient item regions name their boss or event map. Match those
+        regions against both the monster and its current map so bosses whose
+        actor template omits Region still resolve correctly.
+        """
+
+        monster_regions = set(
+            event_catalog.monster_regions.get(
+                str(monster_template_id).casefold(), frozenset()
+            )
+        )
+        map_regions = set()
+        for map_id in map_ids:
+            key = _map_key(map_id)
+            if key:
+                map_regions.update(event_catalog.map_regions.get(key, ()))
+        scopes = monster_regions | map_regions
+        if not scopes:
+            return None
+
+        cache_key = (
+            str(loot_cache.database_path),
+            tuple(loot_cache.database_revision),
+        )
+        with _BOSS_INGREDIENT_REGION_CACHE_LOCK:
+            ingredient_families = _BOSS_INGREDIENT_REGION_CACHE.get(cache_key)
+            if ingredient_families is None:
+                suffix = "_rarity_01"
+                ingredient_families = {}
+                for item_id, row in loot_cache.items_by_id.items():
+                    item_id = str(item_id)
+                    if not item_id.startswith("boss_ingredient_") or not item_id.endswith(suffix):
+                        continue
+                    family = item_id[len("boss_ingredient_"):-len(suffix)]
+                    regions = frozenset(
+                        token.casefold()
+                        for token in _tokens(row.get("Region"))
+                        if token.casefold() != "none"
+                    )
+                    if regions:
+                        ingredient_families[family] = regions
+                _BOSS_INGREDIENT_REGION_CACHE[cache_key] = ingredient_families
+
+        ingredient_families = {
+            family: regions
+            for family, regions in ingredient_families.items()
+            if regions & scopes
+        }
+
+        # Prefer a match explicitly carried by the monster if a map happens
+        # to host more than one event/boss family.
+        direct_matches = {
+            family for family, regions in ingredient_families.items()
+            if regions & monster_regions
+        }
+        matches = direct_matches or set(ingredient_families)
+        if len(matches) != 1:
+            return None
+
+        family = next(iter(matches))
+        rarity_tier = min(5, max(0, int(map_difficulty)) // 2 + 1)
+        item_id = f"boss_ingredient_{family}_rarity_{rarity_tier:02d}"
+        if item_id not in loot_cache.items_by_id:
+            return None
+        return item_id, 1
 
     def _generate_world_loot_for_session(
             self,
@@ -175,6 +260,25 @@ class LootPresenceService:
                     difficulty_factors[1]
                 ),
             )
+            if profile is not None and profile.rank_kind.casefold() == "worldboss":
+                ingredient = self._guaranteed_worldboss_ingredient(
+                    loot_cache,
+                    event_catalog,
+                    monster_template_id=str(monster.template_id),
+                    map_ids=(
+                        map_id,
+                        event_map_id,
+                        map_access_id,
+                        *event_map_aliases,
+                    ),
+                    map_difficulty=map_difficulty,
+                )
+                if ingredient is not None:
+                    map_loot = tuple(
+                        drop for drop in map_loot
+                        if drop.item_id.casefold() != ingredient[0].casefold()
+                    )
+                    event_loot = (*event_loot, ingredient)
             # A guaranteed map-owned progress stack replaces the ordinary
             # scheduled-event collectible roll for that same item. Otherwise
             # a boss kill can award the configured 1300 plus a second random

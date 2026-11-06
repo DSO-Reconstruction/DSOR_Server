@@ -37,6 +37,13 @@ _LEGACY_EXIT_URL_REDIRECTS = {
     ("f4102_dun", "f4102_exit_to_f4100"): ("f4100_hub", "f4102_dun"),
 }
 
+NEW_MOON_CITY_MAP_ID = "e_newmoon_blakborg_city_dun"
+NEW_MOON_REALM_MAP_IDS = frozenset({
+    "e_newmoon_blakborg_white_dun",
+    "e_newmoon_blakborg_black_dun",
+})
+NEW_MOON_PORTAL_SCROLL_TEMPLATE_ID = "e_new_01_scroll_fairy_fire_buff_01"
+
 
 class MapTransitionService:
     """Validate map exits/travel and coordinate the local server handoff."""
@@ -524,6 +531,9 @@ class MapTransitionService:
     def _activate_map_exit(
             self, s: Session, definition, *, trigger: str,
             destination_access_id: str | None = None) -> bool:
+        scroll_mutation = None
+        original_inventory = None
+        original_next_item_id = None
         try:
             character = s.gameplay_character
             selected_access_id = str(
@@ -582,6 +592,41 @@ class MapTransitionService:
                     f"{definition.name!r} has no matching destination entry; "
                     f"using respawn point ({exc})"
                 )
+            requires_new_moon_scroll = (
+                map_key(s.gameplay_map) == NEW_MOON_CITY_MAP_ID
+                and map_key(destination_physical_map_id)
+                in NEW_MOON_REALM_MAP_IDS
+            )
+            if requires_new_moon_scroll:
+                with s.flow_lock:
+                    inventory = s.gameplay_inventory
+                    if inventory is None:
+                        raise ValueError(
+                            "New Moon portal requires 1 Magical New Moon Scroll"
+                        )
+                    scroll = next((
+                        item for item in inventory.items
+                        if str(item.template_id).casefold()
+                        == NEW_MOON_PORTAL_SCROLL_TEMPLATE_ID
+                    ), None)
+                    if scroll is None:
+                        raise ValueError(
+                            "New Moon portal requires 1 Magical New Moon Scroll"
+                        )
+                    original_inventory = inventory
+                    original_next_item_id = int(s.gameplay_next_item_id)
+                    builder = InventoryMutationBuilder(
+                        inventory, s.gameplay_next_item_id,
+                    )
+                    builder.consume(
+                        int(scroll.item_id), 1, preserve_item_id=True,
+                    )
+                    scroll_mutation = builder.finish()
+                    s.gameplay_inventory = scroll_mutation.inventory
+                    s.gameplay_next_item_id = max(
+                        int(s.gameplay_next_item_id),
+                        int(scroll_mutation.next_item_id),
+                    )
             started = CharacterService._begin_map_transfer(
                 self,
                 s,
@@ -594,13 +639,43 @@ class MapTransitionService:
                 ),
             )
         except (OSError, ValueError) as exc:
+            if scroll_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = original_inventory
+                    s.gameplay_next_item_id = original_next_item_id
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] rejected map exit "
                 f"{definition.name!r} ({trigger}): {exc}"
             )
             return False
         if not started:
+            if scroll_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = original_inventory
+                    s.gameplay_next_item_id = original_next_item_id
             return False
+        if scroll_mutation is not None:
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, scroll_mutation.delta,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, scroll_mutation.final,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="new-moon-portal-scroll",
+            )
+            CharacterService._request_account_save(
+                s, "New Moon portal scroll spent",
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] spent 1 "
+                f"{NEW_MOON_PORTAL_SCROLL_TEMPLATE_ID} to enter "
+                f"{destination_physical_map_id}"
+            )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] activated map exit via {trigger}: "
             f"{definition.name!r}: {s.gameplay_map} -> "

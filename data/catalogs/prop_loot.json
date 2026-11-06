@@ -1,5 +1,5 @@
 {
-  "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). 'event_progress': true drops the current page collectible of every event whose progress applies on the map, for this player. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
+  "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible of every event whose progress applies on the map, for this player. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
     "CHEST_lootlist_MAGIC": {
       "comment": "Locked scaling magic chests spend five lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
@@ -30,7 +30,19 @@
         {"item": "money_vc", "stacks": 5, "per_level": [2.8, 4.0]},
         {"event_progress": true, "amount": [10, 20]},
         {"event_progress": true, "amount": [50, 100]},
-        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "amount": [1, 3]}
+        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "amount": [1, 3]},
+        {
+          "map": "e_newmoon_blakborg_city_dun",
+          "comment": "Golden Festive Amphora in Blackborg: 15% chance to drop one Witch Seeker Strap for the opening character's class.",
+          "chance": 0.15,
+          "amount": [1, 1],
+          "item_options_by_class": {
+            "warrior": ["warrior_unique_belt_newmoon_set_03"],
+            "mage": ["mage_unique_belt_newmoon_set_03"],
+            "ranger": ["ranger_unique_belt_newmoon_set_03"],
+            "dwarf": ["dwarf_unique_belt_newmoon_set_03"]
+          }
+        }
       ]
     },
     "CHEST_amphora_small_MAIN": {

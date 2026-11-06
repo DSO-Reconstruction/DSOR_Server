@@ -13443,6 +13443,20 @@ class LocalCombatState:
             )
             for target_actor_id in pending.target_actor_ids:
                 target = self.monsters.get(target_actor_id)
+                # Player summons do not pass through the ordinary player-hit
+                # scheduler. Preserve the target's authored AmmoVulnerability
+                # gate here as well, so Shadow Soul attacks cannot chip a
+                # New Moon witch while their owner lacks Fairy Fire.
+                if (
+                    target is not None
+                    and not self._ammunition_can_hit(
+                        target_actor_id,
+                        self._active_ammunition_types(
+                            summon.modifier_sources
+                        ),
+                    )
+                ):
+                    continue
                 if target is None:
                     if (
                         str(getattr(summon.definition, "category", "")).casefold()
@@ -13761,6 +13775,12 @@ class LocalCombatState:
                 if (
                     previous <= 0
                     or target_actor_id in self.returning_home_actor_ids
+                    or not self._ammunition_can_hit(
+                        target_actor_id,
+                        self._active_ammunition_types(
+                            summon.modifier_sources
+                        ),
+                    )
                     or self._distance(
                         summon.position, self.monster_positions[target_actor_id],
                     ) > strike.radius + max(0.0, target.collision_radius)

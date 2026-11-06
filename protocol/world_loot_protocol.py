@@ -2939,19 +2939,31 @@ def generate_monster_loot(
             row = database.items_by_id.get(str(template_id))
             if row is None:
                 raise ValueError(f"event loot {template_id!r} is not an item")
+            item_category = str(row.get("ItemCategory") or "General")
             rarity_name = str(row.get("DefaultRarity") or "Common")
+            # Ingredient/event materials can carry an authored visual rarity
+            # (Rare/Epic) without being equipment. Passing that rarity into
+            # the equipment enchantment roller aborts the entire boss loot
+            # batch, discarding both ordinary drops and Possible Rewards.
+            equipment_rarity = (
+                EQUIPMENT_RARITIES.index(rarity_name)
+                if (
+                    item_category in EQUIPMENT_ITEM_CATEGORIES
+                    and rarity_name in EQUIPMENT_RARITIES
+                )
+                else 0
+            )
             specifications.append((
                 LootItemDefinition(
                     str(template_id),
-                    str(row.get("ItemCategory") or "General"),
+                    item_category,
                     str(row.get("AutoPickUp") or "None"),
                     "0", "0", "",
                 ),
                 max(1, int(amount)),
                 1,
                 "",
-                EQUIPMENT_RARITIES.index(rarity_name)
-                if rarity_name in EQUIPMENT_RARITIES else 0,
+                equipment_rarity,
             ))
 
         # Existing non-boss cube drops keep their configured flat chance.

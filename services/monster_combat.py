@@ -1502,6 +1502,23 @@ class MonsterCombatService(
             CharacterService._refresh_player_combat_vitals(
                 s, inventory_changed=False,
             )
+            # Player summons retain the owner's modifier snapshot. Rebuild it
+            # when a timed status expires so temporary ammunition (including
+            # New Moon's cauldron Fairy Fire) cannot remain valid forever.
+            with s.flow_lock:
+                modifier_sources = tuple(
+                    CharacterService._active_skill_modifier_sources(s)
+                )
+                owner_actor_id = int(
+                    getattr(s, "gameplay_remote_actor_id", 0)
+                    or combat.player_actor_id
+                )
+            with combat.lock:
+                for actor_id, summon in tuple(combat.player_summons.items()):
+                    if int(summon.owner_actor_id) == owner_actor_id:
+                        combat.player_summons[actor_id] = replace(
+                            summon, modifier_sources=modifier_sources,
+                        )
 
     @staticmethod
     def _active_status_effect_ids(s: Session) -> tuple[int, ...]:
