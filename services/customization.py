@@ -1121,6 +1121,15 @@ class CustomizationService:
                 'stickerbook-unlock-stickerbook-unlock'
             ),
         )
+        if collector_transition.status_effect is not None:
+            # A reached reward raises a variable that the active pet's or
+            # Shadow Soul's effect reads (+3% health and so on). Combat stats
+            # see it at once, but the authoritative health pool keeps its old
+            # maximum until rebuilt, which login did and an unlock did not:
+            # a collection gathered one item at a time only paid at relog.
+            CharacterService._refresh_player_combat_vitals(
+                s, inventory_changed=False,
+            )
         if not progression_queue.defer(
             CharacterService._achievement_on_stickerbook_changed, self, s,
             label="sticker-book achievements",
@@ -1581,6 +1590,12 @@ class CustomizationService:
                 s.gameplay_presence_callback(
                     s, ("status_effects", tuple(transitions))
                 )
+            # A pet carries its own bonuses and the Collector's Bag ones
+            # (MaxHealthPoints:$pet_hitpoint_01). Rebuild the health pool
+            # as a Shadow Soul summon does, or it keeps the old maximum.
+            CharacterService._refresh_player_combat_vitals(
+                s, inventory_changed=False,
+            )
         CharacterService._refresh_admin_speed(s, static_database_path=self.static_database_path)
         CharacterService._persist_gameplay_session(
             self,

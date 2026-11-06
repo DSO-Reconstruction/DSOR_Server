@@ -2,13 +2,15 @@
 
 from dataclasses import replace
 import sqlite3
+import unittest
 from unittest.mock import Mock
 
 import pytest
 
 from dso_server.gameplay.player_combat_stats import calculate_player_combat_stats
 from dso_server.gameplay.stickerbook_state import (
-    collector_effect_definitions, collector_item_rewards, reconcile_collector_effects,
+    collector_effect_definitions, collector_item_rewards, load_sticker_definition,
+    reconcile_collector_effects,
 )
 from dso_server.paths import DEFAULT_STATIC_DB_PATH
 from dso_server.persistence.account_state import _state_from_document, _state_to_document
@@ -21,6 +23,9 @@ from dso_server.protocol.player_init_protocol import (
     StickerbookEntry, decode_server_command_batch,
 )
 from dso_server.services.base import CharacterService
+from dso_server.services.character_server import CharacterServer
+from dso_server.tests.fixtures.characters import character_server
+from dso_server.tests.test_item_set_persistence import initialize as enter_map
 from dso_server.tests.test_rune_progression import add_item, player, saved_state  # noqa: F401 (fixture)
 
 
@@ -321,3 +326,68 @@ def test_a_save_with_the_one_second_duration_goes_back_to_permanent():
     restored = reconcile(COLLECTED_PETS, timed, 100).effects
     assert len(restored) == 3
     assert {entry.total_duration for entry in restored.values()} == {0}
+
+
+@pytest.fixture
+def fighter(monkeypatch):
+    """A new character on a map, with a live combat health pool."""
+    case = unittest.TestCase()
+    try:
+        server = character_server(case)
+        monkeypatch.setattr(CharacterServer, "_send_world_loot_state_batch", Mock())
+        session, _ = enter_map(server)
+        session.send_reliable_ordered_split = Mock()
+        session.gameplay_spawn_position = (0.0, 0.0, 0.0)
+        CharacterService._refresh_player_combat_vitals(session)
+        yield server, session
+    finally:
+        case.doCleanups()
+
+
+def _unlock(server, session, template):
+    item_id = add_item(session, template)
+    request, _ = encode_add_stickerbook_from_inventory(AddStickerbookFromInventoryRequest(item_id))
+    server._handle_add_stickerbook_from_inventory(session, request)
+
+
+def _pool_maximum(session):
+    return session.gameplay_combat_state.player_health[int(session.gameplay_remote_actor_id)][1]
+
+
+def _earned_maximum(session):
+    return calculate_player_combat_stats(
+        DEFAULT_STATIC_DB_PATH, cache_owner=session, class_name="mage",
+        level=session.gameplay_character.level, inventory=session.gameplay_inventory,
+        modifier_sources=CharacterService._active_skill_modifier_sources(session),
+    ).maximum_health
+
+
+def test_pets_collected_one_at_a_time_raise_the_health_pool_at_once(fighter):
+    # A collection gathered in play, not filled offline by the CMS: before, the
+    # pool kept its login maximum and the bonuses only arrived at relog.
+    server, session = fighter
+    base = _pool_maximum(session)
+    _unlock(server, session, "pet_rabbit")
+    CharacterService._toggle_switchable_sticker(
+        server, session, load_sticker_definition(DEFAULT_STATIC_DB_PATH, "pet_rabbit"))
+    with_pet = _pool_maximum(session)
+    assert with_pet > base
+    assert with_pet == _earned_maximum(session)
+    _unlock(server, session, "pet_dog_01")
+    _unlock(server, session, "pet_chicken_white")  # the third Domestic Animal: +3% health
+    assert _pool_maximum(session) > with_pet
+    assert _pool_maximum(session) == _earned_maximum(session)
+
+
+def test_a_soul_collected_while_another_is_out_raises_the_health_pool(fighter):
+    server, session = fighter
+    _unlock(server, session, "item_mercenary_shadow_stalker")
+    CharacterService._activate_mercenary(
+        server, session,
+        load_sticker_definition(DEFAULT_STATIC_DB_PATH, "item_mercenary_shadow_stalker"),
+        source="test",
+    )
+    one_soul = _pool_maximum(session)
+    _unlock(server, session, "item_mercenary_ancient_watcher")  # sb_souls_increased_02
+    assert _pool_maximum(session) > one_soul
+    assert _pool_maximum(session) == _earned_maximum(session)
