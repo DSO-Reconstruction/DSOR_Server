@@ -842,7 +842,17 @@ def reconcile_collector_effects(
             ):
                 # Retained collector buffs are already live. Advancing only
                 # their start tick and resending the same detailed iid is a
-                # duplicate client-side ADD, not a refresh.
+                # duplicate client-side ADD, not a refresh. Rebase the saved
+                # tick in place, though: after a server restart the client's
+                # clock starts over too, so a start tick captured during the
+                # previous process would keep the buff inactive until the new
+                # uptime reaches it.
+                # (Fix by "throw down your fears", Discord, 2026-11-06.)
+                tick = int(server_tick) & 0xFFFFFFFF
+                if int(previous.start_tick) != tick:
+                    effects[int(previous.instance_id)] = replace(
+                        previous, start_tick=tick,
+                    )
                 continue
             effects.pop(int(previous.instance_id), None)
             transitions.append(replace(

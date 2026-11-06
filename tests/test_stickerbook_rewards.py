@@ -26,6 +26,7 @@ from dso_server.services.base import CharacterService
 from dso_server.services.character_server import CharacterServer
 from dso_server.tests.fixtures.characters import character_server
 from dso_server.tests.test_item_set_persistence import initialize as enter_map
+from dso_server.tests.test_recipe_progression import initialize
 from dso_server.tests.test_rune_progression import add_item, player, saved_state  # noqa: F401 (fixture)
 
 
@@ -391,3 +392,55 @@ def test_a_soul_collected_while_another_is_out_raises_the_health_pool(fighter):
     _unlock(server, session, "item_mercenary_ancient_watcher")  # sb_souls_increased_02
     assert _pool_maximum(session) > one_soul
     assert _pool_maximum(session) == _earned_maximum(session)
+
+def test_saved_collector_effects_are_rebased_to_the_new_server_clock():
+    def reconcile(owned, effects, instance, tick=0):
+        return reconcile_collector_effects(
+            DEFAULT_STATIC_DB_PATH, owned, effects,
+            actor_id=1, next_instance_id=instance, server_tick=tick,
+        )
+
+    saved = reconcile(COLLECTED_PETS, {}, 1).effects
+    # A long-running map recorded the tick its buffs were unlocked on.
+    stale = {
+        key: replace(entry, start_tick=5_000_000)
+        for key, entry in saved.items()
+    }
+    restored = reconcile(COLLECTED_PETS, stale, 100)
+    assert {entry.start_tick for entry in restored.effects.values()} == {0}
+    assert set(restored.effects) == set(stale)
+    # Retained instances need no client-side ADD: the initialization snapshot
+    # carries the rebased entry instead.
+    assert restored.status_effect is None
+
+
+def test_a_restart_restores_live_collector_effects_on_the_new_clock(player):
+    server, session, _ = player
+    owned = {resource: StickerbookEntry(2, 0, resource) for resource in COLLECTED_PETS}
+    session.gameplay_stickerbook_entries = owned
+    live = reconcile_collector_effects(
+        DEFAULT_STATIC_DB_PATH, set(owned), {},
+        actor_id=1, next_instance_id=session.gameplay_next_status_effect_instance_id,
+        server_tick=5_000_000,
+    )
+    session.gameplay_persistent_status_effects = live.effects
+    session.gameplay_next_status_effect_instance_id = live.next_instance_id
+    assert {entry.start_tick for entry in live.effects.values()} == {5_000_000}
+
+    server._persist_gameplay_session(session, reason="collector restart", flush=True)
+    saved = server.account_store.get(session.gameplay_character.character_id)
+    server.account_store.put(
+        _state_from_document(_state_to_document(saved)), flush=True,
+    )
+    restored = initialize(server, 47943)
+    collector_ids = {
+        definition.wire_id for definition in collector_effect_definitions(
+            DEFAULT_STATIC_DB_PATH, set(owned),
+        )
+    }
+    effects = [
+        entry for entry in restored.gameplay_persistent_status_effects.values()
+        if entry.effect_id in collector_ids
+    ]
+    assert len(effects) == 3
+    assert {entry.start_tick for entry in effects} == {0}
