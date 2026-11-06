@@ -111,6 +111,14 @@ class PlayerInitializationWorldService:
             )
         except Exception:
             pass
+        if str(gameplay_map).casefold().startswith("e_fullmoon_varholm_dun"):
+            # The Bloodmoon portal is opened by a Vargulf kill in this map
+            # run. Never seed it from global event flags or durable quest/map
+            # discovery while constructing a fresh player's scene.
+            active_event_flags -= frozenset({
+                "e_ful_02_bloodmoon_portal",
+                "e_ful_02_bloodmoon_portal_sequence",
+            })
         map_commands, exit_info = load_local_map_initialization(
             self.static_database_path,
             gameplay_map,
@@ -390,6 +398,20 @@ class PlayerInitializationWorldService:
             # events already revealed.
             with map_event_runtime.lock:
                 runtime_flags = map_event_runtime.active_flags()
+            if (
+                str(gameplay_map).casefold().startswith(
+                    "e_fullmoon_varholm_dun"
+                )
+                and not CharacterService._varholm_bloodmoon_portal_unlocked(
+                    self, s,
+                )
+            ):
+                # Do not inherit another character's shared Vargulf unlock
+                # when rebuilding this late joiner's scene snapshot.
+                runtime_flags -= frozenset({
+                    "e_ful_02_bloodmoon_portal",
+                    "e_ful_02_bloodmoon_portal_sequence",
+                })
             try:
                 reveal_flags = frozenset(
                     CharacterService._quest_reveal_flags(self, s, gameplay_map)
@@ -515,14 +537,17 @@ class PlayerInitializationWorldService:
         daily_day = pending_daily_login_day(claims, today=now.date())
         class_name = CLASS_NAMES[int(character.class_id)].lower()
         pending_booking_notifications = []
-        for claim_key in claims:
+        for claim_key, purchased_class_id in claims.items():
             parsed_booking = parse_ocp_booking_pending_key(claim_key)
             if parsed_booking is None:
                 continue
             booking_guid, booking_offer_id = parsed_booking
             try:
                 booking_reward = resolve_ocp_booking_reward(
-                    booking_offer_id, 'external'
+                    booking_offer_id,
+                    'external',
+                    class_id=max(0, int(purchased_class_id) - 1),
+                    allow_legacy=True,
                 )
             except ValueError as exc:
                 print(

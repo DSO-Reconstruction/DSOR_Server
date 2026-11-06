@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 from dso_server.runtime import resident_content
+from dso_server.gameplay.ocp_store import (
+    FULL_MOON_ATTIRE_ITEMS_BY_CLASS,
+    FULL_MOON_ATTIRE_PRODUCT_KEY,
+    LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS,
+)
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
 from contextlib import closing
@@ -12,7 +17,9 @@ from pathlib import Path
 import re
 import sqlite3
 
-from dso_server.protocol.character_selection import BitReader, BitWriter
+from dso_server.protocol.character_selection import (
+    BitReader, BitWriter, CLASS_NAMES,
+)
 from dso_server.protocol.commerce_protocol import (
     PurchaseItemDefinition,
     load_purchase_item_definition,
@@ -212,16 +219,47 @@ def decode_redeem_voucher_response(
 
 
 def resolve_ocp_booking_reward(
-    offer_id: str, payment_method: str
+    offer_id: str,
+    payment_method: str,
+    *,
+    class_id: int | None = None,
+    allow_legacy: bool = False,
 ) -> OCPBookingReward:
     offer_id = str(offer_id)
     payment_method = str(payment_method)
     if payment_method not in {method.name for method in LOCAL_OCP_METHODS}:
         raise ValueError(f'unsupported OCP payment method {payment_method!r}')
-    if offer_id not in {offer.product_key for offer in LOCAL_OCP_OFFERS}:
+    current_offer_keys = {
+        offer.product_key for offer in LOCAL_OCP_OFFERS
+    }
+    if (
+        offer_id not in current_offer_keys
+        and not (
+            allow_legacy
+            and offer_id in LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS
+        )
+    ):
         raise ValueError(f'unknown OCP offer {offer_id!r}')
     if offer_id == CHARACTER_ALTERATION_PRODUCT_KEY:
         return OCPBookingReward(offer_id, 'characterStyleEdit', 1)
+    if offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY:
+        if class_id is None:
+            raise ValueError(
+                'Full Moon attire purchase needs the active character class'
+            )
+        class_name = CLASS_NAMES.get(int(class_id), '').casefold()
+        attire_item_id = FULL_MOON_ATTIRE_ITEMS_BY_CLASS.get(class_name)
+        if attire_item_id is None:
+            raise ValueError(
+                f'Full Moon attire is not available for class {class_name or class_id!r}'
+            )
+        return OCPBookingReward(offer_id, attire_item_id, 1)
+    attire_item_id = (
+        LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS.get(offer_id)
+        if allow_legacy else None
+    )
+    if attire_item_id is not None:
+        return OCPBookingReward(offer_id, attire_item_id, 1)
     match = re.fullmatch(
         r'1_realCurrency_(\d+)(?:\.\d+)?_0_NONE', offer_id
     )
@@ -605,6 +643,12 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(
         7, 99.90, False, "€",
         "7_characterStyleEdit_1.0000_0_NONE", "", "",
+    ),
+    # Reuse the native package row/title. The server grants only the active
+    # character's matching attire when this single €9.99 offer is purchased.
+    OCPOffer(
+        180_201, 9.99, False, "€",
+        FULL_MOON_ATTIRE_PRODUCT_KEY, "", "",
     ),
 )
 

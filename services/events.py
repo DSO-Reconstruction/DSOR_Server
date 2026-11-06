@@ -465,6 +465,33 @@ class EventService:
         ) + _declared_map_local_event_entries(
             self.static_database_path, active_map_id
         )
+        if (
+            map_key(active_map_id) == "e_fullmoon_varholm_dun"
+            and not CharacterService._varholm_bloodmoon_portal_unlocked(
+                self, s,
+            )
+        ):
+            # Shared map events can remain active after another character
+            # kills Vargulf. Override those instance-wide active entries with
+            # an explicit per-character closed state in this map snapshot.
+            portal_events = frozenset({
+                "e_ful_02_bloodmoon_portal",
+                "e_ful_02_bloodmoon_portal_sequence",
+            })
+            local_entries = tuple(
+                entry for entry in local_entries
+                if entry.event_name.casefold() not in portal_events
+            ) + tuple(
+                EventUpdateEntry(
+                    event_id=0,
+                    event_name=event_name,
+                    flags=(False, True, False, False),
+                    starts_at=None,
+                    ends_at=None,
+                    tags=(),
+                )
+                for event_name in sorted(portal_events)
+            )
         seen_local: set[str] = set()
         update = EventUpdate((
             *scheduled_update.events,

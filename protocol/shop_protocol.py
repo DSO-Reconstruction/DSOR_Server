@@ -23,6 +23,13 @@ from dso_server.protocol.inventory_codec import ItemInfo, encode_item_info, deco
 REQUEST_OFFER_COMMAND = command_id("Commands::RequestOfferCommand", 0x0059)
 OFFER_COMMAND = command_id("Commands::OfferCommand", 0x005A)
 TIMED_OFFERS_INFO_COMMAND = command_id("Commands::TimedOffersInfoCommand", 0x0082)
+# Thabo's two moon-event realm paths are preparation items. Their item
+# templates carry the owning event as metadata, but that must not hide the
+# offers while the event is inactive.
+ALWAYS_AVAILABLE_THABO_EVENT_ITEMS = frozenset({
+    "e_ful_01_teleport_01",
+    "e_new_01_teleport_01",
+})
 # Values are IngamePaymentData::StringToOfferCategory results recovered from
 # this exact client executable.  Unknown strings fall back to Misc (46) in the
 # client; ``Key`` is present in static.db4 but not in the converter's named
@@ -559,6 +566,32 @@ def load_shop_offers(
             for value in active_event_ids
             if str(value).strip()
         }
+
+        def event_requirement_is_active(event_id: str) -> bool:
+            event_id = str(event_id).strip().casefold()
+            if event_id in active_events:
+                return True
+            # Some event shop offers are gated by a dedicated offer template
+            # (for example ``dragan_event_03_offer_attire``), while the event
+            # schedule activates only its parent (``dragan_event_03``).
+            # Treat these offer-only child IDs as active with their parent.
+            if any(
+                event_id.startswith(f"{active_event}_offer_")
+                for active_event in active_events
+            ):
+                return True
+            # Gnob event costumes use independent flags such as
+            # ``gnob_offer_fullmoon_items``. They are not child IDs of the
+            # running Full Moon event, but their family identifies the event
+            # that makes the offers available.
+            if event_id.startswith("gnob_offer_"):
+                family = event_id.removeprefix("gnob_offer_").removesuffix("_items")
+                return any(
+                    family in active_event
+                    for active_event in active_events
+                )
+            return False
+
         offers: list[ShopOffer] = []
         categories: list[int] = []
         for offer_id in _split_strings(shop["Offers"]):
@@ -595,9 +628,16 @@ def load_shop_offers(
                     for value in _split_strings(item_row["EventId"])
                 )
                 item_event_only = bool(item_row["OnlyActiveDuringEvent"])
-            required_events = offer_events | item_events
-            if required_events and not required_events.intersection(
-                active_events
+            always_available_thabo_item = (
+                shop_id == "monger_thabo"
+                and item_id in ALWAYS_AVAILABLE_THABO_EVENT_ITEMS
+            )
+            required_events = offer_events | (
+                set() if always_available_thabo_item else item_events
+            )
+            if required_events and not any(
+                event_requirement_is_active(event_id)
+                for event_id in required_events
             ):
                 continue
             if item_event_only and not active_events:

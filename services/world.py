@@ -50,6 +50,9 @@ AUTO_PICKUP_CATEGORIES = frozenset({
     'Currency', 'InstantConsumable', 'Key',
     'NoAutoUseCurrency', 'IngredientItem', 'ItemCurrency',
 })
+# Full Moon Silver Essence is authored as Ammunition/Privileged in the client
+# data, but its event-map drops should be collected by every player on touch.
+FULL_MOON_SILVER_ESSENCE_ITEM_ID = 'e_ful_01_silver_essence_01'
 _FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
 _FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
 _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
@@ -1999,7 +2002,9 @@ class WorldService:
                 for item_id, drop in s.gameplay_world_loot.items()
                 if (
                     (
-                        drop.item_category in pet_categories
+                        str(drop.item.template_id).casefold()
+                        == FULL_MOON_SILVER_ESSENCE_ITEM_ID
+                        or drop.item_category in pet_categories
                         or (
                             drop.auto_pick_up == 'All'
                             and drop.item_category in AUTO_PICKUP_CATEGORIES

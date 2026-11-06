@@ -64,6 +64,7 @@ class StickerDefinition:
     mount: MountDefinition | None = None
     stickerbook_category_id: int | None = None
     aliases: tuple[str, ...] = ()
+    item_lifetime_seconds: float = 0.0
 
     @property
     def kind(self) -> str:
@@ -500,7 +501,8 @@ def _load_item_cosmetic_definition_cached(
     with _open_read_only(static_database_path) as database:
         item = database.execute(
             """
-            SELECT Id, ItemCategory, StatusEffectId, StatusEffectDuration,
+            SELECT Id, ItemCategory, ItemLifeTime, StatusEffectId,
+                   StatusEffectDuration,
                    StatusEffectValue0, StatusEffectValue1,
                    StatusEffectValue2, StatusEffectValue3,
                    StatusEffectValue4
@@ -546,6 +548,9 @@ def _load_item_cosmetic_definition_cached(
             mount=None,
             stickerbook_category_id=None,
             aliases=(str(item["Id"]),),
+            item_lifetime_seconds=max(
+                0.0, float(item["ItemLifeTime"] or 0.0)
+            ),
         )
 
 

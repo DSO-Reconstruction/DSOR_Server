@@ -2690,7 +2690,11 @@ class LocalCombatState:
                     and actor_id not in self._retired_monster_summon_actor_ids):
                 monster = self.monsters[actor_id]
                 self.monster_health[actor_id] = monster.maximum_health
-                self.monster_status_effects[actor_id].clear()
+                # A killed monster drops its status-effect entry during the
+                # kill transaction. Event/quest cleanup can still retire that
+                # actor afterwards, so recreate the empty container instead
+                # of assuming the kill path left one behind.
+                self.monster_status_effects.setdefault(actor_id, {}).clear()
                 self.monster_status_immunities.pop(actor_id, None)
                 self.monster_positions[actor_id] = monster.position
                 self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)

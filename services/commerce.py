@@ -6,6 +6,7 @@ from dataclasses import replace
 from functools import partial
 import sqlite3
 
+from dso_server.gameplay.ocp_store import FULL_MOON_ATTIRE_PRODUCT_KEY
 from dso_server.runtime.context import *
 from dso_server.runtime.admin_commands import track_inventory_reward
 from dso_server.runtime.transport import Session
@@ -355,9 +356,28 @@ class CommerceService:
 
     def _handle_ocp_offer_request(self, s: Session, payload: bytes) -> None:
         self._handle_simple_gameplay_command(s, payload, 0x010B)
+        with s.flow_lock:
+            character = s.gameplay_character
+        fullmoon_active = (
+            "fullmoon_event_02"
+            in CharacterService._event_catalog(self).active_template_ids()
+        )
+        offers = LOCAL_OCP_OFFERS
+        if (
+            not fullmoon_active
+            or character is None
+            or CLASS_NAMES.get(int(character.class_id), "").casefold()
+            not in {"warrior", "mage", "ranger", "dwarf"}
+        ):
+            # Only advertise the Full Moon attire during its event, when the
+            # active character class can be resolved to its matching item.
+            offers = tuple(
+                offer for offer in offers
+                if offer.product_key != FULL_MOON_ATTIRE_PRODUCT_KEY
+            )
         packet = encode_ocp_offer_batch(
             OCPOfferBatch(
-                LOCAL_OCP_OFFERS,
+                offers,
                 0,
                 LOCAL_OCP_METHODS,
                 0,
@@ -413,8 +433,22 @@ class CommerceService:
 
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
         request = decode_ocp_booking_request(payload)
+        if (
+            request.offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
+            and "fullmoon_event_02"
+            not in CharacterService._event_catalog(self).active_template_ids()
+        ):
+            raise ValueError(
+                "Full Moon attire can only be purchased while its event is active"
+            )
+        with s.flow_lock:
+            character = s.gameplay_character
         reward = resolve_ocp_booking_reward(
-            request.offer_id, request.payment_method
+            request.offer_id,
+            request.payment_method,
+            class_id=(
+                int(character.class_id) if character is not None else None
+            ),
         )
         instance_guid = uuid.uuid4().bytes
         pending_key = ocp_booking_pending_key(
@@ -422,7 +456,14 @@ class CommerceService:
         )
         with s.flow_lock:
             claims = dict(s.gameplay_timed_offer_purchases)
-            claims[pending_key] = 1
+            # Preserve which class the offer was purchased for across reconnects
+            # and character selection changes before OCP confirmation arrives.
+            claims[pending_key] = (
+                int(character.class_id) + 1
+                if request.offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
+                and character is not None
+                else 1
+            )
             s.gameplay_timed_offer_purchases = claims
         CharacterService._request_account_save(
             s, 'OCP booking created', flush=True
@@ -705,7 +746,7 @@ class CommerceService:
                 claims = dict(s.gameplay_timed_offer_purchases)
             pending = next(
                 (
-                    (key, parsed[1])
+                    (key, parsed[1], int(claims[key]))
                     for key in claims
                     if (
                         (parsed := parse_ocp_booking_pending_key(key))
@@ -726,8 +767,18 @@ class CommerceService:
                     )
                     return
                 raise ValueError('unknown OCP booking notification')
-            pending_key, offer_id = pending
-            reward = resolve_ocp_booking_reward(offer_id, 'external')
+            pending_key, offer_id, class_claim = pending
+            purchased_class_id = (
+                int(class_claim) - 1
+                if offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY
+                else int(class_claim)
+            )
+            reward = resolve_ocp_booking_reward(
+                offer_id,
+                'external',
+                class_id=purchased_class_id,
+                allow_legacy=True,
+            )
             expected_kind = ocp_booking_notification_kind(reward)
             if action.kind != expected_kind:
                 raise ValueError(

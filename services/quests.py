@@ -448,6 +448,15 @@ class QuestService:
 
         for flag, destinations in exit_destinations.items():
             event = signals.event(flag)
+            if (
+                normalized_map == "e_fullmoon_varholm_dun"
+                and flag == "e_ful_02_bloodmoon_portal"
+            ):
+                # This is a run-local gate opened by the live Vargulf death
+                # signal. A persisted kill task or discovered destination
+                # must not replay the portal event when a fresh Varholm
+                # instance is initialized.
+                continue
             # The discovered destination is the strongest durable proof that
             # this character has passed the route gate. This also covers
             # authored signals that require only QuestAccepted and carry no
@@ -914,6 +923,32 @@ class QuestService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        # The Vargulf introduction is authored as a server-signal quest that
+        # normally starts when its clue item is received.  Some clients show
+        # the later Vargulf-02 question-mark prop before that signal can be
+        # reached, but the quest-controlled prop is correctly withheld until
+        # Vargulf-02 is accepted.  If the character has finished Varholm's
+        # introduction and has no saved Vargulf-01 state, bootstrap the
+        # first step here so the NPC provides a reachable, visible entry into
+        # the rest of the chain.  Keep cancelled/previously seen states intact.
+        if map_key(runtime.map_id) == "e_fullmoon_varholm_dun":
+            quest_log = _quest_log(s)
+            intro_done = next((
+                progress for quest_id, progress in quest_log.items()
+                if quest_id.casefold() == "e-ful-02-introduction-05-n"
+            ), None)
+            vargulf_intro = next((
+                progress for quest_id, progress in quest_log.items()
+                if quest_id.casefold() == "e-ful-02-vargulf-01-n"
+            ), None)
+            if (
+                intro_done is not None
+                and intro_done.state == QUEST_STATE_CLOSED
+                and vargulf_intro is None
+            ):
+                self._quest_accept(
+                    s, "e-ful-02-vargulf-01-n", offered=False,
+                )
         # These Brigavik objectives are authored as ExploreTask trigger
         # volumes, but their targets can be missed at the map spawn or lie in
         # a part of the scene that this reconstruction currently blocks off.
@@ -1480,6 +1515,21 @@ class QuestService:
                 if progress.task_finished(task.index):
                     tasks_done.add(f"{quest_id}:{task.title}".casefold())
         return frozenset(accepted), frozenset(solved), frozenset(tasks_done)
+
+    def _varholm_bloodmoon_portal_unlocked(self, s: Session) -> bool:
+        """Whether this character completed the Vargulf gate objective.
+
+        The authored portal event flag is shared by everyone on a public
+        Varholm map instance. Its quest task is character-owned, so use that
+        persisted task token when deciding whether to expose the exit to a
+        particular character.
+        """
+
+        _accepted, _solved, tasks_done = self._quest_signal_facts(s)
+        return (
+            "e-ful-02-bloodmoon-03-n:e-ful-02-bloodmoon-03-kill-01"
+            in tasks_done
+        )
 
     # ------------------------------------------------------------------
     # Quest-controlled props
@@ -3470,6 +3520,11 @@ class QuestService:
 
     def _quest_on_item_collected(self, s: Session, template_id: str, amount: int = 1,
                                  *, quest_id: str = "") -> None:
+        # Some authored quest chains start from a server-side
+        # PlayerReceivedItem signal rather than from a giver.  Route pickups
+        # through the same map-signal evaluator as kills and prop use so those
+        # quests are accepted as soon as their trigger item reaches the bag.
+        self._fire_map_signal(s, "PlayerReceivedItem", (template_id,))
         self._quest_feed(s, "collect", template_id, count=max(1, int(amount)),
                          quest_id=quest_id)
 

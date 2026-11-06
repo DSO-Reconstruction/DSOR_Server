@@ -2707,10 +2707,25 @@ def build_local_player_init_commands(
             ServerCommand(PLAYER_READY_COMMAND, Fieldless(), actor_id),
         )
     )
+    input_variation_count = sum(
+        command.command_id == VARIATION_INFO_COMMAND
+        for command in map_entity_commands
+    )
+    output_variation_count = sum(
+        command.command_id == VARIATION_INFO_COMMAND
+        for command in commands
+    )
+    # A mixed batch can split into an unconditional VariationInfo before
+    # EventUpdate and an event-bound one after it. Count that extra phase in
+    # the topology invariant rather than rejecting the new gate materializer.
+    extra_variation_phases = max(
+        0, output_variation_count - input_variation_count,
+    )
     expected_command_count = (
         91 + len(map_entity_commands)
         + len(membership_updates)
         + int(has_variation_info)
+        + extra_variation_phases
     )
     if len(commands) != expected_command_count:
         raise AssertionError(
