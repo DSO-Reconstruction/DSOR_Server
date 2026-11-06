@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
-    FULL_MOON_ATTIRE_ITEMS_BY_CLASS,
+    EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
+    EVENT_ATTIRE_PRODUCT_KEYS,
     FULL_MOON_ATTIRE_PRODUCT_KEY,
     LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS,
+    NEW_MOON_ATTIRE_PRODUCT_KEY,
 )
 from dso_server.protocol.command_ids import command_id
 from dataclasses import dataclass
@@ -242,16 +244,18 @@ def resolve_ocp_booking_reward(
         raise ValueError(f'unknown OCP offer {offer_id!r}')
     if offer_id == CHARACTER_ALTERATION_PRODUCT_KEY:
         return OCPBookingReward(offer_id, 'characterStyleEdit', 1)
-    if offer_id == FULL_MOON_ATTIRE_PRODUCT_KEY:
+    if offer_id in EVENT_ATTIRE_PRODUCT_KEYS:
         if class_id is None:
             raise ValueError(
-                'Full Moon attire purchase needs the active character class'
+                'Event attire purchase needs the active character class'
             )
         class_name = CLASS_NAMES.get(int(class_id), '').casefold()
-        attire_item_id = FULL_MOON_ATTIRE_ITEMS_BY_CLASS.get(class_name)
+        attire_item_id = EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS[
+            offer_id
+        ].get(class_name)
         if attire_item_id is None:
             raise ValueError(
-                f'Full Moon attire is not available for class {class_name or class_id!r}'
+                f'Event attire is not available for class {class_name or class_id!r}'
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
     attire_item_id = (
@@ -649,6 +653,12 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(
         180_201, 9.99, False, "€",
         FULL_MOON_ATTIRE_PRODUCT_KEY, "", "",
+    ),
+    # Reuse the native New Moon package and grant only the active character's
+    # matching attire for this €9.90 offer.
+    OCPOffer(
+        180_202, 9.90, False, "€",
+        NEW_MOON_ATTIRE_PRODUCT_KEY, "", "",
     ),
 )
 

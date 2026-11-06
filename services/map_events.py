@@ -46,6 +46,7 @@ from dso_server.gameplay.boss_encounter_policy import (
     APPROACH_BOSS_MAPS,
     is_boss_spawn_template,
     load_map_encounter_policy,
+    resolve_boss_template_id,
     select_boss_spawn_rows,
 )
 from dso_server.gameplay.event_spawn_areas import event_area_spawn_rows
@@ -61,6 +62,7 @@ from dso_server.gameplay.map_event_state import (
     BLOODSHED_DIFFICULTY,
     CLIENT_REPORTED_SIGNAL_TYPES,
     GatedSpawnRow,
+    NEW_MOON_RECALL_ALTAR_IDS,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
     deduplicate_parallel_world_gatekeeper_rows,
     _dungeon_resource_category,
@@ -2977,6 +2979,61 @@ class MapEventService:
         )) | saved_quest_map_unlocks(self.static_database_path, persisted_state)
         s.gameplay_admin_all_maps = bool(getattr(persisted_state, "admin_all_maps", False))
 
+    def _reconcile_newmoon_city_portals(self, s: Session, runtime) -> None:
+        """Close stale New Moon boss portals when the scheduled event has ended."""
+
+        if map_key(runtime.map_id) != "e_newmoon_blakborg_city_dun":
+            return
+        try:
+            active_events = CharacterService._event_catalog(
+                self,
+            ).active_template_ids()
+        except Exception as exc:
+            _log(f"could not check New Moon portal schedule: {exc}")
+            return
+        if "newmoon_event_02" in active_events:
+            return
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        # A runtime can outlive the event schedule that initialized it. Stop
+        # the quest portal events as well as removing the old global flag, so
+        # neither EventUpdate nor ExitInfo can leave the boss doors visible.
+        portal_event_ids = (
+            "e_new_02_witch_a_06_portal",
+            "e_new_02_witch_b_06_portal",
+        )
+        for event_id in portal_event_ids:
+            definition = runtime.catalog.event(event_id)
+            if definition is None:
+                continue
+            with runtime.lock:
+                active = definition.key in runtime.running
+                pending = definition.key in runtime.pending_start_tokens
+            if active or pending:
+                self._stop_map_local_event(runtime, definition)
+
+        with runtime.lock:
+            enabled, disabled = runtime.replace_global_flags(
+                {"newmoon_event_02", *portal_event_ids}, frozenset(),
+            )
+        if disabled:
+            self._retire_event_monsters(runtime, sessions, disabled)
+            self._unpublish_event_props(runtime, sessions, disabled)
+        if enabled:
+            self._publish_event_props(runtime, sessions, enabled)
+            self._spawn_event_monsters(runtime, sessions, enabled)
+            self._spawn_event_npcs(runtime, sessions, enabled)
+        if enabled or disabled:
+            self._publish_map_exits(
+                runtime, sessions, disabled_event_sets=disabled,
+            )
+            _log(
+                f"reconciled expired New Moon flags on {runtime.map_id}: "
+                f"enabled={enabled}, disabled={disabled}"
+            )
+
     def _on_map_entered(self, s: Session) -> None:
         with s.flow_lock:
             discoveries = {
@@ -2996,6 +3053,7 @@ class MapEventService:
         runtime = getattr(s, "gameplay_map_event_runtime", None)
         if runtime is None:
             return
+        self._reconcile_newmoon_city_portals(s, runtime)
         if CharacterService._is_fractured_planes_run(self, s):
             s.gameplay_fractured_planes_run = True
             with runtime.lock:
@@ -3733,6 +3791,10 @@ class MapEventService:
             participation = dict(s.gameplay_event_participation)
             progress = dict(getattr(s, "gameplay_event_progress", None) or {})
             event_catalog = s.gameplay_event_catalog
+            class_name = (
+                CLASS_NAMES.get(int(character.class_id), "").casefold()
+                if character is not None else ""
+            )
         if event_catalog is None:
             event_catalog = CharacterService._event_catalog(self)
         player_level = max(1, int(getattr(character, "level", 1) or 1))
@@ -3748,6 +3810,9 @@ class MapEventService:
             player_level=player_level,
             rng=random.SystemRandom(),
             event_collectibles=collectibles,
+            class_name=class_name,
+            map_id=map_id,
+            map_aliases=(event_map_id, access_id),
         )
 
     @staticmethod
@@ -4504,6 +4569,23 @@ class MapEventService:
                     f"player is {missing} short"
                 )
                 return
+        new_moon_recall_row = None
+        if keyed_first_use and keyed is not None and (
+            str(keyed.definition.instance_id).casefold()
+            in NEW_MOON_RECALL_ALTAR_IDS
+        ):
+            new_moon_recall_row = self._new_moon_recall_spawn_row(
+                runtime, keyed.definition,
+            )
+            if new_moon_recall_row is None:
+                with runtime.lock:
+                    live = runtime.props.get(int(request.prop_id))
+                    if live is not None:
+                        live.state = PROP_STATE_ACTIVE
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="new-moon-recall-unavailable",
+                )
+                return
         gatherable_template = ""
         if gatherable_first_use:
             category = _multitool_resource_category(keyed.definition)
@@ -4661,6 +4743,10 @@ class MapEventService:
         )
         if flipped:
             self._spawn_pw022_gorgon_from_bust(s, runtime, definition)
+        if flipped and new_moon_recall_row is not None:
+            self._spawn_new_moon_boss_from_recall_altar(
+                s, runtime, definition, new_moon_recall_row,
+            )
         # Retail's reply to a click (docs/PROP_AND_TRIGGER_COMMANDS.md §6):
         # the clicking player's actor in the body, the new state, the game
         # tick, every flag false, trailing actor 0, then a one-record
@@ -4699,7 +4785,7 @@ class MapEventService:
         elif flipped and (definition.loot_list_id or definition.chest_id):
             self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
-            self._grant_stonekeep_miller_ammunition(s, runtime, definition)
+            self._grant_prop_ammunition_buff(s, runtime, definition)
             CharacterService._quest_on_prop_interacted(
                 self, s, definition.instance_id,
                 # A prop can be reused by several quest tasks. Its definition
@@ -4716,19 +4802,30 @@ class MapEventService:
                 self, s, definition.instance_id, definition.template_id,
             )
 
-    def _grant_stonekeep_miller_ammunition(self, s, runtime, definition) -> None:
-        """Apply the mill's authored AmmoType06 buff to its user.
+    def _grant_prop_ammunition_buff(self, s, runtime, definition) -> None:
+        """Mirror authored state-object ammunition buffs into server combat."""
 
-        The client grants this state-object status when the player uses the
-        mill, but the server also needs the status entry so combat's
-        ammunition-vulnerability check can accept hits on the Miller.
-        """
-
+        map_id = map_key(runtime.map_id)
+        template_id = str(definition.template_id or "").casefold()
+        expected = None
         if (
-            map_key(runtime.map_id) != "pw007_stonekeep_01_dun"
-            or str(definition.template_id or "").casefold() != "pw007_mill"
+            map_id == "pw007_stonekeep_01_dun"
+            and template_id == "pw007_mill"
         ):
+            expected = ("pw007_miller_attack_buff", "AmmoType06")
+        elif (
+            map_id in {
+                "e_newmoon_blakborg_white_dun",
+                "e_newmoon_blakborg_black_dun",
+            }
+            and template_id in {"e_new_02_pot_white_01", "e_new_02_pot_black_01"}
+        ):
+            # Fairy Wood in either realm's cauldron grants 120 seconds of the
+            # exact AmmoType04 required by Karabossa and Magotina.
+            expected = ("e_new_01_fairy_buff", "AmmoType04")
+        if expected is None:
             return
+        expected_effect, expected_ammo = expected
         try:
             database_uri = Path(self.static_database_path).resolve().as_uri()
             with closing(sqlite3.connect(
@@ -4746,17 +4843,14 @@ class MapEventService:
                     for token in str(state[0] or "").replace(";", ",").split(",")
                     if token.strip()
                 )
-                # The mill has one authored status. Keep the server bridge
-                # narrow so unrelated state-object effects aren't granted
-                # without their own interaction semantics being verified.
-                if "pw007_miller_attack_buff" not in {
+                if expected_effect.casefold() not in {
                     name.casefold() for name in effect_names
                 }:
                     return
                 effect = database.execute(
                     "SELECT rowid - 1, COALESCE(StatusEffectDuration, 0) "
                     "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
-                    ("pw007_miller_attack_buff",),
+                    (expected_effect,),
                 ).fetchone()
             if effect is None:
                 return
@@ -4772,12 +4866,15 @@ class MapEventService:
             if modifiers is None or not any(
                 str(instruction.kind).casefold() == "ammunitiontype"
                 and any(
-                    str(argument).casefold() == "ammotype06"
+                    str(argument).casefold() == expected_ammo.casefold()
                     for argument in instruction.arguments
                 )
                 for instruction in modifiers.start_modifiers
             ):
-                _log("Stonekeep mill buff has no AmmoType06 start modifier")
+                _log(
+                    f"state-object buff {expected_effect!r} does not carry "
+                    f"{expected_ammo}"
+                )
                 return
             with s.flow_lock:
                 active_entries = [
@@ -4822,13 +4919,32 @@ class MapEventService:
             s.send_reliable_ordered(
                 encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),
                 track=True,
-                label="stonekeep-miller-ammunition",
+                label="state-object-ammunition",
             )
+            # Summon attacks run on the map simulation thread and retain the
+            # owner's modifier snapshot from summon time. Refresh it now so
+            # already-active Shadow Souls also acquire the Fairy Fire gate.
+            combat = getattr(s, "gameplay_combat_state", None)
+            if combat is not None:
+                owner_actor_id = int(
+                    getattr(s, "gameplay_remote_actor_id", 0)
+                    or combat.player_actor_id
+                )
+                with s.flow_lock:
+                    modifier_sources = tuple(
+                        CharacterService._active_skill_modifier_sources(s)
+                    )
+                with combat.lock:
+                    for actor_id, summon in tuple(combat.player_summons.items()):
+                        if int(summon.owner_actor_id) == owner_actor_id:
+                            combat.player_summons[actor_id] = replace(
+                                summon, modifier_sources=modifier_sources,
+                            )
             callback = getattr(s, "gameplay_presence_callback", None)
             if callback is not None:
                 callback(s, ("status_effects", (value,)))
             _log(
-                f"granted Stonekeep Miller vulnerability ammo to player "
+                f"granted state-object vulnerability ammo to player "
                 f"(effect {effect_id}, {duration_ticks} ticks)"
             )
         except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
@@ -4912,6 +5028,94 @@ class MapEventService:
                 f"Gorgon bust spawn failed for {definition.instance_id!r}: "
                 f"{type(exc).__name__}: {exc}"
             )
+
+    def _new_moon_recall_spawn_row(self, runtime, definition):
+        """Resolve the authored witch spawner and its recall altar position."""
+
+        map_id = map_key(runtime.map_id)
+        realm = {
+            "e_newmoon_blakborg_white_dun": "white",
+            "e_newmoon_blakborg_black_dun": "black",
+        }.get(map_id)
+        instance_id = str(definition.instance_id or "").casefold()
+        if (
+            realm is None
+            or instance_id not in NEW_MOON_RECALL_ALTAR_IDS
+        ):
+            return None
+        try:
+            with closing(sqlite3.connect(
+                f"{Path(self.static_database_path).resolve().as_uri()}?mode=ro",
+                uri=True,
+            )) as database:
+                state_object = database.execute(
+                    "SELECT COALESCE(MonsterId, ''), COALESCE(SpawnPoint, '') "
+                    "FROM _Template_StateObject WHERE Id=? LIMIT 1",
+                    (definition.template_id,),
+                ).fetchone()
+            if state_object is None:
+                raise ValueError(
+                    f"state-object template {definition.template_id!r} is missing"
+                )
+            monster_id, spawn_point = (
+                str(value or "").strip() for value in state_object
+            )
+            expected_spawner = f"e_new_02_miniboss_witch_{realm}_spawner_01"
+            if monster_id.casefold() != expected_spawner:
+                raise ValueError(
+                    f"unexpected {realm} recall spawner {monster_id!r}"
+                )
+            if not spawn_point:
+                raise ValueError("state-object template has no recall spawn point")
+            boss_template = (
+                resolve_boss_template_id(self.static_database_path, monster_id)
+                or monster_id
+            )
+            map_path = map_database_path(self.static_database_path, runtime.map_id)
+            with closing(sqlite3.connect(
+                f"file:{map_path.as_posix()}?mode=ro", uri=True,
+            )) as database:
+                anchor = database.execute(
+                    "SELECT rowid, Transform FROM _Instance_SpawnPoint "
+                    "WHERE lower(COALESCE(_ID, ''))=? "
+                    "OR lower(COALESCE(Id, ''))=? "
+                    "OR lower(COALESCE(Name, ''))=? "
+                    "ORDER BY rowid LIMIT 1",
+                    (spawn_point.casefold(),) * 3,
+                ).fetchone()
+            if anchor is None:
+                raise ValueError(f"spawn point {spawn_point!r} is missing")
+            matrix = struct.unpack("<16f", bytes(anchor[1]))
+            position = tuple(float(matrix[index]) for index in (12, 13, 14))
+            if _load_runtime_definition(
+                self.static_database_path, boss_template, 0,
+            ) is None:
+                raise ValueError(f"boss template {boss_template!r} is unavailable")
+            return GatedSpawnRow(
+                -2_200_000 - int(definition.row_id), -1,
+                boss_template, position,
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError, struct.error) as exc:
+            _log(
+                f"New Moon recall altar {definition.instance_id!r} cannot spawn: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _spawn_new_moon_boss_from_recall_altar(
+            self, s, runtime, definition, spawn_row) -> None:
+        """Spawn the witch boss bound to a clicked New Moon recall altar."""
+
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(
+            runtime, sessions, (), extra_rows=(spawn_row,),
+        )
+        _log(
+            f"New Moon recall altar {definition.instance_id!r} requested "
+            f"{spawn_row.template_id!r} at {spawn_row.position!r}"
+        )
 
     def _spawn_f4203_ram_on_entry(self, s, runtime) -> None:
         """Start Crypt of Kings' scripted ram run toward the arena gate."""

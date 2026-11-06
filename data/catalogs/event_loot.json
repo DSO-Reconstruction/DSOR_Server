@@ -1,5 +1,5 @@
 {
-  "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
+  "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions/ranks. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
   "loot_lists": {
     "e_chr_2012_loot_gen_minions": [
       {
@@ -39,6 +39,94 @@
     ]
   },
   "map_loot": {
+    "e_newmoon_blakborg_city_dun": [
+      {
+        "comment": "Blackborg Champions: 5% chance to drop one Witch Seeker Pauldrons for the killer's class.",
+        "ranks": ["champion"],
+        "chance": {"champion": 0.05},
+        "amount": {"champion": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_shoulders_newmoon_set_03"],
+          "mage": ["mage_unique_shoulders_newmoon_set_03"],
+          "ranger": ["ranger_unique_shoulders_newmoon_set_03"],
+          "dwarf": ["dwarf_unique_shoulders_newmoon_set_03"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Outside New Moon, Blackborg mobs have a 35% chance to drop Fairy Wood; the stack scales linearly from 7 on Normal to 30 on Bloodshed.",
+        "item": "e_new_01_quest_spritewood_01",
+        "ranks": ["normal", "monster", "champion", "guardian", "leader"],
+        "chance": {"monster": 0.35, "champion": 0.35, "guardian": 0.35, "leader": 0.35},
+        "amount": {"monster": [7, 30]},
+        "amount_by_difficulty": [7, 10, 13, 16, 19, 22, 25, 27, 30],
+        "require_inactive_events": ["newmoon_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_newmoon_blakborg_white_dun": [
+      {
+        "comment": "Karabossa: guaranteed New Moon event progress; 1,500 at Bloodshed, 20% less per lower difficulty tier.",
+        "item": "e_new_02_progress_item",
+        "monsters": ["e_new_02_miniboss_witch_white_01"],
+        "ranks": ["boss", "worldboss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [252, 315, 393, 492, 614, 768, 960, 1200, 1500],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Karabossa: 15% chance to drop exactly one Possible Rewards set item, costume, or mount for the killer's class. Nivalk has only the shared costume and mount because no class-specific set variants exist in this static DB.",
+        "monsters": ["e_new_02_miniboss_witch_white_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_weaponmodifier_newmoon_set_01", "warrior_unique_boots_newmoon_set_01", "warrior_unique_backitem_newmoon_set_01", "warrior_unique_rh_axe_newmoon_set_01", "warrior_unique_helmet_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_white_01"],
+          "mage": ["mage_unique_weaponmodifier_newmoon_set_01", "mage_unique_boots_newmoon_set_01", "mage_unique_backitem_newmoon_set_01", "mage_unique_rh_staff_newmoon_set_01", "mage_unique_helmet_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_white_01"],
+          "ranger": ["ranger_unique_weaponmodifier_newmoon_set_01", "ranger_unique_boots_newmoon_set_01", "ranger_unique_backitem_newmoon_set_01", "ranger_unique_rh_shortbow_newmoon_set_01", "ranger_unique_helmet_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_white_01"],
+          "dwarf": ["dwarf_unique_weaponmodifier_newmoon_set_01", "dwarf_unique_boots_newmoon_set_01", "dwarf_unique_backitem_newmoon_set_01", "dwarf_unique_rh_pistol_newmoon_set_01", "dwarf_unique_helmet_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_white_01"],
+          "niwalk": ["e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_white_01"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_newmoon_blakborg_black_dun": [
+      {
+        "comment": "Magotina: guaranteed New Moon event progress; 1,500 at Bloodshed, 20% less per lower difficulty tier.",
+        "item": "e_new_02_progress_item",
+        "monsters": ["e_new_02_miniboss_witch_black_01"],
+        "ranks": ["boss", "worldboss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [252, 315, 393, 492, 614, 768, 960, 1200, 1500],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Magotina: 15% chance to drop exactly one Possible Rewards set item, costume, or mount for the killer's class. Nivalk has only the shared costume and mount because no class-specific set variants exist in this static DB.",
+        "monsters": ["e_new_02_miniboss_witch_black_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_weaponmodifier_newmoon_set_02", "warrior_unique_boots_newmoon_set_02", "warrior_unique_backitem_newmoon_set_02", "warrior_unique_rh_axe_newmoon_set_02", "warrior_unique_torso_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_black_01"],
+          "mage": ["mage_unique_weaponmodifier_newmoon_set_02", "mage_unique_boots_newmoon_set_02", "mage_unique_backitem_newmoon_set_02", "mage_unique_rh_staff_newmoon_set_02", "mage_unique_torso_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_black_01"],
+          "ranger": ["ranger_unique_weaponmodifier_newmoon_set_02", "ranger_unique_boots_newmoon_set_02", "ranger_unique_backitem_newmoon_set_02", "ranger_unique_rh_shortbow_newmoon_set_02", "ranger_unique_torso_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_black_01"],
+          "dwarf": ["dwarf_unique_weaponmodifier_newmoon_set_02", "dwarf_unique_boots_newmoon_set_02", "dwarf_unique_backitem_newmoon_set_02", "dwarf_unique_rh_pistol_newmoon_set_02", "dwarf_unique_torso_newmoon_set_03", "e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_black_01"],
+          "niwalk": ["e_new_02_shadow_costume_01", "e_new_02_epic_mount_broom_black_01"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "e_fullmoon_varholm_blood_dun": [
       {
         "item": "e_ful_01_progress_item_01",
@@ -48,6 +136,7 @@
           "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
           "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
         ],
+        "ranks": ["boss", "worldboss"],
         "chance": {"boss": 1.0},
         "amount": {"boss": [1300, 1300]},
         "amount_by_difficulty": [218, 273, 341, 426, 532, 666, 832, 1040, 1300],
@@ -61,6 +150,7 @@
           "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
           "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
         ],
+        "ranks": ["boss", "worldboss"],
         "chance": {"boss": 0.15},
         "amount": {"boss": [1, 1]},
         "item_options_by_class": {
@@ -124,6 +214,7 @@
           "e_ful_02_varholm_night_01_miniboss_werewolf_01",
           "e_ful_02_varholm_night_02_miniboss_werewolf_01"
         ],
+        "ranks": ["boss", "worldboss"],
         "chance": {"boss": 0.5},
         "amount": {"boss": [1, 1]},
         "scale_chance_with_difficulty": true
