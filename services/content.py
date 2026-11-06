@@ -93,7 +93,7 @@ class StaticDatabasePublisher:
             return None
         return stat.st_size, stat.st_mtime_ns
 
-    def _with_season_pass(self, data: bytes) -> bytes:
+    def _with_server_content(self, data: bytes) -> bytes:
         overrides = load_season_pass_overrides(self.season_pass_config)
         if not any(overrides.values()):
             return data
@@ -103,10 +103,11 @@ class StaticDatabasePublisher:
             try:
                 with closing(sqlite3.connect(copy)) as database:
                     with database:
-                        for reward_set, rows in effective_season_pass_rewards(database, overrides).items():
-                            write_season_pass_rewards(database, reward_set, rows)
+                        if any(overrides.values()):
+                            for reward_set, rows in effective_season_pass_rewards(database, overrides).items():
+                                write_season_pass_rewards(database, reward_set, rows)
             except (sqlite3.Error, ValueError) as exc:
-                print(f"[Content] publishing static.db4 without Season Pass edits: {exc}")
+                print(f"[Content] publishing static.db4 without server-side content edits: {exc}")
                 return data
             return copy.read_bytes()
 
@@ -125,7 +126,7 @@ class StaticDatabasePublisher:
         if self._revision != ((stat.st_size, stat.st_mtime_ns), self._config_revision()):
             config = self._config_revision()
             revision, data = self._snapshot()
-            data = self._with_season_pass(data)
+            data = self._with_server_content(data)
             self._sha256 = hashlib.sha256(data).hexdigest()
             self._size = len(data)
             self._packed = b"__ZN" + struct.pack("<I", len(data)) + zlib.compress(data, 6)

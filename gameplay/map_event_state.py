@@ -49,6 +49,16 @@ from dso_server.protocol.prop_protocol import (
 )
 
 
+# These quest portals have no event requirement in quests.xml, but the
+# original signal rows also require the global New Moon event. Keep the
+# authored quest-accepted condition and lift only that seasonal gate so the
+# white/black quest maps are reachable for preparation outside the event.
+YEAR_ROUND_NEWMOON_QUEST_PORTAL_SIGNALS = frozenset({
+    "e_new_02_witch_06a_quest_end",
+    "e_new_02_witch_06b_quest_end",
+})
+
+
 # The client addresses props by the **low 16 bits** of the prop id only:
 # ``ClientPropManager::RegisterPropEntity`` (0x1402197c5) and the world's
 # prop lookup (0x1409ec90e) both ``movzx`` the id's low word before indexing
@@ -402,7 +412,13 @@ class MapSignalCatalog:
         kind = str(event_type).casefold()
         fired = []
         for rule in self.rules_by_event_type.get(kind, ()):
-            if not rule.accepts(
+            candidate = (
+                replace(rule, events_running=())
+                if rule.signal_id.casefold()
+                in YEAR_ROUND_NEWMOON_QUEST_PORTAL_SIGNALS
+                else rule
+            )
+            if not candidate.accepts(
                 map_id=context.map_id,
                 running_events=context.running_events,
                 player_level=context.player_level,
@@ -415,7 +431,7 @@ class MapSignalCatalog:
             ):
                 continue
             if kind == "monsterseliminated":
-                listed = frozenset(rule.params)
+                listed = frozenset(candidate.params)
                 present = listed & context.present_templates
                 if (
                     not present
@@ -438,9 +454,11 @@ class MapSignalCatalog:
                 else:
                     if current_score < required_score:
                         continue
-            elif rule.params and not (frozenset(rule.params) & context.params):
+            elif candidate.params and not (
+                frozenset(candidate.params) & context.params
+            ):
                 continue
-            fired.append(rule)
+            fired.append(candidate)
         return tuple(fired)
 
 

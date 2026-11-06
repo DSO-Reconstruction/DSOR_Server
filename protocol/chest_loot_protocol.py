@@ -498,7 +498,7 @@ def _positive_amount(value: Any, *, default: int = 1) -> int:
 
 def _split_embedded_amount(
     template_id: str, amount: Any,
-) -> tuple[str, int]:
+) -> tuple[str, int | tuple[int, int]]:
     """Handle report edges such as ``item_template,5`` from wishing wells."""
 
     template_id = str(template_id or "").strip()
@@ -509,6 +509,13 @@ def _split_embedded_amount(
             amount = possible_amount.strip()
     if not template_id:
         raise ValueError("reward has no item template id")
+    if isinstance(amount, (list, tuple)):
+        if len(amount) != 2:
+            raise ValueError("reward amount range must have two values")
+        low, high = int(amount[0]), int(amount[1])
+        if low <= 0 or high < low:
+            raise ValueError(f"invalid reward amount range {amount!r}")
+        return template_id, (low, high)
     return template_id, _positive_amount(amount)
 
 
@@ -775,6 +782,7 @@ def _direct_entries(
     record: dict[str, Any],
     *,
     class_name: str = "",
+    rng: random.Random | None = None,
 ) -> tuple[list[_MappedReward], list[_MappedReward], list[_MappedReward], bool]:
     guaranteed: list[_MappedReward] = []
     choices: list[_MappedReward] = []
@@ -866,9 +874,23 @@ def _direct_entries(
             _definition(static_database_path, class_template_id)
             choices.append(_MappedReward(class_template_id, class_amount))
             continue
-        template_id, amount = _split_embedded_amount(
-            entry.get("item"), entry.get("amount")
+        template_id, raw_amount = _split_embedded_amount(
+            entry.get("item"), entry.get("amount", 1)
         )
+        if isinstance(raw_amount, (list, tuple)):
+            if len(raw_amount) != 2:
+                raise ValueError(
+                    f"reward amount range for {template_id!r} must have "
+                    "two values"
+                )
+            minimum, maximum = (int(value) for value in raw_amount)
+            if minimum <= 0 or maximum < minimum:
+                raise ValueError(
+                    f"invalid reward amount range for {template_id!r}"
+                )
+            amount = (rng or random.SystemRandom()).randint(minimum, maximum)
+        else:
+            amount = _positive_amount(raw_amount)
         if template_id == str(record.get("container") or ""):
             continue
         _definition(static_database_path, template_id)
@@ -1308,8 +1330,90 @@ def _authored_chest_contents(
     *,
     player_level: int,
     class_name: str,
+    rng: random.Random | None = None,
 ) -> ChestContents | None:
     """Give one of the boxes in ``_AUTHORED_CHEST_CONTENTS``."""
+
+    if box_definition.template_id == "e_ful_02_small_rewardchest":
+        if int(player_level) < int(box_definition.required_level):
+            raise ValueError(
+                f"container {box_definition.template_id!r} requires level "
+                f"{int(box_definition.required_level)}"
+            )
+        class_name = str(class_name).casefold()
+        if class_name not in {"warrior", "mage", "ranger", "dwarf"}:
+            raise ValueError(
+                "Fullmoon Reward Chest requires a valid character class"
+            )
+        chooser = rng or random.SystemRandom()
+        blood_rune_items = {
+            "warrior": (
+                "warrior_unique_2h_sword2h_bloodmoon_set",
+                "warrior_unique_amulet_bloodmoon_set",
+                "warrior_unique_belt_bloodmoon_set",
+                "warrior_unique_ring_bloodmoon_set",
+            ),
+            "mage": (
+                "mage_unique_2h_staff2h_bloodmoon_set",
+                "mage_unique_amulet_bloodmoon_set",
+                "mage_unique_belt_bloodmoon_set",
+                "mage_unique_ring_bloodmoon_set",
+            ),
+            "ranger": (
+                "ranger_unique_2h_bow_bloodmoon_set",
+                "ranger_unique_amulet_bloodmoon_set",
+                "ranger_unique_belt_bloodmoon_set",
+                "ranger_unique_ring_bloodmoon_set",
+            ),
+            "dwarf": (
+                "dwarf_unique_2h_rifle2h_bloodmoon_set",
+                "dwarf_unique_amulet_bloodmoon_set",
+                "dwarf_unique_belt_bloodmoon_set",
+                "dwarf_unique_ring_bloodmoon_set",
+            ),
+        }
+        wolf_slayer_items = {
+            "warrior": (
+                "warrior_unique_rh_axe_fullmoon_set",
+                "warrior_unique_lh_shield_fullmoon_set",
+                "warrior_unique_helmet_fullmoon_set",
+                "warrior_unique_weaponmod_fullmoon_set",
+            ),
+            "mage": (
+                "mage_unique_rh_staff_fullmoon_set",
+                "mage_unique_lh_book_fullmoon_set",
+                "mage_unique_helmet_fullmoon_set",
+                "mage_unique_weaponmod_fullmoon_set",
+            ),
+            "ranger": (
+                "ranger_unique_rh_longbow_fullmoon_set",
+                "ranger_unique_lh_offensequiver_fullmoon_set",
+                "ranger_unique_helmet_fullmoon_set",
+                "ranger_unique_weaponmod_fullmoon_set",
+            ),
+            "dwarf": (
+                "dwarf_unique_rh_pistol_fullmoon_set",
+                "dwarf_unique_lh_gadget_fullmoon_set",
+                "dwarf_unique_helmet_fullmoon_set",
+                "dwarf_unique_weaponmod_fullmoon_set",
+            ),
+        }
+        reward_choices = (
+            chooser.choice(blood_rune_items[class_name]),
+            chooser.choice(wolf_slayer_items[class_name]),
+            "e_ful_02_costume_bloodwhirl",
+            "e_ful_02_emote_moonwalk",
+            "epicmount_wolf_black",
+        )
+        reward_template = chooser.choice(reward_choices)
+        return ChestContents(
+            box_template_id=box_definition.template_id,
+            source="fullmoon_reward_chest",
+            rewards=(ChestReward(
+                _definition(static_database_path, reward_template), 1,
+            ),),
+            used_tooltip_mapping=False,
+        )
 
     authored = _AUTHORED_CHEST_CONTENTS.get(box_definition.template_id)
     if authored is None:
@@ -1649,6 +1753,7 @@ def roll_chest_contents(
     authored = _authored_chest_contents(
         static_database_path, box_definition,
         player_level=player_level, class_name=class_name,
+        rng=rng,
     )
     if authored is not None:
         return authored
@@ -1665,10 +1770,17 @@ def roll_chest_contents(
     # FAILURE: "Daily limited chest" (emilia_daily_andermant_cost) and the
     #   category Lucky Spheres could not be opened.
     records = None
-    if DESCRIPTION_CHEST_CONTENTS_MAP.is_file():
+    mapped_records = _load_index(map_path).get(box_template_id)
+    mapped_item_loot = any(
+        str(record.get("source") or "") == "_Template_Item.Loot"
+        and record.get("yields")
+        for record in (mapped_records or ())
+    )
+    records = mapped_records if mapped_item_loot else None
+    if not records and DESCRIPTION_CHEST_CONTENTS_MAP.is_file():
         records = _load_index(DESCRIPTION_CHEST_CONTENTS_MAP).get(box_template_id)
     if not records:
-        records = _load_index(map_path).get(box_template_id)
+        records = mapped_records
     if not records:
         adventurer_contents = _adventurer_chest_contents(
             static_database_path,
@@ -1757,7 +1869,7 @@ def roll_chest_contents(
         rng = random.SystemRandom()
 
     guaranteed, one_of, chance, saw_choose = _direct_entries(
-        static_database_path, record, class_name=str(class_name)
+        static_database_path, record, class_name=str(class_name), rng=rng
     )
     used_tooltip = False
     if not guaranteed and not one_of and not chance:

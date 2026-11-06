@@ -85,6 +85,21 @@ MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY = (
     "mystic_cube_epic",        # 8 Bloodshed
     "mystic_cube_epic",        # 9 Parallel World Bloodshed
 )
+BOSS_COMMON_DROP_RANKS = frozenset({
+    "guardian", "leader", "boss", "worldboss",
+})
+BOSS_GEM_RANKS_BY_DIFFICULTY = (
+    ("a", "b", "c"),                 # 0-1
+    ("a", "b", "c"),                 # 1
+    ("b", "c", "d"),                 # 2-3
+    ("b", "c", "d"),                 # 3
+    ("d", "e", "f"),                 # 4-5
+    ("d", "e", "f"),                 # 5
+    ("d", "e", "f", "g", "h"),     # 6-7
+    ("d", "e", "f", "g", "h"),     # 7
+    ("e", "f", "g", "h", "i", "j"), # 8-9
+    ("e", "f", "g", "h", "i", "j"), # 9
+)
 # Healing spheres: the authored rank lists drop them at 1% (monster), 5%
 # (add), 20% (guardian), 35% (champion) and 50% (leader), so a fight almost
 # never produced one. Server policy floors every globe roll: a normal monster
@@ -173,6 +188,11 @@ CRAFTING_DUNGEON_MOUNT_TEMPLATES = (
 )
 CRAFTING_DUNGEON_JEWEL_DROP_CHANCE = 0.05
 CRAFTING_DUNGEON_MOUNT_DROP_CHANCE = 0.15
+FULLMOON_VARGULF_TEMPLATES = frozenset({
+    "e_ful_02_varholm_night_00_miniboss_werewolf_01",
+    "e_ful_02_varholm_night_01_miniboss_werewolf_01",
+    "e_ful_02_varholm_night_02_miniboss_werewolf_01",
+})
 
 
 def _is_crafting_dungeon_access(map_access_id: str) -> bool:
@@ -2329,14 +2349,23 @@ def _scatter_positions(
 ) -> tuple[tuple[float, float, float], ...]:
     if count <= 0:
         return ()
+    # Radial scatter made multi-drop boss rewards overlap because their
+    # world sprites occupy more than the sub-metre radius used here. Lay the
+    # items out on a compact, centered square grid so every drop has its own
+    # ground position while keeping the whole reward pile near the corpse.
+    columns = math.ceil(math.sqrt(count))
+    rows = math.ceil(count / columns)
+    spacing = 0.75
+    start_x = -0.5 * (columns - 1) * spacing
+    start_z = -0.5 * (rows - 1) * spacing
     positions = []
     for index in range(count):
-        angle = 2.0 * math.pi * index / count + rng.uniform(-0.18, 0.18)
-        radius = 0.65 + 0.22 * (index % 3)
+        column = index % columns
+        row = index // columns
         candidate = (
-            float(origin[0]) + math.cos(angle) * radius,
+            float(origin[0]) + start_x + column * spacing,
             float(origin[1]),
-            float(origin[2]) + math.sin(angle) * radius,
+            float(origin[2]) + start_z + row * spacing,
         )
         if position_projector is not None:
             candidate = tuple(
@@ -2380,6 +2409,7 @@ def generate_monster_loot(
         | None
     ) = None,
     additional_event_loot: tuple[tuple[str, int], ...] = (),
+    difficulty_unscaled_drop_templates: frozenset[str] = frozenset(),
 ) -> WorldLootGeneration:
     """Generate editable NewItem state for one lethal monster transition.
 
@@ -2575,6 +2605,37 @@ def generate_monster_loot(
                 class_name,
                 equipment_item_level,
             )
+            if str(map_access_id).casefold().startswith(
+                "e_fullmoon_varholm_dun"
+            ):
+                is_vargulf = (
+                    str(profile.template_id).casefold()
+                    in FULLMOON_VARGULF_TEMPLATES
+                )
+
+                def is_vargulf_set(definition):
+                    row = database.items_by_id.get(
+                        definition.template_id, {}
+                    )
+                    regions = {
+                        token.casefold()
+                        for token in _tokens(row.get("Region"))
+                    }
+                    return (
+                        str(row.get("DefaultRarity") or "").casefold()
+                        == "set"
+                        and "fullmoonvargulf" in regions
+                    )
+
+                if not is_vargulf:
+                    listed_rewards = tuple(
+                        definition for definition in listed_rewards
+                        if not is_vargulf_set(definition)
+                    )
+                    region_uniques = tuple(
+                        definition for definition in region_uniques
+                        if not is_vargulf_set(definition)
+                    )
             unique_by_id = {
                 definition.template_id: definition
                 for definition in (*listed_rewards, *region_uniques)
@@ -2893,11 +2954,14 @@ def generate_monster_loot(
                 if rarity_name in EQUIPMENT_RARITIES else 0,
             ))
 
-        # Members-only Mystic Cube: one independent flat roll per kill. The
-        # tier follows the runtime difficulty, never the drop-rate curve.
+        # Existing non-boss cube drops keep their configured flat chance.
+        # Bosses receive the shared difficulty-tiered quantity below.
         if member_mystic_cube_eligible and (
-            force_drops
-            or generator.random() < cube_drop_chance(map_difficulty)
+            profile.rank_kind not in BOSS_COMMON_DROP_RANKS
+            and (
+                force_drops
+                or generator.random() < cube_drop_chance(map_difficulty)
+            )
         ):
             cube_template = mystic_cube_template_for_difficulty(
                 map_difficulty
@@ -2924,10 +2988,61 @@ def generate_monster_loot(
                 if cube_rarity in EQUIPMENT_RARITIES else 0,
             ))
 
+        if profile.rank_kind in BOSS_COMMON_DROP_RANKS:
+            if member_mystic_cube_eligible:
+                cube_template = mystic_cube_template_for_difficulty(
+                    map_difficulty
+                )
+                cube_row = database.items_by_id.get(cube_template)
+                if cube_row is None:
+                    raise ValueError(
+                        f"mystic cube {cube_template!r} is not an item"
+                    )
+                cube_rarity = str(
+                    cube_row.get("DefaultRarity") or "Common"
+                )
+                cube_definition = LootItemDefinition(
+                    cube_template,
+                    "LootGenItem",
+                    str(cube_row.get("AutoPickUp") or "None"),
+                    "0", "0", "",
+                )
+                for _cube_index in range(generator.randint(2, 4)):
+                    specifications.append((
+                        cube_definition,
+                        1,
+                        1,
+                        "",
+                        EQUIPMENT_RARITIES.index(cube_rarity)
+                        if cube_rarity in EQUIPMENT_RARITIES else 0,
+                    ))
+
+            difficulty_tier = max(
+                0,
+                min(
+                    len(BOSS_GEM_RANKS_BY_DIFFICULTY) - 1,
+                    int(map_difficulty),
+                ),
+            )
+            available_gem_ranks = tuple(
+                rank
+                for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[difficulty_tier]
+                if database.standard_gems_by_rank.get(rank)
+            )
+            for _gem_index in range(generator.randint(1, 3)):
+                if not available_gem_ranks:
+                    break
+                gem_rank = generator.choice(available_gem_ranks)
+                gem_pool = database.gems_for_rank(gem_rank)
+                if gem_pool:
+                    specifications.append((
+                        generator.choice(gem_pool), 1, 1, "", 0,
+                    ))
+
         # Apply the database's map-difficulty stack curve in one final pass so
-        # every generated Currency item, including future loot-list additions,
-        # follows its GroupTags. Event progress uses the same VC curve even
-        # for legacy rows that predate the tag.
+        # Currency and any item with an authored VC/RC stack tag follow their
+        # difficulty curve. Event progress uses the VC curve even for legacy
+        # rows that predate the tag.
         specifications = [
             (
                 definition,
@@ -2941,8 +3056,23 @@ def generate_monster_loot(
                     ),
                 )
                 if (
-                    definition.item_category == "Currency"
-                    or definition.template_id in event_collectible_ids
+                    definition.template_id
+                    not in difficulty_unscaled_drop_templates
+                    and (
+                        definition.item_category == "Currency"
+                        or definition.template_id in event_collectible_ids
+                        or any(
+                            token.casefold() in {
+                                "applystacksizedifficultyfactorvc",
+                                "applystacksizedifficultyfactorrc",
+                            }
+                            for token in _tokens(
+                                database.items_by_id.get(
+                                    definition.template_id, {}
+                                ).get("GroupTags")
+                            )
+                        )
+                    )
                 )
                 else amount,
                 item_level,

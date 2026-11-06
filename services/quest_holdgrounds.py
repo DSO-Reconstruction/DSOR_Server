@@ -1,6 +1,7 @@
 """Map-owned, explicitly started quest defense encounters."""
 
 from dataclasses import dataclass, field, replace
+import math
 import random
 import threading
 import time
@@ -11,6 +12,7 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.local_monster_state import _load_monster, _load_runtime_definition, _spawn_group
 from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.pathengine_navigation import NavigationError
 from dso_server.protocol.gameplay_protocol import NPCBatch, encode_npc_batch, encode_discard_monster_batch
 from dso_server.protocol.socket_minion_protocol import load_socket_minion_definition
 from dso_server.services.base import CharacterService
@@ -28,8 +30,11 @@ class HoldGroundRun:
     character_id: int = field(init=False)
     defender_actor_id: int = 0
     owned_actor_ids: set[int] = field(default_factory=set)
+    wave_actor_ids: set[int] = field(default_factory=set)
+    wave_killed_actor_ids: set[int] = field(default_factory=set)
     wave_index: int = -1
     wave_deadline: float = 0.0
+    wave_clear_deadline: float | None = None
     timer: object | None = None
     poll_token: object | None = None
     outcome: str | None = None
@@ -191,23 +196,125 @@ def _spawn_defender(server, run):
     return spawn
 
 
+def _route_point_at_distance(points, distance):
+    remaining = max(0.0, float(distance))
+    for start, end in zip(points, points[1:]):
+        segment = math.hypot(end[0] - start[0], end[2] - start[2])
+        if segment <= 1e-6:
+            continue
+        if remaining <= segment:
+            ratio = remaining / segment
+            return tuple(
+                float(start[axis])
+                + (float(end[axis]) - float(start[axis])) * ratio
+                for axis in range(3)
+            )
+        remaining -= segment
+    return tuple(float(value) for value in points[-1])
+
+
+def _holdground_spawn_position(run, spec, marker_slot, route_cache, used_positions):
+    """Choose a walkable spawn point along the attacker's route to the NPC."""
+    navigation = getattr(run.combat.encounter, "navigation", None)
+    npc_position = tuple(float(value) for value in run.plan.position)
+    source_position = tuple(float(value) for value in spec.position)
+    if navigation is None:
+        return npc_position
+
+    try:
+        route = route_cache.get(source_position)
+        if route is None:
+            route = navigation.find_route(npc_position, source_position)
+            route_cache[source_position] = route
+        npc_ground = navigation.project_position(npc_position)
+        vertical_offset = npc_position[1] - npc_ground[1]
+        route_length = sum(
+            math.hypot(end[0] - start[0], end[2] - start[2])
+            for start, end in zip(route.points, route.points[1:])
+        )
+        # Advance successive monsters that share a marker along the same
+        # clear approach path instead of stacking them at one coordinate.
+        start_distance = min(9.5, 5.5 + 0.65 * int(marker_slot))
+        for offset in (0.0, 0.8, 1.6, 2.4):
+            distance = min(route_length, start_distance + offset)
+            point = _route_point_at_distance(route.points, distance)
+            point = (point[0], point[1] + vertical_offset, point[2])
+            point = navigation.project_position_relative(
+                point, npc_position, max_horizontal_distance=0.75,
+            )
+            if (math.hypot(point[0] - npc_position[0],
+                           point[2] - npc_position[2]) <= 10.0
+                    and navigation.is_reachable(npc_position, point)
+                    and all(math.dist(point, used) >= 0.9
+                            for used in used_positions)):
+                return point
+    except (NavigationError, ValueError, TypeError, AttributeError):
+        pass
+
+    # If the authored approach is not connected, pick a sampled ground point
+    # from the NPC's own component. This avoids roofs, houses and sealed yards.
+    try:
+        component = navigation.component_for_position(npc_position)
+        candidates = navigation.component_positions(
+            component, around=npc_position, minimum_distance=4.0,
+            maximum_distance=10.0, limit=96,
+        )
+        npc_ground = navigation.project_position(npc_position)
+        vertical_offset = npc_position[1] - npc_ground[1]
+        candidates = sorted(candidates, key=lambda point: (
+            (point[0] - source_position[0]) ** 2
+            + (point[2] - source_position[2]) ** 2
+        ))
+        for candidate in candidates:
+            candidate = (candidate[0], candidate[1] + vertical_offset,
+                         candidate[2])
+            candidate = navigation.project_position_relative(
+                candidate, npc_position, max_horizontal_distance=0.75,
+            )
+            if (navigation.is_reachable(npc_position, candidate)
+                    and all(math.dist(candidate, used) >= 0.9
+                            for used in used_positions)):
+                return candidate
+    except (NavigationError, ValueError, TypeError, AttributeError):
+        pass
+    # The NPC transform itself is a known valid point and is safer than
+    # publishing an attacker inside an obstacle where it can never path out.
+    return npc_position
+
+
 def _spawn_wave(server, run, now):
     run.wave_index += 1
     wave = run.plan.waves[run.wave_index]
     run.wave_deadline = float(now) + wave.duration_seconds
+    run.wave_clear_deadline = None
+    run.wave_actor_ids.clear()
+    run.wave_killed_actor_ids.clear()
     if not wave.spawns:
         return  # An authored intermediate empty wave is a timed pause.
     combat = run.combat
     with combat.lock:
         actor_ids = combat.allocate_runtime_actor_ids(len(wave.spawns))
     monsters, definitions = [], []
+    marker_slots = {}
+    route_cache = {}
+    used_spawn_positions = []
     for actor_id, spec in zip(actor_ids, wave.spawns, strict=True):
         # A corrected pool entry draws independently each time its wave
         # starts (module RNG, as event spawn areas use; tests may seed it).
         template = random.choice(spec.template_pool) if spec.template_pool else spec.template_id
         definition = _load_runtime_definition(server.static_database_path, template, actor_id)
+        # Holdground markers are often far from the defended NPC. The mob
+        # starts on a walkable point along that marker's navmesh route so it
+        # stays visible and can path to the target without appearing in a
+        # house, behind scenery, or on blocked ground.
+        marker_slot = marker_slots.get(spec.marker_id, 0)
+        marker_slots[spec.marker_id] = marker_slot + 1
+        spawn_position = _holdground_spawn_position(
+            run, spec, marker_slot, route_cache, used_spawn_positions,
+        )
+        used_spawn_positions.append(spawn_position)
         monster = _load_monster(server.static_database_path, template, actor_id,
-            spec.position, monster_level=run.runtime.monster_level,
+            spawn_position, monster_level=run.runtime.monster_level,
             scaling_difficulty=run.runtime.scaling_difficulty)
         monsters.append(monster)
         definitions.append(definition)
@@ -218,11 +325,21 @@ def _spawn_wave(server, run, now):
         if len(added) != len(wave.spawns):
             raise RuntimeError("defense wave actor allocation was not complete")
         run.owned_actor_ids.update(added)
+        run.wave_actor_ids.update(added)
         targets = getattr(combat, "holdground_targets", None)
         if targets is None:
             targets = combat.holdground_targets = {}
         targets.update((actor_id, run.defender_actor_id) for actor_id in added)
         combat.activate_monsters(tuple(added))
+        max_npc_distance = max((
+            ((combat.monster_positions[actor_id][0] - run.plan.position[0]) ** 2
+             + (combat.monster_positions[actor_id][2] - run.plan.position[2]) ** 2) ** 0.5
+            for actor_id in added
+        ), default=0.0)
+    print(
+        f"[holdground] {run.binding.holdground_id} wave {wave.number}: "
+        f"spawned {len(added)} attackers within {max_npc_distance:.1f}m of NPC"
+    )
     _publish(server, run, lambda viewer: server._announce_runtime_group(
         viewer, combat, group, force_actor_ids=set(added),
     ))
@@ -271,19 +388,48 @@ def _advance(server, run):
         _finish(server, run, "holdgroundfailed")
         return
     now = time.perf_counter()
-    while now >= run.wave_deadline and run.wave_index + 1 < len(run.plan.waves):
+    while run.wave_index + 1 < len(run.plan.waves):
+        if run.wave_actor_ids:
+            with run.combat.lock:
+                wave_alive = any(
+                    run.combat.monster_health.get(actor_id, 0) > 0
+                    and actor_id not in run.wave_killed_actor_ids
+                    for actor_id in run.wave_actor_ids
+                )
+            if wave_alive:
+                return
+            if run.wave_clear_deadline is None:
+                run.wave_clear_deadline = now + 2.0
+            if now < run.wave_clear_deadline:
+                return
+        elif now < run.wave_deadline:
+            # Authored empty waves are intentional pauses; they have no
+            # monsters whose death could trigger the short inter-wave delay.
+            return
         _spawn_wave(server, run, now)
-    if run.wave_index + 1 == len(run.plan.waves) and now >= run.wave_deadline:
+
+    if run.wave_index + 1 == len(run.plan.waves):
         with run.combat.lock:
-            living = any(run.combat.monster_health.get(actor_id, 0) > 0
-                         for actor_id in run.owned_actor_ids)
-        if not living:
-            _finish(server, run, "holdgroundsucceeded")
+            wave_alive = any(
+                run.combat.monster_health.get(actor_id, 0) > 0
+                and actor_id not in run.wave_killed_actor_ids
+                for actor_id in run.wave_actor_ids
+            )
+        if wave_alive:
+            return
+        if run.wave_actor_ids:
+            if run.wave_clear_deadline is None:
+                run.wave_clear_deadline = now + 2.0
+            if now < run.wave_clear_deadline:
+                return
+        elif now < run.wave_deadline:
+            return
+        _finish(server, run, "holdgroundsucceeded")
 
 
 def advance_holdgrounds(server, session, *, killed_actor_ids=()):
     """Inspect shared encounters after authoritative damage/kill resolution."""
-    del killed_actor_ids
+    killed_actor_ids = {int(actor_id) for actor_id in killed_actor_ids if int(actor_id) > 0}
     runtime = getattr(session, "gameplay_map_event_runtime", None)
     if runtime is None:
         return
@@ -296,6 +442,9 @@ def advance_holdgrounds(server, session, *, killed_actor_ids=()):
             continue
         try:
             with run.lock:
+                run.wave_killed_actor_ids.update(
+                    killed_actor_ids & run.wave_actor_ids
+                )
                 _advance(server, run)
         finally:
             run.owner.gameplay_mutation_lock.release()

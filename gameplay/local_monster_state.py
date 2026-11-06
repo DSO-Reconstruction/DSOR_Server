@@ -587,6 +587,114 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
             'e_doe_map_02_normal_ice_thing_purple_01',
         ),
     },
+    # Event-map IDs use descriptive names while their authored monster IDs use
+    # the short e_new_02 namespace.  The static SpawnList registry is not
+    # exported, so map-prefix discovery returns an empty pool for Blakborg.
+    # Keep the ordinary density lists tied to the matching day/night species;
+    # scripted quest actors and bosses remain in their authored SpawnPoints.
+    'e_newmoon_blakborg_city_dun': {
+        'day_meanie_root': (
+            'e_new_02_day_meanie_rascal_01',
+            'e_new_02_day_thing_root_01',
+        ),
+        'day_gnome_golem': (
+            'e_new_02_day_norsegnome_01',
+            'e_new_02_day_stonegolem_01',
+        ),
+        'meanie_summoner_normal_spawn': (
+            'e_new_02_night_meanie_rascal_01',
+            'e_new_02_night_meanie_summoner_01',
+        ),
+        'gnome_shaman_golem': (
+            'e_new_02_night_norsegnome_01',
+            'e_new_02_night_norsegnome_shaman_01',
+            'e_new_02_night_stonegolem_01',
+        ),
+        'all_spawnlist': (
+            'e_new_02_night_meanie_rascal_01',
+            'e_new_02_night_meanie_summoner_01',
+            'e_new_02_night_norsegnome_01',
+            'e_new_02_night_norsegnome_shaman_01',
+            'e_new_02_night_stonegolem_01',
+            'e_new_02_night_thing_root_01',
+        ),
+        # The three clear-area waves have their own EventSets. Their ordinary
+        # wave mobs are the same night-time pool as the map's event mode.
+        'clear_area_01': (
+            'e_new_02_night_meanie_rascal_01',
+            'e_new_02_night_meanie_summoner_01',
+            'e_new_02_night_norsegnome_01',
+            'e_new_02_night_norsegnome_shaman_01',
+            'e_new_02_night_stonegolem_01',
+            'e_new_02_night_thing_root_01',
+        ),
+        'clear_area_02': (
+            'e_new_02_night_meanie_rascal_01',
+            'e_new_02_night_meanie_summoner_01',
+            'e_new_02_night_norsegnome_01',
+            'e_new_02_night_norsegnome_shaman_01',
+            'e_new_02_night_stonegolem_01',
+            'e_new_02_night_thing_root_01',
+        ),
+        'clear_area_03': (
+            'e_new_02_night_meanie_rascal_01',
+            'e_new_02_night_meanie_summoner_01',
+            'e_new_02_night_norsegnome_01',
+            'e_new_02_night_norsegnome_shaman_01',
+            'e_new_02_night_stonegolem_01',
+            'e_new_02_night_thing_root_01',
+        ),
+    },
+    # Varholm's night EventSet is authored as density areas, but its event map
+    # ID likewise differs from the e_ful_02 monster namespace. Without these
+    # pools the day map works while its night encounter disappears entirely.
+    'e_fullmoon_varholm_dun': {
+        'night_01': (
+            'e_ful_02_varholm_night_normal_beast_hound_01',
+            'e_ful_02_varholm_night_normal_beast_hound_02',
+            'e_ful_02_varholm_night_normal_undead_ripper_01',
+            'e_ful_02_varholm_night_normal_werewolf_melee_01',
+            'e_ful_02_varholm_night_normal_werewolf_ranged_01',
+        ),
+        'night_02': (
+            'e_ful_02_varholm_night_normal_beast_hound_01',
+            'e_ful_02_varholm_night_normal_beast_hound_02',
+            'e_ful_02_varholm_night_normal_undead_ripper_01',
+            'e_ful_02_varholm_night_normal_werewolf_melee_01',
+            'e_ful_02_varholm_night_normal_werewolf_ranged_01',
+        ),
+        'night_mining': (
+            'e_ful_02_varholm_night_normal_beast_hound_01',
+            'e_ful_02_varholm_night_normal_beast_hound_02',
+            'e_ful_02_varholm_night_normal_undead_ripper_01',
+            'e_ful_02_varholm_night_normal_werewolf_melee_01',
+            'e_ful_02_varholm_night_normal_werewolf_ranged_01',
+        ),
+    },
+    # Bloodmoon uses the descriptive event-map ID while its combat templates
+    # live under e_ful_02_varholm_bloodmoon. Without this server-side SpawnList
+    # pool, the map's only unconditional density area cannot produce any mobs.
+    'e_fullmoon_varholm_blood_dun': {
+        'main': (
+            'e_ful_02_varholm_bloodmoon_normal_beast_hound_01',
+            'e_ful_02_varholm_bloodmoon_normal_beast_hound_02',
+            'e_ful_02_varholm_bloodmoon_normal_soul_01',
+            'e_ful_02_varholm_bloodmoon_normal_thing_blood_01',
+            'e_ful_02_varholm_bloodmoon_normal_werewolf_melee_01',
+            'e_ful_02_varholm_bloodmoon_normal_werewolf_ranged_01',
+        ),
+    },
+    # The Moonsilver Mine uses the descriptive event-map ID while its
+    # ordinary monsters live in the e_ful_02_silvermine namespace. Its
+    # server-side SpawnList is not exported, so explicitly populate `main`
+    # with the authored mine gnomes and soulless miners.
+    'e_fullmoon_silvermine_dun': {
+        'main': (
+            'e_ful_02_silvermine_normal_norsegnome_01',
+            'e_ful_02_silvermine_bomber_norsegnome_01',
+            'e_ful_02_silvermine_normal_soulless_norseman_01',
+        ),
+    },
     # Piritlidag's melt rooms need the authored DragonsForge kill target;
     # quest-specific templates are excluded from the generic map pool.
     'f4202_dun': {
@@ -653,6 +761,25 @@ _MAP_MONSTER_TEMPLATE_ADDITIONS = {
     "k0002_greylingforest": _K_SERIES_QUEST_REGION_MONSTERS,
     "k0003_tidalwildwood": _K_SERIES_QUEST_REGION_MONSTERS,
     "k0004_hallofparadoxes": _K_SERIES_QUEST_REGION_MONSTERS,
+}
+
+# Full Moon night champions are authored as champion-rank density areas. The
+# server's exported map data has no SpawnList registry, so the ordinary night
+# lists only yield normal werewolves; promote the authored champion slots to
+# the exact templates required by Varholm's quest objectives.
+_VARHOLM_NIGHT_CHAMPION_AREA_TEMPLATES = {
+    10: (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
+    11: (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
+    12: (
+        "e_ful_02_varholm_night_champion_werewolf_melee_01",
+        "e_ful_02_varholm_night_champion_werewolf_ranged_01",
+    ),
 }
 
 
@@ -3999,10 +4126,25 @@ def _load_dynamic_monster_encounter(
         template_pool = area_template_pools[area.row_id]
         for ordinal, position in enumerate(candidates):
             actor_id = allocate_actor_id()
-            for offset in range(len(template_pool)):
-                template_id = template_pool[
-                    (area.row_id + ordinal + offset) % len(template_pool)
-                ]
+            champion_templates = (
+                _VARHOLM_NIGHT_CHAMPION_AREA_TEMPLATES.get(area.row_id, ())
+                if str(map_id).casefold() == "e_fullmoon_varholm_dun"
+                and int(area.event_set_row) == 138
+                else ()
+            )
+            authored_champion_count = max(
+                int(area.min_champion_spawn), int(area.max_champion_spawn)
+            )
+            if ordinal < authored_champion_count and champion_templates:
+                template_candidates = (champion_templates[ordinal % len(champion_templates)],)
+            else:
+                template_candidates = tuple(
+                    template_pool[
+                        (area.row_id + ordinal + offset) % len(template_pool)
+                    ]
+                    for offset in range(len(template_pool))
+                )
+            for template_id in template_candidates:
                 if append_monster(
                     template_id,
                     actor_id,

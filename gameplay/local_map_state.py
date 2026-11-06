@@ -117,6 +117,16 @@ BASELINE_MAP_EVENT_FLAGS = {
     # event set. Enable it on every entry so the stone is present before the
     # client renders the map's interactive objects.
     "g0001_beach_01_dun": frozenset({"g0001_travelstone"}),
+    # Moonsilver Mine's five authored gnome/norseman SpawnPoint groups are
+    # permanent map population, not an event phase. Keep them active whenever
+    # the mine is entered, including outside the scheduled Full Moon event.
+    "e_fullmoon_silvermine_dun": frozenset({
+        "e_ful_02_silvermine_gnome_spawn_01",
+        "e_ful_02_silvermine_gnome_spawn_02",
+        "e_ful_02_silvermine_gnome_spawn_03",
+        "e_ful_02_silvermine_gnome_spawn_04",
+        "e_ful_02_silvermine_gnome_spawn_05",
+    }),
     # The Glowing Cave entrance is authored on the crafting hub behind this
     # permanent map-local event. Keep the portal visible by default; its
     # Broken Multitool access requirement remains defined by the map data.
@@ -977,6 +987,7 @@ def load_local_map_exits(
             """
         ):
             event_set_row = int(row[9] if row[9] is not None else -1)
+            destination_map_id = str(row[3] or "").strip()
             if (
                 event_set_row >= 0
                 and not include_inactive_event_sets
@@ -984,7 +995,6 @@ def load_local_map_exits(
             ):
                 continue
             position, _rotation = _transform(bytes(row[5]))
-            destination_map_id = str(row[3] or "").strip()
             destination_entry_name = str(row[4] or "").strip()
             if (
                 str(map_id).casefold() == "f4102_dun"
@@ -1446,6 +1456,14 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Varholm's silver-mine exits are present in _Instance_InteractExit but
+    # their gate entities are absent from the loaded scene. The Bloodmoon
+    # portal is also event-created; materialize it only when Vargulf's gate
+    # EventSet is enabled. The mine is available during event downtime.
+    "e_fullmoon_varholm_dun": (
+        "e_fullmoon_silvermine_dun",
+        "e_fullmoon_varholm_blood_dun",
+    ),
     # The K-series maps have no authored return-gate entities in their base
     # scenes. Their extracted map DBs include the added gates by GUID.
     "k0002_greylingforest": ("k0001_maincity",),
@@ -1554,10 +1572,7 @@ def native_scene_exit_variation_entries(
 
     targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
     return tuple(
-        VariationInfoEntry(
-            definition.instance_guid,
-            definition.event_set_row,
-        )
+        VariationInfoEntry(definition.instance_guid, definition.event_set_row)
         for definition in exits
         if (
             definition.active
@@ -1657,11 +1672,21 @@ def load_local_map_initialization(
             selected_map_access_id=selected_map_access_id or "",
             selected_map_difficulty=selected_map_difficulty,
         )
+        native_targets = _NATIVE_SCENE_EXIT_TARGETS.get(
+            str(map_id).casefold(), (),
+        )
+        exit_info_definitions = tuple(
+            definition for definition in exit_definitions
+            if definition.active or not any(
+                definition.destination_map_id.casefold().startswith(target)
+                for target in native_targets
+            )
+        )
         exits = _exit_info_entries_for_access(
             static_database_path,
             map_id,
             all_exit_definitions,
-            exit_definitions,
+            exit_info_definitions,
         )
         native_exit_entries = native_scene_exit_variation_entries(
             map_id, exit_definitions,

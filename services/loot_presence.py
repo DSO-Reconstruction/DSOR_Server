@@ -119,6 +119,7 @@ class LootPresenceService:
         # Event rolls share the generation RNG so one kill is deterministic
         # under tests and requires no static-database work on the hot path.
         generator = random.Random()
+        difficulty_unscaled_drop_templates = frozenset()
         if event_catalog is None and hasattr(self, "static_database_path"):
             event_catalog = CharacterService._event_catalog(self)
         if event_catalog is not None:
@@ -155,6 +156,47 @@ class LootPresenceService:
                 rng=generator,
                 map_difficulty=map_difficulty,
             )
+            difficulty_factors = loot_cache.difficulty_drop_factors.get(
+                int(map_difficulty), (1.0, 1.0)
+            )
+            map_loot = event_catalog.map_loot_drops(
+                map_id=event_map_id,
+                map_aliases=event_map_aliases,
+                class_name=class_name,
+                monster_template_id=str(monster.template_id),
+                monster_rank=(
+                    profile.rank_kind
+                    if profile is not None else "normal"
+                ),
+                monster_level=max(1, int(monster.level)),
+                rng=generator,
+                map_difficulty=map_difficulty,
+                privileged_difficulty_multiplier=float(
+                    difficulty_factors[1]
+                ),
+            )
+            # A guaranteed map-owned progress stack replaces the ordinary
+            # scheduled-event collectible roll for that same item. Otherwise
+            # a boss kill can award the configured 1300 plus a second random
+            # progress stack from the event-wide drop chance.
+            map_progress_items = frozenset(
+                drop.item_id.casefold() for drop in map_loot
+                if drop.item_id.casefold() == "e_ful_01_progress_item_01"
+            )
+            if map_progress_items:
+                event_drops = tuple(
+                    (item_id, amount) for item_id, amount in event_drops
+                    if str(item_id).casefold() not in map_progress_items
+                )
+            difficulty_unscaled_drop_templates = frozenset(
+                drop.item_id
+                for drop in map_loot
+                if not drop.scale_stack_amount_with_difficulty
+            )
+            event_loot = (
+                *event_loot,
+                *((drop.item_id, drop.amount) for drop in map_loot),
+            )
         else:
             # Lightweight protocol tests and deliberately minimal embedded
             # hosts have no event catalog; preserve the allocation hot path.
@@ -190,6 +232,9 @@ class LootPresenceService:
             additional_instant_consumables=event_drops,
             position_projector=position_projector,
             additional_event_loot=event_loot,
+            difficulty_unscaled_drop_templates=(
+                difficulty_unscaled_drop_templates
+            ),
         )
         generation = apply_socket_drop_amounts(
             socket_evaluation,

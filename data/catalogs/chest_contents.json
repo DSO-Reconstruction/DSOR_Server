@@ -192049,15 +192049,109 @@
         "entries": []
       },
       "mapping_note": "Authored: the retail loot list is server-side. Winter-event presents give the Snow Essence that damages Big Paws or class equipment of the present's rarity wearing a christmas (_Template_ItemAppearance region e_chr) skin; the two are picked 50/50."
+    },
+    {
+      "container": "e_ful_02_small_surprisebox",
+      "name": "Small Varholm Survival Chest",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_fullmoon_surprisebox_small_main",
+      "yields": [
+        {
+          "item": "e_ful_01_progress_item_01",
+          "amount": [5, 25],
+          "mode": "guaranteed"
+        },
+        {
+          "item": "e_ful_01_silver_essence_01",
+          "amount": [50, 250],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_item_teleport_change_01",
+          "amount": [1, 10],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_ful_02_shining_silver_essence_01",
+          "amount": [25, 150],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_sar_chest_key",
+          "amount": 1,
+          "mode": "chance",
+          "chance_percent": 5
+        },
+        {
+          "item": "e_ful_01_teleport_01",
+          "amount": 1,
+          "mode": "chance",
+          "chance_percent": 5
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "mapping_note": "Authored from the in-game tooltip; exact server loot-list odds are not present in static.db4."
+    },
+    {
+      "container": "e_ful_02_big_surprisebox",
+      "name": "Big Varholm Survival Chest",
+      "source": "_Template_Item.Loot",
+      "category": "LootGenItem",
+      "obsolete": false,
+      "required_level": 1,
+      "resolved": true,
+      "loot_list": "LOOTBOX_fullmoon_surprisebox_big_main",
+      "yields": [
+        {
+          "item": "e_ful_01_progress_item_01",
+          "amount": [10, 50],
+          "mode": "guaranteed"
+        },
+        {
+          "item": "e_ful_01_silver_essence_01",
+          "amount": [100, 300],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_item_teleport_change_01",
+          "amount": [2, 20],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_ful_02_shining_silver_essence_01",
+          "amount": [75, 250],
+          "mode": "one_of"
+        },
+        {
+          "item": "e_sar_chest_key",
+          "amount": 1,
+          "mode": "chance",
+          "chance_percent": 5
+        },
+        {
+          "item": "e_ful_01_teleport_01",
+          "amount": 1,
+          "mode": "chance",
+          "chance_percent": 5
+        }
+      ],
+      "transitive_yields": [],
+      "blocked_by_loot_lists": [],
+      "mapping_note": "Authored from the in-game tooltip; exact server loot-list odds are not present in static.db4."
     }
   ],
   "summary": {
-    "total_containers": 2853,
-    "resolved_containers": 2225,
-    "total_edges": 7358,
+    "total_containers": 2855,
+    "resolved_containers": 2227,
+    "total_edges": 7370,
     "transitive_edges": 7075,
     "containers_with_nesting": 2085,
-    "distinct_server_side_loot_lists": 522,
+    "distinct_server_side_loot_lists": 524,
     "by_source": {
       "_Template_Chest.Items": {
         "containers": 4,
@@ -192085,9 +192179,9 @@
         "edges": 1297
       },
       "_Template_Item.Loot": {
-        "containers": 562,
-        "resolved": 110,
-        "edges": 415
+        "containers": 564,
+        "resolved": 112,
+        "edges": 427
       },
       "none": {
         "containers": 54,
