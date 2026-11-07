@@ -285,7 +285,7 @@ class EventLootEntry:
 
 @dataclass(frozen=True)
 class MapLootEntry:
-    """A map-owned drop scoped by monster templates, regions, or ranks."""
+    """A map-owned drop scoped by monster templates, regions, ranks and event state."""
 
     loot: EventLootEntry
     monster_templates: frozenset[str]
@@ -296,6 +296,8 @@ class MapLootEntry:
     difficulty_amounts: tuple[int, ...] = ()
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     require_class_option: bool = False
+    minimum_difficulty: int = 0
+    require_active_events: frozenset[str] = frozenset()
     require_inactive_events: frozenset[str] = frozenset()
 
 
@@ -738,6 +740,7 @@ class EventCatalog:
         map_aliases: Iterable[str] = (),
         map_difficulty: int = 0,
         privileged_difficulty_multiplier: float = 1.0,
+        drop_chance_bonus_by_item: Mapping[str, float] = MappingProxyType({}),
         now: datetime | None = None,
     ) -> tuple[MapLootDrop, ...]:
         """Roll authored drops belonging to these maps, independent of schedule."""
@@ -755,6 +758,10 @@ class EventCatalog:
         result = []
         for current_map in current_maps:
             for entry in self.map_loot.get(current_map, ()):
+                if int(map_difficulty) < entry.minimum_difficulty:
+                    continue
+                if not entry.require_active_events.issubset(active_templates):
+                    continue
                 if entry.require_inactive_events & active_templates:
                     continue
                 if entry.monster_ranks and (
@@ -777,6 +784,12 @@ class EventCatalog:
                 chance = loot.chances.get(
                     raw_rank,
                     loot.chances.get(rank, loot.chances.get("monster", 0.0)),
+                )
+                chance *= max(
+                    0.0,
+                    1.0 + float(drop_chance_bonus_by_item.get(
+                        loot.item_id.casefold(), 0.0,
+                    )),
                 )
                 if entry.scale_chance_with_difficulty:
                     chance *= max(0.0, float(privileged_difficulty_multiplier))
@@ -1248,7 +1261,7 @@ def _event_loot_lists(
 def _map_loot_lists(
     path: str, item_rows: Mapping[str, Mapping[str, object]],
 ) -> dict[str, tuple[MapLootEntry, ...]]:
-    """Parse drops tied to a map rather than a scheduled event."""
+    """Parse map drops, including optional difficulty and event-state gates."""
 
     if not path:
         return {}
@@ -1328,6 +1341,14 @@ def _map_loot_lists(
                 for value in inactive_event_values
                 if str(value).strip()
             )
+            active_event_values = entry.get("require_active_events") or ()
+            if isinstance(active_event_values, str):
+                active_event_values = (active_event_values,)
+            active_events = frozenset(
+                str(value).casefold()
+                for value in active_event_values
+                if str(value).strip()
+            )
             if not templates and not monster_regions and not monster_ranks:
                 raise ValueError(
                     f"map loot entry {item_id!r} needs monster, region, or rank scope"
@@ -1356,6 +1377,10 @@ def _map_loot_lists(
                 difficulty_amounts=difficulty_amounts,
                 item_options_by_class=MappingProxyType(class_options),
                 require_class_option=bool(entry.get("require_class_option")),
+                minimum_difficulty=max(
+                    0, int(entry.get("minimum_difficulty", 0))
+                ),
+                require_active_events=active_events,
                 require_inactive_events=inactive_events,
             ))
         result[_map_key(map_id)] = tuple(parsed)

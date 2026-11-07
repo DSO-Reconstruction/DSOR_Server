@@ -322,6 +322,34 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # Defeat the Undefeatable event loot. The client descriptions provide
+    # explicit odds for the hero bag; the random doll body has no odds, so its
+    # ten eligible bodies are selected evenly (Nian is explicitly excluded).
+    "invincible_hero_bag": (
+        ("pet_eyeball_purple", 1, 0.5),
+        ("costume_effect_the_eye_of_fear", 1, 3.0),
+        ("pet_cyclops_blue", 1, 1.5),
+        ("perforated_dragon_tooth", 100, 30.0),
+        ("ancestor_treasure_map", 1, 10.0),
+        ("e_hon_pvp_boost", 1, 15.0),
+        ("e_bos_02_chest_key", 5, 20.0),
+        ("e_chr_2012_event_currency", 150, 20.0),
+    ),
+    "lootbox_event_dtu_random_dollbody": tuple(
+        (template_id, 1, 10.0)
+        for template_id in (
+            "pet_ingredient_body_heredur",
+            "pet_ingredient_body_bloodmage",
+            "pet_ingredient_body_arachna",
+            "pet_ingredient_body_karabossa",
+            "pet_ingredient_body_magotina",
+            "pet_ingredient_body_bearach",
+            "pet_ingredient_body_asar",
+            "pet_ingredient_body_medusa",
+            "pet_ingredient_body_nefertari",
+            "item_ingredient_vamok_dolls_body",
+        )
+    ),
     "event_fools_lucky_gift": (
         ("mythical_mount_skeleton_dragon_01_3d", 1, 12.5),
         ("epicmount_ghost_02_1d", 1, 12.5),
@@ -1334,7 +1362,10 @@ def _authored_chest_contents(
 ) -> ChestContents | None:
     """Give one of the boxes in ``_AUTHORED_CHEST_CONTENTS``."""
 
-    if box_definition.template_id == "e_ful_02_small_rewardchest":
+    if box_definition.template_id in {
+        "e_ful_02_small_rewardchest",
+        "e_ful_02_big_rewardchest",
+    }:
         if int(player_level) < int(box_definition.required_level):
             raise ValueError(
                 f"container {box_definition.template_id!r} requires level "
@@ -1398,20 +1429,27 @@ def _authored_chest_contents(
                 "dwarf_unique_weaponmod_fullmoon_set",
             ),
         }
-        reward_choices = (
-            chooser.choice(blood_rune_items[class_name]),
-            chooser.choice(wolf_slayer_items[class_name]),
-            "e_ful_02_costume_bloodwhirl",
-            "e_ful_02_emote_moonwalk",
-            "epicmount_wolf_black",
+        # The reward chest always gives one class-specific Blood Rune or
+        # Wolf Slayer item, plus one cosmetic reward. These are two separate
+        # draws; combining both groups into one choice left one reward out.
+        reward_templates = (
+            chooser.choice((
+                *blood_rune_items[class_name],
+                *wolf_slayer_items[class_name],
+            )),
+            chooser.choice((
+                "e_ful_02_costume_bloodwhirl",
+                "e_ful_02_emote_moonwalk",
+                "epicmount_wolf_black",
+            )),
         )
-        reward_template = chooser.choice(reward_choices)
         return ChestContents(
             box_template_id=box_definition.template_id,
             source="fullmoon_reward_chest",
-            rewards=(ChestReward(
-                _definition(static_database_path, reward_template), 1,
-            ),),
+            rewards=tuple(
+                ChestReward(_definition(static_database_path, template_id), 1)
+                for template_id in reward_templates
+            ),
             used_tooltip_mapping=False,
         )
 

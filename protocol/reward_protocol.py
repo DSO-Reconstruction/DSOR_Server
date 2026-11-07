@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
+    DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS,
+    DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY,
+    DEFEAT_UNDEFEATABLE_HERO_BAG_PRODUCT_KEY,
+    DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY,
+    DEFEAT_UNDEFEATABLE_LAVA_MATERIAL_PRODUCT_KEY,
+    DEFEAT_UNDEFEATABLE_ROAD_TO_TRIUMPH_PRODUCT_KEY,
+    DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
     EVENT_ATTIRE_PRODUCT_KEYS,
     FULL_MOON_ATTIRE_PRODUCT_KEY,
@@ -76,6 +83,7 @@ class OCPBookingReward:
     item_id: str
     amount: int
     rarity: str = 'Common'
+    bundle_items: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -258,6 +266,12 @@ def resolve_ocp_booking_reward(
                 f'Event attire is not available for class {class_name or class_id!r}'
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
+    bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
+    if bundle_reward is not None:
+        item_id, amount = bundle_reward[0]
+        return OCPBookingReward(
+            offer_id, item_id, amount, bundle_items=bundle_reward
+        )
     attire_item_id = (
         LEGACY_FULL_MOON_ATTIRE_PRODUCT_ITEMS.get(offer_id)
         if allow_legacy else None
@@ -335,14 +349,21 @@ def ocp_booking_notification_payloads(
     values = tuple(rewards)
     if not values:
         raise ValueError('OCP booking notification must contain a reward')
+    items = tuple(
+        (item_id, amount, reward.rarity)
+        for reward in values
+        for item_id, amount in (
+            reward.bundle_items or ((reward.item_id, reward.amount),)
+        )
+    )
     transaction_id = int.from_bytes(guid[:4], 'little') & 0x7FFFFFFF
     return {
         'ingameTransactionId': transaction_id or 1,
-        'templates': ';'.join(str(reward.item_id) for reward in values),
-        'amounts': ';'.join(str(reward.amount) for reward in values),
+        'templates': ';'.join(str(item_id) for item_id, _, _ in items),
+        'amounts': ';'.join(str(amount) for _, amount, _ in items),
         'rarities': ';'.join(
-            'None' if reward.item_id == 'characterStyleEdit' else reward.rarity
-            for reward in values
+            'None' if item_id == 'characterStyleEdit' else rarity
+            for item_id, _, rarity in items
         ),
         # The client routes this authored package id to its special
         # CharacterStyleEdit booking UI. addItems must remain true: false is
@@ -648,17 +669,40 @@ LOCAL_OCP_OFFERS = (
         7, 99.90, False, "€",
         "7_characterStyleEdit_1.0000_0_NONE", "", "",
     ),
-    # Reuse the native package row/title. The server grants only the active
-    # character's matching attire when this single €9.99 offer is purchased.
+    # Reuse native package rows/titles. Event attire grants only the active
+    # character's matching costume; the Defeat the Undefeatable offers grant
+    # their corresponding event reward item after purchase confirmation.
     OCPOffer(
         180_201, 9.99, False, "€",
         FULL_MOON_ATTIRE_PRODUCT_KEY, "", "",
     ),
-    # Reuse the native New Moon package and grant only the active character's
-    # matching attire for this €9.90 offer.
     OCPOffer(
         180_202, 9.90, False, "€",
         NEW_MOON_ATTIRE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_203, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_204, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_205, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_LAVA_MATERIAL_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_206, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_HERO_BAG_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_207, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_ROAD_TO_TRIUMPH_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_208, 9.90, False, "€",
+        DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY, "", "",
     ),
 )
 

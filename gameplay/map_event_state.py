@@ -38,6 +38,7 @@ from dso_server.gameplay.local_map_state import (
     LOCAL_PROP_ID_BASE,
     active_client_instance_guid_overrides,
     effective_event_set_declarations,
+    effective_spawn_event_set_row,
     local_prop_actor_base,
     map_database_path,
 )
@@ -193,6 +194,40 @@ def _dungeon_resource_category(definition: MapPropDefinition) -> str:
 PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS = frozenset({
     "pw_run_lootchest", "pw_run_lootchest_gold",
 })
+DTU_ARENA_REWARD_CHEST_IDS = frozenset({
+    "e_bos_02_reward_chest_01",
+    "e_bos_02_golden_chest_01",
+})
+DTU_CIRCUS_SUPERCHEST_PREFIX = "e_bos_02_super_chest"
+_DTU_BOSS_MAP_ALIASES = {
+    "e_bos_herald_pw_boss": "e_bos_02_herald_01",
+    "e_bos_sigrismarr_pw_boss": "e_bos_02_sigrismarr_01",
+    "e_bos_khalys_pw_boss": "e_bos_02_khalys_01",
+}
+
+
+def is_dtu_boss_arena_map(map_id: object) -> bool:
+    """Whether a map id names one of the DTU final-boss arenas."""
+
+    map_name = map_key(map_id)
+    map_name = _DTU_BOSS_MAP_ALIASES.get(map_name, map_name)
+    return (
+        map_name.startswith("e_bos_02_")
+        or map_name == "e_bos_grimmag_pw_boss"
+    )
+
+
+def _is_dtu_difficulty_chest(map_id: str, definition: MapPropDefinition) -> bool:
+    map_name = map_key(map_id)
+    map_name = _DTU_BOSS_MAP_ALIASES.get(map_name, map_name)
+    template = str(definition.template_id or "").casefold()
+    instance = str(definition.instance_id or "").casefold()
+    if map_name == "e_bos_arena_01":
+        return template.startswith(DTU_CIRCUS_SUPERCHEST_PREFIX)
+    return is_dtu_boss_arena_map(map_name) and (
+        template in DTU_ARENA_REWARD_CHEST_IDS
+        or instance in DTU_ARENA_REWARD_CHEST_IDS
+    )
 
 SERVER_SIGNAL_TYPES = frozenset({"serversignal", "mapsignal"})
 CLIENT_REPORTED_SIGNAL_TYPES = frozenset({"clienttoserversignal", "clientsignal"})
@@ -524,6 +559,63 @@ def _load_signal_catalog(
                 by_start.setdefault(signal, []).append(definition.key)
             for signal in definition.end_signals:
                 by_end.setdefault(signal, []).append(definition.key)
+
+    # The extracted event table assigns the Kingshill exit to the new DTU
+    # boss rooms in its kill signal, but omits those maps from the consuming
+    # event and still lists several retired monster IDs. On this server the
+    # SpawnPoint NpcIds below are the actors actually created and killed.
+    dtu_boss_templates = frozenset({
+        "g0012_boss_07_balor",
+        "f4203_boss_destruktor_06_normal_scale",
+        "c2310_boss_snake_scale",
+        "a0604_normal_g_herold_scale",
+        "a0404_normal_boss_cultistleader_scale",
+        "b1203_normal_boss_highpriest_scale",
+        "e_dra_03_boss_dragan",
+        "e_bos_02_boss_dragan",
+        "e_bos_02_gwenfara_phase_02",
+        "h0008_boss_djinn_lamp_phase_04",
+    })
+    for signal_id in (
+        "e_bos_02_exit_kingshill_start_01",
+        "BOSS_death_start_signal",
+    ):
+        rule = rules_by_id.get(signal_id.casefold())
+        if rule is None:
+            continue
+        updated = replace(
+            rule,
+            params=tuple(dict.fromkeys((
+                *rule.params,
+                *sorted(dtu_boss_templates),
+            ))),
+            maps=(
+                rule.maps | frozenset({
+                    "e_bos_02_djinn_01",
+                    "e_bos_02_dragan_01",
+                    "e_bos_02_gwenfara_01",
+                })
+                if signal_id.casefold() == "e_bos_02_exit_kingshill_start_01"
+                else rule.maps
+            ),
+        )
+        rules_by_id[signal_id.casefold()] = updated
+        rules_by_type[rule.event_type] = [
+            updated if candidate.signal_id.casefold() == signal_id.casefold()
+            else candidate
+            for candidate in rules_by_type.get(rule.event_type, ())
+        ]
+
+    exit_event = events.get("e_bos_02_exit_to_kingshill_01")
+    if exit_event is not None:
+        events[exit_event.key] = replace(
+            exit_event,
+            maps=exit_event.maps | frozenset({
+                "e_bos_02_djinn_01",
+                "e_bos_02_dragan_01",
+                "e_bos_02_gwenfara_01",
+            }),
+        )
     return MapSignalCatalog(
         rules_by_event_type=MappingProxyType({
             key: tuple(values) for key, values in rules_by_type.items()
@@ -726,7 +818,12 @@ def selected_map_difficulty(player) -> int:
     difficulty = int(getattr(player, "gameplay_map_difficulty", 0) or 0)
     if difficulty <= 0:
         runtime = getattr(player, "gameplay_map_event_runtime", None)
-        difficulty = int(getattr(runtime, "scaling_difficulty", 0) or 0)
+        runtime_difficulty = getattr(runtime, "map_difficulty", None)
+        difficulty = int(
+            runtime_difficulty
+            if runtime_difficulty is not None
+            else getattr(runtime, "scaling_difficulty", 0) or 0
+        )
     return max(0, difficulty)
 
 
@@ -1330,10 +1427,18 @@ def _load_map_event_content(
             FROM _Instance_SpawnPoint
             WHERE TRIM(COALESCE(NpcId, ''))<>''
               AND COALESCE(AlliedToPlayer, 0)=0
-              AND COALESCE(EventSetRow, -1)>=0
+              AND (COALESCE(EventSetRow, -1)>=0 OR
+                   (lower(?)='e_bos_02_teleportarium_01'
+                    AND rowid=1))
             ORDER BY rowid
-            """
+            """,
+            (str(map_id),),
         ):
+            event_set_row = effective_spawn_event_set_row(
+                map_id, row_id, template_id, event_set_row,
+            )
+            if event_set_row < 0:
+                continue
             try:
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
@@ -1703,6 +1808,48 @@ def _load_map_event_content(
             replacements.get(prop.prop_id, prop) for prop in props
         ]
 
+    # DTU event chests live in difficulty MapVariation nodes. Their parent
+    # indices are retained in the map database, and the fallback catalog
+    # covers deployments without the optional .mvr sidecar.
+    normalized_map_id = map_key(map_id)
+    if (
+        normalized_map_id == "e_bos_arena_01"
+        or is_dtu_boss_arena_map(normalized_map_id)
+    ):
+        variations = map_difficulty_variations(path)
+        normalized_props = []
+        for prop in props:
+            is_circus_summon = (
+                normalized_map_id == "e_bos_arena_01"
+                and prop.instance_id.casefold().startswith("e_bos_arena_")
+            )
+            if (
+                _is_dtu_difficulty_chest(map_id, prop)
+                and int(prop.parent_node_index) in variations
+            ):
+                variation_group, variation_difficulty = variations[
+                    int(prop.parent_node_index)
+                ]
+                prop = replace(
+                    prop,
+                    variation_group=variation_group,
+                    variation_difficulty=variation_difficulty,
+                    # DTU reward chests and Circus superchests are gated
+                    # scene entities. Their authored GUIDs are not present
+                    # in the loaded client scene, so PropInfo with those
+                    # GUIDs is silently discarded instead of creating a
+                    # chest at this map transform.
+                    instance_guid=ZERO_GUID,
+                )
+            elif is_circus_summon:
+                # These event-controlled scene objects were absent in the
+                # client's arena scene, so a GUID lookup drops PropInfo and
+                # the player cannot click the boss summoning altar. Force the
+                # client to instantiate the server-owned prop at its transform.
+                prop = replace(prop, instance_guid=ZERO_GUID)
+            normalized_props.append(prop)
+        props = normalized_props
+
     return MapEventContent(
         map_id=str(map_id),
         event_sets=MappingProxyType(event_sets),
@@ -1780,6 +1927,9 @@ class MapEventRuntime:
     parallel_world_gatekeepers_defeated: set[str] = field(default_factory=set)
     monster_level: int | None = None
     scaling_difficulty: int = 0
+    # The access difficulty selects map variations; monster scaling is a
+    # separate value and can remain zero on a high-tier arena route.
+    map_difficulty: int | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     # Serialize event transitions through publication without holding the
     # short-lived state lock during packet construction or network delivery.
@@ -1816,6 +1966,10 @@ class MapEventRuntime:
     # Parallel-world arena reward chest props are visible on entry but must
     # reject interaction until the arena boss dies.
     boss_reward_chests_unlocked: set[str] = field(default_factory=set)
+    # Circus opens one randomly selected boss-map gate after four distinct
+    # summoned bosses have been defeated in this arena instance.
+    circus_bosses_defeated: set[str] = field(default_factory=set)
+    circus_random_exit_guid: bytes | None = None
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
     # Monotonic animation anchors for rotating tower beams, shared by every
     # player in this map instance so server hit checks agree with one another.
@@ -2019,7 +2173,10 @@ class MapEventRuntime:
     ) -> tuple[MapPropDefinition, ...]:
         """Reduce overlapping spawn-point props to the one this instance shows.
 
-        Scene objects and non-chest spawn props pass through untouched.
+        DTU difficulty-variant chests are first reduced to the instance tier.
+        Other scene objects and non-chest spawn props pass through untouched.
+        Circus boss summon altars sharing an active EventSet/location are
+        reduced to one stable random choice for this map instance.
         Spawn-point chests within
         ``CHEST_LOCATION_RADIUS`` of each other in the same EventSet form one
         location; ``normal_*`` templates are kept only on tier 0 and
@@ -2032,6 +2189,43 @@ class MapEventRuntime:
         subset before the other prop selections run.
         """
 
+        definitions = tuple(definitions)
+        # DTU arena reward chests and Circus superchests are authored once
+        # for every difficulty tier at the same locations. Keep only the
+        # selected MapVariation before registering/publishing them; the other
+        # tiers point at scene GUIDs that are not instantiated by the client.
+        varied_chests = tuple(
+            definition for definition in self.content.props
+            if definition.variation_group
+            and _is_dtu_difficulty_chest(self.map_id, definition)
+        )
+        if varied_chests:
+            tiers_by_group: dict[int, set[int]] = {}
+            for definition in varied_chests:
+                tiers_by_group.setdefault(
+                    int(definition.variation_group), set(),
+                ).add(int(definition.variation_difficulty))
+            chosen = {
+                group: selected_variation_tier(
+                    tiers,
+                    max(0, int(
+                        self.scaling_difficulty
+                        if self.map_difficulty is None
+                        else self.map_difficulty
+                    )),
+                )
+                for group, tiers in tiers_by_group.items()
+            }
+            definitions = tuple(
+                definition for definition in definitions
+                if not (
+                    definition.variation_group
+                    and _is_dtu_difficulty_chest(self.map_id, definition)
+                )
+                or chosen.get(int(definition.variation_group))
+                == int(definition.variation_difficulty)
+            )
+
         if self.content.is_dungeon:
             definitions = tuple(
                 definition for definition in definitions
@@ -2042,6 +2236,48 @@ class MapEventRuntime:
                     not in self._selected_dungeon_resource_prop_ids
                 )
             )
+        if map_key(self.map_id) == "e_bos_arena_01":
+            summon_props = tuple(
+                definition for definition in definitions
+                if definition.instance_id.casefold().startswith(
+                    "e_bos_arena_",
+                )
+            )
+            if summon_props:
+                groups: list[
+                    tuple[int, tuple[float, float, float], list[MapPropDefinition]]
+                ] = []
+                for definition in summon_props:
+                    for row, anchor, members in groups:
+                        if (
+                            row == int(definition.event_set_row)
+                            and math.hypot(
+                                float(definition.position[0]) - anchor[0],
+                                float(definition.position[2]) - anchor[2],
+                            ) <= 0.5
+                        ):
+                            members.append(definition)
+                            break
+                    else:
+                        groups.append((
+                            int(definition.event_set_row),
+                            tuple(float(value) for value in definition.position),
+                            [definition],
+                        ))
+                chosen_prop_ids = set()
+                for row, anchor, members in groups:
+                    chosen = random.Random(
+                        f"{self.instance_id}:circus-summon:{row}:"
+                        f"{anchor[0]:.2f}:{anchor[2]:.2f}"
+                    ).choice(members)
+                    chosen_prop_ids.add(int(chosen.prop_id))
+                definitions = tuple(
+                    definition for definition in definitions
+                    if not definition.instance_id.casefold().startswith(
+                        "e_bos_arena_",
+                    )
+                    or int(definition.prop_id) in chosen_prop_ids
+                )
         selected = []
         locations = []
         for definition in self._select_chest_variants(definitions):
@@ -2298,8 +2534,12 @@ class MapEventRuntime:
         selected = []
         spots = []
         for definition in definitions:
-            if definition.kind != "scene" or not has_prop_loot(
-                definition.loot_list_id or definition.chest_id
+            is_dtu_reward_chest = _is_dtu_difficulty_chest(
+                self.map_id, definition,
+            )
+            if definition.kind != "scene" or not (
+                has_prop_loot(definition.loot_list_id or definition.chest_id)
+                or is_dtu_reward_chest
             ):
                 selected.append(definition)
                 continue
@@ -2319,13 +2559,20 @@ class MapEventRuntime:
                 selected.append(members[0])
                 continue
             members.sort(key=lambda value: value.row_id)
-            weights = [
-                _CHEST_VARIANT_WEIGHTS.get(
-                    min(int(value.key_amount), 5) if value.key_id else 0,
-                    _CHEST_VARIANT_WEIGHTS[5],
-                )
+            dtu_reward_chests = all(
+                _is_dtu_difficulty_chest(self.map_id, value)
                 for value in members
-            ]
+            )
+            weights = (
+                [1] * len(members)
+                if dtu_reward_chests else [
+                    _CHEST_VARIANT_WEIGHTS.get(
+                        min(int(value.key_amount), 5) if value.key_id else 0,
+                        _CHEST_VARIANT_WEIGHTS[5],
+                    )
+                    for value in members
+                ]
+            )
             selected.append(random.Random(
                 f"{self.instance_key}:chest:{row}:{anchor[0]:.1f}:{anchor[2]:.1f}"
             ).choices(members, weights=weights)[0])
@@ -2389,4 +2636,5 @@ __all__ = [
     "load_map_event_content",
     "load_map_signal_catalog",
     "map_key",
+    "is_dtu_boss_arena_map",
 ]

@@ -715,25 +715,28 @@ class PlayerProjectileService:
                         f"{type(exc).__name__}: {exc}"
                     )
                 if loot_generation is not None:
-                    with s.flow_lock:
-                        if generation != s.gameplay_chase_generation:
-                            return
-                        s.gameplay_next_item_id = max(
-                            s.gameplay_next_item_id,
-                            loot_generation.next_item_id,
-                        )
+                    with s.gameplay_world_loot_position_lock:
+                        drops = ()
                         if s.gameplay_presence_callback is None:
-                        # Multiplayer presence installs the authoritative
-                        # generation into every viewer, including the source.
-                        # Pre-inserting it here allowed an auto-pickup to
-                        # remove an item before presence inserted it a second
-                        # time, respawning the same runtime id.
-                            s.gameplay_world_loot.update(
-                                {
-                                    drop.item.item_id: drop
-                                    for drop in loot_generation.drops
-                                }
+                            # Multiplayer presence installs the authoritative
+                            # generation into every viewer, including the source.
+                            # Pre-inserting it here allowed an auto-pickup to
+                            # remove an item before presence inserted it a second
+                            # time, respawning the same runtime id.
+                            drops = CharacterService._separate_world_loot_positions(
+                                s, loot_generation.drops,
                             )
+                        with s.flow_lock:
+                            if generation != s.gameplay_chase_generation:
+                                return
+                            s.gameplay_next_item_id = max(
+                                s.gameplay_next_item_id,
+                                loot_generation.next_item_id,
+                            )
+                            if s.gameplay_presence_callback is None:
+                                s.gameplay_world_loot.update(
+                                    {drop.item.item_id: drop for drop in drops}
+                                )
 
             resolution_label = (
                 "player-lethal-hit"

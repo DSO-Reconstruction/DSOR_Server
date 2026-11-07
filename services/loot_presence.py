@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from threading import Lock
 
 from dso_server.runtime.context import *
@@ -16,6 +17,7 @@ from dso_server.protocol.membership_protocol import (
     membership_is_active,
 )
 from dso_server.gameplay.event_system import _map_key, _tokens
+from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
 )
@@ -52,6 +54,61 @@ def mystic_cube_drop_is_eligible(session: Session) -> bool:
 
 class LootPresenceService:
     """Allocate collision-free, character-bound drops for map occupants."""
+
+    @staticmethod
+    def _separate_world_loot_positions(session: Session, drops):
+        """Spread new ground drops away from coordinates already in use.
+
+        Callers hold ``gameplay_world_loot_position_lock`` until they publish
+        the drops. Several Circus bosses can die at the same arena center, so
+        retaining each generated item's original coordinate would stack the
+        complete reward pile on top of older loot.
+        """
+
+        if _map_key(getattr(session, "gameplay_map", "")) != "e_bos_arena_01":
+            return tuple(drops)
+        with session.flow_lock:
+            occupied = [
+                tuple(float(axis) for axis in drop.item.ground_position)
+                for drop in session.gameplay_world_loot.values()
+                if getattr(drop.item, "ground_position", None) is not None
+            ]
+        placed = []
+        minimum_spacing = 0.7
+        for drop in drops:
+            position = getattr(drop.item, "ground_position", None)
+            if position is None:
+                continue
+            origin = tuple(float(axis) for axis in position)
+
+            def is_free(candidate):
+                return all(
+                    math.hypot(candidate[0] - other[0], candidate[2] - other[2])
+                    >= minimum_spacing
+                    for other in (*occupied, *placed)
+                )
+
+            selected = origin
+            if not is_free(selected):
+                found = False
+                for ring in range(1, 13):
+                    radius = 0.85 + ring * 0.55
+                    for step in range(16):
+                        angle = (step + (ring % 2) * 0.5) * (math.tau / 16)
+                        candidate = (
+                            origin[0] + math.cos(angle) * radius,
+                            origin[1],
+                            origin[2] + math.sin(angle) * radius,
+                        )
+                        if is_free(candidate):
+                            selected = candidate
+                            found = True
+                            break
+                    if found:
+                        break
+            drop.item.ground_position = selected
+            placed.append(selected)
+        return tuple(drops)
 
     @staticmethod
     def _guaranteed_worldboss_ingredient(
@@ -244,6 +301,20 @@ class LootPresenceService:
             difficulty_factors = loot_cache.difficulty_drop_factors.get(
                 int(map_difficulty), (1.0, 1.0)
             )
+            heart_lava_chance_bonus = 0.0
+            if status_effects:
+                status_effect_ids = load_status_runtime_catalog(
+                    encounter.static_database_path
+                ).effect_ids
+                active_effect_ids = {
+                    int(effect.effect_id) for effect in status_effects
+                }
+                if status_effect_ids.get("Lava_ess_potion_drop_200_effect") in active_effect_ids:
+                    heart_lava_chance_bonus = 2.0
+                if status_effect_ids.get("Lava_ess_potion_drop_500_effect") in active_effect_ids:
+                    heart_lava_chance_bonus = max(
+                        heart_lava_chance_bonus, 5.0,
+                    )
             map_loot = event_catalog.map_loot_drops(
                 map_id=event_map_id,
                 map_aliases=event_map_aliases,
@@ -258,6 +329,10 @@ class LootPresenceService:
                 map_difficulty=map_difficulty,
                 privileged_difficulty_multiplier=float(
                     difficulty_factors[1]
+                ),
+                drop_chance_bonus_by_item=(
+                    {"item_ingredient_mercenary_heartlava": heart_lava_chance_bonus}
+                    if heart_lava_chance_bonus else {}
                 ),
             )
             if profile is not None and profile.rank_kind.casefold() == "worldboss":

@@ -962,6 +962,9 @@ class Session:
         self.gameplay_currency_ic = 0
         self.gameplay_next_item_id = RUNTIME_ITEM_ID_BASE
         self.gameplay_world_loot = {}
+        # Serialize loot placement and publication for this player so
+        # simultaneous boss deaths cannot reserve the same ground position.
+        self.gameplay_world_loot_position_lock = threading.Lock()
         # GameWorld/ItemManager registrations are local to each client.  Keep
         # the authoritative map loot separate from the subset that has
         # actually been announced to this connection so re-entering vicinity
