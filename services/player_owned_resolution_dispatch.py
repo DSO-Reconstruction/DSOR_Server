@@ -244,21 +244,26 @@ class PlayerOwnedResolutionDispatchService:
             )
             if not loot_generations:
                 continue
-            with owner_session.flow_lock:
-                owner_session.gameplay_next_item_id = max(
-                    owner_session.gameplay_next_item_id,
-                    *(
-                        generation.next_item_id
-                        for generation in loot_generations
-                    ),
-                )
-                owner_session.gameplay_world_loot.update(
-                    {
-                        drop.item.item_id: drop
+            with owner_session.gameplay_world_loot_position_lock:
+                drops = CharacterService._separate_world_loot_positions(
+                    owner_session,
+                    tuple(
+                        drop
                         for generation in loot_generations
                         for drop in generation.drops
-                    }
+                    ),
                 )
+                with owner_session.flow_lock:
+                    owner_session.gameplay_next_item_id = max(
+                        owner_session.gameplay_next_item_id,
+                        *(
+                            generation.next_item_id
+                            for generation in loot_generations
+                        ),
+                    )
+                    owner_session.gameplay_world_loot.update(
+                        {drop.item.item_id: drop for drop in drops}
+                    )
             CharacterService._reconcile_world_loot_visibility(
                 owner_session,
                 label="world-loot-spawn",

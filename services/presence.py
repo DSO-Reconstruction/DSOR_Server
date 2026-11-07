@@ -852,17 +852,18 @@ class PresenceService:
                             )
                         if viewer_generation is None or not viewer_generation.drops:
                             continue
-                        with viewer.flow_lock:
-                            viewer.gameplay_next_item_id = max(
-                                viewer.gameplay_next_item_id,
-                                viewer_generation.next_item_id,
+                        with viewer.gameplay_world_loot_position_lock:
+                            drops = CharacterService._separate_world_loot_positions(
+                                viewer, viewer_generation.drops,
                             )
-                            viewer.gameplay_world_loot.update(
-                                {
-                                    drop.item.item_id: drop
-                                    for drop in viewer_generation.drops
-                                }
-                            )
+                            with viewer.flow_lock:
+                                viewer.gameplay_next_item_id = max(
+                                    viewer.gameplay_next_item_id,
+                                    viewer_generation.next_item_id,
+                                )
+                                viewer.gameplay_world_loot.update(
+                                    {drop.item.item_id: drop for drop in drops}
+                                )
                         viewer_received_loot = True
                 try:
                     if visible_dispatches:

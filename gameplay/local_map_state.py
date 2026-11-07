@@ -516,6 +516,28 @@ def effective_event_set_declarations(
     return str(declarations or "")
 
 
+def effective_spawn_event_set_row(
+    map_id: str, row_id: int, template_id: str, event_set_row: int,
+) -> int:
+    """Apply server-owned encounter gates missing from extracted map data.
+
+    Teleportarium's Destructor is the only one of the classic DTU boss rooms
+    whose boss SpawnPoint is exported with ``EventSetRow=-1``. Its sibling
+    rooms place the same entrance boss behind EventSet 159 (``BOSS_spawn``),
+    which opens when the player reaches ``BOSS_start_trigger``. Keep the
+    Destructor on that same entrance lifecycle without editing client files.
+    """
+
+    if (
+        str(map_id).casefold() == "e_bos_02_teleportarium_01"
+        and int(row_id) == 1
+        and str(template_id).casefold() == "f4203_boss_destruktor_06_normal_scale"
+        and int(event_set_row) < 0
+    ):
+        return 159
+    return int(event_set_row)
+
+
 def event_set_enabled(declarations: str, active_flags) -> bool:
     """Positive EventFlags are alternative activation influences.
 
@@ -972,6 +994,20 @@ def load_local_map_exits(
     database = _open_read_only(path)
     try:
         exits = []
+        circus_exit_event_set_ids = {}
+        if str(map_id).casefold() == "e_bos_arena_01":
+            # Circus InteractExit rows store EventSetRow as the EventSets
+            # table's SQLite rowid, while every other map-local event path
+            # uses its authored Id. Translate once so the exit gates line up
+            # with the level-entry event flags (for example level_50 is Id
+            # 643 but its exits carry rowid 644).
+            circus_exit_event_set_ids = {
+                int(rowid): int(event_set_id)
+                for rowid, event_set_id in database.execute(
+                    "SELECT rowid, Id FROM _Instance_EventSets"
+                )
+                if str(event_set_id).lstrip("-").isdigit()
+            }
         enabled_event_sets = _enabled_event_set_ids(
             database,
             active_local_map_event_flags(map_id, active_event_flags),
@@ -986,7 +1022,10 @@ def load_local_map_exits(
             ORDER BY rowid
             """
         ):
-            event_set_row = int(row[9] if row[9] is not None else -1)
+            raw_event_set_row = int(row[9] if row[9] is not None else -1)
+            event_set_row = circus_exit_event_set_ids.get(
+                raw_event_set_row, raw_event_set_row,
+            )
             destination_map_id = str(row[3] or "").strip()
             if (
                 event_set_row >= 0
@@ -1456,6 +1495,10 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Defeat the Undefeatable's random boss gates are in the exit catalog but
+    # missing from Circus's loaded scene. The event runtime selects exactly
+    # one active exit; materialize that selected boss gate by its GUID.
+    "e_bos_arena_01": ("e_bos_02_",),
     # Varholm's silver-mine exits are present in _Instance_InteractExit but
     # their gate entities are absent from the loaded scene. The Bloodmoon
     # portal is also event-created; materialize it only when Vargulf's gate

@@ -40,6 +40,7 @@ from dso_server.gameplay.local_map_state import (
     MapCoordinateFrame,
     _enabled_event_set_ids,
     active_local_map_event_flags,
+    effective_spawn_event_set_row,
     load_map_coordinate_frame,
     load_local_spawn_position,
     map_database_path,
@@ -3328,6 +3329,9 @@ def _load_dynamic_monster_encounter(
                     static_database_path, candidate, 0,
                 ) is not None:
                     template_id = candidate
+            event_set = effective_spawn_event_set_row(
+                map_id, row_id, template_id, event_set,
+            )
             # Mount Suvius's Gorgon guardians are authored as blank-NpcId
             # SpawnPoints whose StateObject templates name them as the result
             # of clicking a bust. Keep them out of the map-entry population;

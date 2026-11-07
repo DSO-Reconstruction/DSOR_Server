@@ -61,6 +61,7 @@ from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
 from dso_server.gameplay.map_event_state import (
     BLOODSHED_DIFFICULTY,
     CLIENT_REPORTED_SIGNAL_TYPES,
+    DTU_ARENA_REWARD_CHEST_IDS,
     GatedSpawnRow,
     NEW_MOON_RECALL_ALTAR_IDS,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
@@ -73,6 +74,7 @@ from dso_server.gameplay.map_event_state import (
     SignalContext,
     TriggerVolumeDefinition,
     ZERO_GUID,
+    is_dtu_boss_arena_map,
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
@@ -889,6 +891,82 @@ _BLOOD_CHEST_GEM_TEMPLATES = (
 )
 _BLOOD_CHEST_LOOT_LIST = "chest_lootlist_bloodshed"
 
+# The DTU superchest tiers use authored, fixed item lists selected below by
+# the static chest instance suffix (01-04). Wooden shares the bronze rewards.
+_DTU_SUPERCHEST_POOLS = {
+    "chest_lootlist_e_bos_superchest_wood": "bronze",
+    "chest_lootlist_e_bos_superchest_copper": "bronze",
+    "chest_lootlist_e_bos_superchest_silver": "silver",
+    "chest_lootlist_e_bos_superchest_gold": "gold",
+}
+_DTU_CLASS_UNIQUES = {
+    "warrior": (
+        "warrior_unique_amulet_undefeatables_set",
+        "warrior_unique_weaponmodifier_undefeatables",
+    ),
+    "mage": (
+        "mage_unique_amulet_undefeatables_set",
+        "mage_unique_weaponmodifier_undefeatables",
+    ),
+    "ranger": (
+        "ranger_unique_amulet_undefeatables_set",
+        "ranger_unique_weaponmodifier_undefeatables",
+    ),
+    "dwarf": (
+        "dwarf_unique_amulet_undefeatables_set",
+        "dwarf_unique_weaponmodifier_undefeatables",
+    ),
+}
+_DTU_CLASS_ADORNMENTS = {
+    class_name: f"{class_name}_unique_weaponmodifier_undefeatables"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_GUARD_CLOAKS = {
+    class_name: f"{class_name}_base_backitem_defense_crafted"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_STRENGTH_CLOAKS = {
+    class_name: f"{class_name}_base_backitem_offense_crafted"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_UNDEFEATABLE_CLOAKS = {
+    class_name: f"{class_name}_unique_backitem_e_bos"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_PANDORA_AMULETS = {
+    class_name: f"{class_name}_unique_amulet_undefeatables_set"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_SILVER_GEAR = {
+    class_name: (
+        f"{class_name}_basic_gloves_02",
+        f"{class_name}_basic_helmet_02",
+        f"{class_name}_basic_shoulders_02",
+        "all_basic_amulet_02",
+    )
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_HEROIC_GEAR = {
+    class_name: _DTU_CLASS_SILVER_GEAR[class_name]
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLASS_SET_WEAPONMODS = {
+    class_name: f"{class_name}_unique_weaponmodifier_undefeatables_set"
+    for class_name in ("warrior", "mage", "ranger", "dwarf")
+}
+_DTU_CLOAK_INGREDIENTS = tuple(
+    f"boss_ingredient_dtu_rarity_{rarity:02d}"
+    for rarity in range(1, 6)
+)
+_DTU_PETS = (
+    "e_bos_01_pet_heredur",
+    "e_bos_01_pet_heredur_uncommon",
+    "e_bos_01_pet_heredur_rare",
+    "e_bos_01_pet_heredur_epic",
+    "e_bos_02_pet_bearach",
+    "e_bos_02_pet_medusa",
+)
+
 # Parallel World reward chests only drop the unupgraded (Common) jewels that
 # belong to this mode. The two Flower Jewels are class-specific, while the
 # other four are shared across every class.
@@ -973,7 +1051,10 @@ def _session_game_tick(s: Session) -> int:
     return int(getattr(s, "gameplay_chase_server_tick", 0) or 0) & 0xFFFFFFFF
 
 
-def _send_prop_info(viewer: Session, states, *, label: str) -> None:
+def _send_prop_info(
+    viewer: Session, states, *, label: str,
+    filter_map_variations: bool = True,
+) -> None:
     """Retail creates and refreshes mid-map props with PropInfo, never NewProp.
 
     Quest-controlled props are filtered per viewer (services/quests.py), and
@@ -981,10 +1062,12 @@ def _send_prop_info(viewer: Session, states, *, label: str) -> None:
     overlapping authoring variants do not stack in one scene.
     """
 
-    states = tuple(
-        state for state in states
-        if prop_visible_to_player(state.definition, viewer)
-    )
+    states = tuple(states)
+    if filter_map_variations:
+        states = tuple(
+            state for state in states
+            if prop_visible_to_player(state.definition, viewer)
+        )
     personalized = tuple(_prop_state_for_viewer(viewer, state) for state in states)
     _send_prop_info_entries(
         viewer, CharacterService._quest_prop_entries(viewer, personalized), label=label,
@@ -1663,7 +1746,7 @@ class MapEventService:
 
     def _attach_map_event_runtime(
             self, s: Session, *, map_id: str, initial_flags,
-            monster_level, scaling_difficulty: int,
+            monster_level, scaling_difficulty: int, map_difficulty: int = 0,
             fresh_instance: bool) -> MapEventRuntime | None:
         """Join the instance's runtime, or start one for a new instance."""
 
@@ -1701,6 +1784,7 @@ class MapEventService:
                     initial_flags=flags,
                     monster_level=monster_level,
                     scaling_difficulty=int(scaling_difficulty),
+                    map_difficulty=int(map_difficulty),
                 )
                 runtime.scheduler = s.gameplay_deadline_scheduler
                 registry[key] = runtime
@@ -2005,6 +2089,20 @@ class MapEventService:
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        if (
+            map_key(runtime.map_id) == "e_bos_arena_01"
+            and kind == "playerkilledmonster"
+        ):
+            # These seven level-entry signals all match the same final arena
+            # boss. At high character levels they all fire on one kill and
+            # expose every authored gate. Circus uses its four-boss random
+            # gate progression below instead.
+            rules = tuple(
+                rule for rule in rules
+                if not rule.signal_id.casefold().startswith(
+                    "e_bos_02_boss_entry_start_lv"
+                )
+            )
         if map_key(runtime.map_id) == "pw214_mortis_boss":
             # The legacy selector names obsolete starter variants and can
             # clear after only the archers die. Count the actual wave actors.
@@ -2657,6 +2755,165 @@ class MapEventService:
             self._emit_map_signal(s, runtime, signal)
         return True
 
+    def _maybe_open_circus_random_gate(
+            self, s: Session, runtime: MapEventRuntime | None,
+            templates: tuple[str, ...],
+    ) -> None:
+        """Open one difficulty-matched Circus exit after four boss kills."""
+
+        if runtime is None or map_key(runtime.map_id) != "e_bos_arena_01":
+            return
+        boss_templates = frozenset({
+            "e_bos_02_miniboss_bloodmage",
+            "e_bos_02_miniboss_heredur_normal",
+            "e_bos_02_miniboss_arachnae_normal",
+            "e_bos_02_miniboss_magotina",
+            "e_bos_02_miniboss_karabossa",
+            "e_bos_02_miniboss_bearach_normal",
+            "e_bos_02_miniboss_horseman",
+            "e_bos_02_miniboss_nefertari",
+            "e_bos_02_miniboss_medusa_normal",
+        })
+        killed_bosses = boss_templates.intersection(
+            str(template).casefold() for template in templates
+        )
+        if not killed_bosses:
+            return
+        with runtime.lock:
+            runtime.circus_bosses_defeated.update(killed_bosses)
+            if (
+                len(runtime.circus_bosses_defeated) < 4
+                or runtime.circus_random_exit_guid is not None
+            ):
+                return
+
+        character = getattr(s, "gameplay_character", None)
+        player_level = max(1, int(getattr(character, "level", 1) or 1))
+        map_tier = max(
+            0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+        )
+        # Select the highest level-entry event for this character. Resolve its
+        # EventSet rows from the loaded map content rather than hardcoding
+        # numeric rows: the server log showed level_50 activates row 643 while
+        # the old hardcoded mapping selected exit candidates from row 644.
+        level_events = (
+            (27, "e_bos_02_level_27_boss_entry_01"),
+            (31, "e_bos_02_level_31_boss_entry_01"),
+            (37, "e_bos_02_level_37_boss_entry_01"),
+            (43, "e_bos_02_level_43_boss_entry_01"),
+            (48, "e_bos_02_level_48_boss_entry_01"),
+            (50, "e_bos_02_level_50_boss_entry_01"),
+        )
+        eligible_events = tuple(
+            event for minimum_level, event in level_events
+            if player_level >= minimum_level
+        )
+        if not eligible_events:
+            _log(
+                f"Circus random gate unavailable below level "
+                f"{level_events[0][0]} for player level {player_level}"
+            )
+            return
+        selected_event = eligible_events[-1]
+        event = runtime.catalog.event(selected_event)
+        if event is None:
+            _log(f"Circus level event {selected_event!r} is missing")
+            return
+        event_rows = frozenset(
+            int(definition.row)
+            for definition in runtime.content.event_sets_for(event.key)
+        )
+        if not event_rows:
+            _log(f"Circus level event {selected_event!r} has no EventSet")
+            return
+        try:
+            exits = tuple(
+                definition for definition in load_local_map_exits(
+                    self.static_database_path,
+                    runtime.map_id,
+                    include_inactive_event_sets=True,
+                )
+                if (
+                    int(definition.event_set_row) in event_rows
+                    and definition.destination_map_id
+                )
+            )
+        except Exception as exc:
+            _log(
+                f"Circus gate candidates unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            return
+        if not exits:
+            _log(
+                f"Circus level event {selected_event!r} EventSets "
+                f"{tuple(sorted(event_rows))} have no exits"
+            )
+            return
+
+        def destination_tier(definition):
+            suffix = str(definition.destination_map_id).rsplit("_diff_", 1)
+            if len(suffix) != 2 or not suffix[1].isdigit():
+                return None
+            return int(suffix[1])
+
+        exact_tier = tuple(
+            definition for definition in exits
+            if destination_tier(definition) == map_tier
+        )
+        tier_candidates = exact_tier or tuple(
+            definition for definition in exits
+            if destination_tier(definition) is not None
+        )
+        if not tier_candidates:
+            _log(
+                f"Circus EventSets {tuple(sorted(event_rows))} "
+                "have no tiered boss exits"
+            )
+            return
+        if not exact_tier:
+            nearest = min(
+                abs(destination_tier(definition) - map_tier)
+                for definition in tier_candidates
+            )
+            tier_candidates = tuple(
+                definition for definition in tier_candidates
+                if abs(destination_tier(definition) - map_tier) == nearest
+            )
+        unique_candidates = {
+            bytes(definition.instance_guid): definition
+            for definition in tier_candidates
+        }
+        selected_exit = random.choice(tuple(unique_candidates.values()))
+        selected_row = int(selected_exit.event_set_row)
+        with runtime.lock:
+            if runtime.circus_random_exit_guid is not None:
+                return
+            runtime.circus_random_exit_guid = bytes(
+                selected_exit.instance_guid
+            )
+        self._schedule_map_local_event_start(runtime, event)
+        # The level-entry event can be started by this same boss-kill signal
+        # before the four-boss counter chooses its gate. Its first exit refresh
+        # therefore saw no selected GUID. Publish again after selection when
+        # that authored event is already active; delayed starts will publish
+        # through their normal transition once they fire.
+        with runtime.lock:
+            event_active = event.key in runtime.active_flags()
+        if event_active:
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            self._publish_map_exits(
+                runtime, sessions, event_sets=event_rows,
+            )
+        _log(
+            f"opened one Circus boss gate after "
+            f"{len(runtime.circus_bosses_defeated)} boss kills: "
+            f"{selected_exit.exit_id} -> {selected_exit.destination_map_id} "
+            f"(difficulty {map_tier}, EventSet {selected_row})"
+        )
+
     def _on_monsters_killed(self, s: Session, monsters) -> None:
         monsters = tuple(monsters)
         from dso_server.services.monster_summons import cleanup_monster_summons
@@ -2739,6 +2996,7 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        self._maybe_open_circus_random_gate(s, runtime, templates)
         if (
             runtime is not None
             and map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
@@ -2884,6 +3142,99 @@ class MapEventService:
         _log(
             f"replayed {len(states)} reward chest prop(s) to player "
             f"on {runtime.map_id} after map entry: {placements}"
+        )
+
+    def _publish_dtu_arena_event_props(
+            self, runtime: MapEventRuntime | None, viewers,
+            *, event_sets=(),
+    ) -> None:
+        """Replay DTU props after their EventUpdate has reached the client.
+
+        The event bonus chest set can be active in the initial snapshot, which
+        is sent before the client finishes loading the map. Boss altar props
+        and the post-kill reward chests are also event-created scene entities;
+        replaying their tier-selected PropInfo after the transition avoids
+        losing the first packet while the scene catches up.
+        """
+
+        if runtime is None:
+            return
+        map_id = map_key(runtime.map_id)
+        circus = map_id == "e_bos_arena_01"
+        boss_room = is_dtu_boss_arena_map(map_id)
+        if not circus and not boss_room:
+            return
+        wanted_sets = {int(row) for row in event_sets}
+        with runtime.lock:
+            states = tuple(
+                state for state in runtime.published_props()
+                if (
+                    not wanted_sets
+                    or int(state.definition.event_set_row) in wanted_sets
+                )
+                and (
+                    (
+                        circus
+                        and (
+                            state.definition.template_id.casefold().startswith(
+                                "e_bos_02_super_chest",
+                            )
+                            or state.definition.instance_id.casefold().startswith(
+                                "e_bos_arena_",
+                            )
+                        )
+                    )
+                    or (
+                        boss_room
+                        and state.definition.template_id.casefold()
+                        in DTU_ARENA_REWARD_CHEST_IDS
+                    )
+                )
+            )
+        if not states:
+            return
+        circus_superchests = tuple(
+            state.definition.instance_id
+            for state in states
+            if circus
+            and state.definition.template_id.casefold().startswith(
+                "e_bos_02_super_chest",
+            )
+        )
+        sent_props = 0
+        for viewer in viewers:
+            visible = tuple(
+                state for state in states
+                if boss_room
+                or prop_visible_to_player(state.definition, viewer)
+            )
+            if visible:
+                sent_props += len(visible)
+                _send_prop_info(
+                    viewer, visible, label="dtu-event-prop-replay",
+                    # Runtime.select_props has already selected exactly one
+                    # MapVariation tier for this instance. Applying the
+                    # session's separate difficulty filter a second time can
+                    # discard that chest tier and leave the arena empty.
+                    filter_map_variations=not boss_room,
+                )
+        _log(
+            f"replayed {len(states)} DTU event prop(s) on {runtime.map_id}; "
+            f"event_sets={tuple(sorted(wanted_sets))} viewers={len(viewers)} "
+            f"sent={sent_props}"
+            + (
+                f" circus_superchests={circus_superchests}"
+                if circus else ""
+            )
+            + (
+                " boss_reward_chests="
+                + ";".join(
+                    f"{state.definition.instance_id}@"
+                    f"{tuple(round(axis, 2) for axis in state.definition.position)}"
+                    for state in states
+                )
+                if boss_room else ""
+            )
         )
 
     def _open_parallel_world_exit_after_boss_kill(
@@ -3235,6 +3586,8 @@ class MapEventService:
         # fully loaded client scene.
         self._ensure_parallel_world_boss_reward_chest_visible(runtime)
         self._publish_parallel_world_boss_reward_chest_props(s, runtime)
+        if map_key(runtime.map_id) == "e_bos_arena_01":
+            self._publish_dtu_arena_event_props(runtime, (s,))
 
     def _ensure_fyeborough_soul_collector(
             self, s: Session, runtime: MapEventRuntime,
@@ -3427,6 +3780,7 @@ class MapEventService:
         parallel_world_jewel_chance = None
         equipment_rewards_by_template = {}
         class_name = ""
+        dtu_event_progress_reward = 0
         if is_parallel_world_boss_chest:
             tier = int(definition.variation_difficulty or 0)
             if tier >= BLOODSHED_DIFFICULTY:
@@ -3531,8 +3885,270 @@ class MapEventService:
                 f"{definition.instance_id} {definition.template_id}"
             ).casefold()
         )
+        is_dtu_superchest = loot_list_id in _DTU_SUPERCHEST_POOLS
+        is_dtu_boss_reward_chest = loot_list_id in {
+            "chest_e_bos_normal", "chest_e_bos_golden",
+        }
         if is_parallel_world_boss_chest:
             pass
+        elif is_dtu_boss_reward_chest:
+            # The arena exports name the one-key and ten-key chest lists but
+            # carry no server-side rows. Use the requested Bloodshed reward
+            # amounts as the top-tier baseline and scale lower tiers down.
+            rng = random.SystemRandom()
+            tier = max(0, min(9, int(
+                definition.variation_difficulty
+                if definition.variation_difficulty is not None
+                else getattr(s, "gameplay_map_difficulty", 0)
+            )))
+            triumphant = loot_list_id == "chest_e_bos_golden"
+            scale = ((tier + 1) / 10.0) * (1.0 if triumphant else 0.1)
+            dtu_event_progress_reward = max(1, round(100 * scale))
+            specifications = [
+                ("money_vc_gold", max(1, round(999 * scale))),
+                ("e_chr_2012_event_currency", max(1, round(100 * scale))),
+                ("money_rc", max(1, round(100 * scale))),
+                # chest_contents_descriptions.json maps the displayed Gold-
+                # embroidered Silk Fabric name to these five difficulty tiers.
+                (f"boss_ingredient_dtu_rarity_{min(5, 1 + tier // 2):02d}", 1),
+            ]
+            with s.flow_lock:
+                access_id = str(getattr(s, "gameplay_map_access_id", "") or "")
+                character = s.gameplay_character
+                class_name = (
+                    CLASS_NAMES.get(int(character.class_id), "").casefold()
+                    if character is not None else ""
+                )
+            try:
+                gems = roll_possible_reward_gems(
+                    self.static_database_path, access_id, 1, rng,
+                )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(
+                    f"cannot roll DTU boss-chest gem: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                gems = ()
+            specifications.extend((template_id, 1) for template_id in gems)
+            if rng.random() < 0.10:
+                specifications.append((
+                    "pet_ingredient_crystal_03",
+                    max(1, round(1 * scale)),
+                ))
+            if rng.random() < 0.10:
+                specifications.append((
+                    "jewel_resource_cost_common", 1,
+                ))
+            if rng.random() < 0.10:
+                specifications.append((
+                    f"unique_gem_dtu_weaponmod_buff_{min(3, tier // 2):02d}",
+                    1,
+                ))
+            if rng.random() < 0.20 and class_name in _DTU_CLASS_ADORNMENTS:
+                specifications.append((
+                    _DTU_CLASS_ADORNMENTS[class_name], 1,
+                ))
+            _log(
+                f"rolled DTU {'Triumphant' if triumphant else 'Undefeatable'} "
+                f"boss chest on {s.gameplay_map} at difficulty {tier}; "
+                f"rewards={tuple(specifications)} "
+                f"event_progress={dtu_event_progress_reward}"
+            )
+        elif is_dtu_superchest:
+            # Circus Monstrorum superchest loot is pinned to the four chest
+            # instances in screenshot order. Reopening a chest always yields
+            # its same authored reward list; no weighted/random selection.
+            instance_id = str(definition.instance_id or "").casefold()
+            suffix = instance_id.rsplit("_", 1)[-1]
+            if suffix not in {"01", "02", "03", "04"}:
+                suffix = "01"
+            with s.flow_lock:
+                character = s.gameplay_character
+                class_name = CLASS_NAMES[
+                    int(getattr(character, "class_id", 0))
+                ].lower()
+
+            def class_item(mapping, fallback=None):
+                return mapping.get(class_name, fallback)
+
+            if loot_list_id in {
+                "chest_lootlist_e_bos_superchest_copper",
+                "chest_lootlist_e_bos_superchest_wood",
+            }:
+                # The Copper post contains two captures. Pair them across the
+                # four static chest instances in order (01/03, 02/04). The
+                # undocumented Wooden tier uses this lower bronze reward set.
+                capture = "01" if suffix in {"01", "03"} else "02"
+                if capture == "01":
+                    specifications = [
+                        ("gem_diamond_poison_b", 2),
+                        ("gem_block_b", 1),
+                        ("gem_diamond_fire_b", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                        ("gem_diamond_andermagic_c", 1),
+                        ("gem_cyanit_b", 1),
+                        ("gem_amethyst_b", 1),
+                        ("gem_ruby_b", 1),
+                        ("gem_faster_run_b", 1),
+                        ("gem_onyx_c", 1),
+                        ("gilded_clover", 5),
+                        ("pet_little_arachna", 1),
+                        ("all_basic_ring_02", 1),
+                    ]
+                else:
+                    specifications = [
+                        ("gem_diamond_fire_b", 1),
+                        ("gem_cyanit_b", 1),
+                        ("gem_ruby_b", 1),
+                        ("gem_faster_run_b", 1),
+                        ("gem_onyx_c", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                        ("gilded_clover", 5),
+                        ("premium_teaser_one_week_consumable_7d", 1),
+                    ]
+                adornment = class_item(_DTU_CLASS_ADORNMENTS)
+                guard_cloak = class_item(_DTU_CLASS_GUARD_CLOAKS)
+                pandora_weapon = class_item(_DTU_CLASS_SET_WEAPONMODS)
+                if adornment:
+                    specifications.append((adornment, 1))
+                if guard_cloak:
+                    specifications.append((guard_cloak, 1))
+                if capture == "02" and pandora_weapon:
+                    specifications.append((pandora_weapon, 1))
+            elif loot_list_id == "chest_lootlist_e_bos_superchest_silver":
+                silver = {
+                    "01": [
+                        ("gem_cyanit_b", 1), ("gem_diamond_fire_b", 1),
+                        ("gilded_clover", 5), ("CLASS_STRENGTH_CLOAK", 1),
+                        ("CLASS_GLOVES", 1),
+                        ("deluxe_teaser_one_week_consumable_7d", 1),
+                        ("gem_diamond_b", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                        ("CLASS_SET_WEAPONMOD", 1), ("gem_block_b", 1),
+                        ("gem_amethyst_b", 1),
+                    ],
+                    "02": [
+                        ("gem_diamond_andermagic_h", 1),
+                        ("gem_cyanit_b", 1), ("gem_amethyst_b", 1),
+                        ("gem_diamond_andermagic_c", 1),
+                        ("gem_faster_run_h", 1),
+                        ("CLASS_UNDEFEATABLE_CLOAK", 1),
+                        ("CLASS_SET_WEAPONMOD", 1),
+                        ("gem_diamond_andermagic_b", 2),
+                        ("gilded_clover", 5), ("CLASS_SHOULDERS", 1),
+                        ("gem_diamond_b", 1),
+                    ],
+                    "03": [
+                        ("gem_ruby_c", 1), ("gem_cyanit_b", 1),
+                        ("CLASS_LONG_WEAPON", 1),
+                        ("gem_diamond_ice_b", 1),
+                        ("jewel_buff_GroupResourceReg_maxHealthpoints_onHit_common", 1),
+                        ("gem_faster_run_b", 1),
+                        ("gem_diamond_lightning_b", 2),
+                        ("all_basic_amulet_02", 1),
+                    ],
+                    "04": [
+                        ("gem_onyx_b", 1), ("gem_diamond_lightning_b", 1),
+                        ("jewel_buff_GroupHpReg_maxResource_onHit_common", 1),
+                        ("CLASS_PANDORA_AMULET", 1),
+                        ("gem_diamond_andermagic_b", 2),
+                        ("CLASS_HELMET", 1), ("gem_diamond_b", 1),
+                        ("gem_block_b", 1), ("gem_diamond_fire_c", 1),
+                    ],
+                }
+                replacements = {
+                    "CLASS_STRENGTH_CLOAK": class_item(_DTU_CLASS_STRENGTH_CLOAKS),
+                    "CLASS_UNDEFEATABLE_CLOAK": class_item(_DTU_CLASS_UNDEFEATABLE_CLOAKS),
+                    "CLASS_SET_WEAPONMOD": class_item(_DTU_CLASS_SET_WEAPONMODS),
+                    "CLASS_PANDORA_AMULET": class_item(_DTU_CLASS_PANDORA_AMULETS),
+                    "CLASS_GLOVES": f"{class_name}_basic_gloves_02",
+                    "CLASS_SHOULDERS": f"{class_name}_basic_shoulders_02",
+                    "CLASS_HELMET": f"{class_name}_basic_helmet_02",
+                    "CLASS_LONG_WEAPON": {
+                        "ranger": "ranger_basic_2h_bow_02",
+                        "warrior": "warrior_basic_2h_sword_02",
+                        "mage": "mage_basic_2h_staff_02",
+                        "dwarf": "dwarf_basic_2h_rifle_02",
+                    }.get(class_name),
+                }
+                specifications = [
+                    (replacements.get(template_id, template_id), amount)
+                    for template_id, amount in silver[suffix]
+                    if not template_id.startswith("CLASS_")
+                    or replacements.get(template_id)
+                ]
+            else:  # Heroic / Gold Chest
+                heroic = {
+                    "01": [
+                        ("gilded_clover", 20),
+                        ("gem_diamond_andermagic_b", 1),
+                        ("gem_diamond_lightning_c", 1),
+                        ("gem_diamond_ice_b", 1),
+                        ("gem_faster_run_b", 1),
+                        ("CLASS_GLOVES", 1),
+                        ("deluxe_teaser_two_weeks", 1),
+                        ("gem_diamond_ice_b", 1),
+                        ("CLASS_SHOULDERS", 1),
+                        ("gem_diamond_h", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                    ],
+                    "02": [
+                        ("gem_diamond_b", 3), ("gem_block_h", 1),
+                        ("gem_diamond_lightning_b", 1),
+                        ("gem_block_i", 1), ("gem_attackspeed_c", 1),
+                        ("gem_ruby_b", 1),
+                        ("CLASS_PANDORA_AMULET", 1),
+                        ("CLASS_LONG_WEAPON", 1),
+                    ],
+                    "03": [
+                        ("gem_cyanit_b", 2), ("gem_attackspeed_h", 1),
+                        ("CLASS_SHIELD", 1), ("gem_diamond_fire_b", 1),
+                        ("gem_block_c", 1), ("e_ide_02_crafting_gem", 1),
+                        ("gem_diamond_b", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                    ],
+                    "04": [
+                        ("gem_diamond_h", 1),
+                        ("CLASS_SET_WEAPONMOD", 1),
+                        ("gem_diamond_ice_b", 2),
+                        ("CLASS_STRENGTH_CLOAK", 1),
+                        ("gem_diamond_andermagic_b", 1),
+                        ("unique_gem_crafting", 1), ("gem_block_b", 1),
+                        ("gem_diamond_poison_c", 1),
+                        ("CLASS_UNDEFEATABLE_CLOAK", 1),
+                        ("gem_diamond_fire_b", 1),
+                    ],
+                }
+                replacements = {
+                    "CLASS_SET_WEAPONMOD": class_item(_DTU_CLASS_SET_WEAPONMODS),
+                    "CLASS_PANDORA_AMULET": class_item(_DTU_CLASS_PANDORA_AMULETS),
+                    "CLASS_STRENGTH_CLOAK": class_item(_DTU_CLASS_STRENGTH_CLOAKS),
+                    "CLASS_UNDEFEATABLE_CLOAK": class_item(_DTU_CLASS_UNDEFEATABLE_CLOAKS),
+                    "CLASS_GLOVES": f"{class_name}_basic_gloves_02",
+                    "CLASS_SHOULDERS": f"{class_name}_basic_shoulders_02",
+                    "CLASS_LONG_WEAPON": {
+                        "ranger": "ranger_basic_rh_longbow_03",
+                        "warrior": "warrior_basic_2h_sword_02",
+                        "mage": "mage_basic_2h_staff_02",
+                        "dwarf": "dwarf_basic_2h_rifle_02",
+                    }.get(class_name),
+                    "CLASS_SHIELD": {
+                        "ranger": "ranger_basic_lh_defensequiver_02",
+                        "warrior": "warrior_basic_lh_shield_02",
+                        "mage": "mage_basic_lh_book_02",
+                        "dwarf": "dwarf_basic_lh_absorber_02",
+                    }.get(class_name),
+                }
+                specifications = [
+                    (replacements.get(template_id, template_id), amount)
+                    for template_id, amount in heroic[suffix]
+                    if not template_id.startswith("CLASS_")
+                    or replacements.get(template_id)
+                ]
+            _log(
+                f"loaded fixed DTU superchest {loot_list_id} "
+                f"rewards for {instance_id}: {tuple(specifications)}"
+            )
         elif is_a_mighty_sentinel_chest:
             try:
                 difficulty = int(getattr(
@@ -3654,6 +4270,7 @@ class MapEventService:
             encounter = s.gameplay_monster_encounter
             last_move = s.gameplay_last_move
             character = s.gameplay_character
+            socket_evaluation = s.gameplay_socket_effect_evaluation
         player_level = max(1, int(getattr(character, "level", 1)))
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
@@ -3665,6 +4282,17 @@ class MapEventService:
             item_rows = prime_world_loot_cache(self.static_database_path).items_by_id
             drops = []
             for (template_id, amount), position in zip(specifications, positions):
+                if socket_evaluation is not None:
+                    absolute, relative = socket_evaluation.drop_amount_bonus(
+                        template_id
+                    )
+                    amount = max(
+                        1,
+                        int(round(
+                            (int(amount) + absolute)
+                            * max(0.0, 1.0 + relative)
+                        )),
+                    )
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
@@ -3770,6 +4398,36 @@ class MapEventService:
             f"spawned {len(drops)} reward item(s) from "
             f"{definition.instance_id!r} for player session"
         )
+        if dtu_event_progress_reward:
+            with s.flow_lock:
+                progress_callback = getattr(
+                    s, "gameplay_event_progress_callback", None,
+                )
+            if callable(progress_callback):
+                try:
+                    progressed = progress_callback(
+                        s,
+                        collectible_id="e_bos_progress_item_t0",
+                        amount=dtu_event_progress_reward,
+                    )
+                except Exception as exc:
+                    _log(
+                        f"cannot grant DTU event progress from "
+                        f"{definition.instance_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    if not progressed:
+                        _log(
+                            f"DTU chest progress collectible was not accepted "
+                            f"for {definition.instance_id!r} "
+                            f"(amount={dtu_event_progress_reward})"
+                        )
+            else:
+                _log(
+                    f"DTU chest progress callback unavailable for "
+                    f"{definition.instance_id!r}"
+                )
         return len(drops)
 
     def _roll_map_chest_loot(self, s: Session, entries) -> tuple[tuple[str, int], ...]:
@@ -5794,6 +6452,27 @@ class MapEventService:
                 )
         if transition.active and transition.event.key == "boss_death":
             self._silence_arena_hazards(runtime, sessions)
+        if (
+            map_key(runtime.map_id) == "e_bos_arena_01"
+            and transition.enabled_sets
+        ) or (
+            is_dtu_boss_arena_map(runtime.map_id)
+            and transition.active
+            and transition.event.key in {"boss_death", "boss_death_dtu"}
+        ):
+            boss_room = is_dtu_boss_arena_map(runtime.map_id)
+            if boss_room:
+                # EventSet 157 owns the DTU post-boss chest rows. The death
+                # event can arrive with no newly enabled rows when the set is
+                # already active, so explicitly republish its props after the
+                # client has processed the event transition.
+                self._publish_event_props(
+                    runtime, sessions, (157,), refresh_existing=True,
+                )
+            self._publish_dtu_arena_event_props(
+                runtime, sessions,
+                event_sets=() if boss_room else transition.enabled_sets,
+            )
         mortis = mortis_arena(self, runtime)
         if mortis is not None:
             mortis.transition(transition)
@@ -6063,6 +6742,14 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            if map_key(runtime.map_id) == "e_bos_arena_01":
+                with runtime.lock:
+                    chosen_circus_exit = runtime.circus_random_exit_guid
+                viewer_definitions = tuple(
+                    definition for definition in viewer_definitions
+                    if chosen_circus_exit is not None
+                    and bytes(definition.instance_guid) == chosen_circus_exit
+                )
             bloodmoon_portal_locked = (
                 map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
                 and not CharacterService._varholm_bloodmoon_portal_unlocked(
@@ -6112,6 +6799,13 @@ class MapEventService:
                 if map_key(runtime.map_id) == "h0001_hub":
                     _log(
                         f"published native exit creation on {runtime.map_id}: "
+                        f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
+                    )
+                elif map_key(runtime.map_id) == "e_bos_arena_01":
+                    _log(
+                        f"published selected Circus boss gate entity on "
+                        f"{runtime.map_id}: "
+                        f"guids={tuple(entry.instance_guid.hex() for entry in native_exit_entries)} "
                         f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
                     )
             for definition in viewer_definitions:

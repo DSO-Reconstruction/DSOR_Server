@@ -131,11 +131,7 @@
       {
         "item": "e_ful_01_progress_item_01",
         "comment": "Bloodmoon Bloodmage: guaranteed Full Moon progress. Bloodshed (difficulty 8) gives 1300; each lower difficulty tier gives 80% of the previous tier. Difficulty 9 uses the Bloodshed cap.",
-        "monsters": [
-          "e_ful_02_varholm_bloodmoon_00_leader_mage_01",
-          "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
-          "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
-        ],
+        "monsters": ["e_ful_02_varholm_bloodmoon_00_leader_mage_01", "e_ful_02_varholm_bloodmoon_01_leader_mage_01", "e_ful_02_varholm_bloodmoon_02_leader_mage_01"],
         "ranks": ["boss", "worldboss"],
         "chance": {"boss": 1.0},
         "amount": {"boss": [1300, 1300]},
@@ -145,39 +141,15 @@
       {
         "item": "warrior_unique_2h_sword2h_bloodmoon_set",
         "comment": "Bloodmoon Bloodmage: 15% chance to drop one Bloodmoon set item for the killer's class.",
-        "monsters": [
-          "e_ful_02_varholm_bloodmoon_00_leader_mage_01",
-          "e_ful_02_varholm_bloodmoon_01_leader_mage_01",
-          "e_ful_02_varholm_bloodmoon_02_leader_mage_01"
-        ],
+        "monsters": ["e_ful_02_varholm_bloodmoon_00_leader_mage_01", "e_ful_02_varholm_bloodmoon_01_leader_mage_01", "e_ful_02_varholm_bloodmoon_02_leader_mage_01"],
         "ranks": ["boss", "worldboss"],
         "chance": {"boss": 0.15},
         "amount": {"boss": [1, 1]},
         "item_options_by_class": {
-          "warrior": [
-            "warrior_unique_2h_sword2h_bloodmoon_set",
-            "warrior_unique_amulet_bloodmoon_set",
-            "warrior_unique_belt_bloodmoon_set",
-            "warrior_unique_ring_bloodmoon_set"
-          ],
-          "mage": [
-            "mage_unique_2h_staff2h_bloodmoon_set",
-            "mage_unique_amulet_bloodmoon_set",
-            "mage_unique_belt_bloodmoon_set",
-            "mage_unique_ring_bloodmoon_set"
-          ],
-          "ranger": [
-            "ranger_unique_2h_bow_bloodmoon_set",
-            "ranger_unique_amulet_bloodmoon_set",
-            "ranger_unique_belt_bloodmoon_set",
-            "ranger_unique_ring_bloodmoon_set"
-          ],
-          "dwarf": [
-            "dwarf_unique_2h_rifle2h_bloodmoon_set",
-            "dwarf_unique_amulet_bloodmoon_set",
-            "dwarf_unique_belt_bloodmoon_set",
-            "dwarf_unique_ring_bloodmoon_set"
-          ]
+          "warrior": ["warrior_unique_2h_sword2h_bloodmoon_set", "warrior_unique_amulet_bloodmoon_set", "warrior_unique_belt_bloodmoon_set", "warrior_unique_ring_bloodmoon_set"],
+          "mage": ["mage_unique_2h_staff2h_bloodmoon_set", "mage_unique_amulet_bloodmoon_set", "mage_unique_belt_bloodmoon_set", "mage_unique_ring_bloodmoon_set"],
+          "ranger": ["ranger_unique_2h_bow_bloodmoon_set", "ranger_unique_amulet_bloodmoon_set", "ranger_unique_belt_bloodmoon_set", "ranger_unique_ring_bloodmoon_set"],
+          "dwarf": ["dwarf_unique_2h_rifle2h_bloodmoon_set", "dwarf_unique_amulet_bloodmoon_set", "dwarf_unique_belt_bloodmoon_set", "dwarf_unique_ring_bloodmoon_set"]
         },
         "scale_stack_amount_with_difficulty": false
       }
@@ -186,14 +158,7 @@
       {
         "item": "e_ful_01_silver_essence_01",
         "comment": "Gnomes in Varholm drop 35-100 Silver Essences, independent of map difficulty.",
-        "monsters": [
-          "e_ful_02_varholm_day_normal_norsegnome_01",
-          "e_ful_02_varholm_day_champion_norsegnome_01",
-          "e_ful_02_varholm_norsegnome_unique_01",
-          "e_ful_02_varholm_norsegnome_unique_02",
-          "e_ful_02_varholm_norsegnome_unique_03",
-          "e_ful_02_varholm_norsegnome_unique_04"
-        ],
+        "monsters": ["e_ful_02_varholm_day_normal_norsegnome_01", "e_ful_02_varholm_day_champion_norsegnome_01", "e_ful_02_varholm_norsegnome_unique_01", "e_ful_02_varholm_norsegnome_unique_02", "e_ful_02_varholm_norsegnome_unique_03", "e_ful_02_varholm_norsegnome_unique_04"],
         "chance": {"monster": 1.0, "elite": 1.0},
         "amount": {"monster": [35, 100], "elite": [35, 100]},
         "scale_stack_amount_with_difficulty": false
@@ -202,18 +167,14 @@
         "item": "e_ful_02_aconitum_01",
         "comment": "Wolfsbane (Aconitum) for Jon Sunlair's repeatable quest. The source confirms the drop map, not its rate; the server baseline increases with map difficulty.",
         "monster_regions": ["fullmoon", "fullmoonDay", "fullmoonLeader", "fullmoonVargulf", "ProgressMonster"],
-        "chance": {"monster": 0.10, "elite": 0.25, "boss": 0.50},
+        "chance": {"monster": 0.1, "elite": 0.25, "boss": 0.5},
         "amount": {"monster": [1, 1], "elite": [1, 1], "boss": [1, 1]},
         "scale_chance_with_difficulty": true
       },
       {
         "item": "e_ful_02_vargulf_claw_01",
         "comment": "Vargulf's Claw drops from the Vargulf boss.",
-        "monsters": [
-          "e_ful_02_varholm_night_00_miniboss_werewolf_01",
-          "e_ful_02_varholm_night_01_miniboss_werewolf_01",
-          "e_ful_02_varholm_night_02_miniboss_werewolf_01"
-        ],
+        "monsters": ["e_ful_02_varholm_night_00_miniboss_werewolf_01", "e_ful_02_varholm_night_01_miniboss_werewolf_01", "e_ful_02_varholm_night_02_miniboss_werewolf_01"],
         "ranks": ["boss", "worldboss"],
         "chance": {"boss": 0.5},
         "amount": {"boss": [1, 1]},
@@ -224,11 +185,7 @@
       {
         "item": "e_ful_01_silver_essence_01",
         "comment": "Silver Mine gnomes drop 35-100 Silver Essences, independent of map difficulty. Silver Pebbles come from barrels, not monsters.",
-        "monsters": [
-          "e_ful_02_silvermine_bomber_norsegnome_01",
-          "e_ful_02_silvermine_champion_norsegnome_01",
-          "e_ful_02_silvermine_normal_norsegnome_01"
-        ],
+        "monsters": ["e_ful_02_silvermine_bomber_norsegnome_01", "e_ful_02_silvermine_champion_norsegnome_01", "e_ful_02_silvermine_normal_norsegnome_01"],
         "chance": {"monster": 1.0, "elite": 1.0},
         "amount": {"monster": [35, 100], "elite": [35, 100]},
         "scale_stack_amount_with_difficulty": false
@@ -236,11 +193,493 @@
       {
         "item": "e_ful_02_silverstone_01",
         "comment": "Geitir the Summoner drops a fixed stack of 30 Silver Pebbles, independent of difficulty.",
-        "monsters": [
-          "e_ful_02_silvermine_leader_soulless_norseman_01"
-        ],
+        "monsters": ["e_ful_02_silvermine_leader_soulless_norseman_01"],
         "chance": {"elite": 1.0},
         "amount": {"elite": [30, 30]},
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_arena_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "8% Heart of Lava drop from Circus Monstrorum bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["e_bos_02_miniboss_bloodmage", "e_bos_02_miniboss_heredur_normal", "e_bos_02_miniboss_arachnae_normal", "e_bos_02_miniboss_magotina", "e_bos_02_miniboss_karabossa", "e_bos_02_miniboss_bearach_normal", "e_bos_02_miniboss_horseman", "e_bos_02_miniboss_nefertari", "e_bos_02_miniboss_medusa_normal"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.08},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_balor_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["g0012_boss_07_balor"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["g0012_boss_07_balor"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["g0012_boss_07_balor"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["g0012_boss_07_balor"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_teleportarium_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["f4203_boss_destruktor_06_normal_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["f4203_boss_destruktor_06_normal_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["f4203_boss_destruktor_06_normal_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["f4203_boss_destruktor_06_normal_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_gorga_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["c2310_boss_snake_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["c2310_boss_snake_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["c2310_boss_snake_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["c2310_boss_snake_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_herald_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["a0604_normal_g_Herold_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["a0604_normal_g_Herold_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["a0604_normal_g_Herold_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["a0604_normal_g_Herold_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_khalys_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["a0404_normal_boss_cultistleader_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["a0404_normal_boss_cultistleader_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["a0404_normal_boss_cultistleader_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["a0404_normal_boss_cultistleader_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_sigrismarr_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["b1203_normal_boss_highpriest_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["b1203_normal_boss_highpriest_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["b1203_normal_boss_highpriest_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["b1203_normal_boss_highpriest_scale"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_grimmag_pw_boss": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["boss_grimmag"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["boss_grimmag"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["boss_grimmag"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["boss_grimmag"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_dragan_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["e_dra_03_boss_dragan", "e_bos_02_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["e_dra_03_boss_dragan", "e_bos_02_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["e_dra_03_boss_dragan", "e_bos_02_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["e_dra_03_boss_dragan", "e_bos_02_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_gwenfara_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["e_bos_02_gwenfara_phase_02"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["e_bos_02_gwenfara_phase_02"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["e_bos_02_gwenfara_phase_02"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["e_bos_02_gwenfara_phase_02"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bos_02_djinn_01": [
+      {
+        "item": "item_ingredient_mercenary_heartlava",
+        "comment": "2% Heart of Lava drop from DTU world bosses starting at Fatal (difficulty index 3).",
+        "monsters": ["h0008_boss_djinn_lamp_phase_04"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 3,
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bos_02_chest_key",
+        "comment": "Guaranteed 1-3 Keys of Defeat from the DTU final boss.",
+        "monsters": ["h0008_boss_djinn_lamp_phase_04"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_ingredient_feather_02",
+        "comment": "30% chance for a Feather of a Gryphon from the DTU final boss.",
+        "monsters": ["h0008_boss_djinn_lamp_phase_04"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.3},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "lootbox_event_dtu_random_dollbody",
+        "comment": "15% chance for a random eligible Doll's Body Possible Reward.",
+        "monsters": ["h0008_boss_djinn_lamp_phase_04"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["boss_bonus_event_02"],
+        "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
       }
     ]

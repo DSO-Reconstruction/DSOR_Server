@@ -7,7 +7,8 @@ from functools import partial
 import sqlite3
 
 from dso_server.gameplay.ocp_store import (
-    EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT,
+    EVENT_OCP_PRODUCT_EVENT_IDS,
+    EVENT_OCP_PRODUCT_KEYS,
     EVENT_ATTIRE_PRODUCT_KEYS,
 )
 from dso_server.runtime.context import *
@@ -371,11 +372,14 @@ class CommerceService:
         offers = LOCAL_OCP_OFFERS
         offers = tuple(
             offer for offer in offers
-            if offer.product_key not in EVENT_ATTIRE_PRODUCT_KEYS
+            if offer.product_key not in EVENT_OCP_PRODUCT_KEYS
             or (
                 character is not None
-                and class_name in {"warrior", "mage", "ranger", "dwarf"}
-                and EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT[offer.product_key]
+                and (
+                    offer.product_key not in EVENT_ATTIRE_PRODUCT_KEYS
+                    or class_name in {"warrior", "mage", "ranger", "dwarf"}
+                )
+                and EVENT_OCP_PRODUCT_EVENT_IDS[offer.product_key]
                 in active_events
             )
         )
@@ -437,7 +441,7 @@ class CommerceService:
 
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
         request = decode_ocp_booking_request(payload)
-        required_event = EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT.get(
+        required_event = EVENT_OCP_PRODUCT_EVENT_IDS.get(
             request.offer_id
         )
         if (
@@ -669,31 +673,36 @@ class CommerceService:
             else:
                 if inventory is None:
                     raise ValueError('player inventory is not initialized')
-                item = load_purchase_item_definition(
-                    self.static_database_path, reward.item_id
+                inventory_rewards = (
+                    reward.bundle_items
+                    or ((reward.item_id, reward.amount),)
                 )
-                if item.item_category == 'Currency':
-                    raise ValueError(
-                        f'unsupported wallet currency {reward.item_id!r}'
+                for item_id, amount in inventory_rewards:
+                    item = load_purchase_item_definition(
+                        self.static_database_path, item_id
                     )
-                mutation = add_purchased_item(
-                    inventory, item, reward.amount,
-                    next_item_id=next_item_id,
-                    item_level=max(
-                        1, int(getattr(character, 'level', 1))
-                    ),
-                )
-                next_item_id = mutation.next_item_id
-                commands.extend((
-                    ServerCommand(
-                        INVENTORY_INFO_COMMAND, mutation.delta,
-                        LOCAL_PLAYER_ACTOR_ID,
-                    ),
-                    ServerCommand(
-                        INVENTORY_INFO_COMMAND, mutation.final,
-                        LOCAL_PLAYER_ACTOR_ID,
-                    ),
-                ))
+                    if item.item_category == 'Currency':
+                        raise ValueError(
+                            f'unsupported wallet currency {item_id!r}'
+                        )
+                    mutation = add_purchased_item(
+                        inventory, item, amount,
+                        next_item_id=next_item_id,
+                        item_level=max(
+                            1, int(getattr(character, 'level', 1))
+                        ),
+                    )
+                    next_item_id = mutation.next_item_id
+                    commands.extend((
+                        ServerCommand(
+                            INVENTORY_INFO_COMMAND, mutation.delta,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ),
+                        ServerCommand(
+                            INVENTORY_INFO_COMMAND, mutation.final,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ),
+                    ))
             claims.pop(pending_key, None)
             claims[ocp_booking_completed_key(parsed[0])] = 1
             packet, packet_bits = (
@@ -1363,6 +1372,7 @@ class CommerceService:
                 shop_currency_resource=shop_currency_resource,
             )
             changed_items = []
+            event_progress_purchases = {}
             max_roll_item_ids = set()
             replaced_item_ids = []
             replacements = {}
@@ -1373,11 +1383,36 @@ class CommerceService:
                 now.hour, now.minute, now.second,
             )
             timed_counts = dict(s.gameplay_timed_offer_purchases)
+            event_catalog = getattr(s, "gameplay_event_catalog", None)
+            event_progress_callback = getattr(
+                s, "gameplay_event_progress_callback", None,
+            )
             for entry, offer, definition in purchases:
+                purchased_amount = int(offer.amount) * int(entry.amount)
+                if (
+                    event_catalog is not None
+                    and event_progress_callback is not None
+                    and event_catalog.is_event_collectible(
+                        definition.template_id
+                    )
+                    and event_catalog.event_for_collectible(
+                        definition.template_id
+                    ) is not None
+                ):
+                    # Event progress items bought from the T shop advance the
+                    # event bar directly; placing them in inventory leaves
+                    # progress unchanged because they never pass through the
+                    # world-loot pickup hook.
+                    collectible_id = str(definition.template_id)
+                    event_progress_purchases[collectible_id] = (
+                        event_progress_purchases.get(collectible_id, 0)
+                        + purchased_amount
+                    )
+                    continue
                 mutation = add_purchased_item(
                     inventory,
                     definition,
-                    offer.amount * entry.amount,
+                    purchased_amount,
                     next_item_id=next_item_id,
                     item_level=(
                         offer.item_level_override
@@ -1556,6 +1591,8 @@ class CommerceService:
                     value=str(shop_currency_resource or ""),
                     count=total_price.ic,
                 )
+        for collectible_id, amount in event_progress_purchases.items():
+            event_progress_callback(s, collectible_id, amount)
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] handled Transaction for "
             f"{transaction.shop_id!r}: delivered "

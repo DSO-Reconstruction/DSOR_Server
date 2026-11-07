@@ -712,6 +712,24 @@ class MapTransitionService:
                 last_move = s.gameplay_last_move
                 coordinate_frame = s.gameplay_coordinate_frame
                 world_position = s.gameplay_spawn_position
+            chosen_circus_gate = None
+            if map_key(gameplay_map) == "e_bos_arena_01":
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                if runtime is not None:
+                    with runtime.lock:
+                        chosen_circus_gate = runtime.circus_random_exit_guid
+                if chosen_circus_gate is None or (
+                    candidates and not any(
+                        bytes(definition.instance_guid)
+                        == bytes(chosen_circus_gate)
+                        for definition in candidates
+                    )
+                ):
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] rejected unopened or "
+                        f"unselected Circus gate {request.exit_id!r}"
+                    )
+                    return
             if not candidates:
                 authored_exits = load_local_map_exits(
                     self.static_database_path,
@@ -725,6 +743,12 @@ class MapTransitionService:
                         or d.name == request.exit_id
                     )
                 )
+                if chosen_circus_gate is not None:
+                    matching_authored = tuple(
+                        definition for definition in matching_authored
+                        if bytes(definition.instance_guid)
+                        == bytes(chosen_circus_gate)
+                    )
                 # A client that cached a different difficulty alias can
                 # request an authored exit GUID that is no longer in the
                 # selected-tier session list. Preserve the quest shortcut in
@@ -1122,6 +1146,56 @@ class MapTransitionService:
                     destination_access_id = authored_exit_url
                 else:
                     destination_access_id = selected_access.request_map_id
+            if map_key(gameplay_map) == "e_bos_arena_01":
+                # Circus exits are authored as difficulty-specific access
+                # IDs, but the client can submit the Normal (diff_00) ID when
+                # entering a selected gate. Keep the destination boss map's
+                # access group and carry over the Circus instance's selected
+                # difficulty so every unlocked route preserves its mode.
+                try:
+                    destination_access = resolve_map_access(
+                        self.static_database_path,
+                        str(destination_access_id or authored_exit_url),
+                        player_level=max(
+                            1, int(getattr(s.gameplay_character, 'level', 1)),
+                        ),
+                    )
+                    if (
+                        destination_access.access_group_id.casefold().startswith(
+                            ("e_bos_02_", "e_bos_grimmag_pw_boss")
+                        )
+                    ):
+                        selected_tier = max(
+                            0, int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+                        )
+                        with sqlite3.connect(
+                            f"file:{Path(self.static_database_path).resolve().as_posix()}?mode=ro",
+                            uri=True,
+                        ) as database:
+                            tier_rows = database.execute(
+                                "SELECT Id, Difficulty FROM _Template_MapAccessGroup "
+                                "WHERE AccessGroup=?",
+                                (destination_access.access_group_id,),
+                            ).fetchall()
+                        if tier_rows:
+                            destination_access_id = min(
+                                tier_rows,
+                                key=lambda row: (
+                                    abs(int(row[1] or 0) - selected_tier),
+                                    int(row[1] or 0),
+                                ),
+                            )[0]
+                            print(
+                                f"[{GAMEPLAY_SERVICE_NAME}] Circus gate kept "
+                                f"difficulty {selected_tier} for "
+                                f"{destination_access.access_group_id}: "
+                                f"{destination_access_id}"
+                            )
+                except (ValueError, sqlite3.Error) as exc:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] Circus gate difficulty "
+                        f"inheritance skipped: {type(exc).__name__}: {exc}"
+                    )
             CharacterService._accept_gameplay_state_command(s, 0x0060)
         except ValueError as exc:
             print(
