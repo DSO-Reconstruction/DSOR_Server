@@ -1831,6 +1831,9 @@ class LocalCombatState:
             self.player_actor_id: resource_now
         }
         self.monsters = self._combatants(encounter)
+        self.monster_permanent_status_immunities = (
+            self._load_monster_permanent_status_immunities()
+        )
         # Actors that map-local events spawn after the encounter was built.
         # The encounter itself is immutable and shared through a cache, so
         self._runtime_spawn_groups: list[MonsterSpawnGroup] = []
@@ -6132,6 +6135,89 @@ class LocalCombatState:
                     return True
         return False
 
+    def _load_monster_permanent_status_immunities(
+        self,
+    ) -> dict[int, frozenset[str]]:
+        """Resolve status-effect immunity groups granted by monster templates.
+
+        Bosses author their armor/resistance-break and crowd-control immunity
+        through ``PermanentStatusEffect`` (for example ``BOSS_Immunity_ALL``).
+        The client receives that effect in the spawn packet, but the server
+        also needs the groups so authoritative hits cannot apply a debuff the
+        client is expected to reject.
+        """
+
+        templates = tuple(sorted({
+            str(monster.template_id)
+            for monster in self.monsters.values()
+            if str(monster.template_id).strip()
+        }))
+        if not templates:
+            return {}
+        result: dict[int, frozenset[str]] = {}
+        try:
+            path = self.encounter.static_database_path
+            placeholders = ",".join("?" for _ in templates)
+            with closing(sqlite3.connect(
+                f"file:{path.as_posix()}?mode=ro", uri=True
+            )) as database:
+                permanent_by_template = {
+                    str(template_id): tuple(
+                        token.partition(",")[0].strip()
+                        for token in str(encoded or "").split(";")
+                        if token.partition(",")[0].strip()
+                    )
+                    for template_id, encoded in database.execute(
+                        "SELECT Id, COALESCE(PermanentStatusEffect, '') "
+                        f"FROM _Template_Monster WHERE Id IN ({placeholders})",
+                        templates,
+                    )
+                }
+                effect_ids = tuple(sorted({
+                    effect_id
+                    for values in permanent_by_template.values()
+                    for effect_id in values
+                }))
+                modifiers_by_effect: dict[str, str] = {}
+                if effect_ids:
+                    effect_placeholders = ",".join("?" for _ in effect_ids)
+                    modifiers_by_effect = {
+                        str(effect_id): str(modifiers or "")
+                        for effect_id, modifiers in database.execute(
+                            "SELECT Id, COALESCE(StartModifiers, '') "
+                            f"FROM _Template_StatusEffect "
+                            f"WHERE Id IN ({effect_placeholders})",
+                            effect_ids,
+                        )
+                    }
+            groups_by_template: dict[str, frozenset[str]] = {}
+            for template_id, effect_ids_for_template in permanent_by_template.items():
+                groups = set()
+                for effect_id in effect_ids_for_template:
+                    for encoded in modifiers_by_effect.get(effect_id, "").split(";"):
+                        kind, separator, arguments = encoded.partition(":")
+                        if (
+                            not separator
+                            or kind.strip().casefold()
+                            != "statuseffectimmunitygroup"
+                        ):
+                            continue
+                        group = arguments.partition(",")[0].split("#", 1)[0]
+                        if group.strip():
+                            groups.add(group.strip().casefold())
+                groups_by_template[template_id] = frozenset(groups)
+            result = {
+                int(actor_id): groups_by_template.get(
+                    str(monster.template_id), frozenset()
+                )
+                for actor_id, monster in self.monsters.items()
+            }
+        except (OSError, sqlite3.Error, ValueError):
+            # A bad optional static row must not prevent a map instance from
+            # starting. Other combat data remains available as before.
+            return {int(actor_id): frozenset() for actor_id in self.monsters}
+        return result
+
     def _status_effect_content(
         self, resource_id: str
     ) -> tuple[frozenset[str], tuple[frozenset[str], float] | None]:
@@ -9341,6 +9427,12 @@ class LocalCombatState:
     ) -> bool:
         """Report whether an authored immunity currently refuses this effect."""
 
+        groups, _immunity = self._status_effect_content(resource_id)
+        permanent_groups = self.monster_permanent_status_immunities.get(
+            int(actor_id), frozenset(),
+        )
+        if groups and not groups.isdisjoint(permanent_groups):
+            return True
         windows = self.monster_status_immunities.get(int(actor_id))
         if not windows:
             return False
@@ -9351,7 +9443,6 @@ class LocalCombatState:
         if not windows:
             self.monster_status_immunities.pop(int(actor_id), None)
             return False
-        groups, _immunity = self._status_effect_content(resource_id)
         if not groups:
             return False
         return any(

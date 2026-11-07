@@ -322,6 +322,19 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # The Surprise Jewel Pack's client description gives exact probabilities.
+    # Jewel of Glory is character-specific in the static item templates.
+    "surprise_jewel_pack_glory": (
+        ("@glory_jewel", 1, 25.0),
+        ("ammunition_damage_bgh", 15000, 25.0),
+        ("money_rc", 60000, 50.0),
+    ),
+    # The tooltip lists two possible outcomes but no probabilities; use an
+    # even split. The jewel has three static rarity templates, selected evenly.
+    "bgh_event_chest": (
+        ("@strenuousness_jewel", 1, 50.0),
+        ("ammunition_damage_bgh", 15000, 50.0),
+    ),
     # Defeat the Undefeatable event loot. The client descriptions provide
     # explicit odds for the hero bag; the random doll body has no odds, so its
     # ten eligible bodies are selected evenly (Nian is explicitly excluded).
@@ -1505,13 +1518,32 @@ def _authored_reward_template(
 
 
 def _authored_reward_entries(
-    entry: _MappedReward, *, player_level: int, rng: random.Random,
+    entry: _MappedReward, *, player_level: int, class_name: str,
+    rng: random.Random,
 ) -> tuple[tuple[str, int], ...]:
     """(template id, amount) for one rolled entry, expanding placeholders."""
 
     expansion = _AUTHORED_REWARD_EXPANSIONS.get(entry.template_id)
     if expansion is not None:
         return expansion
+    if entry.template_id == "@glory_jewel":
+        jewel = {
+            "warrior": "jewel_bgh_warrior",
+            "mage": "jewel_bgh_mage",
+            "ranger": "jewel_bgh_ranger",
+            "dwarf": "jewel_bgh_dwarf",
+        }.get(str(class_name).casefold())
+        if jewel is None:
+            raise ValueError(
+                "Surprise Jewel Pack requires a supported character class"
+            )
+        return ((jewel, entry.amount),)
+    if entry.template_id == "@strenuousness_jewel":
+        return ((rng.choice((
+            "jewel_bgh_key_drop_magic",
+            "jewel_bgh_key_drop_rare",
+            "jewel_bgh_key_drop_epic",
+        )), entry.amount),)
     if entry.template_id == "@community_coins":
         return (("community_coins", rng.choice(_COMMUNITY_COIN_AMOUNTS)),)
     return ((
@@ -1590,7 +1622,8 @@ def _authored_chance_contents(
         ChestReward(_definition(static_database_path, reward_template_id), amount)
         for entry in selected
         for reward_template_id, amount in _authored_reward_entries(
-            entry, player_level=player_level, rng=rng,
+            entry, player_level=player_level, class_name=class_name,
+            rng=rng,
         )
     )
     if not rewards:

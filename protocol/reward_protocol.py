@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
+    BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY,
+    BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY,
+    BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY,
+    BIG_GAME_HUNT_MEDIUM_BUNDLE_PRODUCT_KEY,
+    BIG_GAME_HUNT_SMALL_BUNDLE_PRODUCT_KEY,
     DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS,
     DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY,
     DEFEAT_UNDEFEATABLE_HERO_BAG_PRODUCT_KEY,
@@ -264,6 +269,19 @@ def resolve_ocp_booking_reward(
         if attire_item_id is None:
             raise ValueError(
                 f'Event attire is not available for class {class_name or class_id!r}'
+            )
+        if offer_id == BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_biggamehunt_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_biggamehunt_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
     bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
@@ -703,6 +721,28 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(
         180_208, 9.90, False, "€",
         DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY, "", "",
+    ),
+    # Native Big Game Hunt packages. Prices and package icons come from these
+    # existing PaymentPackages rows; rewards are routed after confirmation.
+    OCPOffer(
+        180_209, 9.90, False, "€",
+        BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_210, 9.90, False, "€",
+        BIG_GAME_HUNT_SMALL_BUNDLE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_211, 9.90, False, "€",
+        BIG_GAME_HUNT_MEDIUM_BUNDLE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_212, 9.90, False, "€",
+        BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_213, 9.90, False, "€",
+        BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY, "", "",
     ),
 )
 

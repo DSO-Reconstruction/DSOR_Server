@@ -29,6 +29,17 @@ DEFEAT_UNDEFEATABLE_ATTIRE_ITEMS_BY_CLASS = {
     "ranger": "costume_event_pass_dtu_ranger",
     "dwarf": "costume_event_pass_dtu_dwarf",
 }
+BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY = "8_event_pass_bgh_1.0000_0_NONE"
+BIG_GAME_HUNT_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_bgh_warrior",
+    "mage": "costume_event_pass_bgh_mage",
+    "ranger": "costume_event_pass_bgh_ranger",
+    "dwarf": "costume_event_pass_bgh_dwarf",
+}
+BIG_GAME_HUNT_SMALL_BUNDLE_PRODUCT_KEY = "8_bgh_box_small_1.0000_0_NONE"
+BIG_GAME_HUNT_MEDIUM_BUNDLE_PRODUCT_KEY = "8_bgh_box_med_1.0000_0_NONE"
+BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY = "8_bgh_box_big_1.0000_0_NONE"
+BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY = "8_glory_jewel_pack_1_1.0000_0_NONE"
 
 DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY = (
     "101_lava_essence_pack_1.0000_0_NONE"
@@ -58,6 +69,11 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     DEFEAT_UNDEFEATABLE_HERO_BAG_PRODUCT_KEY: "boss_bonus_event_02",
     DEFEAT_UNDEFEATABLE_ROAD_TO_TRIUMPH_PRODUCT_KEY: "boss_bonus_event_02",
     DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY: "boss_bonus_event_02",
+    BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY: "scaling_dungeon_kill_event_01",
+    BIG_GAME_HUNT_SMALL_BUNDLE_PRODUCT_KEY: "scaling_dungeon_kill_event_01",
+    BIG_GAME_HUNT_MEDIUM_BUNDLE_PRODUCT_KEY: "scaling_dungeon_kill_event_01",
+    BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY: "scaling_dungeon_kill_event_01",
+    BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY: "scaling_dungeon_kill_event_01",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -66,6 +82,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         FULL_MOON_ATTIRE_PRODUCT_KEY,
         NEW_MOON_ATTIRE_PRODUCT_KEY,
         DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY,
+        BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -73,6 +90,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     NEW_MOON_ATTIRE_PRODUCT_KEY: NEW_MOON_ATTIRE_ITEMS_BY_CLASS,
     DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY:
         DEFEAT_UNDEFEATABLE_ATTIRE_ITEMS_BY_CLASS,
+    BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY: BIG_GAME_HUNT_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -106,6 +124,43 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
             ("potion_health_restore_rarity_02", 10),
             ("respawn_soulguardian_1", 10),
         ),
+    # Guaranteed contents from the native BGH offer groups. Keep the jewel
+    # pack intact so the client's normal random-reward table remains active.
+    BIG_GAME_HUNT_SMALL_BUNDLE_PRODUCT_KEY: (
+        ("difficulty_key_common", 300),
+        ("e_bgh_all_drop_ingredient", 200),
+        ("e_bgh_all_ingredient", 3),
+        ("scaling_dungeon_boss_key_01", 100),
+    ),
+    BIG_GAME_HUNT_MEDIUM_BUNDLE_PRODUCT_KEY: (
+        ("e_bgh_boss_all_travelitem", 2),
+        ("e_bgh_boss_heredur_travelitem", 2),
+        ("e_bgh_boss_herald_travelitem", 2),
+        ("e_bgh_boss_sargon_travelitem", 2),
+        ("e_bgh_boss_nefertari_travelitem", 2),
+        ("e_bgh_boss_balor_travelitem", 2),
+        ("e_bgh_boss_mortis_travelitem", 2),
+        ("e_bgh_boss_guardian_black", 2),
+        ("e_bgh_boss_guardian_all", 2),
+    ),
+    BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY: (
+        ("difficulty_key_common", 380),
+        ("e_bgh_all_drop_ingredient", 250),
+        ("e_bgh_all_ingredient", 5),
+        ("scaling_dungeon_boss_key_01", 120),
+        ("e_bgh_boss_all_travelitem", 3),
+        ("e_bgh_boss_balor_travelitem", 3),
+        ("e_bgh_boss_guardian_all", 3),
+        ("e_bgh_boss_guardian_black", 3),
+        ("e_bgh_boss_herald_travelitem", 3),
+        ("e_bgh_boss_heredur_travelitem", 3),
+        ("e_bgh_boss_mortis_travelitem", 3),
+        ("e_bgh_boss_nefertari_travelitem", 3),
+        ("e_bgh_boss_sargon_travelitem", 3),
+        ("bgh_event_chest", 1),
+    ),
+    BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY:
+        (("surprise_jewel_pack_glory", 1),),
 }
 
 # Older server versions advertised one synthetic key per class. Keep their

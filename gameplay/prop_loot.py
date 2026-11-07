@@ -232,14 +232,15 @@ def _drop_cells():
 
 
 def chest_drop_positions(
-    origin: tuple[float, float, float], count: int,
+    origin: tuple[float, float, float], count: int, *,
+    spacing: float = CHEST_DROP_SPACING,
 ) -> tuple[tuple[float, float, float], ...]:
     cells = _drop_cells()
     return tuple(
         (
-            float(origin[0]) + dx * CHEST_DROP_SPACING,
+            float(origin[0]) + dx * max(0.1, float(spacing)),
             float(origin[1]),
-            float(origin[2]) + dz * CHEST_DROP_SPACING,
+            float(origin[2]) + dz * max(0.1, float(spacing)),
         )
         for dx, dz in (next(cells) for _ in range(max(0, int(count))))
     )

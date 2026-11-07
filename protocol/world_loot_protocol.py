@@ -2355,7 +2355,9 @@ def _scatter_positions(
     # ground position while keeping the whole reward pile near the corpse.
     columns = math.ceil(math.sqrt(count))
     rows = math.ceil(count / columns)
-    spacing = 0.75
+    # Ground-loot sprites are wider than the old sub-metre spacing. Leave a
+    # clear gap so dense boss rewards remain individually visible and clickable.
+    spacing = 0.9
     start_x = -0.5 * (columns - 1) * spacing
     start_z = -0.5 * (rows - 1) * spacing
     positions = []
@@ -2965,15 +2967,14 @@ def generate_monster_loot(
                 )
                 else 0
             )
+            loot_definition = _loot_definition_from_row(row)
             specifications.append((
-                LootItemDefinition(
-                    str(template_id),
-                    item_category,
-                    str(row.get("AutoPickUp") or "None"),
-                    "0", "0", "",
-                ),
+                loot_definition,
                 max(1, int(amount)),
-                1,
+                (
+                    equipment_item_level
+                    if loot_definition.slot_types else 1
+                ),
                 "",
                 equipment_rarity,
             ))

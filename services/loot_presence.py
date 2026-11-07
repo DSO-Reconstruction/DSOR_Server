@@ -65,7 +65,10 @@ class LootPresenceService:
         complete reward pile on top of older loot.
         """
 
-        if _map_key(getattr(session, "gameplay_map", "")) != "e_bos_arena_01":
+        map_id = _map_key(getattr(session, "gameplay_map", ""))
+        is_bgh_map = map_id.startswith("e_bgh_boss_")
+        is_circus_arena = map_id == "e_bos_arena_01"
+        if not (is_bgh_map or is_circus_arena):
             return tuple(drops)
         with session.flow_lock:
             occupied = [
@@ -74,7 +77,7 @@ class LootPresenceService:
                 if getattr(drop.item, "ground_position", None) is not None
             ]
         placed = []
-        minimum_spacing = 0.7
+        minimum_spacing = 0.9 if is_bgh_map else 0.7
         for drop in drops:
             position = getattr(drop.item, "ground_position", None)
             if position is None:
@@ -92,7 +95,11 @@ class LootPresenceService:
             if not is_free(selected):
                 found = False
                 for ring in range(1, 13):
-                    radius = 0.85 + ring * 0.55
+                    radius = (
+                        0.7 + ring * 0.25
+                        if is_bgh_map
+                        else 0.85 + ring * 0.55
+                    )
                     for step in range(16):
                         angle = (step + (ring % 2) * 0.5) * (math.tau / 16)
                         candidate = (
@@ -204,6 +211,16 @@ class LootPresenceService:
         its peer. The shared map lock serializes allocation across every
         session and advances the map high-water mark before it is released.
         """
+
+        if (
+            str(getattr(encounter, "map_id", "")).casefold() == MORTIS_MAP
+            and str(getattr(monster, "template_id", "")).casefold()
+            != MORTIS_FINAL_FORM
+        ):
+            # Mortis is a multi-form encounter. Intermediate forms and the
+            # transition adds are not kill-reward sources; only the unbound
+            # final form may allocate loot.
+            return None
 
         with session.flow_lock:
             map_id = str(session.gameplay_map or "")
@@ -381,6 +398,33 @@ class LootPresenceService:
             # hosts have no event catalog; preserve the allocation hot path.
             event_drops = ()
             event_loot = ()
+
+        if (
+            str(getattr(encounter, "map_id", "")).casefold() == MORTIS_MAP
+            and str(getattr(monster, "template_id", "")).casefold()
+            == MORTIS_FINAL_FORM
+            and status_effects
+        ):
+            dragon_bone_effect_id = load_status_runtime_catalog(
+                encounter.static_database_path
+            ).effect_ids.get("dragon_bone_drop_buff")
+            if dragon_bone_effect_id is not None and any(
+                int(effect.effect_id) == int(dragon_bone_effect_id)
+                for effect in status_effects
+            ):
+                # Normal 0, Painful 1, Excruciating 2, Fatal 3,
+                # Infernal/PW Infernal 4/5, Merciless/PW Merciless 6/7,
+                # and Bloodshed/PW Bloodshed 8/9.
+                dragon_bones_by_difficulty = (
+                    1, 2, 3, 4, 5, 5, 15, 15, 25, 25,
+                )
+                amount = dragon_bones_by_difficulty[max(
+                    0, min(
+                        int(map_difficulty),
+                        len(dragon_bones_by_difficulty) - 1,
+                    ),
+                )]
+                event_loot = (*event_loot, ("dragon_bones", amount))
 
         # Database/cache work is pure and can take milliseconds. Generate with
         # provisional IDs, then reserve one exact map-global range in a tiny

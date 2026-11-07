@@ -51,6 +51,7 @@ from dso_server.gameplay.boss_encounter_policy import (
 )
 from dso_server.gameplay.event_spawn_areas import event_area_spawn_rows
 from dso_server.gameplay.local_monster_state import (
+    _bgh_boss_health_multiplier,
     _grounded_spawn_position,
     _load_monster,
     _load_runtime_definition,
@@ -159,6 +160,7 @@ from dso_server.protocol.world_loot_protocol import (
     roll_new_equipment_enchantments,
 )
 from dso_server.gameplay.prop_loot import (
+    CHEST_DROP_SPACING,
     chest_drop_positions,
     load_prop_loot_catalog,
     roll_prop_loot,
@@ -167,6 +169,43 @@ from dso_server.gameplay.quest_content import load_quest_catalog
 from dso_server.paths import DEFAULT_QUESTS_PATH
 from dso_server.gameplay.mortis_arena import select_spawn_rows as select_mortis_spawn_rows
 from dso_server.services.mortis_arena import arena as mortis_arena
+
+
+_BGH_ALL_BOSS_SEQUENCE = {
+    "e_nightmare_portal": "boss_heredur_bgh",
+    "boss_heredur_bgh": "boss_sargon_bgh",
+    "boss_sargon_bgh": "boss_herald_bgh",
+    "boss_herald_bgh": "boss_nefertari_bgh",
+    "boss_nefertari_bgh": "boss_balor_bgh",
+    "boss_balor_bgh": "boss_mortis_mounted_bgh",
+}
+_BGH_SINGLE_BOSS_PORTALS = {
+    "e_bgh_boss_balor": (
+        "boss_balor_bgh_single", "e_nightmare_portal_balor",
+    ),
+    "e_bgh_boss_guardian_black": (
+        "bgh_guardian_boss_andermagic", "e_nightmare_portal_guardian_black",
+    ),
+    "e_bgh_boss_herald": (
+        "boss_herald_bgh_single", "e_nightmare_portal_herald",
+    ),
+    "e_bgh_boss_heredur": (
+        "boss_heredur_bgh_single", "e_nightmare_portal_heredur",
+    ),
+    "e_bgh_boss_mortis": (
+        "boss_mortis_mounted_bgh_single", "e_nightmare_portal_mortis",
+    ),
+    "e_bgh_boss_nefertari": (
+        "boss_nefertari_bgh_single", "e_nightmare_portal_nefertari",
+    ),
+    "e_bgh_boss_sargon": (
+        "boss_sargon_bgh_single", "e_nightmare_portal_sargon",
+    ),
+}
+_BGH_OLD_GLORY_RING_TEMPLATES = frozenset({
+    "warrior_unique_ring_bgh", "mage_unique_ring_bgh",
+    "ranger_unique_ring_bgh", "dwarf_unique_ring_bgh",
+})
 
 
 _MORTIS_MIRROR_ATTACK_TEMPLATES = {
@@ -1992,6 +2031,15 @@ class MapEventService:
             return
         self._flush_due_map_event_starts(runtime)
         kind = str(event_type).casefold()
+        if kind == "playerkilledmonster":
+            params = tuple(str(value).casefold() for value in params)
+            bgh_single = _BGH_SINGLE_BOSS_PORTALS.get(
+                map_key(runtime.map_id)
+            )
+            if bgh_single is not None and bgh_single[0] in params:
+                # The server materializes the single boss directly, while the
+                # retail close-map rule is authored against its portal actor.
+                params = (*params, bgh_single[1])
         if kind == "playerenteredmap":
             mortis = mortis_arena(self, runtime)
             if mortis is not None:
@@ -2131,6 +2179,26 @@ class MapEventService:
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        if (
+            kind == "playerkilledmonster"
+            and map_key(runtime.map_id) in {
+                "e_bgh_boss_all", "e_bgh_boss_guardian_all",
+            }
+            and any(
+                str(template).startswith("e_nightmare_portal")
+                for template in context.params
+            )
+        ):
+            # In the combined and four-guardian arenas the portal opens the
+            # boss sequence; its static CloseSignal must not terminate the run
+            # at the first kill.
+            rules = tuple(
+                rule for rule in rules
+                if rule.signal_id.casefold() not in {
+                    "close_map_e_bgh_boss_all",
+                    "close_map_e_bgh_boss_guardian_all",
+                }
+            )
         if (
             map_key(runtime.map_id) == "e_bos_arena_01"
             and kind == "playerkilledmonster"
@@ -3038,6 +3106,7 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        self._advance_bgh_all_boss_sequence(s, runtime, monsters)
         self._maybe_open_circus_random_gate(s, runtime, templates)
         if (
             runtime is not None
@@ -3089,6 +3158,107 @@ class MapEventService:
             self._resolve_fractured_planes_floor_clear(
                 s, runtime, score_rules=score_rules,
             )
+
+    def _advance_bgh_all_boss_sequence(
+            self, s: Session, runtime: MapEventRuntime | None, monsters,
+    ) -> None:
+        """Spawn the next authored boss in the combined BGH arena."""
+
+        if runtime is None or map_key(runtime.map_id) != "e_bgh_boss_all":
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        killed = tuple(
+            monster for monster in monsters
+            if str(getattr(monster, "template_id", "")).casefold()
+            in _BGH_ALL_BOSS_SEQUENCE
+        )
+        if not killed:
+            return
+        for dead in killed:
+            dead_template = str(dead.template_id).casefold()
+            next_template = _BGH_ALL_BOSS_SEQUENCE.get(dead_template)
+            if next_template is None:
+                continue
+            with runtime.lock:
+                if next_template in runtime.bgh_sequence_spawned:
+                    continue
+                runtime.bgh_sequence_spawned.add(next_template)
+            with combat.lock:
+                position = tuple(
+                    float(value)
+                    for value in combat.monster_positions.get(
+                        int(dead.actor_id), dead.position,
+                    )
+                )
+            sequence_index = tuple(_BGH_ALL_BOSS_SEQUENCE.values()).index(
+                next_template
+            )
+            row = GatedSpawnRow(
+                row_id=2_000_000 + sequence_index,
+                event_set_row=-1,
+                template_id=next_template,
+                position=position,
+            )
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            timer_factory = getattr(
+                getattr(runtime, "scheduler", None), "timer", None,
+            ) or getattr(s, "gameplay_deadline_timer", None)
+            if not callable(timer_factory):
+                _log(
+                    "Big Game Hunt boss sequence has no deadline scheduler; "
+                    f"spawning {next_template!r} immediately"
+                )
+                self._spawn_event_monsters(
+                    runtime, sessions, (), extra_rows=(row,),
+                )
+                continue
+            timer = timer_factory(
+                1.5,
+                self._spawn_bgh_sequence_boss,
+                args=(runtime, s, row, dead_template, next_template),
+            )
+            timer.start()
+            _log(
+                f"Big Game Hunt combined arena queued {next_template!r} "
+                f"1.5s after {dead_template!r} died"
+            )
+
+    def _spawn_bgh_sequence_boss(
+            self, runtime, fallback_session, row, previous_template,
+            next_template,
+    ) -> None:
+        """Spawn a chained Blazing Inferno boss after its short pause."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        sessions = self._map_event_sessions(runtime)
+        if not sessions:
+            with fallback_session.flow_lock:
+                still_in_instance = (
+                    fallback_session.connected
+                    and getattr(
+                        fallback_session, "gameplay_map_event_runtime", None,
+                    ) is runtime
+                )
+            if still_in_instance:
+                sessions = (fallback_session,)
+        if not sessions:
+            _log(
+                f"Big Game Hunt delayed spawn of {next_template!r} "
+                "cancelled because the arena has no active players"
+            )
+            return
+        self._spawn_event_monsters(
+            runtime, sessions, (), extra_rows=(row,),
+        )
+        _log(
+            f"Big Game Hunt combined arena spawned {next_template!r} "
+            f"after {previous_template!r}"
+        )
 
     def _unlock_parallel_world_boss_reward_chest(
             self, runtime: MapEventRuntime | None, templates: tuple[str, ...],
@@ -3815,6 +3985,12 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
+        is_bgh_mythic_chest = (
+            loot_list_id == _BLOOD_CHEST_LOOT_LIST
+            and map_key(getattr(s, "gameplay_map", "")) in {
+                "e_bgh_boss_all", "e_bgh_boss_guardian_all",
+            }
+        )
         is_parallel_world_boss_chest = (
             str(definition.instance_id).casefold()
             in PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS
@@ -4212,6 +4388,115 @@ class MapEventService:
             # ten demon herbs. The client export has the loot-list reference
             # but omits its server-side contents, so award two per prop.
             specifications = [("demon_herb", 2)]
+        elif is_bgh_mythic_chest:
+            rng = random.SystemRandom()
+            try:
+                tier_value = definition.variation_difficulty
+                if tier_value is None:
+                    with s.flow_lock:
+                        tier_value = max(
+                            int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+                            int(getattr(s, "gameplay_scaling_difficulty", 0) or 0),
+                        )
+                tier = max(0, min(9, int(tier_value)))
+                with s.flow_lock:
+                    character = s.gameplay_character
+                    player_level = max(
+                        1, int(getattr(character, "level", 1) or 1),
+                    )
+                    class_name = CLASS_NAMES[
+                        int(getattr(character, "class_id", 0))
+                    ].lower()
+                    access_id = str(
+                        getattr(s, "gameplay_map_access_id", "") or ""
+                    ) or str(getattr(s, "gameplay_map", "") or "")
+
+                # Each category becomes a separate world-loot object. The
+                # shared chest placement helper spreads every object around
+                # the opener, so the guaranteed reward types do not overlap.
+                specifications = [
+                    (
+                        "money_vc_gold",
+                        max(1, round(
+                            player_level * rng.uniform(2.8, 4.0)
+                            * (tier + 1) / 10.0
+                        )),
+                    ),
+                    ("money_rc", 10 * (tier + 1)),
+                ]
+                gems = roll_possible_reward_gems(
+                    self.static_database_path, access_id, 1, rng,
+                )
+                if not gems:
+                    # BGH map access records may omit the retail Possible
+                    # Rewards gem descriptor. Keep the chest's gem reward
+                    # guaranteed and choose from the rank band authored for
+                    # the selected difficulty.
+                    from dso_server.protocol.world_loot_protocol import (
+                        BOSS_GEM_RANKS_BY_DIFFICULTY,
+                    )
+
+                    loot_cache = prime_world_loot_cache(
+                        self.static_database_path,
+                    )
+                    gem_ranks = BOSS_GEM_RANKS_BY_DIFFICULTY[tier]
+                    gem_candidates = tuple(
+                        definition.template_id
+                        for rank in gem_ranks
+                        for definition in loot_cache.standard_gems_by_rank.get(
+                            rank, (),
+                        )
+                    )
+                    if gem_candidates:
+                        gems = (rng.choice(gem_candidates),)
+                specifications.extend((template_id, 1) for template_id in gems)
+
+                from dso_server.protocol.chest_loot_protocol import (
+                    roll_chest_contents,
+                )
+                from dso_server.protocol.world_loot_protocol import (
+                    EQUIPMENT_RARITIES,
+                )
+
+                difficulty_weights = (
+                    prime_world_loot_cache(self.static_database_path)
+                    .rarity_weights_by_difficulty.get(tier, (0, 0, 1, 0, 0))
+                )
+                rarity_indices = (2, 3, 4)
+                rarity_weights = tuple(
+                    difficulty_weights[index] for index in rarity_indices
+                )
+                if not any(rarity_weights):
+                    rarity_weights = (0, 0, 1)
+                rarity_index = rng.choices(
+                    rarity_indices, weights=rarity_weights, k=1,
+                )[0]
+                rarity = EQUIPMENT_RARITIES[rarity_index].casefold()
+                equipment = roll_chest_contents(
+                    self.static_database_path,
+                    f"all_class_all_equip_{rarity}_01",
+                    player_level=player_level,
+                    class_name=class_name,
+                    rng=rng,
+                )
+                for reward in equipment.rewards:
+                    template_id = reward.definition.template_id
+                    specifications.append((template_id, int(reward.amount)))
+                    equipment_rewards_by_template.setdefault(
+                        template_id, [],
+                    ).append(reward)
+
+                entries = load_prop_loot_catalog().entries(loot_list_id)
+                if entries:
+                    specifications.extend(
+                        self._roll_map_chest_loot(s, entries)
+                    )
+            except (OSError, ValueError, sqlite3.Error) as exc:
+                _log(
+                    f"cannot roll Big Game Hunt Mythic Chest: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                specifications = []
         elif loot_list_id == _BLOOD_CHEST_LOOT_LIST:
             specifications = [
                 ("money_rc", 10),
@@ -4319,7 +4604,13 @@ class MapEventService:
             origin = encounter.coordinate_frame.wire_to_world(
                 last_move.relative_position
             )
-        positions = chest_drop_positions(origin, len(specifications))
+        positions = chest_drop_positions(
+            origin,
+            len(specifications),
+            spacing=(
+                0.9 if is_bgh_mythic_chest else CHEST_DROP_SPACING
+            ),
+        )
         try:
             item_rows = prime_world_loot_cache(self.static_database_path).items_by_id
             drops = []
@@ -4338,12 +4629,31 @@ class MapEventService:
                 item_definition = load_purchase_item_definition(
                     self.static_database_path, template_id,
                 )
-                item = _new_item(item_definition, 0, amount, player_level)
+                is_bgh_old_glory_ring = (
+                    is_bgh_mythic_chest
+                    and template_id.casefold()
+                    in _BGH_OLD_GLORY_RING_TEMPLATES
+                )
+                item_level = (
+                    100 if is_bgh_old_glory_ring else player_level
+                )
+                item_level = min(
+                    max(
+                        int(item_definition.minimum_item_level),
+                        int(item_level),
+                    ),
+                    max(1, int(item_definition.maximum_item_level)),
+                )
+                item = _new_item(
+                    item_definition, 0, amount, item_level,
+                )
+                if item_definition.slot_types:
+                    item.item_level = item_level
                 item.ground_position = position
                 reward_queue = equipment_rewards_by_template.get(template_id)
                 if reward_queue:
                     reward = reward_queue.pop(0)
-                    item.item_level = int(reward.item_level or player_level)
+                    item.item_level = item_level
                     if reward.rarity is not None:
                         item.rarity = int(reward.rarity)
                     if reward.appearance:
@@ -4403,28 +4713,39 @@ class MapEventService:
             return 0
         instance_key = CharacterService._gameplay_instance_key(s)
         map_id = str(s.gameplay_map or "")
-        with self.gameplay_world_lock:
-            counters = getattr(self, "gameplay_world_next_item_ids", None)
-            if counters is None:
-                counters = self.gameplay_world_next_item_ids = {}
-            with s.flow_lock:
-                first = max(
-                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
-                    int(counters.get(instance_key, RUNTIME_ITEM_ID_BASE)),
+        with s.gameplay_world_loot_position_lock:
+            if is_bgh_mythic_chest:
+                drops = list(
+                    CharacterService._separate_world_loot_positions(s, drops)
                 )
-            end = first + len(drops)
-            counters[instance_key] = end
-            counters[map_id] = max(end, int(counters.get(map_id, RUNTIME_ITEM_ID_BASE)))
-            with s.flow_lock:
-                for offset, drop in enumerate(drops):
-                    item_id = first + offset
-                    drop.item.item_id = item_id
-                    drop.item.field_18 = item_id & 0xFFFF
-                    s.gameplay_world_loot[item_id] = drop
-                s.gameplay_next_item_id = max(
-                    int(getattr(s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE)),
-                    end,
+            with self.gameplay_world_lock:
+                counters = getattr(self, "gameplay_world_next_item_ids", None)
+                if counters is None:
+                    counters = self.gameplay_world_next_item_ids = {}
+                with s.flow_lock:
+                    first = max(
+                        int(getattr(
+                            s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE,
+                        )),
+                        int(counters.get(instance_key, RUNTIME_ITEM_ID_BASE)),
+                    )
+                end = first + len(drops)
+                counters[instance_key] = end
+                counters[map_id] = max(
+                    end, int(counters.get(map_id, RUNTIME_ITEM_ID_BASE)),
                 )
+                with s.flow_lock:
+                    for offset, drop in enumerate(drops):
+                        item_id = first + offset
+                        drop.item.item_id = item_id
+                        drop.item.field_18 = item_id & 0xFFFF
+                        s.gameplay_world_loot[item_id] = drop
+                    s.gameplay_next_item_id = max(
+                        int(getattr(
+                            s, "gameplay_next_item_id", RUNTIME_ITEM_ID_BASE,
+                        )),
+                        end,
+                    )
         CharacterService._reconcile_world_loot_visibility(
             s, label="map-chest-loot",
         )
@@ -7776,6 +8097,9 @@ class MapEventService:
                     monster_level=runtime.monster_level,
                     scaling_difficulty=runtime.scaling_difficulty,
                     coefficient_stats=coefficient_stats,
+                    health_multiplier=_bgh_boss_health_multiplier(
+                        runtime.map_id, row.template_id,
+                    ),
                     non_targetable=is_tower_hardware(
                         database_path, runtime.map_id, row.template_id
                     ),
