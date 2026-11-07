@@ -25,10 +25,22 @@ _BOSS_TEMPLATE_OVERRIDES = {
     "e_bos_mortis_pw_boss": "boss_mortis_mounted",
 }
 
-# This is the Between-Group-Hunt portal selector, not an encounter arena. Its
-# authored boss rows are menu previews for the destination choices and must
-# never be materialized as local combat actors.
-_BOSS_SELECTOR_MAPS = {"e_bgh_boss_all"}
+# The combined Blazing Inferno arena starts with a destructible central portal.
+# Keep that portal as the initial actor; its death starts the six-boss sequence.
+_BGH_ALL_SEQUENCE_MAPS = {"e_bgh_boss_all"}
+
+# These arenas start a single boss immediately. The authored portal templates
+# carry retail's next-boss Minion chain, but the single-boss travel items must
+# instantiate the concrete boss without that portal.
+_BGH_SINGLE_BOSS_MAPS = frozenset({
+    "e_bgh_boss_balor",
+    "e_bgh_boss_guardian_black",
+    "e_bgh_boss_herald",
+    "e_bgh_boss_heredur",
+    "e_bgh_boss_mortis",
+    "e_bgh_boss_nefertari",
+    "e_bgh_boss_sargon",
+})
 
 # These arenas reveal their boss only when the player reaches its entrance.
 APPROACH_BOSS_MAPS = frozenset({"a0407_boss", "c2310_boss", "a0404_culttower03"})
@@ -351,8 +363,20 @@ def _select_boss_spawn_candidates(
              or row[2], *row[3:])
             for row in rows
         )
-    if str(map_id).casefold() in _BOSS_SELECTOR_MAPS:
-        return ()
+    if str(map_id).casefold() in _BGH_ALL_SEQUENCE_MAPS:
+        # This map is an encounter arena, not the destination selector: the
+        # authored e_nightmare_portal is destroyed before the first boss.
+        # Preserve the portal template so the server can run that sequence.
+        return rows
+
+    bgh_override = _BOSS_TEMPLATE_OVERRIDES.get(str(map_id).casefold())
+    if (
+        str(map_id).casefold() in _BGH_SINGLE_BOSS_MAPS
+        and bgh_override
+        and _is_concrete_boss(static_database_path, bgh_override)
+    ):
+        anchor = rows[0]
+        return ((*anchor[:2], bgh_override, -1, *anchor[4:]),)
 
     groups: dict[int, list[tuple]] = {}
     for row in rows:

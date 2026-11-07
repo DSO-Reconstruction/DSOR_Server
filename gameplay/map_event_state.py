@@ -1992,6 +1992,10 @@ class MapEventRuntime:
     f4203_ram_impact_started: bool = False
     f4203_ram_gate_opened: bool = False
     kill_score: int = 0
+    # BGH's combined Blazing Inferno arena is a server-owned sequential fight.
+    # This set makes each chained boss spawn idempotent under repeated kill
+    # signals and reconnect/replay paths.
+    bgh_sequence_spawned: set[str] = field(default_factory=set)
     fractured_planes_kill_seen: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
     generation: int = 0

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.mortis_arena import (
+    MAP_ID as MORTIS_MAP,
+    UNBOUND as MORTIS_FINAL_FORM,
+)
 
 def location_effect_waits_for_hit(visual, geometry) -> bool:
     """Is this location effect left out of the cast, for a hit to place?
@@ -653,6 +657,15 @@ class PlayerProjectileService:
                                 )
                             ),
                         )
+                    elif (
+                        str(encounter.map_id).casefold() == MORTIS_MAP
+                        and str(monster.template_id).casefold()
+                        != MORTIS_FINAL_FORM
+                    ):
+                        # Minimal embedded hosts can omit the world-loot
+                        # allocator; keep Mortis' earlier scripted forms
+                        # rewardless there as well.
+                        loot_generation = None
                     else:
                         with s.flow_lock:
                             next_item_id = s.gameplay_next_item_id

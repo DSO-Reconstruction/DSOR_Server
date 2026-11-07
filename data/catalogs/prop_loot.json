@@ -64,6 +64,39 @@
       "entries": [
         {"item": "e_ful_02_vargulf_01_log_01", "amount": [1, 1]}
       ]
+    },
+    "CHEST_lootlist_BLOODSHED": {
+      "comment": "Big Game Hunt Mythic Chest in the all-six-boss and group Guardian Blazing Inferno arenas. Ring of Old Glory is class-specific. DSOFun confirms both sources but does not publish a rate; 5% is the server baseline pending a retail capture.",
+      "entries": [
+        {
+          "map": "e_bgh_boss_all",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "item_options_by_class": {
+            "warrior": ["warrior_unique_ring_bgh"],
+            "mage": ["mage_unique_ring_bgh"],
+            "ranger": ["ranger_unique_ring_bgh"],
+            "dwarf": ["dwarf_unique_ring_bgh"]
+          }
+        },
+        {
+          "map": "e_bgh_boss_guardian_all",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "item_options_by_class": {
+            "warrior": ["warrior_unique_ring_bgh"],
+            "mage": ["mage_unique_ring_bgh"],
+            "ranger": ["ranger_unique_ring_bgh"],
+            "dwarf": ["dwarf_unique_ring_bgh"]
+          }
+        },
+        {
+          "map": "e_bgh_boss_guardian_all",
+          "chance": 0.2,
+          "amount": [1, 1],
+          "item": "jewel_bgh_key_drop_magic"
+        }
+      ]
     }
   },
   "aliases": {

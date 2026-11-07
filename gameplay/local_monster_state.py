@@ -1427,6 +1427,21 @@ def _monster_character_set(
 _ELITE_RANK_FAMILIES = ("champion", "leader", "guardian")
 
 
+def _bgh_boss_health_multiplier(map_id: str, template_id: str) -> float:
+    """Raise authored BGH boss health while retaining normal map scaling."""
+
+    map_key = str(map_id).casefold()
+    template_key = str(template_id).casefold()
+    if not map_key.startswith("e_bgh_boss_"):
+        return 1.0
+    if (
+        (template_key.startswith("boss_") and "_bgh" in template_key)
+        or template_key.startswith("bgh_guardian_boss_")
+    ):
+        return 4.0
+    return 1.0
+
+
 @lru_cache(maxsize=256)
 def _map_type(static_database_path: Path, map_id: str) -> str:
     with _open_read_only(static_database_path) as database:
@@ -1510,6 +1525,7 @@ def _load_monster(
     coefficient_stats: bool = False,
     non_targetable: bool = False,
     rank_override: str = "",
+    health_multiplier: float = 1.0,
 ) -> NewMonster:
     (
         hit_points,
@@ -1600,6 +1616,7 @@ def _load_monster(
         * health_curve
         * health_factor
         * difficulty_health
+        * max(0.0, float(health_multiplier))
     )
     if (str(resistance_text).strip() in {"", "0"}
             and is_pvp_progression_template(
@@ -3491,8 +3508,21 @@ def _load_dynamic_monster_encounter(
                         scripted_boss_templates.add(resolved.casefold())
                 fixed_rows = tuple(
                     row for row in all_fixed_rows
-                    if int(row[3]) not in scripted
-                    and (resolve_boss_template_id(static_database_path, str(row[2])) or str(row[2])).casefold() not in scripted_boss_templates
+                    if (
+                        int(row[3]) not in scripted
+                        or (
+                            str(map_id).casefold() in {
+                                "e_bgh_boss_all", "e_bgh_boss_guardian_all",
+                            }
+                            and str(row[2]).casefold().startswith(
+                                "e_nightmare_portal"
+                            )
+                        )
+                        or (resolve_boss_template_id(
+                            static_database_path, str(row[2])
+                        ) or str(row[2])).casefold()
+                        not in scripted_boss_templates
+                    )
                 )
             else:
                 fixed_rows = tuple(
@@ -3673,7 +3703,15 @@ def _load_dynamic_monster_encounter(
                 # The direct fallback normally cannot raise NavigationError;
                 # retain the authored transform if its implementation does.
                 pass
-        if inside_protected_waypoint(position):
+        bgh_sequence_portal = (
+            str(map_id).casefold() in {
+                "e_bgh_boss_all", "e_bgh_boss_guardian_all",
+            }
+            and str(template_id).casefold().startswith(
+                "e_nightmare_portal"
+            )
+        )
+        if inside_protected_waypoint(position) and not bgh_sequence_portal:
             return False
         if not mounted and not hazard and _spawn_position_is_occupied(occupied_positions, position):
             if not resolve_projected_overlap:
@@ -3728,7 +3766,7 @@ def _load_dynamic_monster_encounter(
                 return False
         runtime = _load_runtime_definition(
             static_database_path, str(template_id), int(actor_id),
-            stationary=mounted,
+            stationary=mounted or bgh_sequence_portal,
         )
         if runtime is None:
             return False
@@ -3745,6 +3783,9 @@ def _load_dynamic_monster_encounter(
                     static_database_path, map_id, template_id
                 ),
                 rank_override=rank_override,
+                health_multiplier=_bgh_boss_health_multiplier(
+                    map_id, template_id,
+                ),
             )
         except ValueError:
             return False

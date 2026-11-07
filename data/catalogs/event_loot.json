@@ -682,6 +682,311 @@
         "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
       }
+    ],
+    "e_bgh_boss_all": [
+      {
+        "comment": "Old Glory cloak from each of the six Blazing Inferno bosses. The official guide confirms the source but does not publish a rate; 5% is the server baseline pending a retail capture.",
+        "monsters": ["boss_heredur_bgh", "boss_sargon_bgh", "boss_herald_bgh", "boss_nefertari_bgh", "boss_balor_bgh", "boss_mortis_mounted_bgh"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_guardian_all": [
+      {
+        "comment": "Old Glory cloak from the group Guardian arena bosses. DSOFun confirms this source but does not publish a rate; 5% is the server baseline pending a retail capture.",
+        "monsters": ["bgh_guardian_boss_fire", "bgh_guardian_boss_poison", "bgh_guardian_boss_lightning", "bgh_guardian_boss_andermagic", "bgh_guardian_boss_golden"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "*": [
+      {
+        "item": "e_bgh_all_drop_ingredient",
+        "comment": "50% Empowered Sorcerer's Book drop from Parallel World worldbosses: 3 on PW Infernal, 6 on PW Merciless, 12 on PW Bloodshed. Difficulty tiers between these named PW modes use the nearest lower amount.",
+        "map_regions": ["Parallel_World"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 0.5},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 1, 1, 1, 1, 3, 3, 6, 6, 12],
+        "minimum_difficulty": 5,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_heredur": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Heredur arena.",
+        "monsters": ["boss_heredur_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "jewel_bgh_warrior",
+        "comment": "5% class-appropriate Jewel of Old Glory from the solo Heredur arena.",
+        "monsters": ["boss_heredur_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["jewel_bgh_warrior"],
+          "mage": ["jewel_bgh_mage"],
+          "ranger": ["jewel_bgh_ranger"],
+          "dwarf": ["jewel_bgh_dwarf"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_sargon": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Sargon arena.",
+        "monsters": ["boss_sargon_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "jewel_bgh_warrior",
+        "comment": "5% class-appropriate Jewel of Old Glory from the solo Sargon arena.",
+        "monsters": ["boss_sargon_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["jewel_bgh_warrior"],
+          "mage": ["jewel_bgh_mage"],
+          "ranger": ["jewel_bgh_ranger"],
+          "dwarf": ["jewel_bgh_dwarf"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_herald": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Herald arena.",
+        "monsters": ["boss_herald_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "jewel_bgh_warrior",
+        "comment": "5% class-appropriate Jewel of Old Glory from the solo Herald arena.",
+        "monsters": ["boss_herald_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["jewel_bgh_warrior"],
+          "mage": ["jewel_bgh_mage"],
+          "ranger": ["jewel_bgh_ranger"],
+          "dwarf": ["jewel_bgh_dwarf"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_nefertari": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Nefertari arena.",
+        "monsters": ["boss_nefertari_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bgh_ancestors_soul",
+        "comment": "15% Ancestor's Soul drop from the solo Nefertari arena.",
+        "monsters": ["boss_nefertari_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory ring blueprint from the solo Nefertari arena.",
+        "item": "recipe_unlock_bgh_ring_intensified",
+        "monsters": ["boss_nefertari_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory cloak blueprint from the solo Nefertari arena.",
+        "item": "recipe_unlock_bgh_backitem_intensified",
+        "monsters": ["boss_nefertari_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_balor": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Balor arena.",
+        "monsters": ["boss_balor_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bgh_ancestors_soul",
+        "comment": "15% Ancestor's Soul drop from the solo Balor arena.",
+        "monsters": ["boss_balor_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory ring blueprint from the solo Balor arena.",
+        "item": "recipe_unlock_bgh_ring_intensified",
+        "monsters": ["boss_balor_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory cloak blueprint from the solo Balor arena.",
+        "item": "recipe_unlock_bgh_backitem_intensified",
+        "monsters": ["boss_balor_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_bgh_boss_mortis": [
+      {
+        "item": "warrior_unique_backitem_bgh_heredur",
+        "comment": "5% class-appropriate Old Glory cloak from the solo Mortis arena.",
+        "monsters": ["boss_mortis_mounted_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options_by_class": {
+          "warrior": ["warrior_unique_backitem_bgh_heredur"],
+          "mage": ["mage_unique_backitem_bgh_heredur"],
+          "ranger": ["ranger_unique_backitem_bgh_heredur"],
+          "dwarf": ["dwarf_unique_backitem_bgh_heredur"]
+        },
+        "require_class_option": true,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_bgh_ancestors_soul",
+        "comment": "15% Ancestor's Soul drop from the solo Mortis arena.",
+        "monsters": ["boss_mortis_mounted_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory ring blueprint from the solo Mortis arena.",
+        "item": "recipe_unlock_bgh_ring_intensified",
+        "monsters": ["boss_mortis_mounted_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "15% Ancestral Glory cloak blueprint from the solo Mortis arena.",
+        "item": "recipe_unlock_bgh_backitem_intensified",
+        "monsters": ["boss_mortis_mounted_bgh_single"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.15},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
     ]
   }
 }

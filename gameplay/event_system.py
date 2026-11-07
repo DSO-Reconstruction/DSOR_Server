@@ -299,6 +299,10 @@ class MapLootEntry:
     minimum_difficulty: int = 0
     require_active_events: frozenset[str] = frozenset()
     require_inactive_events: frozenset[str] = frozenset()
+    # Optional scope for wildcard entries shared across maps (for example all
+    # Parallel World boss arenas). A configured region also matches its
+    # suffixed map families, such as Parallel_World_grimmag.
+    map_regions: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -755,81 +759,98 @@ class EventCatalog:
         raw_rank = str(monster_rank).casefold()
         rank = _rank_class(raw_rank)
         active_templates = self.active_template_ids(now)
+        current_map_regions = frozenset().union(*(
+            self.map_regions.get(current_map, ()) for current_map in current_maps
+        ))
         result = []
-        for current_map in current_maps:
-            for entry in self.map_loot.get(current_map, ()):
-                if int(map_difficulty) < entry.minimum_difficulty:
-                    continue
-                if not entry.require_active_events.issubset(active_templates):
-                    continue
-                if entry.require_inactive_events & active_templates:
-                    continue
-                if entry.monster_ranks and (
-                    raw_rank not in entry.monster_ranks
-                    and rank not in entry.monster_ranks
-                ):
-                    continue
-                if entry.monster_templates and template_id not in entry.monster_templates:
-                    continue
-                if entry.monster_regions and not (
-                    entry.monster_regions & monster_regions
-                ):
-                    continue
-                loot = entry.loot
-                if monster_level < loot.minimum_monster_level or (
-                    loot.maximum_monster_level
-                    and monster_level > loot.maximum_monster_level
-                ):
-                    continue
-                chance = loot.chances.get(
+        scoped_entries = [
+            (current_map, entry)
+            for current_map in current_maps
+            for entry in self.map_loot.get(current_map, ())
+        ]
+        scoped_entries.extend(
+            ("*", entry) for entry in self.map_loot.get("*", ())
+        )
+        for _scope, entry in scoped_entries:
+            if int(map_difficulty) < entry.minimum_difficulty:
+                continue
+            if entry.map_regions and not any(
+                actual == expected
+                or actual.startswith(f"{expected}_")
+                for actual in current_map_regions
+                for expected in entry.map_regions
+            ):
+                continue
+            if not entry.require_active_events.issubset(active_templates):
+                continue
+            if entry.require_inactive_events & active_templates:
+                continue
+            if entry.monster_ranks and (
+                raw_rank not in entry.monster_ranks
+                and rank not in entry.monster_ranks
+            ):
+                continue
+            if entry.monster_templates and template_id not in entry.monster_templates:
+                continue
+            if entry.monster_regions and not (
+                entry.monster_regions & monster_regions
+            ):
+                continue
+            loot = entry.loot
+            if monster_level < loot.minimum_monster_level or (
+                loot.maximum_monster_level
+                and monster_level > loot.maximum_monster_level
+            ):
+                continue
+            chance = loot.chances.get(
+                raw_rank,
+                loot.chances.get(rank, loot.chances.get("monster", 0.0)),
+            )
+            chance *= max(
+                0.0,
+                1.0 + float(drop_chance_bonus_by_item.get(
+                    loot.item_id.casefold(), 0.0,
+                )),
+            )
+            if entry.scale_chance_with_difficulty:
+                chance *= max(0.0, float(privileged_difficulty_multiplier))
+            if rng.random() >= min(1.0, chance):
+                continue
+            if entry.difficulty_amounts:
+                amount = entry.difficulty_amounts[
+                    max(0, min(
+                        int(map_difficulty),
+                        len(entry.difficulty_amounts) - 1,
+                    ))
+                ]
+            else:
+                low, high = loot.amounts.get(
                     raw_rank,
-                    loot.chances.get(rank, loot.chances.get("monster", 0.0)),
+                    loot.amounts.get(rank, loot.amounts.get("monster", (1, 1))),
                 )
-                chance *= max(
-                    0.0,
-                    1.0 + float(drop_chance_bonus_by_item.get(
-                        loot.item_id.casefold(), 0.0,
-                    )),
+                amount = rng.randint(low, high)
+            item_options = entry.item_options_by_class.get(
+                str(class_name).casefold(), ()
+            )
+            if (
+                not item_options
+                and entry.item_options_by_class
+                and entry.require_class_option
+            ):
+                continue
+            if not item_options and entry.item_options_by_class:
+                item_options = tuple(
+                    item_id
+                    for options in entry.item_options_by_class.values()
+                    for item_id in options
                 )
-                if entry.scale_chance_with_difficulty:
-                    chance *= max(0.0, float(privileged_difficulty_multiplier))
-                if rng.random() >= min(1.0, chance):
-                    continue
-                if entry.difficulty_amounts:
-                    amount = entry.difficulty_amounts[
-                        max(0, min(
-                            int(map_difficulty),
-                            len(entry.difficulty_amounts) - 1,
-                        ))
-                    ]
-                else:
-                    low, high = loot.amounts.get(
-                        raw_rank,
-                        loot.amounts.get(rank, loot.amounts.get("monster", (1, 1))),
-                    )
-                    amount = rng.randint(low, high)
-                item_options = entry.item_options_by_class.get(
-                    str(class_name).casefold(), ()
-                )
-                if (
-                    not item_options
-                    and entry.item_options_by_class
-                    and entry.require_class_option
-                ):
-                    continue
-                if not item_options and entry.item_options_by_class:
-                    item_options = tuple(
-                        item_id
-                        for options in entry.item_options_by_class.values()
-                        for item_id in options
-                    )
-                result.append(MapLootDrop(
-                    rng.choice(item_options)
-                    if item_options
-                    else loot.item_for_difficulty(map_difficulty),
-                    amount,
-                    entry.scale_stack_amount_with_difficulty,
-                ))
+            result.append(MapLootDrop(
+                rng.choice(item_options)
+                if item_options
+                else loot.item_for_difficulty(map_difficulty),
+                amount,
+                entry.scale_stack_amount_with_difficulty,
+            ))
         return tuple(result)
 
     def _modified_drop_amount(
@@ -1349,10 +1370,16 @@ def _map_loot_lists(
                 for value in active_event_values
                 if str(value).strip()
             )
+            map_regions = frozenset(
+                _map_key(value)
+                for value in entry.get("map_regions") or ()
+                if str(value).strip()
+            )
             if not templates and not monster_regions and not monster_ranks:
-                raise ValueError(
-                    f"map loot entry {item_id!r} needs monster, region, or rank scope"
-                )
+                if not map_regions:
+                    raise ValueError(
+                        f"map loot entry {item_id!r} needs monster, region, rank, or map-region scope"
+                    )
             parsed.append(MapLootEntry(
                 loot=EventLootEntry(
                     item_id=item_id,
@@ -1382,6 +1409,7 @@ def _map_loot_lists(
                 ),
                 require_active_events=active_events,
                 require_inactive_events=inactive_events,
+                map_regions=map_regions,
             ))
         result[_map_key(map_id)] = tuple(parsed)
     return result
