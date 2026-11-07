@@ -38,6 +38,10 @@ DEFAULT_ELITE_TARGETS = {
 # Event maps author their encounters as waves of ranked actors, so the cap is
 # off unless an administrator enables it for them.
 DEFAULT_INCLUDE_EVENT_MAPS = False
+# The original game's own composition: every authored Guardian, Champion and
+# Leader keeps its rank (and its rank ring), none is promoted. Off by default,
+# so the counts above apply unless an administrator turns it on.
+DEFAULT_KEEP_AUTHORED = False
 
 
 @lru_cache(maxsize=8)
@@ -119,6 +123,7 @@ def normalize_config(document) -> dict:
             if isinstance(map_id, str) and isinstance(entry, dict):
                 maps[map_id] = _targets(entry, {})
     include_event_maps = document.get("include_event_maps")
+    keep_authored = document.get("keep_authored")
     return {
         "difficulties": difficulties,
         "maps": maps,
@@ -126,6 +131,11 @@ def normalize_config(document) -> dict:
             include_event_maps
             if isinstance(include_event_maps, bool)
             else DEFAULT_INCLUDE_EVENT_MAPS
+        ),
+        "keep_authored": (
+            keep_authored
+            if isinstance(keep_authored, bool)
+            else DEFAULT_KEEP_AUTHORED
         ),
     }
 
@@ -144,3 +154,9 @@ def elite_targets(map_id: str, scaling_difficulty: int | None) -> dict:
 
 def include_event_maps() -> bool:
     return bool(config_snapshot()["include_event_maps"])
+
+
+def keep_authored() -> bool:
+    """True when encounters keep their authored elite ranks uncapped."""
+
+    return bool(config_snapshot()["keep_authored"])

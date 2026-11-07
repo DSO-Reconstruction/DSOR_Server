@@ -94,3 +94,22 @@ def test_dungeon_elite_counts_are_monotonically_increasing():
         )
         assert total_elites > prev_total_elites
         prev_total_elites = total_elites
+
+def test_keep_authored_leaves_every_authored_elite():
+    """With keep_authored on, no Guardian, Champion or Leader is demoted or promoted."""
+    from types import SimpleNamespace
+    from dso_server.gameplay import local_monster_state
+
+    assert dungeon_elites.normalize_config({})["keep_authored"] is False
+    assert dungeon_elites.normalize_config({"keep_authored": True})["keep_authored"] is True
+    snapshot = dungeon_elites.normalize_config({"keep_authored": True})
+    monsters = tuple(SimpleNamespace(rank=rank) for rank in
+                     ["Rank_guardian"] * 6 + ["Rank_leader"] * 3 + ["Rank_monster"] * 4)
+    original = dungeon_elites.config_snapshot
+    dungeon_elites.config_snapshot = lambda: snapshot
+    try:
+        kept = local_monster_state._ensure_dungeon_elites(
+            "unused.db4", monsters, map_id="any", scaling_difficulty=0)
+    finally:
+        dungeon_elites.config_snapshot = original
+    assert kept == monsters

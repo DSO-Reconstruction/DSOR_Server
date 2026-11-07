@@ -174,6 +174,8 @@ class DungeonEliteAdministration:
                 "difficulties": cleaned,
                 "maps": maps,
                 "include_event_maps": include_event_maps,
+                # Not edited here yet: a saved count keeps the setting.
+                "keep_authored": normalize_config(document)["keep_authored"],
             }
             self._write_config(updated, revision)
             new_revision = self._read_config()[1]

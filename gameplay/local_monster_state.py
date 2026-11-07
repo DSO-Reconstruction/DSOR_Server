@@ -63,6 +63,7 @@ from dso_server.gameplay.dungeon_elites import (
     elite_config_revision,
     elite_targets,
     include_event_maps,
+    keep_authored,
 )
 from dso_server.gameplay.pathengine_navigation import (
     NavigationError,
@@ -3134,7 +3135,7 @@ def _ensure_dungeon_elites(
     setting asks for. Event maps keep their authored wave composition unless
     the CMS enables capping there.
     """
-    if (
+    if keep_authored() or (
         _map_type(Path(static_database_path), str(map_id)) == 'event'
         and not include_event_maps()
     ):
