@@ -742,7 +742,8 @@ class MapPropDefinition:
         """Whether one use costs ``key_amount`` x ``key_id``.
 
         Charged only for chests filled from data/catalogs/prop_loot.json
-        (amphorae). Other keyed StateObjects -- lockpick chests, Balor's
+        (amphorae), the DTU Circus superchests, and a small set of event
+        resources. Other keyed StateObjects -- lockpick chests, Balor's
         chests, shrines, quest altars -- open as before.
         """
 
@@ -752,12 +753,19 @@ class MapPropDefinition:
         new_moon_cauldron = (
             self.template_id.casefold() in NEW_MOON_CAULDRON_TEMPLATE_IDS
         )
+        dtu_superchest = self.loot_list_id.casefold() in {
+            "chest_lootlist_e_bos_superchest_wood",
+            "chest_lootlist_e_bos_superchest_copper",
+            "chest_lootlist_e_bos_superchest_silver",
+            "chest_lootlist_e_bos_superchest_gold",
+        }
         return bool(
             self.key_id and self.key_amount > 0
             and (
                 has_prop_loot(self.loot_list_id or self.chest_id)
                 or new_moon_recall_altar
                 or new_moon_cauldron
+                or dtu_superchest
             )
         )
 
