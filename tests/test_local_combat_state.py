@@ -33,7 +33,6 @@ from dso_server.protocol.gameplay_commands import LOCAL_PLAYER_ACTOR_ID
 from dso_server.protocol.inventory_codec import InventoryInfo, ItemInfo
 from dso_server.protocol.item_set_protocol import ItemSetModifier
 from dso_server.gameplay.local_combat_state import (
-    ATTACK_SPEED_BREAKPOINTS,
     MONSTER_ACQUISITION_RADIUS,
     MONSTER_CHASE_GRACE_DISTANCE,
     MONSTER_MOVEMENT_DURATION_TICKS,
@@ -1942,11 +1941,13 @@ class LocalCombatStateTests(unittest.TestCase):
         multiplier = self.state.player_skill_speed_multiplier(
             class_name="dwarf",
             inventory=inventory,
+            skill_index=ranger_skill_id("Flamethrower"),
         )
 
-        # Raw speed 6.0 (base 1.0 plus the ring's direct +5) crosses the
-        # 5.7143 breakpoint and plays at 6.25 attacks/second.
-        self.assertAlmostEqual(multiplier, 6.25)
+        # Raw speed 6.0 (base 1.0 plus the ring's direct +5) stops at
+        # SkillExecutionSpeed's 4.0 limit, where the 14-frame Flamethrower
+        # plays in 3 frames.
+        self.assertAlmostEqual(multiplier, 14.0 / 3.0)
         actor_id = self.encounter.actor_ids[0]
         self.state.monster_positions[actor_id] = (2.0, 2.0, 0.0)
         self.state.monster_positions[self.encounter.actor_ids[1]] = (
@@ -1968,26 +1969,47 @@ class LocalCombatStateTests(unittest.TestCase):
         self.assertTrue(pending)
         self.assertAlmostEqual(
             pending[0].due_at - 100.0,
-            13.0 / 25.0 / 6.25,
+            13.0 / 25.0 / (14.0 / 3.0),
             places=6,
         )
 
-    def test_attack_speed_uses_discrete_retail_breakpoints(self):
-        self.assertEqual(effective_attack_speed(1.0), 1.0)
-        self.assertEqual(effective_attack_speed(1.02), 1.0)
-        for index, (threshold, actual) in enumerate(
-            ATTACK_SPEED_BREAKPOINTS
-        ):
-            self.assertAlmostEqual(
-                effective_attack_speed(threshold), actual
-            )
-            if index + 1 < len(ATTACK_SPEED_BREAKPOINTS):
-                next_threshold = ATTACK_SPEED_BREAKPOINTS[index + 1][0]
-                midpoint = (threshold + next_threshold) / 2.0
-                self.assertAlmostEqual(
-                    effective_attack_speed(midpoint), actual
-                )
-        self.assertAlmostEqual(effective_attack_speed(99.0), 25.0)
+    def test_attack_speed_uses_each_skills_retail_breakpoints(self):
+        # The official table (forum, 2015-11-18): Magic Missile, 15 frames.
+        magic_missile = [1.034, 1.111, 1.200, 1.304, 1.429, 1.579,
+                         1.765, 2.000, 2.308, 2.727, 3.333]
+        steps = [
+            speed / 10000 for speed in range(10001, 40001)
+            if effective_attack_speed(speed / 10000, 15)
+            > effective_attack_speed((speed - 1) / 10000, 15)
+        ]
+        self.assertEqual(len(steps), len(magic_missile))
+        for step, listed in zip(steps, magic_missile):
+            self.assertAlmostEqual(step, listed, delta=0.001)
+        # Each skill stops at its own last step below the 4.0 limit:
+        # Fireball (20 frames) 3.636, Heavy Shot (33) 3.882.
+        for frames, last in ((15, 30 / 9), (20, 40 / 11), (33, 66 / 17)):
+            self.assertEqual(effective_attack_speed(1.0, frames), 1.0)
+            capped = effective_attack_speed(last, frames)
+            self.assertLess(effective_attack_speed(last - 1e-4, frames), capped)
+            self.assertEqual(effective_attack_speed(4.0, frames), capped)
+            self.assertEqual(effective_attack_speed(99.0, frames), capped)
+        self.assertAlmostEqual(effective_attack_speed(99.0, 15), 15 / 4)
+        self.assertEqual(effective_attack_speed(0.7, 15), 0.7)
+        # The cast skill's own frames: Rage Attack 15, Smash 20.
+        stats = SimpleNamespace(attack_speed=6.0)
+        self.assertAlmostEqual(self.state.player_skill_speed_multiplier(
+            class_name="warrior", inventory=None, player_stats=stats,
+            skill_index=ranger_skill_id("angrystrike")), 15 / 4)
+        self.assertAlmostEqual(self.state.player_skill_speed_multiplier(
+            class_name="warrior", inventory=None, player_stats=stats,
+            skill_index=ranger_skill_id("mightybash")), 20 / 5)
+
+    def test_battle_anger_stacks_follow_the_sheet_speed(self):
+        from dso_server.services.combat_resolution import battle_anger_stacks
+        self.assertEqual(
+            [battle_anger_stacks(speed) for speed in (3.99, 4.0, 4.49, 4.5, 5.0, 6.0, 6.5, 9.0)],
+            [0, 1, 1, 2, 3, 5, 6, 6],
+        )
 
     def test_unscaled_jump_hit_frame_ignores_equipment_speed(self):
         actor_id = self.encounter.actor_ids[0]

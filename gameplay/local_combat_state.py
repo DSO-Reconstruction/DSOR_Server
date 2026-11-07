@@ -823,50 +823,44 @@ def deterministic_combat_roll(*components: int) -> float:
         value ^= value >> 16
     return (value & _COMBAT_ROLL_MASK) / _COMBAT_ROLL_SCALE
 
-# Retail animation sequences advance in whole frames. The character sheet's
-# raw attack speed therefore changes the effective animation rate only when a
-# breakpoint is crossed. Keep the authored values (ascending for lookup), not
-# a smoothed interpolation between them. The supplied rows describe the
-# 25-frame through 6-frame portion of the curve; the same whole-frame sequence
-# continues through the one-frame floor rather than capping at 4.1667 APS.
-ATTACK_SPEED_BREAKPOINTS = (
-    (1.0256, 1.2500),
-    (1.0811, 1.3158),
-    (1.1429, 1.3889),
-    (1.2121, 1.4706),
-    (1.2903, 1.5625),
-    (1.3793, 1.6667),
-    (1.4815, 1.7857),
-    (1.6000, 1.9231),
-    (1.7391, 2.0833),
-    (1.9048, 2.2727),
-    (2.1053, 2.5000),
-    (2.3529, 2.7778),
-    (2.6667, 3.1250),
-    (3.0769, 3.5714),
-    (3.6364, 4.1667),
-    (4.4444, 5.0000),
-    (5.7143, 6.2500),
-    (8.0000, 8.3333),
-    (13.3333, 12.5000),
-    (40.0000, 25.0000),
-)
+# Retail animation sequences advance in whole frames, so a skill speeds up
+# only at breakpoints, and each skill at its own: a skill of U frames (its
+# SkillUnblockFrame) plays in k frames from the sheet speed 2U/(2k + 1) on.
+# EVIDENCE: every row of the official breakpoint table (forum announcement,
+# 2015-11-18) is 2U/m for odd m: Magic Missile 30/29 ... 30/9, Fireball
+# 40/39 ... 40/11, Heavy Shot 66/65 ... 66/17; where a 2015 frame count still
+# equals today's SkillUnblockFrame, it is that column. Later client builds
+# changed some skills' unblock frames (Rage Attack 21 -> 15), so the frames
+# come from the database, not the 2015 table.
+# FAILURE: one 20-frame table for every skill, its rows a frame off and read
+# as a speed multiplier: a 1.03 sheet swung 25 % faster, and 15-frame skills
+# (Rage Attack, the missiles, Quick Shot) sped up at the wrong speeds.
+SKILL_EXECUTION_SPEED_LIMIT = 4.0
+DEFAULT_SKILL_FRAMES = 20
 
 
-def effective_attack_speed(raw_attack_speed: float) -> float:
-    """Quantize a character-sheet speed to retail sequence breakpoints."""
+def skill_frames_at(raw_attack_speed: float, frames: int) -> int:
+    """The whole frames a skill of ``frames`` frames takes at a sheet speed."""
 
-    raw = max(0.01, float(raw_attack_speed))
+    return max(1, math.ceil(frames / raw_attack_speed - 0.5 - 1e-9))
+
+
+def effective_attack_speed(
+    raw_attack_speed: float, frames: int | None = DEFAULT_SKILL_FRAMES,
+) -> float:
+    """Quantize a character-sheet speed to a skill's own breakpoints."""
+
+    # _Template_ActorAttributes caps SkillExecutionSpeed at 4.0: past it the
+    # original attacks no faster, whatever the character sheet adds up to.
+    # Uncapped, a 6.0 sheet swung Smash every 0.13 s instead of 0.2 s.
+    raw = min(SKILL_EXECUTION_SPEED_LIMIT, max(0.01, float(raw_attack_speed)))
     if raw < 1.0:
-        # Slows below baseline remain meaningful even though the supplied
-        # positive-speed table begins above 1.0.
+        # Slows below baseline stay continuous.
         return raw
-    effective = 1.0
-    for threshold, attacks_per_second in ATTACK_SPEED_BREAKPOINTS:
-        if raw + 1e-9 < threshold:
-            break
-        effective = attacks_per_second
-    return effective
+    frames = int(frames or 0)
+    if frames <= 0:
+        frames = DEFAULT_SKILL_FRAMES
+    return frames / skill_frames_at(raw, frames)
 
 
 # Height above the feet at which a bullet flies when its StartOffset gives
@@ -8732,8 +8726,10 @@ class LocalCombatState:
         modifier_sources: tuple[object, ...] = (),
         player_stats=None,
         level: int = 100,
+        skill_index: int | None = None,
     ) -> float:
-        """Quantize the authoritative raw speed to the client's animation rate.
+        """Quantize the authoritative raw speed to the client's animation rate,
+        at the cast skill's own breakpoints (its SkillUnblockFrame).
 
         Retain item boundaries and active status conditions from the stat
         calculator; flattening the equipment here scales every item by every
@@ -8750,7 +8746,11 @@ class LocalCombatState:
                 inventory=inventory if inventory is not None else InventoryInfo(),
                 modifier_sources=modifier_sources,
             )
-        return effective_attack_speed(player_stats.attack_speed)
+        frames = None
+        if skill_index is not None:
+            geometry = self._load_player_skill_geometry(int(skill_index))
+            frames = geometry.skill_unblock_frame if geometry is not None else None
+        return effective_attack_speed(player_stats.attack_speed, frames)
 
     def _active_monster_modifier_sources(
         self,
