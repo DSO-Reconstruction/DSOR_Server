@@ -1078,6 +1078,16 @@ def _prop_state_for_viewer(viewer: Session, state: PropRuntimeState) -> PropRunt
     """Return this player's view of an individually used prop."""
 
     definition = state.definition
+    dtu_claim_key = _dtu_superchest_claim_key(viewer, definition)
+    if dtu_claim_key:
+        with viewer.flow_lock:
+            claimed = bool(
+                getattr(viewer, "gameplay_timed_offer_purchases", {}).get(
+                    dtu_claim_key, 0,
+                )
+            )
+        if claimed:
+            return PropRuntimeState(definition, PROP_STATE_USED)
     if not definition.individual_usage:
         return state
     runtime = getattr(viewer, "gameplay_map_event_runtime", None)
@@ -1106,6 +1116,38 @@ def _individual_prop_player_id(viewer: Session) -> int:
     if character_id:
         return int(character_id)
     return id(viewer)
+
+
+def _dtu_superchest_claim_key(viewer: Session, definition) -> str:
+    """Stable per-event, per-arena-location claim key for Circus chests."""
+
+    if (
+        map_key(getattr(
+            getattr(viewer, "gameplay_map_event_runtime", None),
+            "map_id", "",
+        )) != "e_bos_arena_01"
+        or str(definition.loot_list_id or "").casefold() not in {
+            "chest_lootlist_e_bos_superchest_wood",
+            "chest_lootlist_e_bos_superchest_copper",
+            "chest_lootlist_e_bos_superchest_silver",
+            "chest_lootlist_e_bos_superchest_gold",
+        }
+    ):
+        return ""
+    instance_id = str(definition.instance_id or "").casefold()
+    location = instance_id.rsplit("_", 1)[-1]
+    if location not in {"01", "02", "03", "04"}:
+        return ""
+    catalog = getattr(viewer, "gameplay_event_catalog", None)
+    if catalog is None:
+        return ""
+    event = next((
+        value for value in catalog.active_events()
+        if value.template.resource_id.casefold() == "boss_bonus_event_02"
+    ), None)
+    if event is None:
+        return ""
+    return f"dtu-superchest:{int(event.event_id)}:{location}"
 
 
 def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
@@ -4488,7 +4530,9 @@ class MapEventService:
         return max(0, int(definition.key_amount) - carried)
 
     @staticmethod
-    def _spend_prop_keys(s: Session, definition) -> bool:
+    def _spend_prop_keys(
+        s: Session, definition, *, claim_key: str = "",
+    ) -> bool:
         """Take KeyAmount x KeyId for one use and publish the bag change.
 
         Retail kept the key stack's item id and sent the reduced stack
@@ -4496,6 +4540,15 @@ class MapEventService:
         """
 
         with s.flow_lock:
+            purchases = dict(
+                getattr(s, "gameplay_timed_offer_purchases", {})
+            )
+            if claim_key and purchases.get(claim_key):
+                _log(
+                    f"refused already-claimed DTU superchest "
+                    f"{definition.instance_id!r} ({claim_key})"
+                )
+                return False
             inventory = s.gameplay_inventory
             if inventory is None:
                 return False
@@ -4513,6 +4566,9 @@ class MapEventService:
             s.gameplay_next_item_id = max(
                 int(s.gameplay_next_item_id), int(mutation.next_item_id),
             )
+            if claim_key:
+                purchases[claim_key] = 1
+                s.gameplay_timed_offer_purchases = purchases
         packet, packet_bits = encode_server_command_batch(tuple(
             ServerCommand(INVENTORY_INFO_COMMAND, record, LOCAL_PLAYER_ACTOR_ID)
             for record in (mutation.delta, mutation.final)
@@ -4520,7 +4576,11 @@ class MapEventService:
         CharacterService._send_world_loot_state_batch(
             s, packet, packet_bits, label="prop-key-inventory",
         )
-        CharacterService._request_account_save(s, "chest key spent")
+        CharacterService._request_account_save(
+            s,
+            "DTU superchest claimed" if claim_key else "chest key spent",
+            flush=bool(claim_key),
+        )
         return True
 
     def _use_gatherable_multitool(self, s: Session) -> bool:
@@ -4671,6 +4731,27 @@ class MapEventService:
         s.send_reliable_ordered((packet, packet_bits), track=True, label=label)
         _send_prop_info(
             s, (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+            label=f"{label}-info",
+        )
+
+    @staticmethod
+    def _show_used_prop_for_viewer(s: Session, definition, *, label: str) -> None:
+        """Refresh a per-character one-shot prop as already used."""
+
+        update = PropUpdate(
+            prop_id=definition.prop_id,
+            state=PROP_STATE_USED,
+            actor_id=LOCAL_PLAYER_ACTOR_ID,
+            counter=_session_game_tick(s),
+            state_changed=True,
+            operation=WIRE_PROP_OPERATION,
+            task_index=0,
+            keep_visual_state=False,
+        )
+        packet, packet_bits = encode_prop_update_batch((update,), actor_id=0)
+        s.send_reliable_ordered((packet, packet_bits), track=True, label=label)
+        _send_prop_info(
+            s, (PropRuntimeState(definition, PROP_STATE_USED),),
             label=f"{label}-info",
         )
 
@@ -5214,6 +5295,41 @@ class MapEventService:
                     ) not in runtime.individual_prop_usage
                 )
             )
+        dtu_superchest_claim_key = ""
+        if (
+            keyed is not None
+            and str(keyed.definition.loot_list_id or "").casefold()
+            in _DTU_SUPERCHEST_POOLS
+            and map_key(runtime.map_id) == "e_bos_arena_01"
+        ):
+            dtu_superchest_claim_key = _dtu_superchest_claim_key(
+                s, keyed.definition,
+            )
+            if not dtu_superchest_claim_key:
+                self._restore_prop_for_viewer(
+                    s, keyed.definition, label="dtu-superchest-event-inactive",
+                )
+                _log(
+                    f"refused DTU superchest {keyed.definition.instance_id!r}: "
+                    "no active boss_bonus_event_02 instance"
+                )
+                return
+            with s.flow_lock:
+                already_claimed = bool(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        dtu_superchest_claim_key, 0,
+                    )
+                )
+            if already_claimed:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition, label="dtu-superchest-already-claimed",
+                )
+                _log(
+                    f"refused already-claimed DTU superchest "
+                    f"{keyed.definition.instance_id!r} "
+                    f"({dtu_superchest_claim_key})"
+                )
+                return
         if keyed_first_use:
             missing = self._prop_keys_missing(s, keyed.definition)
             if missing:
@@ -5364,7 +5480,9 @@ class MapEventService:
         definition = state.definition
         if (
             flipped and definition.spends_keys
-            and not self._spend_prop_keys(s, definition)
+            and not self._spend_prop_keys(
+                s, definition, claim_key=dtu_superchest_claim_key,
+            )
         ):
             # The keys left the bag between the check and the use: undo it.
             with runtime.lock:
