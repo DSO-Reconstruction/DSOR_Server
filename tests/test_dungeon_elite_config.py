@@ -28,6 +28,8 @@ def config_path(tmp_path, monkeypatch):
     monkeypatch.setattr(
         dungeon_elites, "DEFAULT_DUNGEON_ELITES_CONFIG_PATH", path,
     )
+    # The caps' own tests: the counts held, not the original's composition.
+    monkeypatch.setattr(dungeon_elites, "DEFAULT_KEEP_AUTHORED", False)
     clear_monster_encounter_cache()
     yield path
     clear_monster_encounter_cache()

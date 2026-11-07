@@ -39,9 +39,10 @@ DEFAULT_ELITE_TARGETS = {
 # off unless an administrator enables it for them.
 DEFAULT_INCLUDE_EVENT_MAPS = False
 # The original game's own composition: every authored Guardian, Champion and
-# Leader keeps its rank (and its rank ring), none is promoted. Off by default,
-# so the counts above apply unless an administrator turns it on.
-DEFAULT_KEEP_AUTHORED = False
+# Leader keeps its rank (and its rank ring), none is promoted, as the user's
+# recording of the original's crypt shows. On by default; set
+# "keep_authored": false to hold the counts above instead.
+DEFAULT_KEEP_AUTHORED = True
 
 
 @lru_cache(maxsize=8)
