@@ -1795,6 +1795,10 @@ class CustomizationService:
             label='mount-cast-add',
         )
         timer.start()
+        # O takes the mount the moment it is used, not when the summon ends.
+        CharacterService._select_mount_quickbar_shortcut(
+            s, definition.stickerbook_resource_id
+        )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] started typed mount cast for "
             f"{definition.stickerbook_resource_id} from {source}; "
