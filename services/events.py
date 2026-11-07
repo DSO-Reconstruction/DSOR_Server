@@ -666,40 +666,31 @@ class EventService:
         if advance is None:
             return False
         progress[str(advance.event.event_id)] = advance.progress
-        with s.flow_lock:
-            s.gameplay_event_progress = progress
 
         CharacterService._achievement_feed(
             self, s, "eventprogresscollected", (advance.event.template.resource_id,),
             progress=int(advance.progress["amount"]),
         )
 
-        changed = EventProgressChanged((
-            int(advance.event.event_id),
-            int(advance.progress["amount"]),
-            int(advance.progress["level"]),
-            int(advance.progress["currency_level"]),
-            int(advance.progress["group"]),
-        ))
-        packet, packet_bits = encode_server_command_batch((
-            ServerCommand(
-                EVENT_PROGRESS_CHANGED_COMMAND,
-                changed,
-                LOCAL_PLAYER_ACTOR_ID,
-            ),
-        ), include_terminator=True)
-        CharacterService._send_world_loot_state_batch(
-            s, packet, packet_bits, label="event-progress"
-        )
-
+        # Multiple thresholds may grant the same TravelItem (the Greed bar
+        # grants e_hh_travelitem_t1 repeatedly). Merge them before touching
+        # inventory: replacing the same stack repeatedly in one batch leaves
+        # intermediate item IDs in changed_items, which the enchant/receipt
+        # pass cannot find in the final inventory snapshot.
+        item_amounts: dict[str, int] = {}
+        for reward in advance.item_rewards:
+            item_id = reward.item_for_class(class_name)
+            if item_id:
+                item_amounts[item_id] = (
+                    item_amounts.get(item_id, 0) + int(reward.amount)
+                )
         item_definitions = tuple(
             RewardDefinition(
-                f"event:{advance.event.event_id}:{reward.key}",
-                reward.item_for_class(class_name),
-                reward.amount,
+                f"event:{advance.event.event_id}:items:{item_id}",
+                item_id,
+                amount,
             )
-            for reward in advance.item_rewards
-            if reward.item_for_class(class_name)
+            for item_id, amount in item_amounts.items()
         )
         if item_definitions:
             CharacterService._deliver_rewards(
@@ -743,6 +734,29 @@ class EventService:
             CharacterService._send_world_loot_state_batch(
                 s, packet, packet_bits, label="event-currency-reward"
             )
+
+        # Commit claims only after reward delivery succeeds. If the reward
+        # transaction raises, the next progress event can retry the thresholds
+        # instead of persisting claimed keys for items the player never got.
+        with s.flow_lock:
+            s.gameplay_event_progress = progress
+        changed = EventProgressChanged((
+            int(advance.event.event_id),
+            int(advance.progress["amount"]),
+            int(advance.progress["level"]),
+            int(advance.progress["currency_level"]),
+            int(advance.progress["group"]),
+        ))
+        packet, packet_bits = encode_server_command_batch((
+            ServerCommand(
+                EVENT_PROGRESS_CHANGED_COMMAND,
+                changed,
+                LOCAL_PLAYER_ACTOR_ID,
+            ),
+        ), include_terminator=True)
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="event-progress"
+        )
 
         CharacterService._request_account_save(s, "event progress changed")
         print(

@@ -446,6 +446,9 @@ class LootPresenceService:
             extra_boss_gems=int(
                 getattr(socket_evaluation, "boss_bonus_gems", 0)
             ),
+            extra_boss_clovers=int(
+                getattr(socket_evaluation, "boss_bonus_clovers", 0)
+            ),
             guaranteed_gem_templates=(
                 FINAL_GEM_REWARDS
                 if str(encounter.map_id).casefold() == MORTIS_MAP

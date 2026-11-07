@@ -728,6 +728,17 @@ class CommerceService:
                     'ocp-booking-settlement'
                 ),
             )
+        if reward.item_id == 'money_rc':
+            event_progress_callback = getattr(
+                s, 'gameplay_event_progress_callback', None,
+            )
+            if event_progress_callback is not None:
+                # A settled cash-shop Andermant purchase credits the same
+                # money_rc collectible used by the event's monster drops.
+                # Run this only after the OCP confirmation has committed the
+                # wallet credit, so pending or duplicate confirmations cannot
+                # award event progress.
+                event_progress_callback(s, 'money_rc', reward.amount)
         print(
             f'[{GAMEPLAY_SERVICE_NAME}] settled OCP booking: '
             f'{reward.amount}x {reward.item_id}'

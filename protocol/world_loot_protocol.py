@@ -69,6 +69,25 @@ GOLD_ITEM_TEMPLATES = frozenset(("money_vc", "money_vc_gold"))
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
+# The Happy Hour travel-item descriptions promise these guaranteed totals for
+# the corresponding Andermant Golem boss tiers. Static data names each row's
+# loot as SPECIAL_*, a server-owned list that is not exposed as ordinary
+# _Template_Loot data.
+HAPPY_HOUR_BOSS_ANDERMANT = {
+    f"e_hh_boss_golem_andermant_t_{tier}": amount
+    for tier, amount in enumerate((250, 375, 1_000, 2_125, 6_000, 12_000, 28_500))
+}
+HAPPY_HOUR_LUCKY_CATS = (
+    "pet_bronze_cat_uncommon",
+    "pet_silver_cat_uncommon",
+    "pet_golden_cat_uncommon",
+)
+# Map difficulties 0..9 are Normal, Painful, Excruciating, Fatal,
+# Infernal/PW Infernal, Merciless/PW Merciless, and Bloodshed/PW Bloodshed.
+# The Bloodshed baselines are 7 Clover and 200 Draken; lower tiers scale by
+# the same one-through-seven reward step.
+HAPPY_HOUR_CLOVER_BY_DIFFICULTY = (1, 2, 3, 4, 5, 5, 6, 6, 7, 7)
+HAPPY_HOUR_DRAKEN_BY_DIFFICULTY = (29, 57, 86, 114, 143, 143, 171, 171, 200, 200)
 # Mystic Cubes drop from members only, at a flat rate per kill that is
 # deliberately independent of the map's drop and stack scaling. The CMS
 # configuration supplies the effective rate; this constant is the default.
@@ -2401,6 +2420,7 @@ def generate_monster_loot(
     map_difficulty: int = 0,
     map_access_id: str = "",
     extra_boss_gems: int = 0,
+    extra_boss_clovers: int = 0,
     guaranteed_gem_templates: tuple[str, ...] = (),
     additional_instant_consumables: tuple[tuple[str, int], ...] = (),
     position_projector: (
@@ -2427,7 +2447,9 @@ def generate_monster_loot(
 
     ``extra_boss_gems`` implements Jewel of Gem Fortune. Its five database
     status resources are localized as exactly one through five additional
-    gems. The ordinary gem pool is pre-indexed in ``StaticLootCache`` and is
+    gems. ``extra_boss_clovers`` implements Jewel of the Easter Fever, adding
+    one through five Gilded Clover to Happy Hour boss rewards by jewel tier.
+    The ordinary gem pool is pre-indexed in ``StaticLootCache`` and is
     consulted only for boss/world-boss profiles, so this adds no kill-path DB
     transaction or full item-table scan.
     """
@@ -2811,7 +2833,32 @@ def generate_monster_loot(
                     material = generator.choice(elite_material_pool)
                     specifications.append((material, 1, 1, "", 0))
 
-        if force_drops or generator.random() <= andermant_drop_chance:
+        fixed_happy_hour_andermant = HAPPY_HOUR_BOSS_ANDERMANT.get(
+            str(template_id).casefold()
+        )
+        if fixed_happy_hour_andermant is not None:
+            # Keep the usual three-ground-stack boss presentation while
+            # guaranteeing the exact total promised by the TravelItem text.
+            stack_count = _boss_currency_instance_count(profile)
+            base_amount, remainder = divmod(
+                fixed_happy_hour_andermant, stack_count
+            )
+            for index in range(stack_count):
+                specifications.append((
+                    LootItemDefinition(
+                        ANDERMANT_ITEM_TEMPLATE,
+                        "Currency",
+                        "All",
+                        "0",
+                        "0",
+                        "",
+                    ),
+                    base_amount + (1 if index < remainder else 0),
+                    1,
+                    "",
+                    0,
+                ))
+        elif force_drops or generator.random() <= andermant_drop_chance:
             factor = _currency_factor(
                 database, profile.monster_level, int(player_level)
             )
@@ -2842,6 +2889,57 @@ def generate_monster_loot(
                         0,
                     )
                 )
+
+        if fixed_happy_hour_andermant is not None:
+            for pet_template in HAPPY_HOUR_LUCKY_CATS:
+                pet_row = database.items_by_id.get(pet_template)
+                if pet_row is not None and generator.random() <= 0.10:
+                    specifications.append((
+                        _loot_definition_from_row(pet_row),
+                        1,
+                        1,
+                        "",
+                        0,
+                    ))
+
+            difficulty_tier = max(
+                0,
+                min(
+                    len(HAPPY_HOUR_CLOVER_BY_DIFFICULTY) - 1,
+                    int(map_difficulty),
+                ),
+            )
+            clover_amount = (
+                HAPPY_HOUR_CLOVER_BY_DIFFICULTY[difficulty_tier]
+                + max(0, int(extra_boss_clovers))
+            )
+            clover_row = database.items_by_id.get("gilded_clover")
+            if clover_row is not None:
+                specifications.append((
+                    _loot_definition_from_row(clover_row),
+                    clover_amount,
+                    1,
+                    "",
+                    0,
+                ))
+
+            # Draken is stored in the fixed-currency wallet. Emit it through
+            # the normal ground-currency pickup path while retaining the
+            # authored NoAutoUseCurrency template for the client's icon/text.
+            specifications.append((
+                LootItemDefinition(
+                    "e_chr_2012_event_currency",
+                    "Currency",
+                    "All",
+                    "0",
+                    "0",
+                    "",
+                ),
+                HAPPY_HOUR_DRAKEN_BY_DIFFICULTY[difficulty_tier],
+                1,
+                "",
+                0,
+            ))
 
         if wisdom_eligible and (
             force_drops or generator.random() <= BASE_WISDOM_DROP_CHANCE
@@ -3336,6 +3434,8 @@ def _loot_received_currency_type(drop: WorldLootDrop) -> int:
         return 0
     if drop.item.template_id == ANDERMANT_ITEM_TEMPLATE:
         return 1
+    if drop.item.template_id == "e_chr_2012_event_currency":
+        return 7
     if drop.item.template_id == WISDOM_ITEM_TEMPLATE:
         # The client's loot-received case shows types 3 and 5 as GrindCurrency
         # (the violet text); its currency names put Ancient Wisdom at 3.
@@ -3613,6 +3713,10 @@ def credit_currency_drop(
         if value > 0xFFFFFFFFFFFFFFFF:
             raise ValueError("gold balance overflows uint64")
         return replace(state, amount=value, notify=True)
+    if drop.item.template_id == "e_chr_2012_event_currency":
+        values = list(state.values)
+        values[2] = min(0xFFFFFFFF, int(values[2]) + amount)
+        return replace(state, values=tuple(values), notify=True)
     raise ValueError(f"item {drop.item.template_id!r} is not a direct currency")
 
 
