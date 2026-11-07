@@ -40,12 +40,54 @@ from dso_server.gameplay.local_map_state import (
     CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
     CRAFTING_DUNGEON_MAP_ID,
 )
+from dso_server.gameplay.map_event_state import map_key
 
 
 def _crafting_dungeon_leader_present_from_roll(roll: int) -> bool:
     """Map one uniformly distributed byte to the dungeon's exact 50/50 roll."""
 
     return (int(roll) & 0xFF) < 128
+
+
+def _hide_unselected_circus_gates(
+        static_database_path, gameplay_map, map_commands, exit_info):
+    """Do not instantiate every level-gated Circus exit on the client."""
+
+    if map_key(gameplay_map) != "e_bos_arena_01":
+        return map_commands, exit_info
+    # EventSet row ids are normalized by load_local_map_exits from the raw
+    # InteractExit SQLite rowids to the authored EventSets.Id values.
+    gate_rows = frozenset(range(638, 645))
+    filtered_commands = []
+    for command in map_commands:
+        if getattr(command, "command_id", None) != VARIATION_INFO_COMMAND:
+            filtered_commands.append(command)
+            continue
+        value = getattr(command, "value", None)
+        entries = tuple(getattr(value, "entries", ()))
+        kept = tuple(
+            entry for entry in entries
+            if int(getattr(entry, "event_set_row", -1)) not in gate_rows
+        )
+        if kept:
+            filtered_commands.append(replace(
+                command, value=replace(value, entries=kept),
+            ))
+    gate_guids = frozenset(
+        bytes(definition.instance_guid)
+        for definition in load_local_map_exits(
+            static_database_path, gameplay_map,
+            include_inactive_event_sets=True,
+        )
+        if int(definition.event_set_row) in gate_rows
+    )
+    exits = tuple(
+        entry for entry in getattr(exit_info, "exits", ())
+        if bytes(entry.instance_guid) not in gate_guids
+    )
+    if hasattr(exit_info, "exits"):
+        exit_info = replace(exit_info, exits=exits)
+    return tuple(filtered_commands), exit_info
 
 
 @dataclass
@@ -131,6 +173,9 @@ class PlayerInitializationWorldService:
             selected_map_difficulty=map_access.map_difficulty,
             selected_map_access_id=map_access.request_map_id,
         )
+        map_commands, exit_info = _hide_unselected_circus_gates(
+            self.static_database_path, gameplay_map, map_commands, exit_info,
+        )
         # Quest state is restored by this phase. Rebuild the authoritative
         # exits from the same reveal flags as the scene snapshot, rather than
         # retaining the earlier snapshot built before quest restoration.
@@ -148,6 +193,11 @@ class PlayerInitializationWorldService:
                 selected_map_access_id=map_access.request_map_id,
                 selected_map_difficulty=map_access.map_difficulty,
             ))
+            if map_key(gameplay_map) == "e_bos_arena_01":
+                s.gameplay_map_exits = tuple(
+                    definition for definition in s.gameplay_map_exits
+                    if not 638 <= int(definition.event_set_row) <= 644
+                )
         native_exit_commands = tuple(
             command for command in map_commands
             if command.command_id == VARIATION_INFO_COMMAND
@@ -378,6 +428,7 @@ class PlayerInitializationWorldService:
             initial_flags=active_event_flags,
             monster_level=map_access.monster_level,
             scaling_difficulty=map_access.monster_scaling_difficulty,
+            map_difficulty=map_access.map_difficulty,
             # Match entrants initialize concurrently, before either is a
             # presence-ready peer. Their instance key is the match's own
             # (pvp-match-<id>), so they always join one runtime -- like the
@@ -426,6 +477,10 @@ class PlayerInitializationWorldService:
                 selected_map_difficulty=map_access.map_difficulty,
                 selected_map_access_id=map_access.request_map_id,
             )
+            map_commands, exit_info = _hide_unselected_circus_gates(
+                self.static_database_path, gameplay_map,
+                map_commands, exit_info,
+            )
             with s.flow_lock:
                 late_join_exits = tuple(
                     definition
@@ -443,6 +498,10 @@ class PlayerInitializationWorldService:
                         gameplay_map,
                         late_join_exits,
                         selected_map_access_id=map_access.request_map_id,
+                    )
+                    if not (
+                        map_key(gameplay_map) == "e_bos_arena_01"
+                        and 638 <= int(definition.event_set_row) <= 644
                     )
                 )
         with s.flow_lock:

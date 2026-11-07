@@ -2865,16 +2865,28 @@ def generate_monster_loot(
             profile.rank_kind in {"worldboss", "boss"}
             and int(extra_boss_gems) > 0
         ):
-            # Roll each gem's rank, then let the loot RNG choose among the
-            # five ordinary families at that rank.
+            # Jewel of Gem Fortune adds gems from the same difficulty band as
+            # the boss's guaranteed gems. Roll the rank independently for each
+            # added gem; monster-level scaling here made every bonus gem share
+            # one high tier (often Royal) regardless of the map's authored
+            # e..j / lower-tier reward pool.
+            difficulty_tier = max(
+                0,
+                min(
+                    len(BOSS_GEM_RANKS_BY_DIFFICULTY) - 1,
+                    int(map_difficulty),
+                ),
+            )
+            fortune_gem_ranks = tuple(
+                rank
+                for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[difficulty_tier]
+                if database.standard_gems_by_rank.get(rank)
+            )
             for _ in range(max(0, int(extra_boss_gems))):
+                if not fortune_gem_ranks:
+                    break
                 gem_pool = database.gems_for_rank(
-                    _monster_gem_rank(
-                        database,
-                        profile.monster_level,
-                        map_difficulty,
-                        generator,
-                    )
+                    generator.choice(fortune_gem_ranks)
                 )
                 if gem_pool:
                     specifications.append(
@@ -3041,10 +3053,13 @@ def generate_monster_loot(
                 for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[difficulty_tier]
                 if database.standard_gems_by_rank.get(rank)
             )
-            for _gem_index in range(generator.randint(1, 3)):
-                if not available_gem_ranks:
-                    break
-                gem_rank = generator.choice(available_gem_ranks)
+            gem_count = min(
+                generator.randint(1, 3), len(available_gem_ranks),
+            )
+            # A single boss kill can drop several gems. Sample ranks without
+            # replacement so one roll does not cluster all of them at the
+            # same tier (e.g. multiple royal gems together).
+            for gem_rank in generator.sample(available_gem_ranks, gem_count):
                 gem_pool = database.gems_for_rank(gem_rank)
                 if gem_pool:
                     specifications.append((
@@ -3159,9 +3174,16 @@ def generate_monster_loot(
                         rng=generator,
                     )
                     # Lootboxes keep their authored rarity (the christmas
-                    # presents' glow) but carry no enchantments.
+                    # presents' glow) but carry no enchantments. EquipmentRune
+                    # items are rune drops rather than equipment; their
+                    # authored rarity and UniqueModifier define them, and
+                    # rolling equipment enchantments can have no compatible
+                    # candidates, aborting the monster's entire loot batch.
                     if definition.item_category
-                    not in {"Currency", "InstantConsumable", "LootGenItem"}
+                    not in {
+                        "Currency", "InstantConsumable", "LootGenItem",
+                        "EquipmentRune",
+                    }
                     else []
                 ),
                 socketed_templates=[""] * socket_count,
