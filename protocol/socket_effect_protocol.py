@@ -275,6 +275,7 @@ class SocketEffectEvaluation:
     drop_amounts: tuple[tuple[str, float, float], ...] = ()
     actor_variables: tuple[tuple[str, float], ...] = ()
     boss_bonus_gems: int = 0
+    boss_bonus_clovers: int = 0
     skill_scalars: tuple[
         tuple[str, float, str, tuple[str, ...]], ...
     ] = ()
@@ -820,6 +821,7 @@ class SocketEffectDatabase:
         occurrence: dict[tuple[str, str], int] = {}
         actor_variables: dict[str, float] = {}
         boss_bonus_gems = 0
+        boss_bonus_clovers = 0
         skill_scalars = []
         status_group_durations: dict[str, float] = {}
         for program in programs:
@@ -937,6 +939,13 @@ class SocketEffectDatabase:
                         "jewel_boss_gem_drop_rare": 4,
                         "jewel_boss_gem_drop_epic": 5,
                     }.get(rule.definition.resource_id, 0)
+                    boss_bonus_clovers += {
+                        "jewel_easter_event_common": 1,
+                        "jewel_easter_event_uncommon": 2,
+                        "jewel_easter_event_magic": 3,
+                        "jewel_easter_event_rare": 4,
+                        "jewel_easter_event_epic": 5,
+                    }.get(rule.definition.resource_id.casefold(), 0)
                     periodic = self._periodic_aura(
                         program.template_id, rule, ordinal
                     )
@@ -976,6 +985,7 @@ class SocketEffectDatabase:
             ),
             actor_variables=tuple(sorted(actor_variables.items())),
             boss_bonus_gems=max(0, int(boss_bonus_gems)),
+            boss_bonus_clovers=max(0, int(boss_bonus_clovers)),
             skill_scalars=tuple(skill_scalars),
             status_group_durations=tuple(
                 sorted(status_group_durations.items())

@@ -706,6 +706,13 @@ class PlayerProjectileService:
                                     0,
                                 )
                             ),
+                            extra_boss_clovers=int(
+                                getattr(
+                                    socket_evaluation,
+                                    "boss_bonus_clovers",
+                                    0,
+                                )
+                            ),
                             position_projector=lambda candidate: (
                                 combat.ground_loot_position(
                                     resolution.target_actor_id,
