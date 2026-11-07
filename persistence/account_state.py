@@ -836,6 +836,7 @@ def _state_from_document(document: dict) -> AccountState:
     mount = None
     if mount_document is not None:
         definition = find_mount(str(mount_document["resource_id"]))
+        from_database = definition is not None
         definition_document = mount_document.get("definition")
         if definition is None and definition_document is not None:
             definition = MountDefinition(
@@ -867,9 +868,17 @@ def _state_from_document(document: dict) -> AccountState:
             raise ValueError(
                 f"persisted mount {mount_document['resource_id']!r} is unknown"
             )
+        effect_id = int(mount_document["effect_id"])
+        # The ride is saved by its mount's name and by a wire id, which is a
+        # _Template_StatusEffect row: another client build's static.db4
+        # shifts the rows (release261_182 -> the November CDN build moved
+        # ride_mount_tiger_black 4215 -> 4228), so the current database's
+        # ride id wins, as saved status effects are re-resolved by name.
+        if from_database and effect_id != definition.ride_effect_id:
+            effect_id = definition.ride_effect_id
         mount = MountEffectState(
             definition=definition,
-            effect_id=int(mount_document["effect_id"]),
+            effect_id=effect_id,
             instance_id=int(mount_document["instance_id"]),
             start_tick=int(mount_document["start_tick"]),
             duration_ticks=int(mount_document["duration_ticks"]),

@@ -73,6 +73,72 @@ def _resource_bound_effect_ids(database_path: str) -> frozenset[int]:
     return frozenset(ids)
 
 
+SKILL_START_EXCEPT = "skillstartexcept"
+
+
+@lru_cache(maxsize=8)
+def _skill_start_released_effects(
+        database_path: str) -> tuple[dict[int, frozenset[str]], dict[int, str]]:
+    """Effects a skill starts with ``OFF:SkillStartExcept<skill>``.
+
+    Returns {effect id: the skill ids (casefolded) that keep it} and
+    {skill index: its skill id}.
+    CONTRACT: the effect ends when its holder starts any other skill.
+    EVIDENCE (data): Rage Attack (``angrystrike``) starts Fanaticism
+    (skill_angrystrike_buff_frenzy_attackspeed / _movementspeed, 5 stacks a
+    status, D:5) with ``OFF:SkillStartExceptAngryStrike``; the retail client
+    (release261_1024, user's recording 2026-11-04) drops both icons the frame
+    Smash is pressed, at 10 stacks and at 1.
+    FAILURE: without it Fanaticism's +105% attack speed carried into every
+    other skill for its whole duration.
+    """
+
+    released: dict[int, set[str]] = {}
+    skills: dict[int, str] = {}
+    try:
+        with sqlite3.connect(
+            f"file:{Path(database_path).as_posix()}?mode=ro", uri=True
+        ) as database:
+            rows = database.execute(
+                "SELECT UserStatusEffects FROM _Template_Skill "
+                "WHERE UserStatusEffects LIKE '%OFF:SkillStartExcept%'"
+            ).fetchall()
+            for (column,) in rows:
+                for raw in str(column or "").split(";"):
+                    parts = [part.strip() for part in raw.split(",")]
+                    keeps = {
+                        part.partition(":")[2].strip().casefold()[
+                            len(SKILL_START_EXCEPT):
+                        ]
+                        for part in parts[1:]
+                        if part.partition(":")[0].strip().casefold() == "off"
+                        and part.partition(":")[2].strip().casefold()
+                        .startswith(SKILL_START_EXCEPT)
+                    }
+                    if not keeps:
+                        continue
+                    row = database.execute(
+                        "SELECT rowid - 1 FROM _Template_StatusEffect "
+                        "WHERE Id=? LIMIT 1",
+                        (parts[0],),
+                    ).fetchone()
+                    if row is not None:
+                        released.setdefault(int(row[0]), set()).update(keeps)
+            if released:
+                skills = {
+                    int(index): str(skill_id or "").casefold()
+                    for index, skill_id in database.execute(
+                        "SELECT rowid - 1, Id FROM _Template_Skill"
+                    )
+                }
+    except (OSError, sqlite3.Error):
+        return {}, {}
+    return (
+        {effect: frozenset(keeps) for effect, keeps in released.items()},
+        skills,
+    )
+
+
 class PlayerResourceService:
     """Own live vitality limits, skill payments, and resource regeneration."""
 
@@ -152,6 +218,31 @@ class PlayerResourceService:
             s,
             lambda entry: int(entry.effect_id) in ids,
             label="player-resource-exhausted",
+        )
+
+    @staticmethod
+    def _end_skill_start_released_effects(s: Session, skill_index: int) -> bool:
+        """End the effects another skill's start switches off."""
+
+        combat = s.gameplay_combat_state
+        path = (
+            combat.encounter.static_database_path
+            if combat is not None else DEFAULT_STATIC_DB_PATH
+        )
+        released, skills = _skill_start_released_effects(str(path))
+        if not released:
+            return False
+        skill_id = skills.get(int(skill_index), "")
+        ending = {
+            effect for effect, keeps in released.items()
+            if skill_id not in keeps
+        }
+        if not ending:
+            return False
+        return CharacterService._end_player_runtime_effects(
+            s,
+            lambda entry: int(entry.effect_id) in ending,
+            label="player-skill-start-off",
         )
 
     @staticmethod

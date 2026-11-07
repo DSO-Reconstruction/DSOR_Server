@@ -4408,7 +4408,11 @@ class LocalCombatState:
             if geometry.scale_skill_timing
             else 1.0
         )
-        if geometry.skill_type.casefold() == "shifted":
+        # A Jump lands like a Shifted skill, after its release phase: the
+        # leap flies LoopStartFrame + HitFrame (Rage Jump 4 + 11 frames,
+        # 0.6 s); at HitFrame alone the damage showed while the warrior was
+        # still in the air (DSOR client recording 2026-10-30).
+        if geometry.skill_type.casefold() in ("shifted", "jump"):
             return sum(shifted_skill_phases(geometry, attack_speed_multiplier)) / SERVER_TICKS_PER_SECOND
         return max(
             0.0,

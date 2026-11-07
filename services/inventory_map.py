@@ -378,6 +378,56 @@ class InventoryMapService:
             f"new stack {moved.item_id} at {storage_name}[{storage_slot}]"
         )
 
+    def _handle_inventory_merge(
+            self, s: Session, action, inventory, next_item_id: int) -> None:
+        """Apply ``MergeStack`` operations 0x0d..0x10: the item joins the stack
+        named by the one argument, as much as its MaxStackSize lets in.
+
+        Ignored before, so a stack dropped on another never joined it and the
+        client waited on an answer that never came.
+        """
+
+        try:
+            if inventory is None:
+                raise ValueError("player inventory is not initialized")
+            arguments = tuple(action.arguments)
+            if len(arguments) != 1 or not int(arguments[0]):
+                raise ValueError(f"merge needs one target item id, got {arguments}")
+            target_id = int(arguments[0])
+            builder = InventoryMutationBuilder(inventory, next_item_id)
+            template_id = builder.item(action.item_id).template_id
+            definition = load_purchase_item_definition(
+                self.static_database_path, template_id)
+            moved = builder.merge_stacks(
+                action.item_id, target_id, definition.max_stack_size)
+            mutation = builder.finish()
+            packet, packet_bits = encode_server_command_batch(
+                (
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.delta, LOCAL_PLAYER_ACTOR_ID),
+                    ServerCommand(INVENTORY_INFO_COMMAND, mutation.final, LOCAL_PLAYER_ACTOR_ID),
+                ),
+                include_terminator=True,
+            )
+        except ValueError as exc:
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] rejected stack merge for item "
+                f"{action.item_id}: {exc}"
+            )
+            return
+        with s.flow_lock:
+            s.gameplay_inventory = mutation.inventory
+            s.gameplay_next_item_id = mutation.next_item_id
+        CharacterService._send_world_loot_state_batch(
+            s, packet, packet_bits, label="inventory-stack-merge"
+        )
+        CharacterService._request_account_save(
+            s, "inventory stack merge", flush=True
+        )
+        print(
+            f"[{GAMEPLAY_SERVICE_NAME}] merged {moved} of {template_id!r} "
+            f"from item {action.item_id} onto item {target_id}"
+        )
+
     def _handle_inventory_move(
             self, s: Session, action, inventory, next_item_id: int) -> None:
         """Apply ``MoveItem`` operations 0x07..0x0a (storage relocation).
@@ -1022,6 +1072,10 @@ class InventoryMapService:
 
         if action.operation in SPLIT_STACK_OPERATIONS:
             self._handle_inventory_split(s, action, inventory, next_item_id)
+            return
+
+        if action.operation in MERGE_STACK_OPERATIONS:
+            self._handle_inventory_merge(s, action, inventory, next_item_id)
             return
 
         if action.operation in MOVE_ITEM_STORAGE_OPERATIONS:
