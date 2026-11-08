@@ -82,6 +82,33 @@ from dso_server.gameplay.map_event_state import (
     load_map_event_content,
     load_map_signal_catalog,
 )
+from dso_server.gameplay.dragan_state import (
+    DRAGAN_RARE_BOSS_ABSENT_FLAG,
+    DRAGAN_RARE_BOSS_MAPS,
+)
+
+
+_DRAGAN_BOSS_VARIANT_MAPS = frozenset({
+    "e_dra_03_dun_boss_01",
+    "e_dra_03_dun_gloomypastures_01",
+    "e_dra_03_dun_ironforestnight_01",
+    "e_dra_03_dun_jail_01",
+    "e_dra_03_dun_mystranight_01",
+    "e_dra_03_dun_storage_01",
+    "e_dra_03_dun_wildforestnight_01",
+})
+
+_DRAGAN_HEADLESS_HORSEMAN_MAPS = frozenset({
+    "e_dra_03_dun_gloomypastures_01",
+    "e_dra_03_dun_ironforestnight_01",
+    "e_dra_03_dun_jail_01",
+    "e_dra_03_dun_storage_01",
+})
+
+_DRAGAN_JAIL_SPIDER_EGG_TEMPLATES = frozenset({
+    "e_dra_jail_normal_spideregg_01",
+    "e_dra_jail_normal_spideregg_02",
+})
 
 
 
@@ -561,6 +588,79 @@ _SPAWN_LIST_TEMPLATE_OVERRIDES = {
             'e_dra_fortress_normal_undead_ripper_01',
             'e_dra_fortress_normal_death_knight_01',
         ),
+    },
+    # Judgment Day reuses Castle Ravencaw's main-hall density areas, but its
+    # map prefix has no ordinary Rank_monster templates. Without this map-list
+    # binding, the density fallback copies its fixed Sentinel actors into all
+    # eleven areas and fills the map with Sentinels.
+    'e_dra_03_2025_dun_01': {
+        'list_mainhall': (
+            'e_dra_fortress_normal_skeleton_warrior_01',
+            'e_dra_fortress_normal_skeleton_archer_01',
+            'e_dra_fortress_normal_undead_ripper_01',
+            'e_dra_fortress_normal_death_knight_01',
+        ),
+    },
+    # These Dragan maps use named density lists whose SpawnList registry is
+    # missing from the exported static database. Falling back to all fixed
+    # actors pulled in the authored Guardian variants as ordinary density
+    # candidates. Bind each area to its map's normal enemy family instead.
+    'e_dra_03_dun_gloomypastures_01': {
+        'list_farmland': (
+            'e_dra_pastures_normal_black_squire_fire_01',
+            'e_dra_pastures_normal_minion_fire_01',
+            'e_dra_pastures_normal_minion_fire_02',
+            'e_dra_pastures_normal_skeleton_archer_fire_01',
+            'e_dra_pastures_normal_skeleton_warrior_fire_01',
+        ),
+        'list_village': (
+            'e_dra_pastures_normal_black_squire_fire_01',
+            'e_dra_pastures_normal_minion_fire_01',
+            'e_dra_pastures_normal_minion_fire_02',
+            'e_dra_pastures_normal_skeleton_archer_fire_01',
+            'e_dra_pastures_normal_skeleton_warrior_fire_01',
+        ),
+    },
+    'e_dra_03_dun_jail_01': {
+        'list_spiders': ('e_dra_jail_normal_spider_01',),
+        'monster_sandsnakes': (
+            'e_dra_jail_normal_sandsnake_melee_01',
+            'e_dra_jail_normal_sandsnake_ranged_01',
+        ),
+    },
+    'e_dra_03_dun_ironforestnight_01': {
+        'list_mostly_gnomes': ('e_dra_ironforest_normal_norsegnome_01',),
+        'list_mostly_squires': ('e_dra_ironforest_normal_black_squire_ice_01',),
+        'monster_ice': (
+            'e_dra_ironforest_normal_golem_ice_01',
+            'e_dra_ironforest_normal_minion_ice_01',
+            'e_dra_ironforest_normal_troll_01',
+        ),
+    },
+    'e_dra_03_dun_storage_01': {
+        'list_mixed': (
+            'e_dra_storage_normal_black_squire_lightning_01',
+            'e_dra_storage_normal_bomber_norsegnome_01',
+            'e_dra_storage_normal_buzzsaw_01',
+            'e_dra_storage_normal_mechgunner_01',
+            'e_dra_storage_normal_meanie_coal_01',
+            'e_dra_storage_normal_norsegnome_01',
+            'e_dra_storage_normal_skeleton_archer_01',
+        ),
+        'list_mostly_buzzsaws': (
+            'e_dra_storage_normal_buzzsaw_01',
+            'e_dra_storage_normal_bomber_norsegnome_01',
+        ),
+        'list_mostly_gnomes': (
+            'e_dra_storage_normal_bomber_norsegnome_01',
+            'e_dra_storage_normal_mechgunner_01',
+            'e_dra_storage_normal_norsegnome_01',
+        ),
+        'list_lightning_minion_01': ('e_dra_storage_normal_minion_lightning_01',),
+        'list_lightning_minion_02': ('e_dra_storage_normal_minion_lightning_02',),
+        'list_lightning_minion_03': ('e_dra_storage_normal_minion_lightning_03',),
+        'list_lightning_minion_04': ('e_dra_storage_normal_minion_lightning_04',),
+        'list_lightning_minion_05': ('e_dra_storage_normal_minion_lightning_05',),
     },
     # This story map uses the shared reactivation family, not an a0702 normal
     # family. Its named lists identify the supporting species; the only a0702
@@ -1903,6 +2003,230 @@ def _spawn_position(transform: bytes) -> tuple[float, float, float]:
         )
     matrix = struct.unpack("<16f", transform)
     return (float(matrix[12]), float(matrix[13]), float(matrix[14]))
+
+
+def _deduplicate_dragan_boss_variants(rows):
+    """Keep one authored Black Knight captain at each overlapping location.
+
+    Dragan's side maps and Refuge contain several boss-template rows at
+    identical horizontal positions. The side-map rows have no EventSet gate;
+    Refuge's rows share its active EventSet. In both cases, select the lowest
+    numbered template for each location and EventSet, preserving distinct
+    placements and normal difficulty scaling.
+    """
+
+    selected_by_position = {}
+    other_rows = []
+    prefixes = (
+        "e_dra_all_boss_black_knight_",
+        "e_dra_03_boss_dragan_black_knight_",
+    )
+    for row in rows:
+        template_id = str(row[2]).casefold()
+        prefix = next(
+            (candidate for candidate in prefixes
+             if template_id.startswith(candidate)),
+            None,
+        )
+        if prefix is None:
+            other_rows.append(row)
+            continue
+        try:
+            variant_number = int(template_id[len(prefix):])
+        except ValueError:
+            other_rows.append(row)
+            continue
+        position = _spawn_position(row[1])
+        key = (
+            int(row[3]),
+            round(position[0], 2),
+            round(position[2], 2),
+        )
+        current = selected_by_position.get(key)
+        if current is None or variant_number < current[0]:
+            selected_by_position[key] = (variant_number, row)
+    selected = [row for _number, row in selected_by_position.values()]
+    return tuple(sorted((*other_rows, *selected), key=lambda row: int(row[0])))
+
+
+def _select_dragan_rare_boss(
+    map_id, rows, active_event_flags, fixed_row_parent_nodes,
+):
+    """Allow at most one rare Black Knight/Cadoc actor in a side map.
+
+    The server-only instance roll gives the whole candidate pool a 15% chance
+    to spawn. When present, a stable digest selects one authored actor row.
+    """
+
+    flags = tuple(str(flag).casefold() for flag in active_event_flags)
+    choice = next((
+        flag.removeprefix("dragan_rare_boss_choice_")
+        for flag in flags
+        if flag.startswith("dragan_rare_boss_choice_")
+    ), None)
+    candidates = []
+    other_rows = []
+    prefixes = (
+        "e_dra_all_boss_black_knight_",
+        "e_dra_03_boss_dragan_black_knight_",
+    )
+    for row in rows:
+        template_id = str(row[2]).casefold()
+        if (
+            template_id.startswith(prefixes)
+            or template_id.startswith("e_dra_all_leader_portal_death_knight_")
+        ):
+            candidates.append(row)
+        elif template_id.startswith("e_dra_all_normal_portal_death_knight_"):
+            # These five-mob Cadoc support groups must travel with their
+            # matching parent placement instead of entering the 15% boss pool.
+            continue
+        else:
+            other_rows.append(row)
+    absent = DRAGAN_RARE_BOSS_ABSENT_FLAG in flags
+    if choice is None or absent or not candidates:
+        reason = (
+            "no authored candidate rows" if not candidates
+            else "15% roll absent" if absent
+            else "instance roll flag missing"
+        )
+        print(
+            f"[DrasaOnlineMapServer] Dragan rare-boss selection on "
+            f"{map_id}: none ({len(candidates)} candidate row(s); {reason})"
+        )
+        return tuple(other_rows)
+    try:
+        choice_index = int(choice, 16) % len(candidates)
+    except ValueError:
+        return tuple(other_rows)
+    selected = sorted(candidates, key=lambda row: int(row[0]))[choice_index]
+    print(
+        f"[DrasaOnlineMapServer] Dragan rare-boss selection on {map_id}: "
+        f"{selected[2]} at spawn row {selected[0]} "
+        f"(1 of {len(candidates)} candidate row(s))"
+    )
+    other_rows.append(selected)
+    selected_template = str(selected[2]).casefold()
+    if selected_template.startswith("e_dra_all_leader_portal_death_knight_"):
+        selected_parent = fixed_row_parent_nodes.get(int(selected[0]))
+        other_rows.extend(
+            row for row in rows
+            if (
+                str(row[2]).casefold().startswith(
+                    "e_dra_all_normal_portal_death_knight_"
+                )
+                and fixed_row_parent_nodes.get(int(row[0])) == selected_parent
+            )
+        )
+    return tuple(sorted(other_rows, key=lambda row: int(row[0])))
+
+
+def _deduplicate_exact_dragan_spawnpoints(rows):
+    """Remove repeated authored Dragan spawn records with identical content.
+
+    The Excavation Site also authors a generic invisible lightning trigger and
+    a numbered trigger at the exact same placement for each of its five
+    crystal encounters. Only the generic template is referenced by the map's
+    sentinel-elimination signal, so retain it and discard the colocated,
+    unreferenced numbered copy.
+    """
+
+    seen = set()
+    selected = []
+    lightning_trigger_by_placement = {}
+    for row in rows:
+        template_id = str(row[2]).casefold()
+        lightning_prefix = "e_dra_storage_invisible_lightning_trigger"
+        if template_id == lightning_prefix or (
+            template_id.startswith(lightning_prefix + "_")
+            and template_id[len(lightning_prefix) + 1:].isdigit()
+        ):
+            key = (int(row[3]), bytes(row[1]))
+            current = lightning_trigger_by_placement.get(key)
+            priority = 0 if template_id == lightning_prefix else 1
+            if current is None or priority < current[0]:
+                lightning_trigger_by_placement[key] = (priority, row)
+            continue
+        key = (
+            template_id,
+            int(row[3]),
+            bytes(row[1]),
+            str(row[4]).casefold(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        selected.append(row)
+    selected.extend(
+        row for _priority, row in lightning_trigger_by_placement.values()
+    )
+    return tuple(selected)
+
+
+def _select_single_dragan_horseman_spawnpoint(rows):
+    """Keep one quest-gated Headless Horseman placement per elemental map.
+
+    Each of the four Dragan challenge maps authors the same sentinel and the
+    same activated EventSet at five different coordinates. The event quest
+    describes one Headless Horseman appearing after its objective, so these
+    coordinates are alternatives, not five simultaneous copies. Keep the
+    first authored placement for each template/EventSet pair.
+    """
+
+    selected_by_encounter = {}
+    other_rows = []
+    for row in rows:
+        template_id = str(row[2]).casefold()
+        if "_sentinel_headless_horseman_" not in template_id:
+            other_rows.append(row)
+            continue
+        key = (template_id, int(row[3]))
+        selected_by_encounter.setdefault(key, row)
+    selected = list(selected_by_encounter.values())
+    return tuple(sorted((*other_rows, *selected), key=lambda row: int(row[0])))
+
+
+def _select_single_dragan_battleground_general(rows):
+    """Keep one final Battlewise General in the Black Knights' Battleground.
+
+    The last dojo wave authors the same sentinel at five positions under one
+    EventSet. The encounter has one final boss, so use the first authored
+    placement instead of spawning five copies at once.
+    """
+
+    selected_by_encounter = {}
+    other_rows = []
+    for row in rows:
+        template_id = str(row[2]).casefold()
+        if template_id != "e_dra_dojo_sentinel_black_knight_01":
+            other_rows.append(row)
+            continue
+        key = (template_id, int(row[3]))
+        selected_by_encounter.setdefault(key, row)
+    selected = list(selected_by_encounter.values())
+    return tuple(sorted((*other_rows, *selected), key=lambda row: int(row[0])))
+
+
+def _select_single_dragan_castle_mini_boss(rows):
+    """Keep one Castle Ravencaw mini-Dragan at its five alternative points.
+
+    The map fires one ``e_dra_fortress_spawn_minidragan`` event after its
+    authored entry/quest/90%-clear signal. Five rows share that event flag but
+    sit in distant map sectors; they are alternatives for the same encounter,
+    not a five-boss wave. Keep the first authored position for the map run.
+    """
+
+    selected_by_encounter = {}
+    other_rows = []
+    template_id = "e_dra_fortress_sentinel_dragan_mini_leader_01_spawnpoint"
+    for row in rows:
+        if str(row[2]).casefold() != template_id:
+            other_rows.append(row)
+            continue
+        key = (template_id, int(row[3]))
+        selected_by_encounter.setdefault(key, row)
+    selected = list(selected_by_encounter.values())
+    return tuple(sorted((*other_rows, *selected), key=lambda row: int(row[0])))
 
 
 def _parse_damage_types(value: object) -> tuple[tuple[str, float], ...]:
@@ -3372,7 +3696,10 @@ def _load_dynamic_monster_encounter(
         # selection over those rows in the event path.
         if str(map_id).casefold() != "pw214_mortis_boss":
             from dso_server.gameplay.map_event_state import (
-                map_difficulty_variations, selected_variation_tier,
+                _map_level_variations,
+                map_difficulty_variations,
+                selected_variation_level,
+                selected_variation_tier,
             )
             fixed_variations = map_difficulty_variations(
                 map_database_path(static_database_path, map_id)
@@ -3396,6 +3723,62 @@ def _load_dynamic_monster_encounter(
                     )) is None
                     or selected_fixed_tiers.get(variation[0]) == variation[1]
                 )
+            )
+            fixed_level_variations = _map_level_variations(
+                map_database_path(static_database_path, map_id)
+            )
+            level_tiers = {}
+            for row in all_fixed_rows:
+                variation = fixed_level_variations.get(
+                    fixed_row_parent_nodes.get(int(row[0]), 0)
+                )
+                if variation is not None:
+                    level_tiers.setdefault(variation[0], set()).add(
+                        variation[1]
+                    )
+            selected_levels = {
+                family: selected_variation_level(
+                    tiers, int(monster_level or 0)
+                )
+                for family, tiers in level_tiers.items()
+            }
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if (
+                    (variation := fixed_level_variations.get(
+                        fixed_row_parent_nodes.get(int(row[0]), 0)
+                    )) is None
+                    or selected_levels.get(variation[0]) == variation[1]
+                )
+            )
+        if str(map_id).casefold() in _DRAGAN_BOSS_VARIANT_MAPS:
+            all_fixed_rows = _deduplicate_dragan_boss_variants(
+                all_fixed_rows
+            )
+        if str(map_id).casefold() in _DRAGAN_HEADLESS_HORSEMAN_MAPS:
+            all_fixed_rows = _select_single_dragan_horseman_spawnpoint(
+                all_fixed_rows
+            )
+        if str(map_id).casefold() == "e_dra_03_dun_dojo_01":
+            all_fixed_rows = _select_single_dragan_battleground_general(
+                all_fixed_rows
+            )
+        if str(map_id).casefold() == "e_dra_03_dun_01":
+            all_fixed_rows = _select_single_dragan_castle_mini_boss(
+                all_fixed_rows
+            )
+        if str(map_id).casefold() in DRAGAN_RARE_BOSS_MAPS:
+            all_fixed_rows = _select_dragan_rare_boss(
+                map_id, all_fixed_rows, active_event_flags,
+                fixed_row_parent_nodes,
+            )
+        if str(map_id).casefold() == "e_dra_03_dun_storage_01":
+            # The storage site repeats coal-enemy SpawnPoints with identical
+            # template, transform, EventSet and object label under separate
+            # parent nodes. Its lightning encounters also pair one generic
+            # signal actor with a colocated numbered copy. Keep one of each.
+            all_fixed_rows = _deduplicate_exact_dragan_spawnpoints(
+                all_fixed_rows
             )
         # The normal gorgon group on Medusa is a separate tier-0 family from
         # the scaling group. On scaled runs, the BOSS_spawn gorgons replace
@@ -3766,7 +4149,12 @@ def _load_dynamic_monster_encounter(
                 return False
         runtime = _load_runtime_definition(
             static_database_path, str(template_id), int(actor_id),
-            stationary=mounted or bgh_sequence_portal,
+            stationary=(
+                mounted
+                or bgh_sequence_portal
+                or str(template_id).casefold()
+                in _DRAGAN_JAIL_SPIDER_EGG_TEMPLATES
+            ),
         )
         if runtime is None:
             return False

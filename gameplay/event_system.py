@@ -40,6 +40,30 @@ from dso_server.runtime.file_revisions import observed_revision, resolved_path
 UINT32_MAX = 0xFFFFFFFF
 _CURRENCY_COLLECTIBLE_CATEGORIES = frozenset({"Currency", "NoAutoUseCurrency"})
 _DIFFICULTY_SUFFIX = re.compile(r"_diff_\d+$", re.IGNORECASE)
+_DRAGAN_DIFFICULTIES = (0, 1, 2, 3, 4, 6, 8)
+_DRAGAN_CASTLE_PROGRESS_AMOUNTS = (
+    (2, 3), (3, 4), (4, 6), (6, 8), (8, 10), (12, 16), (20, 20),
+)
+_DRAGAN_ELEMENTAL_PROGRESS_AMOUNTS = (
+    (2, 3), (3, 4), (4, 6), (6, 8), (8, 10), (12, 16), (20, 20),
+)
+_DRAGAN_GRAVE_BOSS_PROGRESS_AMOUNTS = (50, 75, 100, 125, 180, 300, 600)
+_DRAGAN_REFUGE_BOSS_PROGRESS_AMOUNTS = (16, 24, 32, 40, 65, 120, 250)
+_DRAGAN_GREAT_HALL_PROGRESS_AMOUNTS = (50, 75, 100, 125, 180, 300, 600)
+_DRAGAN_ELEMENTAL_MAPS = frozenset({
+    "e_dra_03_dun_gloomypastures_01",
+    "e_dra_03_dun_ironforestnight_01",
+    "e_dra_03_dun_jail_01",
+    "e_dra_03_dun_storage_01",
+    "e_dra_03_dun_mystranight_01",
+    "e_dra_03_dun_wildforestnight_01",
+})
+_DRAGAN_ATTIRE_COSTUMES = frozenset({
+    "costume_event_pass_dragan_warrior",
+    "costume_event_pass_dragan_mage",
+    "costume_event_pass_dragan_ranger",
+    "costume_event_pass_dragan_dwarf",
+})
 YEAR_ROUND_MOON_EVENT_MAPS = frozenset({
     "e_fullmoon_varholm_dun",
     "e_newmoon_blakborg_city_dun",
@@ -61,8 +85,76 @@ def _tokens(value: object) -> tuple[str, ...]:
     )
 
 
+def completed_achievement_ids(state: Mapping[str, object] | None) -> frozenset[str]:
+    """Return completed achievement ids for event-bar eligibility checks."""
+
+    result = set()
+    for key, progress in (state or {}).items():
+        completed = getattr(progress, "completed", None)
+        if completed is None and isinstance(progress, Mapping):
+            completed = bool(progress.get("completed_at"))
+        if completed:
+            result.add(str(key).casefold())
+    return frozenset(result)
+
+
 def _map_key(value: object) -> str:
     return _DIFFICULTY_SUFFIX.sub("", str(value or "").strip()).casefold()
+
+
+def _dragan_progress_amount(
+    *,
+    item_id: str,
+    map_ids: Iterable[str],
+    monster_rank: str,
+    map_difficulty: int,
+    rng: random.Random,
+) -> int | None:
+    """Return Dragan's difficulty-specific progress stack from the Oct guide.
+
+    The guide publishes two values for normal enemies and their stronger
+    counterparts on the first two stages; boss stages have one amount per map
+    difficulty.
+    """
+
+    maps = frozenset(_map_key(value) for value in map_ids)
+    collectible = str(item_id or "").casefold()
+    difficulty = max(0, int(map_difficulty))
+    try:
+        difficulty_index = _DRAGAN_DIFFICULTIES.index(difficulty)
+    except ValueError:
+        eligible = [
+            (index, value)
+            for index, value in enumerate(_DRAGAN_DIFFICULTIES)
+            if value <= difficulty
+        ]
+        difficulty_index = eligible[-1][0] if eligible else 0
+    rank = str(monster_rank or "normal").casefold()
+    elite_roll = rank not in {"", "normal", "minion"}
+
+    if (
+        collectible == "e_dra_02_riseofdragan_key_for_maps_01"
+        and (
+            "e_dra_03_dun_01" in maps
+            or maps & _DRAGAN_ELEMENTAL_MAPS
+        )
+    ):
+        low, high = _DRAGAN_CASTLE_PROGRESS_AMOUNTS[difficulty_index]
+        return high if elite_roll else low
+    if (
+        collectible == "e_dra_progress_item"
+        and maps & _DRAGAN_ELEMENTAL_MAPS
+    ):
+        low, high = _DRAGAN_ELEMENTAL_PROGRESS_AMOUNTS[difficulty_index]
+        return high if elite_roll else low
+    if collectible == "e_dra_progress_item_boss":
+        if "e_dra_03_dun_grave_01" in maps:
+            return _DRAGAN_GRAVE_BOSS_PROGRESS_AMOUNTS[difficulty_index]
+        if "e_dra_03_dun_boss_01" in maps:
+            return _DRAGAN_REFUGE_BOSS_PROGRESS_AMOUNTS[difficulty_index]
+        if "e_dra_03_dun_02" in maps:
+            return _DRAGAN_GREAT_HALL_PROGRESS_AMOUNTS[difficulty_index]
+    return None
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -131,12 +223,22 @@ class EventProgressBarDefinition:
     collectibles: tuple[EventCollectible, ...]
     item_rewards: tuple[EventReward, ...]
     currency_rewards: tuple[EventReward, ...]
+    required_achievements: frozenset[str] = frozenset()
     # Bars that advance through leaderboard placement or level-ups list a
     # collectible only as their progress unit; monsters never drop it.
     monster_drops: bool = True
 
-    def accepts(self, player_level: int) -> bool:
-        return self.minimum_level <= player_level <= self.maximum_level
+    def accepts(
+        self,
+        player_level: int,
+        completed_achievements: Iterable[str] = (),
+    ) -> bool:
+        return (
+            self.minimum_level <= player_level <= self.maximum_level
+            and self.required_achievements.issubset(
+                {str(value).casefold() for value in completed_achievements}
+            )
+        )
 
     def current_tier(self, amount: int) -> int:
         """The bar page a player with ``amount`` progress is collecting on.
@@ -196,9 +298,14 @@ class EventTemplateDefinition:
     # event runs (christmas sugar beets). Contents: data/catalogs/event_loot.json.
     loot_list_id: str = ""
 
-    def progress_bar(self, player_level: int) -> EventProgressBarDefinition | None:
+    def progress_bar(
+        self,
+        player_level: int,
+        completed_achievements: Iterable[str] = (),
+    ) -> EventProgressBarDefinition | None:
         eligible = tuple(
-            bar for bar in self.progress_bars if bar.accepts(player_level)
+            bar for bar in self.progress_bars
+            if bar.accepts(player_level, completed_achievements)
         )
         if not eligible:
             return None
@@ -297,6 +404,7 @@ class MapLootEntry:
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     require_class_option: bool = False
     minimum_difficulty: int = 0
+    required_costumes: frozenset[str] = frozenset()
     require_active_events: frozenset[str] = frozenset()
     require_inactive_events: frozenset[str] = frozenset()
     # Optional scope for wildcard entries shared across maps (for example all
@@ -389,11 +497,14 @@ class EventCatalog:
         progress: Mapping[str, Mapping[str, object]],
         *,
         player_level: int,
+        completed_achievements: Iterable[str] = (),
         now: datetime | None = None,
     ) -> EventProgressInfo:
         result = []
         for event in self.active_events(now):
-            if event.template.progress_bar(player_level) is None:
+            if event.template.progress_bar(
+                player_level, completed_achievements
+            ) is None:
                 continue
             state = progress.get(str(event.event_id), {})
             result.append(EventProgressInfoEntry(
@@ -485,8 +596,12 @@ class EventCatalog:
         map_aliases: Iterable[str] = (),
         monster_template_id: str = "",
         progress: Mapping[str, Mapping[str, object]] = MappingProxyType({}),
+        completed_achievements: Iterable[str] = (),
+        map_difficulty: int = 0,
+        active_costume: str = "",
     ) -> tuple[tuple[str, int], ...]:
         rank = str(monster_rank).casefold()
+        map_ids = (map_id, *tuple(map_aliases))
         # The public catalog is also used by tooling and protocol tests. Be
         # defensive about the runtime store's ``(entry, expires_at)`` shape so
         # malformed optional modifier state can never suppress base event
@@ -510,12 +625,13 @@ class EventCatalog:
         result = []
         for event, collectible in self._collectibles_here(
             map_id=map_id,
-            map_aliases=map_aliases,
+            map_aliases=map_ids[1:],
             player_level=player_level,
             participation=participation,
             progress=progress,
             now=now,
             monster_template_id=monster_template_id,
+            completed_achievements=completed_achievements,
         ):
             if event.collectible_ranks and rank not in event.collectible_ranks:
                 continue
@@ -528,6 +644,26 @@ class EventCatalog:
                 int(event.collectible_amount),
                 int(collectible.base_value),
             )
+            if event.template.resource_id.casefold() == "dragan_event_03":
+                base = _dragan_progress_amount(
+                    item_id=collectible.item_id,
+                    map_ids=map_ids,
+                    monster_rank=rank,
+                    map_difficulty=map_difficulty,
+                    rng=rng,
+                ) or base
+                # The worn Dragan Event Attire increases the stack sizes of
+                # Elemental and Raven Pearls. Round half up to match item
+                # stack quantities instead of Python's ties-to-even round.
+                if (
+                    str(active_costume or "").casefold()
+                    in _DRAGAN_ATTIRE_COSTUMES
+                ):
+                    collectible_id = collectible.item_id.casefold()
+                    if collectible_id == "e_dra_progress_item":
+                        base = int(base * 1.5 + 0.5)
+                    elif collectible_id == "e_dra_progress_item_boss":
+                        base = int(base * 1.1 + 0.5)
             amount = self._modified_drop_amount(
                 collectible.item_id, base, active_effects
             )
@@ -541,6 +677,7 @@ class EventCatalog:
         player_level: int,
         participation: Mapping[str, bool],
         progress: Mapping[str, Mapping[str, object]] = MappingProxyType({}),
+        completed_achievements: Iterable[str] = (),
         now: datetime | None = None,
         map_aliases: Iterable[str] = (),
     ) -> dict[str, tuple[str, ...]]:
@@ -560,6 +697,7 @@ class EventCatalog:
             participation=participation,
             progress=progress,
             now=now,
+            completed_achievements=completed_achievements,
         ):
             items = result.setdefault(event.template.resource_id.casefold(), [])
             if collectible.item_id not in items:
@@ -576,6 +714,7 @@ class EventCatalog:
         progress: Mapping[str, Mapping[str, object]],
         now: datetime | None,
         monster_template_id: str = "",
+        completed_achievements: Iterable[str] = (),
     ) -> Iterator[tuple[ScheduledEvent, EventCollectible]]:
         """Progress collectibles a drop on this map advances, per event."""
 
@@ -605,7 +744,9 @@ class EventCatalog:
                 continue
             if template.map_id and _map_key(template.map_id) not in current_maps:
                 continue
-            bar = template.progress_bar(player_level)
+            bar = template.progress_bar(
+                player_level, completed_achievements
+            )
             if bar is None or not bar.monster_drops:
                 continue
             for collectible in bar.droppable_collectibles(
@@ -743,6 +884,7 @@ class EventCatalog:
         class_name: str = "",
         map_aliases: Iterable[str] = (),
         map_difficulty: int = 0,
+        active_costume: str = "",
         privileged_difficulty_multiplier: float = 1.0,
         drop_chance_bonus_by_item: Mapping[str, float] = MappingProxyType({}),
         now: datetime | None = None,
@@ -759,6 +901,7 @@ class EventCatalog:
         raw_rank = str(monster_rank).casefold()
         rank = _rank_class(raw_rank)
         active_templates = self.active_template_ids(now)
+        current_costume = str(active_costume or "").casefold()
         current_map_regions = frozenset().union(*(
             self.map_regions.get(current_map, ()) for current_map in current_maps
         ))
@@ -773,6 +916,8 @@ class EventCatalog:
         )
         for _scope, entry in scoped_entries:
             if int(map_difficulty) < entry.minimum_difficulty:
+                continue
+            if entry.required_costumes and current_costume not in entry.required_costumes:
                 continue
             if entry.map_regions and not any(
                 actual == expected
@@ -895,13 +1040,16 @@ class EventCatalog:
         amount: int,
         player_level: int,
         class_name: str,
+        completed_achievements: Iterable[str] = (),
         now: datetime | None = None,
     ) -> EventProgressAdvance | None:
         found = self.event_for_collectible(collectible_id, now=now)
         if found is None:
             return None
         event, _any_bar = found
-        bar = event.template.progress_bar(player_level)
+        bar = event.template.progress_bar(
+            player_level, completed_achievements
+        )
         if bar is None or not any(
             value.item_id == collectible_id for value in bar.collectibles
         ):
@@ -913,7 +1061,15 @@ class EventCatalog:
         claimed = {str(value) for value in old.get("claimed", ())}
 
         def crossed(reward: EventReward) -> bool:
-            return previous < reward.threshold <= current and reward.key not in claimed
+            # When Dragan's achievement gate is ignored to match the client,
+            # players already progressing on the old level-100 bar need any
+            # newly eligible top-bar milestones up to their current amount.
+            # Claimed reward keys still prevent duplicate delivery.
+            reached = reward.threshold <= current and (
+                previous < reward.threshold
+                or event.template.resource_id.casefold() == "dragan_event_03"
+            )
+            return reached and reward.key not in claimed
 
         item_rewards = tuple(
             reward for reward in bar.item_rewards
@@ -1319,6 +1475,18 @@ def _map_loot_lists(
                     raise ValueError(
                         f"map loot for {map_id!r} names unknown item option {option!r}"
                     )
+            required_costumes = frozenset(
+                str(value).casefold()
+                for value in entry.get("require_active_costumes") or ()
+                if str(value).strip()
+            )
+            if any(
+                not any(item_id.casefold() == costume for item_id in item_rows)
+                for costume in required_costumes
+            ):
+                raise ValueError(
+                    f"map loot for {map_id!r} names an unknown costume"
+                )
             chances = {
                 str(rank).casefold(): max(0.0, min(1.0, float(value)))
                 for rank, value in dict(entry.get("chance") or {}).items()
@@ -1407,6 +1575,7 @@ def _map_loot_lists(
                 minimum_difficulty=max(
                     0, int(entry.get("minimum_difficulty", 0))
                 ),
+                required_costumes=required_costumes,
                 require_active_events=active_events,
                 require_inactive_events=inactive_events,
                 map_regions=map_regions,
@@ -1628,6 +1797,21 @@ def _load_catalog(
                 ),
                 currency_rewards=_parse_reward_entries(
                     bar_row.get("EventRewardCurrency"), currency=True
+                ),
+                # The Dragan event bar is not achievement-gated on this
+                # server. The client displays the level-100+ top bar without
+                # waiting for general_score_5000, so applying that stale
+                # static requirement here makes rewards come from a different
+                # bar than the one shown to the player.
+                required_achievements=(
+                    frozenset()
+                    if resource_id.casefold() == "dragan_event_03"
+                    else frozenset(
+                        value.casefold()
+                        for value in _tokens(
+                            bar_row.get("CompletedAchievementsRequirements")
+                        )
+                    )
                 ),
                 monster_drops=not any(
                     int(bar_row.get(column) or 0)
@@ -1983,6 +2167,7 @@ __all__ = [
     "ScheduledEvent",
     "TravelItemDefinition",
     "UINT32_MAX",
+    "completed_achievement_ids",
     "EventStatusEffectSpec",
     "event_status_effect_ids",
     "event_status_effect_specs",

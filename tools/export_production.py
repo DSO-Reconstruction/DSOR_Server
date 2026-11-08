@@ -260,9 +260,8 @@ def selected_files() -> list[Path]:
         files.extend((ROOT / package).glob("*.py"))
     for pattern in ("*.html", "*.css", "*.js"):
         files.extend((ROOT / "services/admin_static").glob(pattern))
-    files.extend(ROOT / name for name in (
-        "data/quests.xml", "data/catalogs/chest_contents.json",
-    ))
+    files.append(ROOT / "data/quests.xml")
+    files.extend((ROOT / "data" / "catalogs").glob("*.json"))
     for folder in ("docs", "tests"):
         files.extend(path for path in (ROOT / folder).rglob("*")
                      if path.is_file()

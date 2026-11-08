@@ -589,6 +589,332 @@
         "scale_stack_amount_with_difficulty": false
       }
     ],
+    "e_dra_03_dun_01": [
+      {
+        "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+        "comment": "Dragan Event Attire bonus: 5% chance for one additional Cursed Pearl from each Castle Ravencaw enemy.",
+        "ranks": ["monster", "elite", "boss"],
+        "chance": {"monster": 0.05, "elite": 0.05, "boss": 0.05},
+        "amount": {"monster": [1, 1], "elite": [1, 1], "boss": [1, 1]},
+        "require_active_costumes": ["costume_event_pass_dragan_warrior", "costume_event_pass_dragan_mage", "costume_event_pass_dragan_ranger", "costume_event_pass_dragan_dwarf"],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_grave_01": [
+      {
+        "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+        "comment": "Guaranteed regular Cursed Pearl/Raven Pearl drop from the Ghastly Black Widow, using the October 2026 difficulty table. Difficulty indices 5 and 7 are interpolated because they are not selectable event difficulties.",
+        "monsters": ["boss_black_widow"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [50, 75, 100, 125, 180, 240, 300, 450, 600],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "all_unique_boots_dragan_black_knight",
+        "comment": "Grave Black Widow guaranteed Dragan Protective Armor reward. The guide guarantees one armor item; select one of the three documented pieces uniformly. This is a server-side interpretation of the set reward.",
+        "monsters": ["boss_black_widow"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "item_options_by_class": {
+          "warrior": ["all_unique_boots_dragan_black_knight", "all_unique_gloves_dragan_black_knight", "all_unique_torso_dragan_black_knight"],
+          "mage": ["all_unique_boots_dragan_black_knight", "all_unique_gloves_dragan_black_knight", "all_unique_torso_dragan_black_knight"],
+          "ranger": ["all_unique_boots_dragan_black_knight", "all_unique_gloves_dragan_black_knight", "all_unique_torso_dragan_black_knight"],
+          "dwarf": ["all_unique_boots_dragan_black_knight", "all_unique_gloves_dragan_black_knight", "all_unique_torso_dragan_black_knight"]
+        },
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "epicmount_spiderwitch_02",
+        "comment": "Black Widow mount chance; the guide confirms the source but does not publish its rate. Use the server's 2% privileged-loot baseline.",
+        "monsters": ["boss_black_widow"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "item_ingredient_eye_of_aversion",
+        "comment": "The March 2026 Dragan update assigns Eye of Aversion to the Black Widow. October's new Eyes are additional event materials; the official FAQ does not say this earlier source was removed. The numeric rate is unpublished, so use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["boss_black_widow"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_boss_01": [
+      {
+        "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+        "comment": "Guaranteed regular Cursed Pearl/Raven Pearl drop from Dragan the Damned, using the October 2026 Dragan's Refuge difficulty table. Difficulty indices 5 and 7 are interpolated because they are not selectable event difficulties.",
+        "monsters": ["e_dra_03_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [16, 24, 32, 40, 65, 92, 120, 185, 250],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_mythic_ingredient_helmet_01_black_general",
+        "comment": "Dragan the Damned: the Helmet of the Black Knight ingredient drops on Merciless and Bloodshed; Bloodshed gives two per drop per the Dragan guide.",
+        "monsters": ["e_dra_03_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [1, 1, 1, 1, 1, 1, 1, 1, 2],
+        "minimum_difficulty": 6,
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "item_ingredient_eye_of_fear",
+        "comment": "The March 2026 Dragan update assigns Eye of Fear to Dragan in Refuge. October's new Eyes are additional event materials; the official FAQ does not say this earlier source was removed. The numeric rate is unpublished, so use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["e_dra_03_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "item_ingredient_eye_of_demon",
+        "comment": "Eye of Beelzebub was added as an independent, difficulty-scaled Dragan the Damned drop in Refuge by the October 2026 FAQ. The numeric rate is unpublished; use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["e_dra_03_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_03_hardmode_bosskey",
+        "comment": "Dragan Event Attire bonus: 2% chance for one additional Empowered Cursed Pearl from Dragan in the Refuge.",
+        "monsters": ["e_dra_03_boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_costumes": ["costume_event_pass_dragan_warrior", "costume_event_pass_dragan_mage", "costume_event_pass_dragan_ranger", "costume_event_pass_dragan_dwarf"],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_2025_dun_01": [
+      {
+        "item": "item_ingredient_eye_of_collapse",
+        "comment": "Judgment Day End of Dragan drop retained from the 2026 event update. Numeric rate is not published; use the boss template's 2% privileged-loot baseline and scale by map difficulty.",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_dragon_soul_uncommon",
+        "comment": "The Soul of Dragan Doll pet from The End of Dragan in Judgment Day (October 2026 event guide). Its rate is unpublished; use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "item_ingredient_eye_of_avarice",
+        "comment": "New Eye of Avarice drop from The End of Dragan. Officially difficulty-scaled; numeric rate is unpublished, so use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_mythic_ingredient_helmet_01_black_general",
+        "comment": "The End of Dragan grants all three Black Knight ingredients on each victory while the Dragan Event Attire is active (October 2026 guide).",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "require_active_costumes": ["costume_event_pass_dragan_warrior", "costume_event_pass_dragan_mage", "costume_event_pass_dragan_ranger", "costume_event_pass_dragan_dwarf"],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_mythic_ingredient_shoulders_01_black_general",
+        "comment": "The End of Dragan grants all three Black Knight ingredients on each victory while the Dragan Event Attire is active (October 2026 guide).",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "require_active_costumes": ["costume_event_pass_dragan_warrior", "costume_event_pass_dragan_mage", "costume_event_pass_dragan_ranger", "costume_event_pass_dragan_dwarf"],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_mythic_ingredient_backitem_01_black_general",
+        "comment": "The End of Dragan grants all three Black Knight ingredients on each victory while the Dragan Event Attire is active (October 2026 guide).",
+        "monsters": ["dra_03_boss_dragan_2025"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "require_active_costumes": ["costume_event_pass_dragan_warrior", "costume_event_pass_dragan_mage", "costume_event_pass_dragan_ranger", "costume_event_pass_dragan_dwarf"],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_gloomypastures_01": [
+      {
+        "item": "costume_headless_horseman_fire",
+        "comment": "The Fiery Headless Horseman in Gloomy Pastures can drop this costume after the map quest's second stage and the fire-brute encounter. The chance is unpublished; 2% is a server fallback estimate.",
+        "monsters": ["e_dra_pastures_sentinel_headless_horseman_fire"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_jail_01": [
+      {
+        "item": "costume_headless_horseman_poison",
+        "comment": "The Poisonous Headless Horseman in Sulfur Desert can drop this costume after the map quest's second stage, Neroun, and the spider eggs. The chance is unpublished; 2% is a server fallback estimate.",
+        "monsters": ["e_dra_jail_sentinel_headless_horseman_poison"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_storage_01": [
+      {
+        "item": "costume_headless_horseman_lightning",
+        "comment": "The Electrified Headless Horseman in Dragan's Excavation Site can drop this costume after the map quest's second stage and the thunder-citrine objective. The chance is unpublished; 2% is a server fallback estimate.",
+        "monsters": ["e_dra_storage_sentinel_headless_horseman_lightning"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_ironforestnight_01": [
+      {
+        "item": "costume_headless_horseman_ice",
+        "comment": "The Icy Headless Horseman in Iron Forest at Night can drop this costume after the map quest's second stage and the reliquary objective. The chance is unpublished; 2% is a server fallback estimate.",
+        "monsters": ["e_dra_ironforest_sentinel_headless_horseman_ice"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_dojo_01": [
+      {
+        "item": "e_dra_mythic_ingredient_backitem_01_black_general",
+        "comment": "Battlewise Black Knight General: guaranteed Cape of the Black Knight ingredient on Merciless, doubled on Bloodshed, as stated in the October 2026 event guide.",
+        "monsters": ["e_dra_dojo_sentinel_black_knight_01"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 1.0},
+        "amount": {"sentinel": [1, 1]},
+        "amount_by_difficulty": [1, 1, 1, 1, 1, 1, 1, 1, 2],
+        "minimum_difficulty": 6,
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "item_ingredient_fallen_heart",
+        "comment": "Black Knight General drop in Black Knights' Battleground. Numeric rate is unpublished; use the arena final sentinel's 2% privileged-loot baseline and scale by difficulty.",
+        "monsters": ["e_dra_dojo_sentinel_black_knight_01"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "all_unique_amulet_dragan",
+        "comment": "The Amulet of the Black Knight can also drop from the Battleground final boss; the October 2026 guide does not publish its rate, so use the sentinel's 2% privileged-loot baseline.",
+        "monsters": ["e_dra_dojo_sentinel_black_knight_01"],
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.02},
+        "amount": {"sentinel": [1, 1]},
+        "minimum_difficulty": 4,
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_dra_03_dun_02": [
+      {
+        "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+        "comment": "Guaranteed regular Cursed Pearl/Raven Pearl drop from Great Hall Dragan, using the October 2026 Great Hall difficulty table. Difficulty indices 5 and 7 are interpolated because they are not selectable event difficulties.",
+        "monsters": ["boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [50, 75, 100, 125, 180, 240, 300, 450, 600],
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "pet_dragan_common",
+        "comment": "Dragan Doll pet drop from the Great Hall boss (October 2026 event guide). Its rate is unpublished; use the boss template's 2% privileged-loot baseline.",
+        "monsters": ["boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "e_dra_mythic_ingredient_shoulders_01_black_general",
+        "comment": "Great Hall Dragan: guaranteed Shoulders of the Black Knight ingredient x2 on Merciless and x4 on Bloodshed, per the October 2026 event guide.",
+        "monsters": ["boss_dragan"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [1, 1, 1, 1, 1, 1, 2, 2, 4],
+        "minimum_difficulty": 6,
+        "require_active_events": ["dragan_event_03"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "e_bos_02_gwenfara_01": [
       {
         "item": "item_ingredient_mercenary_heartlava",

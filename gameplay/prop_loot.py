@@ -37,18 +37,28 @@ class PropLootEntry:
     map. ``event_id`` limits an item entry to maps where that event's
     progress applies. ``per_level`` sizes each stack as the player level
     times a uniform factor (gold); otherwise ``amount`` is a [min, max]
-    range. ``stacks`` is the number of separate ground objects.
+    range. ``stacks`` is the number of separate ground objects. Entries
+    sharing ``roll_group`` form one weighted, one-of roll.
+    ``minimum_difficulty`` gates an entry, and
+    ``scale_chance_with_difficulty`` applies the selected map's authored drop
+    multipliers to its independent ``chance`` roll.
     """
 
     item_id: str
     event_progress: bool
     event_id: str
+    event_progress_item_id: str
     chance: float
     amount: tuple[int, int]
     per_level: tuple[float, float] | None
     stacks: int
     map_id: str = ""
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
+    roll_group: str = ""
+    weight: float = 0.0
+    minimum_difficulty: int = 0
+    maximum_difficulty: int | None = None
+    scale_chance_with_difficulty: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,16 +107,46 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
     if "per_level" in entry:
         per_level = _range(entry["per_level"], "per_level", minimum=0.0)
     low, high = _range(entry.get("amount", 1), "amount", minimum=1)
+    roll_group = str(entry.get("roll_group") or "").strip().casefold()
+    weight = max(0.0, float(entry.get("weight", 0.0)))
+    if bool(roll_group) != (weight > 0.0):
+        raise ValueError(
+            f"prop loot list {list_id!r}: roll_group and positive weight "
+            "must be specified together"
+        )
+    minimum_difficulty = max(0, int(entry.get("minimum_difficulty", 0)))
+    maximum_difficulty = (
+        max(0, int(entry["maximum_difficulty"]))
+        if entry.get("maximum_difficulty") is not None else None
+    )
+    if (
+        maximum_difficulty is not None
+        and maximum_difficulty < minimum_difficulty
+    ):
+        raise ValueError(
+            f"prop loot list {list_id!r}: maximum_difficulty must be "
+            "at least minimum_difficulty"
+        )
     return PropLootEntry(
         item_id=item_id,
         event_progress=event_progress,
         event_id=str(entry.get("event") or "").strip().casefold(),
+        event_progress_item_id=(
+            str(entry.get("event_progress_item") or "").strip().casefold()
+        ),
         chance=max(0.0, min(1.0, float(entry.get("chance", 1.0)))),
         amount=(int(low), int(high)),
         per_level=per_level,
         stacks=max(1, int(entry.get("stacks", 1))),
         map_id=str(entry.get("map") or "").strip().casefold(),
         item_options_by_class=MappingProxyType(class_options),
+        roll_group=roll_group,
+        weight=weight,
+        minimum_difficulty=minimum_difficulty,
+        maximum_difficulty=maximum_difficulty,
+        scale_chance_with_difficulty=bool(
+            entry.get("scale_chance_with_difficulty")
+        ),
     )
 
 
@@ -157,6 +197,8 @@ def roll_prop_loot(
     class_name: str = "",
     map_id: str = "",
     map_aliases: Iterable[str] = (),
+    map_difficulty: int = 0,
+    privileged_difficulty_multiplier: float = 1.0,
 ) -> tuple[tuple[str, int], ...]:
     """Roll one chest for one player.
 
@@ -172,25 +214,26 @@ def roll_prop_loot(
         if str(value).strip()
     )
     result = []
-    for entry in entries:
-        if entry.map_id and entry.map_id not in current_maps:
-            continue
-        if entry.event_id and entry.event_id not in event_collectibles:
-            continue
-        if entry.chance < 1.0 and rng.random() >= entry.chance:
-            continue
+    weighted_groups: dict[str, list[PropLootEntry]] = {}
+
+    def add_entry(entry: PropLootEntry) -> None:
         if entry.event_progress:
             items = tuple(
                 item_id
-                for collectibles in event_collectibles.values()
+                for event_id, collectibles in event_collectibles.items()
+                if not entry.event_id or event_id.casefold() == entry.event_id
                 for item_id in collectibles
+                if (
+                    not entry.event_progress_item_id
+                    or item_id.casefold() == entry.event_progress_item_id
+                )
             )
         else:
             class_options = entry.item_options_by_class
             if class_options:
                 options = class_options.get(str(class_name).casefold(), ())
                 if not options:
-                    continue
+                    return
                 items = (rng.choice(options),)
             else:
                 items = (entry.item_id,)
@@ -201,6 +244,37 @@ def roll_prop_loot(
                 else:
                     amount = rng.randint(*entry.amount)
                 result.append((item_id, amount))
+
+    for entry in entries:
+        if entry.map_id and entry.map_id not in current_maps:
+            continue
+        if entry.event_id and entry.event_id not in event_collectibles:
+            continue
+        if int(map_difficulty) < entry.minimum_difficulty:
+            continue
+        if (
+            entry.maximum_difficulty is not None
+            and int(map_difficulty) > entry.maximum_difficulty
+        ):
+            continue
+        chance = entry.chance
+        if entry.scale_chance_with_difficulty:
+            chance *= max(0.0, float(privileged_difficulty_multiplier))
+        chance = min(1.0, max(0.0, chance))
+        if entry.roll_group:
+            weighted_groups.setdefault(entry.roll_group, []).append(entry)
+            continue
+        if chance < 1.0 and rng.random() >= chance:
+            continue
+        add_entry(entry)
+
+    for group in weighted_groups.values():
+        chosen = rng.choices(
+            group,
+            weights=tuple(entry.weight for entry in group),
+            k=1,
+        )[0]
+        add_entry(chosen)
     return tuple(result)
 
 

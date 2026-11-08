@@ -25,7 +25,11 @@ from dso_server.gameplay.map_difficulty_state import (
     is_concrete_map_access,
     map_teleport_access_group_override,
 )
-from dso_server.gameplay.quest_content import QUEST_STATE_ACCEPTED, active_tasks
+from dso_server.gameplay.quest_content import (
+    QUEST_STATE_ACCEPTED,
+    QUEST_STATE_CLOSED,
+    active_tasks,
+)
 from dso_server.services.map_events import _PARALLEL_WORLD_TIERED_EXIT_MAPS
 
 
@@ -43,6 +47,165 @@ NEW_MOON_REALM_MAP_IDS = frozenset({
     "e_newmoon_blakborg_black_dun",
 })
 NEW_MOON_PORTAL_SCROLL_TEMPLATE_ID = "e_new_01_scroll_fairy_fire_buff_01"
+_DRAGAN_ELEMENTAL_UNLOCK_QUESTS = {
+    "e_dra_03_dun_gloomypastures_01": "e-dra-unlock-fire-n",
+    "e_dra_03_dun_ironforestnight_01": "e-dra-unlock-ice-n",
+    "e_dra_03_dun_storage_01": "e-dra-unlock-lightning-n",
+    "e_dra_03_dun_jail_01": "e-dra-unlock-poison-n",
+}
+_DRAGAN_SECRET_LAIR_ACCESS_GROUPS = frozenset({
+    "i0004_fire_big_dun_event_dragan",
+    "i0010_physical_big_dun_event_dragan",
+})
+
+
+def _dragan_map_access_costs(
+    static_database_path, access, *, refuge_offering_already_paid=False,
+):
+    """Return authored entry item costs for a selected Dragan access tier."""
+    access_group_id = str(access.access_group_id).casefold()
+    if (
+        not access_group_id.startswith("e_dra_03_")
+        and access_group_id not in _DRAGAN_SECRET_LAIR_ACCESS_GROUPS
+    ):
+        return ()
+    try:
+        with sqlite3.connect(
+            f"file:{Path(static_database_path).resolve().as_posix()}?mode=ro",
+            uri=True,
+        ) as database:
+            row = database.execute(
+                """
+                SELECT KeyId FROM _Template_MapAccessGroup
+                WHERE AccessGroup=?
+                ORDER BY CASE WHEN Id=? THEN 0 ELSE 1 END,
+                         ABS(CAST(Difficulty AS INTEGER)-?),
+                         CAST(Difficulty AS INTEGER), rowid
+                LIMIT 1
+                """,
+                (
+                    str(access.access_group_id),
+                    str(access.request_map_id),
+                    int(access.map_difficulty),
+                ),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise ValueError("could not load Dragan map access costs") from exc
+    costs = []
+    for token in str(row[0] or "").split(";") if row else ():
+        template_id, separator, amount = token.strip().partition(":")
+        if not template_id or not separator:
+            continue
+        if (
+            refuge_offering_already_paid
+            and str(access.physical_map_id).casefold()
+            == "e_dra_03_dun_boss_01"
+            and template_id.casefold() == "e_dra_03_hardmode_bosskey"
+        ):
+            # Offering Brazier already consumes this Empowered Cursed Pearl
+            # before it activates the Refuge portal. Do not charge it again
+            # during the immediately following map transfer.
+            continue
+        try:
+            amount = int(amount)
+        except ValueError:
+            continue
+        if amount > 0:
+            costs.append((template_id, amount))
+    return tuple(costs)
+
+
+def _consume_map_access_costs(session, costs):
+    """Stage map-entry costs; caller restores the original state if transfer fails."""
+    if not costs:
+        return None, None, None
+    with session.flow_lock:
+        original_inventory = session.gameplay_inventory
+        original_next_item_id = int(session.gameplay_next_item_id)
+        if original_inventory is None:
+            raise ValueError("map access requires inventory items")
+        builder = InventoryMutationBuilder(
+            original_inventory, original_next_item_id,
+        )
+        for template_id, required_amount in costs:
+            matching = [
+                item for item in builder.inventory.items
+                if str(item.template_id).casefold() == str(template_id).casefold()
+            ]
+            available = sum(max(0, int(item.amount)) for item in matching)
+            if available < int(required_amount):
+                raise ValueError(
+                    f"map access requires {required_amount} {template_id}"
+                )
+            remaining = int(required_amount)
+            for item in matching:
+                amount = min(remaining, max(0, int(item.amount)))
+                if amount:
+                    builder.consume(int(item.item_id), amount, preserve_item_id=True)
+                    remaining -= amount
+                if not remaining:
+                    break
+        mutation = builder.finish()
+        session.gameplay_inventory = mutation.inventory
+        session.gameplay_next_item_id = max(
+            int(session.gameplay_next_item_id), int(mutation.next_item_id),
+        )
+        return mutation, original_inventory, original_next_item_id
+
+
+def _dragan_access_quest_gate(session, access, *, authored_portal=False):
+    """Enforce Dragan's authored quest and boss-portal routes."""
+    physical_map_id = str(access.physical_map_id).casefold()
+    access_group_id = str(access.access_group_id).casefold()
+    if access_group_id in _DRAGAN_SECRET_LAIR_ACCESS_GROUPS:
+        # Refuge's two Dragan-specific Secret Lair exits are activated by its
+        # authored boss encounter. Direct travel must not bypass that route.
+        return bool(authored_portal)
+    if physical_map_id == "e_dra_03_dun_dojo_01":
+        # The October 2026 event exposes Battleground only on Infernal,
+        # Merciless and Bloodshed (the authored difficulty ids 4, 6 and 8).
+        return int(access.map_difficulty) in {4, 6, 8}
+    if physical_map_id in {
+        "e_dra_03_dun_boss_01",  # Refuge, opened by the Offering Brazier.
+        "e_dra_03_2025_dun_01",  # Judgment Day, opened after Refuge Dragan.
+        "e_dra_03_dun_grave_01",
+        "e_dra_03_dun_wildforestnight_01",
+        "e_dra_03_dun_mystranight_01",
+    }:
+        # These routes are opened by a prop or a boss encounter. A direct map
+        # travel request must not skip the in-map trigger that opens them.
+        return bool(authored_portal)
+    if physical_map_id == "e_dra_03_dun_02":
+        # The Castle gate is opened by finishing the whole "Preparation for
+        # the Unknown" route: all four elemental marks, the second-floor
+        # statue, and General Insith. Checking only the four zone quests
+        # allowed direct travel to skip those remaining objectives.
+        required = {"e-dra-unlock-second-floor-01-n"}
+        with session.flow_lock:
+            closed = {
+                str(quest_id).casefold()
+                for quest_id, progress in getattr(
+                    session, "gameplay_quest_log", {}
+                ).items()
+                if int(getattr(progress, "state", -1)) == QUEST_STATE_CLOSED
+            }
+        return required.issubset(closed)
+    unlock_quest = _DRAGAN_ELEMENTAL_UNLOCK_QUESTS.get(physical_map_id)
+    if not unlock_quest:
+        return True
+    with session.flow_lock:
+        quest_log = getattr(session, "gameplay_quest_log", {})
+        progress = next(
+            (
+                value for quest_id, value in quest_log.items()
+                if str(quest_id).casefold() == unlock_quest
+            ),
+            None,
+        )
+        state = int(getattr(progress, "state", -1))
+        return state == QUEST_STATE_CLOSED or (
+            authored_portal and state == QUEST_STATE_ACCEPTED
+        )
 
 
 class MapTransitionService:
@@ -534,6 +697,9 @@ class MapTransitionService:
         scroll_mutation = None
         original_inventory = None
         original_next_item_id = None
+        access_mutation = None
+        access_original_inventory = None
+        access_original_next_item_id = None
         try:
             character = s.gameplay_character
             selected_access_id = str(
@@ -571,6 +737,12 @@ class MapTransitionService:
                 )
             ):
                 raise ValueError("the destination requires its unlocking quest")
+            if not _dragan_access_quest_gate(
+                s, destination_access, authored_portal=True,
+            ):
+                raise ValueError(
+                    "the Dragan Great Hall requires all four elemental quests"
+                )
             try:
                 if home_exit:
                     destination_position = load_local_travel_point_position(
@@ -627,6 +799,19 @@ class MapTransitionService:
                         int(s.gameplay_next_item_id),
                         int(scroll_mutation.next_item_id),
                     )
+            access_costs = _dragan_map_access_costs(
+                self.static_database_path,
+                destination_access,
+                refuge_offering_already_paid=(
+                    destination_physical_map_id.casefold()
+                    == "e_dra_03_dun_boss_01"
+                ),
+            )
+            if access_costs:
+                (access_mutation, access_original_inventory,
+                 access_original_next_item_id) = _consume_map_access_costs(
+                    s, access_costs,
+                )
             started = CharacterService._begin_map_transfer(
                 self,
                 s,
@@ -639,6 +824,10 @@ class MapTransitionService:
                 ),
             )
         except (OSError, ValueError) as exc:
+            if access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
             if scroll_mutation is not None:
                 with s.flow_lock:
                     s.gameplay_inventory = original_inventory
@@ -649,11 +838,36 @@ class MapTransitionService:
             )
             return False
         if not started:
+            if access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
             if scroll_mutation is not None:
                 with s.flow_lock:
                     s.gameplay_inventory = original_inventory
                     s.gameplay_next_item_id = original_next_item_id
             return False
+        if access_mutation is not None:
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, access_mutation.delta,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, access_mutation.final,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="dragan-map-access-costs",
+            )
+            CharacterService._request_account_save(
+                s, "Dragan map access costs spent",
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] spent Dragan map access costs "
+                f"for {destination_access.request_map_id!r}: {access_costs}"
+            )
         if scroll_mutation is not None:
             packet, packet_bits = encode_server_command_batch((
                 ServerCommand(
@@ -731,10 +945,19 @@ class MapTransitionService:
                     )
                     return
             if not candidates:
+                map_event_runtime = getattr(
+                    s, "gameplay_map_event_runtime", None,
+                )
+                if map_event_runtime is not None:
+                    with map_event_runtime.lock:
+                        active_event_flags = map_event_runtime.active_flags()
+                else:
+                    active_event_flags = frozenset()
                 authored_exits = load_local_map_exits(
                     self.static_database_path,
                     gameplay_map,
                     include_inactive_event_sets=True,
+                    active_event_flags=active_event_flags,
                 )
                 matching_authored = tuple(
                     d for d in authored_exits
@@ -1341,6 +1564,9 @@ class MapTransitionService:
                   f"targets {request.map_id!r}:{request.entry_name or ''}")
             return
         map_id, entry_name = destination
+        access_mutation = None
+        access_original_inventory = None
+        access_original_next_item_id = None
         try:
             cleared_floor, _claimed_floor = CharacterService._fractured_planes_progress(s)
             replaying_cleared_floor = (
@@ -1362,6 +1588,10 @@ class MapTransitionService:
             ):
                 raise ValueError("the destination requires its unlocking quest")
             access = resolve_map_access(self.static_database_path, map_id, player_level=player_level)
+            if not _dragan_access_quest_gate(s, access):
+                raise ValueError(
+                    "the Dragan map is behind a quest or portal gate"
+                )
             try:
                 spawn_position = load_local_entry_position(
                     self.static_database_path, access.physical_map_id, entry_name)
@@ -1370,14 +1600,48 @@ class MapTransitionService:
                 # installed map. Use that destination's authored default spawn.
                 spawn_position = load_local_spawn_position(
                     self.static_database_path, access.physical_map_id)
+            access_costs = _dragan_map_access_costs(
+                self.static_database_path, access,
+            )
+            if access_costs:
+                (access_mutation, access_original_inventory,
+                 access_original_next_item_id) = _consume_map_access_costs(
+                    s, access_costs,
+                )
             with s.flow_lock:
                 s.gameplay_client_command_state[command_id] = request
             CharacterService._accept_gameplay_state_command(s, command_id)
-            CharacterService._begin_map_transfer(
+            started = CharacterService._begin_map_transfer(
                 self, s, map_id, spawn_position=spawn_position,
                 reason="event-travel", scaling_difficulty=0,
                 fractured_planes_run=fractured_planes_run)
+            if not started and access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
+                return
+            if started and access_mutation is not None:
+                packet, packet_bits = encode_server_command_batch((
+                    ServerCommand(
+                        INVENTORY_INFO_COMMAND, access_mutation.delta,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                    ServerCommand(
+                        INVENTORY_INFO_COMMAND, access_mutation.final,
+                        LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                ), include_terminator=True)
+                CharacterService._send_world_loot_state_batch(
+                    s, packet, packet_bits, label="dragan-map-access-costs",
+                )
+                CharacterService._request_account_save(
+                    s, "Dragan map access costs spent",
+                )
         except (OSError, ValueError) as exc:
+            if access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected event travel: {exc}")
 
     def _perform_map_travel(
@@ -1426,6 +1690,9 @@ class MapTransitionService:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected quest-locked map travel to {map_id!r}")
             return
         consumed_travel_item = False
+        access_mutation = None
+        access_original_inventory = None
+        access_original_next_item_id = None
         if pending is not None:
             if float(pending.get("expires_at", 0.0)) < time.perf_counter():
                 with s.flow_lock:
@@ -1544,6 +1811,24 @@ class MapTransitionService:
                     scaling_difficulty=difficulty)
                 spawn_position = load_local_travel_point_position(
                     self.static_database_path, access.physical_map_id)
+            else:
+                access = resolve_map_access(self.static_database_path, map_id,
+                    player_level=max(1, int(getattr(character, "level", 1))),
+                    scaling_difficulty=difficulty)
+            if not _dragan_access_quest_gate(s, access):
+                raise ValueError(
+                    "the Dragan map is behind a quest or portal gate"
+                )
+            access_costs = (
+                () if consumed_travel_item else _dragan_map_access_costs(
+                    self.static_database_path, access,
+                )
+            )
+            if access_costs:
+                (access_mutation, access_original_inventory,
+                 access_original_next_item_id) = _consume_map_access_costs(
+                    s, access_costs,
+                )
             started = CharacterService._begin_map_transfer(
                 self,
                 s,
@@ -1557,6 +1842,10 @@ class MapTransitionService:
                 scaling_difficulty=difficulty,
             )
         except (OSError, ValueError) as exc:
+            if access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
             if consumed_travel_item:
                 with s.flow_lock:
                     s.gameplay_inventory = original_inventory
@@ -1565,12 +1854,37 @@ class MapTransitionService:
             print(f"[{GAMEPLAY_SERVICE_NAME}] rejected map travel: {exc}")
             return
         if not started:
+            if access_mutation is not None:
+                with s.flow_lock:
+                    s.gameplay_inventory = access_original_inventory
+                    s.gameplay_next_item_id = access_original_next_item_id
             if consumed_travel_item:
                 with s.flow_lock:
                     s.gameplay_inventory = original_inventory
                     s.gameplay_next_item_id = original_next_item_id
                     s.gameplay_pending_travel_item = pending
             return
+        if access_mutation is not None:
+            packet, packet_bits = encode_server_command_batch((
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, access_mutation.delta,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+                ServerCommand(
+                    INVENTORY_INFO_COMMAND, access_mutation.final,
+                    LOCAL_PLAYER_ACTOR_ID,
+                ),
+            ), include_terminator=True)
+            CharacterService._send_world_loot_state_batch(
+                s, packet, packet_bits, label="dragan-map-access-costs",
+            )
+            CharacterService._request_account_save(
+                s, "Dragan map access costs spent",
+            )
+            print(
+                f"[{GAMEPLAY_SERVICE_NAME}] spent Dragan map access costs "
+                f"for {access.request_map_id!r}: {access_costs}"
+            )
         if stone_price:
             from dso_server.protocol.commerce_protocol import PurchasePrice, debit_currency
             with s.flow_lock:

@@ -16932,57 +16932,69 @@
     "rarity_hints": null,
     "entries": [
      {
-      "text": "Spirit Essence(10%)",
+      "text": "Spirit Essence",
       "amount": 3000,
-      "chance_percent": null,
+      "chance_percent": 10.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "rc_ammunition_ammotype_11"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
-      "text": "Empowered Cursed Pearl(30%)",
+      "text": "Empowered Cursed Pearl",
       "amount": 1,
-      "chance_percent": null,
+      "chance_percent": 30.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "e_dra_03_hardmode_bosskey"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
-      "text": "Empowered Cursed Pearl(35%)",
+      "text": "Empowered Cursed Pearl",
       "amount": 2,
-      "chance_percent": null,
+      "chance_percent": 35.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "e_dra_03_hardmode_bosskey"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
-      "text": "Empowered Cursed Pearl(20%)",
+      "text": "Empowered Cursed Pearl",
       "amount": 3,
-      "chance_percent": null,
+      "chance_percent": 20.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "e_dra_03_hardmode_bosskey"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
-      "text": "Eye of Collapse(4%)",
+      "text": "Eye of Collapse",
       "amount": 1,
-      "chance_percent": null,
+      "chance_percent": 4.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "item_ingredient_eye_of_collapse"
+      ],
+      "match": "exact",
       "ambiguous": false
      },
      {
-      "text": "Fallen Heart(1%)",
+      "text": "Fallen Heart",
       "amount": 1,
-      "chance_percent": null,
+      "chance_percent": 1.0,
       "mode": "chance",
-      "candidates": [],
-      "match": "none",
+      "candidates": [
+       "item_ingredient_fallen_heart"
+      ],
+      "match": "exact",
       "ambiguous": false
      }
     ]

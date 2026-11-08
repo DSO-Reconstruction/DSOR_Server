@@ -1033,6 +1033,15 @@ class PlayerProjectileService:
                     s,
                     label="world-loot-spawn",
                 )
+                for _resolution, _label, loot_generation in dispatches:
+                    if bool(getattr(
+                        loot_generation,
+                        "dragan_first_clear_reward",
+                        False,
+                    )):
+                        CharacterService._confirm_dragan_great_hall_first_clear(
+                            self, s, loot_generation,
+                        )
         if (getattr(s, "gameplay_match", None) is not None
                 and getattr(s, "gameplay_match_callback", None) is not None):
             # Battleground objectives score damage dealt to team structures.

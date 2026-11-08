@@ -32,6 +32,9 @@ from dso_server.protocol.player_init_protocol import (
     VariationInfoEntry,
 )
 from dso_server.gameplay.map_collision_terrain import load_map_collision_terrain
+from dso_server.gameplay.dragan_state import (
+    filter_dragan_secret_portal_exits,
+)
 
 
 LOCAL_NPC_ACTOR_BASE = 0x10000
@@ -1079,7 +1082,9 @@ def load_local_map_exits(
                     event_set_row=event_set_row,
                 )
             )
-        return tuple(exits)
+        return filter_dragan_secret_portal_exits(
+            map_id, tuple(exits), active_event_flags,
+        )
     finally:
         database.close()
 
@@ -1495,6 +1500,13 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Castle Ravencaw authors the Dragan Battleground exits, but its loaded
+    # scene omits the portal entity. Create only the selected difficulty gate
+    # from the authored exit GUID so the arena entrance is visible and usable.
+    "e_dra_03_dun_01": ("e_dra_03_dun_dojo_",),
+    # Great Hall's authored return exit is event-gated and also absent from
+    # the loaded scene. Materialize it when Dragan's finish event is enabled.
+    "e_dra_03_dun_02": ("e_dra_03_dun_01",),
     # Defeat the Undefeatable's random boss gates are in the exit catalog but
     # missing from Circus's loaded scene. The event runtime selects exactly
     # one active exit; materialize that selected boss gate by its GUID.

@@ -285,6 +285,20 @@ class PlayerRespawnService:
         CharacterService._expire_summons_with_owner(s)
         from dso_server.services.talent_events import dispatch_player_death
         dispatch_player_death(s)
+        # Black Knights' Battleground authors PlayerDied ->
+        # e_dra_dojo_wave_stop_signal_01, which ends the active waves after a
+        # death. It is a ClosedPVE map, so the generic death path does not
+        # otherwise report this event to the map-local signal evaluator.
+        with s.flow_lock:
+            failed_battleground = (
+                str(getattr(s, "gameplay_map", "")).casefold()
+                == "e_dra_03_dun_dojo_01"
+            )
+            presence_callback = getattr(
+                s, "gameplay_presence_callback", None,
+            )
+        if failed_battleground and callable(presence_callback):
+            presence_callback(s, ("map_signal", "PlayerDied", ()))
         if allowed and getattr(s, "gameplay_match", None) is None:
             with s.flow_lock:
                 if not s.gameplay_death_pending or s.gameplay_respawn_in_progress:

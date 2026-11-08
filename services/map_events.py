@@ -50,6 +50,7 @@ from dso_server.gameplay.boss_encounter_policy import (
     select_boss_spawn_rows,
 )
 from dso_server.gameplay.event_spawn_areas import event_area_spawn_rows
+from dso_server.gameplay.event_system import completed_achievement_ids
 from dso_server.gameplay.local_monster_state import (
     _bgh_boss_health_multiplier,
     _grounded_spawn_position,
@@ -158,6 +159,7 @@ from dso_server.protocol.world_loot_protocol import (
     possible_reward_rates,
     roll_possible_reward_gems,
     roll_new_equipment_enchantments,
+    prime_world_loot_cache,
 )
 from dso_server.gameplay.prop_loot import (
     CHEST_DROP_SPACING,
@@ -3106,6 +3108,31 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == "e_dra_03_dun_02"
+            and frozenset(templates).intersection({
+                "boss_dragan", "e_dra_03_boss_dragan",
+            })
+        ):
+            # Great Hall's return exit and repeatable relic chest share the
+            # authored finish-battle EventSet. Some Dragan boss death paths
+            # bypass its ClientSignal, so guarantee that the same authored
+            # finish event runs from the authoritative lethal-kill callback.
+            finish_event = runtime.catalog.event(
+                "e_dra_2nd_floor_finish_battle",
+            )
+            if finish_event is not None:
+                self._schedule_map_local_event_start(runtime, finish_event)
+                _log(
+                    "ensured Great Hall finish event after Dragan defeat; "
+                    "publishing return exit and reward chest"
+                )
+            else:
+                _log(
+                    "Great Hall Dragan was defeated but the authored finish "
+                    "event is missing from the map event catalog"
+                )
         self._advance_bgh_all_boss_sequence(s, runtime, monsters)
         self._maybe_open_circus_random_gate(s, runtime, templates)
         if (
@@ -3997,8 +4024,17 @@ class MapEventService:
         )
         parallel_world_jewel_chance = None
         equipment_rewards_by_template = {}
+        dragan_gate_claim_update = None
         class_name = ""
         dtu_event_progress_reward = 0
+        with s.flow_lock:
+            chest_character = s.gameplay_character
+            player_level = max(
+                1, int(getattr(chest_character, "level", 1) or 1)
+            )
+            class_name = CLASS_NAMES.get(
+                int(getattr(chest_character, "class_id", 0) or 0), ""
+            ).casefold()
         if is_parallel_world_boss_chest:
             tier = int(definition.variation_difficulty or 0)
             if tier >= BLOODSHED_DIFFICULTY:
@@ -4562,8 +4598,53 @@ class MapEventService:
             if andermant_reward:
                 specifications.append(("money_rc", andermant_reward))
         else:
+            dragan_elemental_chest_loot_lists = {}
+            for element in ("fire", "ice", "lightning", "poison"):
+                for chest_number in (1, 2, 3):
+                    dragan_elemental_chest_loot_lists[
+                        f"e_dra_fortress_rewardchest_{element}_{chest_number:02d}"
+                    ] = f"chest_e_dra_fortress_rewardchest_{element}"
+                dragan_elemental_chest_loot_lists[
+                    f"e_dra_fortress_rewardchest_{element}_04"
+                ] = (
+                    f"chest_e_dra_fortress_rewardchest_{element}_repeatable"
+                )
+            dragan_elemental_final_chests = {
+                instance_id: loot_list_id
+                for instance_id, loot_list_id
+                in dragan_elemental_chest_loot_lists.items()
+                if instance_id.endswith("_04")
+            }
+            dragan_chest_instance_id = str(
+                definition.instance_id
+            ).casefold()
+            dragan_elemental_chest_loot_list = (
+                dragan_elemental_chest_loot_lists.get(
+                    dragan_chest_instance_id
+                )
+            )
+            is_dragan_elemental_relic_chest = (
+                map_key(getattr(s, "gameplay_map", ""))
+                == "e_dra_03_dun_01"
+                and dragan_elemental_chest_loot_list is not None
+                and loot_list_id == dragan_elemental_chest_loot_list
+            )
+            is_dragan_elemental_reward_chest = (
+                is_dragan_elemental_relic_chest
+                and dragan_chest_instance_id.endswith("_04")
+            )
+            catalog_loot_list_id = (
+                "CHEST_e_dra_fortress_rewardchest_repeatable"
+                if is_dragan_elemental_reward_chest
+                else (
+                    "CHEST_e_dra_fortress_rewardchest_elemental_quest"
+                    if is_dragan_elemental_relic_chest else loot_list_id
+                )
+            )
             try:
-                entries = load_prop_loot_catalog().entries(loot_list_id)
+                entries = load_prop_loot_catalog().entries(
+                    catalog_loot_list_id
+                )
             except (OSError, ValueError) as exc:
                 _log(f"prop loot catalog unavailable: {type(exc).__name__}: {exc}")
                 entries = None
@@ -4575,6 +4656,119 @@ class MapEventService:
                 specifications = []
             else:
                 specifications = list(self._roll_map_chest_loot(s, entries))
+                if (
+                    is_dragan_elemental_relic_chest
+                    and not is_dragan_elemental_reward_chest
+                ):
+                    from dso_server.protocol.chest_loot_protocol import (
+                        roll_chest_contents,
+                    )
+
+                    rng = random.SystemRandom()
+                    # The three quest-gated chests in each elemental area
+                    # share the 2-3 equipment reward. The repeatable final
+                    # chest has its own smaller gem/Pearl table. Cap equipment
+                    # at Epic (the client's Legendary tier).
+                    rarity_boxes = (
+                        "all_class_all_equip_uncommon_01",
+                        "all_class_all_equip_magic_01",
+                        "all_class_all_equip_rare_01",
+                        "all_class_all_equip_epic_01",
+                    )
+                    for _ in range(rng.randint(2, 3)):
+                        equipment = roll_chest_contents(
+                            self.static_database_path,
+                            rng.choice(rarity_boxes),
+                            player_level=player_level,
+                            class_name=class_name,
+                            rng=rng,
+                        )
+                        for reward in equipment.rewards:
+                            template_id = reward.definition.template_id
+                            specifications.append(
+                                (template_id, int(reward.amount))
+                            )
+                            equipment_rewards_by_template.setdefault(
+                                template_id, [],
+                            ).append(reward)
+
+                    if is_dragan_elemental_reward_chest:
+                        # Each of the four repeatable final Castle chests gives
+                        # each special prize a 10% roll. Any unclaimed prize is
+                        # guaranteed on the fourth distinct final chest.
+                        gate_map_id = map_key(getattr(s, "gameplay_map", ""))
+                        chest_key = (
+                            f"{gate_map_id}:{dragan_chest_instance_id}"
+                        )
+                        valid_chests = {
+                            f"e_dra_03_dun_01:{instance_id}"
+                            for instance_id in dragan_elemental_final_chests
+                        }
+                        event_catalog = getattr(
+                            s, "gameplay_event_catalog", None
+                        )
+                        dragan_event = next((
+                            event for event in (
+                                event_catalog.active_events()
+                                if event_catalog is not None else ()
+                            )
+                            if event.template.resource_id.casefold()
+                            == "dragan_event_03"
+                        ), None)
+                        if chest_key in valid_chests and dragan_event is not None:
+                            with s.flow_lock:
+                                progress = copy.deepcopy(
+                                    getattr(
+                                        s, "gameplay_event_progress", {}
+                                    ) or {}
+                                )
+                            claims_by_event = dict(
+                                progress.get(
+                                    "dragan_gate_chest_claims", {}
+                                ) or {}
+                            )
+                            event_key = str(int(dragan_event.event_id))
+                            state = dict(
+                                claims_by_event.get(event_key, {}) or {}
+                            )
+                            opened = set(
+                                str(value)
+                                for value in state.get("opened", ())
+                            )
+                            claimed = set(
+                                str(value)
+                                for value in state.get("claimed", ())
+                            )
+                            prize_items = (
+                                ("premium_teaser_one_week_consumable_7d", 1),
+                                ("money_rc", 5000),
+                                ("melt_tool_90d", 1),
+                            )
+                            # The four final chests are repeatable. Track which
+                            # distinct chests the player has opened so any
+                            # still-unclaimed special prize is guaranteed on
+                            # the fourth distinct chest, while common rewards
+                            # and the normal per-opening chance keep working
+                            # on repeat visits to the same chest.
+                            opened.add(chest_key)
+                            for template_id, amount in prize_items:
+                                if (
+                                    template_id not in claimed
+                                    and (len(opened) >= len(valid_chests)
+                                         or rng.random() < 0.10)
+                                ):
+                                    specifications.append(
+                                        (template_id, amount)
+                                    )
+                                    claimed.add(template_id)
+                            claims_by_event[event_key] = {
+                                "opened": sorted(opened),
+                                "claimed": sorted(claimed),
+                            }
+                            progress["dragan_gate_chest_claims"] = (
+                                claims_by_event
+                            )
+                            dragan_gate_claim_update = progress
         if (
             is_parallel_world_boss_chest
             and parallel_world_jewel_chance is not None
@@ -4749,6 +4943,18 @@ class MapEventService:
         CharacterService._reconcile_world_loot_visibility(
             s, label="map-chest-loot",
         )
+        if dragan_gate_claim_update is not None:
+            with s.flow_lock:
+                current_progress = copy.deepcopy(
+                    getattr(s, "gameplay_event_progress", {}) or {}
+                )
+                current_progress["dragan_gate_chest_claims"] = (
+                    dragan_gate_claim_update.get("dragan_gate_chest_claims", {})
+                )
+                s.gameplay_event_progress = current_progress
+            CharacterService._request_account_save(
+                s, "dragan gate chest rewards claimed",
+            )
         # Chest drops are placed around the player. Run the server-side
         # proximity pickup immediately so AutoPickUp=All rewards (including
         # this chest's key stack) are collected without requiring another
@@ -4811,6 +5017,9 @@ class MapEventService:
             )
             participation = dict(s.gameplay_event_participation)
             progress = dict(getattr(s, "gameplay_event_progress", None) or {})
+            completed_achievements = completed_achievement_ids(
+                getattr(s, "gameplay_achievements", None)
+            )
             event_catalog = s.gameplay_event_catalog
             class_name = (
                 CLASS_NAMES.get(int(character.class_id), "").casefold()
@@ -4825,7 +5034,14 @@ class MapEventService:
             player_level=player_level,
             participation=participation,
             progress=progress,
+            completed_achievements=completed_achievements,
         )
+        map_difficulty = max(
+            0, int(getattr(s, "gameplay_map_difficulty", 0) or 0)
+        )
+        difficulty_drop_factors = prime_world_loot_cache(
+            self.static_database_path
+        ).difficulty_drop_factors.get(map_difficulty, (1.0, 1.0))
         return roll_prop_loot(
             entries,
             player_level=player_level,
@@ -4834,6 +5050,10 @@ class MapEventService:
             class_name=class_name,
             map_id=map_id,
             map_aliases=(event_map_id, access_id),
+            map_difficulty=map_difficulty,
+            privileged_difficulty_multiplier=(
+                difficulty_drop_factors[0] * difficulty_drop_factors[1]
+            ),
         )
 
     @staticmethod
@@ -7239,6 +7459,16 @@ class MapEventService:
                     _log(
                         f"published native exit creation on {runtime.map_id}: "
                         f"event_sets={tuple(entry.event_set_row for entry in native_exit_entries)}"
+                    )
+                elif map_key(runtime.map_id) == "e_dra_03_dun_01":
+                    _log(
+                        f"published Dragan Battleground entrance on "
+                        f"{runtime.map_id}: "
+                        f"destinations={tuple(sorted({
+                            definition.destination_map_id
+                            for definition in viewer_definitions
+                            if definition.instance_guid in native_exit_guids
+                        }))}"
                     )
                 elif map_key(runtime.map_id) == "e_bos_arena_01":
                     _log(
