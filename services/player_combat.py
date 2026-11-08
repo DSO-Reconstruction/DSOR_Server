@@ -455,6 +455,9 @@ class PlayerCombatService(PlayerCastTimingService):
         if rejection is None:
             CharacterService._cancel_mount_cast(s, "combat skill started")
             CharacterService._remove_mount_ride(s, reason="combat skill started")
+            CharacterService._end_skill_start_released_effects(
+                s, skill.skill_index
+            )
         if rejection is None and runtime_cast and combat is not None:
             # The cast is accepted: it burns essence. The damage range above
             # was calculated with the essence still equipped, which is the
@@ -1013,6 +1016,9 @@ class PlayerCombatService(PlayerCastTimingService):
         if rejection is None:
             CharacterService._cancel_mount_cast(s, "combat skill started")
             CharacterService._remove_mount_ride(s, reason="combat skill started")
+            CharacterService._end_skill_start_released_effects(
+                s, client_skill.skill_index
+            )
         if rejection is None and combat is not None:
             # Cleanse at cast start, before the destination allowance and
             # any MoveCommand that follows the escape.

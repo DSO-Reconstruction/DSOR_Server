@@ -547,6 +547,15 @@ MOVE_ITEM_STORAGE_OPERATIONS = {
 # ``Messaging::SplitStack``'s first argument is the amount that *stays* in the
 # source stack, not the amount that moves: ``InventoryProperty::OnSplitStack``
 # assigns it directly to the source item's amount.
+# ``MergeStack``: the moved item's id and, as the one argument, the id of the
+# stack it joins; the operation names the storage of that stack.
+MERGE_STACK_OPERATIONS = {
+    0x0D: "storage_slots",
+    0x0E: "extra_storage_slots",
+    0x0F: "bank_storage_slots",
+    0x10: "extra_bank_storage_slots",
+}
+
 SPLIT_STACK_OPERATIONS = {
     0x1E: "storage_slots",
     0x1F: "extra_storage_slots",

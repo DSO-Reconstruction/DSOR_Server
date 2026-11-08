@@ -228,14 +228,35 @@ def apply_season_pass_overrides(
 def effective_season_pass_rewards(
     database, overrides: Mapping[str, Mapping[int, Mapping[str, object]]],
 ) -> dict[str, dict[int, tuple[int, str, str, str]]]:
-    """Every reward set this database has, with the CMS overrides applied."""
-    return {
+    """Every reward set this database has, with the CMS overrides applied.
+
+    CONTRACT: a level's experience threshold is one column (SeasonPassExp)
+    that both sets share, so an edited threshold applies to every set.
+    FAILURE (2026-11-05, release261 November 2026 data, which has the
+    alternate set): saving a level wrote the standard set's new threshold,
+    then the alternate set's unchanged one over it (450 read back as 400;
+    tests/test_season_pass_admin.py).
+    """
+    tables = {
         reward_set: apply_season_pass_overrides(
             read_season_pass_rewards(database, reward_set),
             overrides.get(reward_set, {}),
         )
         for reward_set in SEASON_PASS_REWARD_COLUMNS
         if season_pass_reward_set(database, reward_set == "alternate") == reward_set
+    }
+    thresholds = {
+        int(level): int(fields["exp"])
+        for reward_set in SEASON_PASS_REWARD_COLUMNS
+        for level, fields in overrides.get(reward_set, {}).items()
+        if "exp" in fields
+    }
+    return {
+        reward_set: {
+            level: (thresholds.get(int(level), values[0]), *values[1:])
+            for level, values in rows.items()
+        }
+        for reward_set, rows in tables.items()
     }
 
 

@@ -823,6 +823,39 @@ class InventoryMutationBuilder:
         self.changed_items.append(copy.deepcopy(moved))
         return moved
 
+    def merge_stacks(self, item_id: int, target_id: int, max_stack: int) -> int:
+        """Move as much of stack ``item_id`` onto ``target_id`` as fits under
+        ``max_stack``; return the amount moved.
+
+        Both stacks keep the identity transition every partial-stack mutation
+        uses: a changed stack is republished under a fresh id (new->old in the
+        replacements), an emptied source is removed.  The stack's selling value
+        (``stack_vc_value``) follows its amount.
+        """
+
+        source = self.item(item_id)
+        target = self.item(target_id)
+        if int(source.item_id) == int(target.item_id):
+            raise ValueError("cannot merge a stack onto itself")
+        if source.template_id != target.template_id:
+            raise ValueError(
+                f"cannot merge {source.template_id!r} onto {target.template_id!r}"
+            )
+        moved = min(int(source.amount), int(max_stack) - int(target.amount))
+        if moved <= 0:
+            raise ValueError(f"stack {target_id} is already full")
+        unit = int(target.stack_vc_value) // max(1, int(target.amount))
+        target.amount = int(target.amount) + moved
+        target.stack_vc_value = unit * int(target.amount)
+        self.rekey_item(target_id)
+        source_unit = int(source.stack_vc_value) // max(1, int(source.amount))
+        left = int(source.amount) - moved
+        self.consume(item_id, moved)
+        if left:
+            self.item(self.next_item_id - 1).stack_vc_value = source_unit * left
+            self.changed_items[-1].stack_vc_value = source_unit * left
+        return moved
+
     def move_item(
         self,
         item_id: int,

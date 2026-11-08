@@ -211,6 +211,7 @@ from dso_server.protocol.gameplay_protocol import (
     SET_TITLE_COMMAND,
     USE_TRAVEL_ITEM_COMMAND,
     SPLIT_STACK_OPERATIONS,
+    MERGE_STACK_OPERATIONS,
     UPGRADE_STICKER_BOOK_ITEM_COMMAND,
     InstanceConfigClientInfo,
     ActorStatsUpdate,

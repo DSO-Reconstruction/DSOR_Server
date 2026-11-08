@@ -1707,6 +1707,13 @@ def roll_equipment_reward(
         candidates = _eligible_equipment(
             database, str(class_name), max(1, int(item_level))
         )
+        if rarity != ROLLED_EQUIPMENT_RARITIES[0]:
+            # A trinket is only ever Common: no random enchantments fit it.
+            candidates = tuple(
+                candidate for candidate in candidates
+                if candidate.item_category
+                not in ENCHANTMENT_FREE_TRINKET_CATEGORIES
+            )
     else:
         candidates = _eligible_fixed_rarity_equipment(
             database,
@@ -2590,6 +2597,14 @@ def generate_monster_loot(
                     rarity = _roll_equipment_rarity(
                         database, map_difficulty, generator
                     )
+                    # Trinkets have no random enchantments: they always
+                    # drop at their template's rarity, Common, as in the
+                    # original (a rolled Magic trinket showed nothing).
+                    if (
+                        definition.item_category
+                        in ENCHANTMENT_FREE_TRINKET_CATEGORIES
+                    ):
+                        rarity = 0
                     specifications.append(
                         (
                             definition,

@@ -108,6 +108,24 @@ class LogoutTests(unittest.TestCase):
         self.assertTrue(s.gameplay_exit_transition_started)
         self.assertIsNone(s.gameplay_logout_timer)
 
+    def test_the_players_cancel_stops_the_countdown(self):
+        s = self._session(TUTORIAL)
+        self.server._handle_logout(s, self.request[0])
+        (timer,) = s.timers
+        cancel = encode_logout(Logout(True, False))
+        self.server._handle_logout(s, cancel[0])
+        self.assertTrue(timer.cancelled)
+        self.assertIsNone(s.gameplay_logout_timer)
+        self.assertEqual(
+            self._sent(s, PLAYER_LOGOUT_INFO_COMMAND)[-1], encode_player_logout_info(0),
+        )
+        timer.fire()
+        self.assertEqual(self._sent(s, SWITCH_MAP_COMMAND), [])
+        # A cancel with nothing counting down starts nothing.
+        self.server._handle_logout(s, cancel[0])
+        self.assertEqual(len(s.timers), 1)
+        self.assertFalse(s.gameplay_exit_transition_started)
+
     def test_a_hit_cancels_the_countdown(self):
         s = self._session(TUTORIAL)
         self.server._handle_logout(s, self.request[0])
