@@ -105,7 +105,7 @@ MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY = (
     "mystic_cube_epic",        # 9 Parallel World Bloodshed
 )
 BOSS_COMMON_DROP_RANKS = frozenset({
-    "guardian", "leader", "boss", "worldboss",
+    "boss", "worldboss",
 })
 BOSS_GEM_RANKS_BY_DIFFICULTY = (
     ("a", "b", "c"),                 # 0-1
@@ -179,6 +179,11 @@ EQUIPMENT_ITEM_CATEGORIES = frozenset((
 BASE_WISDOM_DROP_CHANCE = 0.12
 # Event progress dropped by an event map's final boss, in base drops.
 EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER = 25
+DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS = frozenset({
+    "e_dra_02_riseofdragan_key_for_maps_01",
+    "e_dra_progress_item",
+    "e_dra_progress_item_boss",
+})
 EQUIPMENT_RARITIES = (
     "Common",
     "Uncommon",
@@ -359,6 +364,7 @@ class WorldLootGeneration:
     profile: MonsterLootProfile
     drops: tuple[WorldLootDrop, ...]
     next_item_id: int
+    dragan_first_clear_reward: bool = False
 
 
 @dataclass(frozen=True)
@@ -623,11 +629,19 @@ def _load_static_loot_cache(
             if rank is None:
                 continue
             template_id = str(monster["Id"])
+            rank_id = str(rank["Id"])
+            rank_kind = str(rank["Rank"] or "monster").lower()
+            # The static rank table classifies Rank_sentinel as "boss" for
+            # combat scaling. It is still a Sentinel loot class: treating it
+            # as a boss incorrectly grants boss gems and multiple guaranteed
+            # Mystic Cubes to every Sentinel.
+            if rank_id.casefold() == "rank_sentinel":
+                rank_kind = "sentinel"
             monster_profiles[template_id] = MonsterLootProfile(
                 template_id=template_id,
                 monster_level=max(1, int(monster["CharLevel"] or 1)),
-                rank_id=str(rank["Id"]),
-                rank_kind=str(rank["Rank"] or "monster").lower(),
+                rank_id=rank_id,
+                rank_kind=rank_kind,
                 drop_chance=_probability(monster["DropChance"]),
                 loot_stack_size=max(
                     0.0, float(monster["LootStackSize"] or 0.0)
@@ -3029,7 +3043,9 @@ def generate_monster_loot(
         }
         # An event map's final boss (rank worldboss: Big Paws, Dragan...) pays
         # out a large stack of progress; minibosses a small one. The map
-        # difficulty curve below scales both.
+        # difficulty curve below scales both. Dragan's own collectibles are
+        # already explicitly sized per difficulty in EventCatalog, so do not
+        # multiply those stacks again by boss rank.
         event_rank_multiplier = (
             EVENT_FINAL_BOSS_PROGRESS_MULTIPLIER
             if profile.rank_kind == "worldboss"
@@ -3047,6 +3063,12 @@ def generate_monster_loot(
             item_category = str(
                 row.get("ItemCategory") or "InstantConsumable"
             )
+            stack_multiplier = (
+                1
+                if str(template_id).casefold()
+                in DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS
+                else event_rank_multiplier
+            )
             specifications.append((
                 LootItemDefinition(
                     str(template_id),
@@ -3054,7 +3076,7 @@ def generate_monster_loot(
                     str(row.get("AutoPickUp") or "All"),
                     "0", "0", "",
                 ),
-                max(1, int(amount)) * event_rank_multiplier,
+                max(1, int(amount)) * stack_multiplier,
                 1,
                 "",
                 0,
@@ -3182,8 +3204,8 @@ def generate_monster_loot(
 
         # Apply the database's map-difficulty stack curve in one final pass so
         # Currency and any item with an authored VC/RC stack tag follow their
-        # difficulty curve. Event progress uses the VC curve even for legacy
-        # rows that predate the tag.
+        # difficulty curve. Generic event progress uses the VC fallback; the
+        # Dragan progress items are already explicitly sized by difficulty.
         specifications = [
             (
                 definition,
@@ -3199,6 +3221,8 @@ def generate_monster_loot(
                 if (
                     definition.template_id
                     not in difficulty_unscaled_drop_templates
+                    and definition.template_id.casefold()
+                    not in DIFFICULTY_SIZED_DRAGAN_PROGRESS_ITEMS
                     and (
                         definition.item_category == "Currency"
                         or definition.template_id in event_collectible_ids

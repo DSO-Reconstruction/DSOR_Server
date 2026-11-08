@@ -322,6 +322,16 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # The Dragan package tooltip states the exact one-of odds. Spirit Essence
+    # is class ammunition in the client templates, so resolve it per opener.
+    "surprise_dragan_package": (
+        ("@spirit_essence", 3000, 10.0),
+        ("e_dra_03_hardmode_bosskey", 1, 30.0),
+        ("e_dra_03_hardmode_bosskey", 2, 35.0),
+        ("e_dra_03_hardmode_bosskey", 3, 20.0),
+        ("item_ingredient_eye_of_collapse", 1, 4.0),
+        ("item_ingredient_fallen_heart", 1, 1.0),
+    ),
     # The Surprise Jewel Pack's client description gives exact probabilities.
     # Jewel of Glory is character-specific in the static item templates.
     "surprise_jewel_pack_glory": (
@@ -424,6 +434,21 @@ _AUTHORED_RANDOM_CHESTS: dict[str, tuple[str, int, int]] = {
     "polished_squama": ("money_rc", 5, 15),
 }
 _AUTHORED_ROLL_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # Dragan's paid packages have fixed rewards plus independent bonus rolls.
+    # Their exact contents and chances are present in the client tooltips,
+    # while the server-owned loot lists are absent from the static database.
+    "event_dra_payment_package_01": (
+        ("e_dra_03_hardmode_bosskey", 1, 100.0),
+        ("@spirit_essence", 1000, 100.0),
+        ("pet_gargoyle_skull_dra", 1, 3.0),
+    ),
+    "event_dra_payment_package_02": (
+        ("e_dra_03_hardmode_bosskey", 1, 100.0),
+        ("community_coins", 10, 100.0),
+        ("costumes_headless_horseman_06", 1, 1.0),
+        ("vanity_trail_13", 1, 1.0),
+        ("e_bgh_ancestors_soul", 1, 50.0),
+    ),
     "ancestor_treasure_map": (
         ("perforated_dragon_scale", 1, 100.0),
         ("perforated_dragon_bone", 1, 80.0),
@@ -1538,6 +1563,18 @@ def _authored_reward_entries(
                 "Surprise Jewel Pack requires a supported character class"
             )
         return ((jewel, entry.amount),)
+    if entry.template_id == "@spirit_essence":
+        ammunition = {
+            "warrior": "rc_ammunition_ammotype_11",
+            "ranger": "rc_ammunition_ammotype_12",
+            "dwarf": "rc_ammunition_ammotype_13",
+            "mage": "rc_ammunition_ammotype_14",
+        }.get(str(class_name).casefold())
+        if ammunition is None:
+            raise ValueError(
+                "Surprise Dragan Package requires a supported character class"
+            )
+        return ((ammunition, entry.amount),)
     if entry.template_id == "@strenuousness_jewel":
         return ((rng.choice((
             "jewel_bgh_key_drop_magic",
@@ -1559,6 +1596,7 @@ def _authored_chance_contents(
     box_definition: PurchaseItemDefinition,
     *,
     player_level: int,
+    class_name: str,
     rng: random.Random,
 ) -> ChestContents | None:
     """Roll a box written in the authored weighted/bonus/roll tables."""
@@ -1831,6 +1869,7 @@ def roll_chest_contents(
     chance_authored = _authored_chance_contents(
         static_database_path, box_definition,
         player_level=player_level,
+        class_name=class_name,
         rng=rng or random.SystemRandom(),
     )
     if chance_authored is not None:

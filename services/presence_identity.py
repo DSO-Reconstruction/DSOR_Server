@@ -83,6 +83,15 @@ class PresenceIdentityService:
             # sees (or shares combat state with) the other participant.
             s.gameplay_instance_id = f"pvp-match-{int(match.match_id)}"
             return
+        if str(s.gameplay_map or "").casefold() in {
+            "e_dra_03_dun_dojo_01",  # Black Knights' Battleground.
+            "e_dra_03_dun_02",       # Great Hall.
+        }:
+            # These two Dragan event maps are explicitly solo-only. ClosedPVE
+            # dungeons normally let group members join an existing instance;
+            # give each Dragan entry its own instance key instead.
+            s.gameplay_instance_id = uuid4().hex
+            return
         policy = load_map_encounter_policy(self.static_database_path, s.gameplay_map)
         if policy.area_type.casefold() not in {'closedpve', 'boss'}:
             s.gameplay_instance_id = ''

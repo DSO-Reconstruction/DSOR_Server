@@ -4,6 +4,13 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
+    DRAGAN_ATTIRE_PRODUCT_KEY,
+    DRAGAN_EYE_OF_AVERSION_PRODUCT_KEY,
+    DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY,
+    DRAGAN_EYE_OF_FEAR_PRODUCT_KEY,
+    DRAGAN_FALLEN_HEART_PRODUCT_KEY,
+    DRAGAN_JUDGMENT_DAY_PRODUCT_KEY,
+    DRAGAN_LAST_GUARDIAN_PRODUCT_KEY,
     BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY,
     BIG_GAME_HUNT_BIG_BUNDLE_PRODUCT_KEY,
     BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY,
@@ -275,6 +282,19 @@ def resolve_ocp_booking_reward(
                 "skin_dwarf_unique_backitem_attire_biggamehunt_01"
                 if class_name == "dwarf"
                 else "skin_all_unique_backitem_attire_biggamehunt_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
+            )
+        if offer_id == DRAGAN_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_dra_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_dra_01"
             )
             attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
             return OCPBookingReward(
@@ -744,6 +764,15 @@ LOCAL_OCP_OFFERS = (
         180_213, 9.90, False, "€",
         BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY, "", "",
     ),
+    # Dragan event attire and packages reuse their native PaymentPackages
+    # product keys. Package rewards are routed after confirmation above.
+    OCPOffer(180_214, 9.90, False, "€", DRAGAN_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_215, 9.90, False, "€", DRAGAN_LAST_GUARDIAN_PRODUCT_KEY, "", ""),
+    OCPOffer(180_216, 9.90, False, "€", DRAGAN_JUDGMENT_DAY_PRODUCT_KEY, "", ""),
+    OCPOffer(180_217, 9.90, False, "€", DRAGAN_EYE_OF_AVERSION_PRODUCT_KEY, "", ""),
+    OCPOffer(180_218, 9.90, False, "€", DRAGAN_EYE_OF_FEAR_PRODUCT_KEY, "", ""),
+    OCPOffer(180_219, 9.90, False, "€", DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_220, 9.90, False, "€", DRAGAN_FALLEN_HEART_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

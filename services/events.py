@@ -13,6 +13,7 @@ import time
 import uuid
 
 from dso_server.gameplay.map_event_state import load_map_event_content, map_key
+from dso_server.gameplay.event_system import completed_achievement_ids
 from dso_server.persistence.account_registry import DEFAULT_SESSION_TTL_SECONDS
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -428,6 +429,9 @@ class EventService:
             )
             progress = copy.deepcopy(s.gameplay_event_progress)
             participation = dict(s.gameplay_event_participation)
+            completed_achievements = completed_achievement_ids(
+                getattr(s, "gameplay_achievements", None)
+            )
             active_map_id = str(map_id or s.gameplay_map or '')
             active_access_group_id = str(
                 map_access_group_id
@@ -515,7 +519,11 @@ class EventService:
             )
         return (
             update,
-            catalog.progress_info(progress, player_level=player_level),
+            catalog.progress_info(
+                progress,
+                player_level=player_level,
+                completed_achievements=completed_achievements,
+            ),
             catalog.participation_info(participation),
         )
 
@@ -653,6 +661,9 @@ class EventService:
         with s.flow_lock:
             progress = copy.deepcopy(s.gameplay_event_progress)
             character = copy.deepcopy(s.gameplay_character)
+            completed_achievements = completed_achievement_ids(
+                getattr(s, "gameplay_achievements", None)
+            )
         if character is None:
             return False
         class_name = CLASS_NAMES.get(int(character.class_id), "Mage")
@@ -662,6 +673,7 @@ class EventService:
             amount=max(0, int(amount)),
             player_level=max(1, int(character.level)),
             class_name=class_name,
+            completed_achievements=completed_achievements,
         )
         if advance is None:
             return False

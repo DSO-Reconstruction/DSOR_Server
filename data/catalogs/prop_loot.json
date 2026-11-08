@@ -1,5 +1,5 @@
 {
-  "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible of every event whose progress applies on the map, for this player. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
+  "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). Entries sharing 'roll_group' form one weighted, one-of roll. 'minimum_difficulty' and 'maximum_difficulty' gate entries and 'scale_chance_with_difficulty' applies map difficulty drop factors to 'chance'. 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible; 'event_progress_item' restricts it to one currently active page collectible. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
     "CHEST_lootlist_MAGIC": {
       "comment": "Locked scaling magic chests spend five lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
@@ -65,6 +65,109 @@
         {"item": "e_ful_02_vargulf_01_log_01", "amount": [1, 1]}
       ]
     },
+    "CHEST_e_dra_all_rewardchest_maps": {
+      "comment": "Standard Dragan relic chest used on the four elemental maps and secret maps. The October 2026 guide documents one or two Empowered Cursed Pearls from this 80%-clear chest.",
+      "entries": [
+        {"item": "e_dra_03_hardmode_bosskey", "amount": [1, 2]}
+      ]
+    },
+    "CHEST_e_dra_fortress_rewardchest_elemental_quest": {
+      "comment": "User-specified common rewards shared by Castle Ravencaw's one-time and repeatable elemental relic chests. Premium, 5,000 Andermant, and 90-day Smelter are separate 10% rewards only on the four repeatable final chests, each guaranteed on the fourth distinct final chest if still unclaimed; equipment is rolled in services/map_events.py. The rune entries use the static catalog's Common-rarity damage, health, attack-speed, and critical runes.",
+      "entries": [
+        {"item": "e_sar_chest_key", "amount": [1, 1]},
+        {"item": "e_chr_2012_event_currency", "amount": [250, 250]},
+        {"item": "lootbox_gems_e", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
+        {"item": "lootbox_gems_f", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
+        {"item": "lootbox_gems_g", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
+        {"item": "unique_gem_damage_00", "amount": [1, 1]},
+        {"item": "unique_gem_hitpoints_00", "amount": [1, 1]},
+        {"item": "unique_gem_attackspeed_00", "amount": [1, 1]},
+        {"item": "unique_gem_critical_00", "amount": [1, 1]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "amount": [1, 1]},
+        {"item": "gilded_clover", "amount": [1, 50]},
+        {"item": "money_vc_gold", "amount": [500, 500]},
+        {"item": "misc_resurrect_partymember_01", "amount": [5, 5]}
+      ]
+    },
+    "CHEST_e_dra_jail_hole": {
+      "comment": "User-confirmed Jail hole rewards: 250 Draken, one Jewel of Enhancement, and 2 gems on Normal through Fatal or 3 gems on Merciless and Bloodshed. lootbox_gems_n is the static catalog's Royal Gem Bag tier, corresponding to the requested Görkemli quality.",
+      "entries": [
+        {"item": "e_chr_2012_event_currency", "amount": [250, 250]},
+        {"item": "e_ide_02_crafting_gem", "amount": [1, 1]},
+        {"item": "lootbox_gems_n", "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [2, 2]},
+        {"item": "lootbox_gems_n", "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [3, 3]}
+      ]
+    },
+    "CHEST_dragan_coal_heap": {
+      "comment": "User requested that all ten Storage coal-heap loot chests remain empty for now.",
+      "entries": []
+    },
+    "CHEST_e_dra_fortress_rewardchest_repeatable": {
+      "comment": "Repeatable Castle Ravencaw final quest chest: one gem bag on Normal through Infernal, two on Merciless and Bloodshed, plus Cursed Pearls scaled by difficulty (10/15/20/25/36/60/120). The three one-time quest chests use the separate elemental_quest list.",
+      "entries": [
+        {"item": "lootbox_gems_e", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
+        {"item": "lootbox_gems_f", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
+        {"item": "lootbox_gems_g", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
+        {"item": "lootbox_gems_e", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
+        {"item": "lootbox_gems_f", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
+        {"item": "lootbox_gems_g", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [10, 10]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [15, 15]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [20, 20]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [25, 25]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [36, 36]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [60, 60]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [120, 120]}
+      ]
+    },
+    "CHEST_e_dra_2nd_floor_rewardchest_repeatable": {
+      "comment": "Great Hall repeatable relic chest. The October 2026 event guide gives the boss and chest 50/50 Raven Pearls on Normal through 600/600 on Bloodshed. The chest also grants the current Dragan progress collectible, whatever page the character is collecting.",
+      "entries": [
+        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [2, 2]},
+        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [4, 4]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [50, 50]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [75, 75]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [100, 100]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [125, 125]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [180, 180]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [300, 300]},
+        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [600, 600]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [50, 50]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [75, 75]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [100, 100]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [125, 125]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [180, 180]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [300, 300]},
+        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [600, 600]}
+      ]
+    },
+    "lootlis_statue_of_the_black_knight_all": {
+      "comment": "Dragan 2026 Black Knight statues. Each statue costs one Empowered Cursed Pearl. Official Oct 2026 FAQ confirms separate 5% rolls for Eye of Avarice and Eye of Beelzebub at every difficulty; the legacy statue reward remains one guaranteed Arcane Dragon Essence plus one weighted item. Legacy weights are from the official March 2026 edition and are retained because October says the usual statue rewards remain.",
+      "entries": [
+        {"item": "e_bgh_ancestors_soul", "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_avarice", "chance": 0.05, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_demon", "chance": 0.05, "amount": [1, 1]},
+        {"item": "pet_ghost_bird_uncommon", "roll_group": "legacy_reward", "weight": 0.1, "amount": [1, 1]},
+        {"item": "pet_blackfire_bird_uncommon", "roll_group": "legacy_reward", "weight": 0.2, "amount": [1, 1]},
+        {"item": "vanity_trail_27", "roll_group": "legacy_reward", "weight": 1.7, "amount": [1, 1]},
+        {"item": "item_ingredient_fallen_heart", "roll_group": "legacy_reward", "weight": 2.0, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_aversion", "roll_group": "legacy_reward", "weight": 13.0, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_fear", "roll_group": "legacy_reward", "weight": 13.0, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_collapse", "roll_group": "legacy_reward", "weight": 10.0, "amount": [1, 1]},
+        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]},
+        {"item": "e_dra_mythic_ingredient_helmet_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]},
+        {"item": "e_dra_mythic_ingredient_backitem_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]}
+      ]
+    },
+    "Lootlist_e_dra_2025_reward": {
+      "comment": "Judgment Day Hero Treasure Chest. The Oct 2026 FAQ adds independent Eye of Avarice and Eye of Beelzebub rolls from Excruciating onward; the chance scales with map difficulty. Official numeric baseline is unpublished, so 5% uses the event's privileged-drop baseline pending an in-game capture.",
+      "entries": [
+        {"item": "e_bgh_ancestors_soul", "chance": 0.02, "maximum_difficulty": 6, "comment": "The official Mar 2026 hotfix says Arcane Dragon Essence can drop here from Normal through Merciless. The numeric rate is not published; 2% is the server baseline. Bloodshed is guaranteed.", "amount": [1, 1]},
+        {"item": "e_bgh_ancestors_soul", "minimum_difficulty": 8, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_avarice", "chance": 0.05, "minimum_difficulty": 2, "scale_chance_with_difficulty": true, "amount": [1, 1]},
+        {"item": "item_ingredient_eye_of_demon", "chance": 0.05, "minimum_difficulty": 2, "scale_chance_with_difficulty": true, "amount": [1, 1]}
+      ]
+    },
     "CHEST_lootlist_BLOODSHED": {
       "comment": "Big Game Hunt Mythic Chest in the all-six-boss and group Guardian Blazing Inferno arenas. Ring of Old Glory is class-specific. DSOFun confirms both sources but does not publish a rate; 5% is the server baseline pending a retail capture.",
       "entries": [
@@ -100,6 +203,14 @@
     }
   },
   "aliases": {
+    "CHEST_e_dra_fortress_rewardchest_fire": "CHEST_e_dra_fortress_rewardchest_elemental_quest",
+    "CHEST_e_dra_fortress_rewardchest_ice": "CHEST_e_dra_fortress_rewardchest_elemental_quest",
+    "CHEST_e_dra_fortress_rewardchest_lightning": "CHEST_e_dra_fortress_rewardchest_elemental_quest",
+    "CHEST_e_dra_fortress_rewardchest_poison": "CHEST_e_dra_fortress_rewardchest_elemental_quest",
+    "CHEST_e_dra_fortress_rewardchest_fire_repeatable": "CHEST_e_dra_fortress_rewardchest_repeatable",
+    "CHEST_e_dra_fortress_rewardchest_ice_repeatable": "CHEST_e_dra_fortress_rewardchest_repeatable",
+    "CHEST_e_dra_fortress_rewardchest_lightning_repeatable": "CHEST_e_dra_fortress_rewardchest_repeatable",
+    "CHEST_e_dra_fortress_rewardchest_poison_repeatable": "CHEST_e_dra_fortress_rewardchest_repeatable",
     "CHEST_amphora_MAIN": "CHEST_amphora_normal_MAIN",
     "e_ful_01_event_chest": "CHEST_amphora_normal_MAIN",
     "e_new_01_event_chest_01_A": "CHEST_amphora_normal_MAIN",

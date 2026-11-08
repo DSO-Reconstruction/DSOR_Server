@@ -1,10 +1,12 @@
-"""Fixed map hazards: the ancestral-guard statues that shoot ice missiles.
+"""Fixed map hazards: static traps that should not be combat targets.
 
-The christmas maps (Winter Summit, Kranparus' lairs) and Eternal Watch stand
+The Christmas maps (Winter Summit, Kranparus' lairs) and Eternal Watch stand
 ``characters/ancestral_guard`` statues in wall columns. They are authored as
 ordinary SpawnPoint monsters, but they are scenery traps rather than
 opponents: a static strategy, the ``e_mark_no_damage`` permanent effect
-(``ActorFeature:off,Damage``) and an icetrap skill.
+(``ActorFeature:off,Damage``) and an icetrap skill. Castle Ravencaw's visible
+powernodes and invisible laser actors are fixed hazards too, but use separate
+client templates and therefore need explicit identification.
 
 * ``NoTurnStaticStrategy`` statues face across a corridor and fire along
   their authored yaw whenever a player is near, so their missiles form the
@@ -29,6 +31,10 @@ UNTARGETABLE_FACTION = 0x00010004
 HAZARD_STATUS_EFFECT = "e_mark_no_damage"
 FIXED_DIRECTION_STRATEGY = "noturnstaticstrategy"
 AIMED_STRATEGY = "staticstrategy"
+DRAGAN_LASER_TEMPLATES = frozenset({
+    "e_dra_fortress_normal_powernode",
+    "e_dra_fortress_invisible_laser",
+})
 
 
 @lru_cache(maxsize=8)
@@ -42,17 +48,24 @@ def _hazard_strategies(database_path: str) -> dict[str, str]:
         ).fetchall()
     result = {}
     for template_id, behavior, permanent, graphics in rows:
+        identifier = str(template_id).casefold()
         strategy = str(behavior or "").casefold()
         effects = {
             value.split(":", 1)[0].strip().casefold()
             for value in re.split(r"[;,]", str(permanent or ""))
         }
+        # Castle Ravencaw's visible powernodes and invisible laser actors are
+        # fixed traps, not combat targets. Their client templates lack the
+        # ancestral-guard graphics/effect signature used by the older traps.
+        if identifier in DRAGAN_LASER_TEMPLATES:
+            result[identifier] = strategy
+            continue
         if (
             str(graphics or "").casefold() == HAZARD_GRAPHICS
             and strategy in {FIXED_DIRECTION_STRATEGY, AIMED_STRATEGY}
             and HAZARD_STATUS_EFFECT in effects
         ):
-            result[str(template_id).casefold()] = strategy
+            result[identifier] = strategy
     return result
 
 
@@ -65,9 +78,15 @@ def is_map_hazard(database_path: str | Path, template_id: str) -> bool:
 def fires_fixed_direction(database_path: str | Path, template_id: str) -> bool:
     """Whether the hazard shoots along its authored facing, not at a player."""
 
+    strategy = _hazard_strategies(str(database_path)).get(
+        str(template_id).casefold(), ""
+    )
     return (
-        _hazard_strategies(str(database_path)).get(str(template_id).casefold())
-        == FIXED_DIRECTION_STRATEGY
+        strategy == FIXED_DIRECTION_STRATEGY
+        or (
+            strategy.startswith("noturn")
+            and "staticstrategy" in strategy
+        )
     )
 
 

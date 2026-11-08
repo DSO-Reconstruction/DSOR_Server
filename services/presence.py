@@ -774,6 +774,7 @@ class PresenceService:
             for viewer in (session, *peers):
                 visible_dispatches = []
                 viewer_received_loot = False
+                dragan_claim_generation = None
                 for resolution, label, loot_generation in dispatches:
                     if (
                         resolution.target_actor_id
@@ -865,6 +866,12 @@ class PresenceService:
                                     {drop.item.item_id: drop for drop in drops}
                                 )
                         viewer_received_loot = True
+                        if bool(getattr(
+                            viewer_generation,
+                            "dragan_first_clear_reward",
+                            False,
+                        )):
+                            dragan_claim_generation = viewer_generation
                 try:
                     if visible_dispatches:
                         CharacterService._send_combat_resolutions(
@@ -905,6 +912,10 @@ class PresenceService:
                         viewer,
                         label="world-loot-spawn",
                     )
+                    if dragan_claim_generation is not None:
+                        CharacterService._confirm_dragan_great_hall_first_clear(
+                            self, viewer, dragan_claim_generation,
+                        )
             return None
         if (
             isinstance(event, tuple)

@@ -16,7 +16,11 @@ from dso_server.protocol.membership_protocol import (
     PREMIUM_MEMBERSHIP,
     membership_is_active,
 )
-from dso_server.gameplay.event_system import _map_key, _tokens
+from dso_server.gameplay.event_system import (
+    _map_key,
+    _tokens,
+    completed_achievement_ids,
+)
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
@@ -27,6 +31,63 @@ _BOSS_INGREDIENT_REGION_CACHE: dict[
     tuple[str, tuple[int, int]], dict[str, frozenset[str]]
 ] = {}
 _BOSS_INGREDIENT_REGION_CACHE_LOCK = Lock()
+_DRAGAN_FIRST_CLEAR_CLAIM_KEY = "dragan_great_hall_first_boss_reward"
+_DRAGAN_CLASS_SET_ITEMS = {
+    # The template format below already inserts ``2h_`` before this suffix.
+    # Store only the weapon name here so we resolve the real static item IDs.
+    "warrior": ("sword", "warrior"),
+    "mage": ("staff", "mage"),
+    "ranger": ("bow", "ranger"),
+    "dwarf": ("rifle", "dwarf"),
+}
+
+
+def _dragan_great_hall_first_clear_items(class_name: str) -> tuple[str, ...]:
+    """All Dragan set 01/02 items for a class, plus pets through Uncommon."""
+
+    class_key = str(class_name or "").casefold()
+    weapon_type = _DRAGAN_CLASS_SET_ITEMS.get(class_key)
+    if weapon_type is None:
+        return ()
+    weapon, item_class = weapon_type
+    return (
+        *(
+            f"{item_class}_unique_2h_{weapon}_dragan_set_01_{variant}"
+            for variant in ("base", "fire", "lightning", "poison")
+        ),
+        f"{item_class}_unique_backitem_dragan_set_01",
+        f"{item_class}_unique_shoulders_dragan_set_01",
+        f"{item_class}_unique_torso_dragan_set_01",
+        f"{item_class}_unique_boots_dragan_set_02",
+        f"{item_class}_unique_gloves_dragan_set_02",
+        f"{item_class}_unique_helmet_dragan_set_02",
+        f"{item_class}_unique_ring_dragan_set_02",
+        "pet_dragan_common",
+        "pet_dragan_uncommon",
+    )
+
+
+def _confirm_dragan_great_hall_first_clear(
+    service, session, generation,
+) -> None:
+    """Persist the one-time claim only after its drops were published."""
+
+    if not bool(getattr(generation, "dragan_first_clear_reward", False)):
+        return
+    with session.flow_lock:
+        progress = dict(
+            getattr(session, "gameplay_event_progress", {}) or {}
+        )
+        progress[_DRAGAN_FIRST_CLEAR_CLAIM_KEY] = {
+            "claimed": True,
+            "delivered": True,
+        }
+        session.gameplay_event_progress = progress
+        session.gameplay_dragan_first_clear_pending = False
+    CharacterService._request_account_save(
+        service, session,
+        "Dragan Great Hall first boss rewards delivered",
+    )
 
 
 def mystic_cube_drop_is_eligible(session: Session) -> bool:
@@ -54,6 +115,14 @@ def mystic_cube_drop_is_eligible(session: Session) -> bool:
 
 class LootPresenceService:
     """Allocate collision-free, character-bound drops for map occupants."""
+
+    @staticmethod
+    def _confirm_dragan_great_hall_first_clear(
+        service, session, generation,
+    ) -> None:
+        _confirm_dragan_great_hall_first_clear(
+            service, session, generation,
+        )
 
     @staticmethod
     def _separate_world_loot_positions(session: Session, drops):
@@ -253,6 +322,9 @@ class LootPresenceService:
                 int(session.gameplay_map_difficulty),
                 int(getattr(session, 'gameplay_scaling_difficulty', 0)),
             )
+            active_costume = str(
+                getattr(session, "gameplay_active_costume", "") or ""
+            )
             # Premium and Deluxe each grant the cube drop on their own.
             member_mystic_cube_eligible = mystic_cube_drop_is_eligible(
                 session
@@ -265,6 +337,9 @@ class LootPresenceService:
             # stable snapshot. Fixed-page bars drop by the player's page.
             event_progress = dict(
                 getattr(session, 'gameplay_event_progress', None) or {}
+            )
+            completed_achievements = completed_achievement_ids(
+                getattr(session, 'gameplay_achievements', None)
             )
             status_effects = snapshot_active_status_entries(
                 session.gameplay_persistent_status_effects,
@@ -281,6 +356,56 @@ class LootPresenceService:
         difficulty_unscaled_drop_templates = frozenset()
         if event_catalog is None and hasattr(self, "static_database_path"):
             event_catalog = CharacterService._event_catalog(self)
+        dragan_first_clear_items = ()
+        if (
+            event_catalog is not None
+            and "dragan_event_03" in event_catalog.active_template_ids()
+            and str(monster.template_id).casefold() in {
+                "boss_dragan", "e_dra_03_boss_dragan",
+            }
+            and "e_dra_03_dun_02" in {
+                _map_key(map_id), _map_key(event_map_id),
+            }
+        ):
+            with session.flow_lock:
+                progress_snapshot = dict(
+                    getattr(session, "gameplay_event_progress", {}) or {}
+                )
+                claim_state = progress_snapshot.get(
+                    _DRAGAN_FIRST_CLEAR_CLAIM_KEY, {}
+                )
+                claimed = bool(
+                    isinstance(claim_state, dict)
+                    and claim_state.get("claimed")
+                )
+                first_clear_items = (
+                    _dragan_great_hall_first_clear_items(class_name)
+                )
+                if (
+                    claimed
+                    and isinstance(claim_state, dict)
+                    and not claim_state.get("delivered")
+                    and first_clear_items
+                ):
+                    inventory = getattr(session, "gameplay_inventory", None)
+                    owned_templates = {
+                        str(item.template_id).casefold()
+                        for item in owned_inventory_items(inventory)
+                    } if inventory is not None else set()
+                    # Older code consumed the one-time claim as soon as loot
+                    # was generated. If the account owns none of the promised
+                    # set/pet items, treat that legacy claim as undelivered.
+                    claimed = any(
+                        item_id.casefold() in owned_templates
+                        for item_id in first_clear_items
+                    )
+                pending = bool(getattr(
+                    session, "gameplay_dragan_first_clear_pending", False,
+                ))
+                if not claimed and not pending:
+                    dragan_first_clear_items = first_clear_items
+                    if dragan_first_clear_items:
+                        session.gameplay_dragan_first_clear_pending = True
         if event_catalog is not None:
             loot_cache = (
                 getattr(self, "world_loot_cache", None)
@@ -300,6 +425,9 @@ class LootPresenceService:
                 map_aliases=event_map_aliases,
                 monster_template_id=str(monster.template_id),
                 progress=event_progress,
+                completed_achievements=completed_achievements,
+                map_difficulty=map_difficulty,
+                active_costume=active_costume,
             )
             event_loot = event_catalog.event_loot_drops(
                 map_id=event_map_id,
@@ -344,6 +472,7 @@ class LootPresenceService:
                 monster_level=max(1, int(monster.level)),
                 rng=generator,
                 map_difficulty=map_difficulty,
+                active_costume=active_costume,
                 privileged_difficulty_multiplier=float(
                     difficulty_factors[1]
                 ),
@@ -399,6 +528,12 @@ class LootPresenceService:
             event_drops = ()
             event_loot = ()
 
+        if dragan_first_clear_items:
+            event_loot = (
+                *event_loot,
+                *((item_id, 1) for item_id in dragan_first_clear_items),
+            )
+
         if (
             str(getattr(encounter, "map_id", "")).casefold() == MORTIS_MAP
             and str(getattr(monster, "template_id", "")).casefold()
@@ -429,55 +564,61 @@ class LootPresenceService:
         # Database/cache work is pure and can take milliseconds. Generate with
         # provisional IDs, then reserve one exact map-global range in a tiny
         # world-lock transaction.
-        generation = generate_monster_loot(
-            encounter.static_database_path,
-            monster.template_id,
-            class_name=class_name,
-            player_level=max(1, int(player_level)),
-            monster_level=max(1, int(monster.level)),
-            position=position,
-            next_item_id=0,
-            rng=generator,
-            force_drops=FORCE_LOOT_DROPS_FOR_TESTING,
-            wisdom_eligible=wisdom_eligible,
-            member_mystic_cube_eligible=member_mystic_cube_eligible,
-            map_difficulty=map_difficulty,
-            map_access_id=map_access_id,
-            extra_boss_gems=int(
-                getattr(socket_evaluation, "boss_bonus_gems", 0)
-            ),
-            extra_boss_clovers=int(
-                getattr(socket_evaluation, "boss_bonus_clovers", 0)
-            ),
-            guaranteed_gem_templates=(
-                FINAL_GEM_REWARDS
-                if str(encounter.map_id).casefold() == MORTIS_MAP
-                and str(monster.template_id).casefold() == MORTIS_FINAL_FORM
-                else ()
-            ),
-            additional_instant_consumables=event_drops,
-            position_projector=position_projector,
-            additional_event_loot=event_loot,
-            difficulty_unscaled_drop_templates=(
-                difficulty_unscaled_drop_templates
-            ),
-        )
-        generation = apply_socket_drop_amounts(
-            socket_evaluation,
-            generation,
-        )
-        generation = apply_status_drop_amounts(
-            encounter.static_database_path,
-            status_effects,
-            generation,
-            # EventCatalog has already resolved these exact item modifiers,
-            # including stack limits and parameter substitution. Excluding
-            # them here prevents a progress buff being applied twice while
-            # generic money/item bonuses still affect the rest of the kill.
-            excluded_template_ids=(
-                template_id for template_id, _amount in event_drops
-            ),
-        )
+        try:
+            generation = generate_monster_loot(
+                encounter.static_database_path,
+                monster.template_id,
+                class_name=class_name,
+                player_level=max(1, int(player_level)),
+                monster_level=max(1, int(monster.level)),
+                position=position,
+                next_item_id=0,
+                rng=generator,
+                force_drops=FORCE_LOOT_DROPS_FOR_TESTING,
+                wisdom_eligible=wisdom_eligible,
+                member_mystic_cube_eligible=member_mystic_cube_eligible,
+                map_difficulty=map_difficulty,
+                map_access_id=map_access_id,
+                extra_boss_gems=int(
+                    getattr(socket_evaluation, "boss_bonus_gems", 0)
+                ),
+                extra_boss_clovers=int(
+                    getattr(socket_evaluation, "boss_bonus_clovers", 0)
+                ),
+                guaranteed_gem_templates=(
+                    FINAL_GEM_REWARDS
+                    if str(encounter.map_id).casefold() == MORTIS_MAP
+                    and str(monster.template_id).casefold() == MORTIS_FINAL_FORM
+                    else ()
+                ),
+                additional_instant_consumables=event_drops,
+                position_projector=position_projector,
+                additional_event_loot=event_loot,
+                difficulty_unscaled_drop_templates=(
+                    difficulty_unscaled_drop_templates
+                ),
+            )
+            generation = apply_socket_drop_amounts(
+                socket_evaluation,
+                generation,
+            )
+            generation = apply_status_drop_amounts(
+                encounter.static_database_path,
+                status_effects,
+                generation,
+                # EventCatalog has already resolved these exact item modifiers,
+                # including stack limits and parameter substitution. Excluding
+                # them here prevents a progress buff being applied twice while
+                # generic money/item bonuses still affect the rest of the kill.
+                excluded_template_ids=(
+                    template_id for template_id, _amount in event_drops
+                ),
+            )
+        except Exception:
+            if dragan_first_clear_items:
+                with session.flow_lock:
+                    session.gameplay_dragan_first_clear_pending = False
+            raise
         reservation_size = max(
             len(generation.drops),
             int(generation.next_item_id),
@@ -512,6 +653,8 @@ class LootPresenceService:
                     ) in occupied_indices:
                         candidate += 1
                     if candidate > 0xFFFFFFFF:
+                        if dragan_first_clear_items:
+                            session.gameplay_dragan_first_clear_pending = False
                         raise ValueError(
                             "client item-id space is exhausted"
                         )
@@ -552,4 +695,8 @@ class LootPresenceService:
         except TypeError:
             # Lightweight protocol tests use SimpleNamespace generations.
             generation.next_item_id = next_item_id
+        if dragan_first_clear_items:
+            generation = replace(
+                generation, dragan_first_clear_reward=True,
+            )
         return generation

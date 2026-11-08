@@ -41,6 +41,10 @@ from dso_server.gameplay.local_map_state import (
     CRAFTING_DUNGEON_MAP_ID,
 )
 from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.dragan_state import (
+    dragan_rare_boss_spawn_flag,
+    dragan_secret_portal_target_flag,
+)
 
 
 def _crafting_dungeon_leader_present_from_roll(roll: int) -> bool:
@@ -131,6 +135,19 @@ class PlayerInitializationWorldService:
             ).active_event_flags(),
             *map_access.event_set_flags,
         })
+        rare_boss_spawn_flag = dragan_rare_boss_spawn_flag(
+            gameplay_map,
+            CharacterService._gameplay_instance_key(s),
+        )
+        secret_portal_flag = dragan_secret_portal_target_flag(
+            gameplay_map,
+            CharacterService._gameplay_instance_key(s),
+        )
+        instance_dragon_flags = frozenset(
+            flag for flag in (rare_boss_spawn_flag, secret_portal_flag) if flag
+        )
+        if instance_dragon_flags:
+            active_event_flags |= instance_dragon_flags
         if str(gameplay_map).casefold() == CRAFTING_DUNGEON_MAP_ID:
             # Each solo dungeon instance gets one stable 50/50 leader roll.
             # Hashing the private instance id keeps late/reconnecting members

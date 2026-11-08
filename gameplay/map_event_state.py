@@ -669,6 +669,10 @@ class GatedSpawnRow:
     # spawn point's parent node; 0/0 when it belongs to no variation.
     variation_group: int = 0
     variation_difficulty: int = 0
+    # ``MapVariation`` family and character-level threshold (variationType 3).
+    # Some maps author normal/guardian actors as overlapping level variants.
+    variation_level_group: int = 0
+    variation_level: int = 0
 
 
 def select_variation_spawn_rows(
@@ -700,6 +704,43 @@ def select_variation_spawn_rows(
         row for row in rows
         if not row.variation_group
         or chosen[row.variation_group] == row.variation_difficulty
+    )
+
+
+def selected_variation_level(levels: Iterable[int], player_level: int) -> int | None:
+    """Select the highest authored level threshold at or below the player."""
+
+    values = tuple(int(value) for value in levels if int(value) > 0)
+    if not values:
+        return None
+    level = max(0, int(player_level))
+    eligible = [value for value in values if value <= level]
+    return max(eligible) if eligible else min(values)
+
+
+def select_level_variation_spawn_rows(
+    rows: Iterable[GatedSpawnRow], player_level: int,
+) -> tuple[GatedSpawnRow, ...]:
+    """Keep one level variant per MapVariation family for this player."""
+
+    rows = tuple(rows)
+    levels: dict[int, set[int]] = {}
+    for row in rows:
+        if row.variation_level_group and row.variation_level > 0:
+            levels.setdefault(row.variation_level_group, set()).add(
+                row.variation_level
+            )
+    selected = {
+        group: selected_variation_level(values, player_level)
+        for group, values in levels.items()
+    }
+    return tuple(
+        row for row in rows
+        if (
+            not row.variation_level_group
+            or selected.get(row.variation_level_group)
+            == row.variation_level
+        )
     )
 
 
@@ -741,10 +782,11 @@ class MapPropDefinition:
     def spends_keys(self) -> bool:
         """Whether one use costs ``key_amount`` x ``key_id``.
 
-        Charged only for chests filled from data/catalogs/prop_loot.json
-        (amphorae), the DTU Circus superchests, and a small set of event
-        resources. Other keyed StateObjects -- lockpick chests, Balor's
-        chests, shrines, quest altars -- open as before.
+        Charged for catalog-backed props in data/catalogs/prop_loot.json
+        (including Dragan's Empowered Pearl statues), the DTU Circus
+        superchests, and a small set of event resources. Other keyed
+        StateObjects -- lockpick chests, Balor's chests, shrines, quest
+        altars -- open as before.
         """
 
         new_moon_recall_altar = (
@@ -1024,7 +1066,7 @@ def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
     try:
         root = ET.fromstring(resident_content.read_bytes(path.with_suffix(".mvr")))
     except (OSError, ET.ParseError):
-        return {}
+        return _fallback_map_level_variations(path)
     variations: dict[int, tuple[int, int]] = {}
     for node in root.iter("LevelNode"):
         if str(node.get("variationType", "")).strip() != "3":
@@ -1037,6 +1079,32 @@ def _map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
             continue
         variations[index] = (group, value)
     return variations
+
+
+@lru_cache(maxsize=1)
+def _map_level_variation_catalog() -> Mapping[str, Mapping[int, tuple[int, int]]]:
+    catalog_path = (
+        Path(__file__).resolve().parent.parent
+        / "data" / "catalogs" / "map_level_variations_fallback.json"
+    )
+    try:
+        payload = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return MappingProxyType({})
+    return MappingProxyType({
+        str(map_id).casefold(): MappingProxyType({
+            int(row[0]): (int(row[1]), int(row[2]))
+            for row in rows
+            if isinstance(row, list) and len(row) == 3
+        })
+        for map_id, rows in payload.items()
+        if isinstance(rows, list)
+    })
+
+
+def _fallback_map_level_variations(path: Path) -> dict[int, tuple[int, int]]:
+    values = _map_level_variation_catalog().get(Path(path).stem.casefold())
+    return dict(values or {})
 
 
 @dataclass(frozen=True)
@@ -1380,8 +1448,12 @@ def _load_map_event_content(
     path = map_database_path(Path(database_path), map_id)
     level_variations = (
         _map_level_variations(path)
-        if map_key(map_id) == "pw017_dragonslair_01_dun" else {}
+        if (
+            map_key(map_id) == "pw017_dragonslair_01_dun"
+            or map_key(map_id).startswith("e_dra_")
+        ) else {}
     )
+    spawn_level_variations = _map_level_variations(path)
     with sqlite3.connect(
         f"file:{path.as_posix()}?mode=ro", uri=True
     ) as database:
@@ -1454,11 +1526,18 @@ def _load_map_event_content(
             variation_group, variation_difficulty = spawn_variations.get(
                 int(parent_node_index or 0), (0, 0)
             )
+            variation_level_group, variation_level = (
+                spawn_level_variations.get(
+                    int(parent_node_index or 0), (0, 0)
+                )
+            )
             spawn_rows.append(GatedSpawnRow(
                 int(row_id), int(event_set_row), str(template_id).strip(),
                 position, rotation,
                 variation_group=variation_group,
                 variation_difficulty=variation_difficulty,
+                variation_level_group=variation_level_group,
+                variation_level=variation_level,
             ))
         if map_key(map_id) == "h0004_temple_dun":
             # The Hunt for a Legend sandhill phase stores its Sandsnake
@@ -2163,6 +2242,9 @@ class MapEventRuntime:
                 or int(self.scaling_difficulty) >= BLOODSHED_DIFFICULTY
             ),
             self.scaling_difficulty,
+        )
+        selected = select_level_variation_spawn_rows(
+            selected, int(self.monster_level or 0),
         )
 
         if map_key(self.map_id) == "pw001_grimmagstone_01_dun":
