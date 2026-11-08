@@ -35,6 +35,23 @@ def _transaction_touches_npc_gates(template_ids) -> bool:
     )
 
 
+def _achievement_on_purchased_dragon_bones(
+    service, session: Session, template_id: str, amount: int,
+) -> None:
+    """Count Dragon Bones granted by a completed purchase as collected items.
+
+    Purchases bypass the world-loot pickup callback. Mortis's separate elixir
+    requirement is enforced when its bonus drop is generated; a shop grant of
+    the same collectible should advance the Pick_Up achievement directly.
+    """
+
+    if str(template_id or "").casefold() != "dragon_bones" or int(amount) <= 0:
+        return
+    CharacterService._achievement_on_item_collected(
+        service, session, "dragon_bones", int(amount),
+    )
+
+
 class CommerceService:
     """NPC/OCP offers, rewards, and purchase transactions."""
 
@@ -620,6 +637,7 @@ class CommerceService:
 
     def _settle_ocp_booking(
             self, s: Session, pending_key: str, reward) -> None:
+        purchased_dragon_bones = []
         with s.flow_lock:
             claims = dict(s.gameplay_timed_offer_purchases)
             if not claims.get(pending_key, 0):
@@ -692,6 +710,8 @@ class CommerceService:
                             1, int(getattr(character, 'level', 1))
                         ),
                     )
+                    if str(item_id).casefold() == "dragon_bones":
+                        purchased_dragon_bones.append((item_id, int(amount)))
                     next_item_id = mutation.next_item_id
                     commands.extend((
                         ServerCommand(
@@ -727,6 +747,10 @@ class CommerceService:
                     'ocp-booking-settlement-'
                     'ocp-booking-settlement'
                 ),
+            )
+        for item_id, amount in purchased_dragon_bones:
+            _achievement_on_purchased_dragon_bones(
+                self, s, item_id, amount,
             )
         if reward.item_id == 'money_rc':
             event_progress_callback = getattr(
@@ -1212,14 +1236,16 @@ class CommerceService:
                         definition = load_purchase_item_definition(
                             self.static_database_path, str(row[1]),
                         )
+                        purchased_amount = (
+                            max(1, int(row[2] or 1)) * direct_entry.amount
+                        )
                         price = PurchasePrice(rc=int(row[0]) * direct_entry.amount)
                         currency, game_currencies, game_currency_update = debit_purchase_currency(
                             currency, game_currencies, price,
                             shop_currency_resource=None,
                         )
                         mutation = add_purchased_item(
-                            inventory, definition,
-                            max(1, int(row[2] or 1)) * direct_entry.amount,
+                            inventory, definition, purchased_amount,
                             next_item_id=next_item_id,
                             item_level=max(1, int(character.level)),
                         )
@@ -1252,6 +1278,9 @@ class CommerceService:
                         self._season_pass_feed(s, "SpendRealCurrency", count=price.rc)
                         CharacterService._persist_gameplay_session(
                             self, s, reason="direct offer transaction",
+                        )
+                        _achievement_on_purchased_dragon_bones(
+                            self, s, definition.template_id, purchased_amount,
                         )
                         print(
                             f"[{GAMEPLAY_SERVICE_NAME}] handled direct offer "
@@ -1383,6 +1412,7 @@ class CommerceService:
                 shop_currency_resource=shop_currency_resource,
             )
             changed_items = []
+            purchased_dragon_bones = []
             event_progress_purchases = {}
             max_roll_item_ids = set()
             replaced_item_ids = []
@@ -1400,6 +1430,10 @@ class CommerceService:
             )
             for entry, offer, definition in purchases:
                 purchased_amount = int(offer.amount) * int(entry.amount)
+                if definition.template_id.casefold() == "dragon_bones":
+                    purchased_dragon_bones.append((
+                        definition.template_id, purchased_amount,
+                    ))
                 if (
                     event_catalog is not None
                     and event_progress_callback is not None
@@ -1618,3 +1652,7 @@ class CommerceService:
         CharacterService._persist_gameplay_session(
             self, s, reason='vendor transaction'
         )
+        for item_id, amount in purchased_dragon_bones:
+            _achievement_on_purchased_dragon_bones(
+                self, s, item_id, amount,
+            )
