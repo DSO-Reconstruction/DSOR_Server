@@ -416,6 +416,7 @@ class PlayerCombatService(PlayerCastTimingService):
                         inventory=None,
                         modifier_sources=modifier_effect_ids,
                         player_stats=player_stats,
+                        skill_index=skill.skill_index,
                     )
                 )
             phase.mark("stats")
@@ -944,6 +945,7 @@ class PlayerCombatService(PlayerCastTimingService):
                     inventory=None,
                     modifier_sources=modifier_effect_ids,
                     player_stats=player_stats,
+                    skill_index=client_skill.skill_index,
                 )
             )
             geometry = combat._load_player_skill_geometry(

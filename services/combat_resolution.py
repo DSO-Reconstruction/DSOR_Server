@@ -25,6 +25,17 @@ WIRE_UINT32_MAX = 0xFFFFFFFF
 ATTACK_SPEED_BONUS_STACK = "AttacksPerSecondBonus_stack"
 
 
+def battle_anger_stacks(attack_speed: float) -> int:
+    """Battle Anger stacks a cast adds: one from a 4.0 sheet speed, one more
+    each 0.5 above, six from 6.5 (the data's AttacksPerSecondBonus_stack
+    triggers go up to _06)."""
+
+    speed = float(attack_speed)
+    if speed + 1e-9 < 4.0:
+        return 0
+    return min(6, 1 + math.floor((speed - 4.0 + 1e-9) / 0.5))
+
+
 @lru_cache(maxsize=4)
 def _load_attack_speed_bonus_effects(database_path: str):
     path = Path(database_path).resolve()
@@ -1451,13 +1462,9 @@ class CombatResolutionService:
             label: str) -> None:
         """Add the speed-tiered number of native damage stacks per cast."""
 
-        speed = float(attack_speed)
-        if speed + 1e-9 < 4.0:
+        stacks_per_cast = battle_anger_stacks(attack_speed)
+        if not stacks_per_cast:
             return
-        stacks_per_cast = min(
-            5,
-            1 + math.floor((speed - 4.0 + 1e-9) / 0.5),
-        )
         combat = s.gameplay_combat_state
         path = getattr(
             getattr(combat, "encounter", None),
