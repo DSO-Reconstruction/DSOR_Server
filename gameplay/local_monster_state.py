@@ -64,6 +64,7 @@ from dso_server.gameplay.dungeon_elites import (
     elite_config_revision,
     elite_targets,
     include_event_maps,
+    keep_authored,
 )
 from dso_server.gameplay.pathengine_navigation import (
     NavigationError,
@@ -3157,6 +3158,9 @@ def _ensure_dungeon_elites(
         and not include_event_maps()
     ):
         return tuple(monsters)
+    # keep_authored: never demote (the original's composition); a tier's
+    # shortfall is still filled up to its count.
+    authored_only = keep_authored()
     targets = elite_targets(str(map_id), scaling_difficulty)
     result = list(monsters)
     candidates = [
@@ -3169,7 +3173,7 @@ def _ensure_dungeon_elites(
             index for index, monster in enumerate(result)
             if str(monster.rank).casefold() == rank.casefold()
         ]
-        if len(current) > target:
+        if len(current) > target and not authored_only:
             # Keep a spread across the map rather than the first N actors.
             keep = (
                 {current[int((ordinal + 0.5) * len(current) / target)]
