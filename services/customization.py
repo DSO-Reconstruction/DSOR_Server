@@ -48,12 +48,26 @@ class CustomizationService:
     @staticmethod
     def _select_mount_quickbar_shortcut(
             s: Session, resource_id: str) -> bool:
-        """Bind the successfully summoned mount to the shared O shortcut."""
+        """Bind the successfully summoned mount to the shared O shortcut.
+
+        The last mount ridden goes on O, from the album or from the bag: a
+        sticker-book mount as a sticker shortcut (kind 2), a mount item that
+        is not in the album as an item shortcut (kind 1, used from the bag).
+        """
 
         resource_id = str(resource_id).strip()
         if not resource_id:
             return False
         with s.flow_lock:
+            inventory = s.gameplay_inventory
+            from_bag = (
+                resource_id not in s.gameplay_stickerbook_entries
+                and inventory is not None
+                and any(
+                    str(item.template_id) == resource_id
+                    for item in inventory.items
+                )
+            )
             quick_slots = s.gameplay_quick_slots
             if not isinstance(quick_slots, QuickSlotsInfo) or not quick_slots.quickbars:
                 return False
@@ -66,7 +80,7 @@ class CustomizationService:
                         QuickSlotInfo(0xFFFFFFFF, None)
                         for _ in range(17 - len(slots))
                     )
-                selected = QuickSlotInfo(2, resource_id)
+                selected = QuickSlotInfo(1 if from_bag else 2, resource_id)
                 if slots[8] != selected:
                     slots[8] = selected
                     changed = True
@@ -1781,6 +1795,10 @@ class CustomizationService:
             label='mount-cast-add',
         )
         timer.start()
+        # O takes the mount the moment it is used, not when the summon ends.
+        CharacterService._select_mount_quickbar_shortcut(
+            s, definition.stickerbook_resource_id
+        )
         print(
             f"[{GAMEPLAY_SERVICE_NAME}] started typed mount cast for "
             f"{definition.stickerbook_resource_id} from {source}; "
