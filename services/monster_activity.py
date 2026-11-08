@@ -485,7 +485,15 @@ class MonsterActivityService:
                         if attack.execution_context_tick is not None
                         else attack.impact_tick
                     ),
-                    hit_frame=attack.hit_frame,
+                    # ShiftedSkillVisualizer passes the execution context's
+                    # hit frame to CalculateSequenceFPS as a phase length.
+                    # A zero LoopStartFrame is valid in some monster skill
+                    # templates, but the client asserts unless this is > 0.
+                    hit_frame=(
+                        max(1, int(attack.hit_frame))
+                        if attack.command_id == SHIFTED_SKILL_COMMAND
+                        else attack.hit_frame
+                    ),
                     motion_unblock_frame=attack.motion_unblock_frame,
                     skill_unblock_frame=attack.skill_unblock_frame,
                     reserved=0,
