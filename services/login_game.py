@@ -124,12 +124,16 @@ class LoginGameServer(DispatchService, LoginServer):
                     f"resolves to {map_access.physical_map_id!r}, not "
                     f"{map_name!r}"
                 )
-            access_id = map_access.request_map_id
-            ruleset = (
-                0
-                if access_id != map_name
-                else self.static_database.gameplay_map_ruleset(map_name)
-            )
+            if map_access.client_access_id is not None:
+                access_id = map_access.request_map_id
+                ruleset = 1
+            else:
+                access_id = map_access.request_map_id
+                ruleset = (
+                    0
+                    if access_id != map_name
+                    else self.static_database.gameplay_map_ruleset(map_name)
+                )
         else:
             ruleset = 5 if map_name in {"a0200_kingscity", "b1200_hub"} else 1
             access_id = requested_access_id or map_name
