@@ -21,6 +21,7 @@ from urllib.parse import urlsplit
 from urllib import error as urlerror
 from urllib import request as urlrequest
 
+from client_inventory_vfx import create_inventory_vfx_client
 from client_settings import (
     OldItemVisuals,
     apply_old_item_visuals,
@@ -272,6 +273,8 @@ STRINGS = {
         "password2": "Şifre (tekrar)",
         "remember": "Hesabı kaydet",
         "old_look": "Eski item görünümü (eski çerçeve ve arka planlar)",
+        "inventory_vfx": "Envanter VFX düzeltmesi (bu oturum)",
+        "err_inventory_vfx": "Envanter VFX düzeltmesi bu istemci sürümünü desteklemiyor.",
         "play_saved": "OYNA",
         "login": "GİRİŞ YAP",
         "register": "HESAP OLUŞTUR",
@@ -301,6 +304,8 @@ STRINGS = {
         "password2": "Password (repeat)",
         "remember": "Remember account",
         "old_look": "Old item look (old frames and backgrounds)",
+        "inventory_vfx": "Inventory VFX fix (this session)",
+        "err_inventory_vfx": "The inventory VFX fix does not support this client build.",
         "play_saved": "PLAY",
         "login": "SIGN IN",
         "register": "CREATE ACCOUNT",
@@ -371,7 +376,7 @@ class App(tk.Tk):
         self.configure(bg=BG)
         self.resizable(False, False)
         self.lang = "en"
-        self._center(460, 690)
+        self._center(460, 716)
         if ICON_PATH.exists():
             try:
                 self.iconbitmap(str(ICON_PATH))
@@ -449,6 +454,7 @@ class App(tk.Tk):
         )
         self.remember_var = tk.BooleanVar(value=False)
         self.old_look_var = tk.BooleanVar(value=_load_old_look())
+        self.inventory_vfx_var = tk.BooleanVar(value=False)
 
         self.server_ip_row = self._field(inner, s["server_ip"], self.server_ip_var)
         self.game_language_row = tk.Frame(inner, bg=BG_PANEL)
@@ -500,6 +506,13 @@ class App(tk.Tk):
             command=self._on_old_look_toggle,
         )
         self.old_look_check.pack(fill="x", before=self.status_lbl, pady=(2, 0))
+        self.inventory_vfx_check = tk.Checkbutton(
+            inner, text=s["inventory_vfx"], variable=self.inventory_vfx_var,
+            font=("Segoe UI", 9), fg=TEXT, bg=BG_PANEL,
+            activebackground=BG_PANEL, activeforeground=GOLD,
+            selectcolor=BG_INPUT, highlightthickness=0,
+        )
+        self.inventory_vfx_check.pack(fill="x", before=self.status_lbl, pady=(2, 0))
 
         # buttons
         btns = tk.Frame(inner, bg=BG_PANEL)
@@ -578,6 +591,7 @@ class App(tk.Tk):
                     child.config(text=label.upper())
         self.remember_check.config(text=s["remember"])
         self.old_look_check.config(text=s["old_look"])
+        self.inventory_vfx_check.config(text=s["inventory_vfx"])
         self.game_language_label.config(text=s["game_language"].upper())
         self._busy_refresh()
         self._set_status("")
@@ -748,7 +762,8 @@ class App(tk.Tk):
             launch_game(api, username, password, self.lang,
                         server_host_override=server_host,
                         game_language=self.game_language_var.get(),
-                        old_look=self.old_look_var.get())
+                        old_look=self.old_look_var.get(),
+                        inventory_vfx=self.inventory_vfx_var.get())
         except RuntimeError as exc:
             self.after(0, self._busy, False)
             self.after(0, self._set_status, str(exc), RED_HOVER)
@@ -756,12 +771,23 @@ class App(tk.Tk):
         self.after(300, self.destroy)
 
 
-def _restore_old_visuals(process: subprocess.Popen, visuals: OldItemVisuals) -> None:
-    """Put the client's own item frames and backgrounds back after it exits."""
+def _cleanup_client_session(
+    visuals: OldItemVisuals | None, temporary_client: Path | None,
+) -> None:
     try:
-        process.wait()
+        if visuals is not None:
+            restore_old_item_visuals(visuals)
     finally:
-        restore_old_item_visuals(visuals)
+        if temporary_client is not None:
+            temporary_client.unlink(missing_ok=True)
+
+
+def _wait_for_client_exit(
+    process: subprocess.Popen, visuals: OldItemVisuals | None,
+    temporary_client: Path | None,
+) -> None:
+    process.wait()
+    _cleanup_client_session(visuals, temporary_client)
 
 
 def launch_game(
@@ -773,6 +799,7 @@ def launch_game(
     server_host_override: str | None = None,
     game_language: str | None = None,
     old_look: bool = False,
+    inventory_vfx: bool = False,
 ) -> None:
     """Login then spawn the game client. Raises RuntimeError on failure."""
     s = STRINGS[lang]
@@ -828,20 +855,27 @@ def launch_game(
         # before its normal restore handler ran.
         discard_old_item_visuals(working_dir)
         visuals = None
+    temporary_client = None
     try:
+        if inventory_vfx:
+            temporary_client = create_inventory_vfx_client(client_exe)
+            if temporary_client is None:
+                raise RuntimeError(s["err_inventory_vfx"])
+            cmd[0] = str(temporary_client)
         process = subprocess.Popen(cmd, cwd=str(working_dir))
-    except OSError:
-        if visuals is not None:
-            restore_old_item_visuals(visuals)
+    except (OSError, RuntimeError) as exc:
+        _cleanup_client_session(visuals, temporary_client)
+        if isinstance(exc, OSError):
+            raise RuntimeError(s["err_launch"].format(code=str(exc))) from exc
         raise
     if visuals is not None:
         remember_client_process(visuals, process.pid)
-        # The launcher window closes now, but the interpreter waits for this
-        # thread, so the client's own art is back once the game has exited.
+    if visuals is not None or temporary_client is not None:
+        # Keep the interpreter alive after the launcher window closes.
         threading.Thread(
-            target=_restore_old_visuals,
-            args=(process, visuals),
-            name="restore-old-item-visuals",
+            target=_wait_for_client_exit,
+            args=(process, visuals, temporary_client),
+            name="cleanup-client-session",
             daemon=False,
         ).start()
 
