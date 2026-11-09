@@ -127,6 +127,11 @@ class PresenceVisualService:
         and aborts the client in ~LocationEffect ("!this->IsValid()").
         """
 
+        with session.gameplay_location_effect_send_lock:
+            CharacterService._discard_client_location_effects_unlocked(session)
+
+    @staticmethod
+    def _discard_client_location_effects_unlocked(session: Session) -> None:
         with session.flow_lock:
             instance_ids = tuple(sorted(session.gameplay_location_effect_ids))
             session.gameplay_location_effect_ids = set()
@@ -141,6 +146,13 @@ class PresenceVisualService:
     def _send_player_location_visuals_to(session: Session, visuals) -> None:
         """Reconcile native world effects with one client's registrations."""
 
+        with session.gameplay_location_effect_send_lock:
+            CharacterService._send_player_location_visuals_unlocked(
+                session, visuals
+            )
+
+    @staticmethod
+    def _send_player_location_visuals_unlocked(session: Session, visuals) -> None:
         # Actor-hosted auras already render through StatusEffect. Their
         # internal receiver areas must not create duplicate ground VFX.
         visuals = tuple(v for v in visuals if not getattr(v, "follows_owner", False))

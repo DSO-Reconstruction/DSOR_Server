@@ -7,6 +7,7 @@ registration fails and the client aborts in ~LocationEffect ("!this->IsValid()")
 """
 
 from types import SimpleNamespace
+from threading import Event, Thread
 from unittest.mock import Mock
 
 from dso_server.protocol.gameplay_protocol import decode_discard_location_effect_batch
@@ -59,3 +60,43 @@ def test_a_client_still_on_the_map_keeps_receiving_effects():
     CharacterService._send_player_location_visuals_to(session, (_visual(0x10005),))
     assert session.gameplay_location_effect_ids == {0x10005}
     session.send_reliable_ordered.assert_called_once()
+
+
+def test_effect_creation_and_discard_keep_packet_order_across_threads():
+    session = _client(57105)
+    creation_started = Event()
+    finish_creation = Event()
+    discard_started = Event()
+    discard_finished = Event()
+    sent = []
+
+    def send(_payload, *, label, **_kwargs):
+        if label == "player-location-effect-new":
+            creation_started.set()
+            assert finish_creation.wait(2)
+        sent.append(label)
+
+    session.send_reliable_ordered.side_effect = send
+
+    def discard():
+        discard_started.set()
+        CharacterService._send_player_location_visuals_to(session, ())
+        discard_finished.set()
+
+    creating = Thread(target=CharacterService._send_player_location_visuals_to,
+                      args=(session, (_visual(0x10018),)))
+    discarding = Thread(target=discard)
+    try:
+        creating.start()
+        assert creation_started.wait(2)
+        discarding.start()
+        assert discard_started.wait(2)
+        assert not discard_finished.wait(0.05)
+        assert sent == []
+    finally:
+        finish_creation.set()
+        creating.join(2)
+        if discarding.ident is not None:
+            discarding.join(2)
+    assert not creating.is_alive() and not discarding.is_alive()
+    assert sent == ["player-location-effect-new", "player-location-effect-discard"]
