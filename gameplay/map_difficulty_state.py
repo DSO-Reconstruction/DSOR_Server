@@ -20,6 +20,7 @@ class MapAccessSelection:
     map_difficulty: int
     scaling_difficulty: int
     monster_level: int | None
+    client_access_id: str | None = None
 
     @property
     def monster_scaling_difficulty(self) -> int:
@@ -108,10 +109,11 @@ def _default_heroic_access(
 ) -> tuple[str, str, int] | None:
     """Return the first client-valid difficulty for a Heroic map.
 
-    Heroic map databases expose a difficulty-zero staging row, but the
-    client's gauntlet UI treats zero as ``InvalidMapDifficulty`` once the map
-    is loaded. Retail enters these maps through a positive-difficulty access
-    ID. Prefer difficulty one and retain a deterministic positive fallback.
+    Heroic map databases expose a difficulty-zero row, but the client's
+    ruleset-0 gauntlet path treats zero as ``InvalidMapDifficulty`` once the
+    map is loaded. Preserve the positive access ID as a fallback while
+    retaining the selected Normal row for the standard PvE map-load path.
+    Direct physical-map routes still use difficulty one.
     """
 
     row = database.execute(
@@ -160,6 +162,7 @@ def resolve_map_access(
             """,
             (request_map_id,),
         ).fetchone()
+        client_access_id = None
         if row is None:
             direct_template = database.execute(
                 """
@@ -227,13 +230,19 @@ def resolve_map_access(
             and str(template[2]).casefold() == "heroic"
             and map_difficulty <= 0
         ):
+            requested_normal = map_difficulty == 0 and row is not None
             promoted = _default_heroic_access(database, access_group_id)
             if promoted is None:
                 raise ValueError(
                     f"heroic map {physical_map_id!r} has no positive "
                     "difficulty access"
                 )
-            request_map_id, access_group_id, map_difficulty = promoted
+            if requested_normal:
+                # Preserve the Normal access row as authoritative and record
+                # the positive access ID for callers that use ruleset 0.
+                client_access_id = promoted[0]
+            else:
+                request_map_id, access_group_id, map_difficulty = promoted
             physical_map_id = _physical_map_for_access_group(
                 database, access_group_id
             )
@@ -253,15 +262,19 @@ def resolve_map_access(
             )
         level_plus = int(difficulty[0] or 0)
 
-        # A map is level-scaled when its access group exposes difficulty
-        # choices or its template explicitly owns a scaling level.  The
-        # selected MapDifficulty adds the exact offset seen in retail
-        # (level 100 + difficulty 3's 15 = monster level 115).
+        # Heroic access groups remain level-scaled at Normal (difficulty 0).
+        # Otherwise a Heroic map whose IgnoreDifficultySelection flag is off
+        # falls back to level 1 when its Normal row is selected. The selected
+        # MapDifficulty adds the authored offset (level 100 + difficulty 3's
+        # 15 = monster level 115).
         scaled = bool(
             map_difficulty
             or (
                 template is not None
-                and int(template[1] or 0) != 0
+                and (
+                    int(template[1] or 0) != 0
+                    or str(template[2]).casefold() == "heroic"
+                )
             )
         )
         monster_level = (
@@ -287,4 +300,5 @@ def resolve_map_access(
         map_difficulty,
         scaling_difficulty,
         monster_level,
+        client_access_id,
     )

@@ -426,12 +426,21 @@ class LifecycleService:
                     f"resolves to {map_access.physical_map_id!r}, not "
                     f"{map_name!r}"
                 )
-            access_id = map_access.request_map_id
-            ruleset = (
-                0
-                if access_id != map_name
-                else self.static_database.gameplay_map_ruleset(map_name)
-            )
+            if map_access.client_access_id is not None:
+                # Heroic Normal is a real server-side access row, but the
+                # client's ruleset-0 Gauntlet path interprets the promoted
+                # positive ID as Painful. Send the selected Normal row on the
+                # ordinary PvE ruleset path so both client and server retain
+                # Normal difficulty.
+                access_id = map_access.request_map_id
+                ruleset = 1
+            else:
+                access_id = map_access.request_map_id
+                ruleset = (
+                    0
+                    if access_id != map_name
+                    else self.static_database.gameplay_map_ruleset(map_name)
+                )
         else:
             # Keep the two known protocol values available to a deliberately
             # database-less test/development server.

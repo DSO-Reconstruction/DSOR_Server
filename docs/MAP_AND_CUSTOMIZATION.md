@@ -148,7 +148,11 @@ physical ID in both fields leaves `ClientGauntletManager` without a valid map
 difficulty. Heroic physical IDs entered directly, such as by `!map` or an old
 persisted state, are promoted to their difficulty-1 access row because the
 Heroic difficulty-zero staging row maps to the client's
-`InvalidMapDifficulty` enum and crashes `GauntletScoringWidget`.
+`InvalidMapDifficulty` enum and crashes `GauntletScoringWidget`. For an
+explicit Normal (`_00`) selection, the map-load packet retains that selected
+access ID and uses the ordinary PvE ruleset, bypassing the Gauntlet path that
+turns the positive difficulty-1 access ID into Painful. The server uses the
+same Normal row for monster levels, encounter scaling, and progression.
 
 `local_monster_state` resolves level curves and difficulty factors when
 building every monster, so health, shield, damage, armor, resistances, and the
