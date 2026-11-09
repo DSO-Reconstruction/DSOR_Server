@@ -883,6 +883,9 @@ class Session:
         # Native NewLocationEffect/DiscardLocationEffect registrations are
         # client-local just like monster and item registrations.
         self.gameplay_location_effect_ids = set()
+        # Serialize effect-table reconciliation and packet publication.
+        # The flow lock cannot be held during send_reliable_ordered.
+        self.gameplay_location_effect_send_lock = threading.Lock()
         # Status instances installed solely to select talent/item-specific
         # remote spell VFX. Keyed by (source actor id, instance id) so a
         # repeated cast never re-creates an already-live client effect.
