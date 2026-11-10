@@ -59,14 +59,15 @@ _DRAGAN_SECRET_LAIR_ACCESS_GROUPS = frozenset({
 })
 
 
-def _dragan_map_access_costs(
+def _map_access_costs(
     static_database_path, access, *, refuge_offering_already_paid=False,
 ):
-    """Return authored entry item costs for a selected Dragan access tier."""
+    """Return authored entry item costs for supported map access tiers."""
     access_group_id = str(access.access_group_id).casefold()
     if (
         not access_group_id.startswith("e_dra_03_")
         and access_group_id not in _DRAGAN_SECRET_LAIR_ACCESS_GROUPS
+        and access_group_id != "e_hal_01_darkwood_dun"
     ):
         return ()
     try:
@@ -90,7 +91,7 @@ def _dragan_map_access_costs(
                 ),
             ).fetchone()
     except sqlite3.Error as exc:
-        raise ValueError("could not load Dragan map access costs") from exc
+        raise ValueError("could not load map access costs") from exc
     costs = []
     for token in str(row[0] or "").split(";") if row else ():
         template_id, separator, amount = token.strip().partition(":")
@@ -806,7 +807,7 @@ class MapTransitionService:
                         int(s.gameplay_next_item_id),
                         int(scroll_mutation.next_item_id),
                     )
-            access_costs = _dragan_map_access_costs(
+            access_costs = _map_access_costs(
                 self.static_database_path,
                 destination_access,
                 refuge_offering_already_paid=(
@@ -866,13 +867,13 @@ class MapTransitionService:
                 ),
             ), include_terminator=True)
             CharacterService._send_world_loot_state_batch(
-                s, packet, packet_bits, label="dragan-map-access-costs",
+                s, packet, packet_bits, label="map-access-costs",
             )
             CharacterService._request_account_save(
-                s, "Dragan map access costs spent",
+                s, "map access costs spent",
             )
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] spent Dragan map access costs "
+                f"[{GAMEPLAY_SERVICE_NAME}] spent map access costs "
                 f"for {destination_access.request_map_id!r}: {access_costs}"
             )
         if scroll_mutation is not None:
@@ -1607,7 +1608,7 @@ class MapTransitionService:
                 # installed map. Use that destination's authored default spawn.
                 spawn_position = load_local_spawn_position(
                     self.static_database_path, access.physical_map_id)
-            access_costs = _dragan_map_access_costs(
+            access_costs = _map_access_costs(
                 self.static_database_path, access,
             )
             if access_costs:
@@ -1639,10 +1640,10 @@ class MapTransitionService:
                     ),
                 ), include_terminator=True)
                 CharacterService._send_world_loot_state_batch(
-                    s, packet, packet_bits, label="dragan-map-access-costs",
+                    s, packet, packet_bits, label="map-access-costs",
                 )
                 CharacterService._request_account_save(
-                    s, "Dragan map access costs spent",
+                    s, "map access costs spent",
                 )
         except (OSError, ValueError) as exc:
             if access_mutation is not None:
@@ -1827,7 +1828,7 @@ class MapTransitionService:
                     "the Dragan map is behind a quest or portal gate"
                 )
             access_costs = (
-                () if consumed_travel_item else _dragan_map_access_costs(
+                () if consumed_travel_item else _map_access_costs(
                     self.static_database_path, access,
                 )
             )
@@ -1883,13 +1884,13 @@ class MapTransitionService:
                 ),
             ), include_terminator=True)
             CharacterService._send_world_loot_state_batch(
-                s, packet, packet_bits, label="dragan-map-access-costs",
+                s, packet, packet_bits, label="map-access-costs",
             )
             CharacterService._request_account_save(
-                s, "Dragan map access costs spent",
+                s, "map access costs spent",
             )
             print(
-                f"[{GAMEPLAY_SERVICE_NAME}] spent Dragan map access costs "
+                f"[{GAMEPLAY_SERVICE_NAME}] spent map access costs "
                 f"for {access.request_map_id!r}: {access_costs}"
             )
         if stone_price:

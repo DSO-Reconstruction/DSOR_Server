@@ -113,6 +113,7 @@ _DRAGAN_JAIL_SPIDER_EGG_TEMPLATES = frozenset({
 
 
 
+
 # The client map database names this server-owned spawn list but does not
 # contain its list membership. The template and generated locations below are
 # recovered fields from the live b1201 encounter, represented as ordinary
@@ -135,6 +136,25 @@ _LOCAL_ENCOUNTERS = {
 _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES = {
     ("b1101_pve", "b1101_s_undead_mage_q_silentscreams06_spawnpoint"):
         "b1101_s_undead_mage_q_SilentScreams06",
+    (
+        "e_hal_01_pumpkin_dun",
+        "e_hal_01_pumpkinmap_quest_leader_mummy_01_spawnpoint",
+    ): "e_hal_01_pumpkinmap_quest_leader_mummy_01",
+    (
+        "e_hal_01_castle_dun",
+        "e_hal_01_castle_treasture_mob_01_spawnpoint",
+    ): "e_hal_01_castle_treasture_mob_01",
+    (
+        "e_hal_01_castle_dun",
+        "e_hal_01_castle_unique_jullov_01_spawnpoint",
+    ): "e_hal_01_castle_unique_jullov_01",
+    **{
+        (
+            "e_hal_01_pumpkin_dun",
+            f"e_hal_01_pumpkinmap_normal_leech_01_spawnpoint_0{index}",
+        ): "e_hal_01_pumpkinmap_normal_leech_01"
+        for index in range(1, 6)
+    },
 }
 
 # c2202_pve's extracted map database omits the four Gorgon Guard spawnpoints
@@ -498,6 +518,69 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    'e_hal_01_darkwood_dun': {
+        'ripper_pumpkins_roots': (
+            'e_hal_01_wood_normal_ripper_01',
+            'e_hal_01_wood_normal_pumpkin_01',
+            'e_hal_01_wood_normal_thing_roots_01',
+        ),
+        'ripper_souls_roots': (
+            'e_hal_01_wood_normal_ripper_01',
+            'e_hal_01_wood_normal_soul_01',
+            'e_hal_01_wood_normal_thing_roots_01',
+        ),
+        'challenge_area_main': (
+            'e_hal_01_wood_normal_leech_01',
+            'e_hal_01_wood_normal_mummy_01',
+            'e_hal_01_wood_normal_twiner_01',
+        ),
+        'challenge_path_main': (
+            'e_hal_01_wood_normal_leech_01',
+            'e_hal_01_wood_normal_mummy_01',
+            'e_hal_01_wood_normal_twiner_01',
+        ),
+    },
+    'e_hal_01_castle_dun': {
+        'combined_spawnlist': (
+            'e_hal_01_castle_normal_chimera_01',
+            'e_hal_01_castle_normal_leech_01',
+            'e_hal_01_castle_normal_meat_mummy_01',
+            'e_hal_01_castle_normal_pumpkin',
+            'e_hal_01_castle_normal_soul_01',
+            'e_hal_01_castle_normal_twiner_01',
+            'e_hal_01_castle_normal_undead_ripper_01',
+        ),
+    },
+    # Oldfield's exported SpawnLists have no membership table. Falling back
+    # to fixed actors fills its ordinary areas with quest Guardians, Champions,
+    # and the post-clear Sentinel instead of the map's normal enemy family.
+    'e_hal_01_pumpkin_dun': {
+        'combined_list_field': (
+            'e_hal_01_pumpkinmap_normal_hound_skeleton_01',
+            'e_hal_01_pumpkinmap_normal_leech_01',
+            'e_hal_01_pumpkinmap_normal_meat_mummy_01',
+            'e_hal_01_pumpkinmap_normal_pumpkin_01',
+            'e_hal_01_pumpkinmap_normal_thing_roots_01',
+            'e_hal_01_pumpkinmap_normal_undead_ripper_01',
+        ),
+        'combined_list_wood': (
+            'e_hal_01_pumpkinmap_normal_hound_skeleton_01',
+            'e_hal_01_pumpkinmap_normal_leech_01',
+            'e_hal_01_pumpkinmap_normal_meat_mummy_01',
+            'e_hal_01_pumpkinmap_normal_pumpkin_01',
+            'e_hal_01_pumpkinmap_normal_thing_roots_01',
+            'e_hal_01_pumpkinmap_normal_undead_ripper_01',
+        ),
+        'combined_list_exit': (
+            'e_hal_01_pumpkinmap_normal_hound_skeleton_01',
+            'e_hal_01_pumpkinmap_normal_leech_01',
+            'e_hal_01_pumpkinmap_normal_meat_mummy_01',
+            'e_hal_01_pumpkinmap_normal_pumpkin_01',
+            'e_hal_01_pumpkinmap_normal_thing_roots_01',
+            'e_hal_01_pumpkinmap_normal_undead_ripper_01',
+        ),
+        'sentinel_adds': ('e_hal_01_pumpkinmap_normal_add_soul_01',),
+    },
     # The New Moon realm maps retain three champion-density areas each, but
     # the client export omits their SpawnList membership. Their New Moon
     # monster pool has one authored champion template; bind both list labels
@@ -3599,6 +3682,10 @@ def _load_dynamic_monster_encounter(
     encounter_policy = load_map_encounter_policy(
         static_database_path, map_id
     )
+    permits_density_population = (
+        encounter_policy.permits_density_population
+        or str(map_id).casefold() == 'e_hal_01_castle_dun'
+    )
     navigation = _navigation_for_map(static_database_path, map_id)
     terrain = _terrain_for_map(static_database_path, map_id)
     if player_position is None:
@@ -3634,24 +3721,41 @@ def _load_dynamic_monster_encounter(
             active_local_map_event_flags(map_id, active_event_flags),
             map_id=map_id,
         )
-        authored_fixed_rows = tuple(database.execute(
-            """
-            SELECT rowid, Transform, COALESCE(NpcId, ''),
-                   COALESCE(EventSetRow, -1), COALESCE(_ID, ''),
-                   COALESCE(Rank, ''), COALESCE(ParentNodeIndex, 0)
-            FROM _Instance_SpawnPoint
-            WHERE COALESCE(AlliedToPlayer, 0)=0
-              AND (
-                  TRIM(COALESCE(NpcId, ''))<>''
-                  OR lower(COALESCE(Rank, '')) IN (
-                      'rank_champion', 'rank_guardian', 'rank_leader',
-                      'rank_leader_no_entchantments', 'rank_sentinel'
+        map_key = str(map_id).casefold()
+        authored_override_ids = tuple(
+            object_id
+            for (override_map, object_id)
+            in _AUTHORED_SPAWNPOINT_TEMPLATE_OVERRIDES
+            if override_map == map_key
+        )
+        override_filter = (
+            " OR lower(COALESCE(_ID, '')) IN ("
+            + ", ".join("?" for _ in authored_override_ids)
+            + ")"
+            if authored_override_ids else ""
+        )
+        authored_fixed_rows = tuple(
+            database.execute(
+                f"""
+                SELECT rowid, Transform, COALESCE(NpcId, ''),
+                       COALESCE(EventSetRow, -1), COALESCE(_ID, ''),
+                       COALESCE(Rank, ''), COALESCE(ParentNodeIndex, 0)
+                FROM _Instance_SpawnPoint
+                WHERE COALESCE(AlliedToPlayer, 0)=0
+                  AND (
+                      TRIM(COALESCE(NpcId, ''))<>''
+                      OR lower(COALESCE(Rank, '')) IN (
+                          'rank_champion', 'rank_guardian', 'rank_leader',
+                          'rank_leader_no_entchantments', 'rank_sentinel'
+                      )
+                      {override_filter}
                   )
-              )
-            ORDER BY CASE WHEN COALESCE(EventSetRow, -1)=-1 THEN 0 ELSE 1 END,
-                     rowid
-            """
-        ).fetchall())
+                ORDER BY CASE WHEN COALESCE(EventSetRow, -1)=-1 THEN 0 ELSE 1 END,
+                         rowid
+                """,
+                authored_override_ids,
+            ).fetchall()
+        )
         all_fixed_rows = []
         fixed_row_parent_nodes = {}
         for (
@@ -3921,7 +4025,7 @@ def _load_dynamic_monster_encounter(
             and not (
                 SPAWN_AREA_MONSTERS_ENABLED
                 and include_spawn_areas
-                and encounter_policy.permits_density_population
+                and permits_density_population
             )
             and encounter_policy.area_type.casefold() not in ('closedpve', 'openpve')
             and encounter_policy.map_type.casefold() != 'event'
@@ -3948,7 +4052,7 @@ def _load_dynamic_monster_encounter(
             if (
                 SPAWN_AREA_MONSTERS_ENABLED
                 and include_spawn_areas
-                and encounter_policy.permits_density_population
+                and permits_density_population
             )
             else ()
         )
@@ -4499,7 +4603,10 @@ def _load_dynamic_monster_encounter(
         len(candidates) for _area, candidates in area_candidates
     )
     active_population_target = spawn_area_target_count
-    if SPAWN_AREA_MAX_TOTAL_MONSTERS:
+    if (
+        SPAWN_AREA_MAX_TOTAL_MONSTERS
+        and str(map_id).casefold() != 'e_hal_01_pumpkin_dun'
+    ):
         fixed_outside_spawn_areas = max(
             0, fixed_monster_count - sum(existing_by_area.values())
         )

@@ -1313,6 +1313,38 @@
         "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
       }
+    ],
+    "e_hal_01_castle_dun": [
+      {
+        "comment": "Ghost Fire from worthy Creepy Castle opponents while Return of the Dead is active.",
+        "item": "e_hal_01_challenge_buff_key",
+        "ranks": ["guardian", "champion", "leader"],
+        "chance": {"guardian": 1.0, "champion": 1.0, "leader": 1.0},
+        "amount": {"guardian": [1, 1], "champion": [1, 1], "leader": [1, 1]},
+        "require_active_events": ["halloween_event_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Witchqueen Gwenfara always drops a difficulty-scaled Ghost Fire stack, even outside the challenge.",
+        "item": "e_hal_01_challenge_buff_key",
+        "monsters": ["e_hal_01_boss_gwenfara_phase_03"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 11],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Witchqueen Gwenfara's guaranteed Life Force quest drop; the stack grows with dungeon difficulty.",
+        "item": "e_hal_01_challenge_wendigo_fire_key",
+        "monsters": ["e_hal_01_boss_gwenfara_phase_03"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount_by_difficulty": [5, 7, 9, 11, 15, 17, 20, 25, 40],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
     ]
   }
 }

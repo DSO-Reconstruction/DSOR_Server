@@ -1570,6 +1570,11 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
     # The return gate is also absent from the Frog River Delta scene.
     "g0002_jungle_01_dun": ("g0001_beach_01_dun",),
+    # Oldfield's Darkwood exits are present in the map exit table but absent
+    # from the loaded scene. Create the selected difficulty gate by GUID.
+    "e_hal_01_pumpkin_dun": ("e_hal_01_darkwood_dun_",),
+    # Darkwood's Oldfield return exits are likewise absent from its scene.
+    "e_hal_01_darkwood_dun": ("e_hal_01_pumpkin_dun_",),
     # The Temple of Ice gate is authored in the exit table but missing from
     # the loaded Cradle of Frost scene; create its exit entity by GUID.
     "g0005_temple_ice_01_dun": ("g0005_temple_ice_02_dun",),

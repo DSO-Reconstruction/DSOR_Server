@@ -291,6 +291,18 @@ class LootPresenceService:
             # final form may allocate loot.
             return None
 
+        if (
+            str(getattr(encounter, "map_id", "")).casefold()
+            == "e_hal_01_castle_dun"
+            and str(getattr(monster, "template_id", "")).casefold() in {
+                "e_hal_01_boss_gwenfara_phase_01",
+                "e_hal_01_boss_gwenfara_phase_02",
+            }
+        ):
+            # The first two deaths change the encounter; only the final
+            # Gwenfara form owns the map's boss rewards.
+            return None
+
         with session.flow_lock:
             map_id = str(session.gameplay_map or "")
             event_map_id = str(
@@ -482,18 +494,36 @@ class LootPresenceService:
                 ),
             )
             if profile is not None and profile.rank_kind.casefold() == "worldboss":
-                ingredient = self._guaranteed_worldboss_ingredient(
-                    loot_cache,
-                    event_catalog,
-                    monster_template_id=str(monster.template_id),
-                    map_ids=(
-                        map_id,
-                        event_map_id,
-                        map_access_id,
-                        *event_map_aliases,
-                    ),
-                    map_difficulty=map_difficulty,
-                )
+                ingredient = None
+                if (
+                    str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
+                    and str(monster.template_id).casefold()
+                    == "e_hal_01_boss_gwenfara_phase_03"
+                ):
+                    # The access preview specifies the exact crafting tier;
+                    # its first three difficulties share rarity 01.
+                    ingredient_id = next((
+                        item_id for item_id in
+                        loot_cache.map_reward_items_by_access.get(map_access_id, ())
+                        if item_id.startswith("boss_ingredient_halloween_rarity_")
+                    ), None)
+                    if ingredient_id in loot_cache.items_by_id:
+                        ingredient = (ingredient_id, 1)
+                elif not str(map_access_id).casefold().startswith(
+                    "e_hal_01_castle_dun_"
+                ):
+                    ingredient = self._guaranteed_worldboss_ingredient(
+                        loot_cache,
+                        event_catalog,
+                        monster_template_id=str(monster.template_id),
+                        map_ids=(
+                            map_id,
+                            event_map_id,
+                            map_access_id,
+                            *event_map_aliases,
+                        ),
+                        map_difficulty=map_difficulty,
+                    )
                 if ingredient is not None:
                     map_loot = tuple(
                         drop for drop in map_loot
@@ -527,6 +557,21 @@ class LootPresenceService:
             # hosts have no event catalog; preserve the allocation hot path.
             event_drops = ()
             event_loot = ()
+
+        # Creepy Castle's capture wisp itself must award the unchastened soul
+        # consumed by its bottle prop. The retail regional drop is not present
+        # in the reconstructed event catalog, so attach it to the wisp's own
+        # lethal loot transition instead of relying on its incident minion.
+        if (
+            str(getattr(encounter, "map_id", "")).casefold()
+            == "e_hal_01_castle_dun"
+            and str(getattr(monster, "template_id", "")).casefold() in {
+                "e_hal_01_castle_quest_will_o_the_wisp_01",
+                "e_hal_01_castle_quest_will_o_the_wisp_02",
+                "e_hal_01_castle_quest_will_o_the_wisp_03",
+            }
+        ):
+            event_loot = (*event_loot, ("e_hal_01_quest_ghostkey", 1))
 
         if dragan_first_clear_items:
             event_loot = (

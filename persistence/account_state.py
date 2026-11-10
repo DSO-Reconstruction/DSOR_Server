@@ -1286,6 +1286,34 @@ class AccountStateStore:
                         "AND COALESCE(ItemTemplateId, '')<>''"
                     )
                 }
+                # Legacy item templates can share a localized title with the
+                # active Ingredient Bag template used by the client.
+                bag_aliases = {
+                    str(row[0]): str(row[1])
+                    for row in database.execute(
+                        "SELECT item.Id, bag.ItemTemplateId "
+                        "FROM _Template_Item item "
+                        "JOIN _Template_IngredientBag bag "
+                        "ON COALESCE(bag.IsLive, 0)=1 "
+                        "JOIN _Template_Item bag_item "
+                        "ON bag_item.Id=bag.ItemTemplateId "
+                        "WHERE bag_item.LocaleIdTitle="
+                        "COALESCE(NULLIF(item.LocaleIdTitle, ''), "
+                        "item.Id || 'Title') "
+                        "AND NOT EXISTS ("
+                        "SELECT 1 FROM _Template_IngredientBag direct "
+                        "WHERE COALESCE(direct.IsLive, 0)=1 "
+                        "AND direct.ItemTemplateId=item.Id) "
+                        "AND (SELECT COUNT(DISTINCT candidate.ItemTemplateId) "
+                        "FROM _Template_IngredientBag candidate "
+                        "JOIN _Template_Item candidate_item "
+                        "ON candidate_item.Id=candidate.ItemTemplateId "
+                        "WHERE COALESCE(candidate.IsLive, 0)=1 "
+                        "AND candidate_item.LocaleIdTitle="
+                        "COALESCE(NULLIF(item.LocaleIdTitle, ''), "
+                        "item.Id || 'Title'))=1"
+                    )
+                }
         except sqlite3.Error as exc:
             self.warnings.append(
                 f"could not validate Ingredient Bag entries: {exc}"
@@ -1299,15 +1327,29 @@ class AccountStateStore:
             items_by_id = {
                 int(item.item_id): item for item in inventory.items
             }
+            item_indexes = {
+                int(item.item_id): index
+                for index, item in enumerate(inventory.items)
+            }
             retained_ids = []
             changed = any(
                 template not in live_templates
+                or bag_aliases.get(template, template) != template
                 for template in inventory.ingredient_bag_templates
             )
             for item_id in inventory.ingredient_bag_item_ids:
                 item_id = int(item_id)
                 item = items_by_id.get(item_id)
-                if item is not None and item.template_id in live_templates:
+                bag_template = (
+                    bag_aliases.get(item.template_id, item.template_id)
+                    if item is not None else ""
+                )
+                if item is not None and bag_template in live_templates:
+                    if bag_template != item.template_id:
+                        item = replace(item, template_id=bag_template)
+                        inventory.items[item_indexes[item_id]] = item
+                        items_by_id[item_id] = item
+                        changed = True
                     retained_ids.append(item_id)
                     continue
 
@@ -1354,16 +1396,24 @@ class AccountStateStore:
                 continue
             inventory.ingredient_bag_item_ids = retained_ids
             inventory.ingredient_bag_templates = list(dict.fromkeys(
-                template for template in inventory.ingredient_bag_templates
-                if template in live_templates
+                bag_aliases.get(template, template)
+                for template in inventory.ingredient_bag_templates
+                if (
+                    template in live_templates
+                    or bag_aliases.get(template) in live_templates
+                )
             ))
             for item_id in retained_ids:
                 item = items_by_id.get(item_id)
-                if (
-                    item is not None
-                    and item.template_id not in inventory.ingredient_bag_templates
-                ):
-                    inventory.ingredient_bag_templates.append(item.template_id)
+                if item is not None:
+                    bag_template = bag_aliases.get(
+                        item.template_id, item.template_id,
+                    )
+                    if (
+                        bag_template in live_templates
+                        and bag_template not in inventory.ingredient_bag_templates
+                    ):
+                        inventory.ingredient_bag_templates.append(bag_template)
             inventory.changed_item_ids = []
             inventory.item_id_replacements = {}
             repaired_characters += 1

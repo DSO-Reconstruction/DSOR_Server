@@ -1579,6 +1579,9 @@ def _possible_reward_runes(
         for row in database.item_rows_by_category.get("equipmentrune", ())
         if str(row.get("ItemCategory") or "").casefold() == "equipmentrune"
         and int(row.get("Obsolete") or 0) == 0
+        and not str(row.get("Id") or "").casefold().startswith(
+            "unique_gem_run_damage_berry_hal_"
+        )
         and rarity_order.get(str(row.get("DefaultRarity") or "").casefold(), 99)
         <= maximum_index
     )
@@ -2648,6 +2651,15 @@ def generate_monster_loot(
                 class_name,
                 equipment_item_level,
             )
+            # Creepy Castle's possible rewards belong to Gwenfara's final
+            # form. The access preview is shared by every monster in the map,
+            # but it must not turn those drops into ordinary mob loot.
+            if (
+                str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
+                and str(profile.template_id).casefold()
+                != "e_hal_01_boss_gwenfara_phase_03"
+            ):
+                listed_rewards = ()
             crafting_special_reward_ids = frozenset((
                 CRAFTING_DUNGEON_JEWEL_TEMPLATE,
                 *CRAFTING_DUNGEON_MOUNT_TEMPLATES,
@@ -2658,6 +2670,12 @@ def generate_monster_loot(
                 class_name,
                 equipment_item_level,
             )
+            if (
+                str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
+                and str(profile.template_id).casefold()
+                != "e_hal_01_boss_gwenfara_phase_03"
+            ):
+                region_uniques = ()
             if str(map_access_id).casefold().startswith(
                 "e_fullmoon_varholm_dun"
             ):
@@ -2741,6 +2759,12 @@ def generate_monster_loot(
                         "DefaultRarity"
                     ) or ""
                 ).casefold() not in {"unique", "set"}
+                and not (
+                    str(map_access_id).casefold().startswith("e_hal_01_castle_dun_")
+                    and definition.template_id.casefold().startswith(
+                        "boss_ingredient_halloween_rarity_"
+                    )
+                )
                 and definition.template_id.casefold()
                 not in crafting_special_reward_ids
             )
@@ -3103,6 +3127,16 @@ def generate_monster_loot(
                 else 0
             )
             loot_definition = _loot_definition_from_row(row)
+            if str(template_id).casefold() == "e_hal_01_quest_ghostkey":
+                # This quest key gates its bottle props. The static template
+                # says QuestItem/Privileged, which the server's normal
+                # proximity auto-pickup path does not collect; expose it as a
+                # guaranteed auto-collected key while preserving its item id.
+                loot_definition = replace(
+                    loot_definition,
+                    item_category="Key",
+                    auto_pick_up="All",
+                )
             specifications.append((
                 loot_definition,
                 max(1, int(amount)),
@@ -3311,17 +3345,20 @@ def generate_monster_loot(
                         enchantment_tier=map_difficulty,
                         rng=generator,
                     )
-                    # Lootboxes keep their authored rarity (the christmas
-                    # presents' glow) but carry no enchantments. EquipmentRune
-                    # items are rune drops rather than equipment; their
-                    # authored rarity and UniqueModifier define them, and
-                    # rolling equipment enchantments can have no compatible
-                    # candidates, aborting the monster's entire loot batch.
-                    if definition.item_category
-                    not in {
-                        "Currency", "InstantConsumable", "LootGenItem",
-                        "EquipmentRune",
-                    }
+                    # Only equipment receives rolled equipment enchantments.
+                    # Event ingredients can have an Uncommon/Epic visual
+                    # rarity while carrying no gear slots or enchantment
+                    # pool; sending them through the equipment roller can
+                    # abort the entire monster loot batch. Lootboxes retain
+                    # their authored glow, while runes keep their own
+                    # UniqueModifier-based definition.
+                    if (
+                        _is_equipment_row(item_row)
+                        and definition.item_category not in {
+                            "Currency", "InstantConsumable", "LootGenItem",
+                            "EquipmentRune", "Ammunition",
+                        }
+                    )
                     else []
                 ),
                 socketed_templates=[""] * socket_count,
@@ -3762,7 +3799,7 @@ def credit_currency_drop(
 def add_world_drop_to_inventory(
     info: InventoryInfo, drop: WorldLootDrop, *, max_stack_size: int = 1,
     next_item_id: int = 0, reserved_item_ids=(),
-    ingredient_bag: bool = False,
+    ingredient_bag: bool = False, ingredient_bag_template_id: str = "",
 ) -> InventoryLootMutation:
     """Move one non-currency world item to its configured inventory bag.
 
@@ -3780,6 +3817,8 @@ def add_world_drop_to_inventory(
     if any(item.item_id == drop.item.item_id for item in inventory.items):
         raise ValueError(f"inventory already contains item {drop.item.item_id}")
     stored = copy.deepcopy(drop.item)
+    if ingredient_bag and ingredient_bag_template_id:
+        stored = replace(stored, template_id=ingredient_bag_template_id)
     stored.quest_id = drop.quest_id
     stored.ground_position = (0.0, 0.0, 0.0)
     changed_item_ids: list[int] = []
@@ -3860,8 +3899,9 @@ def add_world_drop_to_inventory(
         inventory.items.append(stored)
         if ingredient_bag:
             inventory.ingredient_bag_item_ids.append(int(stored.item_id))
-            if stored.template_id not in inventory.ingredient_bag_templates:
-                inventory.ingredient_bag_templates.append(stored.template_id)
+            bag_template_id = ingredient_bag_template_id or stored.template_id
+            if bag_template_id not in inventory.ingredient_bag_templates:
+                inventory.ingredient_bag_templates.append(bag_template_id)
         else:
             location = free_inventory_location(inventory)
             if location is None:

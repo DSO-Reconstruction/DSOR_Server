@@ -1786,7 +1786,8 @@ class InventoryMapService:
                 game_currency_updates = ()
                 receipt_grants = tuple(
                     ItemReceiptGrant(
-                        reward.definition.template_id,
+                        reward.definition.ingredient_bag_template_id
+                        or reward.definition.template_id,
                         reward.amount,
                         materialized=(
                             reward.definition.item_category != "Currency"
@@ -1840,7 +1841,8 @@ class InventoryMapService:
                 game_currency_updates = mutation.game_currency_updates
                 receipt_grants = tuple(
                     ItemReceiptGrant(
-                        reward.definition.template_id,
+                        reward.definition.ingredient_bag_template_id
+                        or reward.definition.template_id,
                         reward.amount,
                         materialized=not (
                             reward.definition.item_category in {

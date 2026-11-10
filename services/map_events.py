@@ -459,6 +459,40 @@ def _fractured_planes_hazards(static_database_path: str, map_id: str):
     return tuple(result)
 
 
+@lru_cache(maxsize=16)
+def _darkwood_wendigo_hazards(static_database_path: str, map_id: str):
+    """Load the authored Wendigo challenge damage fields in Darkwood."""
+
+    if map_key(map_id) != "e_hal_01_darkwood_dun":
+        return ()
+    path = map_database_path(static_database_path, map_id)
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            rows = database.execute(
+                "SELECT rowid, COALESCE(EventSetRow, -1), Transform, Id, "
+                "StatusEffectId FROM _Instance_LocationEffect "
+                "WHERE Id='e_hal_01_wood_challenge_damage' "
+                "AND StatusEffectId='e_hal_01_wood_challenge_damage_aura'"
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"Wendigo hazard load failed on {map_id}: {exc}")
+        return ()
+    result = []
+    for row_id, event_set, transform, hazard_id, effect_id in rows:
+        try:
+            matrix = tuple(struct.unpack("<16f", bytes(transform)))
+        except (TypeError, struct.error):
+            continue
+        result.append((
+            TriggerVolumeDefinition(
+                int(row_id), str(hazard_id), int(event_set), False,
+                "halloween-wendigo-hazard", matrix,
+            ),
+            str(effect_id),
+        ))
+    return tuple(result)
+
+
 # How far a trap/debuff aura may sit from the room it belongs to. Authored
 # auras sit on the corridor in front of their room, a few tens of units away
 # from the density area that populates it.
@@ -797,6 +831,19 @@ EVENT_SPAWN_SNAP_DISTANCE = 4.0
 # same actor, materialized by the initial population (boss rooms bypass the
 # event gate so the boss exists on entry).
 EVENT_SPAWN_DUPLICATE_RADIUS = 1.5
+# The Darkwood Wendigo encounter exposes all three ritual circles together.
+# Their shared authored set is retired only after every distinct circle has
+# consumed its 10-key cost, then the final boss event is started.
+_DARKWOOD_WENDIGO_MAP = "e_hal_01_darkwood_dun"
+_DARKWOOD_WENDIGO_RITUAL_EVENT = "e_hal_01_darkwood_ghost_fire_01_spawn"
+_DARKWOOD_WENDIGO_RITUAL_EVENT_SET = 1248
+_DARKWOOD_WENDIGO_FIRE_TEMPLATE = "e_hal_wendigo_fire_01"
+_DARKWOOD_WENDIGO_BOSS_SIGNAL = (
+    "e_hal_01_darkwood_ghost_fire_03_end_signal_01"
+)
+_DARKWOOD_WENDIGO_QUEST_TRIGGERS = (
+    "halchexpl01", "halchexpl02", "halchexpl03",
+)
 # Statue turrets this close to a defeated boss guard its arena: Big Paws'
 # two turrets stand 12 m from him, the nearest corridor statues over 60 m.
 ARENA_HAZARD_RADIUS = 25.0
@@ -1036,6 +1083,82 @@ def _parallel_world_reward_jewel_candidates(class_name: str) -> tuple[str, ...]:
 
 def _log(message: str) -> None:
     print(f"{MAP_EVENT_LOG_PREFIX} {message}")
+
+
+def _is_darkwood_wendigo_wave_start_signal(signal_id: object) -> bool:
+    """Whether a signal starts one of the movement-triggered Wendigo waves."""
+
+    key = str(signal_id or "").casefold()
+    for stage in (1, 2, 3):
+        for branch in ("", "b", "c"):
+            prefix = (
+                f"e_hal_01_darkwood_ghost_fire_{stage:02d}{branch}"
+                "_start_signal_"
+            )
+            if key.startswith(prefix) and key[len(prefix):] in {
+                "01", "02", "03", "04", "05", "client",
+            }:
+                return True
+    return False
+
+
+def _darkwood_wendigo_ritual_prop(runtime, definition):
+    """Classify one of the three simultaneously available ritual circles."""
+
+    if (
+        map_key(runtime.map_id) != _DARKWOOD_WENDIGO_MAP
+        or str(getattr(definition, "template_id", "") or "").casefold()
+        != _DARKWOOD_WENDIGO_FIRE_TEMPLATE
+    ):
+        return None
+    if (
+        int(getattr(definition, "event_set_row", -1))
+        != _DARKWOOD_WENDIGO_RITUAL_EVENT_SET
+        or str(getattr(definition, "key_id", "") or "").casefold()
+        != "e_hal_01_challenge_wendigo_fire_key"
+        or int(getattr(definition, "key_amount", 0) or 0) != 10
+    ):
+        return False
+    return True
+
+
+def _darkwood_wendigo_factory_prop(runtime, definition) -> bool:
+    """Whether the ritual's scene prop needs a factory-created wire entity.
+
+    The Darkwood map already owns these scene objects. Binding PropInfo to the
+    authored GUID can hit the client's duplicate-PropId assertion; PropUpdate
+    alone does not register an interactive GameProp. Publish a zero-GUID prop
+    at the same transform instead, while EventUpdate continues to control the
+    authored scene visuals.
+    """
+
+    return bool(
+        map_key(runtime.map_id) == _DARKWOOD_WENDIGO_MAP
+        and int(getattr(definition, "event_set_row", -1))
+        == _DARKWOOD_WENDIGO_RITUAL_EVENT_SET
+        and str(getattr(definition, "template_id", "") or "").casefold()
+        == _DARKWOOD_WENDIGO_FIRE_TEMPLATE
+        and str(getattr(definition, "kind", "") or "").casefold() == "scene"
+    )
+
+
+def _darkwood_wendigo_ritual_prop_ids(runtime) -> frozenset[int]:
+    """Return this map instance's selected three ritual-circle prop ids."""
+
+    return frozenset(
+        int(definition.prop_id)
+        for definition in runtime.select_props(
+            runtime.content.props_for_sets(
+                (_DARKWOOD_WENDIGO_RITUAL_EVENT_SET,),
+            )
+        )
+        if (
+            int(definition.event_set_row)
+            == _DARKWOOD_WENDIGO_RITUAL_EVENT_SET
+            and str(definition.template_id or "").casefold()
+            == _DARKWOOD_WENDIGO_FIRE_TEMPLATE
+        )
+    )
 
 
 @lru_cache(maxsize=4)
@@ -1910,6 +2033,19 @@ class MapEventService:
                 state.definition.prop_id: state
                 for state in runtime.published_props()
             }
+            # Register all three Darkwood circles as factory props. The two
+            # authored scene GUIDs can hit the client's duplicate-PropId
+            # assertion, while PropUpdate alone does not register an
+            # interactive GameProp.
+            for prop_id, state in tuple(states_by_id.items()):
+                if not _darkwood_wendigo_factory_prop(
+                    runtime, state.definition,
+                ):
+                    continue
+                states_by_id[prop_id] = PropRuntimeState(
+                    replace(state.definition, instance_guid=ZERO_GUID),
+                    state.state,
+                )
             if (
                 map_key(runtime.map_id) == "b1205_crafting_dun"
                 and "server_b1205_crafting_leader_present"
@@ -2181,6 +2317,24 @@ class MapEventService:
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        if map_key(runtime.map_id) == _DARKWOOD_WENDIGO_MAP:
+            blocked_wendigo_rules = tuple(
+                rule for rule in rules
+                if _is_darkwood_wendigo_wave_start_signal(rule.signal_id)
+            )
+            if blocked_wendigo_rules:
+                _log(
+                    "ignored ungated Wendigo wave start(s) on "
+                    f"{runtime.map_id}: "
+                    f"{tuple(rule.signal_id for rule in blocked_wendigo_rules)!r}; "
+                    "the three ritual circles own boss activation"
+                )
+                rules = tuple(
+                    rule for rule in rules
+                    if not _is_darkwood_wendigo_wave_start_signal(
+                        rule.signal_id
+                    )
+                )
         if (
             kind == "playerkilledmonster"
             and map_key(runtime.map_id) in {
@@ -3108,6 +3262,19 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        self._advance_castle_gwenfara(s, runtime, templates)
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == "e_hal_01_darkwood_dun"
+            and "e_hal_01_wood_quest_leader_ripper_01" in templates
+        ):
+            # The return exit is authored as always active, rather than as a
+            # boss-death EventSet. Republish its current access-tier variant
+            # after the quest kill so the client can use the Oldfield route.
+            sessions = self._map_event_sessions(runtime)
+            if s not in sessions:
+                sessions = (*sessions, s)
+            self._publish_map_exits(runtime, sessions)
         if (
             runtime is not None
             and map_key(runtime.map_id) == "e_dra_03_dun_02"
@@ -3185,6 +3352,49 @@ class MapEventService:
             self._resolve_fractured_planes_floor_clear(
                 s, runtime, score_rules=score_rules,
             )
+
+    def _advance_castle_gwenfara(
+            self, s: Session, runtime: MapEventRuntime | None,
+            templates: tuple[str, ...],
+    ) -> None:
+        """Spawn the next Gwenfara form as soon as the current one dies."""
+        if runtime is None or map_key(runtime.map_id) != "e_hal_01_castle_dun":
+            return
+        if "e_hal_01_boss_gwenfara_phase_01" in templates:
+            next_phase = 2
+        elif "e_hal_01_boss_gwenfara_phase_02" in templates:
+            next_phase = 3
+        else:
+            return
+        boss_row = next((
+            row for row in runtime.content.spawn_rows
+            if row.template_id.casefold()
+            == "e_hal_01_boss_gwenfara_phase_01"
+        ), None)
+        if boss_row is None:
+            _log("Creepy Castle Gwenfara phase spawnpoint is missing")
+            return
+        marker = f"castle_gwenfara_phase_0{next_phase}_spawned"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            runtime.fired_once.add(marker)
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        next_template = f"e_hal_01_boss_gwenfara_phase_0{next_phase}"
+        self._spawn_event_monsters(
+            runtime, sessions, (),
+            extra_rows=(replace(
+                boss_row,
+                row_id=-2_000_100 - next_phase,
+                template_id=next_template,
+            ),),
+        )
+        _log(
+            f"Creepy Castle Gwenfara phase 0{next_phase - 1} defeated; "
+            f"spawned {next_template} immediately"
+        )
 
     def _advance_bgh_all_boss_sequence(
             self, s: Session, runtime: MapEventRuntime | None, monsters,
@@ -5270,10 +5480,11 @@ class MapEventService:
         )
         packet, packet_bits = encode_prop_update_batch((update,), actor_id=0)
         s.send_reliable_ordered((packet, packet_bits), track=True, label=label)
-        _send_prop_info(
-            s, (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
-            label=f"{label}-info",
-        )
+        if definition.instance_guid == ZERO_GUID:
+            _send_prop_info(
+                s, (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+                label=f"{label}-info",
+            )
 
     @staticmethod
     def _show_used_prop_for_viewer(s: Session, definition, *, label: str) -> None:
@@ -5291,10 +5502,11 @@ class MapEventService:
         )
         packet, packet_bits = encode_prop_update_batch((update,), actor_id=0)
         s.send_reliable_ordered((packet, packet_bits), track=True, label=label)
-        _send_prop_info(
-            s, (PropRuntimeState(definition, PROP_STATE_USED),),
-            label=f"{label}-info",
-        )
+        if definition.instance_guid == ZERO_GUID:
+            _send_prop_info(
+                s, (PropRuntimeState(definition, PROP_STATE_USED),),
+                label=f"{label}-info",
+            )
 
     def _handle_staging_signal(self, s: Session, payload: bytes) -> None:
         CharacterService._handle_simple_gameplay_command(s, payload, 0x0113)
@@ -5313,6 +5525,15 @@ class MapEventService:
             return
         rule = runtime.catalog.rule(signal_id)
         if rule is None or not rule.enabled:
+            return
+        if (
+            map_key(runtime.map_id) == _DARKWOOD_WENDIGO_MAP
+            and _is_darkwood_wendigo_wave_start_signal(rule.signal_id)
+        ):
+            _log(
+                f"ignored client-reported Wendigo wave start "
+                f"{rule.signal_id!r}; activate the fire prop instead"
+            )
             return
         if rule.signal_type not in CLIENT_REPORTED_SIGNAL_TYPES:
             _log(
@@ -5346,6 +5567,148 @@ class MapEventService:
         )
         _log(f"client reported trigger {request.trigger_id!r}")
         self._fire_map_signal(s, "PlayerHitTrigger", (request.trigger_id,))
+
+    @staticmethod
+    def _apply_darkwood_wendigo_hazard_damage(
+            s: Session, runtime: MapEventRuntime, position) -> None:
+        """Apply the map-authored 80% HP damage tick before Wendigo dies.
+
+        The static map gates these three location effects with EventSet 158
+        (``BOSS_death=False``). The client publishes their visuals, but the
+        server movement path did not apply their damage program, so crossing
+        the guarded area was harmless on the authoritative character state.
+        """
+
+        if map_key(runtime.map_id) != "e_hal_01_darkwood_dun":
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        # The three Summoning Slates grant mutually exclusive, timed
+        # Salamander Blaze effects. The client-side aura visuals do not stop
+        # this server-authored contact damage, so honor the active effect here
+        # before testing the lethal fields.
+        try:
+            from dso_server.gameplay.status_runtime_catalog import (
+                load_status_runtime_catalog,
+            )
+            status_catalog = load_status_runtime_catalog(
+                combat.encounter.static_database_path,
+            )
+            immunity_ids = frozenset(
+                effect_id
+                for name, effect_id in status_catalog.effect_ids.items()
+                if name.casefold().startswith(
+                    "e_hal_01_wood_challenge_damage_aura_effect_immunity_"
+                )
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError):
+            immunity_ids = frozenset()
+        if immunity_ids:
+            now = time.perf_counter()
+            with s.flow_lock:
+                active_immunity = any(
+                    int(entry.effect_id) in immunity_ids
+                    and (
+                        expires_at is None
+                        or float(expires_at) > now
+                    )
+                    for entry, expires_at
+                    in tuple(s.gameplay_runtime_status_effects.values())
+                )
+            if active_immunity:
+                return
+        hazards = _darkwood_wendigo_hazards(
+            str(combat.encounter.static_database_path), runtime.map_id,
+        )
+        if not hazards:
+            return
+        with runtime.lock:
+            active_sets = set(
+                runtime.content.enabled_event_set_rows(runtime.active_flags())
+            )
+        matching = tuple(
+            (volume, effect_id)
+            for volume, effect_id in hazards
+            if volume.event_set_row in active_sets and volume.contains(position)
+        )
+        if not matching:
+            return
+
+        hazard_id = min(volume.row_id for volume, _effect in matching)
+        now = time.perf_counter()
+        with s.flow_lock:
+            if (
+                s.gameplay_combat_state is not combat
+                or s.gameplay_map_event_runtime is not runtime
+            ):
+                return
+            cooldowns = getattr(s, "gameplay_darkwood_hazard_next_at", None)
+            if cooldowns is None:
+                cooldowns = {}
+                s.gameplay_darkwood_hazard_next_at = cooldowns
+            if now < float(cooldowns.get(hazard_id, 0.0)):
+                return
+            cooldowns[hazard_id] = now + 1.0
+            inventory = s.gameplay_inventory
+            actor_id = int(
+                getattr(s, "gameplay_remote_actor_id", 0)
+                or combat.player_actor_id
+            )
+        if inventory is None:
+            return
+
+        from dso_server.services.talent_events import (
+            dispatch_talent_event, spare_player,
+        )
+        with combat.lock:
+            health = combat.player_health.get(actor_id)
+            if health is None or int(health[0]) <= 0:
+                return
+            previous, maximum = int(health[0]), int(health[1])
+            # The authored aura ticks every second with
+            # ``CurrHealthPoints:-0.8,relative``.
+            damage = max(1, int(math.ceil(maximum * 0.8)))
+            current = max(0, previous - damage)
+            applied = previous - current
+            health[0] = current
+            if actor_id == int(combat.player_actor_id):
+                combat.player_current_health = current
+            death_saved = current <= 0 and spare_player(s, combat, actor_id)
+            current = int(health[0])
+        if applied <= 0:
+            return
+
+        CharacterService._cancel_respawn_protection(s)
+        with s.flow_lock:
+            if s.gameplay_inventory is inventory:
+                inventory.health_points = float(current)
+            server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        resolution = DamageResolution(
+            target_actor_id=CharacterService._viewer_actor_id(s, actor_id),
+            attacker_actor_id=0,
+            current_health=current,
+            maximum_health=maximum,
+            damage=applied,
+            killed=current <= 0,
+            position=tuple(float(value) for value in position),
+            server_tick=server_tick,
+            hit_tags=(0,),
+            skill_index=0,
+            source_actor_id=0,
+            periodic_damage=True,
+        )
+        CharacterService._send_combat_resolution(
+            s, resolution, label="darkwood-wendigo-challenge-hazard",
+            include_item_set_procs=False,
+        )
+        _log(
+            f"Wendigo challenge hazard hit on {runtime.map_id}: "
+            f"actor={actor_id}, area={hazard_id}, damage={applied}, "
+            f"event_sets={tuple(sorted(active_sets))}"
+        )
+        if death_saved:
+            dispatch_talent_event(s, "nohealth", server_tick=server_tick)
 
     @staticmethod
     def _apply_fractured_planes_hazard_damage(
@@ -5712,6 +6075,9 @@ class MapEventService:
             if previous_wire_position is not None
             else None
         )
+        MapEventService._apply_darkwood_wendigo_hazard_damage(
+            s, runtime, world,
+        )
         MapEventService._apply_fractured_planes_hazard_damage(
             s, runtime, world,
         )
@@ -5836,6 +6202,21 @@ class MapEventService:
                     ) not in runtime.individual_prop_usage
                 )
             )
+            wendigo_ritual_prop = (
+                _darkwood_wendigo_ritual_prop(runtime, keyed.definition)
+                if keyed_first_use and keyed is not None else None
+            )
+            wendigo_prop_unavailable = bool(
+                wendigo_ritual_prop is True
+                and keyed is not None
+                and (
+                    runtime.darkwood_wendigo_boss_spawned
+                    or int(keyed.definition.prop_id)
+                    in runtime.darkwood_wendigo_used_prop_ids
+                    or int(keyed.definition.prop_id)
+                    in runtime.darkwood_wendigo_reserved_prop_ids
+                )
+            )
         dtu_superchest_claim_key = ""
         if (
             keyed is not None
@@ -5869,6 +6250,26 @@ class MapEventService:
                     f"refused already-claimed DTU superchest "
                     f"{keyed.definition.instance_id!r} "
                     f"({dtu_superchest_claim_key})"
+                )
+                return
+        if wendigo_ritual_prop is False:
+            _log(
+                f"refused malformed Darkwood Wendigo ritual prop "
+                f"{keyed.definition.instance_id!r} on event set "
+                f"{keyed.definition.event_set_row}"
+            )
+            self._restore_prop_for_viewer(
+                s, keyed.definition, label="wendigo-prop-invalid",
+            )
+            return
+        if wendigo_ritual_prop is True:
+            if wendigo_prop_unavailable:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition, label="wendigo-ritual-complete",
+                )
+                _log(
+                    f"refused already-used or completed Wendigo ritual prop: "
+                    f"{keyed.definition.instance_id!r}"
                 )
                 return
         if keyed_first_use:
@@ -5965,6 +6366,8 @@ class MapEventService:
                     s, keyed.definition, label="gatherable-rewards-unavailable",
                 )
                 return
+        wendigo_rejected = False
+        wendigo_rejected_used = False
         with runtime.lock:
             existing = runtime.props.get(int(request.prop_id))
             definition = existing.definition if existing is not None else None
@@ -5988,7 +6391,23 @@ class MapEventService:
                 and (definition.one_shot or definition.individual_usage)
                 and not (definition.loot_list_id or definition.chest_id)
             )
-            if definition is not None and (definition.individual_usage or quest_usage):
+            if (
+                wendigo_ritual_prop is True
+                and definition is not None
+                and (
+                    runtime.darkwood_wendigo_boss_spawned
+                    or int(definition.prop_id)
+                    in runtime.darkwood_wendigo_used_prop_ids
+                    or int(definition.prop_id)
+                    in runtime.darkwood_wendigo_reserved_prop_ids
+                )
+            ):
+                result = (
+                    PropRuntimeState(definition, PROP_STATE_USED), False,
+                )
+                wendigo_rejected = True
+                wendigo_rejected_used = True
+            elif definition is not None and (definition.individual_usage or quest_usage):
                 usage_key = (
                     _individual_prop_player_id(s), int(definition.prop_id),
                 )
@@ -6008,9 +6427,27 @@ class MapEventService:
             else:
                 result = runtime.interact(request.prop_id)
             if result is not None and result[1]:
+                if wendigo_ritual_prop is True:
+                    runtime.darkwood_wendigo_reserved_prop_ids.add(
+                        int(definition.prop_id),
+                    )
                 CharacterService._quest_record_prop_usage(
                     s, definition, quest_operation,
                 )
+        if wendigo_rejected:
+            if wendigo_rejected_used:
+                self._show_used_prop_for_viewer(
+                    s, definition, label="wendigo-ritual-already-used",
+                )
+            else:
+                self._restore_prop_for_viewer(
+                    s, definition, label="wendigo-ritual-not-ready",
+                )
+            _log(
+                f"refused already-used or completed Wendigo ritual prop: "
+                f"{definition.instance_id!r}"
+            )
+            return
         if result is None:
             _log(
                 f"PropInteraction for unknown prop {request.prop_id} "
@@ -6027,6 +6464,10 @@ class MapEventService:
         ):
             # The keys left the bag between the check and the use: undo it.
             with runtime.lock:
+                if wendigo_ritual_prop is True:
+                    runtime.darkwood_wendigo_reserved_prop_ids.discard(
+                        int(definition.prop_id),
+                    )
                 if definition.individual_usage:
                     runtime.individual_prop_usage.discard((
                         _individual_prop_player_id(s), int(definition.prop_id),
@@ -6037,6 +6478,37 @@ class MapEventService:
                         live.state = PROP_STATE_ACTIVE
             self._restore_prop_for_viewer(s, definition, label="prop-key-missing")
             return
+        wendigo_boss_ready = False
+        wendigo_used_count = 0
+        if flipped and wendigo_ritual_prop is True:
+            with runtime.lock:
+                runtime.darkwood_wendigo_reserved_prop_ids.discard(
+                    int(definition.prop_id),
+                )
+                runtime.darkwood_wendigo_used_prop_ids.add(
+                    int(definition.prop_id),
+                )
+                expected_prop_ids = _darkwood_wendigo_ritual_prop_ids(runtime)
+                wendigo_used_count = len(
+                    runtime.darkwood_wendigo_used_prop_ids
+                    & expected_prop_ids
+                )
+                if len(expected_prop_ids) != 3:
+                    _log(
+                        f"Darkwood Wendigo ritual expects 3 fire props, "
+                        f"found {len(expected_prop_ids)} on {runtime.map_id}"
+                    )
+                elif (
+                    expected_prop_ids
+                    and expected_prop_ids.issubset(
+                        runtime.darkwood_wendigo_used_prop_ids,
+                    )
+                    and not runtime.darkwood_wendigo_boss_spawned
+                ):
+                    # Claim the boss release while holding the shared map
+                    # lock so simultaneous third clicks cannot spawn it twice.
+                    runtime.darkwood_wendigo_boss_spawned = True
+                    wendigo_boss_ready = True
         if flipped and gatherable_template and not self._use_gatherable_multitool(s):
             # A concurrent inventory change may have consumed the last tool
             # after the preflight check. Restore the node so no reward is lost.
@@ -6064,10 +6536,9 @@ class MapEventService:
             self._spawn_new_moon_boss_from_recall_altar(
                 s, runtime, definition, new_moon_recall_row,
             )
-        # Retail's reply to a click (docs/PROP_AND_TRIGGER_COMMANDS.md §6):
-        # the clicking player's actor in the body, the new state, the game
-        # tick, every flag false, trailing actor 0, then a one-record
-        # PropInfo refreshing the same prop.
+        # Retail's PropUpdate state flip: the clicking player's actor in the
+        # body, the new state, current game tick, flags false, trailing actor
+        # 0. Server-created zero-GUID props also get a PropInfo refresh below.
         remote_actor_id = int(getattr(s, "gameplay_remote_actor_id", 0) or 0)
         viewers = (
             (s,) if definition.individual_usage or quest_usage
@@ -6093,7 +6564,46 @@ class MapEventService:
             viewer.send_reliable_ordered(
                 (packet, packet_bits), track=True, label="prop-update"
             )
-            _send_prop_info(viewer, (state,), label="prop-update-info")
+            # A scene prop with its authored GUID is already bound to the
+            # client entity. Replaying PropInfo makes LookupPropEntity try to
+            # assign a second prop id to that same entity (the client's
+            # "Entity already had a prop assigned" assertion). PropUpdate is
+            # the retail state flip; keep PropInfo refreshes for server-created
+            # zero-GUID props, which need their factory-backed refresh path.
+            if definition.instance_guid == ZERO_GUID:
+                _send_prop_info(viewer, (state,), label="prop-update-info")
+        if flipped and wendigo_ritual_prop is True:
+            _log(
+                f"Wendigo ritual circle {wendigo_used_count}/3 activated; "
+                f"spent {definition.key_amount}x {definition.key_id}"
+            )
+            if 1 <= wendigo_used_count <= len(
+                _DARKWOOD_WENDIGO_QUEST_TRIGGERS
+            ):
+                # The retail quest's three ExploreTasks still reference the
+                # old sequential wave EventSets. The custom ritual now shows
+                # all three props together, so those gated map volumes never
+                # raise halchexpl02/03. Advance the corresponding discovery
+                # task only after this distinct circle was successfully used.
+                CharacterService._quest_on_triggers(
+                    self, s,
+                    (_DARKWOOD_WENDIGO_QUEST_TRIGGERS[
+                        wendigo_used_count - 1
+                    ],),
+                )
+        if wendigo_boss_ready:
+            ritual_event = runtime.catalog.event(
+                _DARKWOOD_WENDIGO_RITUAL_EVENT,
+            )
+            if ritual_event is not None:
+                self._stop_map_local_event(runtime, ritual_event)
+            self._emit_map_signal(
+                s, runtime, _DARKWOOD_WENDIGO_BOSS_SIGNAL,
+            )
+            _log(
+                f"all three Wendigo ritual circles were used on {runtime.map_id}; "
+                f"started boss event with {_DARKWOOD_WENDIGO_BOSS_SIGNAL!r}"
+            )
         if flipped and gatherable_template:
             self._spawn_gatherable_drop(
                 s, definition, gatherable_template,
@@ -6124,6 +6634,22 @@ class MapEventService:
 
         map_id = map_key(runtime.map_id)
         template_id = str(definition.template_id or "").casefold()
+        wendigo_buff_effects = {
+            "e_hal_01_wood_challenge_buff_01":
+                "e_hal_01_wood_challenge_damage_aura_effect_immunity_01",
+            "e_hal_01_wood_challenge_buff_02":
+                "e_hal_01_wood_challenge_damage_aura_effect_immunity_02",
+            "e_hal_01_wood_challenge_buff_03":
+                "e_hal_01_wood_challenge_damage_aura_effect_immunity_03",
+        }
+        if (
+            map_id == "e_hal_01_darkwood_dun"
+            and template_id in wendigo_buff_effects
+        ):
+            self._grant_darkwood_wendigo_buff(
+                s, definition, wendigo_buff_effects[template_id],
+            )
+            return
         expected = None
         if (
             map_id == "pw007_stonekeep_01_dun"
@@ -6266,6 +6792,119 @@ class MapEventService:
             )
         except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
             _log(f"could not grant Stonekeep Miller ammunition: {exc}")
+
+    def _grant_darkwood_wendigo_buff(
+            self, s: Session, definition, expected_effect: str) -> None:
+        """Apply the selected Summoning Slate's authored Salamander Blaze."""
+
+        try:
+            from dso_server.gameplay.status_runtime_catalog import (
+                load_status_runtime_catalog,
+            )
+            immunity_effect_ids = frozenset(
+                effect_id
+                for name, effect_id in load_status_runtime_catalog(
+                    self.static_database_path,
+                ).effect_ids.items()
+                if name.casefold().startswith(
+                    "e_hal_01_wood_challenge_damage_aura_effect_immunity_"
+                )
+            )
+            database_uri = Path(self.static_database_path).resolve().as_uri()
+            with closing(sqlite3.connect(
+                f"{database_uri}?mode=ro", uri=True,
+            )) as database:
+                state = database.execute(
+                    "SELECT COALESCE(StatusEffects, '') "
+                    "FROM _Template_StateObject WHERE Id=? LIMIT 1",
+                    (definition.template_id,),
+                ).fetchone()
+                effect = database.execute(
+                    "SELECT rowid - 1, COALESCE(StatusEffectDuration, 0) "
+                    "FROM _Template_StatusEffect WHERE Id=? LIMIT 1",
+                    (expected_effect,),
+                ).fetchone()
+            state_effects = tuple(
+                token.strip().split(",", 1)[0]
+                for token in str(state[0] or "").replace(";", "|").split("|")
+                if token.strip()
+            ) if state is not None else ()
+            if (
+                effect is None
+                or expected_effect.casefold() not in {
+                    name.casefold() for name in state_effects
+                }
+            ):
+                _log(
+                    f"Darkwood Summoning Slate {definition.template_id!r} "
+                    f"does not author {expected_effect!r}"
+                )
+                return
+            effect_id = int(effect[0])
+            duration_seconds = max(0.0, float(effect[1] or 0.0))
+            if duration_seconds <= 0:
+                _log(f"Darkwood buff {expected_effect!r} has no duration")
+                return
+            duration_ticks = max(
+                1, int(math.ceil(duration_seconds * SERVER_TICKS_PER_SECOND)),
+            )
+            now = time.perf_counter()
+            with s.flow_lock:
+                runtime_effects = s.gameplay_runtime_status_effects
+                removals = []
+                for instance_id, (entry, expires_at) in tuple(
+                    runtime_effects.items()
+                ):
+                    if int(entry.effect_id) in immunity_effect_ids:
+                        # The retail effects are mutually exclusive; clear an
+                        # older slate's server timer before installing the
+                        # newly selected duration.
+                        runtime_effects.pop(instance_id, None)
+                        removals.append(entry)
+                start_tick = _session_game_tick(s) & 0xFFFFFFFF
+                instance_id = int(s.gameplay_next_status_effect_instance_id)
+                s.gameplay_next_status_effect_instance_id += 1
+                entry = StatusEffectEntry(
+                    effect_id=effect_id,
+                    instance_id=instance_id,
+                    end_tick=(start_tick + duration_ticks) & 0xFFFFFFFF,
+                    tick_interval=SERVER_TICKS_PER_SECOND,
+                    start_tick=start_tick,
+                    stack_index=0,
+                    total_duration=duration_ticks,
+                    source_level=100,
+                    source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    update_timing=False,
+                    stacked=False,
+                    permanent=False,
+                    has_details=True,
+                )
+                runtime_effects[instance_id] = (
+                    entry, now + duration_seconds,
+                )
+            status_entries = tuple(
+                CharacterService._consumable_cleanup_entry(
+                    old, server_tick=start_tick,
+                )
+                for old in removals
+            ) + (entry,)
+            value = StatusEffect(False, status_entries)
+            s.send_reliable_ordered(
+                encode_status_effect_batch(
+                    value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+                ),
+                track=True,
+                label="darkwood-salamander-blaze",
+            )
+            callback = getattr(s, "gameplay_presence_callback", None)
+            if callback is not None:
+                callback(s, ("status_effects", (value,)))
+            _log(
+                f"granted Salamander Blaze from {definition.instance_id!r}: "
+                f"effect={expected_effect}, duration={duration_seconds:.0f}s"
+            )
+        except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
+            _log(f"could not grant Darkwood Salamander Blaze: {exc}")
 
     def _spawn_pw022_gorgon_from_bust(self, s, runtime, definition) -> None:
         """Spawn the guardian linked to a one-shot Mount Suvius bust prop."""
@@ -7290,21 +7929,57 @@ class MapEventService:
                 )
             )
         for viewer in sessions:
-            _send_prop_info(viewer, published, label="map-event-prop-info")
+            prop_info_states = tuple(
+                PropRuntimeState(
+                    replace(state.definition, instance_guid=ZERO_GUID),
+                    state.state,
+                )
+                if _darkwood_wendigo_factory_prop(
+                    runtime, state.definition,
+                ) else state
+                for state in published
+            )
+            if prop_info_states:
+                _send_prop_info(
+                    viewer, prop_info_states, label="map-event-prop-info",
+                )
 
     def _unpublish_event_props(self, runtime, sessions, event_sets) -> None:
         with runtime.lock:
-            prop_ids = tuple(
-                prop_id for prop_id, state in runtime.props.items()
-                if state.definition.event_set_row in set(event_sets)
+            event_set_rows = {int(row) for row in event_sets}
+            states = tuple(
+                state for state in runtime.props.values()
+                if int(state.definition.event_set_row) in event_set_rows
             )
+            prop_ids = tuple(state.definition.prop_id for state in states)
             removed = runtime.unpublish_props(prop_ids)
         if not removed:
             return
         _log(f"hid {len(removed)} prop(s) on {runtime.map_id}")
+        # DiscardProp removes the client's prop-id lookup but can leave the
+        # scene entity's PropId attribute attached. If an authored scene prop
+        # is revealed again, PropInfo then resolves its GUID to that entity
+        # and asserts that no prop id has been assigned. EventUpdate already
+        # hides authored scene objects, so only discard zero-GUID props that
+        # the server factory-created and which have no scene entity to retain.
+        # Ritual scene props are factory-created on the wire and must also be
+        # discarded when their EventSet closes.
+        scene_prop_ids = {
+            state.definition.prop_id
+            for state in states
+            if state.definition.instance_guid != ZERO_GUID
+            and not _darkwood_wendigo_factory_prop(
+                runtime, state.definition,
+            )
+        }
+        discard_ids = tuple(
+            prop_id for prop_id in removed if prop_id not in scene_prop_ids
+        )
+        if not discard_ids:
+            return
         for viewer in sessions:
             packet, packet_bits = encode_discard_prop_batch(
-                removed, actor_id=LOCAL_PLAYER_ACTOR_ID
+                discard_ids, actor_id=LOCAL_PLAYER_ACTOR_ID
             )
             CharacterService._send_world_loot_state_batch(
                 viewer, packet, packet_bits, label="map-event-discard-prop"

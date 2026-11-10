@@ -1826,6 +1826,9 @@ class WorldService:
                         # herb/ore rows have no client bag entry and crash its
                         # IngredientBagUtil lookup if force-classified here.
                         ingredient_bag=item_definition.ingredient_bag,
+                        ingredient_bag_template_id=(
+                            item_definition.ingredient_bag_template_id
+                        ),
                     )
                     response_packet, response_bits = (
                         encode_world_pickup_response(

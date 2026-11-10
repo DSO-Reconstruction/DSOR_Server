@@ -444,6 +444,18 @@ class QuestService:
             # does not unlock this instance's progression portal.
             exit_destinations.pop(run_gate_event, None)
 
+        if (
+            normalized_map == "e_hal_01_darkwood_dun"
+            and "e-hal-01-darkwood-main-03-n:e-hal-01-darkwood-03-kill-01-n"
+            in tasks_done
+        ):
+            # The Oldfield-to-Creepy-Castle gate is opened by a ClientSignal
+            # after the Darkwood quest keeper dies. That event is instance
+            # state, while the kill task is character-persistent. Restore
+            # the authored gate for returning characters from that durable
+            # task token; the keeper itself must stay defeated.
+            restored.add("e_hal_01_wooddun_open_castle_entry")
+
         def gated_by_open_quest_task(event) -> bool:
             # The exit event has an authored PlayerEnteredMap restore with a
             # completed-task gate of a quest that is still open in the log.
@@ -3042,6 +3054,34 @@ class QuestService:
                 changed_any = True
                 self._quest_publish_result(s, quest, result, kind, value)
         if changed_any:
+            if (
+                str(getattr(s, "gameplay_map", "") or "").casefold()
+                == "e_hal_01_pumpkin_dun"
+                and any(
+                    str(quest_id).casefold() == "e-hal-01-pumpkin-main-04-n"
+                    and progress.state == QUEST_STATE_ACCEPTED
+                    and progress.tokens.get(
+                        "e-hal-01-pumpkin-04-talk-01-n_fin", 0,
+                    ) > 0
+                    for quest_id, progress in log.items()
+                )
+            ):
+                # Ward's defense and follow-up talk unlock the Darkwood leg.
+                # The Oldfield exit is an always-active scene exit, so refresh
+                # its published state as soon as the quest advances instead
+                # of waiting for another map-entry refresh.
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                if runtime is not None:
+                    try:
+                        sessions = self._map_event_sessions(runtime)
+                        if s not in sessions:
+                            sessions = (*sessions, s)
+                        self._publish_map_exits(runtime, sessions)
+                    except Exception as exc:
+                        _log(
+                            "Oldfield Darkwood exit refresh failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
             if str(kind).casefold() not in {
                 "holdgroundsucceeded", "holdgroundfailed",
             }:
