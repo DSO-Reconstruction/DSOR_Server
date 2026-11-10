@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
+    HALLOWEEN_ATTIRE_PRODUCT_KEY,
+    HALLOWEEN_BIG_PIE_PRODUCT_KEY,
+    HALLOWEEN_BUNDLE_PRODUCT_KEY,
+    HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY,
+    HALLOWEEN_SMALL_PIE_PRODUCT_KEY,
     DRAGAN_ATTIRE_PRODUCT_KEY,
     DRAGAN_EYE_OF_AVERSION_PRODUCT_KEY,
     DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY,
@@ -773,6 +778,11 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_218, 9.90, False, "€", DRAGAN_EYE_OF_FEAR_PRODUCT_KEY, "", ""),
     OCPOffer(180_219, 9.90, False, "€", DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY, "", ""),
     OCPOffer(180_220, 9.90, False, "€", DRAGAN_FALLEN_HEART_PRODUCT_KEY, "", ""),
+    OCPOffer(180_221, 9.90, False, "€", HALLOWEEN_SMALL_PIE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_222, 9.90, False, "€", HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_223, 9.90, False, "€", HALLOWEEN_BIG_PIE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_224, 9.90, False, "€", HALLOWEEN_BUNDLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_225, 9.90, False, "€", HALLOWEEN_ATTIRE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

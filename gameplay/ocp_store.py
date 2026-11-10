@@ -55,6 +55,18 @@ DRAGAN_EYE_OF_FEAR_PRODUCT_KEY = "8_eye_of_fear_package_1.0000_0_NONE"
 DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY = "8_eye_of_collapse_package_1.0000_0_NONE"
 DRAGAN_FALLEN_HEART_PRODUCT_KEY = "8_fallen_heart_package_1.0000_0_NONE"
 
+HALLOWEEN_SMALL_PIE_PRODUCT_KEY = "8_ghostly_pie_small_2023_1.0000_0_NONE"
+HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY = "8_ghostly_pie_medium_2023_1.0000_0_NONE"
+HALLOWEEN_BIG_PIE_PRODUCT_KEY = "8_ghostly_pie_big_2023_1.0000_0_NONE"
+HALLOWEEN_BUNDLE_PRODUCT_KEY = "8_ghost_festival_bundle_1.0000_0_NONE"
+HALLOWEEN_ATTIRE_PRODUCT_KEY = "8_event_pass_halloween_1.0000_0_NONE"
+HALLOWEEN_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_halloween_warrior",
+    "mage": "costume_event_pass_halloween_mage",
+    "ranger": "costume_event_pass_halloween_ranger",
+    "dwarf": "costume_event_pass_halloween_dwarf",
+}
+
 DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY = (
     "101_lava_essence_pack_1.0000_0_NONE"
 )
@@ -95,6 +107,11 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     DRAGAN_EYE_OF_FEAR_PRODUCT_KEY: "dragan_event_03",
     DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY: "dragan_event_03",
     DRAGAN_FALLEN_HEART_PRODUCT_KEY: "dragan_event_03",
+    HALLOWEEN_SMALL_PIE_PRODUCT_KEY: "halloween_event_01",
+    HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY: "halloween_event_01",
+    HALLOWEEN_BIG_PIE_PRODUCT_KEY: "halloween_event_01",
+    HALLOWEEN_BUNDLE_PRODUCT_KEY: "halloween_event_01",
+    HALLOWEEN_ATTIRE_PRODUCT_KEY: "halloween_event_01",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -105,6 +122,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         DEFEAT_UNDEFEATABLE_ATTIRE_PRODUCT_KEY,
         BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY,
         DRAGAN_ATTIRE_PRODUCT_KEY,
+        HALLOWEEN_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -114,6 +132,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
         DEFEAT_UNDEFEATABLE_ATTIRE_ITEMS_BY_CLASS,
     BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY: BIG_GAME_HUNT_ATTIRE_ITEMS_BY_CLASS,
     DRAGAN_ATTIRE_PRODUCT_KEY: DRAGAN_ATTIRE_ITEMS_BY_CLASS,
+    HALLOWEEN_ATTIRE_PRODUCT_KEY: HALLOWEEN_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -146,6 +165,10 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
         ("e_dra_03_hardmode_bosskey", 4),
         ("e_sar_chest_key", 20),
     ),
+    HALLOWEEN_SMALL_PIE_PRODUCT_KEY: (("item_event_hal_food_ghost_cake", 1),),
+    HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY: (("item_event_hal_food_ghost_cake", 10),),
+    HALLOWEEN_BIG_PIE_PRODUCT_KEY: (("item_event_hal_food_ghost_cake", 50),),
+    HALLOWEEN_BUNDLE_PRODUCT_KEY: (("ghost_festival_bundle", 1),),
     DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY:
         (("lava_essence_l", 5),),
     DEFEAT_UNDEFEATABLE_LAVA_MATERIAL_PRODUCT_KEY:

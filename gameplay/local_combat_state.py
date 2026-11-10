@@ -66,6 +66,7 @@ from dso_server.gameplay.local_monster_state import (
     MonsterSpawnGroup,
     load_player_summon_spawn,
 )
+from dso_server.gameplay.local_map_state import map_database_path
 from dso_server.gameplay.player_summon_lifecycle import (
     PlayerSummonAuraDefinition,
     SUMMON_AURA_RENEW_INTERVAL_TICKS,
@@ -114,6 +115,93 @@ VICTIM_STATUS_EFFECTS_DISABLED = _status_effects_disabled(
 STATUS_EFFECTS_DISABLED = _status_effects_disabled(
     "DSO_DISABLE_STATUS_EFFECTS"
 )
+
+
+# These are the three scripted capture wisps in Creepy Castle. Keep their
+# identity map-scoped: followers ignore them, and damage stays locked until
+# the wisp is lured into an authored bottle area.
+_CREEPY_CASTLE_QUEST_WISPS = frozenset({
+    "e_hal_01_castle_quest_will_o_the_wisp_01",
+    "e_hal_01_castle_quest_will_o_the_wisp_02",
+    "e_hal_01_castle_quest_will_o_the_wisp_03",
+})
+_CREEPY_CASTLE_CAPTURE_PROPS = (
+    "e_hal_01_castle_ghost_altar_01",
+    "e_hal_01_castle_ghost_hidden_chest_01",
+    "e_hal_01_castle_ghost_hidden_chest_02",
+    "e_hal_01_castle_ghost_hidden_chest_03",
+)
+_CREEPY_CASTLE_CAPTURE_DISTANCE = 12.0
+
+
+@lru_cache(maxsize=16)
+def _creepy_castle_capture_points(
+    static_database_path: str,
+) -> tuple[tuple[float, float, float], ...]:
+    """Read the authored bottle/altar positions without modifying client DBs."""
+
+    path = map_database_path(
+        Path(static_database_path), "e_hal_01_castle_dun",
+    )
+    if not path.is_file():
+        return ()
+    placeholders = ",".join("?" for _ in _CREEPY_CASTLE_CAPTURE_PROPS)
+    try:
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True,
+        )) as database:
+            rows = database.execute(
+                "SELECT Id, Transform FROM _Instance_StateObject "
+                f"WHERE Id IN ({placeholders})",
+                _CREEPY_CASTLE_CAPTURE_PROPS,
+            ).fetchall()
+    except sqlite3.Error:
+        return ()
+    transforms = {str(prop_id): transform for prop_id, transform in rows}
+    points = []
+    for prop_id in _CREEPY_CASTLE_CAPTURE_PROPS:
+        transform = transforms.get(prop_id)
+        if not isinstance(transform, bytes) or len(transform) != 64:
+            return ()
+        values = struct.unpack("<16f", transform)
+        points.append((float(values[12]), float(values[13]), float(values[14])))
+    return tuple(points)
+
+
+def _is_creepy_castle_quest_wisp(map_id: str, template_id: str) -> bool:
+    return (
+        str(map_id).casefold() == "e_hal_01_castle_dun"
+        and str(template_id).casefold() in _CREEPY_CASTLE_QUEST_WISPS
+    )
+
+
+def _creepy_castle_wisp_travel_distance(
+    map_id: str,
+    template_id: str,
+    spawn_position: tuple[float, float, float],
+    capture_points: tuple[tuple[float, float, float], ...],
+) -> float | None:
+    """Give each quest wisp enough leash to reach its numbered bottle prop."""
+
+    if not _is_creepy_castle_quest_wisp(map_id, template_id):
+        return None
+    try:
+        point_index = int(str(template_id)[-2:])
+    except ValueError:
+        return None
+    # Capture points are ordered: altar, hidden chest 01, 02, 03.
+    if not 1 <= point_index <= 3 or len(capture_points) <= point_index:
+        return None
+    point = capture_points[point_index]
+    distance = math.hypot(
+        float(spawn_position[0]) - point[0],
+        float(spawn_position[2]) - point[2],
+    )
+    # Leave room for navigation around walls and for the 12-unit unlock area.
+    return max(
+        MONSTER_NAVIGATION_RADIUS_CAP,
+        distance + _CREEPY_CASTLE_CAPTURE_DISTANCE + 50.0,
+    )
 
 @lru_cache(maxsize=4096)
 def parse_disabled_actor_features(encoded: str) -> frozenset[str]:
@@ -944,6 +1032,9 @@ class MonsterCombatant:
     # Retail marks it with ``e_mark_no_damage``/invulnerability, so no player
     # skill, damage-over-time, or summon may take its health down.
     invulnerable: bool = False
+    # Capture wisps can be killed by the player, but follower summons must not
+    # autonomously lock onto this quest objective.
+    summon_targetable: bool = True
     # NoTurnStaticStrategy statue traps (gameplay/map_hazards.py) shoot along
     # their authored facing whenever a player is near, never at the player.
     fixed_direction: bool = False
@@ -1759,6 +1850,13 @@ class LocalCombatState:
         initially_active: bool = True,
     ) -> None:
         self.encounter = encounter
+        self._creepy_castle_capture_points = (
+            _creepy_castle_capture_points(
+                str(encounter.static_database_path),
+            )
+            if str(encounter.map_id).casefold() == "e_hal_01_castle_dun"
+            else ()
+        )
         self._cast_status_applications = {}
         self.lock = InstrumentedRLock(
             MAP_COMBAT_DOMAIN,
@@ -1916,6 +2014,8 @@ class LocalCombatState:
             actor_id: monster.position
             for actor_id, monster in self.monsters.items()
         }
+        for actor_id in tuple(self.monsters):
+            self._refresh_creepy_castle_wisp_protection(actor_id)
         self.monster_navigation_offsets = {}
         for actor_id, monster in self.monsters.items():
             navigation_ground = encounter.navigation.project_position(
@@ -2206,6 +2306,14 @@ class LocalCombatState:
                 1, int(round(stats.get(2, monster.field_90)))
             )
             runtime = encounter.runtime_for_actor(monster.actor_id)
+            wisp_travel_distance = _creepy_castle_wisp_travel_distance(
+                encounter.map_id,
+                monster.template_id,
+                monster.position,
+                _creepy_castle_capture_points(
+                    str(encounter.static_database_path),
+                ),
+            )
             result[monster.actor_id] = MonsterCombatant(
                 actor_id=monster.actor_id,
                 template_id=monster.template_id,
@@ -2217,9 +2325,18 @@ class LocalCombatState:
                 maximum_damage=float(stats.get(12, stats.get(11, 1.0))),
                 run_speed=float(runtime.run_speed),
                 aggro_range=float(runtime.aggro_range),
-                escape_range=float(runtime.escape_range),
+                escape_range=(
+                    max(float(runtime.escape_range), wisp_travel_distance)
+                    if wisp_travel_distance is not None
+                    else float(runtime.escape_range)
+                ),
                 travel_distance=(
-                    float(runtime.travel_distance)
+                    max(
+                        float(runtime.travel_distance),
+                        wisp_travel_distance,
+                    )
+                    if wisp_travel_distance is not None
+                    else float(runtime.travel_distance)
                     if (
                         str(monster.rank or "").casefold().startswith("rank_boss")
                         or (
@@ -2235,6 +2352,9 @@ class LocalCombatState:
                 attack_interval=float(runtime.attack_interval),
                 collision_radius=float(runtime.capsule_radius),
                 target_radius=monster_target_radii(encounter.static_database_path).get(monster.template_id),
+                summon_targetable=not _is_creepy_castle_quest_wisp(
+                    encounter.map_id, monster.template_id,
+                ),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
                 invulnerable=(
@@ -2462,6 +2582,12 @@ class LocalCombatState:
             maximum_health = max(
                 1, int(round(stats.get(2, monster.field_90)))
             )
+            wisp_travel_distance = _creepy_castle_wisp_travel_distance(
+                self.encounter.map_id,
+                monster.template_id,
+                monster.position,
+                self._creepy_castle_capture_points,
+            )
             combatant = MonsterCombatant(
                 actor_id=actor_id,
                 template_id=monster.template_id,
@@ -2473,9 +2599,18 @@ class LocalCombatState:
                 maximum_damage=float(stats.get(12, stats.get(11, 1.0))),
                 run_speed=float(runtime.run_speed),
                 aggro_range=float(runtime.aggro_range),
-                escape_range=float(runtime.escape_range),
+                escape_range=(
+                    max(float(runtime.escape_range), wisp_travel_distance)
+                    if wisp_travel_distance is not None
+                    else float(runtime.escape_range)
+                ),
                 travel_distance=(
-                    float(runtime.travel_distance)
+                    max(
+                        float(runtime.travel_distance),
+                        wisp_travel_distance,
+                    )
+                    if wisp_travel_distance is not None
+                    else float(runtime.travel_distance)
                     if (
                         self.encounter.map_id.casefold() == "f4203_boss"
                         and monster.template_id.casefold() == "f4203_boss_06_ram"
@@ -2488,6 +2623,9 @@ class LocalCombatState:
                 attack_interval=float(runtime.attack_interval),
                 collision_radius=float(runtime.capsule_radius),
                 target_radius=monster_target_radii(self.encounter.static_database_path).get(monster.template_id),
+                summon_targetable=not _is_creepy_castle_quest_wisp(
+                    self.encounter.map_id, monster.template_id,
+                ),
                 attack=runtime.attack,
                 attacks=runtime.attacks or (runtime.attack,),
                 invulnerable=(
@@ -2514,7 +2652,7 @@ class LocalCombatState:
             self.monsters[actor_id] = combatant
             self.monster_health[actor_id] = combatant.maximum_health
             self.monster_status_effects[actor_id] = {}
-            self.monster_positions[actor_id] = combatant.position
+            self._set_monster_position(actor_id, combatant.position)
             try:
                 navigation_ground = self.encounter.navigation.project_position(
                     combatant.position
@@ -2693,7 +2831,7 @@ class LocalCombatState:
                 # of assuming the kill path left one behind.
                 self.monster_status_effects.setdefault(actor_id, {}).clear()
                 self.monster_status_immunities.pop(actor_id, None)
-                self.monster_positions[actor_id] = monster.position
+                self._set_monster_position(actor_id, monster.position)
                 self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
                 self.monster_moving[actor_id] = False
         discarded = set(int(value) for value in actor_ids)
@@ -3138,7 +3276,7 @@ class LocalCombatState:
             actor_id, True, server_tick,
             reason="hard leash: pulled past its reset radius, reset at spawn",
         )
-        self.monster_positions[actor_id] = monster.position
+        self._set_monster_position(actor_id, monster.position)
         self.monster_health[actor_id] = monster.maximum_health
         self.monster_yaws[actor_id] = self._monster_spawn_yaws.get(actor_id, 0.0)
         self.monster_moving[actor_id] = False
@@ -5892,6 +6030,7 @@ class LocalCombatState:
                     )
                     for target_id in self.living_actor_ids
                     if target_id not in self.returning_home_actor_ids
+                    and self.monsters[target_id].summon_targetable
                     and (not follows or owner is None or
                          self._distance(owner, self.monster_positions[target_id]) <= definition.aggro_range)
                 )
@@ -10367,6 +10506,36 @@ class LocalCombatState:
                     monster, invulnerable=bool(invulnerable),
                 )
 
+    def _refresh_creepy_castle_wisp_protection(self, actor_id: int) -> None:
+        """Keep a wisp alive until it reaches one of the authored bottle props."""
+
+        actor_id = int(actor_id)
+        monster = self.monsters.get(actor_id)
+        if monster is None or not _is_creepy_castle_quest_wisp(
+            self.encounter.map_id, monster.template_id,
+        ):
+            return
+        position = self.monster_positions.get(actor_id, monster.position)
+        points = self._creepy_castle_capture_points
+        near_capture_prop = not points or any(
+            math.hypot(
+                float(position[0]) - point[0],
+                float(position[2]) - point[2],
+            ) <= _CREEPY_CASTLE_CAPTURE_DISTANCE
+            for point in points
+        )
+        self.monsters[actor_id] = replace(
+            monster,
+            invulnerable=not near_capture_prop,
+        )
+
+    def _set_monster_position(
+        self, actor_id: int, position: tuple[float, float, float],
+    ) -> None:
+        actor_id = int(actor_id)
+        self.monster_positions[actor_id] = tuple(float(v) for v in position)
+        self._refresh_creepy_castle_wisp_protection(actor_id)
+
     def assign_monster_targets(self, actor_ids, candidates, *, now=None):
         """Choose a visible, living player per monster; keep nearby targets stable.
 
@@ -10521,7 +10690,7 @@ class LocalCombatState:
                         start[1] + (scripted_goal[1] - start[1]) * ratio,
                         start[2] + dz * ratio,
                     )
-                    self.monster_positions[actor_id] = destination
+                    self._set_monster_position(actor_id, destination)
                     yaw = math.atan2(-dx, -dz)
                     self.monster_yaws[actor_id] = yaw
                     self.monster_moving[actor_id] = True
@@ -10850,7 +11019,7 @@ class LocalCombatState:
                 and home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
             ):
                 destination = home
-                self.monster_positions[actor_id] = destination
+                self._set_monster_position(actor_id, destination)
                 self.monster_health[actor_id] = monster.maximum_health
                 self.monster_moving[actor_id] = False
                 self._set_returning_home(actor_id, False, server_tick)
@@ -10990,7 +11159,7 @@ class LocalCombatState:
                             )
                         ):
                             destination = candidate
-                            self.monster_positions[actor_id] = destination
+                            self._set_monster_position(actor_id, destination)
                             separated = True
                             self.monster_yaws[actor_id] = math.atan2(
                                 -(destination[0] - start[0]),
@@ -11116,7 +11285,7 @@ class LocalCombatState:
             moved = displacement > 1e-5
             yaw = math.atan2(-dx, -dz) if moved else 0.0
             if moved:
-                self.monster_positions[actor_id] = destination
+                self._set_monster_position(actor_id, destination)
                 self.monster_yaws[actor_id] = yaw
             reached_home = (
                 returning_home
@@ -11125,7 +11294,7 @@ class LocalCombatState:
             )
             if reached_home and self._distance(start, home) <= travel + 1e-6:
                 destination = home
-                self.monster_positions[actor_id] = home
+                self._set_monster_position(actor_id, home)
                 self.monster_health[actor_id] = monster.maximum_health
                 self._set_returning_home(actor_id, False, server_tick)
                 moved = False
@@ -12967,6 +13136,7 @@ class LocalCombatState:
                     (self._distance(summon.position, self.monster_positions[monster_actor_id]), monster_actor_id)
                     for monster_actor_id in self.living_actor_ids
                     if monster_actor_id not in self.returning_home_actor_ids
+                    and self.monsters[monster_actor_id].summon_targetable
                     and self.monster_hostile_to_player(
                         monster_actor_id, summon.owner_actor_id)
                 ]
@@ -13033,6 +13203,7 @@ class LocalCombatState:
                     )
                     for monster_actor_id in self.living_actor_ids
                     if monster_actor_id not in self.returning_home_actor_ids
+                    and self.monsters[monster_actor_id].summon_targetable
                     and self.monster_hostile_to_player(
                         monster_actor_id, summon.owner_actor_id)
                 ) + tuple(
@@ -15734,7 +15905,9 @@ class LocalCombatState:
                 # The native ChargeThrough animation moves to the supplied
                 # point. Commit the same endpoint in authoritative combat so
                 # the next chase snapshot cannot snap Mortis back to his origin.
-                self.monster_positions[actor_id] = tuple(attack.target_position)
+                self._set_monster_position(
+                    actor_id, tuple(attack.target_position),
+                )
                 self.monster_routes.pop(actor_id, None)
             targets_monster = attack.target_actor_id in self.monsters
             target_world = (

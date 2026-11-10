@@ -322,6 +322,55 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # The retro chest tooltip calls the rare cold-flame cosmetic by its
+    # former name; the current client title for this item is Cold Flame Array.
+    "ghsot_retro_chest": (
+        ("vanity_groundmarker_42", 1, 0.5),
+        ("e_hal_01_entry_dark_path", 20, 15.0),
+        ("e_sar_chest_key", 20, 15.0),
+        ("e_light_ammunition_rc_300", 2999, 15.0),
+        ("pw_enter_locked_difficulty_key", 100, 20.0),
+        ("crafting_stateobject_key", 100, 19.5),
+        ("e_hal_01_teleport_castle_01", 8, 15.0),
+    ),
+    # Ghost Festival tooltips: each use selects exactly one reward. The
+    # amount placeholders preserve the tooltip's random Andermant/voucher
+    # ranges, while all ordinary entries use their authored fixed stacks.
+    "item_event_hal_food_ghost_cake": (
+        ("pw_enter_locked_difficulty_key", 30, 30.0),
+        ("item_event_hal_food_fruit_candy", 1000, 25.0),
+        ("ce_darkforce_key", 1, 25.0),
+        ("@hal_random_andermant", 0, 13.2),
+        ("@hal_random_voucher", 0, 5.5),
+        ("@hal_tiny_troublemaker", 1, 1.3),
+    ),
+    "item_event_hal_food_sparkling_chocolate": (
+        ("pw_enter_locked_difficulty_key", 30, 35.0),
+        ("item_event_hal_food_fruit_candy", 1000, 20.0),
+        ("ce_darkforce_key", 1, 30.0),
+        ("@hal_random_voucher", 0, 4.5),
+        ("@hal_tiny_troublemaker", 1, 10.5),
+    ),
+    "ghost_festival_chest": (
+        ("pet_jindo_youling", 1, 0.5),
+        ("vanity_groundmarker_28", 1, 1.5),
+        ("costume_effect_halloween_2025", 1, 2.0),
+        ("item_event_hal_food_sparkling_chocolate", 1, 2.0),
+        ("crafting_stateobject_key", 5, 35.0),
+        ("e_hal_01_entry_dark_path", 5, 30.0),
+        ("e_hal_01_teleport_castle_01", 5, 28.5),
+    ),
+    "ghost_festival_cooking_chest": (
+        ("item_event_hal_food_sweet_milk", 1, 12.0),
+        ("item_event_hal_food_cooked_beef", 1, 8.0),
+        ("item_event_hal_food_berry_juice", 1, 12.0),
+        ("item_event_hal_food_apple_juice", 1, 12.0),
+        ("item_event_hal_food_cocoa_milk", 1, 12.0),
+        ("item_event_hal_food_pumpkin_jam", 1, 8.0),
+        ("item_event_hal_food_chocolate_pie", 1, 12.0),
+        ("item_event_hal_food_berry_beef_pie", 1, 12.0),
+        ("item_event_hal_food_apple_pie", 1, 12.0),
+    ),
     # The Dragan package tooltip states the exact one-of odds. Spirit Essence
     # is class ammunition in the client templates, so resolve it per opener.
     "surprise_dragan_package": (
@@ -1583,6 +1632,18 @@ def _authored_reward_entries(
         )), entry.amount),)
     if entry.template_id == "@community_coins":
         return (("community_coins", rng.choice(_COMMUNITY_COIN_AMOUNTS)),)
+    if entry.template_id == "@hal_random_andermant":
+        return (("money_rc", rng.randint(2000, 30000)),)
+    if entry.template_id == "@hal_random_voucher":
+        return (("item_event_hal_exchange", rng.randint(1, 3)),)
+    if entry.template_id == "@hal_tiny_troublemaker":
+        return ((rng.choice((
+            "pet_nanguatouyouling_01", "pet_nanguatouyouling_02",
+            "pet_nanguatouyouling_03", "pet_nanguatouyouling_04",
+            "pet_nanguatouyouling_05", "pet_nanguatouyouling_06",
+            "pet_nanguatouyouling_07", "pet_nanguatouyouling_08",
+            "pet_nanguatouyouling_09",
+        )), entry.amount),)
     return ((
         _authored_reward_template(
             entry.template_id, player_level=player_level, rng=rng,

@@ -801,6 +801,16 @@ class MapPropDefinition:
             "chest_lootlist_e_bos_superchest_silver",
             "chest_lootlist_e_bos_superchest_gold",
         }
+        darkwood_summoning_slate = self.template_id.casefold() in {
+            "e_hal_01_wood_challenge_buff_01",
+            "e_hal_01_wood_challenge_buff_02",
+            "e_hal_01_wood_challenge_buff_03",
+        }
+        darkwood_wendigo_circle = self.template_id.casefold() in {
+            "e_hal_wendigo_fire_01",
+            "e_hal_wendigo_fire_02",
+            "e_hal_wendigo_fire_03",
+        }
         return bool(
             self.key_id and self.key_amount > 0
             and (
@@ -808,6 +818,8 @@ class MapPropDefinition:
                 or new_moon_recall_altar
                 or new_moon_cauldron
                 or dtu_superchest
+                or darkwood_summoning_slate
+                or darkwood_wendigo_circle
             )
         )
 
@@ -2058,6 +2070,12 @@ class MapEventRuntime:
     circus_bosses_defeated: set[str] = field(default_factory=set)
     circus_random_exit_guid: bytes | None = None
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
+    # Darkwood's Wendigo ritual has three independently clickable fire props.
+    # Each unique prop costs its authored 10 fire keys; the boss is released
+    # once all three placements have been used in this map instance.
+    darkwood_wendigo_used_prop_ids: set[int] = field(default_factory=set)
+    darkwood_wendigo_reserved_prop_ids: set[int] = field(default_factory=set)
+    darkwood_wendigo_boss_spawned: bool = False
     # Monotonic animation anchors for rotating tower beams, shared by every
     # player in this map instance so server hit checks agree with one another.
     tower_beam_started_at: dict[int, float] = field(default_factory=dict)

@@ -60,6 +60,7 @@ class PurchaseItemDefinition:
     minimum_item_level: int = 1
     maximum_item_level: int = 200
     unit_vc_price: int = 0
+    ingredient_bag_template_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -153,7 +154,8 @@ def load_purchase_item_definition(
     try:
         row = database.execute(
             "SELECT Id, MaxStackSize, DefaultRarity, RequiredLevel, "
-            "ItemCategory, PriceVC FROM _Template_Item WHERE Id=?",
+            "ItemCategory, PriceVC, LocaleIdTitle "
+            "FROM _Template_Item WHERE Id=?",
             (template_id,),
         ).fetchone()
         level_row = database.execute(
@@ -163,11 +165,39 @@ def load_purchase_item_definition(
         ).fetchone()
         if row is None:
             raise ValueError(f"unknown item template {template_id!r}")
-        ingredient_bag = database.execute(
-            "SELECT 1 FROM _Template_IngredientBag "
-            "WHERE ItemTemplateId=? AND IsLive=1 LIMIT 1",
-            (template_id,),
-        ).fetchone() is not None
+        bag_title = str(row["LocaleIdTitle"] or f"{template_id}Title")
+        bag_row = database.execute(
+            "SELECT bag.ItemTemplateId FROM _Template_IngredientBag bag "
+            "JOIN _Template_Item bag_item ON bag_item.Id=bag.ItemTemplateId "
+            "WHERE bag.IsLive=1 AND "
+            "(bag.ItemTemplateId=? OR (bag_item.LocaleIdTitle=? "
+            "AND NOT EXISTS (SELECT 1 FROM _Template_IngredientBag direct "
+            "WHERE direct.IsLive=1 AND direct.ItemTemplateId=?) "
+            "AND (SELECT COUNT(DISTINCT candidate.ItemTemplateId) "
+            "FROM _Template_IngredientBag candidate "
+            "JOIN _Template_Item candidate_item "
+            "ON candidate_item.Id=candidate.ItemTemplateId "
+            "WHERE candidate.IsLive=1 "
+            "AND candidate_item.LocaleIdTitle=?)=1)) "
+            "ORDER BY CASE WHEN bag.ItemTemplateId=? THEN 0 ELSE 1 END "
+            "LIMIT 1",
+            (template_id, bag_title, template_id, bag_title, template_id),
+        ).fetchone()
+        ingredient_bag_template_id = (
+            str(bag_row[0]) if bag_row is not None else ""
+        )
+        if ingredient_bag_template_id and ingredient_bag_template_id != template_id:
+            row = database.execute(
+                "SELECT Id, MaxStackSize, DefaultRarity, RequiredLevel, "
+                "ItemCategory, PriceVC, LocaleIdTitle "
+                "FROM _Template_Item WHERE Id=?",
+                (ingredient_bag_template_id,),
+            ).fetchone()
+            level_row = database.execute(
+                "SELECT SlotType, MinDropLevel, MaxDropLevel "
+                "FROM _Template_Item WHERE Id=?",
+                (ingredient_bag_template_id,),
+            ).fetchone()
         rarity_name = str(row["DefaultRarity"] or "Common")
         try:
             rarity = OFFER_RARITY_IDS[rarity_name]
@@ -181,7 +211,7 @@ def load_purchase_item_definition(
             rarity=rarity,
             required_level=max(1, int(row["RequiredLevel"] or 1)),
             item_category=str(row["ItemCategory"] or ""),
-            ingredient_bag=ingredient_bag,
+            ingredient_bag=bag_row is not None,
             slot_types=tuple(
                 value.strip()
                 for value in str(level_row['SlotType'] or '')
@@ -195,6 +225,7 @@ def load_purchase_item_definition(
                 1, int(level_row['MaxDropLevel'] or 200)
             ),
             unit_vc_price=max(0, int(row["PriceVC"] or 0)),
+            ingredient_bag_template_id=ingredient_bag_template_id,
         )
     finally:
         database.close()
@@ -449,6 +480,10 @@ def add_purchased_item(
     replaced_ids: list[int] = []
     replacements: dict[int, int] = {}
     remaining = amount
+    destination_template_id = (
+        definition.ingredient_bag_template_id or definition.template_id
+        if definition.ingredient_bag else definition.template_id
+    )
 
     def in_destination(item_id: int) -> bool:
         return (
@@ -462,7 +497,7 @@ def add_purchased_item(
     for index, old_item in enumerate(list(info.items)):
         if (
             remaining <= 0
-            or old_item.template_id != definition.template_id
+            or old_item.template_id != destination_template_id
             # Ordinary grants must not become owned by an unrelated quest.
             or old_item.quest_id
             or old_item.amount >= definition.max_stack_size
@@ -498,11 +533,13 @@ def add_purchased_item(
         new_item = _new_item(
             definition, new_id, stack_amount, item_level
         )
+        if new_item.template_id != destination_template_id:
+            new_item = replace(new_item, template_id=destination_template_id)
         info.items.append(new_item)
         if definition.ingredient_bag:
             info.ingredient_bag_item_ids.append(new_id)
-            if definition.template_id not in info.ingredient_bag_templates:
-                info.ingredient_bag_templates.append(definition.template_id)
+            if destination_template_id not in info.ingredient_bag_templates:
+                info.ingredient_bag_templates.append(destination_template_id)
         else:
             location = free_inventory_location(info)
             if location is None:

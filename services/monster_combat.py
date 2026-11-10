@@ -1506,13 +1506,16 @@ class MonsterCombatService(
             # when a timed status expires so temporary ammunition (including
             # New Moon's cauldron Fairy Fire) cannot remain valid forever.
             with s.flow_lock:
-                modifier_sources = tuple(
-                    CharacterService._active_skill_modifier_sources(s)
-                )
                 owner_actor_id = int(
                     getattr(s, "gameplay_remote_actor_id", 0)
                     or combat.player_actor_id
                 )
+            # This resolver also expires runtime effects and may reacquire
+            # flow_lock. Keep it outside the lock to avoid recursive lock
+            # acquisition when several timed effects expire together.
+            modifier_sources = tuple(
+                CharacterService._active_skill_modifier_sources(s)
+            )
             with combat.lock:
                 for actor_id, summon in tuple(combat.player_summons.items()):
                     if int(summon.owner_actor_id) == owner_actor_id:

@@ -154,7 +154,11 @@ def track_inventory_reward(function):
         with s.flow_lock:
             s.gameplay_inventory_rewards_in_progress = getattr(s, "gameplay_inventory_rewards_in_progress", 0) + 1
         try:
-            return function(self, s, *args, **kwargs)
+            # Inventory grants copy and replace the complete inventory state.
+            # Serialize them with other character mutations so concurrent loot
+            # and quest rewards cannot both allocate the same storage slot.
+            with s.gameplay_mutation_lock:
+                return function(self, s, *args, **kwargs)
         finally:
             with s.flow_lock:
                 s.gameplay_inventory_rewards_in_progress -= 1
