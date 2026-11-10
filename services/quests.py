@@ -1767,6 +1767,21 @@ class QuestService:
         log = _quest_log(s)
         closed = [q for q, p in log.items() if p.state == QUEST_STATE_CLOSED]
         npc_key = str(npc_template_id).casefold()
+        npc_keys = {npc_key}
+        # Kalodoro swaps its quest NPC templates for discount variants while
+        # the seasonal price event is active. Keep quest offers and turn-ins
+        # attached to the same NPCs across those alternate templates.
+        seasonal_npc_bases = (
+            ("e_sum_npc_tailor_discount_", "e_sum_npc_tailor"),
+            ("e_sum_gambler_discount_", "e_sum_gambler_trader"),
+            ("e_sum_premium_discount_", "e_sum_premium_trader"),
+            ("e_sum_npc_tamer_discount_", "e_sum_npc_tamer"),
+            ("e_sum_event_merchant_discount_", "e_sum_event_merchant"),
+            ("e_sum_merchant_misc_discount_", "e_sum_merchant_misc"),
+        )
+        for prefix, base_template in seasonal_npc_bases:
+            if npc_key.startswith(prefix):
+                npc_keys.add(base_template)
         interactions: list[NPCInteraction] = []
         flags: list[NPCFlag] = []
         # Quests in progress first, as retail listed them (tutorial capture,
@@ -1783,12 +1798,12 @@ class QuestService:
                 (
                     task.task_type.casefold() == "completetask"
                     and quest.goal
-                    and quest.goal.casefold() == npc_key
+                    and quest.goal.casefold() in npc_keys
                     and task.is_done(progress.tokens)
                 )
                 or any(
                     event.kind == "encounter"
-                    and event.value.casefold() == npc_key
+                    and event.value.casefold() in npc_keys
                     and all(guard.holds(progress.tokens) for guard in event.guards)
                     for event in task.events
                 )
@@ -1803,13 +1818,18 @@ class QuestService:
                 ))
             elif (
                 progress.state == QUEST_STATE_FINISHED
-                and quest.goal.casefold() == npc_key
+                and quest.goal.casefold() in npc_keys
             ):
                 interactions.append(NPCInteraction(
                     quest.quest_id, NPC_QUEST_DIALOG, quest.quest_id, quest.quest_type_id,
                 ))
         active_events = self._quest_active_events(s)
-        for quest in catalog.offered_by(npc_template_id):
+        offered_quests = {
+            quest.quest_id: quest
+            for template in npc_keys
+            for quest in catalog.offered_by(template)
+        }
+        for quest in offered_quests.values():
             if catalog.available(
                 quest, class_name=class_name, level=level,
                 closed_quests=closed,
@@ -1828,7 +1848,7 @@ class QuestService:
                 continue
             for task in active_tasks(quest, progress):
                 for dialog_id, actor in task.dialogs.items():
-                    if actor.casefold() != npc_key:
+                    if actor.casefold() not in npc_keys:
                         continue
                     talk_is_active = any(
                         event.kind == "talk"
@@ -2952,8 +2972,40 @@ class QuestService:
         if loot:
             try:
                 self._deliver_rewards(s, tuple(loot), claim_keys=None, label="quest-loot")
+                CharacterService._quest_credit_event_progress_rewards(
+                    s, tuple(loot),
+                )
             except Exception as exc:
                 _log(f"loot reward failed: {type(exc).__name__}: {exc}")
+
+    @staticmethod
+    def _quest_credit_event_progress_rewards(s, rewards) -> None:
+        """Count directly delivered quest collectibles toward event bars.
+
+        World pickups and chest contents already use the event-progress hook,
+        but quest rewards are inserted into inventory directly. Credit those
+        collectibles after their inventory delivery has succeeded.
+        """
+
+        catalog = getattr(s, "gameplay_event_catalog", None)
+        progress_callback = getattr(
+            s, "gameplay_event_progress_callback", None,
+        )
+        if catalog is None or progress_callback is None:
+            return
+        for reward in rewards:
+            collectible_id = str(
+                getattr(reward, "item_id", "") or ""
+            ).strip()
+            amount = max(0, int(getattr(reward, "amount", 0) or 0))
+            if amount and catalog.is_event_collectible(collectible_id):
+                try:
+                    progress_callback(s, collectible_id, amount)
+                except Exception as exc:
+                    _log(
+                        f"quest event-progress credit failed for "
+                        f"{collectible_id!r}: {type(exc).__name__}: {exc}"
+                    )
 
     def _quest_dynamic_xp(self, s: Session, percent: float) -> int:
         if percent <= 0:
@@ -3141,6 +3193,7 @@ class QuestService:
             self._deliver_rewards(
                 s, rewards, claim_keys=None, label="quest-item",
             )
+            QuestService._quest_credit_event_progress_rewards(s, rewards)
         except Exception as exc:
             _log(
                 f"inventory quest drop failed for {quest.quest_id!r}: "

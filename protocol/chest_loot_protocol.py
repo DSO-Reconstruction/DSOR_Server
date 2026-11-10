@@ -388,6 +388,47 @@ _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
         ("ammunition_damage_bgh", 15000, 25.0),
         ("money_rc", 60000, 50.0),
     ),
+    # Summer Fortune Bag lists twelve outcomes but no probabilities; use an
+    # even one-of split. Jewel types are shown without a rarity, so resolve
+    # each one to a random rarity after that outcome is selected.
+    "summer_fortune_bag": tuple(
+        (item, amount, 100.0 / 12.0)
+        for item, amount in (
+            ("pw_enter_locked_difficulty_key", 30),
+            ("ammunition_damage_epic", 2000),
+            ("ce_darkforce_key", 1),
+            ("@summer_fortune_coins", 1),
+            ("lootbox_level_rallye_jewels_random", 1),
+            ("e_sum_01_reward_key", 1),
+            ("@summer_ingredient_jewel", 1),
+            ("@summer_gem_fortune_jewel", 1),
+            ("@summer_focus_jewel", 1),
+            ("epicmount_wolf_summer", 1),
+            ("costume_effect_summerevent", 1),
+            ("pet_dog_summer", 1),
+        )
+    ),
+    # Summer Lucky Chest tooltip gives exact mutually exclusive outcomes.
+    "summer_lucky_chest": (
+        ("epicmount_elk_01", 1, 15.0),
+        ("e_summer_essence_fire_2024", 2, 25.0),
+        ("item_ingredient_mercenary_verdant", 500, 20.0),
+        ("money_rc", 50000, 40.0),
+    ),
+    # The official 2026 Summer Solstice rebalance publishes a one-of table
+    # for this chest; Kalodoro's four reward chests grant it as an additional
+    # item during the Festival phase.
+    "summer_solstice_celebration_chest": (
+        ("dragon_blood_box", 1, 20.0),
+        ("e_sum_coins", 50, 25.0),
+        ("e_sum_coins", 30, 10.0),
+        ("pw_enter_locked_difficulty_key", 50, 15.0),
+        ("e_sar_chest_key", 10, 15.0),
+        ("e_sum_01_reward_key", 1, 8.0),
+        ("item_ingredient_mercenary_viridis", 1, 5.0),
+        ("epicmount_elk_01", 1, 1.5),
+        ("pet_dog_summer", 1, 0.5),
+    ),
     # The tooltip lists two possible outcomes but no probabilities; use an
     # even split. The jewel has three static rarity templates, selected evenly.
     "bgh_event_chest": (
@@ -467,6 +508,28 @@ _AUTHORED_BONUS_CHESTS: dict[
             ("e_cny_boss_essence_04", 1999, 25.0),
             ("ce2024_black_dragon_mount", 1, 20.0),
             ("@challenge_pass_package", 1, 5.0),
+        ),
+    ),
+}
+_AUTHORED_FIXED_ROLL_CHESTS: dict[
+    str,
+    tuple[
+        tuple[tuple[str, int], ...],
+        tuple[tuple[str, int, float], ...],
+    ],
+] = {
+    # Summer Night Dream Chest guarantees Verdant Essence Shards, then rolls
+    # each listed bonus independently at the odds in its tooltip.
+    "summer_nightdream_chest": (
+        (("item_ingredient_mercenary_verdant", 100),),
+        (
+            ("pw_enter_locked_difficulty_key", 100, 20.0),
+            ("e_sum_coins", 90, 20.0),
+            ("e_sum_01_ferry_ticket", 10, 20.0),
+            ("e_sum_01_reward_key", 1, 15.0),
+            ("e_sar_chest_key", 10, 20.0),
+            ("epicmount_elk_01", 1, 5.0),
+            ("e_summer_essence_fire_2024", 1, 10.0),
         ),
     ),
 }
@@ -1632,6 +1695,14 @@ def _authored_reward_entries(
         )), entry.amount),)
     if entry.template_id == "@community_coins":
         return (("community_coins", rng.choice(_COMMUNITY_COIN_AMOUNTS)),)
+    if entry.template_id == "@summer_fortune_coins":
+        return (("e_sum_coins", rng.choice((25, 50, 100, 200))),)
+    if entry.template_id == "@summer_ingredient_jewel":
+        return (("jewel_ingredient_find_common", entry.amount),)
+    if entry.template_id == "@summer_gem_fortune_jewel":
+        return (("jewel_boss_gem_drop_common", entry.amount),)
+    if entry.template_id == "@summer_focus_jewel":
+        return (("jewel_skill_cooldown_common", entry.amount),)
     if entry.template_id == "@hal_random_andermant":
         return (("money_rc", rng.randint(2000, 30000)),)
     if entry.template_id == "@hal_random_voucher":
@@ -1682,12 +1753,15 @@ def _authored_chance_contents(
         )
     weighted = _AUTHORED_WEIGHTED_CHESTS.get(template_id)
     bonus = _AUTHORED_BONUS_CHESTS.get(template_id)
+    fixed_roll = _AUTHORED_FIXED_ROLL_CHESTS.get(template_id)
     rolls = _AUTHORED_ROLL_CHESTS.get(template_id)
     source = "authored_roll_chest"
     if weighted is not None:
         source = "authored_weighted_chest"
     elif bonus is not None:
         source = "authored_bonus_chest"
+    elif fixed_roll is not None:
+        source = "authored_fixed_roll_chest"
     elif rolls is None:
         if template_id not in _CRAFTING_CHEST_TEMPLATES:
             return None
@@ -1711,6 +1785,15 @@ def _authored_chance_contents(
             [_MappedReward(item, amount, chance) for item, amount, chance in table],
             rng,
         )]
+    elif fixed_roll is not None:
+        fixed, table = fixed_roll
+        selected = [
+            _MappedReward(item, amount) for item, amount in fixed
+        ] + [
+            _MappedReward(item, amount, chance)
+            for item, amount, chance in table
+            if rng.random() * 100.0 < chance
+        ]
     else:
         selected = [
             _MappedReward(item, amount, chance)

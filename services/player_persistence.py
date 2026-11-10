@@ -70,8 +70,15 @@ class PlayerPersistenceService:
         if cache is None:
             cache = {}
             self._safe_login_hub_cache = cache
-        if start_map_id in cache:
-            return cache[start_map_id]
+        cached_hub = cache.get(start_map_id)
+        if cached_hub:
+            try:
+                if self.static_database.gameplay_map_is_city_hub(
+                    cached_hub
+                ):
+                    return cached_hub
+            except (AttributeError, KeyError, OSError, ValueError):
+                pass
         queue = deque((start_map_id,))
         visited = set()
         while queue and len(visited) < 256:
@@ -80,7 +87,7 @@ class PlayerPersistenceService:
                 continue
             visited.add(map_id)
             try:
-                if self.static_database.gameplay_map_ruleset(map_id) == 5:
+                if self.static_database.gameplay_map_is_city_hub(map_id):
                     cache[start_map_id] = map_id
                     return map_id
                 exits = load_local_map_exits(
@@ -207,9 +214,8 @@ class PlayerPersistenceService:
             self.static_database_path, state.map_id
         ).is_file():
             try:
-                hostile = (
-                    self.static_database.gameplay_map_ruleset(state.map_id)
-                    != 5
+                hostile = not self.static_database.gameplay_map_is_city_hub(
+                    state.map_id
                 )
             except (AttributeError, KeyError, OSError, ValueError):
                 hostile = True

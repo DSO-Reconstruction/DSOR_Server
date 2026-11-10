@@ -2838,6 +2838,16 @@ def generate_monster_loot(
             elite_ranks = {"guardian", "champion", "leader", "boss", "worldboss"}
             if profile.rank_kind in elite_ranks:
                 rune_pool = _possible_reward_runes(database, descriptors)
+                if str(map_access_id).casefold().startswith("e_sum_dun_01"):
+                    # Kalodoro's reward list enables generic rune rewards on
+                    # higher difficulties, but the Concentrated Solstice Rune
+                    # is not part of this event's monster drops.
+                    rune_pool = tuple(
+                        rune for rune in rune_pool
+                        if not rune.template_id.casefold().startswith(
+                            "unique_gem_resistance_ice_critical_hitpoints_"
+                        )
+                    )
                 if rune_pool and (
                     force_drops
                     or generator.random() <= _difficulty_drop_chances(

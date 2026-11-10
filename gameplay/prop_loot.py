@@ -59,6 +59,7 @@ class PropLootEntry:
     minimum_difficulty: int = 0
     maximum_difficulty: int | None = None
     scale_chance_with_difficulty: bool = False
+    required_active_costumes: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -147,6 +148,11 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         scale_chance_with_difficulty=bool(
             entry.get("scale_chance_with_difficulty")
         ),
+        required_active_costumes=frozenset(
+            str(value).strip().casefold()
+            for value in entry.get("required_active_costumes", ())
+            if str(value).strip()
+        ),
     )
 
 
@@ -198,6 +204,7 @@ def roll_prop_loot(
     map_id: str = "",
     map_aliases: Iterable[str] = (),
     map_difficulty: int = 0,
+    active_costume: str = "",
     privileged_difficulty_multiplier: float = 1.0,
 ) -> tuple[tuple[str, int], ...]:
     """Roll one chest for one player.
@@ -213,6 +220,7 @@ def roll_prop_loot(
         for value in (map_id, *map_aliases)
         if str(value).strip()
     )
+    current_costume = str(active_costume or "").strip().casefold()
     result = []
     weighted_groups: dict[str, list[PropLootEntry]] = {}
 
@@ -246,6 +254,11 @@ def roll_prop_loot(
                 result.append((item_id, amount))
 
     for entry in entries:
+        if (
+            entry.required_active_costumes
+            and current_costume not in entry.required_active_costumes
+        ):
+            continue
         if entry.map_id and entry.map_id not in current_maps:
             continue
         if entry.event_id and entry.event_id not in event_collectibles:

@@ -66,6 +66,25 @@ HALLOWEEN_ATTIRE_ITEMS_BY_CLASS = {
     "ranger": "costume_event_pass_halloween_ranger",
     "dwarf": "costume_event_pass_halloween_dwarf",
 }
+SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY = "8_event_pass_summer_1.0000_0_NONE"
+SUMMER_FESTIVAL_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_sum_warrior",
+    "mage": "costume_event_pass_sum_mage",
+    "ranger": "costume_event_pass_sum_ranger",
+    "dwarf": "costume_event_pass_sum_dwarf",
+}
+SUMMER_FESTIVAL_PREP_START_PRODUCT_KEY = (
+    "101_e_sum_prep_start_1.0000_0_NONE"
+)
+SUMMER_FESTIVAL_START_PRODUCT_KEY = (
+    "101_e_sum_festival_start_1.0000_0_NONE"
+)
+SUMMER_FORTUNE_BAG_SMALL_PRODUCT_KEY = "8_summer_bag_small_1.0000_0_NONE"
+SUMMER_FORTUNE_BAG_MEDIUM_PRODUCT_KEY = "8_summer_bag_med_1.0000_0_NONE"
+SUMMER_FORTUNE_BAG_BIG_PRODUCT_KEY = "8_summer_bag_big_1.0000_0_NONE"
+SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY = "101_summer_dream_1.0000_0_NONE"
+SUMMER_LUCKY_CHEST_PRODUCT_KEY = "101_summer_lucky_1.0000_0_NONE"
+SUMMER_SET_CHEST_PRODUCT_KEY = "101_summer_set_1.0000_0_NONE"
 
 DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY = (
     "101_lava_essence_pack_1.0000_0_NONE"
@@ -112,6 +131,37 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     HALLOWEEN_BIG_PIE_PRODUCT_KEY: "halloween_event_01",
     HALLOWEEN_BUNDLE_PRODUCT_KEY: "halloween_event_01",
     HALLOWEEN_ATTIRE_PRODUCT_KEY: "halloween_event_01",
+    # The summer costume is sold throughout preparation and festival phases.
+    SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+        "summer_festival_event_01_quests",
+    ),
+    SUMMER_FESTIVAL_PREP_START_PRODUCT_KEY:
+        "summer_festival_event_01_prefarming",
+    SUMMER_FESTIVAL_START_PRODUCT_KEY: "summer_festival_event_01",
+    SUMMER_FORTUNE_BAG_SMALL_PRODUCT_KEY:
+        "summer_festival_event_01_prefarming",
+    SUMMER_FORTUNE_BAG_MEDIUM_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+    ),
+    SUMMER_FORTUNE_BAG_BIG_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+    ),
+    SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+    ),
+    SUMMER_LUCKY_CHEST_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+    ),
+    SUMMER_SET_CHEST_PRODUCT_KEY: (
+        "summer_festival_event_01",
+        "summer_festival_event_01_prefarming",
+    ),
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -123,6 +173,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY,
         DRAGAN_ATTIRE_PRODUCT_KEY,
         HALLOWEEN_ATTIRE_PRODUCT_KEY,
+        SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -133,9 +184,22 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     BIG_GAME_HUNT_ATTIRE_PRODUCT_KEY: BIG_GAME_HUNT_ATTIRE_ITEMS_BY_CLASS,
     DRAGAN_ATTIRE_PRODUCT_KEY: DRAGAN_ATTIRE_ITEMS_BY_CLASS,
     HALLOWEEN_ATTIRE_PRODUCT_KEY: HALLOWEEN_ATTIRE_ITEMS_BY_CLASS,
+    SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY: SUMMER_FESTIVAL_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
+
+
+def ocp_product_event_is_active(product_key, active_event_ids):
+    """Return whether any event phase that enables this OCP product is active."""
+
+    required_events = EVENT_OCP_PRODUCT_EVENT_IDS.get(product_key)
+    if required_events is None:
+        return False
+    if isinstance(required_events, str):
+        required_events = (required_events,)
+    active = {str(event_id).casefold() for event_id in active_event_ids}
+    return any(str(event_id).casefold() in active for event_id in required_events)
 
 # Most OCP purchases settle as one inventory grant. Road to Triumph and Unlock
 # Victory are native multi-item offer groups, so their contents are granted as
@@ -231,6 +295,24 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     BIG_GAME_HUNT_JEWEL_PACK_PRODUCT_KEY:
         (("surprise_jewel_pack_glory", 1),),
+    # Summer offers reuse their native PaymentPackages/Offergroup contents.
+    SUMMER_FESTIVAL_PREP_START_PRODUCT_KEY: (
+        ("e_sum_01_reward_key", 1),
+        ("e_sum_01_ferry_ticket", 10),
+    ),
+    SUMMER_FESTIVAL_START_PRODUCT_KEY: (
+        ("e_sum_01_reward_key", 10),
+        ("e_sum_01_minigame_ticket_01", 40),
+        ("e_sum_01_fishing_rod_01", 30),
+        ("difficulty_key_common", 100),
+        ("e_sum_coins", 1500),
+    ),
+    SUMMER_FORTUNE_BAG_SMALL_PRODUCT_KEY: (("summer_fortune_bag", 1),),
+    SUMMER_FORTUNE_BAG_MEDIUM_PRODUCT_KEY: (("summer_fortune_bag", 10),),
+    SUMMER_FORTUNE_BAG_BIG_PRODUCT_KEY: (("summer_fortune_bag", 50),),
+    SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY: (("summer_nightdream_chest", 1),),
+    SUMMER_LUCKY_CHEST_PRODUCT_KEY: (("summer_lucky_chest", 1),),
+    SUMMER_SET_CHEST_PRODUCT_KEY: (("item_ingredient_mercenary_verdant", 100),),
 }
 
 # Older server versions advertised one synthetic key per class. Keep their
