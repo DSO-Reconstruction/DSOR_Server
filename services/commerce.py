@@ -10,6 +10,7 @@ from dso_server.gameplay.ocp_store import (
     EVENT_OCP_PRODUCT_EVENT_IDS,
     EVENT_OCP_PRODUCT_KEYS,
     EVENT_ATTIRE_PRODUCT_KEYS,
+    ocp_product_event_is_active,
 )
 from dso_server.runtime.context import *
 from dso_server.runtime.admin_commands import track_inventory_reward
@@ -396,8 +397,9 @@ class CommerceService:
                     offer.product_key not in EVENT_ATTIRE_PRODUCT_KEYS
                     or class_name in {"warrior", "mage", "ranger", "dwarf"}
                 )
-                and EVENT_OCP_PRODUCT_EVENT_IDS[offer.product_key]
-                in active_events
+                and ocp_product_event_is_active(
+                    offer.product_key, active_events
+                )
             )
         )
         packet = encode_ocp_offer_batch(
@@ -458,16 +460,15 @@ class CommerceService:
 
     def _handle_ocp_booking(self, s: Session, payload: bytes) -> None:
         request = decode_ocp_booking_request(payload)
-        required_event = EVENT_OCP_PRODUCT_EVENT_IDS.get(
-            request.offer_id
-        )
         if (
-            required_event is not None
-            and required_event
-            not in CharacterService._event_catalog(self).active_template_ids()
+            request.offer_id in EVENT_OCP_PRODUCT_EVENT_IDS
+            and not ocp_product_event_is_active(
+                request.offer_id,
+                CharacterService._event_catalog(self).active_template_ids(),
+            )
         ):
             raise ValueError(
-                "Event attire can only be purchased while its event is active"
+                "Event products can only be purchased while their event is active"
             )
         with s.flow_lock:
             character = s.gameplay_character

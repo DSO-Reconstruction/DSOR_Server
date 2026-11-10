@@ -1501,7 +1501,9 @@ class MapTransitionService:
             if not candidate:
                 continue
             try:
-                is_hub = self.static_database.gameplay_map_ruleset(candidate) == 5
+                is_hub = self.static_database.gameplay_map_is_city_hub(
+                    candidate
+                )
             except Exception:
                 continue
             if is_hub and map_database_path(

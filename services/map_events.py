@@ -60,6 +60,7 @@ from dso_server.gameplay.local_monster_state import (
     load_local_player_only_encounter,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
+from dso_server.gameplay.map_hazards import is_map_hazard
 from dso_server.gameplay.map_event_state import (
     BLOODSHED_DIFFICULTY,
     CLIENT_REPORTED_SIGNAL_TYPES,
@@ -1242,6 +1243,18 @@ def _prop_state_for_viewer(viewer: Session, state: PropRuntimeState) -> PropRunt
     """Return this player's view of an individually used prop."""
 
     definition = state.definition
+    summer_claim_key = _summer_solstice_reward_chest_claim_key(
+        viewer, definition,
+    )
+    if summer_claim_key:
+        with viewer.flow_lock:
+            claimed = bool(
+                getattr(viewer, "gameplay_timed_offer_purchases", {}).get(
+                    summer_claim_key, 0,
+                )
+            )
+        if claimed:
+            return PropRuntimeState(definition, PROP_STATE_USED)
     dtu_claim_key = _dtu_superchest_claim_key(viewer, definition)
     if dtu_claim_key:
         with viewer.flow_lock:
@@ -1312,6 +1325,25 @@ def _dtu_superchest_claim_key(viewer: Session, definition) -> str:
     if event is None:
         return ""
     return f"dtu-superchest:{int(event.event_id)}:{location}"
+
+
+def _summer_solstice_reward_chest_claim_key(viewer: Session, definition) -> str:
+    """Persist Kalodoro reward-chest usage across map and server sessions."""
+
+    if map_key(getattr(
+        getattr(viewer, "gameplay_map_event_runtime", None), "map_id", "",
+    )) != "e_sum_dun_02":
+        return ""
+    instance_id = str(definition.instance_id or "").casefold()
+    if instance_id not in {
+        "e_sum_01_reward_pet_chest",
+        "e_sum_01_reward_mount_chest",
+        "e_sum_01_reward_jewel_chest",
+        "e_sum_01_reward_gem_chest",
+        "e_sum_01_reward_rune_chest",
+    }:
+        return ""
+    return f"summer-solstice-reward-chest:{instance_id}"
 
 
 def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
@@ -1975,6 +2007,14 @@ class MapEventService:
             s.gameplay_fractured_planes_run = True
             key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
+        if map_key(map_id) == "e_sum_minidun_chestroom_01":
+            # Chest-game flags belong to this minigame run. Some entry
+            # snapshots carry them as active and expose all reward chests
+            # before the player makes a selection.
+            flags = frozenset(
+                flag for flag in flags
+                if not flag.startswith("e_sum_dun_01_chest_game_")
+            )
         gate = _PARALLEL_WORLD_EXIT_BOSSES.get(map_key(map_id))
         if gate is not None:
             flags = flags - {gate[1]}
@@ -1994,6 +2034,12 @@ class MapEventService:
                 )
                 runtime.scheduler = s.gameplay_deadline_scheduler
                 registry[key] = runtime
+            if map_key(map_id) == "e_sum_minidun_chestroom_01":
+                # EventSet 1748 is authored as an OR over the ending flag and
+                # every reward flag, so starting the ending event exposes all
+                # 31 chest groups. Keep the aggregate row disabled; selected
+                # per-chest EventSets remain independently usable.
+                runtime.suppress_event_sets((1748,))
         with s.flow_lock:
             s.gameplay_map_event_runtime = runtime
             s.gameplay_trigger_volumes_inside = set()
@@ -2161,7 +2207,10 @@ class MapEventService:
     # Signal evaluation
     # ------------------------------------------------------------------
 
-    def _fire_map_signal(self, s: Session, event_type: str, params) -> None:
+    def _fire_map_signal(
+            self, s: Session, event_type: str, params, *,
+            synthetic_dead_templates=(),
+    ) -> None:
         """Evaluate every server signal rule of ``event_type`` for ``s``."""
 
         runtime = getattr(s, "gameplay_map_event_runtime", None)
@@ -2197,7 +2246,10 @@ class MapEventService:
             if combat is not None:
                 with combat.lock:
                     present, alive = combat.monster_template_counts()
-                present_templates = frozenset(present)
+                present_templates = frozenset(present) | frozenset(
+                    str(value).casefold()
+                    for value in synthetic_dead_templates
+                )
                 alive_templates = frozenset(alive)
                 if (
                     kind == "monsterseliminatedpercentage"
@@ -2852,6 +2904,25 @@ class MapEventService:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
         if (
+            map_key(runtime.map_id) == "e_sum_minidun_chestroom_01"
+            and (
+                key == "e_sum_dun_01_chest_game_activate_chests_start_signal"
+                or (
+                    key.startswith(
+                        "e_sum_dun_01_chest_game_activate_chest_"
+                    ) and key.endswith("_start_signal")
+                )
+            )
+        ):
+            # Retail binds the brazier's picker_done signal to all 31 reward
+            # events at once. The server banks only the selected unlock flags
+            # in _bank_underground_chamber_chests instead.
+            _log(
+                "ignored bulk Underground Chamber reward signal "
+                f"{key!r}; selected chest flags own the payout"
+            )
+            return
+        if (
             map_key(runtime.map_id) == "pw001_grimmagstone_01_dun"
             and key in {
                 "pw001_spawn_exit_signal",
@@ -2886,7 +2957,200 @@ class MapEventService:
                 definition = catalog.event(event_key)
                 if definition is not None and definition.applies_to(runtime.map_id):
                     self._schedule_map_local_event_start(runtime, definition)
+        if (
+            map_key(runtime.map_id) == "e_sum_minidun_arena_02"
+            and key in {
+                "e_sum_dun_01_arena_off_ending_start_signal",
+                "e_sum_dun_01_arena_off_ending_start_signal_01",
+            }
+        ):
+            # Meanie Rumble's authored chest activation signals all listen for
+            # the death of this invisible timer actor. The final boss kill
+            # already determines when the ending begins; mirror that missing
+            # actor only after the real ending signal so chest unlocks remain
+            # gated by completing the waves.
+            self._stop_summer_solstice_waves(
+                runtime, "e_sum_dun_01_arena_off_wave_",
+            )
+            self._fire_map_signal(
+                s, "MonstersEliminated",
+                ("e_sum_01_arena_off_invisible_timer",),
+                synthetic_dead_templates=(
+                    "e_sum_01_arena_off_invisible_timer",
+                ),
+            )
+        # The retail minigame's invisible timer actors are intentionally not
+        # instantiated as combatants by this server. They emit the final
+        # signal after the one-minute round, which stops the timed waves and
+        # activates the authored reward chest sets. Reproduce that clock here
+        # for both Solstice arenas so the ending does not depend on a missing
+        # invisible monster template.
+        arena_start_signals = {
+            "e_sum_minidun_arena_01": "e_sum_dun_01_arena_def_arena_start_signal",
+        }
+        map_id = map_key(runtime.map_id)
+        if (
+            map_id in arena_start_signals
+            and key == arena_start_signals[map_id]
+        ):
+            scheduler = getattr(runtime, "scheduler", None)
+            with runtime.lock:
+                timer_key = f"summer_solstice_arena_end:{map_id}"
+                timers = getattr(runtime, "summer_solstice_timers", None)
+                if timers is None:
+                    timers = set()
+                    runtime.summer_solstice_timers = timers
+                should_start_timer = timer_key not in timers
+                if should_start_timer:
+                    timers.add(timer_key)
+            if should_start_timer and scheduler is not None:
+                # The laser's native aura rotates independently of player
+                # movement. Poll its authored beam geometry during the round
+                # so a stationary player is hit when the blue beam sweeps
+                # across them, rather than relying on a proximity aura or a
+                # movement packet to notice contact.
+                with runtime.lock:
+                    runtime.summer_solstice_laser_active = True
+                beam_timer = scheduler.timer(
+                    TOWER_BEAM_CHECK_INTERVAL,
+                    self._run_summer_solstice_laser_tick,
+                    args=(runtime,),
+                )
+                beam_timer.start()
+                timer = scheduler.timer(
+                    60.0,
+                    self._finish_summer_solstice_defense,
+                    args=(runtime,),
+                )
+                timer.start()
         CharacterService._quest_on_signal(self, s, signal_id)
+
+    def _run_summer_solstice_laser_tick(self, runtime) -> None:
+        """Check the rotating Endurance laser against players every 50 ms."""
+
+        with runtime.lock:
+            active = bool(
+                getattr(runtime, "summer_solstice_laser_active", False)
+            )
+            scheduler = getattr(runtime, "scheduler", None)
+        if (
+            not active
+            or scheduler is None
+            or not self._map_event_runtime_is_live(runtime)
+            or map_key(runtime.map_id) != "e_sum_minidun_arena_01"
+        ):
+            return
+        for viewer in self._map_event_sessions(runtime):
+            with viewer.flow_lock:
+                combat = viewer.gameplay_combat_state
+                move = viewer.gameplay_last_move
+                position = viewer.gameplay_spawn_position
+            if combat is None or position is None:
+                continue
+            if move is not None:
+                position = combat.encounter.coordinate_frame.wire_to_world(
+                    move.relative_position
+                )
+            try:
+                MapEventService._apply_tower_aura_damage(
+                    viewer, runtime, position,
+                )
+            except Exception as exc:
+                _log(
+                    "Summer Solstice laser beam tick failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        with runtime.lock:
+            if not getattr(runtime, "summer_solstice_laser_active", False):
+                return
+            timer = scheduler.timer(
+                TOWER_BEAM_CHECK_INTERVAL,
+                self._run_summer_solstice_laser_tick,
+                args=(runtime,),
+            )
+        timer.start()
+
+    def _stop_summer_solstice_waves(self, runtime, event_prefix: str) -> None:
+        """Cancel pending wave spawns and retire active wave EventSets."""
+
+        for definition in runtime.catalog.events.values():
+            if (
+                definition.applies_to(runtime.map_id)
+                and definition.key.startswith(event_prefix)
+            ):
+                self._stop_map_local_event(runtime, definition)
+
+    def _finish_summer_solstice_defense(self, runtime) -> None:
+        """Resolve missing invisible timer actors at the end of survival."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        if map_key(runtime.map_id) != "e_sum_minidun_arena_01":
+            return
+        with runtime.lock:
+            runtime.summer_solstice_laser_active = False
+        sessions = self._map_event_sessions(runtime)
+        if not sessions:
+            return
+        with sessions[0].flow_lock:
+            combat = sessions[0].gameplay_combat_state
+            player_actor_id = int(
+                getattr(sessions[0], "gameplay_remote_actor_id", 0)
+                or getattr(combat, "player_actor_id", 0)
+            )
+        player_survived = True
+        if combat is not None:
+            with combat.lock:
+                player_health = combat.player_health.get(player_actor_id)
+                if player_health is not None and int(player_health[0]) <= 0:
+                    player_survived = False
+        try:
+            self._stop_summer_solstice_waves(
+                runtime, "e_sum_dun_01_arena_def_wave_",
+            )
+            if not player_survived:
+                self._fire_map_signal(
+                    sessions[0], "MonstersEliminated",
+                    ("e_sum_01_arena_def_invisible_ending",),
+                    synthetic_dead_templates=(
+                        "e_sum_01_arena_def_invisible_ending",
+                    ),
+                )
+                _log(
+                    f"Summer Solstice survival ended without chests on "
+                    f"{runtime.map_id}: player did not survive the round"
+                )
+                return
+            # Retail uses one invisible actor per chest tier and one ending
+            # actor. Those templates are absent from static.db4, so resolve
+            # their server-side MonstersEliminated signals at the survival
+            # deadline. The authored signal rules still decide which chest
+            # events and map sets become active.
+            for index in range(1, 8):
+                self._fire_map_signal(
+                    sessions[0], "MonstersEliminated",
+                    (f"e_sum_01_arena_def_invisible_chest_timer_{index:02d}",),
+                    synthetic_dead_templates=(
+                        f"e_sum_01_arena_def_invisible_chest_timer_{index:02d}",
+                    ),
+                )
+            self._fire_map_signal(
+                sessions[0], "MonstersEliminated",
+                ("e_sum_01_arena_def_invisible_ending",),
+                synthetic_dead_templates=(
+                    "e_sum_01_arena_def_invisible_ending",
+                ),
+            )
+            _log(
+                f"resolved missing Summer Solstice survival timers on "
+                f"{runtime.map_id}; unlocked all seven chest tiers and ended "
+                "the 60-second round"
+            )
+        except Exception as exc:
+            _log(
+                f"Summer Solstice arena ending failed on {runtime.map_id}: "
+                f"{type(exc).__name__}: {exc}"
+            )
 
     def _fractured_planes_floor_blockers(
             self, s: Session, runtime: MapEventRuntime,
@@ -4005,6 +4269,12 @@ class MapEventService:
         if entrance_started:
             self._publish_entrance_bosses(runtime, (s,))
         CharacterService._quest_on_map_entered(self, s)
+        if map_key(runtime.map_id) == "e_sum_dun_02":
+            # Kalodoro's entry rules replace each base trader with its active
+            # discount NPC after the initial map NPCInfo batch. Re-send quest
+            # metadata once those synchronous event transitions have settled,
+            # so quest markers don't remain attached only to hidden base NPCs.
+            CharacterService._quest_refresh_npc_infos(self, s)
         self._ensure_fyeborough_soul_collector(s, runtime)
         self._ensure_artaya_clearing_demons(s, runtime)
         self._ensure_pw209_sultans_enforcer02_mobs(s, runtime)
@@ -5231,6 +5501,9 @@ class MapEventService:
                 getattr(s, "gameplay_achievements", None)
             )
             event_catalog = s.gameplay_event_catalog
+            active_costume = str(
+                getattr(s, "gameplay_active_costume", "") or ""
+            )
             class_name = (
                 CLASS_NAMES.get(int(character.class_id), "").casefold()
                 if character is not None else ""
@@ -5261,6 +5534,7 @@ class MapEventService:
             map_id=map_id,
             map_aliases=(event_map_id, access_id),
             map_difficulty=map_difficulty,
+            active_costume=active_costume,
             privileged_difficulty_multiplier=(
                 difficulty_drop_factors[0] * difficulty_drop_factors[1]
             ),
@@ -5832,9 +6106,10 @@ class MapEventService:
             *, previous_position=None, previous_position_at=None) -> None:
         """Damage a player standing inside a fixed tower's aura.
 
-        ``e_dra_fortress_normal_powernode`` is the Fractured Planes laser. It
-        has no ``Skills`` row, so the ordinary monster attack path never fires
-        for it: the floor's most visible hazard used to deal exactly nothing.
+        ``e_dra_fortress_normal_powernode`` is used as a laser in Fractured
+        Planes and the Summer Solstice Arena. It has no ``Skills`` row, so the
+        ordinary monster attack path never fires for it: the visible hazard
+        otherwise deals nothing.
         Its permanent aura supplies the native rotating laser effect. The
         server applies the tower's level-scaled ``MinDamage``/``MaxDamage``
         average when the player intersects the blue beam, instead of applying
@@ -5848,7 +6123,8 @@ class MapEventService:
         combat = getattr(s, "gameplay_combat_state", None)
         if combat is None:
             return
-        if not is_tower_layout(runtime.map_id):
+        summer_arena = map_key(runtime.map_id) == "e_sum_minidun_arena_01"
+        if not is_tower_layout(runtime.map_id) and not summer_arena:
             return
         encounter = combat.encounter
         static_path = str(encounter.static_database_path)
@@ -5861,8 +6137,15 @@ class MapEventService:
                     float(combat.monster_yaws.get(actor_id, 0.0)),
                 )
                 for actor_id, monster in combat.monsters.items()
-                if is_tower_mechanism(
-                    static_path, runtime.map_id, monster.template_id,
+                if (
+                    is_tower_mechanism(
+                        static_path, runtime.map_id, monster.template_id,
+                    )
+                    or (
+                        summer_arena
+                        and monster.template_id.casefold()
+                        == "e_dra_fortress_normal_powernode"
+                    )
                 )
                 and combat.monster_health.get(actor_id, 0) > 0
             )
@@ -5919,7 +6202,14 @@ class MapEventService:
             # finite beam segment. This includes the authored player capsule
             # radius without expanding the whole 8-unit aura sphere.
             beam_radius = beam_width * 0.5
-            contact_distance = beam_radius + TOWER_PLAYER_COLLISION_RADIUS
+            # In Arena of Endurance, the player reported taking damage while
+            # merely near the visible blue line. The capsule expansion made
+            # the effective beam twice as wide (the log's 0.959 distance was
+            # accepted against a 1.0 threshold). Match the visible strip in
+            # this arena; keep the capsule allowance for the older tower map.
+            contact_distance = beam_radius + (
+                0.0 if summer_arena else TOWER_PLAYER_COLLISION_RADIUS
+            )
             beam_touched = False
             contact = None
             for sample, sample_at in samples:
@@ -6033,7 +6323,10 @@ class MapEventService:
                     source_actor_id=0,
                     periodic_damage=True,
                 ),
-                label="fractured-planes-tower-aura",
+                label=(
+                    "summer-solstice-laser"
+                    if summer_arena else "fractured-planes-tower-aura"
+                ),
                 include_item_set_procs=False,
             )
             if death_saved:
@@ -6048,11 +6341,130 @@ class MapEventService:
                 for tower_id, _monster, _interval, contact in hits
             )
             _log(
-                f"Fractured Planes tower aura hit on {runtime.map_id}: "
+                f"{'Summer Solstice laser' if summer_arena else 'Fractured Planes tower aura'} "
+                f"hit on {runtime.map_id}: "
                 f"actor={actor}, position="
                 f"{tuple(round(value, 3) for value in world)}, "
                 f"contacts={contact_summary}"
             )
+
+    @staticmethod
+    def _apply_summer_solstice_sandstorm_damage(
+            s: Session, runtime: MapEventRuntime, position) -> None:
+        """Apply the authored Sandstorm aura when a player enters its radius."""
+
+        if map_key(runtime.map_id) != "e_sum_minidun_arena_01":
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        world = tuple(float(value) for value in position[:3])
+        with combat.lock:
+            hazards = tuple(
+                (int(actor_id), combat.monsters[actor_id], tuple(
+                    float(value) for value in combat.monster_positions.get(
+                        actor_id, combat.monsters[actor_id].position,
+                    )[:3]
+                ))
+                for actor_id in combat.active_monster_actor_ids
+                if actor_id in combat.monsters
+                and combat.monster_health.get(actor_id, 0) > 0
+                and combat.monsters[actor_id].template_id.casefold() in {
+                    "e_sum_01_arena_def_normal_sandstorm_01",
+                    "e_sum_01_arena_def_normal_sandstorm_02",
+                }
+            )
+        touching = tuple(
+            (actor_id, hazard_position)
+            for actor_id, _monster, hazard_position in hazards
+            if math.hypot(
+                world[0] - hazard_position[0],
+                world[2] - hazard_position[2],
+            ) <= 2.0
+            and abs(world[1] - hazard_position[1]) <= 1.0
+        )
+        if not touching:
+            return
+        now = time.perf_counter()
+        actor_id, damage_position = min(
+            touching,
+            key=lambda item: math.dist(world, item[1]),
+        )
+        with s.flow_lock:
+            if (
+                s.gameplay_combat_state is not combat
+                or s.gameplay_map_event_runtime is not runtime
+            ):
+                return
+            cooldowns = getattr(
+                s, "gameplay_summer_sandstorm_next_at", None,
+            )
+            if cooldowns is None:
+                cooldowns = {}
+                s.gameplay_summer_sandstorm_next_at = cooldowns
+            if now < float(cooldowns.get(actor_id, 0.0)):
+                return
+            cooldowns[actor_id] = now + 1.0
+            inventory = s.gameplay_inventory
+            player_actor_id = int(
+                getattr(s, "gameplay_remote_actor_id", 0)
+                or combat.player_actor_id
+            )
+        if inventory is None:
+            return
+        from dso_server.services.talent_events import (
+            dispatch_talent_event, spare_player,
+        )
+        with combat.lock:
+            health = combat.player_health.get(player_actor_id)
+            if health is None or int(health[0]) <= 0:
+                return
+            previous, maximum = int(health[0]), int(health[1])
+            # e_zah_01_sandstorm_aura_effect is authored as
+            # CurrHealthPoints:-0.3,relative and ticks once per second.
+            damage = max(1, int(math.ceil(maximum * 0.3)))
+            current = max(0, previous - damage)
+            applied = previous - current
+            health[0] = current
+            if player_actor_id == int(combat.player_actor_id):
+                combat.player_current_health = current
+            death_saved = current <= 0 and spare_player(
+                s, combat, player_actor_id,
+            )
+            current = int(health[0])
+        if applied <= 0:
+            return
+        CharacterService._cancel_respawn_protection(s)
+        with s.flow_lock:
+            if s.gameplay_inventory is inventory:
+                inventory.health_points = float(current)
+            server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        resolution = DamageResolution(
+            target_actor_id=CharacterService._viewer_actor_id(
+                s, player_actor_id,
+            ),
+            attacker_actor_id=actor_id,
+            current_health=current,
+            maximum_health=maximum,
+            damage=applied,
+            killed=current <= 0,
+            position=damage_position,
+            server_tick=server_tick,
+            hit_tags=(0,),
+            skill_index=0,
+            source_actor_id=actor_id,
+            periodic_damage=True,
+        )
+        CharacterService._send_combat_resolution(
+            s, resolution, label="summer-solstice-sandstorm",
+            include_item_set_procs=False,
+        )
+        _log(
+            f"Summer Solstice sandstorm hit on {runtime.map_id}: "
+            f"actor={player_actor_id}, hazard={actor_id}, damage={applied}"
+        )
+        if death_saved:
+            dispatch_talent_event(s, "nohealth", server_tick=server_tick)
 
     @staticmethod
     def _check_trigger_volumes(
@@ -6076,6 +6488,9 @@ class MapEventService:
             else None
         )
         MapEventService._apply_darkwood_wendigo_hazard_damage(
+            s, runtime, world,
+        )
+        MapEventService._apply_summer_solstice_sandstorm_damage(
             s, runtime, world,
         )
         MapEventService._apply_fractured_planes_hazard_damage(
@@ -6218,6 +6633,27 @@ class MapEventService:
                 )
             )
         dtu_superchest_claim_key = ""
+        summer_reward_claim_key = (
+            _summer_solstice_reward_chest_claim_key(
+                s, keyed.definition,
+            ) if keyed is not None else ""
+        )
+        if summer_reward_claim_key:
+            with s.flow_lock:
+                already_claimed = bool(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        summer_reward_claim_key, 0,
+                    )
+                )
+            if already_claimed:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition, label="summer-reward-chest-already-claimed",
+                )
+                _log(
+                    f"refused already-claimed Kalodoro Summer Solstice chest "
+                    f"{keyed.definition.instance_id!r}"
+                )
+                return
         if (
             keyed is not None
             and str(keyed.definition.loot_list_id or "").casefold()
@@ -6456,6 +6892,29 @@ class MapEventService:
             return
         state, flipped = result
         definition = state.definition
+        if flipped and summer_reward_claim_key:
+            with s.flow_lock:
+                purchases = dict(
+                    getattr(s, "gameplay_timed_offer_purchases", {})
+                )
+                already_claimed = bool(purchases.get(summer_reward_claim_key, 0))
+                if not already_claimed:
+                    purchases[summer_reward_claim_key] = 1
+                    s.gameplay_timed_offer_purchases = purchases
+            if already_claimed:
+                if definition.individual_usage:
+                    with runtime.lock:
+                        runtime.individual_prop_usage.discard((
+                            _individual_prop_player_id(s),
+                            int(definition.prop_id),
+                        ))
+                self._show_used_prop_for_viewer(
+                    s, definition, label="summer-reward-chest-race-claimed",
+                )
+                return
+            CharacterService._request_account_save(
+                s, "Summer Solstice reward chest claimed", flush=True,
+            )
         if (
             flipped and definition.spends_keys
             and not self._spend_prop_keys(
@@ -6609,6 +7068,35 @@ class MapEventService:
                 s, definition, gatherable_template,
                 random.SystemRandom().randint(1, 10),
             )
+        elif (
+            flipped
+            and map_key(runtime.map_id) == "e_sum_minidun_chestroom_01"
+            and definition.template_id.casefold().startswith(
+                "e_sum_01_minigame_chest_picker_"
+            )
+        ):
+            # Picking a floor plate only banks a choice; its contents are
+            # revealed by the authored chest/brazier flow. Dropping the plate
+            # loot immediately would bypass the Chamber's risk mechanic.
+            pass
+        elif (
+            flipped
+            and map_key(runtime.map_id) == "e_sum_dun_02"
+            and definition.template_id.casefold() in {
+                "e_sum_01_minigame_fishing_01_yellow",
+                "e_sum_01_minigame_fishing_01_red",
+                "e_sum_01_minigame_fishing_01_blue",
+            }
+        ):
+            # Fishing vats have no LootListId in static.db4 even though their
+            # OperationId is the retail fishing operation. The server must
+            # resolve that operation after charging the authored Fishing Rod.
+            self._spawn_map_chest_loot(
+                s, replace(
+                    definition,
+                    loot_list_id="CHEST_lootlist_e_sum_fishing_vat",
+                ),
+            )
         elif flipped and (definition.loot_list_id or definition.chest_id):
             self._spawn_map_chest_loot(s, definition)
         if state.state == PROP_STATE_ACTIVE or flipped:
@@ -6625,9 +7113,138 @@ class MapEventService:
                 s, "PlayerInteractedProp",
                 (definition.instance_id, definition.template_id),
             )
+            if (
+                map_key(runtime.map_id) == "e_sum_minidun_chestroom_01"
+                and definition.template_id.casefold()
+                == "e_sum_01_minigame_chest_picker_fault"
+            ):
+                self._fail_underground_chamber_chest_game(runtime)
+            elif (
+                map_key(runtime.map_id) == "e_sum_minidun_chestroom_01"
+                and definition.template_id.casefold()
+                == "e_sum_01_minigame_chest_picker_done"
+            ):
+                self._bank_underground_chamber_chests(runtime)
+            elif (
+                flipped
+                and map_key(runtime.map_id)
+                == "e_sum_minidun_chestroom_01"
+                and definition.template_id.casefold().startswith(
+                    "e_sum_01_minigame_chest_picker_"
+                )
+            ):
+                # PlayerInteractedProp has already activated this plate's
+                # unlock_chest_N event, so a hit banks this and all earlier
+                # choices before the player can select another plate.
+                self._roll_underground_chamber_plate_trigger(
+                    runtime, definition.template_id,
+                )
             CharacterService._achievement_on_prop_interacted(
                 self, s, definition.instance_id, definition.template_id,
             )
+
+    @staticmethod
+    def _underground_chamber_chest_rows(runtime) -> dict[int, int]:
+        """Map each reward EventSet row to its authored picker number."""
+
+        chest_rows = {}
+        for number in range(1, 32):
+            event_key = f"e_sum_dun_01_chest_game_activate_chest_{number:02d}"
+            for event_set in runtime.content.event_sets_for(event_key):
+                if event_key in event_set.required:
+                    chest_rows[int(event_set.row)] = number
+        return chest_rows
+
+    def _bank_underground_chamber_chests(
+            self, runtime, *, reason: str = "brazier") -> None:
+        """Reveal selected rewards and retire every unselected chest."""
+
+        if map_key(runtime.map_id) != "e_sum_minidun_chestroom_01":
+            return
+        marker = "underground_chamber_chests_closed"
+        with runtime.lock:
+            if marker in runtime.fired_once:
+                return
+            flags = runtime.active_flags()
+            selected = {
+                int(flag.rsplit("_", 1)[-1])
+                for flag in flags
+                if flag.startswith("e_sum_dun_01_chest_game_unlock_chest_")
+                and flag.rsplit("_", 1)[-1].isdigit()
+            }
+            selected = {number for number in selected if 1 <= number <= 31}
+            runtime.fired_once.add(marker)
+            runtime.fired_once.add("underground_chamber_chests_banked")
+        # Preserve the authored ending transition so the picker field closes.
+        # Its aggregate EventSet 1748 is suppressed when the runtime attaches,
+        # preventing that phase from opening all reward chests.
+        ending = runtime.catalog.event("e_sum_dun_01_chest_game_ending")
+        if ending is not None:
+            self._start_map_local_event(runtime, ending)
+        chest_rows = self._underground_chamber_chest_rows(runtime)
+        hidden_rows = {
+            row for row, number in chest_rows.items()
+            if number not in selected
+        }
+        picker_rows = {
+            int(prop.event_set_row)
+            for prop in runtime.content.props
+            if int(prop.event_set_row) >= 0
+            and prop.template_id.casefold().startswith(
+                "e_sum_01_minigame_chest_picker_"
+            )
+        }
+
+        # The authored brazier signals start these events. Ensure the selected
+        # reward gates are active, then make every other chest unavailable.
+        for number in sorted(selected):
+            event = runtime.catalog.event(
+                f"e_sum_dun_01_chest_game_activate_chest_{number:02d}"
+            )
+            if event is not None:
+                self._start_map_local_event(runtime, event)
+        rows_to_hide = hidden_rows | picker_rows
+        if rows_to_hide:
+            runtime.suppress_event_sets(rows_to_hide)
+            self._unpublish_event_props(
+                runtime, self._map_event_sessions(runtime), rows_to_hide,
+            )
+        _log(
+            f"Underground Chamber rewards revealed by {reason}: "
+            f"selected={tuple(sorted(selected))}, "
+            f"hidden reward sets={len(hidden_rows)}, "
+            f"closed picker sets={len(picker_rows)}"
+        )
+
+    def _roll_underground_chamber_plate_trigger(
+            self, runtime, plate_template_id: str) -> None:
+        """Each selected plate has a 25% chance to resolve the run."""
+
+        if map_key(runtime.map_id) != "e_sum_minidun_chestroom_01":
+            return
+        template = str(plate_template_id or "").casefold()
+        if not template.startswith("e_sum_01_minigame_chest_picker_"):
+            return
+        with runtime.lock:
+            if "underground_chamber_chests_closed" in runtime.fired_once:
+                return
+        triggered = random.SystemRandom().random() < 0.25
+        _log(
+            f"Underground Chamber plate {template!r} "
+            f"trigger roll={'hit' if triggered else 'safe'} (25%)"
+        )
+        if triggered:
+            self._fail_underground_chamber_chest_game(runtime)
+
+    def _fail_underground_chamber_chest_game(self, runtime) -> None:
+        """Resolve the trigger chest: keep selected rewards, hide the rest."""
+
+        if map_key(runtime.map_id) != "e_sum_minidun_chestroom_01":
+            return
+        with runtime.lock:
+            if "underground_chamber_chests_closed" in runtime.fired_once:
+                return
+        self._bank_underground_chamber_chests(runtime, reason="trigger chest")
 
     def _grant_prop_ammunition_buff(self, s, runtime, definition) -> None:
         """Mirror authored state-object ammunition buffs into server combat."""
@@ -7581,6 +8198,49 @@ class MapEventService:
     def _start_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        if map_key(runtime.map_id) == "e_sum_minidun_chestroom_01":
+            event_key = definition.key.casefold()
+            if event_key == "e_sum_dun_01_chest_game_ending":
+                with runtime.lock:
+                    closing_allowed = bool(
+                        {
+                            "underground_chamber_chests_banked",
+                            "underground_chamber_chests_failed",
+                        } & runtime.fired_once
+                    )
+                if not closing_allowed:
+                    _log(
+                        "blocked Underground Chamber ending before the "
+                        "brazier or a failed picker"
+                    )
+                    return
+            elif event_key == "e_sum_dun_01_chest_game_activate_chests":
+                _log(
+                    "blocked bulk Underground Chamber chest activation; "
+                    "rewards are selected individually"
+                )
+                return
+            elif event_key.startswith(
+                "e_sum_dun_01_chest_game_activate_chest_"
+            ):
+                suffix = event_key.rsplit("_", 1)[-1]
+                if suffix.isdigit():
+                    unlock_flag = (
+                        "e_sum_dun_01_chest_game_unlock_chest_"
+                        f"{int(suffix):02d}"
+                    )
+                    with runtime.lock:
+                        selected_after_brazier = (
+                            "underground_chamber_chests_banked"
+                            in runtime.fired_once
+                            and unlock_flag in runtime.active_flags()
+                        )
+                    if not selected_after_brazier:
+                        _log(
+                            "blocked unselected Underground Chamber reward "
+                            f"event {event_key!r} before banking"
+                        )
+                        return
         gate = _PARALLEL_WORLD_EXIT_BOSSES.get(map_key(runtime.map_id))
         if (
             gate is not None
@@ -8920,6 +9580,7 @@ class MapEventService:
                 "pw212_sentinel_uniskel_mirror_self",
                 "pw212_sentinel_uniskel_dwarf_mirror_self",
             }
+            hazard = is_map_hazard(database_path, row.template_id)
             mounted = is_tower_mechanism(
                 database_path, runtime.map_id, row.template_id,
             )
@@ -8935,7 +9596,7 @@ class MapEventService:
             # The cinematic's staff, portal and root motion are authored
             # against this exact transform, not a navigable combat position.
             if (
-                not scripted_cultist and not mounted
+                not scripted_cultist and not mounted and not hazard
                 and not is_boss_spawn_template(database_path, row.template_id)
             ):
                 try:
@@ -8960,7 +9621,7 @@ class MapEventService:
                 database_path,
                 row.template_id,
                 actor_id,
-                stationary=mounted or scripted_mortis_mirror,
+                stationary=mounted or hazard or scripted_mortis_mirror,
             )
             if scripted_mortis_mirror and mirror_owner is not None:
                 class_name = CLASS_NAMES.get(
@@ -9005,8 +9666,10 @@ class MapEventService:
                     health_multiplier=_bgh_boss_health_multiplier(
                         runtime.map_id, row.template_id,
                     ),
-                    non_targetable=is_tower_hardware(
-                        database_path, runtime.map_id, row.template_id
+                    non_targetable=(
+                        hazard or is_tower_hardware(
+                            database_path, runtime.map_id, row.template_id,
+                        )
                     ),
                 )
             except ValueError as exc:

@@ -70,6 +70,12 @@ def refresh_session_events(server, s, cid, context, previous, catalog):
     s.send_reliable_ordered_split(packet, total_bit_length=bits, track=True, label_prefix="admin-events-update")
     commands = [ServerCommand(EVENT_PROGRESS_INFO_COMMAND, progress, 1),
                 ServerCommand(EVENT_PARTICIPATION_INFO_COMMAND, participation, 1)]
+    # Quest offers are embedded in NPCInfo. When an event becomes active while
+    # a player is already online, the EventUpdate alone does not refresh the
+    # NPC's quest list, leaving newly eligible seasonal quests invisible until
+    # the player changes maps or logs in again.
+    quest_npc_infos = server._quest_npc_info_commands(s)
+    commands.extend(quest_npc_infos)
     notifications = EventService._event_notification_entries_for_session(server, s, s.gameplay_character)
     if notifications:
         commands.append(ServerCommand(NOTIFICATION_COMMAND, Notification(1, notifications), 0))

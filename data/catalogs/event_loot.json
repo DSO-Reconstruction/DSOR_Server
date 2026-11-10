@@ -1,6 +1,14 @@
 {
-  "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions/ranks. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
+  "note": "Contents of the loot lists named by _Template_Events.Loot and the map-owned drops used by special maps. The retail server owned these lists and the client data only names them, so they are authored here. While an event runs, every kill of a monster whose _Template_Monster.EventDropChance is above zero rolls its event's list on maps the event does not exclude. Per rank class (monster; elite = guardian, champion, leader; boss = boss, worldboss) an entry gives a chance and an amount range [min, max]; a missing class uses monster's values. Map loot is independent of scheduled events, scoped by map and monster templates/regions/ranks. Its difficulty chance scaling uses the map's privileged-loot factor; item GroupTags can scale stack amounts. An item containing {difficulty:02d} drops the map difficulty's variant. Map loot may also use amount_by_difficulty for fixed per-tier amounts (the last amount covers higher difficulties), item_options to choose one item uniformly after one chance roll, and item_options_by_class to choose one item uniformly for the killer's class after one chance roll.",
   "loot_lists": {
+    "GLOBAL_summer_festival_prefarming": [
+      {
+        "item": "e_sum_01_ferry_ticket",
+        "comment": "Ferry Tickets: 0.5% base chance from worthy opponents during Summer Solstice Preparation.",
+        "chance": {"monster": 0.005},
+        "amount": {"monster": [1, 1]}
+      }
+    ],
     "e_chr_2012_loot_gen_minions": [
       {
         "item": "e_chr_2012_dungeon_key_normal",
@@ -39,6 +47,44 @@
     ]
   },
   "map_loot": {
+    "e_sum_dun_01": [
+      {
+        "comment": "Kalodoro preparation: one random colored powder has a 5% base chance from ordinary creatures, 10% from elites and 25% from bosses. The difficulty's authored PrivilegedLootDrop factor raises the chance (1x on Normal through 2.5x on Bloodshed); stack sizes rise by difficulty. Retail confirms colored powder drops throughout Dracania with a higher chance on Kalodoro but does not publish exact rates; these are the server's explicit balancing values.",
+        "monsters": [
+          "e_sum_01_normal_cerberus_01",
+          "e_sum_01_normal_cyclops_01",
+          "e_sum_01_normal_satyr_melee_01",
+          "e_sum_01_normal_satyr_ranged_01",
+          "e_sum_01_normal_stonegolem_01",
+          "e_sum_01_leader_cerberus_01",
+          "e_sum_01_leader_cyclops_01",
+          "e_sum_01_leader_satyr_melee_01",
+          "e_sum_01_leader_satyr_ranged_01",
+          "e_sum_01_leader_stonegolem_01",
+          "e_sum_01_guardian_cerberus_01",
+          "e_sum_01_sentinel_cerberus_01",
+          "e_sum_01_sentinel_cyclops_01",
+          "e_sum_01_sentinel_satyr_melee_01",
+          "e_sum_01_sentinel_satyr_ranged_01",
+          "e_sum_01_sentinel_stonegolem_01",
+          "e_sum_01_boss_centaur_01",
+          "e_sum_01_boss_centaur_02"
+        ],
+        "item_options": [
+          "e_sum_01_color_sand_yellow",
+          "e_sum_01_color_sand_purple",
+          "e_sum_01_color_sand_red",
+          "e_sum_01_color_sand_green"
+        ],
+        "ranks": ["monster", "elite", "boss"],
+        "chance": {"monster": 0.05, "elite": 0.10, "boss": 0.25},
+        "amount": {"monster": [1, 1], "elite": [1, 1], "boss": [1, 1]},
+        "amount_by_difficulty": [1, 1, 1, 1, 2, 2, 2, 3, 3],
+        "require_active_events": ["summer_festival_event_01_prefarming"],
+        "scale_chance_with_difficulty": true,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "e_newmoon_blakborg_city_dun": [
       {
         "comment": "Blackborg Champions: 5% chance to drop one Witch Seeker Pauldrons for the killer's class.",

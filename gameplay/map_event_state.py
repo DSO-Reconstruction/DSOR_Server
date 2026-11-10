@@ -811,6 +811,14 @@ class MapPropDefinition:
             "e_hal_wendigo_fire_02",
             "e_hal_wendigo_fire_03",
         }
+        summer_fishing_vat = (
+            self.template_id.casefold() in {
+                "e_sum_01_minigame_fishing_01_yellow",
+                "e_sum_01_minigame_fishing_01_red",
+                "e_sum_01_minigame_fishing_01_blue",
+            }
+            and self.key_id.casefold() == "e_sum_01_fishing_rod_01"
+        )
         return bool(
             self.key_id and self.key_amount > 0
             and (
@@ -820,6 +828,7 @@ class MapPropDefinition:
                 or dtu_superchest
                 or darkwood_summoning_slate
                 or darkwood_wendigo_circle
+                or summer_fishing_vat
             )
         )
 
@@ -1715,6 +1724,12 @@ def _load_map_event_content(
                 bool(quest_switch_id)
                 and template_id.casefold() in quest_controlled_templates
             )
+            summer_chestroom_reward = (
+                map_key(map_id) == "e_sum_minidun_chestroom_01"
+                and instance_id.casefold().startswith(
+                    "e_sum_01_minigame_chest_"
+                )
+            )
             props.append(MapPropDefinition(
                 prop_id=prop_actor_base + int(row_id) - 1,
                 row_id=int(row_id),
@@ -1722,7 +1737,10 @@ def _load_map_event_content(
                 instance_id=instance_id,
                 template_id=template_id,
                 instance_guid=(
-                    ZERO_GUID if quest_seal or quest_controlled
+                    ZERO_GUID if (
+                        quest_seal or quest_controlled
+                        or summer_chestroom_reward
+                    )
                     else client_state_object_guids.get(
                         int(row_id), bytes(guid) if guid else ZERO_GUID
                     )
@@ -1770,6 +1788,27 @@ def _load_map_event_content(
                 instance_id.casefold() in signal_props
                 or template_id.casefold() in signal_props
             )
+            quest_switch_id = (
+                quest_switches.get(instance_id.casefold())
+                or quest_switches.get(template_id.casefold(), "")
+            )
+            # Kalodoro's Spread Fire task binds these tent placements to one
+            # quest switch. Preserve their authored one-shot behavior so a
+            # character can count each tent only once per map instance.
+            if (
+                map_key(map_id) == "e_sum_dun_01"
+                and instance_id.casefold().startswith(
+                    "e_sum_01_call_boss_tent_"
+                )
+                and quest_switch_id.casefold().startswith(
+                    "e-sum-01-call-boss-01-"
+                )
+            ):
+                # The map's PlayerEnteredMap signal starts
+                # e_sum_dun_01_remove_tents immediately and disables this
+                # EventSet. Keep the quest target placements outside that
+                # set; one-shot usage and quest gating still apply per player.
+                event_set_row = -1
             props.append(MapPropDefinition(
                 prop_id=spawn_prop_id(
                     scene_row_limit,
@@ -1795,10 +1834,7 @@ def _load_map_event_content(
                 # Switch names the StateObjectId template (StateObjectId).
                 # Match either so quest-controlled spawn props are published
                 # and revealed when their task is active.
-                quest_switch_id=(
-                    quest_switches.get(instance_id.casefold())
-                    or quest_switches.get(template_id.casefold(), "")
-                ),
+                quest_switch_id=quest_switch_id,
                 key_id=template_keys.get(template_id, ("", 0))[0],
                 key_amount=template_keys.get(template_id, ("", 0))[1],
             ))

@@ -16,31 +16,75 @@
     "CHEST_amphora_normal_MAIN": {
       "comment": "Retail sample 2026-10-28 (Dragan, e_dra_03_dun_01): 10 Draken, gold 276/234/208, progress key x3 and x50, 1 e_dra_03_hardmode_bosskey. Chances of the second progress stack and the boss key are not known from one sample.",
       "entries": [
-        {"item": "e_chr_2012_event_currency", "amount": [10, 10]},
-        {"item": "money_vc", "stacks": 3, "per_level": [2.8, 4.0]},
-        {"event_progress": true, "amount": [2, 4]},
-        {"event_progress": true, "chance": 0.5, "amount": [25, 50]},
-        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "chance": 0.5, "amount": [1, 1]}
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [10, 10]
+        },
+        {
+          "item": "money_vc",
+          "stacks": 3,
+          "per_level": [2.8, 4.0]
+        },
+        {
+          "event_progress": true,
+          "amount": [2, 4]
+        },
+        {
+          "event_progress": true,
+          "chance": 0.5,
+          "amount": [25, 50]
+        },
+        {
+          "item": "e_dra_03_hardmode_bosskey",
+          "event": "dragan_event_03",
+          "chance": 0.5,
+          "amount": [1, 1]
+        }
       ]
     },
     "CHEST_amphora_golden_MAIN": {
       "comment": "Costs five keys; scaled from the normal amphora (no retail sample yet).",
       "entries": [
-        {"item": "e_chr_2012_event_currency", "amount": [50, 50]},
-        {"item": "money_vc", "stacks": 5, "per_level": [2.8, 4.0]},
-        {"event_progress": true, "amount": [10, 20]},
-        {"event_progress": true, "amount": [50, 100]},
-        {"item": "e_dra_03_hardmode_bosskey", "event": "dragan_event_03", "amount": [1, 3]},
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [50, 50]
+        },
+        {
+          "item": "money_vc",
+          "stacks": 5,
+          "per_level": [2.8, 4.0]
+        },
+        {
+          "event_progress": true,
+          "amount": [10, 20]
+        },
+        {
+          "event_progress": true,
+          "amount": [50, 100]
+        },
+        {
+          "item": "e_dra_03_hardmode_bosskey",
+          "event": "dragan_event_03",
+          "amount": [1, 3]
+        },
         {
           "map": "e_newmoon_blakborg_city_dun",
           "comment": "Golden Festive Amphora in Blackborg: 15% chance to drop one Witch Seeker Strap for the opening character's class.",
           "chance": 0.15,
           "amount": [1, 1],
           "item_options_by_class": {
-            "warrior": ["warrior_unique_belt_newmoon_set_03"],
-            "mage": ["mage_unique_belt_newmoon_set_03"],
-            "ranger": ["ranger_unique_belt_newmoon_set_03"],
-            "dwarf": ["dwarf_unique_belt_newmoon_set_03"]
+            "warrior": [
+              "warrior_unique_belt_newmoon_set_03"
+            ],
+            "mage": [
+              "mage_unique_belt_newmoon_set_03"
+            ],
+            "ranger": [
+              "ranger_unique_belt_newmoon_set_03"
+            ],
+            "dwarf": [
+              "dwarf_unique_belt_newmoon_set_03"
+            ]
           }
         }
       ]
@@ -48,54 +92,135 @@
     "CHEST_amphora_small_MAIN": {
       "comment": "Free small amphora; a fraction of the normal one (no retail sample yet).",
       "entries": [
-        {"item": "e_chr_2012_event_currency", "chance": 0.5, "amount": [2, 4]},
-        {"item": "money_vc", "per_level": [2.8, 4.0]},
-        {"event_progress": true, "amount": [1, 2]}
+        {
+          "item": "e_chr_2012_event_currency",
+          "chance": 0.5,
+          "amount": [2, 4]
+        },
+        {
+          "item": "money_vc",
+          "per_level": [2.8, 4.0]
+        },
+        {
+          "event_progress": true,
+          "amount": [1, 2]
+        }
       ]
     },
     "CHEST_fullmoon_silvermine_barrel_main": {
       "comment": "Moonsilver Mine silver barrels. The map contains 16 barrels; two Silver Pebbles per barrel yields 32 per full run, within the usual 24-35 range documented for opening all barrels.",
       "entries": [
-        {"item": "e_ful_02_silverstone_01", "amount": [2, 2]}
+        {
+          "item": "e_ful_02_silverstone_01",
+          "amount": [2, 2]
+        }
       ]
     },
     "STATE_fullmoon_vargulf_01_log_place_01": {
       "comment": "Varholm's Vargulf introductory clue. Picking up this quest log starts e-ful-02-vargulf-01-n through the authored PlayerReceivedItem signal.",
       "entries": [
-        {"item": "e_ful_02_vargulf_01_log_01", "amount": [1, 1]}
+        {
+          "item": "e_ful_02_vargulf_01_log_01",
+          "amount": [1, 1]
+        }
       ]
     },
     "CHEST_e_dra_all_rewardchest_maps": {
       "comment": "Standard Dragan relic chest used on the four elemental maps and secret maps. The October 2026 guide documents one or two Empowered Cursed Pearls from this 80%-clear chest.",
       "entries": [
-        {"item": "e_dra_03_hardmode_bosskey", "amount": [1, 2]}
+        {
+          "item": "e_dra_03_hardmode_bosskey",
+          "amount": [1, 2]
+        }
       ]
     },
     "CHEST_e_dra_fortress_rewardchest_elemental_quest": {
       "comment": "User-specified common rewards shared by Castle Ravencaw's one-time and repeatable elemental relic chests. Premium, 5,000 Andermant, and 90-day Smelter are separate 10% rewards only on the four repeatable final chests, each guaranteed on the fourth distinct final chest if still unclaimed; equipment is rolled in services/map_events.py. The rune entries use the static catalog's Common-rarity damage, health, attack-speed, and critical runes.",
       "entries": [
-        {"item": "e_sar_chest_key", "amount": [1, 1]},
-        {"item": "e_chr_2012_event_currency", "amount": [250, 250]},
-        {"item": "lootbox_gems_e", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
-        {"item": "lootbox_gems_f", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
-        {"item": "lootbox_gems_g", "roll_group": "gem_bag", "weight": 1, "amount": [1, 1]},
-        {"item": "unique_gem_damage_00", "amount": [1, 1]},
-        {"item": "unique_gem_hitpoints_00", "amount": [1, 1]},
-        {"item": "unique_gem_attackspeed_00", "amount": [1, 1]},
-        {"item": "unique_gem_critical_00", "amount": [1, 1]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "amount": [1, 1]},
-        {"item": "gilded_clover", "amount": [1, 50]},
-        {"item": "money_vc_gold", "amount": [500, 500]},
-        {"item": "misc_resurrect_partymember_01", "amount": [5, 5]}
+        {
+          "item": "e_sar_chest_key",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [250, 250]
+        },
+        {
+          "item": "lootbox_gems_e",
+          "roll_group": "gem_bag",
+          "weight": 1,
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_f",
+          "roll_group": "gem_bag",
+          "weight": 1,
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_g",
+          "roll_group": "gem_bag",
+          "weight": 1,
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_damage_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_hitpoints_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_attackspeed_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_critical_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gilded_clover",
+          "amount": [1, 50]
+        },
+        {
+          "item": "money_vc_gold",
+          "amount": [500, 500]
+        },
+        {
+          "item": "misc_resurrect_partymember_01",
+          "amount": [5, 5]
+        }
       ]
     },
     "CHEST_e_dra_jail_hole": {
       "comment": "User-confirmed Jail hole rewards: 250 Draken, one Jewel of Enhancement, and 2 gems on Normal through Fatal or 3 gems on Merciless and Bloodshed. lootbox_gems_n is the static catalog's Royal Gem Bag tier, corresponding to the requested Görkemli quality.",
       "entries": [
-        {"item": "e_chr_2012_event_currency", "amount": [250, 250]},
-        {"item": "e_ide_02_crafting_gem", "amount": [1, 1]},
-        {"item": "lootbox_gems_n", "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [2, 2]},
-        {"item": "lootbox_gems_n", "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [3, 3]}
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [250, 250]
+        },
+        {
+          "item": "e_ide_02_crafting_gem",
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_n",
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 4,
+          "amount": [2, 2]
+        },
+        {
+          "item": "lootbox_gems_n",
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 8,
+          "amount": [3, 3]
+        }
       ]
     },
     "CHEST_dragan_coal_heap": {
@@ -105,67 +230,323 @@
     "CHEST_e_dra_fortress_rewardchest_repeatable": {
       "comment": "Repeatable Castle Ravencaw final quest chest: one gem bag on Normal through Infernal, two on Merciless and Bloodshed, plus Cursed Pearls scaled by difficulty (10/15/20/25/36/60/120). The three one-time quest chests use the separate elemental_quest list.",
       "entries": [
-        {"item": "lootbox_gems_e", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
-        {"item": "lootbox_gems_f", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
-        {"item": "lootbox_gems_g", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 0, "maximum_difficulty": 4, "amount": [1, 1]},
-        {"item": "lootbox_gems_e", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
-        {"item": "lootbox_gems_f", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
-        {"item": "lootbox_gems_g", "roll_group": "repeatable_gem", "weight": 1, "minimum_difficulty": 6, "maximum_difficulty": 8, "amount": [2, 2]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [10, 10]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [15, 15]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [20, 20]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [25, 25]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [36, 36]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [60, 60]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [120, 120]}
+        {
+          "item": "lootbox_gems_e",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 4,
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_f",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 4,
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_g",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 4,
+          "amount": [1, 1]
+        },
+        {
+          "item": "lootbox_gems_e",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 8,
+          "amount": [2, 2]
+        },
+        {
+          "item": "lootbox_gems_f",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 8,
+          "amount": [2, 2]
+        },
+        {
+          "item": "lootbox_gems_g",
+          "roll_group": "repeatable_gem",
+          "weight": 1,
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 8,
+          "amount": [2, 2]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 0,
+          "amount": [10, 10]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 1,
+          "maximum_difficulty": 1,
+          "amount": [15, 15]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 2,
+          "maximum_difficulty": 2,
+          "amount": [20, 20]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 3,
+          "maximum_difficulty": 3,
+          "amount": [25, 25]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 4,
+          "maximum_difficulty": 4,
+          "amount": [36, 36]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 6,
+          "amount": [60, 60]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "minimum_difficulty": 8,
+          "maximum_difficulty": 8,
+          "amount": [120, 120]
+        }
       ]
     },
     "CHEST_e_dra_2nd_floor_rewardchest_repeatable": {
       "comment": "Great Hall repeatable relic chest. The October 2026 event guide gives the boss and chest 50/50 Raven Pearls on Normal through 600/600 on Bloodshed. The chest also grants the current Dragan progress collectible, whatever page the character is collecting.",
       "entries": [
-        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [2, 2]},
-        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [4, 4]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [50, 50]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [75, 75]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [100, 100]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [125, 125]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [180, 180]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [300, 300]},
-        {"item": "e_dra_02_RiseOfDragan_key_for_maps_01", "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [600, 600]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 0, "maximum_difficulty": 0, "amount": [50, 50]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 1, "maximum_difficulty": 1, "amount": [75, 75]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 2, "maximum_difficulty": 2, "amount": [100, 100]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 3, "maximum_difficulty": 3, "amount": [125, 125]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 4, "maximum_difficulty": 4, "amount": [180, 180]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 6, "maximum_difficulty": 6, "amount": [300, 300]},
-        {"event_progress": true, "event": "dragan_event_03", "minimum_difficulty": 8, "maximum_difficulty": 8, "amount": [600, 600]}
+        {
+          "item": "e_dra_mythic_ingredient_shoulders_01_black_general",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 6,
+          "amount": [2, 2]
+        },
+        {
+          "item": "e_dra_mythic_ingredient_shoulders_01_black_general",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 8,
+          "maximum_difficulty": 8,
+          "amount": [4, 4]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 0,
+          "amount": [50, 50]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 1,
+          "maximum_difficulty": 1,
+          "amount": [75, 75]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 2,
+          "maximum_difficulty": 2,
+          "amount": [100, 100]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 3,
+          "maximum_difficulty": 3,
+          "amount": [125, 125]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 4,
+          "maximum_difficulty": 4,
+          "amount": [180, 180]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 6,
+          "amount": [300, 300]
+        },
+        {
+          "item": "e_dra_02_RiseOfDragan_key_for_maps_01",
+          "event": "dragan_event_03",
+          "minimum_difficulty": 8,
+          "maximum_difficulty": 8,
+          "amount": [600, 600]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 0,
+          "maximum_difficulty": 0,
+          "amount": [50, 50]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 1,
+          "maximum_difficulty": 1,
+          "amount": [75, 75]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 2,
+          "maximum_difficulty": 2,
+          "amount": [100, 100]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 3,
+          "maximum_difficulty": 3,
+          "amount": [125, 125]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 4,
+          "maximum_difficulty": 4,
+          "amount": [180, 180]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 6,
+          "maximum_difficulty": 6,
+          "amount": [300, 300]
+        },
+        {
+          "event_progress": true,
+          "event": "dragan_event_03",
+          "minimum_difficulty": 8,
+          "maximum_difficulty": 8,
+          "amount": [600, 600]
+        }
       ]
     },
     "lootlis_statue_of_the_black_knight_all": {
       "comment": "Dragan 2026 Black Knight statues. Each statue costs one Empowered Cursed Pearl. Official Oct 2026 FAQ confirms separate 5% rolls for Eye of Avarice and Eye of Beelzebub at every difficulty; the legacy statue reward remains one guaranteed Arcane Dragon Essence plus one weighted item. Legacy weights are from the official March 2026 edition and are retained because October says the usual statue rewards remain.",
       "entries": [
-        {"item": "e_bgh_ancestors_soul", "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_avarice", "chance": 0.05, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_demon", "chance": 0.05, "amount": [1, 1]},
-        {"item": "pet_ghost_bird_uncommon", "roll_group": "legacy_reward", "weight": 0.1, "amount": [1, 1]},
-        {"item": "pet_blackfire_bird_uncommon", "roll_group": "legacy_reward", "weight": 0.2, "amount": [1, 1]},
-        {"item": "vanity_trail_27", "roll_group": "legacy_reward", "weight": 1.7, "amount": [1, 1]},
-        {"item": "item_ingredient_fallen_heart", "roll_group": "legacy_reward", "weight": 2.0, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_aversion", "roll_group": "legacy_reward", "weight": 13.0, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_fear", "roll_group": "legacy_reward", "weight": 13.0, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_collapse", "roll_group": "legacy_reward", "weight": 10.0, "amount": [1, 1]},
-        {"item": "e_dra_mythic_ingredient_shoulders_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]},
-        {"item": "e_dra_mythic_ingredient_helmet_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]},
-        {"item": "e_dra_mythic_ingredient_backitem_01_black_general", "roll_group": "legacy_reward", "weight": 20.0, "amount": [1, 1]}
+        {
+          "item": "e_bgh_ancestors_soul",
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_avarice",
+          "chance": 0.05,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_demon",
+          "chance": 0.05,
+          "amount": [1, 1]
+        },
+        {
+          "item": "pet_ghost_bird_uncommon",
+          "roll_group": "legacy_reward",
+          "weight": 0.1,
+          "amount": [1, 1]
+        },
+        {
+          "item": "pet_blackfire_bird_uncommon",
+          "roll_group": "legacy_reward",
+          "weight": 0.2,
+          "amount": [1, 1]
+        },
+        {
+          "item": "vanity_trail_27",
+          "roll_group": "legacy_reward",
+          "weight": 1.7,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_fallen_heart",
+          "roll_group": "legacy_reward",
+          "weight": 2.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_aversion",
+          "roll_group": "legacy_reward",
+          "weight": 13.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_fear",
+          "roll_group": "legacy_reward",
+          "weight": 13.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_collapse",
+          "roll_group": "legacy_reward",
+          "weight": 10.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_dra_mythic_ingredient_shoulders_01_black_general",
+          "roll_group": "legacy_reward",
+          "weight": 20.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_dra_mythic_ingredient_helmet_01_black_general",
+          "roll_group": "legacy_reward",
+          "weight": 20.0,
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_dra_mythic_ingredient_backitem_01_black_general",
+          "roll_group": "legacy_reward",
+          "weight": 20.0,
+          "amount": [1, 1]
+        }
       ]
     },
     "Lootlist_e_dra_2025_reward": {
       "comment": "Judgment Day Hero Treasure Chest. The Oct 2026 FAQ adds independent Eye of Avarice and Eye of Beelzebub rolls from Excruciating onward; the chance scales with map difficulty. Official numeric baseline is unpublished, so 5% uses the event's privileged-drop baseline pending an in-game capture.",
       "entries": [
-        {"item": "e_bgh_ancestors_soul", "chance": 0.02, "maximum_difficulty": 6, "comment": "The official Mar 2026 hotfix says Arcane Dragon Essence can drop here from Normal through Merciless. The numeric rate is not published; 2% is the server baseline. Bloodshed is guaranteed.", "amount": [1, 1]},
-        {"item": "e_bgh_ancestors_soul", "minimum_difficulty": 8, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_avarice", "chance": 0.05, "minimum_difficulty": 2, "scale_chance_with_difficulty": true, "amount": [1, 1]},
-        {"item": "item_ingredient_eye_of_demon", "chance": 0.05, "minimum_difficulty": 2, "scale_chance_with_difficulty": true, "amount": [1, 1]}
+        {
+          "item": "e_bgh_ancestors_soul",
+          "chance": 0.02,
+          "maximum_difficulty": 6,
+          "comment": "The official Mar 2026 hotfix says Arcane Dragon Essence can drop here from Normal through Merciless. The numeric rate is not published; 2% is the server baseline. Bloodshed is guaranteed.",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_bgh_ancestors_soul",
+          "minimum_difficulty": 8,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_avarice",
+          "chance": 0.05,
+          "minimum_difficulty": 2,
+          "scale_chance_with_difficulty": true,
+          "amount": [1, 1]
+        },
+        {
+          "item": "item_ingredient_eye_of_demon",
+          "chance": 0.05,
+          "minimum_difficulty": 2,
+          "scale_chance_with_difficulty": true,
+          "amount": [1, 1]
+        }
       ]
     },
     "CHEST_lootlist_BLOODSHED": {
@@ -176,10 +557,18 @@
           "chance": 0.05,
           "amount": [1, 1],
           "item_options_by_class": {
-            "warrior": ["warrior_unique_ring_bgh"],
-            "mage": ["mage_unique_ring_bgh"],
-            "ranger": ["ranger_unique_ring_bgh"],
-            "dwarf": ["dwarf_unique_ring_bgh"]
+            "warrior": [
+              "warrior_unique_ring_bgh"
+            ],
+            "mage": [
+              "mage_unique_ring_bgh"
+            ],
+            "ranger": [
+              "ranger_unique_ring_bgh"
+            ],
+            "dwarf": [
+              "dwarf_unique_ring_bgh"
+            ]
           }
         },
         {
@@ -187,10 +576,18 @@
           "chance": 0.05,
           "amount": [1, 1],
           "item_options_by_class": {
-            "warrior": ["warrior_unique_ring_bgh"],
-            "mage": ["mage_unique_ring_bgh"],
-            "ranger": ["ranger_unique_ring_bgh"],
-            "dwarf": ["dwarf_unique_ring_bgh"]
+            "warrior": [
+              "warrior_unique_ring_bgh"
+            ],
+            "mage": [
+              "mage_unique_ring_bgh"
+            ],
+            "ranger": [
+              "ranger_unique_ring_bgh"
+            ],
+            "dwarf": [
+              "dwarf_unique_ring_bgh"
+            ]
           }
         },
         {
@@ -198,6 +595,1563 @@
           "chance": 0.2,
           "amount": [1, 1],
           "item": "jewel_bgh_key_drop_magic"
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_reward_pet": {
+      "comment": "Kalodoro Summer Solstice Token chest (10 tokens): the event guide names the Melon Pug; static stickerbook data resolves the reward to the Uncommon pet. During summer_festival_event_01, the current official rules add one Summer Solstice Celebration Chest.",
+      "entries": [
+        {
+          "item": "pet_pug_melon_uncommon",
+          "amount": [1, 1]
+        },
+        {
+          "item": "summer_solstice_celebration_chest",
+          "event": "summer_festival_event_01",
+          "map": "e_sum_city_01",
+          "amount": [1, 1]
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_reward_mount": {
+      "comment": "Kalodoro Summer Solstice Token chest (10 tokens): one permanent Summer Solstice Horse. During summer_festival_event_01, the current official rules add one Summer Solstice Celebration Chest.",
+      "entries": [
+        {
+          "item": "mount_summer_horse_01",
+          "amount": [1, 1]
+        },
+        {
+          "item": "summer_solstice_celebration_chest",
+          "event": "summer_festival_event_01",
+          "map": "e_sum_city_01",
+          "amount": [1, 1]
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_reward_jewel_new": {
+      "comment": "Kalodoro Summer Solstice Token chest (10 tokens): the supplied event guide shows one Common Jewel of Lasting Health. During summer_festival_event_01, the current official rules add one Summer Solstice Celebration Chest.",
+      "entries": [
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": [1, 1]
+        },
+        {
+          "item": "summer_solstice_celebration_chest",
+          "event": "summer_festival_event_01",
+          "map": "e_sum_city_01",
+          "amount": [1, 1]
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_reward_rune": {
+      "comment": "Kalodoro Summer Solstice Token chest (10 tokens): common rune rewards transcribed from the supplied guide (Fortitude, two Regeneration runes, Fire Resilience, and Andermagic Resilience). During summer_festival_event_01, the current official rules add one Summer Solstice Celebration Chest.",
+      "entries": [
+        {
+          "item": "unique_gem_armor_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_healthregen_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_healthregen_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_resistance_fire_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "unique_gem_resistance_andermagic_00",
+          "amount": [1, 1]
+        },
+        {
+          "item": "summer_solstice_celebration_chest",
+          "event": "summer_festival_event_01",
+          "map": "e_sum_city_01",
+          "amount": [1, 1]
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_reward_gem": {
+      "comment": "Kalodoro Summer Solstice Token chest (10 tokens): the supplied guide shows nine gem rewards. Server stat gem templates map Royal=i, Trapezoid=j, Refined Trapezoid=k, Brilliant Trapezoid=l, Exquisite Trapezoid=m, Imperial=n; its legacy Sapphire template supplies the movement-speed Rhodolite reward. During summer_festival_event_01, the current official rules add one Summer Solstice Celebration Chest.",
+      "entries": [
+        {
+          "item": "gem_diamond_fire_i",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_diamond_ice_n",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_block_l",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_attackspeed_i",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_sapphire_i",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_cyanit_j",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_block_j",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_diamond_andermagic_k",
+          "amount": [1, 1]
+        },
+        {
+          "item": "gem_diamond_poison_i",
+          "amount": [1, 1]
+        },
+        {
+          "item": "summer_solstice_celebration_chest",
+          "event": "summer_festival_event_01",
+          "map": "e_sum_city_01",
+          "amount": [1, 1]
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_fishing_vat": {
+      "comment": "Fishing Vat reward roll. The 1x Fishing Rod cost is enforced by the StateObject KeyId/KeyAmount.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_fish",
+          "amount": [1, 1],
+          "roll_group": "fishing_reward",
+          "weight": 30,
+          "comment": "Sun Fish quest item; listed as a Fishing reward."
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [10, 25],
+          "roll_group": "fishing_reward",
+          "weight": 25,
+          "comment": "Solar Coins."
+        },
+        {
+          "item": "lockpick",
+          "amount": [1, 5],
+          "roll_group": "fishing_reward",
+          "weight": 15,
+          "comment": "Lockpicks."
+        },
+        {
+          "item": "e_sum_01_minigame_ticket_01",
+          "amount": [1, 1],
+          "roll_group": "fishing_reward",
+          "weight": 10,
+          "comment": "Mini-game Ticket."
+        },
+        {
+          "item": "item_ingredient_spirit_flame_stone",
+          "amount": [1, 5],
+          "roll_group": "fishing_reward",
+          "weight": 10,
+          "comment": "Spirit stone reward family."
+        },
+        {
+          "item": "misc_colorize_fk_Cyan_003",
+          "amount": [1, 1],
+          "roll_group": "fishing_reward",
+          "weight": 5,
+          "comment": "Customization dye."
+        },
+        {
+          "item": "gem_ruby_a",
+          "amount": [1, 1],
+          "roll_group": "fishing_reward",
+          "weight": 10,
+          "comment": "Low-rarity gem."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_01": {
+      "comment": "Summer Solstice Arena off reward chest 1; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Common Jewel of Health Regeneration while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_02": {
+      "comment": "Summer Solstice Arena off reward chest 2; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Common Jewel of Health Regeneration while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_03": {
+      "comment": "Summer Solstice Arena off reward chest 3; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_04": {
+      "comment": "Summer Solstice Arena off reward chest 4; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_05": {
+      "comment": "Summer Solstice Arena off reward chest 5; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_06": {
+      "comment": "Summer Solstice Arena off reward chest 6; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_off_minigame_07": {
+      "comment": "Summer Solstice Arena off reward chest 7; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_off",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_01": {
+      "comment": "Summer Solstice Arena def reward chest 1; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_02": {
+      "comment": "Summer Solstice Arena def reward chest 2; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_03": {
+      "comment": "Summer Solstice Arena def reward chest 3; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_04": {
+      "comment": "Summer Solstice Arena def reward chest 4; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_05": {
+      "comment": "Summer Solstice Arena def reward chest 5; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_06": {
+      "comment": "Summer Solstice Arena def reward chest 6; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_arena_def_minigame_07": {
+      "comment": "Summer Solstice Arena def reward chest 7; guaranteed quest proof plus Solar Coins.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_def",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [5, 15]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_summer_event_magic",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Jewel of Scorching Ray while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "item_ingredient_mercenary_verdant",
+          "amount": [10, 25],
+          "chance": 0.2,
+          "comment": "2026 official event source confirms this shard drops from Meanie Rumble and Arena of Endurance chests; rate/stack are server tuning because the source publishes no odds."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_chest_minigame": {
+      "comment": "Underground Chamber banked chest reward.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_gamble",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [10, 25]
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Common Jewel of Health Regeneration while wearing the full Summer Festival Attire."
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.05,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        }
+      ]
+    },
+    "CHEST_lootlist_e_sum_01_chest_minigame_jackpot": {
+      "comment": "Underground Chamber jackpot chest reward.",
+      "entries": [
+        {
+          "item": "e_sum_01_progress_mini_gamble",
+          "amount": [1, 1]
+        },
+        {
+          "item": "e_sum_coins",
+          "amount": [25, 50]
+        },
+        {
+          "item": "e_sum_01_fishing_rod_01",
+          "amount": [1, 1],
+          "chance": 0.1,
+          "comment": "Fishing Rod chance; official event guide confirms the other three minigames can award rods."
+        },
+        {
+          "item_options_by_class": {
+            "dwarf": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_dwarf"
+            ],
+            "mage": [
+              "jewel_unique_damage_AreaDamageFireOnHit_common_mage"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Fiery Flower Jewel."
+        },
+        {
+          "item_options_by_class": {
+            "ranger": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_ranger"
+            ],
+            "warrior": [
+              "jewel_unique_damage_AreaDamageLightningOnHit_common_warrior"
+            ]
+          },
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% class-appropriate Common Thundering Flower Jewel."
+        },
+        {
+          "item": "jewel_buff_critical_attackspeed_onHitCritical_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Rage."
+        },
+        {
+          "item": "jewel_resource_cost_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Relentlessness."
+        },
+        {
+          "item": "jewel_skill_cooldown_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Focus."
+        },
+        {
+          "item": "jewel_unique_damage_HealthGlobeDamageBuff_common",
+          "amount": [1, 1],
+          "chance": 0.005,
+          "comment": "0.5% Common Jewel of Amplified Healing."
+        },
+        {
+          "item": "jewel_buff_health_reg_common",
+          "amount": [1, 1],
+          "chance": 0.01,
+          "required_active_costumes": [
+            "costume_event_pass_sum_warrior",
+            "costume_event_pass_sum_mage",
+            "costume_event_pass_sum_ranger",
+            "costume_event_pass_sum_dwarf"
+          ],
+          "comment": "1% Common Jewel of Health Regeneration while wearing the full Summer Festival Attire."
         }
       ]
     }
@@ -236,7 +2190,6 @@
     "e_tow_03_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
     "e_tow_04_event_chest_normal_loot": "CHEST_amphora_normal_MAIN",
     "e_tow_04_challenge_event_chest_loot": "CHEST_amphora_normal_MAIN",
-
     "e_dra_03_event_chest_golden": "CHEST_amphora_golden_MAIN",
     "e_dra_03_event_chest_golden_challenge": "CHEST_amphora_golden_MAIN",
     "CHEST_fullmoon_event_chest_golden_day_main": "CHEST_amphora_golden_MAIN",
@@ -255,7 +2208,6 @@
     "e_tow_03_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
     "e_tow_04_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
     "e_tow_04_challenge_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
-
     "e_dra_03_event_chest_small": "CHEST_amphora_small_MAIN",
     "CHEST_fullmoon_varholm_day_small_amphora_main": "CHEST_amphora_small_MAIN",
     "CHEST_fullmoon_varholm_night_small_amphora_main": "CHEST_amphora_small_MAIN",

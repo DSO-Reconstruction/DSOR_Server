@@ -401,6 +401,7 @@ class MapLootEntry:
     scale_chance_with_difficulty: bool = False
     scale_stack_amount_with_difficulty: bool = True
     difficulty_amounts: tuple[int, ...] = ()
+    item_options: tuple[str, ...] = ()
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     require_class_option: bool = False
     minimum_difficulty: int = 0
@@ -977,6 +978,8 @@ class EventCatalog:
             item_options = entry.item_options_by_class.get(
                 str(class_name).casefold(), ()
             )
+            if not item_options and entry.item_options:
+                item_options = entry.item_options
             if (
                 not item_options
                 and entry.item_options_by_class
@@ -1452,6 +1455,10 @@ def _map_loot_lists(
             raise ValueError(f"map loot for {map_id!r} must be an array")
         parsed = []
         for entry in entries:
+            item_options = tuple(
+                str(value) for value in entry.get("item_options") or ()
+                if str(value)
+            )
             raw_class_options = dict(entry.get("item_options_by_class") or {})
             class_options = {}
             for class_name, values in raw_class_options.items():
@@ -1461,10 +1468,9 @@ def _map_loot_lists(
                         f"map loot class options for {class_name!r} cannot be empty"
                     )
                 class_options[str(class_name).casefold()] = options
-            all_options = tuple(
-                item_id
-                for options in class_options.values()
-                for item_id in options
+            all_options = (
+                *item_options,
+                *(item_id for options in class_options.values() for item_id in options),
             )
             item_id = str(entry.get("item") or (all_options[0] if all_options else ""))
             item = item_rows.get(item_id)
@@ -1570,6 +1576,7 @@ def _map_loot_lists(
                     entry.get("scale_stack_amount_with_difficulty", True)
                 ),
                 difficulty_amounts=difficulty_amounts,
+                item_options=item_options,
                 item_options_by_class=MappingProxyType(class_options),
                 require_class_option=bool(entry.get("require_class_option")),
                 minimum_difficulty=max(

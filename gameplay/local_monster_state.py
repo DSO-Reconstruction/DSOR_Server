@@ -3414,6 +3414,12 @@ def _load_map_monster_templates(
             )
             else map_prefix
         )
+        # Kalodoro's map is named e_sum_dun_01, while its ordinary mobs use
+        # the e_sum_01_* template family. Without this authored alias the
+        # empty map-prefix query falls back to the only ungated fixed actor:
+        # Guardian Straying Lava Hound, and fills every density area with it.
+        if str(map_id).casefold() == "e_sum_dun_01":
+            map_prefix = "e_sum_01_normal_"
         rows = database.execute(
             """
             SELECT Id

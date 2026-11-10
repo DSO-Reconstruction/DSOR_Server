@@ -34,6 +34,11 @@ AIMED_STRATEGY = "staticstrategy"
 DRAGAN_LASER_TEMPLATES = frozenset({
     "e_dra_fortress_normal_powernode",
     "e_dra_fortress_invisible_laser",
+    # Summer Solstice Arena of Endurance hazards are authored as 1-HP
+    # monsters, but their aura is the damage source. Keep their aura active
+    # while preventing attacks from destroying the hazard actor.
+    "e_sum_01_arena_def_normal_sandstorm_01",
+    "e_sum_01_arena_def_normal_sandstorm_02",
 })
 
 

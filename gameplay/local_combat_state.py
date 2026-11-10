@@ -14655,6 +14655,19 @@ class LocalCombatState:
                 continue
             monster = self.monsters[actor_id]
             if (
+                self.encounter.map_id.casefold() == "e_sum_minidun_arena_01"
+                and monster.template_id.casefold() in {
+                    "e_sum_01_arena_def_normal_sandstorm_01",
+                    "e_sum_01_arena_def_normal_sandstorm_02",
+                }
+            ):
+                # These Arena tornadoes are environmental hazards. Their
+                # inherited e_zah_01_boss_sandstorm_suicide skill is being
+                # resolved as a direct attack on the player (4114 damage
+                # every ~0.45s in live logs). Arena damage is handled by the
+                # dedicated beam and Sandstorm aura checks instead.
+                continue
+            if (
                 self.encounter.map_id.casefold() == "f4203_boss"
                 and monster.template_id.casefold() == "f4203_boss_06_ram"
             ):

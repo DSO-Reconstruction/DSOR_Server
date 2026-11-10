@@ -167,7 +167,7 @@ class PlayerRespawnService:
         s.gameplay_last_visited_town = str(
             getattr(persisted_state, "last_visited_town", "") or ""
         )
-        if self.static_database.gameplay_map_ruleset(map_id) == 5:
+        if self.static_database.gameplay_map_is_city_hub(map_id):
             s.gameplay_last_visited_town = map_id
         CharacterService._cancel_player_death_dialog(s)
         s.gameplay_death_pending = False

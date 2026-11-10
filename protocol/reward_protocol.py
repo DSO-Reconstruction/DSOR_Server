@@ -9,6 +9,15 @@ from dso_server.gameplay.ocp_store import (
     HALLOWEEN_BUNDLE_PRODUCT_KEY,
     HALLOWEEN_MEDIUM_PIE_PRODUCT_KEY,
     HALLOWEEN_SMALL_PIE_PRODUCT_KEY,
+    SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY,
+    SUMMER_FESTIVAL_PREP_START_PRODUCT_KEY,
+    SUMMER_FESTIVAL_START_PRODUCT_KEY,
+    SUMMER_FORTUNE_BAG_SMALL_PRODUCT_KEY,
+    SUMMER_FORTUNE_BAG_MEDIUM_PRODUCT_KEY,
+    SUMMER_FORTUNE_BAG_BIG_PRODUCT_KEY,
+    SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY,
+    SUMMER_LUCKY_CHEST_PRODUCT_KEY,
+    SUMMER_SET_CHEST_PRODUCT_KEY,
     DRAGAN_ATTIRE_PRODUCT_KEY,
     DRAGAN_EYE_OF_AVERSION_PRODUCT_KEY,
     DRAGAN_EYE_OF_COLLAPSE_PRODUCT_KEY,
@@ -287,6 +296,19 @@ def resolve_ocp_booking_reward(
                 "skin_dwarf_unique_backitem_attire_biggamehunt_01"
                 if class_name == "dwarf"
                 else "skin_all_unique_backitem_attire_biggamehunt_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
+            )
+        if offer_id == SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_sum_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_sum_01"
             )
             attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
             return OCPBookingReward(
@@ -783,6 +805,46 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_223, 9.90, False, "€", HALLOWEEN_BIG_PIE_PRODUCT_KEY, "", ""),
     OCPOffer(180_224, 9.90, False, "€", HALLOWEEN_BUNDLE_PRODUCT_KEY, "", ""),
     OCPOffer(180_225, 9.90, False, "€", HALLOWEEN_ATTIRE_PRODUCT_KEY, "", ""),
+    # The summer PaymentPackages row and event_pass_summer offer group are
+    # native; route the confirmed purchase to the active character's outfit.
+    OCPOffer(
+        180_226, 9.90, False, "€",
+        SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY, "", "",
+    ),
+    # All remaining Summer Solstice OCP products reuse their native package
+    # keys and route the template offer-group contents after purchase.
+    OCPOffer(
+        180_227, 9.90, False, "€",
+        SUMMER_FESTIVAL_PREP_START_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_228, 9.90, False, "€",
+        SUMMER_FESTIVAL_START_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_229, 9.90, False, "€",
+        SUMMER_FORTUNE_BAG_SMALL_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_230, 9.90, False, "€",
+        SUMMER_FORTUNE_BAG_MEDIUM_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_231, 9.90, False, "€",
+        SUMMER_FORTUNE_BAG_BIG_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_232, 9.90, False, "€",
+        SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_233, 9.90, False, "€",
+        SUMMER_LUCKY_CHEST_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_234, 9.90, False, "€",
+        SUMMER_SET_CHEST_PRODUCT_KEY, "", "",
+    ),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

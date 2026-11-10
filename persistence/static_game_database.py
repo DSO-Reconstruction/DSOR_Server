@@ -554,6 +554,31 @@ class StaticGameDatabase:
         # dso_server_legacy/docs/LEGACY_FORK.md.
         return 5 if str(row[0]) == "Hub" else 1
 
+    def gameplay_map_is_city_hub(self, map_id: str) -> bool:
+        """Return whether a map is an actual city hub for return routing.
+
+        Some event maps are authored with ``AreaType='Hub'`` because they
+        expose hub-style services, but they are not city destinations. In
+        particular, treating those maps as the character's last town can
+        route the symbolic ``Hub`` travel request straight back into the
+        event map.
+        """
+
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                compat.map_template_row_query(
+                    connection, ("MapType", "AreaType"),
+                ),
+                (str(map_id),),
+            ).fetchone()
+        if row is None:
+            return False
+        map_type, area_type = row
+        return (
+            str(area_type or "").casefold() == "hub"
+            and str(map_type or "").casefold() != "event"
+        )
+
     def gameplay_map_chat_region(self, map_id: str) -> str:
         """Return the database-owned chat region for a gameplay map."""
 

@@ -280,6 +280,7 @@ class QuestDefinition:
     rewards: tuple[QuestReward, ...]
     bound_to_map: bool = False
     accept_inventory_drops: tuple[Drop, ...] = ()
+    enabled_live: bool = True
 
     @property
     def key(self) -> str:
@@ -591,6 +592,7 @@ def _parse_quest(element: ET.Element) -> QuestDefinition:
         rewards=rewards,
         bound_to_map=_bool(element.get("boundToMap")),
         accept_inventory_drops=accept_inventory_drops,
+        enabled_live=_bool(element.get("enabledLive", "true")),
     )
 
 
@@ -659,7 +661,8 @@ class QuestCatalog:
         if quest.key in known and not quest.repeatable:
             return False
         return (
-            quest.accepts_class(class_name)
+            quest.enabled_live
+            and quest.accepts_class(class_name)
             and quest.accepts_level(level)
             and quest.requirements_met(closed_quests)
             and quest.event_requirement_met(active_events)
