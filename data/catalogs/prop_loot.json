@@ -1,6 +1,221 @@
 {
   "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). Entries sharing 'roll_group' form one weighted, one-of roll. 'minimum_difficulty' and 'maximum_difficulty' gate entries and 'scale_chance_with_difficulty' applies map difficulty drop factors to 'chance'. 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible; 'event_progress_item' restricts it to one currently active page collectible. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
+    "CHEST_e_stego_arena_chest_01": {
+      "comment": "Cosmic Chest rewards from the Stellar Gold event guide, plus Golden Phoenix listed in DSO release 260.91 notes. Individual odds are unpublished; the reward group uses equal weights as a fallback.",
+      "entries": [
+        {
+          "item": "e_stego_progress_01",
+          "amount": [25, 25],
+          "roll_group": "cosmic_chest_stellar_gold",
+          "weight": 1
+        },
+        {
+          "item": "e_stego_progress_01",
+          "amount": [80, 80],
+          "roll_group": "cosmic_chest_stellar_gold",
+          "weight": 1
+        },
+        {
+          "item": "e_stego_progress_01",
+          "amount": [200, 200],
+          "roll_group": "cosmic_chest_stellar_gold",
+          "weight": 1
+        },
+        {
+          "item": "epicmount_rocket_02",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [150, 150],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [250, 250],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [500, 500],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "pet_pixie_golden_uncommon",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "pet_pixie_golden_magic",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "pet_phoenix_golden",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_e",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_f",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_g",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [20, 20],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [50, 50],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "lockpick",
+          "amount": [8, 8],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "lockpick",
+          "amount": [13, 13],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "gilded_clover",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "currency_stickerbook_upgrade",
+          "amount": [3, 3],
+          "roll_group": "cosmic_chest_reward",
+          "weight": 1
+        },
+        {
+          "item": "epicmount_rocket_02",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [150, 150],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [250, 250],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "rc_ammunition_ammotype_15",
+          "amount": [500, 500],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "pet_pixie_golden_uncommon",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "pet_pixie_golden_magic",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "pet_phoenix_golden",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_e",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_f",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "lootbox_gems_g",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [20, 20],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "e_chr_2012_event_currency",
+          "amount": [50, 50],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "lockpick",
+          "amount": [8, 8],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "lockpick",
+          "amount": [13, 13],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "gilded_clover",
+          "amount": [1, 1],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        },
+        {
+          "item": "currency_stickerbook_upgrade",
+          "amount": [3, 3],
+          "roll_group": "cosmic_chest_reward_second",
+          "weight": 1
+        }
+      ]
+    },
     "CHEST_lootlist_MAGIC": {
       "comment": "Locked scaling magic chests spend five lockpicks. Their rewards are rolled from the static chest contents in services/map_events.py.",
       "entries": []

@@ -974,6 +974,13 @@ _PARALLEL_WORLD_BOSS_REWARD_CHESTS = {
         "boss_gorga", "pw027_spawn_chest",
     ),
 }
+
+_STELLAR_GOLD_FINAL_BOSSES = frozenset({
+    "e_stego_boss_destructor_gold",
+    "e_stego_boss_herald_gold",
+    "e_stego_boss_nefertari_gold",
+    "e_stego_boss_sigrismarr_gold",
+})
 _BLOOD_CHEST_GEM_TEMPLATES = (
     "gem_amethyst_e", "gem_cyanit_e", "gem_diamond_e",
     "gem_onyx_e", "gem_ruby_e",
@@ -7950,6 +7957,25 @@ class MapEventService:
                 viewer, packet, packet_bits, label=label,
             )
 
+    def _publish_stellar_gold_barrier_open(self, runtime, sessions) -> None:
+        packet, packet_bits = encode_server_command_batch((
+            ServerCommand(
+                OBSTACLE_UPDATE_COMMAND,
+                # ObstacleUpdate addresses the obstacle's authored Name, not
+                # its map row ID or _ID. The DB4 names this gate "ed_barrier".
+                ObstacleUpdate((ObstacleState("ed_barrier", 2),)),
+                LOCAL_PLAYER_ACTOR_ID,
+            ),
+        ))
+        for viewer in sessions:
+            CharacterService._send_world_loot_state_batch(
+                viewer, packet, packet_bits, label="stellar-gold-barrier-open",
+            )
+        _log(
+            f"opened Stellar Gold arena obstacle on {runtime.map_id} "
+            f"for {len(sessions)} player(s)"
+        )
+
     def _open_f4203_ram_gate(self, runtime, sessions) -> None:
         with runtime.lock:
             door_event_set_row = runtime.f4203_ram_door_event_set_row
@@ -8461,6 +8487,14 @@ class MapEventService:
         if transition.active and transition.event.key == "boss_death":
             self._silence_arena_hazards(runtime, sessions)
         if (
+            transition.active
+            and map_key(runtime.map_id) == "e_stego_arena_01"
+            and transition.event.key == "e_stego_barrier_removal_01"
+        ):
+            # EventUpdate removes the visible EventSet, but the client's
+            # obstacle controller retains collision until state 2 is sent.
+            self._publish_stellar_gold_barrier_open(runtime, sessions)
+        if (
             map_key(runtime.map_id) == "e_bos_arena_01"
             and transition.enabled_sets
         ) or (
@@ -8564,6 +8598,14 @@ class MapEventService:
         suppressed_client_spawn_events = active_flags & set(
             candidate_spawn_events
         )
+        if (
+            target_map == "e_stego_arena_01"
+            and "e_stego_boss_spawn_01" in active_flags
+        ):
+            # The final-boss EventSet contains four alternatives. The server
+            # selects and publishes one actor; activating this flag on the
+            # client would instantiate all four authored candidates locally.
+            suppressed_client_spawn_events.add("e_stego_boss_spawn_01")
         client_active_flags = active_flags - suppressed_client_spawn_events
         for event_key in referenced:
             event = catalog.event(event_key)
@@ -9409,6 +9451,34 @@ class MapEventService:
                 f"kept {len(companion_rows)} nearby companion row(s) and "
                 f"suppressed {len(special_rows) - 1} alternate fixed row(s)"
             )
+        if map_key(runtime.map_id) == "e_stego_arena_01":
+            final_boss_rows = tuple(
+                row for row in rows
+                if int(row.event_set_row) == 1587
+                and row.template_id.casefold() in _STELLAR_GOLD_FINAL_BOSSES
+            )
+            if final_boss_rows:
+                with runtime.lock:
+                    selected_boss = runtime.stellar_gold_final_boss_spawn
+                    if selected_boss is None:
+                        selected_row = random.choice(final_boss_rows)
+                        selected_boss = (
+                            int(selected_row.row_id),
+                            selected_row.template_id.casefold(),
+                        )
+                        runtime.stellar_gold_final_boss_spawn = selected_boss
+                rows = tuple(
+                    row for row in rows
+                    if row.template_id.casefold() not in _STELLAR_GOLD_FINAL_BOSSES
+                    or (
+                        int(row.row_id) == selected_boss[0]
+                        and row.template_id.casefold() == selected_boss[1]
+                    )
+                )
+                _log(
+                    f"Stellar Gold selected final boss {selected_boss[1]!r} "
+                    f"from {len(final_boss_rows)} candidate(s) on {runtime.map_id}"
+                )
         authored_rotations = {row.row_id: row.rotation for row in rows}
         # An EventSet keeps one row per difficulty variant of its boss (the
         # Heredur arena's BOSS_spawn set holds ten ``boss_heredur_scaling``
@@ -9951,6 +10021,12 @@ class MapEventService:
                                 "rank_champion", "rank_leader",
                                 "rank_sentinel",
                             }
+                        )
+                        or (
+                            map_key(combat.encounter.map_id)
+                            == "e_stego_arena_01"
+                            and combat.monsters[actor_id].rank_id.casefold()
+                            == "rank_sentinel"
                         )
                         or (
                             load_map_encounter_policy(

@@ -1657,6 +1657,14 @@ def _monster_character_set(
 
 _ELITE_RANK_FAMILIES = ("champion", "leader", "guardian")
 
+# This arena hazard uses a point targeted Shifted skill whose impact is made
+# from LocationStatusEffects instead of a projectile. Its authored skill has
+# no SkillBulletId, so the ordinary guard below skips the only attack on the
+# invisible ice shooter and the map event cannot materialize that actor.
+_LOCATION_EFFECT_SHIFTED_SKILLS_WITHOUT_BULLET = frozenset({
+    "e_stego_boss_sigrismarr_inv_multi_frost_explosion",
+})
+
 
 def _bgh_boss_health_multiplier(map_id: str, template_id: str) -> float:
     """Raise authored BGH boss health while retaining normal map scaling."""
@@ -2438,6 +2446,10 @@ def _load_runtime_template(
             skill_resource_id = skill_resource_id.strip()
             if not skill_resource_id:
                 continue
+            location_effect_shift = (
+                skill_resource_id.casefold()
+                in _LOCATION_EFFECT_SHIFTED_SKILLS_WITHOUT_BULLET
+            )
             skill_row = database.execute(
                 """
                 SELECT s.rowid - 1, HitFrame, MotionUnblockFrame,
@@ -2521,10 +2533,15 @@ def _load_runtime_template(
                 # projectile must never use the point-free BulletSkill payload.
                 command_id = TARGET_POINT_BULLET_SKILL_COMMAND
             elif skill_type == "Shifted" and (
-                has_bullet or skill_resource_id.casefold() == "bossmortisunbound_gravedigger"
+                has_bullet
+                or skill_resource_id.casefold() == "bossmortisunbound_gravedigger"
+                or location_effect_shift
             ) and targeting_type.casefold() in {
                 "radius", "point", "location", "randomposition",
             }:
+                # Sigrismarr's invisible ice shooter casts a ground effect
+                # from LocationStatusEffects, so its authored Shifted skill
+                # deliberately has no projectile bullet.
                 command_id = SHIFTED_SKILL_COMMAND
             elif summon and skill_type == "Shifted":
                 command_id = SHIFTED_SKILL_COMMAND

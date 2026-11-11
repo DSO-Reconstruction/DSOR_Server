@@ -2111,6 +2111,9 @@ class MapEventRuntime:
     # locations. Keep the one selected actor for this map run so a replay of
     # the event publication cannot choose a second point (or reroll goblin).
     scaling_dungeon_sentinel_spawn: tuple[int, str] | None = None
+    # Stellar Gold releases one randomly selected final boss per arena run.
+    # Retain its authored SpawnPoint row so event replay cannot reroll it.
+    stellar_gold_final_boss_spawn: tuple[int, str] | None = None
     a_mighty_threat_position: tuple[float, float, float] | None = None
     a_mighty_threat_chest_revealed: bool = False
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
