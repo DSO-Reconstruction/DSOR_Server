@@ -32,6 +32,39 @@ _ORSHA_MACHINE_BABY_TEMPLATES = (
 )
 
 _EVENT_AREA_TEMPLATE_OVERRIDES = {
+    # e_viscanium_submarine_01 has five test spawn volumes instead of the
+    # retail per-area list registry. The map's two fixed champion spawnpoints
+    # are the only champions used by the Sentinel unlock signal; keep all
+    # density areas on ordinary dark dwarves.
+    ("e_viscanium_submarine_01", -1, 1): (
+        "e_ide_02_harbor_engineer_01",
+        "e_ide_02_harbor_dark_dwarf_01",
+        "e_ide_02_harbor_buzzsaw_01",
+        "e_ide_02_harbor_dark_dwarf_gunner_01",
+    ),
+    ("e_viscanium_submarine_01", -1, 2): (
+        "e_ide_02_harbor_engineer_01",
+        "e_ide_02_harbor_dark_dwarf_01",
+        "e_ide_02_harbor_buzzsaw_01",
+        "e_ide_02_harbor_dark_dwarf_gunner_01",
+    ),
+    ("e_viscanium_submarine_01", -1, 3): (
+        "e_ide_02_harbor_engineer_01",
+        "e_ide_02_harbor_dark_dwarf_01",
+        "e_ide_02_harbor_buzzsaw_01",
+        "e_ide_02_harbor_dark_dwarf_gunner_01",
+    ),
+    ("e_viscanium_submarine_01", -1, 4): (
+        "e_ide_02_harbor_engineer_01",
+        "e_ide_02_harbor_dark_dwarf_01",
+        "e_ide_02_harbor_buzzsaw_01",
+        "e_ide_02_harbor_dark_dwarf_gunner_01",
+    ),
+    ("e_viscanium_submarine_01", -1, 5): (
+        "e_ide_02_harbor_engineer_01",
+        "e_ide_02_harbor_dark_dwarf_01",
+        "e_ide_02_harbor_buzzsaw_01",
+    ),
     # Varholm's Full Moon night has three champion-rank areas, but the client
     # export omits the server SpawnList registry that selects their actors.
     # The quest kill objectives require these exact champion templates; using

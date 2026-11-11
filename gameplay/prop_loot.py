@@ -50,6 +50,7 @@ class PropLootEntry:
     event_progress_item_id: str
     chance: float
     amount: tuple[int, int]
+    amount_by_difficulty: tuple[int, ...]
     per_level: tuple[float, float] | None
     stacks: int
     map_id: str = ""
@@ -108,6 +109,15 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
     if "per_level" in entry:
         per_level = _range(entry["per_level"], "per_level", minimum=0.0)
     low, high = _range(entry.get("amount", 1), "amount", minimum=1)
+    raw_amount_by_difficulty = entry.get("amount_by_difficulty")
+    amount_by_difficulty = tuple(
+        int(value) for value in raw_amount_by_difficulty
+    ) if isinstance(raw_amount_by_difficulty, list) else ()
+    if any(value < 1 for value in amount_by_difficulty):
+        raise ValueError(
+            f"prop loot list {list_id!r}: amount_by_difficulty values "
+            "must be positive"
+        )
     roll_group = str(entry.get("roll_group") or "").strip().casefold()
     weight = max(0.0, float(entry.get("weight", 0.0)))
     if bool(roll_group) != (weight > 0.0):
@@ -137,6 +147,7 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         ),
         chance=max(0.0, min(1.0, float(entry.get("chance", 1.0)))),
         amount=(int(low), int(high)),
+        amount_by_difficulty=amount_by_difficulty,
         per_level=per_level,
         stacks=max(1, int(entry.get("stacks", 1))),
         map_id=str(entry.get("map") or "").strip().casefold(),
@@ -249,6 +260,11 @@ def roll_prop_loot(
             for _stack in range(entry.stacks):
                 if entry.per_level is not None:
                     amount = max(1, round(level * rng.uniform(*entry.per_level)))
+                elif entry.amount_by_difficulty:
+                    amount = entry.amount_by_difficulty[min(
+                        max(0, int(map_difficulty)),
+                        len(entry.amount_by_difficulty) - 1,
+                    )]
                 else:
                     amount = rng.randint(*entry.amount)
                 result.append((item_id, amount))

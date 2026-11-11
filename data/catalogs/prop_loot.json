@@ -39,6 +39,34 @@
           "event": "dragan_event_03",
           "chance": 0.5,
           "amount": [1, 1]
+        },
+        {
+          "item": "darkdwarf_lightningset_shoulders_chest",
+          "map": "e_z0110_dun",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Shoulders Fortune Chest from a normal event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_cloak_chest",
+          "map": "e_z0110_dun",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Cloak Fortune Chest from a normal event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_shoulders_chest",
+          "map": "e_viscanium_submarine_01",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Shoulders Fortune Chest from a normal event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_cloak_chest",
+          "map": "e_viscanium_submarine_01",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Cloak Fortune Chest from a normal event amphora."
         }
       ]
     },
@@ -68,6 +96,34 @@
           "amount": [1, 3]
         },
         {
+          "item": "darkdwarf_lightningset_shoulders_chest",
+          "map": "e_z0110_dun",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Shoulders Fortune Chest from a golden event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_cloak_chest",
+          "map": "e_z0110_dun",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Cloak Fortune Chest from a golden event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_shoulders_chest",
+          "map": "e_viscanium_submarine_01",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Shoulders Fortune Chest from a golden event amphora."
+        },
+        {
+          "item": "darkdwarf_lightningset_cloak_chest",
+          "map": "e_viscanium_submarine_01",
+          "chance": 0.05,
+          "amount": [1, 1],
+          "comment": "Dark Dwarf Heist test drop: Cloak Fortune Chest from a golden event amphora."
+        },
+        {
           "map": "e_newmoon_blakborg_city_dun",
           "comment": "Golden Festive Amphora in Blackborg: 15% chance to drop one Witch Seeker Strap for the opening character's class.",
           "chance": 0.15,
@@ -86,6 +142,12 @@
               "dwarf_unique_belt_newmoon_set_03"
             ]
           }
+        },
+        {
+          "item": "e_e_viscanium_hardmode_key",
+          "map": "e_z0110_dun",
+          "amount": [50, 50],
+          "comment": "Dark Dwarf Heist Viscanium Mine five-key amphora bonus: 50 Lowering Contraption Burners."
         }
       ]
     },
@@ -2154,6 +2216,69 @@
           "comment": "1% Common Jewel of Health Regeneration while wearing the full Summer Festival Attire."
         }
       ]
+    },
+    "lootlist_darkdwarf_lightningset_shoulders_chest": {
+      "comment": "Dark Dwarf Heist Shoulders Fortune Chest; one weighted outcome with the percentages and quantities shown in the client tooltip.",
+      "entries": [
+        {"item":"set_blackdwarf2026_shoulders_warrior","item_options_by_class":{"warrior":["set_blackdwarf2026_shoulders_warrior"],"mage":["set_blackdwarf2026_shoulders_mage"],"ranger":["set_blackdwarf2026_shoulders_ranger"],"dwarf":["set_blackdwarf2026_shoulders_dwarf"]},"amount":[1,1],"roll_group":"dark_dwarf_heist_shoulders","weight":0.5},
+        {"item":"money_rc","amount":[8000,8000],"roll_group":"dark_dwarf_heist_shoulders","weight":6.5},
+        {"item":"lightningset_material_general","amount":[25,25],"roll_group":"dark_dwarf_heist_shoulders","weight":9},
+        {"item":"event_identify_drop_crystal_piece_02","amount":[200,200],"roll_group":"dark_dwarf_heist_shoulders","weight":9},
+        {"item":"e_ide_02_challenge_progress_01","amount":[200,200],"roll_group":"dark_dwarf_heist_shoulders","weight":9},
+        {"item":"e_ide_02_challenge_progress_02","amount":[200,200],"roll_group":"dark_dwarf_heist_shoulders","weight":10},
+        {"item":"e_ide_01_pickaxe_01","amount":[15,15],"roll_group":"dark_dwarf_heist_shoulders","weight":15},
+        {"item":"e_ide_01_pickaxe_01","amount":[20,20],"roll_group":"dark_dwarf_heist_shoulders","weight":10},
+        {"item":"e_ide_01_pickaxe_01","amount":[30,30],"roll_group":"dark_dwarf_heist_shoulders","weight":6},
+        {"item":"e_sar_chest_key","amount":[10,10],"roll_group":"dark_dwarf_heist_shoulders","weight":10},
+        {"item":"e_sar_chest_key","amount":[15,15],"roll_group":"dark_dwarf_heist_shoulders","weight":5},
+        {"item":"e_sar_chest_key","amount":[20,20],"roll_group":"dark_dwarf_heist_shoulders","weight":10}
+      ]
+    },
+    "lootlist_darkdwarf_lightningset_cloak_chest": {
+      "comment": "Dark Dwarf Heist Cloak Fortune Chest; one weighted outcome with the percentages and quantities shown in the client tooltip.",
+      "entries": [
+        {"item":"set_blackdwarf2026_backitem_warrior","item_options_by_class":{"warrior":["set_blackdwarf2026_backitem_warrior"],"mage":["set_blackdwarf2026_backitem_mage"],"ranger":["set_blackdwarf2026_backitem_ranger"],"dwarf":["set_blackdwarf2026_backitem_dwarf"]},"amount":[1,1],"roll_group":"dark_dwarf_heist_cloak","weight":0.5},
+        {"item":"money_rc","amount":[8000,8000],"roll_group":"dark_dwarf_heist_cloak","weight":5.5},
+        {"item":"lightningset_material_general","amount":[25,25],"roll_group":"dark_dwarf_heist_cloak","weight":10},
+        {"item":"event_identify_drop_crystal_piece_02","amount":[200,200],"roll_group":"dark_dwarf_heist_cloak","weight":14},
+        {"item":"e_ide_02_challenge_progress_01","amount":[200,200],"roll_group":"dark_dwarf_heist_cloak","weight":14},
+        {"item":"e_ide_02_challenge_progress_02","amount":[200,200],"roll_group":"dark_dwarf_heist_cloak","weight":14},
+        {"item":"e_ide_01_pickaxe_01","amount":[30,30],"roll_group":"dark_dwarf_heist_cloak","weight":8},
+        {"item":"e_ide_01_pickaxe_01","amount":[15,15],"roll_group":"dark_dwarf_heist_cloak","weight":6},
+        {"item":"e_ide_01_pickaxe_01","amount":[20,20],"roll_group":"dark_dwarf_heist_cloak","weight":4},
+        {"item":"e_sar_chest_key","amount":[10,10],"roll_group":"dark_dwarf_heist_cloak","weight":10},
+        {"item":"e_sar_chest_key","amount":[15,15],"roll_group":"dark_dwarf_heist_cloak","weight":5},
+        {"item":"e_sar_chest_key","amount":[20,20],"roll_group":"dark_dwarf_heist_cloak","weight":9}
+      ]
+    },
+    "lootlist_darkdwarf_miner_jar_special": {
+      "comment": "Dark Dwarf Heist 2026 official FAQ Miner’s Jar (Special). Every line rolls independently; the jar costs 10 Amphora Keys.",
+      "entries": [
+        {"item":"darkdwarf_lightningset_shoulders_chest","amount":[1,1],"chance":0.05},
+        {"item":"darkdwarf_lightningset_cloak_chest","amount":[1,1],"chance":0.05},
+        {"item":"e_chr_2012_event_currency","amount":[60,60],"chance":0.40},
+        {"item":"e_ide_02_challenge_progress_01","amount":[20,20],"chance":0.50},
+        {"item":"event_identify_drop_crystal_piece_02","amount":[20,20],"chance":0.50},
+        {"item":"e_ide_02_challenge_progress_02","amount":[100,100],"chance":0.50},
+        {"item":"lightningset_material_general","amount":[1,1]},
+        {"item":"lightningset_material_general","amount":[2,2],"chance":0.35},
+        {"item":"lightningset_material_general","amount":[3,3],"chance":0.10},
+        {"item":"e_ide_01_pickaxe_01","amount":[5,5],"chance":0.25},
+        {"item":"e_ide_02_location_key","amount":[5,5],"chance":0.15},
+        {"item":"e_e_viscanium_hardmode_key","amount":[150,150],"chance":0.30}
+      ]
+    },
+    "lootlist_darkdwarf_viscanium_rock": {
+      "comment": "Viscanium Mine rock: the Dark Dwarf Heist guide gives 5 Pure Viscanium per click.",
+      "entries": [
+        {"item":"event_identify_drop_crystal_piece_02","amount":[5,5]}
+      ]
+    },
+    "lootlist_darkdwarf_viscanium_geode": {
+      "comment": "Viscanium Mine geode: consumes one Crystal Miner's Pickaxe and gives guaranteed Pure Viscanium. The guide's difficulty tiers scale from 5 on Normal to 45 on Bloodshed.",
+      "entries": [
+        {"item":"event_identify_drop_crystal_piece_02","amount":[5,5],"amount_by_difficulty":[5,10,15,20,25,30,35,40,45]}
+      ]
     }
   },
   "aliases": {
@@ -2200,7 +2325,9 @@
     "CHEST_e_hal_01_challenge_event_chest_gold_loot": "CHEST_amphora_golden_MAIN",
     "CHEST_dark_dwarf_golden_mine": "CHEST_amphora_golden_MAIN",
     "CHEST_dark_dwarf_golden_mini": "CHEST_amphora_golden_MAIN",
-    "CHEST_dark_dwarf_new_mine": "CHEST_amphora_golden_MAIN",
+    "CHEST_dark_dwarf_new_mine": "lootlist_darkdwarf_miner_jar_special",
+    "SUB_EVENT_dark_dwarf_progress_geode": "lootlist_darkdwarf_viscanium_geode",
+    "SUB_EVENT_dark_dwarf_progress_rock": "lootlist_darkdwarf_viscanium_rock",
     "e_ess_01_event_chest_loot_01": "CHEST_amphora_golden_MAIN",
     "e_dra_04_event_amphora_02": "CHEST_amphora_golden_MAIN",
     "e_time_01_event_chest_gold": "CHEST_amphora_golden_MAIN",

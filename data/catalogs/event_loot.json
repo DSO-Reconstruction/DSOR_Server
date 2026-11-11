@@ -1091,6 +1091,136 @@
         "scale_stack_amount_with_difficulty": false
       }
     ],
+    "e_z0110_dun": [
+      {
+        "comment": "Dark Dwarf Heist 2026 FAQ guarantees 1 Levin's Crystal from a Sentinel on Bloodshed. No lower-difficulty rate is published; 1% is a conservative server estimate there.",
+        "item": "lightningset_material_general",
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 0.01},
+        "amount": {"sentinel": [1, 1]},
+        "maximum_difficulty": 7,
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist 2026 FAQ guarantees exactly 1 Levin's Crystal from a Sentinel on Bloodshed.",
+        "item": "lightningset_material_general",
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 1.0},
+        "amount": {"sentinel": [1, 1]},
+        "minimum_difficulty": 8,
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 1 awards Pure Viscanium progression by difficulty.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_01"],
+        "ranks": ["champion"],
+        "item": "e_ide_02_challenge_progress_01",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [10, 10, 30, 30, 50, 50, 50, 50, 70],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 1 drops 15/30/30/50 Lowering Contraption Burners across Normal–Fatal, Infernal, Merciless, and Bloodshed.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_01"],
+        "ranks": ["champion"],
+        "item": "e_e_viscanium_hardmode_key",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [15, 15, 15, 15, 30, 30, 30, 30, 50],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 2 awards Pure Viscanium progression by difficulty.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_02"],
+        "ranks": ["champion"],
+        "item": "e_ide_02_challenge_progress_01",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [20, 20, 40, 40, 60, 60, 60, 60, 80],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 2 drops 20/35/35/50 Lowering Contraption Burners across Normal–Fatal, Infernal, Merciless, and Bloodshed.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_02"],
+        "ranks": ["champion"],
+        "item": "e_e_viscanium_hardmode_key",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [20, 20, 20, 20, 35, 35, 35, 35, 50],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 3 awards Pure Viscanium progression by difficulty.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_03"],
+        "ranks": ["champion"],
+        "item": "e_ide_02_challenge_progress_01",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [30, 30, 50, 50, 70, 70, 70, 70, 90],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist guide: Mine Champion 3 drops 25/40/40/50 Lowering Contraption Burners across Normal–Fatal, Infernal, Merciless, and Bloodshed.",
+        "monsters": ["dark_dwarf_mini_boss_dragon_03"],
+        "ranks": ["champion"],
+        "item": "e_e_viscanium_hardmode_key",
+        "chance": {"champion": 1.0},
+        "amount": {"champion": [1, 1]},
+        "amount_by_difficulty": [25, 25, 25, 25, 40, 40, 40, 40, 50],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist: Scarlet Prince guarantees one Secret Map of the Viscanium Mine during the event.",
+        "monsters": ["dark_dwarf_boss_dragon"],
+        "ranks": ["sentinel"],
+        "item": "e_ide_02_location_key",
+        "chance": {"sentinel": 1.0},
+        "amount": {"sentinel": [1, 1]},
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_viscanium_submarine_01": [
+      {
+        "comment": "Dark Dwarf Heist 2026 FAQ: event-map Sentinels guarantee 30 Viscanium Ore on Normal, scaling to 45 on Bloodshed. Intermediate difficulty amounts linearly interpolate the published endpoints.",
+        "item": "e_ide_02_challenge_progress_02",
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 1.0},
+        "amount_by_difficulty": [30, 32, 34, 36, 38, 40, 42, 44, 45],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Admiral Iron Creeper guarantees Levin's Crystal. The amount rises by map difficulty and reaches 7 on Bloodshed.",
+        "item": "lightningset_material_general",
+        "ranks": ["sentinel"],
+        "chance": {"sentinel": 1.0},
+        "amount": {"sentinel": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 5, 5, 6, 7],
+        "require_active_events": ["e_ide_challenge_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "*": [
       {
         "item": "e_bgh_all_drop_ingredient",
@@ -1101,6 +1231,16 @@
         "amount": {"worldboss": [1, 1]},
         "amount_by_difficulty": [1, 1, 1, 1, 1, 3, 3, 6, 6, 12],
         "minimum_difficulty": 5,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "Dark Dwarf Heist: 1% chance for the Secret Map of the Viscanium Mine from guardian, leader, champion, and worldboss kills on any map while e_ide_challenge_01 is active.",
+        "item": "e_ide_02_location_key",
+        "ranks": ["guardian", "leader", "champion", "worldboss"],
+        "chance": {"elite": 0.01, "boss": 0.01},
+        "amount": {"elite": [1, 1], "boss": [1, 1]},
+        "require_active_events": ["e_ide_challenge_01"],
         "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
       }

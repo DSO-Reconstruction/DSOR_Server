@@ -126,6 +126,9 @@ class ConsumableDefinition:
     aura_targets: str = ''
     effect_hosts: str = ''
     child_effects: tuple[LinkedStatusEffectDefinition, ...] = ()
+    can_be_used_in_maps: tuple[str, ...] = ()
+    event_id: str = ''
+    only_active_during_event: bool = False
 
     @property
     def is_instant(self) -> bool:
@@ -597,7 +600,8 @@ def _load_consumable_catalog_cached(
             SELECT Id, ItemCategory, StatusEffectId, StatusEffectDuration,
                    StatusEffectTickRate, StatusEffectValue0,
                    StatusEffectValue1, StatusEffectValue2,
-                   StatusEffectValue3, StatusEffectValue4
+                   StatusEffectValue3, StatusEffectValue4,
+                   CanBeUsedInMaps, EventId, OnlyActiveDuringEvent
             FROM _Template_Item
             WHERE ItemCategory IN ('Consumable', 'InstantConsumable')
               AND COALESCE(StatusEffectId, '') <> ''
@@ -676,6 +680,13 @@ def _load_consumable_catalog_cached(
                 inherited_duration_seconds=duration_seconds,
                 inherited_values=values,
             ),
+            can_be_used_in_maps=tuple(
+                value.strip().casefold()
+                for value in str(item['CanBeUsedInMaps'] or '').split(';')
+                if value.strip()
+            ),
+            event_id=str(item['EventId'] or '').strip().casefold(),
+            only_active_during_event=bool(item['OnlyActiveDuringEvent']),
         )
         definitions[definition.item_template_id] = definition
     reward_effects = []
