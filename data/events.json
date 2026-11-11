@@ -79,6 +79,16 @@
       "participation_default": true,
       "collectible_drop_chance": 0.35,
       "collectible_amount": 1
+    },
+    {
+      "event_id": 65559,
+      "template_id": "stellar_gold_event_01",
+      "state": "scheduled",
+      "starts_at": "2026-11-11T19:47:43.127106+00:00",
+      "ends_at": "2026-11-18T19:47:43.127106+00:00",
+      "participation_default": true,
+      "collectible_drop_chance": 0.35,
+      "collectible_amount": 1
     }
   ]
 }

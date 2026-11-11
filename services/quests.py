@@ -3289,6 +3289,19 @@ class QuestService:
             # obstacle controller retains its collision state independently.
             # State 2 opens the obstacle, as for the F4203 ram gate.
             return ObstacleUpdate((ObstacleState("pw206_temple_obstacle", 2),))
+        if map_key(map_id) == "e_stego_arena_01":
+            runtime = getattr(s, "gameplay_map_event_runtime", None)
+            if runtime is not None:
+                with runtime.lock:
+                    barrier_removed = (
+                        "e_stego_barrier_removal_01" in runtime.active_flags()
+                    )
+                if barrier_removed:
+                    # EventUpdate hides the obstacle from the scene, while
+                    # physical collision is controlled by ObstacleUpdate.
+                    return ObstacleUpdate((ObstacleState(
+                        "ed_barrier", 2,
+                    ),))
         return ObstacleUpdate(())
 
     def _quest_refresh_event_state(self, s: Session) -> None:

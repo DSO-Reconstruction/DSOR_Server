@@ -1223,6 +1223,19 @@
     ],
     "*": [
       {
+        "comment": "Stellar Gold golden monsters drop the fixed essence amount for the map difficulty: Painful 60, Excruciating 75, Fatal 81, Infernal 108, Merciless 180, Bloodshed 360 (DSOFUN Stellar Gold event guide). The item is limited to the golden-monster region and the active event.",
+        "item": "rc_ammunition_ammotype_15",
+        "monster_regions": ["StegoEssenceChampion"],
+        "ranks": ["monster"],
+        "chance": {"monster": 1.0},
+        "amount": {"monster": [1, 1]},
+        "amount_by_difficulty": [1, 60, 75, 81, 108, 108, 180, 180, 360],
+        "minimum_difficulty": 1,
+        "require_active_events": ["stellar_gold_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
         "item": "e_bgh_all_drop_ingredient",
         "comment": "50% Empowered Sorcerer's Book drop from Parallel World worldbosses: 3 on PW Infernal, 6 on PW Merciless, 12 on PW Bloodshed. Difficulty tiers between these named PW modes use the nearest lower amount.",
         "map_regions": ["Parallel_World"],
@@ -1529,6 +1542,43 @@
         "chance": {"boss": 1.0},
         "amount_by_difficulty": [5, 7, 9, 11, 15, 17, 20, 25, 40],
         "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
+    "e_stego_arena_01": [
+      {
+        "comment": "Each Stellar Gold Cosmic Goblin guarantees 4-12 Keys of Prowess; use the exact template rather than rank metadata so the reward is not lost to rank classification. Bloodshed is capped at 12 per goblin.",
+        "item": "scaling_dungeon_boss_key_01",
+        "monsters": ["a0000_duria_dungeons_treasure_monster_01"],
+        "chance": {"monster": 1.0},
+        "amount": {"monster": [4, 12]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false,
+        "require_active_events": ["stellar_gold_event_01"]
+      },
+      {
+        "comment": "The Stellar Gold guide's final boss progress table: Painful 270, Excruciating 304, Fatal 348, Infernal 405, Merciless 593, Bloodshed 1010. Normal and PW variants are clamped to the nearest listed tier.",
+        "item": "e_stego_progress_01",
+        "monster_regions": ["StellarGoldBoss"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 1]},
+        "amount_by_difficulty": [1, 270, 304, 348, 405, 405, 593, 593, 1010, 1010],
+        "minimum_difficulty": 1,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false,
+        "require_active_events": ["stellar_gold_event_01"]
+      },
+      {
+        "comment": "Cosmic Chest Key from the final Stellar Gold boss wave. The guide says the chance depends on difficulty but gives no rates; use the final bosses' authored 2% privileged-loot chance, scaled by map difficulty.",
+        "item": "e_stego_chest_key_01",
+        "monster_regions": ["StellarGoldBoss"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 1,
+        "require_active_events": ["stellar_gold_event_01"],
+        "scale_chance_with_difficulty": true,
         "scale_stack_amount_with_difficulty": false
       }
     ]

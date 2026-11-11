@@ -94,6 +94,7 @@ _PIRILTIDAG_SLAVKOFF_VISIBILITY_ENTER_RADIUS = 250.0
 _PIRILTIDAG_SLAVKOFF_VISIBILITY_EXIT_RADIUS = 275.0
 _TIME_HARP_MAP = "c2302_dun"
 _DARK_DWARF_HARBOR_MAP = "e_viscanium_submarine_01"
+_STELLAR_GOLD_ARENA_MAP = "e_stego_arena_01"
 _TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
     "c2302_normal_g_gorgon_q_templeofeternity_03a",
     "c2302_normal_g_gorgon_q_templeofeternity_03a_scale",
@@ -243,6 +244,18 @@ class WorldService:
             # Keep Harbor's Champion, Leader, and Sentinel actors announced
             # map-wide so their client-authored minimap icons remain visible
             # when the player is distant.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _STELLAR_GOLD_ARENA_MAP
+            and monster is not None
+            and (
+                monster.rank_id.casefold() == "rank_sentinel"
+                or monster.rank_id.casefold().startswith("rank_boss")
+            )
+        ):
+            # Cosmic Chest Greedy Goblins and the final bosses have
+            # client-authored minimap markers. Keep those actors map-visible.
             return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             encounter is not None
@@ -943,6 +956,16 @@ class WorldService:
                                     "rank_champion", "rank_leader",
                                     "rank_sentinel",
                                 }
+                            )
+                            or (
+                                encounter.map_id.casefold()
+                                == _STELLAR_GOLD_ARENA_MAP
+                                and (
+                                    combat.monsters[actor_id].rank_id.casefold()
+                                    == "rank_sentinel"
+                                    or combat.monsters[actor_id].rank_id.casefold()
+                                    .startswith("rank_boss")
+                                )
                             )
                         )
                     )
