@@ -3599,6 +3599,7 @@ class MapEventService:
             s, runtime, templates,
         )
         self._fire_map_signal(s, "MonstersEliminated", templates)
+        self._ensure_dark_dwarf_harbor_admiral_spawn(runtime, templates)
         self._fire_map_signal(s, "MonstersEliminatedPercentage", ())
         self._update_fractured_planes_clear_state(s, monsters)
         # Process kill/elimination and room-clear signals before using the
@@ -3616,6 +3617,55 @@ class MapEventService:
             self._resolve_fractured_planes_floor_clear(
                 s, runtime, score_rules=score_rules,
             )
+
+    def _ensure_dark_dwarf_harbor_admiral_spawn(
+            self, runtime: MapEventRuntime | None,
+            killed_templates: tuple[str, ...]) -> None:
+        """Start Harbor's authored Admiral event after both marker champions die.
+
+        The retail ``MonstersEliminated`` signal is still evaluated above.
+        Track the two marker kills on the shared map runtime as a fallback so
+        despawning corpses or imported spawn rows cannot lose the transition.
+        """
+
+        if (
+            runtime is None
+            or map_key(runtime.map_id) != "e_viscanium_submarine_01"
+        ):
+            return
+        anchors = frozenset({
+            "e_ide_02_harbor_champion_engineer_01",
+            "e_ide_02_harbor_champion_dark_dwarf_gunner",
+        })
+        killed = anchors.intersection(
+            str(template).casefold() for template in killed_templates
+        )
+        if not killed:
+            return
+        with runtime.lock:
+            runtime.dark_dwarf_harbor_champions_defeated.update(killed)
+            if (
+                not anchors.issubset(
+                    runtime.dark_dwarf_harbor_champions_defeated
+                )
+                or runtime.dark_dwarf_harbor_admiral_event_scheduled
+            ):
+                return
+            runtime.dark_dwarf_harbor_admiral_event_scheduled = True
+        definition = runtime.catalog.event("dark_dwarf_map2_boss_spwan")
+        if definition is None or not definition.applies_to(runtime.map_id):
+            with runtime.lock:
+                runtime.dark_dwarf_harbor_admiral_event_scheduled = False
+            _log(
+                "Dark Dwarf Harbor Admiral spawn event is missing from the "
+                "map event catalog"
+            )
+            return
+        self._schedule_map_local_event_start(runtime, definition)
+        _log(
+            "started Dark Dwarf Harbor Admiral event after both marker "
+            "champions were defeated"
+        )
 
     def _advance_castle_gwenfara(
             self, s: Session, runtime: MapEventRuntime | None,
@@ -9893,6 +9943,15 @@ class MapEventService:
                     and (
                         combat.monsters[actor_id].template_id.casefold()
                         in _FORCE_ANNOUNCE_EVENT_ACTORS
+                        or (
+                            map_key(combat.encounter.map_id)
+                            == "e_viscanium_submarine_01"
+                            and combat.monsters[actor_id].rank_id.casefold()
+                            in {
+                                "rank_champion", "rank_leader",
+                                "rank_sentinel",
+                            }
+                        )
                         or (
                             load_map_encounter_policy(
                                 combat.encounter.static_database_path,

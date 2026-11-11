@@ -408,6 +408,7 @@ class MapLootEntry:
     required_costumes: frozenset[str] = frozenset()
     require_active_events: frozenset[str] = frozenset()
     require_inactive_events: frozenset[str] = frozenset()
+    maximum_difficulty: int | None = None
     # Optional scope for wildcard entries shared across maps (for example all
     # Parallel World boss arenas). A configured region also matches its
     # suffixed map families, such as Parallel_World_grimmag.
@@ -917,6 +918,11 @@ class EventCatalog:
         )
         for _scope, entry in scoped_entries:
             if int(map_difficulty) < entry.minimum_difficulty:
+                continue
+            if (
+                entry.maximum_difficulty is not None
+                and int(map_difficulty) > entry.maximum_difficulty
+            ):
                 continue
             if entry.required_costumes and current_costume not in entry.required_costumes:
                 continue
@@ -1582,6 +1588,10 @@ def _map_loot_lists(
                 minimum_difficulty=max(
                     0, int(entry.get("minimum_difficulty", 0))
                 ),
+                maximum_difficulty=(
+                    max(0, int(entry["maximum_difficulty"]))
+                    if entry.get("maximum_difficulty") is not None else None
+                ),
                 required_costumes=required_costumes,
                 require_active_events=active_events,
                 require_inactive_events=inactive_events,
@@ -1793,6 +1803,18 @@ def _load_catalog(
                         for value in _tokens(item.get("EventId"))
                     ),
                 ))
+            reward_items = str(bar_row.get("EventRewardItems") or "")
+            if (
+                resource_id.casefold() == "e_ide_challenge_01"
+                and bar_id.casefold() == "e_ide_challenge_01_progressbar_03"
+            ):
+                # The 2026 FAQ's level-100 progress rewards specify 400
+                # Amphora Keys at this tier; the older static row still uses
+                # Sargon chest keys.
+                reward_items = reward_items.replace(
+                    "2/23000:e_sar_chest_key:400",
+                    "2/23000:e_ide_02_chest_key_01:400",
+                )
             bars.append(EventProgressBarDefinition(
                 resource_id=bar_id,
                 minimum_level=max(1, int(bar_row.get("MinPlayerLevel") or 1)),
@@ -1800,7 +1822,7 @@ def _load_catalog(
                 priority=int(bar_row.get("Priority") or 0),
                 collectibles=tuple(collectibles),
                 item_rewards=_parse_reward_entries(
-                    bar_row.get("EventRewardItems"), currency=False
+                    reward_items, currency=False
                 ),
                 currency_rewards=_parse_reward_entries(
                     bar_row.get("EventRewardCurrency"), currency=True

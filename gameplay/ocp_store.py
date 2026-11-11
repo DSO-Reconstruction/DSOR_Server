@@ -86,6 +86,28 @@ SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY = "101_summer_dream_1.0000_0_NONE"
 SUMMER_LUCKY_CHEST_PRODUCT_KEY = "101_summer_lucky_1.0000_0_NONE"
 SUMMER_SET_CHEST_PRODUCT_KEY = "101_summer_set_1.0000_0_NONE"
 
+DARK_DWARF_LEVIN_CRYSTAL_PACKAGE_PRODUCT_KEY = (
+    "101_levin_crystal_pack_1.0000_0_NONE"
+)
+DARK_DWARF_FORGEFYRE_MAGIC_POTION_PRODUCT_KEY = (
+    "101_iridescent_magic_potion_regular_1.0000_0_NONE"
+)
+DARK_DWARF_FORGEFYRE_POTION_PRODUCT_KEY = (
+    "101_iridescent_potion_regular_1.0000_0_NONE"
+)
+DARK_DWARF_LEVIN_CRYSTAL_SUPER_PACKAGE_PRODUCT_KEY = (
+    "101_levin_crystal_super_pack_1.0000_0_NONE"
+)
+DARK_DWARF_SHOULDERS_FORTUNE_CHEST_PRODUCT_KEY = (
+    "101_shoulders_fortune_chest_1.0000_0_NONE"
+)
+DARK_DWARF_CLOAK_FORTUNE_CHEST_PRODUCT_KEY = (
+    "101_cloak_fortune_chest_1.0000_0_NONE"
+)
+DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY = (
+    "101_copper_farthing_pack_1.0000_0_NONE"
+)
+
 DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY = (
     "101_lava_essence_pack_1.0000_0_NONE"
 )
@@ -162,6 +184,13 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
         "summer_festival_event_01",
         "summer_festival_event_01_prefarming",
     ),
+    DARK_DWARF_LEVIN_CRYSTAL_PACKAGE_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_FORGEFYRE_MAGIC_POTION_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_FORGEFYRE_POTION_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_LEVIN_CRYSTAL_SUPER_PACKAGE_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_SHOULDERS_FORTUNE_CHEST_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_CLOAK_FORTUNE_CHEST_PRODUCT_KEY: "e_ide_challenge_01",
+    DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY: "e_ide_challenge_01",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -313,6 +342,28 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     SUMMER_NIGHTDREAM_CHEST_PRODUCT_KEY: (("summer_nightdream_chest", 1),),
     SUMMER_LUCKY_CHEST_PRODUCT_KEY: (("summer_lucky_chest", 1),),
     SUMMER_SET_CHEST_PRODUCT_KEY: (("item_ingredient_mercenary_verdant", 100),),
+    DARK_DWARF_LEVIN_CRYSTAL_PACKAGE_PRODUCT_KEY:
+        (("lightningset_material_general", 100),),
+    DARK_DWARF_FORGEFYRE_MAGIC_POTION_PRODUCT_KEY:
+        (("darkdwarf_potion_hour_s", 2),),
+    DARK_DWARF_FORGEFYRE_POTION_PRODUCT_KEY:
+        (("darkdwarf_potion_times_s", 20),),
+    DARK_DWARF_LEVIN_CRYSTAL_SUPER_PACKAGE_PRODUCT_KEY:
+        (("lightningset_material_general", 1000),),
+    DARK_DWARF_SHOULDERS_FORTUNE_CHEST_PRODUCT_KEY:
+        (("darkdwarf_lightningset_shoulders_chest", 1),),
+    DARK_DWARF_CLOAK_FORTUNE_CHEST_PRODUCT_KEY:
+        (("darkdwarf_lightningset_cloak_chest", 1),),
+    # Dark Dwarf Heist 2026 FAQ package contents. The older _Offer rows in
+    # this client build still point at Sargon/difficulty keys instead.
+    DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY: (
+        ("epicmount_steambike_02", 1),
+        ("lightningset_material_general", 200),
+        ("e_sar_chest_key", 20),
+        ("e_e_viscanium_hardmode_key", 30),
+        ("cooking_key", 100),
+        ("ammunition_damage_epic", 1999),
+    ),
 }
 
 # Older server versions advertised one synthetic key per class. Keep their

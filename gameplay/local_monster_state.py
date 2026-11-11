@@ -518,6 +518,53 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    # Viscanium Mine's exported map has no e_z0110_* monster family and its
+    # server-owned spawn-list registry is not present in static.db4. Falling
+    # back to the map's fixed actors (or the old e_ide_02_champion_* templates)
+    # makes the entire density population one champion-looking archetype.
+    # Rebuild the two authored mine lists from the ordinary-rank event mobs.
+    "e_z0110_dun": {
+        "spawnlist_mine": (
+            "e_ide_02_mine_dark_dwarf_01",
+            "e_ide_02_mine_dun_norsegnome_01",
+            "e_ide_02_mine_troll_01",
+            "e_ide_02_mine_buzzsaw_01",
+        ),
+        "spawnlist_mine_entry": (
+            "e_ide_02_mine_dark_dwarf_01",
+            "e_ide_02_mine_dun_norsegnome_01",
+            "e_ide_02_mine_troll_01",
+        ),
+    },
+    # The client map's density volumes were locally replaced by five broad
+    # test_meanie_spawnarea polygons. Its server spawn-list registry is not
+    # shipped; recover the submarine's normal dark-dwarf mix explicitly so
+    # champion-only lists cannot become the entire population.
+    "e_viscanium_submarine_01": {
+        "spawnlist_gunner_engineer_darkdwarf_w_champion": (
+            "e_ide_02_harbor_engineer_01",
+            "e_ide_02_harbor_dark_dwarf_01",
+            "e_ide_02_harbor_buzzsaw_01",
+            "e_ide_02_harbor_dark_dwarf_gunner_01",
+        ),
+        "spawnlist_darkdwarf_buzzsaw_gunner": (
+            "e_ide_02_harbor_engineer_01",
+            "e_ide_02_harbor_dark_dwarf_01",
+            "e_ide_02_harbor_buzzsaw_01",
+            "e_ide_02_harbor_dark_dwarf_gunner_01",
+        ),
+        "spawnlist_gunner_engineer_darkdwarf": (
+            "e_ide_02_harbor_engineer_01",
+            "e_ide_02_harbor_dark_dwarf_01",
+            "e_ide_02_harbor_buzzsaw_01",
+            "e_ide_02_harbor_dark_dwarf_gunner_01",
+        ),
+        "spawnlist_group_buzzsaw_dwarf": (
+            "e_ide_02_harbor_engineer_01",
+            "e_ide_02_harbor_dark_dwarf_01",
+            "e_ide_02_harbor_buzzsaw_01",
+        ),
+    },
     'e_hal_01_darkwood_dun': {
         'ripper_pumpkins_roots': (
             'e_hal_01_wood_normal_ripper_01',

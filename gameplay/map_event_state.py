@@ -1690,6 +1690,19 @@ def _load_map_event_content(
                 loot_list_id, chest_id, state, parent_node_index,
                 key_id, key_amount,
             ) = row
+            if (
+                map_key(map_id) in {
+                    "e_z0110_dun", "e_viscanium_submarine_01",
+                }
+                and template_id.casefold() in {
+                    "e_ide_02_event_chest_01",
+                    "e_ide_02_event_chest_02",
+                    "e_ide_02_event_chest_new",
+                }
+            ):
+                # These 2026 Dark Dwarf Heist amphorae use Amphora Keys;
+                # the inherited map rows still name Sargon's chest key.
+                key_id = "e_sar_chest_key"
             try:
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
@@ -1730,6 +1743,17 @@ def _load_map_event_content(
                     "e_sum_01_minigame_chest_"
                 )
             )
+            # The Mine's Viscanium geodes are authored scene StateObjects,
+            # but the active client does not materialize their scene GUIDs
+            # reliably. Publish them like the nearby small ore spawn props so
+            # the client instantiates each clickable geode at its position.
+            # Keep the template and server-side pickaxe/loot data unchanged.
+            viscanium_geode = (
+                map_key(map_id) == "e_z0110_dun"
+                and template_id.casefold() == "e_identify_event_02_all_level_stone"
+                and str(loot_list_id).casefold()
+                == "sub_event_dark_dwarf_progress_geode"
+            )
             props.append(MapPropDefinition(
                 prop_id=prop_actor_base + int(row_id) - 1,
                 row_id=int(row_id),
@@ -1739,7 +1763,7 @@ def _load_map_event_content(
                 instance_guid=(
                     ZERO_GUID if (
                         quest_seal or quest_controlled
-                        or summer_chestroom_reward
+                        or summer_chestroom_reward or viscanium_geode
                     )
                     else client_state_object_guids.get(
                         int(row_id), bytes(guid) if guid else ZERO_GUID
@@ -1750,7 +1774,14 @@ def _load_map_event_content(
                 event_set_row=int(event_set_row),
                 operation=authored_operation,
                 one_shot=bool(int(one_shot or 0)),
-                individual_usage=templates.get(template_id, ("", False, "", "", False))[4],
+                # Each geode is one shared mining deposit. The stock
+                # template's IndividualUsage would let every player mine
+                # the same prop separately instead of consuming its state.
+                individual_usage=(
+                    False if viscanium_geode else templates.get(
+                        template_id, ("", False, "", "", False),
+                    )[4]
+                ),
                 loot_list_id=str(loot_list_id).strip(),
                 chest_id=str(chest_id).strip(),
                 signal_referenced=signal_referenced,
@@ -2116,6 +2147,8 @@ class MapEventRuntime:
     # player in this map instance so server hit checks agree with one another.
     tower_beam_started_at: dict[int, float] = field(default_factory=dict)
     fired_once: set[str] = field(default_factory=set)
+    dark_dwarf_harbor_champions_defeated: set[str] = field(default_factory=set)
+    dark_dwarf_harbor_admiral_event_scheduled: bool = False
     published_exit_events: set[tuple[int, str]] = field(default_factory=set)
     f4203_ram_actor_id: int | None = None
     f4203_ram_goal: tuple[float, float, float] | None = None
@@ -2681,10 +2714,32 @@ class MapEventRuntime:
 
         selected = []
         spots = []
+        mining_node_positions = set()
         for definition in definitions:
             is_dtu_reward_chest = _is_dtu_difficulty_chest(
                 self.map_id, definition,
             )
+            is_dark_dwarf_mining_node = (
+                map_key(self.map_id) == "e_z0110_dun"
+                and str(definition.loot_list_id).casefold()
+                in {
+                    "sub_event_dark_dwarf_progress_geode",
+                    "sub_event_dark_dwarf_progress_rock",
+                }
+            )
+            if is_dark_dwarf_mining_node:
+                # The Mine DB repeats identical geodes under several parent
+                # nodes. Keep one clickable prop at each exact transform,
+                # while retaining nearby deposits at distinct locations.
+                position_key = (
+                    str(definition.loot_list_id).casefold(),
+                    tuple(round(float(axis), 3) for axis in definition.position),
+                )
+                if position_key in mining_node_positions:
+                    continue
+                mining_node_positions.add(position_key)
+                selected.append(definition)
+                continue
             if definition.kind != "scene" or not (
                 has_prop_loot(definition.loot_list_id or definition.chest_id)
                 or is_dtu_reward_chest

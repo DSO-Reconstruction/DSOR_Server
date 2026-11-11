@@ -912,6 +912,35 @@ class ConsumableService:
         )
         if definition is None:
             return False
+        if definition.can_be_used_in_maps:
+            with s.flow_lock:
+                current_maps = {
+                    str(value or '').strip().casefold()
+                    for value in (
+                        s.gameplay_map,
+                        getattr(s, 'gameplay_map_access_id', None),
+                        getattr(s, 'gameplay_map_access_group_id', None),
+                    )
+                    if str(value or '').strip()
+                }
+            if not current_maps.intersection(definition.can_be_used_in_maps):
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] denied consumable "
+                    f"{item.template_id!r}: outside allowed maps"
+                )
+                return True
+        if definition.only_active_during_event and definition.event_id:
+            event_catalog = getattr(s, 'gameplay_event_catalog', None)
+            active_events = (
+                event_catalog.active_template_ids()
+                if event_catalog is not None else frozenset()
+            )
+            if definition.event_id not in active_events:
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] denied consumable "
+                    f"{item.template_id!r}: event is not active"
+                )
+                return True
         if STATUS_EFFECTS_DISABLED:
             print(
                 f"[{GAMEPLAY_SERVICE_NAME}] rejected consumable "

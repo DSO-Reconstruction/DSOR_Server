@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from threading import Lock
 
 from dso_server.runtime.context import *
@@ -22,6 +23,7 @@ from dso_server.gameplay.event_system import (
     completed_achievement_ids,
 )
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.protocol.consumable_protocol import load_consumable_catalog
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
 )
@@ -40,6 +42,85 @@ _DRAGAN_CLASS_SET_ITEMS = {
     "ranger": ("bow", "ranger"),
     "dwarf": ("rifle", "dwarf"),
 }
+_DARK_DWARF_HEIST_MAPS = frozenset({
+    'e_z0110_dun',
+    'e_viscanium_submarine_01',
+})
+_DARK_DWARF_DROP_POTIONS = (
+    'darkdwarf_potion_hour_s',
+    'darkdwarf_potion_hour_l',
+    'darkdwarf_potion_times_s',
+    'darkdwarf_potion_times_l',
+)
+
+
+def _apply_dark_dwarf_boss_drop_bonus(
+    generation,
+    *,
+    database_path,
+    status_effects,
+    event_catalog,
+    map_ids,
+    monster_rank,
+):
+    """Double Heist recipes and Viscanium Ore from bosses under Forgefyre."""
+
+    if generation is None or str(monster_rank or '').casefold() not in {
+        'boss', 'worldboss',
+    }:
+        return generation
+    if not any(
+        _map_key(value) in _DARK_DWARF_HEIST_MAPS for value in map_ids
+    ):
+        return generation
+    if (
+        event_catalog is None
+        or 'e_ide_challenge_01' not in event_catalog.active_template_ids()
+    ):
+        return generation
+
+    consumables = load_consumable_catalog(database_path)
+    potion_effect_ids = {
+        definition.effect_id
+        for item_id in _DARK_DWARF_DROP_POTIONS
+        if (definition := consumables.definition(item_id)) is not None
+    }
+    if not potion_effect_ids.intersection(
+        int(effect.effect_id) for effect in status_effects
+    ):
+        return generation
+
+    updated = []
+    changed = False
+    for drop in generation.drops:
+        template_id = str(drop.item.template_id).casefold()
+        item_category = str(drop.item_category or '').casefold()
+        if not (
+            template_id == 'e_ide_02_challenge_progress_02'
+            or template_id == 'e_ide_02_chest_key_recipe_01'
+            or item_category in {'recipeitem', 'recipeconsumable'}
+        ):
+            updated.append(drop)
+            continue
+        if template_id == 'e_ide_02_challenge_progress_02':
+            updated.append(replace(
+                drop,
+                item=replace(
+                    drop.item,
+                    amount=max(1, int(drop.item.amount)) * 2,
+                ),
+            ))
+        else:
+            # Recipe items are authored with MaxStackSize=1. Emit a second
+            # item instead of building an invalid two-count recipe stack.
+            stack_amount = max(1, int(drop.item.amount))
+            copies = stack_amount * 2
+            updated.extend(
+                replace(drop, item=replace(drop.item, amount=1))
+                for _ in range(copies)
+            )
+        changed = True
+    return replace(generation, drops=tuple(updated)) if changed else generation
 
 
 def _dragan_great_hall_first_clear_items(class_name: str) -> tuple[str, ...]:
@@ -657,6 +738,18 @@ class LootPresenceService:
                 # generic money/item bonuses still affect the rest of the kill.
                 excluded_template_ids=(
                     template_id for template_id, _amount in event_drops
+                ),
+            )
+            generation = _apply_dark_dwarf_boss_drop_bonus(
+                generation,
+                database_path=encounter.static_database_path,
+                status_effects=status_effects,
+                event_catalog=event_catalog,
+                map_ids=(
+                    map_id, event_map_id, map_access_id, *event_map_aliases
+                ),
+                monster_rank=(
+                    profile.rank_kind if profile is not None else 'normal'
                 ),
             )
         except Exception:

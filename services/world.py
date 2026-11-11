@@ -93,6 +93,7 @@ _PIRILTIDAG_SLAVKOFF_TEMPLATE = (
 _PIRILTIDAG_SLAVKOFF_VISIBILITY_ENTER_RADIUS = 250.0
 _PIRILTIDAG_SLAVKOFF_VISIBILITY_EXIT_RADIUS = 275.0
 _TIME_HARP_MAP = "c2302_dun"
+_DARK_DWARF_HARBOR_MAP = "e_viscanium_submarine_01"
 _TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
     "c2302_normal_g_gorgon_q_templeofeternity_03a",
     "c2302_normal_g_gorgon_q_templeofeternity_03a_scale",
@@ -230,6 +231,18 @@ class WorldService:
                 monster.template_id,
             )
         ):
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == _DARK_DWARF_HARBOR_MAP
+            and monster is not None
+            and monster.rank_id.casefold() in {
+                "rank_champion", "rank_leader", "rank_sentinel",
+            }
+        ):
+            # Keep Harbor's Champion, Leader, and Sentinel actors announced
+            # map-wide so their client-authored minimap icons remain visible
+            # when the player is distant.
             return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             encounter is not None
@@ -921,6 +934,15 @@ class WorldService:
                                 == _REWRITE_HISTORY_MAP
                                 and combat.monsters[actor_id].template_id.casefold()
                                 in _REWRITE_HISTORY_QUEST_MOB_TEMPLATES
+                            )
+                            or (
+                                encounter.map_id.casefold()
+                                == _DARK_DWARF_HARBOR_MAP
+                                and combat.monsters[actor_id].rank_id.casefold()
+                                in {
+                                    "rank_champion", "rank_leader",
+                                    "rank_sentinel",
+                                }
                             )
                         )
                     )

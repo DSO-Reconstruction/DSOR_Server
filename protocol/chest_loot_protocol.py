@@ -322,6 +322,37 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # These are inventory LootGenItems. Their loot lists are server-owned,
+    # so the map-prop loot catalog does not participate when opening them
+    # from the inventory; define their complete one-of tables here.
+    "darkdwarf_lightningset_cloak_chest": (
+        ("set_blackdwarf2026_backitem_{cls}", 1, 0.5),
+        ("money_rc", 8000, 5.5),
+        ("lightningset_material_general", 25, 10.0),
+        ("event_identify_drop_crystal_piece_02", 200, 14.0),
+        ("e_ide_02_challenge_progress_01", 200, 14.0),
+        ("e_ide_02_challenge_progress_02", 200, 14.0),
+        ("e_ide_01_pickaxe_01", 30, 8.0),
+        ("e_ide_01_pickaxe_01", 15, 6.0),
+        ("e_ide_01_pickaxe_01", 20, 4.0),
+        ("e_sar_chest_key", 10, 10.0),
+        ("e_sar_chest_key", 15, 5.0),
+        ("e_sar_chest_key", 20, 9.0),
+    ),
+    "darkdwarf_lightningset_shoulders_chest": (
+        ("set_blackdwarf2026_shoulders_{cls}", 1, 0.5),
+        ("money_rc", 8000, 6.5),
+        ("lightningset_material_general", 25, 9.0),
+        ("event_identify_drop_crystal_piece_02", 200, 9.0),
+        ("e_ide_02_challenge_progress_01", 200, 9.0),
+        ("e_ide_02_challenge_progress_02", 200, 10.0),
+        ("e_ide_01_pickaxe_01", 15, 15.0),
+        ("e_ide_01_pickaxe_01", 20, 10.0),
+        ("e_ide_01_pickaxe_01", 30, 6.0),
+        ("e_sar_chest_key", 10, 10.0),
+        ("e_sar_chest_key", 15, 5.0),
+        ("e_sar_chest_key", 20, 10.0),
+    ),
     # The retro chest tooltip calls the rare cold-flame cosmetic by its
     # former name; the current client title for this item is Cold Flame Array.
     "ghsot_retro_chest": (
@@ -1660,6 +1691,14 @@ def _authored_reward_entries(
 ) -> tuple[tuple[str, int], ...]:
     """(template id, amount) for one rolled entry, expanding placeholders."""
 
+    if "{cls}" in entry.template_id:
+        normalized_class = str(class_name).casefold()
+        if normalized_class not in {"warrior", "mage", "ranger", "dwarf"}:
+            raise ValueError(
+                f"class-specific chest reward {entry.template_id!r} "
+                "requires a supported character class"
+            )
+        return ((entry.template_id.format(cls=normalized_class), entry.amount),)
     expansion = _AUTHORED_REWARD_EXPANSIONS.get(entry.template_id)
     if expansion is not None:
         return expansion
