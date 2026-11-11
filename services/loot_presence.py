@@ -384,6 +384,17 @@ class LootPresenceService:
             # Gwenfara form owns the map's boss rewards.
             return None
 
+        if (
+            str(getattr(encounter, "map_id", "")).casefold()
+            == "e_cny_boss_02"
+            and str(getattr(monster, "template_id", "")).casefold()
+            != "boss_cny_beast"
+        ):
+            # Altered Kingdom's guardians and both add waves are encounter
+            # phases, not loot sources. Keep the final Nian kill on the normal
+            # loot path so its event rewards can be rolled below.
+            return None
+
         with session.flow_lock:
             map_id = str(session.gameplay_map or "")
             event_map_id = str(

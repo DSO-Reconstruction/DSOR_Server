@@ -47,6 +47,86 @@
     ]
   },
   "map_loot": {
+    "e_cny_boss_02": [
+      {
+        "comment": "2026 Altered Kingdom Lantern Coins. The official event FAQ publishes 0-1 on Normal/Painful, then 1-3 Excruciating, 20-30 Fatal, 30-40 Infernal, 35-45 Merciless and 80-90 Bloodshed. Normal/Painful are represented as a 50% one-coin roll; higher-tier ranges are guaranteed. Parallel World difficulty indices share their matching tier.",
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.5},
+        "amount": {"boss": [1, 1]},
+        "minimum_difficulty": 0,
+        "maximum_difficulty": 1,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "2026 Altered Kingdom Lantern Coin amounts by difficulty; official FAQ says the drop is guaranteed from Excruciating upward. Intermediate amounts are randomized within the published range.",
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [1, 3]},
+        "minimum_difficulty": 2,
+        "maximum_difficulty": 2,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [20, 30]},
+        "minimum_difficulty": 3,
+        "maximum_difficulty": 3,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [30, 40]},
+        "minimum_difficulty": 4,
+        "maximum_difficulty": 5,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [35, 45]},
+        "minimum_difficulty": 6,
+        "maximum_difficulty": 7,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "item": "cny_lantern_coin",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 1.0},
+        "amount": {"boss": [80, 90]},
+        "minimum_difficulty": 8,
+        "maximum_difficulty": 9,
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The 2026 official FAQ lists New Year Fireworks as an Altered Kingdom drop on every difficulty but does not publish its probability. 2% is an explicit server fallback estimate.",
+        "item": "costume_effect_cny2026",
+        "monsters": ["boss_cny_beast"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "e_sum_dun_01": [
       {
         "comment": "Kalodoro preparation: one random colored powder has a 5% base chance from ordinary creatures, 10% from elites and 25% from bosses. The difficulty's authored PrivilegedLootDrop factor raises the chance (1x on Normal through 2.5x on Bloodshed); stack sizes rise by difficulty. Retail confirms colored powder drops throughout Dracania with a higher chance on Kalodoro but does not publish exact rates; these are the server's explicit balancing values.",

@@ -1,6 +1,32 @@
 {
   "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). Entries sharing 'roll_group' form one weighted, one-of roll. 'minimum_difficulty' and 'maximum_difficulty' gate entries and 'scale_chance_with_difficulty' applies map difficulty drop factors to 'chance'. 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible; 'event_progress_item' restricts it to one currently active page collectible. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
+    "cny_boss_nian_box_reward": {
+      "comment": "Nian's final chest grants the event progress item. The official 2025 patch notes publish three possible stacks per difficulty; the equally weighted choices preserve the documented range while no individual odds are published. 2026 reuses the same chest/progress item, while Lantern Coins and the New Year Fireworks aura are boss drops.",
+      "entries": [
+        {"item":"e_cny_progress_lantern","amount":[10,10],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","maximum_difficulty":0},
+        {"item":"e_cny_progress_lantern","amount":[14,14],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","maximum_difficulty":0},
+        {"item":"e_cny_progress_lantern","amount":[18,18],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","maximum_difficulty":0},
+        {"item":"e_cny_progress_lantern","amount":[20,20],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":1,"maximum_difficulty":1},
+        {"item":"e_cny_progress_lantern","amount":[25,25],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":1,"maximum_difficulty":1},
+        {"item":"e_cny_progress_lantern","amount":[30,30],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":1,"maximum_difficulty":1},
+        {"item":"e_cny_progress_lantern","amount":[50,50],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":2,"maximum_difficulty":2},
+        {"item":"e_cny_progress_lantern","amount":[60,60],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":2,"maximum_difficulty":2},
+        {"item":"e_cny_progress_lantern","amount":[70,70],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":2,"maximum_difficulty":2},
+        {"item":"e_cny_progress_lantern","amount":[75,75],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":3,"maximum_difficulty":3},
+        {"item":"e_cny_progress_lantern","amount":[85,85],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":3,"maximum_difficulty":3},
+        {"item":"e_cny_progress_lantern","amount":[90,90],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":3,"maximum_difficulty":3},
+        {"item":"e_cny_progress_lantern","amount":[100,100],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":4,"maximum_difficulty":5},
+        {"item":"e_cny_progress_lantern","amount":[110,110],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":4,"maximum_difficulty":5},
+        {"item":"e_cny_progress_lantern","amount":[120,120],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":4,"maximum_difficulty":5},
+        {"item":"e_cny_progress_lantern","amount":[130,130],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":6,"maximum_difficulty":7},
+        {"item":"e_cny_progress_lantern","amount":[140,140],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":6,"maximum_difficulty":7},
+        {"item":"e_cny_progress_lantern","amount":[150,150],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":6,"maximum_difficulty":7},
+        {"item":"e_cny_progress_lantern","amount":[160,160],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":8,"maximum_difficulty":9},
+        {"item":"e_cny_progress_lantern","amount":[180,180],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":8,"maximum_difficulty":9},
+        {"item":"e_cny_progress_lantern","amount":[200,200],"roll_group":"cny_lantern_progress","weight":1,"map":"e_cny_boss_02","minimum_difficulty":8,"maximum_difficulty":9}
+      ]
+    },
     "CHEST_e_stego_arena_chest_01": {
       "comment": "Cosmic Chest rewards from the Stellar Gold event guide, plus Golden Phoenix listed in DSO release 260.91 notes. Individual odds are unpublished; the reward group uses equal weights as a fallback.",
       "entries": [

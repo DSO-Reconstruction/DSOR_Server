@@ -5193,6 +5193,69 @@ class MapEventService:
                 specifications = []
             else:
                 specifications = list(self._roll_map_chest_loot(s, entries))
+                is_cny_nian_reward_chest = (
+                    loot_list_id == "cny_boss_nian_box_reward"
+                    and map_key(getattr(s, "gameplay_map", ""))
+                    == "e_cny_boss_02"
+                )
+                if is_cny_nian_reward_chest:
+                    from dso_server.protocol.chest_loot_protocol import (
+                        roll_chest_contents,
+                    )
+                    from dso_server.protocol.world_loot_protocol import (
+                        EQUIPMENT_RARITIES,
+                    )
+
+                    rng = random.SystemRandom()
+                    with s.flow_lock:
+                        tier_value = max(
+                            int(definition.variation_difficulty or 0),
+                            int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+                            int(getattr(s, "gameplay_scaling_difficulty", 0) or 0),
+                        )
+                    tier = max(0, min(9, int(tier_value)))
+                    rarity_weights = (
+                        prime_world_loot_cache(self.static_database_path)
+                        .rarity_weights_by_difficulty.get(
+                            tier, (0, 25, 25, 25, 25),
+                        )
+                    )
+                    # Keep the event chest's equipment above Common. Its
+                    # rarity rises with the selected difficulty's authored
+                    # Uncommon/Magic/Rare/Epic weights (Epic is the client's
+                    # Legendary tier in this build).
+                    rarity_indices = (1, 2, 3, 4)
+                    rarity_roll_weights = tuple(
+                        rarity_weights[index] for index in rarity_indices
+                    )
+                    if not any(rarity_roll_weights):
+                        rarity_roll_weights = (1, 1, 1, 1)
+                    rarity_boxes = tuple(
+                        f"all_class_all_equip_{EQUIPMENT_RARITIES[index].casefold()}_01"
+                        for index in rarity_indices
+                    )
+                    for _ in range(rng.randint(2, 4)):
+                        rarity_box = rng.choices(
+                            rarity_boxes,
+                            weights=rarity_roll_weights,
+                            k=1,
+                        )[0]
+                        equipment = roll_chest_contents(
+                            self.static_database_path,
+                            rarity_box,
+                            player_level=player_level,
+                            class_name=class_name,
+                            rng=rng,
+                        )
+                        for reward in equipment.rewards:
+                            template_id = reward.definition.template_id
+                            specifications.append(
+                                (template_id, int(reward.amount))
+                            )
+                            equipment_rewards_by_template.setdefault(
+                                template_id, [],
+                            ).append(reward)
+
                 if (
                     is_dragan_elemental_relic_chest
                     and not is_dragan_elemental_reward_chest

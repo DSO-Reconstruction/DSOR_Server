@@ -118,6 +118,28 @@ STELLAR_GOLD_PACKAGE_PRODUCT_KEY = (
     "8_fury_stellar_sold_package_1_1.0000_0_NONE"
 )
 
+CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY = (
+    "101_cny_2024_1_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY = (
+    "101_cny_2024_2_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY = (
+    "8_cny_cookie_small_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_COOKING_BUNDLE_BIG_PRODUCT_KEY = (
+    "101_cny_cookie_big_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY = (
+    "8_kung_fu_lion_package_1_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY = (
+    "8_new_year_surprise_chest_1_1.0000_0_NONE"
+)
+CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY = (
+    "8_new_year_gift_chest_1_1.0000_0_NONE"
+)
+
 DEFEAT_UNDEFEATABLE_LAVA_ESSENCE_PRODUCT_KEY = (
     "101_lava_essence_pack_1.0000_0_NONE"
 )
@@ -203,6 +225,13 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY: "e_ide_challenge_01",
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY: "stellar_gold_event_01",
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY: "stellar_gold_event_01",
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_BIG_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY: "event_new_year_2024",
+    CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY: "event_new_year_2024",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -380,6 +409,43 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY: (
         ("event_stellar_gold_package", 1),
+    ),
+    # Chinese New Year offers use the authored 2024 offer groups. The mount,
+    # ingredients, coins, keys, and chests below match those groups' contents.
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: (
+        ("epicmount_newyear_dragon_golden_14d", 1),
+        ("item_event_vanilla_extract", 100),
+        ("money_cc", 100),
+        ("cooking_key", 100),
+        ("money_rc", 5000),
+        ("lootbox_level_rallye_jewels_random", 1),
+    ),
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: (
+        ("epicmount_newyear_dragon_golden", 1),
+        ("item_event_vanilla_extract", 1000),
+        ("money_cc", 1000),
+        ("cooking_key", 1000),
+        ("money_rc", 20000),
+        ("lootbox_level_rallye_jewels_random", 5),
+    ),
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: (
+        ("item_event_hal_ingredients_flour", 100),
+        ("item_event_hal_ingredients_milk", 50),
+        ("item_event_vanilla_extract", 100),
+    ),
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_BIG_PRODUCT_KEY: (
+        ("item_event_hal_ingredients_flour", 1000),
+        ("item_event_hal_ingredients_milk", 500),
+        ("item_event_vanilla_extract", 1000),
+    ),
+    CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY:
+        (("event_kung_fu_lion_package", 1),),
+    CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY:
+        (("new_year_surprise_chest", 1),),
+    CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY: (
+        ("cny_lantern_coin", 3000),
+        ("e_cny_boss_essence_04", 3000),
+        ("money_rc", 5000),
     ),
 }
 
