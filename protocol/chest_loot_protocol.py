@@ -321,10 +321,45 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
 # 100/50/40/20 (the description lists the four without odds).
 # Fool's Lucky Gift only says "you have a chance to receive one of the
 # following items", with no odds: the eight mounts are drawn evenly.
+_NEW_YEAR_FORTUNE_COOKIE_ITEMS = tuple(
+    f"item_lootbox_fortune_cookie_{number}"
+    for number in range(1, 11)
+)
+_NEW_YEAR_FORTUNE_COOKIE_REWARDS = (
+    ("epicmount_newyear_dragon_red", 1),
+    ("all_unique_ring_defense", 1),
+    ("pet_new_year_lion", 1),
+    ("event_cny_2024_costume_lion_cap_{cls}", 1),
+    ("costume_anniversary_dragon_red_02", 1),
+    ("e_sar_chest_key", 10),
+    ("lootbox_level_rallye_jewels_random", 1),
+    ("money_rc", 5000),
+    ("crafting_stateobject_key", 10),
+    ("premium_teaser_one_day_consumable_7d", 1),
+    ("money_cc", 20),
+    ("cooking_key", 20),
+    ("e_cny_boss_essence_04", 999),
+    ("e_newyear_2024_travelitem_newyearfirecracker", 1),
+    ("pet_panda", 1),
+    ("epicmount_goldfish", 1),
+)
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
     # These are inventory LootGenItems. Their loot lists are server-owned,
     # so the map-prop loot catalog does not participate when opening them
     # from the inventory; define their complete one-of tables here.
+    # The Fortune Cookie Box gives one of its ten cookie variants; each
+    # cookie gives one of the sixteen rewards in its tooltip (uniform odds).
+    "item_lootbox_fortune_cookie_box": tuple(
+        (template_id, 1, 10.0)
+        for template_id in _NEW_YEAR_FORTUNE_COOKIE_ITEMS
+    ),
+    **{
+        template_id: tuple(
+            (reward_id, amount, 100.0 / len(_NEW_YEAR_FORTUNE_COOKIE_REWARDS))
+            for reward_id, amount in _NEW_YEAR_FORTUNE_COOKIE_REWARDS
+        )
+        for template_id in _NEW_YEAR_FORTUNE_COOKIE_ITEMS
+    },
     "darkdwarf_lightningset_cloak_chest": (
         ("set_blackdwarf2026_backitem_{cls}", 1, 0.5),
         ("money_rc", 8000, 5.5),

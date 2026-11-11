@@ -57,6 +57,8 @@ _DRAGAN_SECRET_LAIR_ACCESS_GROUPS = frozenset({
     "i0004_fire_big_dun_event_dragan",
     "i0010_physical_big_dun_event_dragan",
 })
+ALTERED_KINGDOM_MAP_ID = "e_cny_boss_02"
+ALTERED_KINGDOM_MIN_DIFFICULTY = 3  # Fatal
 
 
 def _map_access_costs(
@@ -554,6 +556,13 @@ class MapTransitionService:
             scaling_difficulty=scaling_difficulty,
         )
         physical_map_id = map_access.physical_map_id
+        if (
+            map_key(physical_map_id) == ALTERED_KINGDOM_MAP_ID
+            and int(map_access.map_difficulty) < ALTERED_KINGDOM_MIN_DIFFICULTY
+        ):
+            raise ValueError(
+                "Altered Kingdom is only available from Fatal difficulty"
+            )
         destination_path = map_database_path(
             self.static_database_path, physical_map_id
         )

@@ -11,6 +11,13 @@ from dso_server.gameplay.ocp_store import (
     DARK_DWARF_LEVIN_CRYSTAL_PACKAGE_PRODUCT_KEY,
     DARK_DWARF_LEVIN_CRYSTAL_SUPER_PACKAGE_PRODUCT_KEY,
     DARK_DWARF_SHOULDERS_FORTUNE_CHEST_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_BIG_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY,
+    CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY,
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY,
     HALLOWEEN_ATTIRE_PRODUCT_KEY,
@@ -863,6 +870,36 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_241, 9.90, False, "€", DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY, "", ""),
     OCPOffer(180_242, 9.90, False, "€", STELLAR_GOLD_PACKAGE_PRODUCT_KEY, "", ""),
     OCPOffer(180_243, 9.90, False, "€", STELLAR_GOLD_ATTIRE_PRODUCT_KEY, "", ""),
+    # Chinese New Year packages reuse their native PaymentPackages keys and
+    # grant the authored offer-group contents after purchase confirmation.
+    OCPOffer(
+        180_244, 9.90, False, "€",
+        CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_245, 9.90, False, "€",
+        CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_246, 9.90, False, "€",
+        CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_247, 9.90, False, "€",
+        CHINESE_NEW_YEAR_COOKING_BUNDLE_BIG_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_248, 9.90, False, "€",
+        CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_249, 9.90, False, "€",
+        CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY, "", "",
+    ),
+    OCPOffer(
+        180_250, 9.90, False, "€",
+        CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY, "", "",
+    ),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"
