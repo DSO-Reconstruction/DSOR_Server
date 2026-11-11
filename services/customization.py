@@ -332,7 +332,11 @@ class CustomizationService:
                 or character is None
                 or (move is None and s.gameplay_spawn_position is None)
             ):
-                raise ValueError("mercenary use requires an active map session")
+                # Sticker-book input can arrive while the client is entering
+                # a map. There is no authoritative position/combat state to
+                # attach the summon to yet, so treat this as an unavailable
+                # action instead of raising through the gameplay dispatcher.
+                return False
             owner_actor_id = (
                 s.gameplay_remote_actor_id
                 or CharacterService._remote_actor_id(character.character_id)
