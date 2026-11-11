@@ -272,6 +272,28 @@ class PlayerInitializationWorldService:
                 monster_encounter = load_local_player_only_encounter(
                     self.static_database_path, gameplay_map
                 )
+        if monster_encounter is None:
+            # A saved Shadow Soul must be recreated after every map handoff.
+            # Peaceful maps usually have no combat encounter, which would
+            # otherwise make the restore path skip the companion entirely.
+            active_mercenary = str(
+                getattr(state.persisted_state, "active_mercenary", "") or ""
+            ).strip()
+            definition = (
+                load_sticker_definition(
+                    self.static_database_path, active_mercenary
+                )
+                if active_mercenary else None
+            )
+            if definition is not None and definition.kind == "mercenary":
+                monster_encounter = load_local_player_only_encounter(
+                    self.static_database_path, gameplay_map
+                )
+                print(
+                    f"[{GAMEPLAY_SERVICE_NAME}] {gameplay_map} has no "
+                    "monster encounter; using a player-only encounter to "
+                    "restore the active Shadow Soul"
+                )
         skill_book_ids = tuple(
             self.static_database.player_skill_manager_indices(
                 character.class_id
