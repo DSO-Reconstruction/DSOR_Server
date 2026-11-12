@@ -5,6 +5,7 @@ import time
 
 from dso_server.services.admin_live import ready
 from dso_server.services.base import CharacterService
+from dso_server.gameplay.map_event_state import map_key
 
 
 @contextmanager
@@ -69,6 +70,30 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
     if not current:
         return (), ()
 
+    active_templates = catalog.active_template_ids()
+    rocketmen_active = "new_year_event_01" in active_templates
+
+    # Kingshill's Rocketmen portal is controlled by a separate map-local
+    # event. Its start signal requires the global event, but it has no end
+    # signal, so an already-running controller would otherwise keep the
+    # portal open after the schedule expires in this occupied map instance.
+    kingshill_rocketmen_closed = (
+        map_key(runtime.map_id) == "a0200_kingscity"
+        and not rocketmen_active
+    )
+    if kingshill_rocketmen_closed:
+        portal_event = runtime.catalog.event("a0200_new_year_event_exit")
+        if portal_event is not None:
+            with runtime.lock:
+                portal_event_is_running = (
+                    portal_event.key in runtime.running
+                    or portal_event.key in runtime.pending_start_tokens
+                )
+            if portal_event_is_running:
+                CharacterService._stop_map_local_event(
+                    server, runtime, portal_event,
+                )
+
     # Include both catalogs' inactive entries and aliases. Removing a schedule
     # entry must also remove the flag that an existing runtime captured at join.
     owned_flags = {
@@ -77,6 +102,11 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
         for event in source.events
         for value in (event.template.resource_id, *event.tags)
     }
+    if kingshill_rocketmen_closed:
+        # The client-only portal controller can also be captured as an
+        # initialization flag (for example through a revealed quest NPC).
+        # Once the global event is closed, retire that stale flag too.
+        owned_flags.add("a0200_new_year_event_exit")
     with runtime.lock:
         enabled, disabled = runtime.replace_global_flags(
             owned_flags, catalog.active_event_flags(),

@@ -478,6 +478,16 @@ class QuestService:
         for flag, destinations in exit_destinations.items():
             event = signals.event(flag)
             if (
+                normalized_map == "a0200_kingscity"
+                and flag.casefold() == "a0200_new_year_event_exit"
+                and "new_year_event_01" not in running
+            ):
+                # The Rocketmen gate's destination may already be in the
+                # character's discovered-map list from an earlier season.
+                # Unlike a permanent route, this portal must not be restored
+                # from discovery while its owning global event is inactive.
+                continue
+            if (
                 normalized_map == "e_fullmoon_varholm_dun"
                 and flag == "e_ful_02_bloodmoon_portal"
             ):
