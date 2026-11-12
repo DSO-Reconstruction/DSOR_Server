@@ -360,6 +360,19 @@ _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
     # These are inventory LootGenItems. Their loot lists are server-owned,
     # so the map-prop loot catalog does not participate when opening them
     # from the inventory; define their complete one-of tables here.
+    # Hunting Ring Bundle lists one of eight rewards but gives no odds, so use
+    # equal chances. "Elemental Essence of Vigor (Legendary)" is the client's
+    # display name for the highest essence tier in this static database.
+    "item_lootbox_hunting_ring_bundle": (
+        ("all_unique_ring_mh_01", 1, 12.5),
+        ("all_unique_ring_mh_02", 1, 12.5),
+        ("ammunition_damage_epic", 999, 12.5),
+        ("ls_emote_break_test_c", 1, 12.5),
+        ("ls_keys", 1, 12.5),
+        ("cooking_key", 10, 12.5),
+        ("gilded_clover", 10, 12.5),
+        ("community_coins", 20, 12.5),
+    ),
     # The Fortune Cookie Box gives one of its ten cookie variants; each
     # cookie gives one of the sixteen rewards in its tooltip (uniform odds).
     "item_lootbox_fortune_cookie_box": tuple(
