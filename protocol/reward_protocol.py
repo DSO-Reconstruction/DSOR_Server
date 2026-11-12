@@ -20,6 +20,10 @@ from dso_server.gameplay.ocp_store import (
     CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY,
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY,
+    ROCKETMEN_ATTIRE_PRODUCT_KEY,
+    ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY,
+    ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY,
+    ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY,
     HALLOWEEN_ATTIRE_PRODUCT_KEY,
     HALLOWEEN_BIG_PIE_PRODUCT_KEY,
     HALLOWEEN_BUNDLE_PRODUCT_KEY,
@@ -338,6 +342,19 @@ def resolve_ocp_booking_reward(
                 "skin_dwarf_unique_backitem_attire_dra_01"
                 if class_name == "dwarf"
                 else "skin_all_unique_backitem_attire_dra_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
+            )
+        if offer_id == ROCKETMEN_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_nye_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_nye_01"
             )
             attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
             return OCPBookingReward(
@@ -900,6 +917,11 @@ LOCAL_OCP_OFFERS = (
         180_250, 9.90, False, "€",
         CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY, "", "",
     ),
+    # Riot of the Rocketmen uses native New Year event payment packages.
+    OCPOffer(180_251, 9.90, False, "€", ROCKETMEN_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_252, 9.90, False, "€", ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_253, 9.90, False, "€", ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY, "", ""),
+    OCPOffer(180_254, 9.90, False, "€", ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

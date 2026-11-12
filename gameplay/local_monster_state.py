@@ -1084,9 +1084,11 @@ class MonsterAttackDefinition:
 
     @property
     def support(self) -> bool:
-        """A skill that strikes nobody: a buff on the caster or a summon."""
+        """A skill that strikes nobody: a buff or a zero-damage summon."""
 
-        return self.self_buff or bool(self.summon_template)
+        return self.self_buff or (
+            bool(self.summon_template) and self.damage_modifier <= 0.0
+        )
 
 
 @dataclass(frozen=True)
@@ -2499,10 +2501,7 @@ def _load_runtime_template(
             has_bullet = bool(skill_bullet_id)
             mortis_charge = skill_resource_id.casefold() == "bossmortisunbound_charge"
             self_buff = False
-            summon = (
-                int(skill_row[26] or 0) != 0
-                and float(skill_row[16]) <= 0.0
-            )
+            summon = int(skill_row[26] or 0) != 0
             summon_template = summon_amount = summon_limit = None
             if summon:
                 summon_template = str(skill_row[27] or "").strip() or str(movement_row[7] or "").strip()
@@ -2681,19 +2680,40 @@ def _load_runtime_template(
         tuple(value for value in attacks if not value.support)
         + tuple(value for value in attacks if value.support)
     )
+    if str(template_id).casefold() == "e_nye_normal_dun_spawner_animatronic":
+        # Keep each authored map anchor productive without letting every one
+        # accumulate the full six-Rocketman native limit at once.
+        attacks = tuple(
+            replace(value, summon_limit=min(3, value.summon_limit))
+            if value.summon_template else value
+            for value in attacks
+        )
     pvp_progression = str(movement_row[12]) == PVP_PROGRESSION_MINION_TYPE
-    if attacks[0].support and not pvp_progression:
+    scripted_event_controller = is_new_year_dungeon_summon_controller(
+        template_id
+    )
+    if (
+        attacks[0].support
+        and not pvp_progression
+        and not scripted_event_controller
+    ):
         # A fortress rammer/bomb spawner's only skill is its summon; it is
         # still its autonomous action (PvPSpawnerRammerSummon/BombsSummon).
+        # Professor Jullov's invisible dungeon rocket shooter is another
+        # authored support-only actor; its timed shifted skills create the
+        # firecracker minions required by the event quest.
         return None
     attack = attacks[0]
     static_strategies = {
         "staticstrategy", "noturnstaticstrategy",
         "sleeplessstaticstrategy", "boss04strategy",
-        "boss03strategy",
+        "boss03strategy", "noturnsleeplessstaticstrategy",
     }
-    if pvp_progression:
-        # The spawners' NoTurnNoTargetStaticStrategy is a fixed structure.
+    if pvp_progression or scripted_event_controller:
+        # These authored spawners/controllers are fixed structures. Treating
+        # them as mobile makes every controller chase the player; their
+        # repeated summons then pile up at the player's location instead of
+        # being distributed around the map at their authored spawn points.
         static_strategies = static_strategies | {"noturnnotargetstaticstrategy"}
     return (
         attacks,
@@ -2733,6 +2753,37 @@ def _load_runtime_definition(
 
     values = _load_runtime_template(static_database_path, str(template_id))
     if values is None:
+        if is_new_year_dungeon_bomb_summon(template_id):
+            # Nye bombs are authored as patrol/no-attack actors. They have no
+            # Skills row, but must retain movement so they can walk toward a
+            # player and be destroyed. A stationary player-only fallback made
+            # them visible but froze them in place.
+            with _open_read_only(Path(static_database_path)) as database:
+                movement = database.execute(
+                    "SELECT RunSpeed, AggroRange, AttackInterval, "
+                    "CapsuleRadius, EscapeRange, TravelDistance, "
+                    "COALESCE(StartupDuration, 0) "
+                    "FROM _Template_Monster WHERE Id=? LIMIT 1",
+                    (str(template_id),),
+                ).fetchone()
+            if movement is not None:
+                run_speed = max(0.1, float(movement[0] or 0.0))
+                travel_distance = max(0.0, float(movement[5] or 0.0))
+                return MonsterRuntimeDefinition(
+                    actor_id=int(actor_id),
+                    attack=_PLAYER_ONLY_ATTACK,
+                    run_speed=run_speed,
+                    aggro_range=max(
+                        float(movement[1] or 0.0),
+                        min(travel_distance, 24.0),
+                    ),
+                    attack_interval=0.0,
+                    capsule_radius=max(0.1, float(movement[3] or 0.3)),
+                    escape_range=max(0.0, float(movement[4] or 0.0)),
+                    travel_distance=travel_distance,
+                    attacks=(),
+                    startup_duration=max(0.0, float(movement[6] or 0.0)),
+                )
         # Damage dolls and mounted aura-only devices intentionally have no
         # Skills. Keep their authored actor/permanent effects in the world
         # without inventing movement or an autonomous attack.
@@ -4008,6 +4059,15 @@ def _load_dynamic_monster_encounter(
                 row for row in all_fixed_rows
                 if not bloodshed_only_template(row[2])
             )
+        if str(map_id).casefold() == "e_nye_dungeon_01":
+            # Machine Babies are released by delayed map-local events. Their
+            # client scene placeholders must not be combat actors on entry.
+            all_fixed_rows = tuple(
+                row for row in all_fixed_rows
+                if not str(row[2]).casefold().startswith(
+                    "e_nye_normal_dun_spawner_bomb_var_"
+                )
+            )
         all_fixed_rows = deduplicate_pw002_wave_three_warriors(
             map_id, all_fixed_rows,
         )
@@ -4330,6 +4390,7 @@ def _load_dynamic_monster_encounter(
             stationary=(
                 mounted
                 or bgh_sequence_portal
+                or is_rocketmen_event_inert_summon(template_id)
                 or str(template_id).casefold()
                 in _DRAGAN_JAIL_SPIDER_EGG_TEMPLATES
             ),
@@ -4345,8 +4406,17 @@ def _load_dynamic_monster_encounter(
                 monster_level=monster_level,
                 scaling_difficulty=scaling_difficulty,
                 coefficient_stats=mounted,
-                non_targetable=hazard or is_tower_hardware(
-                    static_database_path, map_id, template_id
+                non_targetable=(
+                    hazard
+                    or is_rocketmen_event_inert_summon(template_id)
+                    or is_tower_hardware(
+                        static_database_path, map_id, template_id
+                    )
+                    or (
+                        str(map_id).casefold() == "e_nye_dungeon_01"
+                        and str(template_id).casefold()
+                        == "h0009_endlesstower_01_room_fire_shooter"
+                    )
                 ),
                 rank_override=rank_override,
                 health_multiplier=_bgh_boss_health_multiplier(
@@ -4688,7 +4758,6 @@ def _load_dynamic_monster_encounter(
                 - fixed_outside_spawn_areas,
             ),
         )
-
     quotas = [0] * len(area_candidates)
     if active_population_target and area_candidates:
         if active_population_target >= len(area_candidates):
@@ -5148,6 +5217,76 @@ _PLAYER_ONLY_ATTACK = MonsterAttackDefinition(
     projectile_velocity=0.0,
     projectile_radius=0.0,
 )
+
+
+_ROCKETMEN_EVENT_SUMMON_CONTROLLERS = frozenset({
+    "e_nye_normal_event_dun_invisible_rocket_shooter",
+    "e_nye_normal_event_dun_invisible_rocket_shooter_scale",
+})
+_ROCKETMEN_EVENT_INERT_SUMMON_PREFIXES = (
+    "e_nye_normal_event_dun_invisible_rocket_shooter_spawner_",
+    "e_nye_normal_event_dun_invisible_target_position_marker_var_",
+)
+_NEW_YEAR_DUNGEON_SUMMON_CONTROLLER_PREFIXES = (
+    "e_nye_normal_dun_spawner_animatronic",
+    "e_nye_normal_dun_spawner_bomb_var_",
+)
+_NEW_YEAR_DUNGEON_INERT_HELPER_PREFIXES = (
+    "e_nye_normal_dun_invisible_spawner_bomb_",
+    "e_nye_normal_dun_invisible_activate_spawner_bomb_marker_",
+    "e_nye_normal_dun_invisible_heal_bomb_target_",
+)
+
+
+def is_rocketmen_event_summon_controller(template_id: str) -> bool:
+    """Whether this is the invisible shooter that runs dungeon Rocketmen waves."""
+
+    normalized = str(template_id or "").casefold()
+    return normalized in _ROCKETMEN_EVENT_SUMMON_CONTROLLERS
+
+
+def is_new_year_dungeon_summon_controller(template_id: str) -> bool:
+    """Whether an invisible New Year dungeon actor controls timed summons."""
+
+    normalized = str(template_id or "").casefold()
+    return (
+        is_rocketmen_event_summon_controller(normalized)
+        or any(
+            normalized.startswith(prefix)
+            for prefix in _NEW_YEAR_DUNGEON_SUMMON_CONTROLLER_PREFIXES
+        )
+    )
+
+
+def is_new_year_dungeon_bomb_summon(template_id: str) -> bool:
+    """Whether this is a targetable, inert bomb spawned by a Machine Baby."""
+
+    return str(template_id or "").casefold().startswith(
+        "e_nye_normal_dun_bomb_var_"
+    )
+
+
+def is_new_year_dungeon_inert_helper(template_id: str) -> bool:
+    """Whether an inert New Year dungeon prop helper needs a runtime actor."""
+
+    normalized = str(template_id or "").casefold()
+    return (
+        normalized == "e_nye_normal_dun_spawner_bomb_inactive"
+        or any(
+            normalized.startswith(prefix)
+            for prefix in _NEW_YEAR_DUNGEON_INERT_HELPER_PREFIXES
+        )
+    )
+
+
+def is_rocketmen_event_inert_summon(template_id: str) -> bool:
+    """Whether this is a neutral helper entity created by a Rocketmen wave."""
+
+    normalized = str(template_id or "").casefold()
+    return any(
+        normalized.startswith(prefix)
+        for prefix in _ROCKETMEN_EVENT_INERT_SUMMON_PREFIXES
+    )
 
 
 _PLAYER_ONLY_ENCOUNTERS: dict[tuple[Path, str], LocalMonsterEncounter] = {}

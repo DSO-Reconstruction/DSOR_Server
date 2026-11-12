@@ -61,6 +61,7 @@ class PropLootEntry:
     maximum_difficulty: int | None = None
     scale_chance_with_difficulty: bool = False
     required_active_costumes: frozenset[str] = frozenset()
+    amount_bonus_by_costume: Mapping[str, float] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -164,6 +165,13 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
             for value in entry.get("required_active_costumes", ())
             if str(value).strip()
         ),
+        amount_bonus_by_costume=MappingProxyType({
+            str(costume).strip().casefold(): float(bonus)
+            for costume, bonus in dict(
+                entry.get("amount_bonus_by_costume") or {}
+            ).items()
+            if str(costume).strip()
+        }),
     )
 
 
@@ -267,6 +275,14 @@ def roll_prop_loot(
                     )]
                 else:
                     amount = rng.randint(*entry.amount)
+                amount_bonus = entry.amount_bonus_by_costume.get(
+                    current_costume, 0.0,
+                )
+                if amount_bonus:
+                    amount = max(
+                        1,
+                        int(math.floor(amount * (1.0 + amount_bonus) + 0.5)),
+                    )
                 result.append((item_id, amount))
 
     for entry in entries:

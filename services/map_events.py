@@ -57,6 +57,7 @@ from dso_server.gameplay.local_monster_state import (
     _load_monster,
     _load_runtime_definition,
     _spawn_group,
+    is_new_year_dungeon_inert_helper,
     load_local_player_only_encounter,
 )
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
@@ -73,6 +74,7 @@ from dso_server.gameplay.map_event_state import (
     WIRE_PROP_OPERATION,
     MapEventRuntime,
     MapLocalEventDefinition,
+    MapPropDefinition,
     PropRuntimeState,
     SignalContext,
     TriggerVolumeDefinition,
@@ -488,6 +490,44 @@ def _darkwood_wendigo_hazards(static_database_path: str, map_id: str):
             TriggerVolumeDefinition(
                 int(row_id), str(hazard_id), int(event_set), False,
                 "halloween-wendigo-hazard", matrix,
+            ),
+            str(effect_id),
+        ))
+    return tuple(result)
+
+
+@lru_cache(maxsize=8)
+def _new_year_trap_hazards(static_database_path: str, map_id: str):
+    """Load Rocketmen's authored player-damage trap boxes.
+
+    This map has the LocationEffect volumes and lever event sets, but no
+    _Instance_Trap records. Treat each player aura box as the missing server
+    trigger volume, activated only while its lever's EventSet is enabled.
+    """
+
+    if map_key(map_id) != "e_nye_dungeon_01":
+        return ()
+    path = map_database_path(static_database_path, map_id)
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            rows = database.execute(
+                "SELECT rowid, COALESCE(EventSetRow, -1), Transform, Id "
+                "FROM _Instance_LocationEffect "
+                "WHERE lower(Id) LIKE 'e_nye_trap_%_player_aura'"
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"Rocketmen trap load failed on {map_id}: {exc}")
+        return ()
+    result = []
+    for row_id, event_set, transform, effect_id in rows:
+        try:
+            matrix = tuple(struct.unpack("<16f", bytes(transform)))
+        except (TypeError, struct.error):
+            continue
+        result.append((
+            TriggerVolumeDefinition(
+                int(row_id), str(effect_id), int(event_set), False,
+                "rocketmen-trap", matrix,
             ),
             str(effect_id),
         ))
@@ -1091,6 +1131,88 @@ def _parallel_world_reward_jewel_candidates(class_name: str) -> tuple[str, ...]:
 
 def _log(message: str) -> None:
     print(f"{MAP_EVENT_LOG_PREFIX} {message}")
+
+
+_NEW_YEAR_MACHINE_BABIES = frozenset(
+    f"e_nye_normal_dun_spawner_bomb_var_{index:02d}"
+    for index in range(1, 5)
+)
+
+
+def _is_new_year_machine_baby(template_id: object) -> bool:
+    return str(template_id or "").casefold() in _NEW_YEAR_MACHINE_BABIES
+
+
+def _is_new_year_undestroyable_tower(map_id: object, template_id: object) -> bool:
+    return (
+        map_key(map_id) == "e_nye_dungeon_01"
+        and str(template_id or "").casefold()
+        == "h0009_endlesstower_01_room_fire_shooter"
+    )
+
+
+_NEW_YEAR_MACHINE_DELAYS = {
+    1: (30, 30, 30, 30, 30),
+    2: (210, 150, 120, 90, 35),
+    3: (390, 330, 300, 270, 40),
+    4: (580, 520, 490, 460, 45),
+}
+
+
+def _new_year_machine_delay(runtime, definition, sessions) -> float:
+    key = str(getattr(definition, "key", "") or "").casefold()
+    prefix = "e_nye_activate_spawner_bomb_var_"
+    if not key.startswith(prefix) or "_message" in key or "_remove_" in key:
+        return float(definition.start_delay)
+    suffix = key[len(prefix):]
+    if len(suffix) < 2 or not suffix[:2].isdigit():
+        return float(definition.start_delay)
+    machine = int(suffix[:2])
+    if machine not in _NEW_YEAR_MACHINE_DELAYS:
+        return float(definition.start_delay)
+    players = min(5, max(1, len(sessions)))
+    expected = (
+        f"{prefix}{machine:02d}"
+        if players == 5 or machine == 1
+        else f"{prefix}{machine:02d}_delay_{players}_player"
+    )
+    return float(
+        _NEW_YEAR_MACHINE_DELAYS[machine][players - 1]
+        if key == expected else definition.start_delay
+    )
+
+
+def _next_new_year_machine_event(runtime, machine: int, players: int):
+    if machine not in _NEW_YEAR_MACHINE_DELAYS:
+        return None
+    base = f"e_nye_activate_spawner_bomb_var_{machine:02d}"
+    event_key = (
+        base if players >= 5
+        else f"{base}_delay_{max(1, players)}_player"
+    )
+    return runtime.catalog.event(event_key)
+
+
+def _new_year_machine_event_stage(event_key: object) -> int:
+    key = str(event_key or "").casefold()
+    prefix = "e_nye_activate_spawner_bomb_var_"
+    if not key.startswith(prefix) or "_message" in key or "_remove_" in key:
+        return 0
+    suffix = key[len(prefix):]
+    return int(suffix[:2]) if len(suffix) >= 2 and suffix[:2].isdigit() else 0
+
+
+def _new_year_machine_spawn_row(runtime, machine: int):
+    if machine not in _NEW_YEAR_MACHINE_DELAYS:
+        return None
+    template = f"e_nye_normal_dun_spawner_bomb_var_{machine:02d}"
+    row = next((
+        candidate for candidate in runtime.content.spawn_rows
+        if str(candidate.template_id).casefold() == template
+    ), None)
+    if row is None:
+        return None
+    return next(iter(runtime.gated_spawn_rows((row.event_set_row,))), None)
 
 
 def _is_darkwood_wendigo_wave_start_signal(signal_id: object) -> bool:
@@ -2047,6 +2169,43 @@ class MapEventService:
                 # 31 chest groups. Keep the aggregate row disabled; selected
                 # per-chest EventSets remain independently usable.
                 runtime.suppress_event_sets((1748,))
+        if map_key(map_id) == "e_nye_dungeon_01":
+            # The authored trap levers all sit behind EventSet 1546, which is
+            # normally unavailable until the encounter is ending. Keep the
+            # twelve level-selected lever props usable and map-visible from
+            # entry; their own interaction signals still control trap state.
+            with runtime.lock:
+                lever_definitions = runtime.select_props(
+                    runtime.content.props_for_sets((1546,))
+                )
+                for definition in lever_definitions:
+                    if not str(definition.instance_id).casefold().startswith(
+                        "e_nye_trigger_object_bomb_trap_"
+                    ):
+                        continue
+                    previous = runtime.props.get(definition.prop_id)
+                    visible_definition = replace(
+                        definition,
+                        event_set_row=-1,
+                        instance_guid=ZERO_GUID,
+                    )
+                    runtime.props[definition.prop_id] = PropRuntimeState(
+                        visible_definition,
+                        previous.state if previous is not None else 0,
+                    )
+            if fresh_instance:
+                first_machine = runtime.catalog.event(
+                    "e_nye_activate_spawner_bomb_var_01",
+                )
+                if first_machine is not None:
+                    # The boss-start trigger is deeper in the map. The first
+                    # machine's 30-second clock begins as soon as the map
+                    # instance is created, so it cannot be killed early.
+                    self._schedule_map_local_event_start(
+                        runtime, first_machine,
+                    )
+                else:
+                    _log("first Machine Baby activation event is missing")
         with s.flow_lock:
             s.gameplay_map_event_runtime = runtime
             s.gameplay_trigger_volumes_inside = set()
@@ -2911,6 +3070,40 @@ class MapEventService:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
         if (
+            map_key(runtime.map_id) == "e_nye_dungeon_01"
+            and key in {
+                f"e_nye_loot_trigger_interact_start_signal_{index:02d}"
+                for index in range(1, 5)
+            }
+        ):
+            crate_number = int(key.rsplit("_", 1)[-1])
+            # Each unlocked Fireworks Crate can reveal its authored Liberated
+            # Greed Fiend chest, whose EventSet and spawn point are already
+            # tied to this interaction event in the map data. Start that event
+            # directly after the chance roll so the chest EventSet/prop is
+            # published authoritatively instead of depending on a second
+            # signal-catalog lookup.
+            if random.random() >= 0.45:
+                _log(
+                    "Professor Jullov Fireworks Crate did not reveal a "
+                    f"Liberated Greed Fiend chest ({key})"
+                )
+                return
+            chest_event = runtime.catalog.event(
+                f"e_nye_loot_trigger_interact_{crate_number:02d}"
+            )
+            if chest_event is not None:
+                self._start_map_local_event(runtime, chest_event)
+                _log(
+                    "Professor Jullov Fireworks Crate revealed a "
+                    f"Liberated Greed Fiend chest ({key})"
+                )
+                return
+            _log(
+                "Liberated Greed Fiend chest event is missing for "
+                f"Professor Jullov Fireworks Crate ({key})"
+            )
+        if (
             map_key(runtime.map_id) == "e_sum_minidun_chestroom_01"
             and (
                 key == "e_sum_dun_01_chest_game_activate_chests_start_signal"
@@ -3463,6 +3656,10 @@ class MapEventService:
         ))
         if not templates:
             return
+        if (
+            runtime := getattr(s, "gameplay_map_event_runtime", None)
+        ) is not None and map_key(runtime.map_id) == "e_nye_dungeon_01":
+            self._record_new_year_machine_kills(s, runtime, monsters, templates)
         if (getattr(s, "gameplay_match", None) is not None
                 and getattr(s, "gameplay_match_callback", None) is not None):
             # Battleground objectives (Assault the Fortress structures);
@@ -3624,6 +3821,142 @@ class MapEventService:
             self._resolve_fractured_planes_floor_clear(
                 s, runtime, score_rules=score_rules,
             )
+
+    def _record_new_year_machine_kills(
+            self, s: Session, runtime: MapEventRuntime,
+            monsters, templates: tuple[str, ...]) -> None:
+        killed = _NEW_YEAR_MACHINE_BABIES.intersection(templates)
+        if not killed:
+            return
+        with runtime.lock:
+            runtime.new_year_machine_babies_defeated.update(killed)
+            defeated = len(runtime.new_year_machine_babies_defeated)
+            if runtime.new_year_encounter_cleared:
+                return
+            if defeated < 4:
+                next_stage = int(next(iter(killed)).rsplit("_", 1)[-1]) + 1
+                pending = ()
+            else:
+                next_stage = 0
+                runtime.new_year_encounter_cleared = True
+                spawn_sets = {
+                    int(row.event_set_row)
+                    for row in runtime.content.spawn_rows
+                    if int(row.event_set_row) >= 0
+                }
+                runtime.suppress_event_sets(spawn_sets)
+                pending = tuple(runtime.pending.values())
+                runtime.pending.clear()
+                runtime.pending_start_deadlines.clear()
+                runtime.pending_start_tokens.clear()
+                runtime.wave_countdown_digits.clear()
+        if defeated < 4:
+            sessions = self._map_event_sessions(runtime)
+            next_event = _next_new_year_machine_event(
+                runtime, next_stage, len(sessions),
+            )
+            if next_event is not None:
+                _log(
+                    f"Rocketmen Machine Baby defeated on {runtime.map_id}: "
+                    f"{defeated}/4; activating machine {next_stage} now"
+                )
+                self._start_map_local_event(runtime, next_event)
+            else:
+                _log(
+                    f"Rocketmen Machine Baby defeated on {runtime.map_id}: "
+                    f"{defeated}/4; next activation event was not found"
+                )
+            return
+        for handle in pending:
+            cancel = getattr(handle, "cancel", None)
+            if cancel is not None:
+                cancel()
+
+        sessions = self._map_event_sessions(runtime)
+        self._publish_new_year_worldboss_loot_prop(runtime, sessions)
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            return
+        with combat.lock:
+            living = tuple(
+                (int(actor_id), monster)
+                for actor_id, monster in combat.monsters.items()
+                if combat.monster_health.get(actor_id, 0) > 0
+            )
+            actor_ids = tuple(sorted(actor_id for actor_id, _monster in living))
+        from dso_server.services.monster_summons import cleanup_monster_summons
+        cleanup_monster_summons(
+            self, s, tuple(monster for _actor_id, monster in living),
+        )
+        with combat.lock:
+            retired = set(combat.retire_monsters(actor_ids))
+        if retired:
+            for viewer in sessions:
+                with viewer.flow_lock:
+                    if viewer.gameplay_combat_state is not combat:
+                        continue
+                    discard = tuple(sorted(
+                        retired & viewer.gameplay_spawned_monster_actor_ids
+                    ))
+                    viewer.gameplay_spawned_monster_actor_ids.difference_update(retired)
+                    CharacterService._forget_published_monsters(viewer, retired)
+                    viewer.gameplay_announced_monster_actor_ids.difference_update(retired)
+                    viewer.gameplay_requested_actor_ids.difference_update(retired)
+                    for actor_id in retired:
+                        viewer.gameplay_delivered_monster_positions.pop(actor_id, None)
+                if discard:
+                    viewer.send_reliable_ordered(
+                        encode_discard_monster_batch(discard),
+                        track=True,
+                        label="rocketmen-encounter-clear",
+                    )
+        _log(
+            "Rocketmen encounter cleared after all four Machine Babies; "
+            f"retired {len(retired)} living mob(s) and suppressed "
+            f"{len(spawn_sets)} spawn EventSet(s)"
+        )
+
+    def _publish_new_year_worldboss_loot_prop(
+            self, runtime: MapEventRuntime, sessions) -> None:
+        """Activate the authored rocket-pile prop as the final Worldboss loot."""
+
+        with runtime.lock:
+            source = next((
+                definition for definition in runtime.content.props
+                if definition.instance_id.casefold()
+                == "e_nye_01_rocketpile_01"
+            ), None)
+            if source is None:
+                _log(
+                    "could not activate New Year Worldboss loot prop: "
+                    "authored e_nye_01_rocketpile_01 placement was not found"
+                )
+                return
+            definition = replace(
+                source,
+                instance_guid=ZERO_GUID,
+                event_set_row=-1,
+                one_shot=True,
+                loot_list_id="lootlist_e_nye_worldboss_pile",
+                chest_id="",
+                signal_referenced=False,
+                workbench=False,
+                quest_switch_id="",
+                key_id="",
+                key_amount=0,
+            )
+            state = PropRuntimeState(definition, PROP_STATE_ACTIVE)
+            runtime.props[definition.prop_id] = state
+        for viewer in sessions:
+            _send_prop_info(
+                viewer, (state,), label="new-year-worldboss-loot-prop",
+            )
+        _log(
+            "activated authored New Year Worldboss loot prop "
+            "e_nye_01_rocketpile_01 "
+            f"at {tuple(round(axis, 2) for axis in state.definition.position)}; "
+            f"published to {len(sessions)} player(s)"
+        )
 
     def _ensure_dark_dwarf_harbor_admiral_spawn(
             self, runtime: MapEventRuntime | None,
@@ -5193,6 +5526,117 @@ class MapEventService:
                 specifications = []
             else:
                 specifications = list(self._roll_map_chest_loot(s, entries))
+                if loot_list_id == "lootlist_e_nye_worldboss_pile":
+                    rng = random.SystemRandom()
+                    with s.flow_lock:
+                        tier = max(0, min(9, int(
+                            getattr(s, "gameplay_map_difficulty", 0) or 0
+                        )))
+                        access_id = str(
+                            getattr(s, "gameplay_map_access_id", "") or ""
+                        ) or str(getattr(s, "gameplay_map", "") or "")
+
+                    from dso_server.protocol.world_loot_protocol import (
+                        BOSS_GEM_RANKS_BY_DIFFICULTY,
+                        EQUIPMENT_RARITIES,
+                        MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY,
+                    )
+
+                    # Premium/Deluxe membership earns two or three cubes;
+                    # the cube rarity follows the map difficulty ladder.
+                    from dso_server.services.loot_presence import (
+                        mystic_cube_drop_is_eligible,
+                    )
+
+                    if mystic_cube_drop_is_eligible(s):
+                        cube = MYSTIC_CUBE_TEMPLATES_BY_DIFFICULTY[tier]
+                        specifications.extend(
+                            (cube, 1) for _ in range(rng.randint(2, 3))
+                        )
+
+                    # Roll two or three gems from this access's authored gem
+                    # band, with the boss difficulty band as a fallback for
+                    # event access records that omit Possible Rewards gems.
+                    gem_count = rng.randint(2, 3)
+                    gems = roll_possible_reward_gems(
+                        self.static_database_path, access_id, gem_count, rng,
+                    )
+                    if len(gems) < gem_count:
+                        loot_cache = prime_world_loot_cache(
+                            self.static_database_path,
+                        )
+                        gem_candidates = tuple(
+                            item.template_id
+                            for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[tier]
+                            for item in loot_cache.standard_gems_by_rank.get(
+                                rank, (),
+                            )
+                        )
+                        if gem_candidates:
+                            gems = (
+                                *gems,
+                                *(
+                                    rng.choice(gem_candidates)
+                                    for _ in range(gem_count - len(gems))
+                                ),
+                            )
+                    specifications.extend((template_id, 1) for template_id in gems)
+
+                    # Three items on lower tiers, four from Infernal, and
+                    # five from Bloodshed. Guarantee a randomized Magic/Rare/
+                    # Legendary mix, then randomize any extra items as well.
+                    item_count = 3 + min(2, tier // 4)
+                    rarity_indices = (2, 3, 4)
+                    rarity_rolls = list(rarity_indices)
+                    rng.shuffle(rarity_rolls)
+                    rarity_rolls.extend(
+                        rng.choice(rarity_indices)
+                        for _ in range(item_count - len(rarity_rolls))
+                    )
+                    from dso_server.protocol.chest_loot_protocol import (
+                        roll_chest_contents,
+                    )
+
+                    for rarity_index in rarity_rolls:
+                        rarity = EQUIPMENT_RARITIES[rarity_index].casefold()
+                        equipment = roll_chest_contents(
+                            self.static_database_path,
+                            f"all_class_all_equip_{rarity}_01",
+                            player_level=player_level,
+                            class_name=class_name,
+                            rng=rng,
+                        )
+                        for reward in equipment.rewards:
+                            template_id = reward.definition.template_id
+                            specifications.append((
+                                template_id, int(reward.amount),
+                            ))
+                            equipment_rewards_by_template.setdefault(
+                                template_id, [],
+                            ).append(reward)
+
+                    # Roll each mercenary core independently, one at a time.
+                    # More than one core may drop from a single Rocket Pile.
+                    for core in (
+                        "item_ingredient_mercenary_necklace_core",
+                        "item_ingredient_mercenary_cloak_core",
+                        "item_ingredient_mercenary_belt_core",
+                    ):
+                        if rng.random() < 0.05:
+                            specifications.append((core, 1))
+
+                    # One random Soul Destruction mercenary recipe at 20%.
+                    if rng.random() < 0.20:
+                        specifications.append((rng.choice((
+                            "recipe_mercenary_soul_destruction_belt",
+                            "recipe_mercenary_soul_destruction_cloak",
+                            "recipe_mercenary_soul_destruction_necklace",
+                        )), 1))
+                    _log(
+                        "rolled New Year Worldboss pile bonus rewards: "
+                        f"difficulty={tier}, specifications="
+                        f"{tuple(specifications)!r}"
+                    )
                 is_cny_nian_reward_chest = (
                     loot_list_id == "cny_boss_nian_box_reward"
                     and map_key(getattr(s, "gameplay_map", ""))
@@ -5392,7 +5836,17 @@ class MapEventService:
             last_move = s.gameplay_last_move
             character = s.gameplay_character
             socket_evaluation = s.gameplay_socket_effect_evaluation
+        is_new_year_worldboss_pile = (
+            map_key(getattr(s, "gameplay_map", "")) == "e_nye_dungeon_01"
+            and loot_list_id == "lootlist_e_nye_worldboss_pile"
+        )
         player_level = max(1, int(getattr(character, "level", 1)))
+        equipment_difficulty = int(definition.variation_difficulty or 0)
+        if is_new_year_worldboss_pile:
+            equipment_difficulty = max(
+                equipment_difficulty,
+                int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+            )
         origin = tuple(float(value) for value in definition.position)
         if encounter is not None and last_move is not None:
             origin = encounter.coordinate_frame.wire_to_world(
@@ -5402,7 +5856,9 @@ class MapEventService:
             origin,
             len(specifications),
             spacing=(
-                0.9 if is_bgh_mythic_chest else CHEST_DROP_SPACING
+                0.9
+                if is_bgh_mythic_chest or is_new_year_worldboss_pile
+                else CHEST_DROP_SPACING
             ),
         )
         try:
@@ -5469,7 +5925,7 @@ class MapEventService:
                         reward_inventory,
                         (int(item.item_id),),
                         class_name=class_name,
-                        map_difficulty=int(definition.variation_difficulty or 0),
+                        map_difficulty=equipment_difficulty,
                         rng=random.SystemRandom(),
                     )
                     refresh_inventory_economy_values(
@@ -5508,9 +5964,14 @@ class MapEventService:
         instance_key = CharacterService._gameplay_instance_key(s)
         map_id = str(s.gameplay_map or "")
         with s.gameplay_world_loot_position_lock:
-            if is_bgh_mythic_chest:
+            if is_bgh_mythic_chest or is_new_year_worldboss_pile:
                 drops = list(
-                    CharacterService._separate_world_loot_positions(s, drops)
+                    CharacterService._separate_world_loot_positions(
+                        s, drops,
+                        minimum_spacing=(
+                            0.9 if is_new_year_worldboss_pile else None
+                        ),
+                    )
                 )
             with self.gameplay_world_lock:
                 counters = getattr(self, "gameplay_world_next_item_ids", None)
@@ -6616,6 +7077,7 @@ class MapEventService:
         MapEventService._apply_fractured_planes_hazard_damage(
             s, runtime, world,
         )
+        MapEventService._apply_new_year_trap_damage(s, runtime, world)
         MapEventService._apply_tower_aura_damage(
             s, runtime, world, previous_position=previous_world,
             previous_position_at=previous_wire_position_at,
@@ -6662,6 +7124,89 @@ class MapEventService:
         callback = getattr(s, "gameplay_presence_callback", None)
         if callback is not None:
             callback(s, ("map_signal", "PlayerHitTrigger", trigger_ids))
+
+    @staticmethod
+    def _apply_new_year_trap_damage(
+            s: Session, runtime: MapEventRuntime, position) -> None:
+        if map_key(runtime.map_id) != "e_nye_dungeon_01":
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        hazards = _new_year_trap_hazards(
+            str(combat.encounter.static_database_path), runtime.map_id,
+        )
+        with runtime.lock:
+            active_sets = set(runtime.enabled_event_sets)
+        matching = tuple(
+            volume for volume, _effect in hazards
+            if volume.event_set_row in active_sets and volume.contains(position)
+        )
+        if not matching:
+            return
+        hazard_id = min(volume.row_id for volume in matching)
+        now = time.perf_counter()
+        with s.flow_lock:
+            if s.gameplay_combat_state is not combat:
+                return
+            cooldowns = getattr(s, "gameplay_new_year_trap_next_at", None)
+            if cooldowns is None:
+                cooldowns = {}
+                s.gameplay_new_year_trap_next_at = cooldowns
+            if now < float(cooldowns.get(hazard_id, 0.0)):
+                return
+            cooldowns[hazard_id] = now + 1.0
+            inventory = s.gameplay_inventory
+            actor_id = int(
+                getattr(s, "gameplay_remote_actor_id", 0)
+                or combat.player_actor_id
+            )
+        if inventory is None:
+            return
+        from dso_server.services.talent_events import dispatch_talent_event, spare_player
+        with combat.lock:
+            health = combat.player_health.get(actor_id)
+            if health is None or int(health[0]) <= 0:
+                return
+            previous, maximum = int(health[0]), int(health[1])
+            current = max(0, previous - max(1, int(math.ceil(maximum * 0.02))))
+            applied = previous - current
+            health[0] = current
+            if actor_id == int(combat.player_actor_id):
+                combat.player_current_health = current
+            death_saved = current <= 0 and spare_player(s, combat, actor_id)
+            current = int(health[0])
+        if applied <= 0:
+            return
+        CharacterService._cancel_respawn_protection(s)
+        with s.flow_lock:
+            if s.gameplay_inventory is inventory:
+                inventory.health_points = float(current)
+            server_tick = int(server_time() // 40) & 0xFFFFFFFF
+        CharacterService._send_combat_resolution(
+            s,
+            DamageResolution(
+                target_actor_id=CharacterService._viewer_actor_id(s, actor_id),
+                attacker_actor_id=0,
+                current_health=current,
+                maximum_health=maximum,
+                damage=applied,
+                killed=current <= 0,
+                position=tuple(float(value) for value in position),
+                server_tick=server_tick,
+                hit_tags=(0,), skill_index=0, source_actor_id=0,
+                periodic_damage=True,
+            ),
+            label="rocketmen-trap",
+            include_item_set_procs=False,
+        )
+        _log(
+            f"Rocketmen trap triggered: actor={actor_id}, "
+            f"effect={tuple(effect for _volume, effect in matching)!r}, "
+            f"damage={applied}"
+        )
+        if death_saved:
+            dispatch_talent_event(s, "nohealth", server_tick=server_tick)
 
     def _handle_prop_interaction(self, s: Session, payload: bytes) -> None:
         request = decode_prop_interaction(
@@ -8083,6 +8628,10 @@ class MapEventService:
             delay = 0.0
         else:
             delay = max(5.0, definition.start_delay) if wave else definition.start_delay
+            if map_key(runtime.map_id) == "e_nye_dungeon_01":
+                delay = _new_year_machine_delay(
+                    runtime, definition, self._map_event_sessions(runtime),
+                )
         if delay <= 0.0:
             self._start_map_local_event(runtime, definition)
             return
@@ -8302,6 +8851,29 @@ class MapEventService:
             definition: MapLocalEventDefinition, token: object) -> None:
         if not self._map_event_runtime_is_live(runtime):
             return
+        if (
+            map_key(runtime.map_id) == "e_nye_dungeon_01"
+            and _new_year_machine_event_stage(definition.key) == 1
+            and not self._map_event_sessions(runtime)
+        ):
+            # The first Machine Baby timer is anchored to instance creation,
+            # which can precede the entrant becoming presence-ready. Do not
+            # consume the event transition before there is a combat/session
+            # context to materialize the Baby; retry this same due event
+            # without restarting its 30-second countdown.
+            scheduler = getattr(runtime, "scheduler", None)
+            if scheduler is not None:
+                with runtime.lock:
+                    if runtime.pending_start_tokens.get(definition.key) is not token:
+                        return
+                    handle = scheduler.timer(
+                        0.5,
+                        self._run_delayed_map_event_start,
+                        args=(runtime, definition, token),
+                    )
+                    runtime.pending[definition.key] = handle
+                handle.start()
+                return
         try:
             self._start_map_local_event(runtime, definition, pending_token=token)
         except Exception as exc:
@@ -8465,6 +9037,18 @@ class MapEventService:
         if transition.enabled_sets:
             self._publish_event_props(runtime, sessions, transition.enabled_sets)
             extra_spawn_rows = ()
+            if (
+                transition.active
+                and map_key(runtime.map_id) == "e_nye_dungeon_01"
+            ):
+                machine_stage = _new_year_machine_event_stage(
+                    transition.event.key,
+                )
+                machine_row = _new_year_machine_spawn_row(
+                    runtime, machine_stage,
+                )
+                if machine_row is not None:
+                    extra_spawn_rows = (machine_row,)
             if (
                 transition.active
                 and map_key(runtime.map_id) == "e_fullmoon_varholm_dun"
@@ -8661,6 +9245,17 @@ class MapEventService:
         suppressed_client_spawn_events = active_flags & set(
             candidate_spawn_events
         )
+        if target_map == "e_nye_dungeon_01":
+            machine_events = {
+                event_key for event_key in active_flags
+                if _new_year_machine_event_stage(event_key) > 0
+            }
+            # The native EventSet creates Machine Babies before the server's
+            # NewMonster actor arrives. Mercenaries can target that transient
+            # client-side copy and kill it before authoritative spawn. Keep
+            # the runtime flag for quest/state logic, but let the server's
+            # explicit spawn packet create the only attackable actor.
+            suppressed_client_spawn_events.update(machine_events)
         if (
             target_map == "e_stego_arena_01"
             and "e_stego_boss_spawn_01" in active_flags
@@ -8716,6 +9311,32 @@ class MapEventService:
             self, runtime, sessions, event_sets, *, refresh_existing=False) -> None:
         with runtime.lock:
             definitions = runtime.select_props(runtime.content.props_for_sets(event_sets))
+            if map_key(runtime.map_id) == "e_nye_dungeon_01":
+                # The Greed Fiend chest is also named by a legacy quest
+                # Switch. Its appearance is gated by opening a Fireworks
+                # Crate, not by accepting that quest; clear the quest binding
+                # on this runtime copy so _quest_prop_entries sends it to all
+                # players and PropInteraction treats it as an ordinary chest.
+                definitions = tuple(
+                    replace(definition, quest_switch_id="")
+                    if (
+                        definition.template_id.casefold()
+                        == "treasure_monster_e_nye"
+                        and definition.loot_list_id.casefold()
+                        == "lootlist_treasure_monster_e_nye"
+                    ) else definition
+                    for definition in definitions
+                )
+                for definition in definitions:
+                    existing = runtime.props.get(definition.prop_id)
+                    if (
+                        existing is not None
+                        and definition.template_id.casefold()
+                        == "treasure_monster_e_nye"
+                    ):
+                        existing.definition = replace(
+                            existing.definition, quest_switch_id="",
+                        )
             published = runtime.publish_props(definitions)
             if refresh_existing:
                 # Replay authoritative states after a partial global refresh;
@@ -9412,7 +10033,19 @@ class MapEventService:
     def _spawn_event_monsters(
             self, runtime, sessions, event_sets, *, extra_rows=(),
     ) -> None:
-        rows = (*runtime.gated_spawn_rows(event_sets), *tuple(extra_rows))
+        if (
+            map_key(runtime.map_id) == "e_nye_dungeon_01"
+            and runtime.new_year_encounter_cleared
+        ):
+            return
+        gated_rows = runtime.gated_spawn_rows(event_sets)
+        extra_rows = tuple(extra_rows)
+        if map_key(runtime.map_id) == "e_nye_dungeon_01":
+            gated_rows = tuple(
+                row for row in gated_rows
+                if not _is_new_year_machine_baby(row.template_id)
+            )
+        rows = (*gated_rows, *extra_rows)
         rows = select_mortis_spawn_rows(self.static_database_path, runtime, rows)
         # Scene controllers are event-graph objects, not renderable combatants.
         # In particular, publishing one as a NewMonster can leave the client
@@ -9804,7 +10437,10 @@ class MapEventService:
                 database_path,
                 row.template_id,
                 actor_id,
-                stationary=mounted or hazard or scripted_mortis_mirror,
+                stationary=(
+                    mounted or hazard or scripted_mortis_mirror
+                    or is_new_year_dungeon_inert_helper(row.template_id)
+                ),
             )
             if scripted_mortis_mirror and mirror_owner is not None:
                 class_name = CLASS_NAMES.get(
@@ -9825,6 +10461,13 @@ class MapEventService:
             if runtime_definition is None:
                 _log(f"no runtime template for {row.template_id!r}; skipped")
                 continue
+            if (
+                map_key(runtime.map_id) == "e_nye_dungeon_01"
+                and _is_new_year_machine_baby(row.template_id)
+            ):
+                # The four Machine Babies are fixed map machines. Their
+                # authored coordinates are gameplay anchors, not patrol starts.
+                runtime_definition = replace(runtime_definition, run_speed=0.0)
             if (
                 runtime.map_id.casefold() == "f4203_boss"
                 and row.template_id.casefold() == "f4203_boss_06_ram"
@@ -9853,6 +10496,15 @@ class MapEventService:
                         hazard or is_tower_hardware(
                             database_path, runtime.map_id, row.template_id,
                         )
+                        or _is_new_year_undestroyable_tower(
+                            runtime.map_id, row.template_id,
+                        )
+                    ),
+                    rank_override=(
+                        "rank_sentinel"
+                        if map_key(runtime.map_id) == "e_nye_dungeon_01"
+                        and _is_new_year_machine_baby(row.template_id)
+                        else ""
                     ),
                 )
             except ValueError as exc:

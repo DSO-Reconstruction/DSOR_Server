@@ -206,7 +206,8 @@ class LootPresenceService:
         )
 
     @staticmethod
-    def _separate_world_loot_positions(session: Session, drops):
+    def _separate_world_loot_positions(
+            session: Session, drops, *, minimum_spacing: float | None = None):
         """Spread new ground drops away from coordinates already in use.
 
         Callers hold ``gameplay_world_loot_position_lock`` until they publish
@@ -218,7 +219,7 @@ class LootPresenceService:
         map_id = _map_key(getattr(session, "gameplay_map", ""))
         is_bgh_map = map_id.startswith("e_bgh_boss_")
         is_circus_arena = map_id == "e_bos_arena_01"
-        if not (is_bgh_map or is_circus_arena):
+        if not (is_bgh_map or is_circus_arena or minimum_spacing is not None):
             return tuple(drops)
         with session.flow_lock:
             occupied = [
@@ -227,7 +228,12 @@ class LootPresenceService:
                 if getattr(drop.item, "ground_position", None) is not None
             ]
         placed = []
-        minimum_spacing = 0.9 if is_bgh_map else 0.7
+        minimum_spacing = max(
+            0.1,
+            float(minimum_spacing)
+            if minimum_spacing is not None
+            else (0.9 if is_bgh_map else 0.7),
+        )
         for drop in drops:
             position = getattr(drop.item, "ground_position", None)
             if position is None:
@@ -371,6 +377,11 @@ class LootPresenceService:
             # transition adds are not kill-reward sources; only the unbound
             # final form may allocate loot.
             return None
+
+        is_rocketmen_dungeon = (
+            str(getattr(encounter, "map_id", "")).casefold()
+            == "e_nye_dungeon_01"
+        )
 
         if (
             str(getattr(encounter, "map_id", "")).casefold()
@@ -763,6 +774,23 @@ class LootPresenceService:
                     profile.rank_kind if profile is not None else 'normal'
                 ),
             )
+            if is_rocketmen_dungeon:
+                # Rocketmen's ordinary currencies/equipment stay disabled,
+                # while its explicitly requested 35% Oiltastic Mixture drop
+                # and the normal health globes remain available.
+                generation = replace(
+                    generation,
+                    drops=tuple(
+                        drop for drop in generation.drops
+                        if (
+                            str(drop.item.template_id).casefold()
+                            in {"e_nye_keyitem_01"}
+                            or "healthglobe" in str(
+                                drop.item.template_id
+                            ).casefold()
+                        )
+                    ),
+                )
         except Exception:
             if dragan_first_clear_items:
                 with session.flow_lock:
