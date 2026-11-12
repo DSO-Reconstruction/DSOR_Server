@@ -170,6 +170,12 @@ class PlayerInitializationWorldService:
             )
         except Exception:
             pass
+        if (map_key(gameplay_map) == "a0200_kingscity"
+                and "new_year_event_01" not in active_event_flags):
+            # The Rocketmen portal uses a client-only map event with no end
+            # signal. A quest reveal can carry that local flag across entry;
+            # never seed it unless the owning global event is active.
+            active_event_flags -= frozenset({"a0200_new_year_event_exit"})
         if str(gameplay_map).casefold().startswith("e_fullmoon_varholm_dun"):
             # The Bloodmoon portal is opened by a Vargulf kill in this map
             # run. Never seed it from global event flags or durable quest/map
