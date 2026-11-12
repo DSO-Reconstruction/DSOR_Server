@@ -503,7 +503,34 @@ class EventCatalog:
         now: datetime | None = None,
     ) -> EventProgressInfo:
         result = []
-        for event in self.active_events(now):
+        active_events = self.active_events(now)
+        # The retail mini-kill variants all use the same
+        # ``mini_kill_progress_item``. The client can only show one progress
+        # bar for that collectible, so keep the Mantis bar as the shared bar
+        # while it is active; otherwise use the first active mini-kill event.
+        mini_kill_events = tuple(
+            event for event in active_events
+            if event.template.resource_id.casefold().startswith("mini_kill_event_")
+            and event.template.progress_bar(
+                player_level, completed_achievements
+            ) is not None
+            and any(
+                collectible.item_id.casefold() == "mini_kill_progress_item"
+                for bar in event.template.progress_bars
+                for collectible in bar.collectibles
+            )
+        )
+        mini_kill_owner = next((
+            event for event in mini_kill_events
+            if event.template.resource_id.casefold() == "mini_kill_event_1d_mantis"
+        ), mini_kill_events[0] if mini_kill_events else None)
+        for event in active_events:
+            if (
+                event.template.resource_id.casefold().startswith("mini_kill_event_")
+                and mini_kill_owner is not None
+                and event.event_id != mini_kill_owner.event_id
+            ):
+                continue
             if event.template.progress_bar(
                 player_level, completed_achievements
             ) is None:
@@ -567,9 +594,33 @@ class EventCatalog:
         return bool(requirements & self.active_template_ids(now))
 
     def event_for_collectible(
-        self, item_id: str, *, now: datetime | None = None
+        self, item_id: str, *, now: datetime | None = None,
+        player_level: int | None = None,
+        completed_achievements: Iterable[str] = (),
     ) -> tuple[ScheduledEvent, EventProgressBarDefinition] | None:
-        for event in self.active_events(now):
+        active_events = self.active_events(now)
+        matching_events = tuple(
+            event for event in active_events
+            if (
+                player_level is None
+                or event.template.progress_bar(
+                    player_level, completed_achievements
+                ) is not None
+            )
+            if any(
+                value.item_id == item_id
+                for bar in event.template.progress_bars
+                for value in bar.collectibles
+            )
+        )
+        if str(item_id).casefold() == "mini_kill_progress_item":
+            mantis = next((
+                event for event in matching_events
+                if event.template.resource_id.casefold() == "mini_kill_event_1d_mantis"
+            ), None)
+            if mantis is not None:
+                matching_events = (mantis,)
+        for event in matching_events:
             for bar in event.template.progress_bars:
                 if any(value.item_id == item_id for value in bar.collectibles):
                     return event, bar
@@ -625,6 +676,7 @@ class EventCatalog:
             if entry is not None
         )
         result = []
+        seen_mini_kill_collectibles: set[str] = set()
         for event, collectible in self._collectibles_here(
             map_id=map_id,
             map_aliases=map_ids[1:],
@@ -635,6 +687,19 @@ class EventCatalog:
             monster_template_id=monster_template_id,
             completed_achievements=completed_achievements,
         ):
+            if event.template.resource_id.casefold().startswith("mini_kill_event_"):
+                item_key = collectible.item_id.casefold()
+                if item_key == "mini_kill_progress_item":
+                    owner = self.event_for_collectible(
+                        collectible.item_id, now=now,
+                        player_level=player_level,
+                        completed_achievements=completed_achievements,
+                    )
+                    if owner is not None and event.event_id != owner[0].event_id:
+                        continue
+                    if item_key in seen_mini_kill_collectibles:
+                        continue
+                    seen_mini_kill_collectibles.add(item_key)
             if event.collectible_ranks and rank not in event.collectible_ranks:
                 continue
             # An event map's final boss (Big Paws, Dragan, Wendigo...) always
@@ -1052,7 +1117,10 @@ class EventCatalog:
         completed_achievements: Iterable[str] = (),
         now: datetime | None = None,
     ) -> EventProgressAdvance | None:
-        found = self.event_for_collectible(collectible_id, now=now)
+        found = self.event_for_collectible(
+            collectible_id, now=now, player_level=player_level,
+            completed_achievements=completed_achievements,
+        )
         if found is None:
             return None
         event, _any_bar = found

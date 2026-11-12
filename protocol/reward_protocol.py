@@ -20,6 +20,8 @@ from dso_server.gameplay.ocp_store import (
     CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY,
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY,
+    MONSTER_HUNT_ATTIRE_PRODUCT_KEY,
+    HUNTING_RING_BUNDLE_PRODUCT_KEY,
     ROCKETMEN_ATTIRE_PRODUCT_KEY,
     ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY,
     ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY,
@@ -323,6 +325,18 @@ def resolve_ocp_booking_reward(
                 attire_item_id,
                 1,
                 bundle_items=attire_rewards,
+            )
+        if offer_id == MONSTER_HUNT_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_mini_kill_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_mini_kill_01"
+            )
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
             )
         if offer_id == SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY:
             skin_item_id = (
@@ -922,6 +936,9 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_252, 9.90, False, "€", ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY, "", ""),
     OCPOffer(180_253, 9.90, False, "€", ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY, "", ""),
     OCPOffer(180_254, 9.90, False, "€", ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY, "", ""),
+    # Monster Hunt uses the native attire and Hunting Ring payment packages.
+    OCPOffer(180_255, 9.90, False, "€", MONSTER_HUNT_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_256, 9.90, False, "€", HUNTING_RING_BUNDLE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

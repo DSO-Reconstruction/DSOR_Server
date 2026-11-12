@@ -137,6 +137,18 @@ ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY = (
     "8_small_soul_chest_1.0000_0_NONE"
 )
 
+# Monster Hunt's native Cash Shop packages are also advertised in the OCP
+# store while the Mantis phase is active. The payment provider owns the EUR
+# price; this server mapping controls only event visibility and fulfillment.
+MONSTER_HUNT_ATTIRE_PRODUCT_KEY = "8_event_pass_mini_kill_1.0000_0_NONE"
+MONSTER_HUNT_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_mini_kill_warrior",
+    "mage": "costume_event_pass_mini_kill_mage",
+    "ranger": "costume_event_pass_mini_kill_ranger",
+    "dwarf": "costume_event_pass_mini_kill_dwarf",
+}
+HUNTING_RING_BUNDLE_PRODUCT_KEY = "8_hunting_ring_bundle_1_1.0000_0_NONE"
+
 CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY = (
     "101_cny_2024_1_1.0000_0_NONE"
 )
@@ -248,6 +260,8 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY: "new_year_event_01",
     ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY: "new_year_event_01",
     ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY: "new_year_event_01",
+    MONSTER_HUNT_ATTIRE_PRODUCT_KEY: "mini_kill_event_1d_mantis",
+    HUNTING_RING_BUNDLE_PRODUCT_KEY: "mini_kill_event_1d_mantis",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: "event_new_year_2024",
@@ -269,6 +283,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY,
         STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
         ROCKETMEN_ATTIRE_PRODUCT_KEY,
+        MONSTER_HUNT_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -282,6 +297,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY: SUMMER_FESTIVAL_ATTIRE_ITEMS_BY_CLASS,
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY: STELLAR_GOLD_ATTIRE_ITEMS_BY_CLASS,
     ROCKETMEN_ATTIRE_PRODUCT_KEY: ROCKETMEN_ATTIRE_ITEMS_BY_CLASS,
+    MONSTER_HUNT_ATTIRE_PRODUCT_KEY: MONSTER_HUNT_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -302,6 +318,7 @@ def ocp_product_event_is_active(product_key, active_event_ids):
 # Victory are native multi-item offer groups, so their contents are granted as
 # an aligned list after the purchase is confirmed.
 DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
+    HUNTING_RING_BUNDLE_PRODUCT_KEY: (("item_lootbox_hunting_ring_bundle", 1),),
     # Keep native Dragan loot bags intact so their own tooltip and random
     # rewards run after the player opens them.
     DRAGAN_LAST_GUARDIAN_PRODUCT_KEY: (("event_dra_payment_package_01", 1),),
