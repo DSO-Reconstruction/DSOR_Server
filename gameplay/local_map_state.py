@@ -99,6 +99,10 @@ NPC_CATEGORY_BY_PROFESSION = {
 }
 LOCAL_PROP_ID_BASE = 0x10000
 KINGSCITY_MAP_ID = "a0200_kingscity"
+SARGON_HOME_RETURN_MAPS = frozenset({
+    "pw210_sargon_fortress_dun",
+    "pw211_sargon_boss",
+})
 PARALLEL_WORLDS_HUB_MAP_ID = "pw000_hub"
 TUTORIAL_DUNGEON_MAP_ID = "a0001_start_tutorial_dun"
 TUTORIAL_CULTIST_EVENT_FLAG = "a0001_start_dun_undead_mage_01"
@@ -226,6 +230,7 @@ class LocalMapExit:
     # which the client never instantiated.
     event_set_row: int = -1
 
+
     def contains(
         self,
         position: tuple[float, float, float],
@@ -239,6 +244,20 @@ class LocalMapExit:
             float(position[0]) - self.position[0],
             float(position[2]) - self.position[2],
         ) <= radius
+
+
+def exit_display_map_id(source_map_id: str, destination_map_id: str) -> str:
+    """Return the localized destination ID shown by the client for an exit."""
+
+    destination = str(destination_map_id or "").strip()
+    if (
+        str(source_map_id).casefold() in SARGON_HOME_RETURN_MAPS
+        and destination.casefold() in {"home", "hub"}
+    ):
+        # These authored return exits are symbolic at the server boundary,
+        # but ``home`` is not a localizable map name in the client catalog.
+        return KINGSCITY_MAP_ID
+    return destination
 
 
 @dataclass(frozen=True)
@@ -527,10 +546,24 @@ def effective_spawn_event_set_row(
     Teleportarium's Destructor is the only one of the classic DTU boss rooms
     whose boss SpawnPoint is exported with ``EventSetRow=-1``. Its sibling
     rooms place the same entrance boss behind EventSet 159 (``BOSS_spawn``),
-    which opens when the player reaches ``BOSS_start_trigger``. Keep the
-    Destructor on that same entrance lifecycle without editing client files.
+    which opens when the player reaches ``BOSS_start_trigger``. Sargon's
+    exported throne controller has the inverse phase gate from the server's
+    two-stage fight and is rebound to the positive second-phase flag. Keep
+    these corrections server-side without editing client files.
     """
 
+    if (
+        str(map_id).casefold() == "pw211_sargon_boss"
+        and int(row_id) == 2
+        and str(template_id).casefold() == "boss_sargon_throne"
+        and int(event_set_row) in {4166, 4172}
+    ):
+        # The throne is a staging actor whose status effect materializes
+        # boss_sargon_big. Its exported negative phase gate makes that boss
+        # appear beside boss_sargon on entry. Tie it to the positive phase-2
+        # flag instead, so the big form is released only after Sargon dies.
+        # The map export changed these paired row IDs between revisions.
+        return {4166: 4165, 4172: 4171}[int(event_set_row)]
     if (
         str(map_id).casefold() == "e_bos_02_teleportarium_01"
         and int(row_id) == 1
@@ -1487,11 +1520,11 @@ def _exit_info_entries_for_access(
     entity. The selected variation is materialized separately through
     VariationInfo where needed, so only its authored name belongs here.
     """
-    del static_database_path, map_id, all_exits
+    del static_database_path, all_exits
     return tuple(
         ExitInfoEntry(
             definition.name,
-            definition.destination_map_id,
+            exit_display_map_id(map_id, definition.destination_map_id),
             int(definition.active),
             definition.instance_guid,
         )
@@ -1565,6 +1598,18 @@ _NATIVE_SCENE_EXIT_TARGETS = {
     "pw023_atlantis_above_water_01_dun": ("pw024_",),
     "pw025_ship_graveyard_01_dun": ("pw026_",),
     "pw026_heart_of_atlantis_01_dun": ("pw027_",),
+    # Sargon's native BOSS_death EventSet opens every overlapping elemental
+    # secret-room exit at once. The server selects one destination per run and
+    # creates that exit (plus the return-to-home travelpoint) explicitly.
+    "pw211_sargon_boss": (
+        "home",
+        "i0010_physical_big_dun_event_mortis_diff_",
+        "i0012_poison_big_dun_event_mortis_diff_",
+        "i0004_fire_big_dun_event_mortis_diff_",
+        "i0006_ice_big_dun_event_mortis_diff_",
+        "i0008_lightning_big_dun_event_mortis_diff_",
+        "i0002_andermagic_big_dun_event_mortis_diff_",
+    ),
     # The Frog River Delta gate is authored in the exit table but missing
     # from the loaded Stillwater Bay scene; create the selected tier entity.
     "g0001_beach_01_dun": ("g0002_jungle_01_dun",),
@@ -1632,7 +1677,13 @@ def native_scene_exit_variation_entries(
 
     targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
     return tuple(
-        VariationInfoEntry(definition.instance_guid, definition.event_set_row)
+        VariationInfoEntry(
+            definition.instance_guid,
+            -1 if (
+                str(map_id).casefold() == "pw211_sargon_boss"
+                and definition.event_set_row == 157
+            ) else definition.event_set_row,
+        )
         for definition in exits
         if (
             definition.active

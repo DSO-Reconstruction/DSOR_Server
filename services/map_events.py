@@ -34,6 +34,7 @@ from dso_server.gameplay.local_map_state import (
     LOCAL_NPC_ACTOR_BASE,
     active_local_map_event_flags,
     _exit_info_entries_for_access,
+    exit_display_map_id,
     filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_npc_definitions,
@@ -70,6 +71,13 @@ from dso_server.gameplay.map_event_state import (
     GatedSpawnRow,
     NEW_MOON_RECALL_ALTAR_IDS,
     PARALLEL_WORLD_REWARD_CHEST_INSTANCE_IDS,
+    SARGON_SHADOWFORT_ALTAR_EVENT_PREFIX,
+    SARGON_SHADOWFORT_EXIT_EVENT_KEYS,
+    SARGON_SHADOWFORT_MAP_ID,
+    SARGON_SHADOWFORT_SENTINEL_EVENT,
+    SARGON_SHADOWFORT_SENTINEL_SIGNAL,
+    SARGON_SHADOWFORT_SENTINEL_TEMPLATE,
+    SARGON_THRONE_ROOM_MAP_ID,
     deduplicate_parallel_world_gatekeeper_rows,
     _dungeon_resource_category,
     WIRE_PROP_OPERATION,
@@ -88,6 +96,7 @@ from dso_server.gameplay.map_event_state import (
 )
 from dso_server.gameplay.quest_content import (
     QUEST_STATE_ACCEPTED,
+    QUEST_STATE_CLOSED,
     active_tasks,
 )
 from dso_server.gameplay.pathengine_navigation import NavigationError
@@ -887,6 +896,19 @@ _DARKWOOD_WENDIGO_BOSS_SIGNAL = (
 _DARKWOOD_WENDIGO_QUEST_TRIGGERS = (
     "halchexpl01", "halchexpl02", "halchexpl03",
 )
+_SARGON_THRONE_ROOM_MAP = SARGON_THRONE_ROOM_MAP_ID
+_SARGON_MAIN_QUEST = "pw210-way-to-sargon-01-n"
+_SARGON_SECOND_PHASE_MONSTER_TEMPLATES = frozenset({
+    "boss_sargon_big",
+    "boss_sargon_throne",
+    "boss_sargon_soul_form",
+})
+_SARGON_SECOND_PHASE_START_SIGNAL = (
+    "boss_sargon_second_phase_start_signal_01"
+)
+_SARGON_EVENT_ONLY_SECOND_PHASE_START_SIGNAL = (
+    "boss_sargon_second_phase_start_signal_02"
+)
 # Statue turrets this close to a defeated boss guard its arena: Big Paws'
 # two turrets stand 12 m from him, the nearest corridor statues over 60 m.
 ARENA_HAZARD_RADIUS = 25.0
@@ -903,6 +925,9 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     # The Lythira spawn transform is the boss's authored arena position and
     # can be outside the ordinary vicinity radius from the entry point.
     "fp_boss_01_lythira",
+    # The Shadowfort Sentinel has a native skull minimap icon. Announce it
+    # when its event set spawns it so every player sees the marker immediately.
+    "pw210_sentinel_shadow_father_01",
 })
 _TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
 
@@ -2454,6 +2479,60 @@ class MapEventService:
             f"at {tuple(round(value, 2) for value in position)}"
         )
 
+    @staticmethod
+    def _sargon_shadowfort_leader_waves_cleared(s, runtime) -> bool:
+        """Return true after all three selected altar leader groups are dead."""
+
+        selected_events = frozenset(
+            runtime.sargon_shadowfort_selected_altar_event_keys
+        )
+        if len(selected_events) != 3:
+            return False
+        with runtime.lock:
+            if not selected_events.issubset(runtime.active_flags()):
+                return False
+            leader_spawn_rows_by_event = {
+                event_key: tuple(
+                    row
+                    for row in runtime.content.spawn_rows_for_sets(
+                        event_set.row
+                        for event_set in runtime.content.event_sets_for(
+                            event_key
+                        )
+                    )
+                    if row.template_id.casefold().startswith("pw210_leader_")
+                )
+                for event_key in selected_events
+            }
+            actor_ids_by_row = {
+                int(row): set(actor_ids)
+                for row, actor_ids in runtime.event_set_actor_ids.items()
+            }
+        if any(not rows for rows in leader_spawn_rows_by_event.values()):
+            return False
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return False
+        with combat.lock:
+            alive = set(combat.alive_actor_ids)
+            monsters = combat.monsters
+            for rows in leader_spawn_rows_by_event.values():
+                for row in rows:
+                    actor_ids = actor_ids_by_row.get(
+                        int(row.event_set_row), set(),
+                    )
+                    leader_actor_ids = {
+                        actor_id for actor_id in actor_ids
+                        if (
+                            (monster := monsters.get(actor_id)) is not None
+                            and monster.template_id.casefold()
+                            == row.template_id.casefold()
+                        )
+                    }
+                    if not leader_actor_ids or leader_actor_ids.intersection(alive):
+                        return False
+        return True
+
     def _fire_map_signal(
             self, s: Session, event_type: str, params, *,
             synthetic_dead_templates=(),
@@ -2632,6 +2711,26 @@ class MapEventService:
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            sentinel_rules = tuple(
+                rule for rule in rules
+                if rule.signal_id.casefold()
+                == SARGON_SHADOWFORT_SENTINEL_SIGNAL
+            )
+            if sentinel_rules:
+                if self._sargon_shadowfort_leader_waves_cleared(s, runtime):
+                    with runtime.lock:
+                        runtime.sargon_shadowfort_sentinel_unlocked = True
+                else:
+                    _log(
+                        "blocked Sargon Shadowfort Sentinel signal before all "
+                        "three selected altar leader waves were defeated"
+                    )
+                    rules = tuple(
+                        rule for rule in rules
+                        if rule.signal_id.casefold()
+                        != SARGON_SHADOWFORT_SENTINEL_SIGNAL
+                    )
         if map_key(runtime.map_id) == _DARKWOOD_WENDIGO_MAP:
             blocked_wendigo_rules = tuple(
                 rule for rule in rules
@@ -3162,10 +3261,67 @@ class MapEventService:
         else:
             _log("Panoltiaco Senbu spawn point is missing from map content")
 
+    @staticmethod
+    def _sargon_main_quest_completed(s: Session) -> bool:
+        with s.flow_lock:
+            return any(
+                str(quest_id).casefold() == _SARGON_MAIN_QUEST
+                and int(getattr(progress, "state", -1))
+                == QUEST_STATE_CLOSED
+                for quest_id, progress in (
+                    getattr(s, "gameplay_quest_log", {}) or {}
+                ).items()
+            )
+
     def _emit_map_signal(self, s: Session, runtime: MapEventRuntime,
                          signal_id: str) -> None:
         catalog = runtime.catalog
         key = str(signal_id).casefold()
+        if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            if key == SARGON_SHADOWFORT_SENTINEL_SIGNAL:
+                with runtime.lock:
+                    sentinel_unlocked = runtime.sargon_shadowfort_sentinel_unlocked
+                if not sentinel_unlocked:
+                    _log("blocked Sargon Shadowfort Sentinel spawn before altar clear")
+                    return
+            if key in {
+                "pw210_sargon_open_exit_to_sargon_start_signal_01",
+                "pw210_sargon_open_exit_to_sargon_event_only_start_signal_01",
+            }:
+                with runtime.lock:
+                    sentinel_defeated = runtime.sargon_shadowfort_sentinel_defeated
+                if not sentinel_defeated:
+                    _log("blocked Sargon Shadowfort boss gate before Sentinel death")
+                    return
+        if map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP:
+            if key == _SARGON_EVENT_ONLY_SECOND_PHASE_START_SIGNAL:
+                # The quest-incomplete branch's Soul Form is not part of this
+                # two-phase encounter. Incomplete runs end after the first
+                # Sargon; completed runs use the regular phase event below.
+                _log(
+                    "ignored Sargon's quest-incomplete Soul Form branch; "
+                    "the second phase requires the main quest"
+                )
+                return
+            if key == _SARGON_SECOND_PHASE_START_SIGNAL:
+                with runtime.lock:
+                    first_phase_defeated = (
+                        runtime.sargon_throne_first_phase_defeated
+                    )
+                if not first_phase_defeated:
+                    _log(
+                        "blocked Sargon's reincarnation phase before "
+                        "the first Sargon was defeated"
+                    )
+                    return
+                if not self._sargon_main_quest_completed(s):
+                    _log(
+                        "ignored Sargon's reincarnation phase because "
+                        "The Terrible is Back is not complete"
+                    )
+                    return
+                with runtime.lock:
+                    runtime.sargon_throne_second_phase_authorized = True
         if (
             map_key(runtime.map_id) == "e_nye_dungeon_01"
             and key in {
@@ -3251,6 +3407,30 @@ class MapEventService:
                 if definition is not None and definition.applies_to(runtime.map_id):
                     self._stop_map_local_event(runtime, definition)
             for event_key in catalog.events_by_start_signal.get(event_signal, ()):
+                if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
+                    event_key_folded = str(event_key).casefold()
+                    if (
+                        event_key_folded.startswith(
+                            SARGON_SHADOWFORT_ALTAR_EVENT_PREFIX
+                        )
+                        and event_key_folded
+                        not in runtime.sargon_shadowfort_selected_altar_event_keys
+                    ):
+                        _log(
+                            "ignored unselected Sargon Shadowfort altar event "
+                            f"{event_key_folded!r}"
+                        )
+                        continue
+                    if (
+                        event_key_folded == SARGON_SHADOWFORT_SENTINEL_EVENT
+                        and not runtime.sargon_shadowfort_sentinel_unlocked
+                    ):
+                        continue
+                    if (
+                        event_key_folded in SARGON_SHADOWFORT_EXIT_EVENT_KEYS
+                        and not runtime.sargon_shadowfort_sentinel_defeated
+                    ):
+                        continue
                 definition = catalog.event(event_key)
                 if definition is not None and definition.applies_to(runtime.map_id):
                     self._schedule_map_local_event_start(runtime, definition)
@@ -3767,6 +3947,25 @@ class MapEventService:
         CharacterService._ranking_on_monsters_killed(self, s, monsters)
         CharacterService._on_map_companion_boss_defeated(self, s, monsters)
         runtime = getattr(s, "gameplay_map_event_runtime", None)
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP
+            and "boss_sargon" in templates
+        ):
+            with runtime.lock:
+                runtime.sargon_throne_first_phase_defeated = True
+            _log("Sargon Throne Room first phase defeated")
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID
+            and SARGON_SHADOWFORT_SENTINEL_TEMPLATE in templates
+        ):
+            with runtime.lock:
+                if runtime.sargon_shadowfort_sentinel_unlocked:
+                    runtime.sargon_shadowfort_sentinel_defeated = True
+                    _log(
+                        "Sargon Shadowfort Sentinel defeated; boss gate unlocked"
+                    )
         score_rules = ()
         mortis = mortis_arena(self, runtime)
         if mortis is not None:
@@ -3827,6 +4026,22 @@ class MapEventService:
                             runtime, current_score
                         )
         self._fire_map_signal(s, "PlayerKilledMonster", templates)
+        if (
+            runtime is not None
+            and map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP
+            and "boss_sargon" in templates
+            and not self._sargon_main_quest_completed(s)
+        ):
+            # Without the main quest, phase one is the final encounter. The
+            # retail BOSS_death signal otherwise only fires for the second
+            # form, which this branch intentionally never spawns.
+            for event_key in ("boss_start", "boss_spawn"):
+                definition = runtime.catalog.event(event_key)
+                if definition is not None:
+                    self._stop_map_local_event(runtime, definition)
+            death_event = runtime.catalog.event("boss_death")
+            if death_event is not None:
+                self._start_map_local_event(runtime, death_event)
         self._advance_castle_gwenfara(s, runtime, templates)
         if (
             runtime is not None
@@ -4657,6 +4872,7 @@ class MapEventService:
         self._fire_map_signal(
             s, "PlayerEnteredMapId", (access_group, access_id, runtime.map_id)
         )
+        self._schedule_sargon_shadowfort_gate_refresh(s, runtime)
         # Retail requires generator interactions before its ram mechanism
         # spawns the machine that breaks the boss arena entrance. The server
         # does not implement those custom prop modules, so complete that step
@@ -4804,6 +5020,48 @@ class MapEventService:
             self._reconcile_easter_giant_egg(
                 runtime, (s,), event_catalog,
             )
+
+    def _schedule_sargon_shadowfort_gate_refresh(
+            self, s: Session, runtime: MapEventRuntime) -> None:
+        """Reapply the locked gate after the client has loaded the map scene."""
+
+        if map_key(runtime.map_id) != SARGON_SHADOWFORT_MAP_ID:
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            return
+        with runtime.lock:
+            if runtime.sargon_shadowfort_sentinel_defeated:
+                return
+        handle = scheduler.timer(
+            1.0,
+            self._refresh_sargon_shadowfort_gate_state,
+            args=(s, runtime),
+        )
+        handle.start()
+
+    def _refresh_sargon_shadowfort_gate_state(
+            self, s: Session, runtime: MapEventRuntime) -> None:
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        with s.flow_lock:
+            if (
+                not s.connected
+                or not s.gameplay_presence_ready
+                or s.gameplay_map != runtime.map_id
+                or getattr(s, "gameplay_map_event_runtime", None) is not runtime
+            ):
+                return
+        with runtime.lock:
+            if runtime.sargon_shadowfort_sentinel_defeated:
+                return
+        self._publish_map_event_snapshot(
+            runtime,
+            (s,),
+            changed_event="sargon_shadowfort_gate_entry_refresh",
+            active=False,
+        )
+        _log("reapplied closed Sargon Shadowfort boss gate after map load")
 
     def _reconcile_easter_giant_egg(self, runtime, sessions, catalog) -> None:
         """Spawn one event Giant Egg in each active dungeon instance."""
@@ -8959,6 +9217,16 @@ class MapEventService:
             # The Vial interaction is the summon action; retail's ten-second
             # authored delay leaves the player waiting after the ritual.
             delay = 0.0
+        elif (
+            map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP
+            and str(definition.key).casefold() in {
+                "boss_sargon_second_phase",
+                "boss_sargon_second_phase_damage_aura",
+            }
+        ):
+            # Sargon starts his reincarnation phase four seconds after phase
+            # one dies; keep its damage aura on the same phase boundary.
+            delay = 4.0
         else:
             delay = max(5.0, definition.start_delay) if wave else definition.start_delay
             if map_key(runtime.map_id) == "e_nye_dungeon_01":
@@ -9242,6 +9510,45 @@ class MapEventService:
     def _start_map_local_event_locked(
             self, runtime: MapEventRuntime,
             definition: MapLocalEventDefinition, *, pending_token=None) -> None:
+        if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            event_key = str(definition.key).casefold()
+            with runtime.lock:
+                sentinel_unlocked = runtime.sargon_shadowfort_sentinel_unlocked
+                sentinel_defeated = runtime.sargon_shadowfort_sentinel_defeated
+            if (
+                event_key == SARGON_SHADOWFORT_SENTINEL_EVENT
+                and not sentinel_unlocked
+            ):
+                _log("blocked Sargon Shadowfort Sentinel event before altar clear")
+                return
+            if (
+                event_key in SARGON_SHADOWFORT_EXIT_EVENT_KEYS
+                and not sentinel_defeated
+            ):
+                _log("blocked Sargon Shadowfort boss gate before Sentinel death")
+                return
+        if map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP:
+            event_key = str(definition.key).casefold()
+            with runtime.lock:
+                first_phase_defeated = (
+                    runtime.sargon_throne_first_phase_defeated
+                )
+                second_phase_authorized = (
+                    runtime.sargon_throne_second_phase_authorized
+                )
+            if event_key in {"boss_start", "boss_spawn"} and first_phase_defeated:
+                _log(
+                    f"blocked Sargon {event_key} restart after first-phase death"
+                )
+                return
+            if event_key in {
+                "boss_sargon_second_phase",
+                "boss_sargon_second_phase_damage_aura",
+            } and not (first_phase_defeated and second_phase_authorized):
+                _log(
+                    f"blocked Sargon event {event_key!r} before authorized phase 2"
+                )
+                return
         if map_key(runtime.map_id) == "e_sum_minidun_chestroom_01":
             event_key = definition.key.casefold()
             if event_key == "e_sum_dun_01_chest_game_ending":
@@ -9307,6 +9614,13 @@ class MapEventService:
             transition = runtime.begin_event(definition)
         if transition is None:
             return
+        if (
+            map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP
+            and str(definition.key).casefold()
+            == "boss_sargon_second_phase"
+        ):
+            with runtime.lock:
+                runtime.sargon_throne_second_phase_started = True
         _log(
             f"{definition.event_id} started on {runtime.map_id}: "
             f"enabled sets {transition.enabled_sets}, "
@@ -9553,7 +9867,17 @@ class MapEventService:
     # ------------------------------------------------------------------
 
     def _broadcast_map_event_update(self, runtime, sessions, transition) -> None:
-        definition = transition.event
+        self._publish_map_event_snapshot(
+            runtime,
+            sessions,
+            changed_event=transition.event.event_id,
+            active=transition.active,
+            include_event_key=transition.event.key,
+        )
+
+    def _publish_map_event_snapshot(
+            self, runtime, sessions, *, changed_event: str, active: bool,
+            include_event_key: str | None = None) -> None:
         # A map-local EventUpdate must describe the full state of the map's
         # event flags. Sending only currently running events leaves any event
         # that ended earlier latched on the client, which can keep an EventSet
@@ -9563,7 +9887,8 @@ class MapEventService:
             catalog = runtime.catalog
             referenced = set(runtime.content.referenced_events)
             referenced.update(runtime.running)
-            referenced.add(definition.key)
+            if include_event_key:
+                referenced.add(str(include_event_key).casefold())
         definitions = {}
         target_map = map_key(runtime.map_id)
         # A Mighty Threat's map-clear EventSet contains alternative
@@ -9575,7 +9900,7 @@ class MapEventService:
         candidate_spawn_events = (
             runtime.content.a_mighty_threat_spawn_event_keys(catalog)
         )
-        suppressed_client_spawn_events = active_flags & set(
+        suppressed_client_events = active_flags & set(
             candidate_spawn_events
         )
         if target_map == "e_nye_dungeon_01":
@@ -9588,7 +9913,7 @@ class MapEventService:
             # client-side copy and kill it before authoritative spawn. Keep
             # the runtime flag for quest/state logic, but let the server's
             # explicit spawn packet create the only attackable actor.
-            suppressed_client_spawn_events.update(machine_events)
+            suppressed_client_events.update(machine_events)
         if (
             target_map == "e_stego_arena_01"
             and "e_stego_boss_spawn_01" in active_flags
@@ -9596,8 +9921,13 @@ class MapEventService:
             # The final-boss EventSet contains four alternatives. The server
             # selects and publishes one actor; activating this flag on the
             # client would instantiate all four authored candidates locally.
-            suppressed_client_spawn_events.add("e_stego_boss_spawn_01")
-        client_active_flags = active_flags - suppressed_client_spawn_events
+            suppressed_client_events.add("e_stego_boss_spawn_01")
+        if target_map == _SARGON_THRONE_ROOM_MAP and "boss_death" in active_flags:
+            # BOSS_death is attached to all six secret-room destinations and
+            # each difficulty copy in this scene. Toggling it client-side
+            # reveals every overlapping portal; the server creates one room.
+            suppressed_client_events.add("boss_death")
+        client_active_flags = active_flags - suppressed_client_events
         for event_key in referenced:
             event = catalog.event(event_key)
             if event is not None and (
@@ -9633,10 +9963,10 @@ class MapEventService:
             )
         _log(
             f"published map-event state update on {runtime.map_id}: "
-            f"changed={definition.event_id} active={transition.active}, "
+            f"changed={changed_event} active={active}, "
             f"snapshot_events={len(entries)}, active_events="
             f"{tuple(sorted(key for key in definitions if key in client_active_flags))}, "
-            f"client_spawn_suppressed={tuple(sorted(suppressed_client_spawn_events))}, "
+            f"client_event_suppressed={tuple(sorted(suppressed_client_events))}, "
             f"sessions={len(sessions)}"
         )
 
@@ -9912,6 +10242,17 @@ class MapEventService:
             active_override=None, update_session_state=True,
             disabled_event_sets=()) -> None:
         disabled_rows = frozenset(int(row) for row in disabled_event_sets)
+        shadowfort_locked_rows = frozenset()
+        if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            with runtime.lock:
+                sentinel_defeated = runtime.sargon_shadowfort_sentinel_defeated
+            if not sentinel_defeated:
+                shadowfort_locked_rows = frozenset(
+                    event_set.row
+                    for event_key in SARGON_SHADOWFORT_EXIT_EVENT_KEYS
+                    for event_set in runtime.content.event_sets_for(event_key)
+                )
+                disabled_rows |= shadowfort_locked_rows
         with runtime.lock:
             flags = runtime.active_flags()
         try:
@@ -9924,6 +10265,11 @@ class MapEventService:
                 )
                 if definition.active and definition.destination_map_id
             )
+            if shadowfort_locked_rows:
+                definitions = tuple(
+                    definition for definition in definitions
+                    if definition.event_set_row not in shadowfort_locked_rows
+                )
             definitions = self._select_a_mighty_threat_waypoint_exits(
                 runtime, definitions,
             )
@@ -9998,6 +10344,21 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            if map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP:
+                with runtime.lock:
+                    secret_room_group = (
+                        runtime.sargon_throne_secret_room_group
+                    )
+                viewer_definitions = tuple(
+                    definition for definition in viewer_definitions
+                    if definition.destination_map_id.casefold() == "home"
+                    or (
+                        secret_room_group is not None
+                        and definition.destination_map_id.casefold().startswith(
+                            secret_room_group
+                        )
+                    )
+                )
             if map_key(runtime.map_id) == "e_bos_arena_01":
                 with runtime.lock:
                     chosen_circus_exit = runtime.circus_random_exit_guid
@@ -10101,7 +10462,9 @@ class MapEventService:
                 exit_info_entries = tuple(
                     ExitInfoEntry(
                         definition.name,
-                        definition.destination_map_id,
+                        exit_display_map_id(
+                            runtime.map_id, definition.destination_map_id,
+                        ),
                         int(entry_active),
                         definition.instance_guid,
                     )
@@ -10118,7 +10481,9 @@ class MapEventService:
                 exit_info_entries = tuple(
                     ExitInfoEntry(
                         definition.name,
-                        definition.destination_map_id,
+                        exit_display_map_id(
+                            runtime.map_id, definition.destination_map_id,
+                        ),
                         int(entry_active),
                         definition.instance_guid,
                     )
@@ -10133,7 +10498,11 @@ class MapEventService:
                 }
                 exit_info_entries += tuple(
                     ExitInfoEntry(
-                        definition.name, definition.destination_map_id, 0,
+                        definition.name,
+                        exit_display_map_id(
+                            runtime.map_id, definition.destination_map_id,
+                        ),
+                        0,
                         definition.instance_guid,
                     )
                     for definition in previous_exits
@@ -10147,7 +10516,9 @@ class MapEventService:
                 exit_info_entries += tuple(
                     ExitInfoEntry(
                         definition.name,
-                        definition.destination_map_id,
+                        exit_display_map_id(
+                            runtime.map_id, definition.destination_map_id,
+                        ),
                         0,
                         definition.instance_guid,
                     )
@@ -10532,6 +10903,33 @@ class MapEventService:
                 if not _is_new_year_machine_baby(row.template_id)
             )
         rows = (*gated_rows, *extra_rows)
+        if map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP:
+            with runtime.lock:
+                phase_two_released = (
+                    runtime.sargon_throne_first_phase_defeated
+                    and runtime.sargon_throne_second_phase_authorized
+                    and runtime.sargon_throne_second_phase_started
+                )
+            if not phase_two_released:
+                blocked_rows = tuple(
+                    row for row in rows
+                    if str(row.template_id).casefold()
+                    in _SARGON_SECOND_PHASE_MONSTER_TEMPLATES
+                )
+                if blocked_rows:
+                    blocked_ids = tuple(
+                        (int(row.row_id), str(row.template_id))
+                        for row in blocked_rows
+                    )
+                    rows = tuple(
+                        row for row in rows
+                        if str(row.template_id).casefold()
+                        not in _SARGON_SECOND_PHASE_MONSTER_TEMPLATES
+                    )
+                    _log(
+                        "blocked Sargon phase-2 spawn before the first phase "
+                        f"and quest authorization: rows={blocked_ids!r}"
+                    )
         rows = select_mortis_spawn_rows(self.static_database_path, runtime, rows)
         # Scene controllers are event-graph objects, not renderable combatants.
         # In particular, publishing one as a NewMonster can leave the client

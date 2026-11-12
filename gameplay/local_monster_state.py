@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from functools import cached_property, lru_cache
 import math
 import os
+import random
 import sqlite3
 import struct
 import threading
@@ -1006,6 +1007,8 @@ _K_SERIES_QUEST_REGION_MONSTERS = (
     "tainted_sludge",
     "lord_of_ashes",
 )
+_SARGON_SHADOW_PORTAL_MAP_ID = "g0001_beach_01_night_dun"
+_SARGON_SHADOW_PORTAL_TEMPLATE_ID = "g0001_guardian_shadow_portal_01"
 _MAP_MONSTER_TEMPLATE_ADDITIONS = {
     "k0002_greylingforest": _K_SERIES_QUEST_REGION_MONSTERS,
     "k0003_tidalwildwood": _K_SERIES_QUEST_REGION_MONSTERS,
@@ -3578,6 +3581,13 @@ def _load_map_monster_templates(
             for fragment in excluded_fragments
         )
     )
+    if str(map_id).casefold() == _SARGON_SHADOW_PORTAL_MAP_ID:
+        # Portals are capped through their authored fixed SpawnPoints below;
+        # keep generic density areas from creating additional portals.
+        templates = tuple(
+            template for template in templates
+            if template.casefold() != _SARGON_SHADOW_PORTAL_TEMPLATE_ID
+        )
     if str(map_id).casefold() == "pw001_grimmagstone_01_dun":
         # Prefix matching also finds seasonal burning skeletons and the
         # boss's private adds. Neither belongs to ordinary density lists.
@@ -3853,9 +3863,12 @@ def _load_dynamic_monster_encounter(
     with _open_read_only(
         map_database_path(static_database_path, map_id)
     ) as database:
+        active_map_flags = active_local_map_event_flags(
+            map_id, active_event_flags,
+        )
         enabled_event_sets = _enabled_event_set_ids(
             database,
-            active_local_map_event_flags(map_id, active_event_flags),
+            active_map_flags,
             map_id=map_id,
         )
         map_key = str(map_id).casefold()
@@ -4120,6 +4133,40 @@ def _load_dynamic_monster_encounter(
                 )
             )
         )
+        if map_key == _SARGON_SHADOW_PORTAL_MAP_ID:
+            portal_rows = tuple(
+                row for row in fixed_rows
+                if str(row[2]).casefold() == _SARGON_SHADOW_PORTAL_TEMPLATE_ID
+            )
+            portal_rows_by_position = {}
+            for row in portal_rows:
+                try:
+                    transform = struct.unpack("<16f", row[1])
+                    position_key = (
+                        round(transform[12], 2),
+                        round(transform[14], 2),
+                    )
+                except (struct.error, TypeError):
+                    position_key = ("row", int(row[0]))
+                portal_rows_by_position.setdefault(position_key, row)
+            portal_candidates = tuple(portal_rows_by_position.values())
+            if "sargon_event" in active_map_flags:
+                portal_count = min(
+                    len(portal_candidates), random.randint(4, 5),
+                )
+                selected_portal_rows = {
+                    int(row[0])
+                    for row in random.sample(portal_candidates, portal_count)
+                }
+            else:
+                selected_portal_rows = set()
+            fixed_rows = tuple(
+                row for row in fixed_rows
+                if (
+                    str(row[2]).casefold() != _SARGON_SHADOW_PORTAL_TEMPLATE_ID
+                    or int(row[0]) in selected_portal_rows
+                )
+            )
         selected_event_rows = tuple(
             row
             for row in fixed_rows

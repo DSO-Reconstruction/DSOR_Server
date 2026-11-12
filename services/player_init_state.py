@@ -46,6 +46,7 @@ from dso_server.gameplay.endless_tower_effects import (
     endless_tower_player_buffs,
 )
 from dso_server.gameplay.event_system import event_status_entry
+from dso_server.gameplay.map_event_state import sargon_shadowfort_seed_flags
 from dso_server.gameplay.membership_effects import (
     membership_status_effect,
     membership_status_effect_ids,
@@ -399,6 +400,9 @@ class PlayerInitializationStateService:
             )
         except Exception:
             pass
+        active_event_flags = sargon_shadowfort_seed_flags(
+            gameplay_map, active_event_flags,
+        )
         map_exit_definitions = tuple(
             definition
             for definition in load_local_map_exits(

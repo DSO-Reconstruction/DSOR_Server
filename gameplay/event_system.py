@@ -41,6 +41,11 @@ UINT32_MAX = 0xFFFFFFFF
 _CURRENCY_COLLECTIBLE_CATEGORIES = frozenset({"Currency", "NoAutoUseCurrency"})
 _DIFFICULTY_SUFFIX = re.compile(r"_diff_\d+$", re.IGNORECASE)
 _DRAGAN_DIFFICULTIES = (0, 1, 2, 3, 4, 6, 8)
+# Difficulty ids 0..9 use 1, 2, 3, 4, 5, 5, 7, 7, 10, 10 beans;
+# Bloodshed and Parallel World Bloodshed both give the requested 10x stack.
+_SARGON_WORLD_BOSS_COFFEE_BEANS_BY_DIFFICULTY = (
+    1, 2, 3, 4, 5, 5, 7, 7, 10, 10,
+)
 _DRAGAN_CASTLE_PROGRESS_AMOUNTS = (
     (2, 3), (3, 4), (4, 6), (6, 8), (8, 10), (12, 16), (20, 20),
 )
@@ -63,6 +68,12 @@ _DRAGAN_ATTIRE_COSTUMES = frozenset({
     "costume_event_pass_dragan_mage",
     "costume_event_pass_dragan_ranger",
     "costume_event_pass_dragan_dwarf",
+})
+_SARGON_ATTIRE_COSTUMES = frozenset({
+    "costume_event_pass_sargon_warrior",
+    "costume_event_pass_sargon_mage",
+    "costume_event_pass_sargon_ranger",
+    "costume_event_pass_sargon_dwarf",
 })
 YEAR_ROUND_MOON_EVENT_MAPS = frozenset({
     "e_fullmoon_varholm_dun",
@@ -731,6 +742,15 @@ class EventCatalog:
                         base = int(base * 1.5 + 0.5)
                     elif collectible_id == "e_dra_progress_item_boss":
                         base = int(base * 1.1 + 0.5)
+            elif (
+                event.template.resource_id.casefold() == "sargon_event"
+                and str(active_costume or "").casefold()
+                in _SARGON_ATTIRE_COSTUMES
+                and collectible.item_id.casefold() == "e_sar_progress_item"
+            ):
+                # The Terrifying Shadows attire increases Shadow stack size
+                # by 50%, with a minimum increase of one item.
+                base = max(base + 1, int(base * 1.5 + 0.5))
             amount = self._modified_drop_amount(
                 collectible.item_id, base, active_effects
             )
@@ -898,23 +918,53 @@ class EventCatalog:
             self.monster_regions.get(str(monster_template_id).casefold(), ()),
         )
         rank = _rank_class(monster_rank)
+        raw_rank = str(monster_rank).casefold()
         result = []
         for event in self.active_events(now):
             template = event.template
+            is_sargon_event = (
+                template.resource_id.casefold() == "sargon_event"
+            )
             entries = self.event_loot.get(template.loot_list_id.casefold(), ())
-            if not entries:
-                continue
             if not bool(participation.get(
                 str(event.event_id), event.participation_default
             )):
                 continue
             if not template.minimum_level <= player_level <= template.maximum_level:
                 continue
+            if is_sargon_event:
+                if raw_rank == "worldboss":
+                    difficulty = max(
+                        0,
+                        min(
+                            int(map_difficulty),
+                            len(_SARGON_WORLD_BOSS_COFFEE_BEANS_BY_DIFFICULTY)
+                            - 1,
+                        ),
+                    )
+                    result.append((
+                        "e_sar_key_coffee_beans",
+                        _SARGON_WORLD_BOSS_COFFEE_BEANS_BY_DIFFICULTY[
+                            difficulty
+                        ],
+                    ))
+                elif rng.random() < 0.05:
+                    result.append(("e_sar_key_coffee_beans", 1))
+            if not entries:
+                continue
             if current_maps & template.excluded_maps:
                 continue
             if template.map_id and _map_key(template.map_id) not in current_maps:
                 continue
             for entry in entries:
+                # The Sargon Coffee Bean drop is governed above so it can
+                # also be guaranteed for world bosses with the configured
+                # difficulty stack. Avoid a second roll from authored loot.
+                if (
+                    is_sargon_event
+                    and entry.item_id.casefold() == "e_sar_key_coffee_beans"
+                ):
+                    continue
                 if monster_level < entry.minimum_monster_level or (
                     entry.maximum_monster_level
                     and monster_level > entry.maximum_monster_level
