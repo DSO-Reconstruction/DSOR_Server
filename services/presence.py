@@ -912,6 +912,20 @@ class PresenceService:
                         viewer,
                         label="world-loot-spawn",
                     )
+                    if any(
+                        str(drop.item.template_id).casefold()
+                        in {"e_easter_keyitem_01", "e_easter_progress_item_t0"}
+                        or str(drop.item.template_id).casefold().startswith(
+                            "e_colour_ammunition_"
+                        )
+                        for drop in drops
+                    ):
+                        with viewer.flow_lock:
+                            last_move = viewer.gameplay_last_move
+                        if last_move is not None:
+                            CharacterService._pickup_nearby_auto_loot(
+                                viewer, last_move.relative_position,
+                            )
                     if dragan_claim_generation is not None:
                         CharacterService._confirm_dragan_great_hall_first_clear(
                             self, viewer, dragan_claim_generation,

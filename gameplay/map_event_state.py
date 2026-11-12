@@ -841,6 +841,10 @@ class MapPropDefinition:
         interactive ones.
         """
 
+        if str(self.template_id).casefold().startswith((
+            "e_easter_01_egg_", "e_easter_01_dun_egg_",
+        )):
+            return True
         if self.workbench or self.signal_referenced or self.quest_switch_id:
             return True
         # Gatherable StateObjectSpawnPoints use the retail MAIN_ herb/ore loot
@@ -2128,6 +2132,9 @@ class MapEventRuntime:
     props: dict[int, PropRuntimeState] = field(default_factory=dict)
     # StateObject IndividualUsage is scoped to a player and this map instance.
     individual_prop_usage: set[tuple[int, int]] = field(default_factory=set)
+    # Kingshill's six Spring Eggs are one-shot scene props but respawn after
+    # a short event cooldown. Keep one timer per authored prop per instance.
+    easter_hub_egg_respawn_timers: dict[object, object] = field(default_factory=dict)
     # Quest placements used in this map instance: (player, switch id, prop id).
     # Retail refreshes props with the map, so a new run offers them again; a
     # later task's own switch may also reuse the same placement.

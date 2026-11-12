@@ -357,6 +357,14 @@ _NEW_YEAR_FORTUNE_COOKIE_REWARDS = (
     ("epicmount_goldfish", 1),
 )
 _AUTHORED_WEIGHTED_CHESTS: dict[str, tuple[tuple[str, int, float], ...]] = {
+    # Surprise Spring Pack: tooltip states exact one-of odds (total 100%).
+    "surprise_spring_pack_box": (
+        ("holy_core_selectbox", 1, 5.0),
+        ("item_ingredient_mercenary_heart_of_holy", 10, 30.0),
+        ("item_ingredient_mercenary_heart_of_holy", 20, 15.0),
+        ("e_easter_spring_dust", 10, 20.0),
+        ("money_rc", 10000, 30.0),
+    ),
     # These are inventory LootGenItems. Their loot lists are server-owned,
     # so the map-prop loot catalog does not participate when opening them
     # from the inventory; define their complete one-of tables here.

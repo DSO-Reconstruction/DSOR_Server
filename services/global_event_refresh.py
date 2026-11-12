@@ -142,4 +142,7 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
             completed.append(cid)
         except Exception as exc:
             errors.append({"character_id": cid, "error": str(exc)[:200]})
+    CharacterService._reconcile_easter_giant_egg(
+        server, runtime, sessions, catalog,
+    )
     return tuple(completed), tuple(errors)

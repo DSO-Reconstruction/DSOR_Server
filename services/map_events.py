@@ -37,6 +37,7 @@ from dso_server.gameplay.local_map_state import (
     filter_parallel_world_exits_for_access,
     load_local_map_exits,
     load_local_npc_definitions,
+    load_local_spawn_position,
     local_npc_actor_id,
     local_npc_info,
     map_database_path,
@@ -227,6 +228,7 @@ _MORTIS_MIRROR_ATTACK_TEMPLATES = {
 GATHERABLE_MULTITOOL_TEMPLATE = "crafting_stateobject_key"
 GATHERABLE_BROKEN_MULTITOOL_TEMPLATE = "crafting_stateobject_key_broken"
 GATHERABLE_AUTO_PICKUP_DELAY_SECONDS = 0.8
+EASTER_HUB_EGG_RESPAWN_SECONDS = 1.0
 
 
 def _multitool_resource_category(definition) -> str:
@@ -891,6 +893,7 @@ ARENA_HAZARD_RADIUS = 25.0
 _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "a0001_champion_undead_mage_01",
     "a0005_champion_grimmag_01_q_waytogrimmagstone_03",
+    "e_easter_01_boss_egg_easter",
     "f4203_boss_06_ram",
     # Fyeborough's story sentinel is gated by a quest event and can already
     # exist in the encounter before that event releases it. Force its native
@@ -902,6 +905,26 @@ _FORCE_ANNOUNCE_EVENT_ACTORS = frozenset({
     "fp_boss_01_lythira",
 })
 _TUTORIAL_CULTIST_TEMPLATE = "a0001_champion_undead_mage_01"
+
+
+def _is_easter_dungeon_festival_egg(definition) -> bool:
+    """Whether an authored dungeon prop is one of Easter's clickable eggs."""
+
+    template_id = str(getattr(definition, "template_id", "")).casefold()
+    return (
+        template_id.startswith("e_easter_01_egg_")
+        or template_id.startswith("e_easter_01_dun_egg_")
+    )
+
+
+def _is_kingshill_spring_egg(definition) -> bool:
+    """Whether an authored prop is one of Kingshill's respawning eggs."""
+
+    template_id = str(getattr(definition, "template_id", "")).casefold()
+    return (
+        template_id.startswith("e_easter_01_hub_egg_")
+        or template_id == "e_easter_2025_spring_egg"
+    )
 
 
 def _a_mighty_threat_goblin_template(map_id: object) -> str:
@@ -2277,6 +2300,15 @@ class MapEventService:
                         replace(state.definition, instance_guid=ZERO_GUID),
                         state.state,
                     )
+            # Event-controlled Easter eggs can be hidden by the client's
+            # scene EventSet despite being published by the server. Factory-
+            # create active egg props so they remain visible and clickable.
+            for prop_id, state in tuple(states_by_id.items()):
+                if _is_easter_dungeon_festival_egg(state.definition):
+                    states_by_id[prop_id] = PropRuntimeState(
+                        replace(state.definition, instance_guid=ZERO_GUID),
+                        state.state,
+                    )
             if map_key(runtime.map_id) == "pw205_helios_dun":
                 # Retail gates these reusable stones behind a quest-phase
                 # EventSet. They are ordinary map resources and must remain
@@ -2373,6 +2405,55 @@ class MapEventService:
     # Signal evaluation
     # ------------------------------------------------------------------
 
+    def _spawn_easter_secret_lair_daran(self, s, runtime) -> None:
+        """Spawn Easter's Daran once when the Secret Lair trigger is entered."""
+
+        template_id = "e_easter_01_dun_boss_troll_01"
+        fired_key = "easter_secret_lair_daran_spawned"
+        with runtime.lock:
+            if fired_key in runtime.fired_once:
+                return
+            trigger = next((
+                volume for volume in runtime.content.trigger_volumes
+                if (
+                    str(volume.triggered_event_id).casefold()
+                    == "secretlaireaster"
+                    or str(volume.trigger_id).casefold()
+                    == "secretlaireaster"
+                )
+            ), None)
+            runtime.fired_once.add(fired_key)
+        if trigger is not None:
+            matrix = trigger.matrix
+            position = (
+                float(matrix[12]) + 4.0,
+                float(matrix[13]),
+                float(matrix[14]),
+            )
+        else:
+            with s.flow_lock:
+                frame = getattr(s, "gameplay_coordinate_frame", None)
+                last_move = getattr(s, "gameplay_last_move", None)
+            if frame is None or last_move is None:
+                with runtime.lock:
+                    runtime.fired_once.discard(fired_key)
+                return
+            origin = frame.wire_to_world(last_move.relative_position)
+            position = (float(origin[0]) + 4.0, float(origin[1]), float(origin[2]))
+        sessions = self._map_event_sessions(runtime)
+        if s not in sessions:
+            sessions = (*sessions, s)
+        self._spawn_event_monsters(
+            runtime, sessions, (),
+            extra_rows=(GatedSpawnRow(
+                -1_100_001, -1, template_id, position,
+            ),),
+        )
+        _log(
+            f"spawned Easter Daran in Secret Lair on {runtime.map_id} "
+            f"at {tuple(round(value, 2) for value in position)}"
+        )
+
     def _fire_map_signal(
             self, s: Session, event_type: str, params, *,
             synthetic_dead_templates=(),
@@ -2384,6 +2465,22 @@ class MapEventService:
             return
         self._flush_due_map_event_starts(runtime)
         kind = str(event_type).casefold()
+        if (
+            kind == "playerhittrigger"
+            and map_key(runtime.map_id) == "i0010_physical_big_dun"
+            and any(str(value).casefold() == "secretlaireaster" for value in params)
+        ):
+            event_catalog = getattr(s, "gameplay_event_catalog", None)
+            if event_catalog is None:
+                try:
+                    event_catalog = CharacterService._event_catalog(self)
+                except (OSError, ValueError, sqlite3.Error):
+                    event_catalog = None
+            if (
+                event_catalog is not None
+                and "easter_event_01" in event_catalog.active_template_ids()
+            ):
+                self._spawn_easter_secret_lair_daran(s, runtime)
         if kind == "playerkilledmonster":
             params = tuple(str(value).casefold() for value in params)
             bgh_single = _BGH_SINGLE_BOSS_PORTALS.get(
@@ -4697,6 +4794,121 @@ class MapEventService:
         self._publish_parallel_world_boss_reward_chest_props(s, runtime)
         if map_key(runtime.map_id) == "e_bos_arena_01":
             self._publish_dtu_arena_event_props(runtime, (s,))
+        event_catalog = getattr(s, "gameplay_event_catalog", None)
+        if event_catalog is None:
+            try:
+                event_catalog = CharacterService._event_catalog(self)
+            except (OSError, ValueError, sqlite3.Error):
+                event_catalog = None
+        if event_catalog is not None:
+            self._reconcile_easter_giant_egg(
+                runtime, (s,), event_catalog,
+            )
+
+    def _reconcile_easter_giant_egg(self, runtime, sessions, catalog) -> None:
+        """Spawn one event Giant Egg in each active dungeon instance."""
+
+        event_set = -1901
+        template_id = "e_easter_01_boss_egg_easter"
+        current_map = map_key(runtime.map_id)
+        active = (
+            runtime.content.is_dungeon
+            and not current_map.startswith(("e_easter_dun_", "pw"))
+            and "easter_event_01" in catalog.active_template_ids()
+        )
+        if active:
+            egg_sets = {
+                int(prop.event_set_row)
+                for prop in runtime.content.props
+                if _is_easter_dungeon_festival_egg(prop)
+                and int(prop.event_set_row) >= 0
+            }
+            if egg_sets:
+                self._publish_event_props(
+                    runtime, sessions, egg_sets, refresh_existing=True,
+                )
+        combat = self._map_event_combat_state(sessions)
+        if combat is None:
+            return
+        if not active:
+            self._retire_event_monsters(runtime, sessions, (event_set,))
+            with runtime.lock:
+                runtime.fired_once.discard("easter_giant_egg_spawned")
+                runtime.fired_once.discard("easter_giant_egg_spawning")
+            return
+
+        with runtime.lock:
+            if (
+                "easter_giant_egg_spawned" in runtime.fired_once
+                or "easter_giant_egg_spawning" in runtime.fired_once
+            ):
+                return
+            runtime.fired_once.add("easter_giant_egg_spawning")
+        try:
+            with combat.lock:
+                alive = set(combat.alive_actor_ids)
+                existing = tuple(
+                    actor_id for actor_id, monster in combat.monsters.items()
+                    if actor_id in alive
+                    and monster.template_id.casefold() == template_id
+                )
+                candidates = tuple(
+                    tuple(float(value) for value in combat.monster_positions.get(
+                        actor_id, monster.position,
+                    ))
+                    for actor_id, monster in combat.monsters.items()
+                    if actor_id in alive
+                    and not monster.rank_id.casefold().startswith("rank_boss")
+                    and monster.template_id.casefold() != template_id
+                )
+            if existing:
+                with runtime.lock:
+                    runtime.event_set_actor_ids.setdefault(event_set, set()).update(
+                        existing
+                    )
+                    runtime.fired_once.add("easter_giant_egg_spawned")
+                return
+            if not candidates or _load_runtime_definition(
+                self.static_database_path, template_id, 0, stationary=True,
+            ) is None:
+                return
+
+            spawn_position = None
+            for anchor in random.sample(candidates, len(candidates)):
+                offsets = [(4.0, 0.0), (-4.0, 0.0), (0.0, 4.0), (0.0, -4.0)]
+                random.shuffle(offsets)
+                for dx, dz in offsets:
+                    try:
+                        spawn_position = _grounded_spawn_position(
+                            combat.encounter.navigation,
+                            combat.encounter.terrain,
+                            (anchor[0] + dx, anchor[1], anchor[2] + dz),
+                            reference_position=anchor,
+                            max_horizontal_distance=8.0,
+                        )
+                    except (CollisionTerrainError, NavigationError, ValueError):
+                        continue
+                    if spawn_position is not None:
+                        break
+                if spawn_position is not None:
+                    break
+            if spawn_position is None:
+                return
+
+            sessions = tuple(sessions) or self._map_event_sessions(runtime)
+            row = GatedSpawnRow(
+                -1_901_000, event_set, template_id, spawn_position,
+            )
+            self._spawn_event_monsters(runtime, sessions, (), extra_rows=(row,))
+            with runtime.lock:
+                spawned = bool(runtime.event_set_actor_ids.get(event_set))
+                if spawned:
+                    runtime.fired_once.add("easter_giant_egg_spawned")
+                else:
+                    runtime.fired_once.discard("easter_giant_egg_spawned")
+        finally:
+            with runtime.lock:
+                runtime.fired_once.discard("easter_giant_egg_spawning")
 
     def _ensure_fyeborough_soul_collector(
             self, s: Session, runtime: MapEventRuntime,
@@ -4882,6 +5094,18 @@ class MapEventService:
         """
 
         loot_list_id = str(definition.loot_list_id or definition.chest_id).casefold()
+        if _is_easter_dungeon_festival_egg(definition):
+            # Map-content refreshes can keep a previously registered prop
+            # definition alive after the event publisher has assigned the
+            # Festival Egg table. Resolve from the egg template at click time
+            # too, so the actual reward roll cannot fall back to the retail
+            # scaling-list id (which has no authored server loot rows).
+            loot_list_id = (
+                "chest_e_easter_egg_island"
+                if map_key(getattr(s, "gameplay_map", ""))
+                == "e_easter_dun_01"
+                else "chest_e_easter_egg_normal"
+            )
         is_bgh_mythic_chest = (
             loot_list_id == _BLOOD_CHEST_LOOT_LIST
             and map_key(getattr(s, "gameplay_map", "")) in {
@@ -6363,6 +6587,111 @@ class MapEventService:
                 label=f"{label}-info",
             )
 
+    def _schedule_easter_hub_egg_respawn(
+            self, runtime, definition, *, player_id: int) -> None:
+        """Reactivate a broken Kingshill Spring Egg after its cooldown."""
+
+        if (
+            map_key(runtime.map_id) != "a0200_kingscity"
+            or not _is_kingshill_spring_egg(definition)
+        ):
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            _log("Kingshill Spring Egg respawn has no map deadline scheduler")
+            return
+        prop_id = int(definition.prop_id)
+        individual_usage = bool(definition.individual_usage)
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            state = runtime.props.get(prop_id)
+            if individual_usage:
+                if timer_key not in runtime.individual_prop_usage:
+                    return
+            elif state is None or state.state != PROP_STATE_USED:
+                return
+            timers = runtime.easter_hub_egg_respawn_timers
+            if timer_key in timers:
+                return
+            timer = scheduler.timer(
+                EASTER_HUB_EGG_RESPAWN_SECONDS,
+                self._respawn_easter_hub_egg,
+                args=(
+                    runtime, prop_id,
+                    int(player_id) if individual_usage else None,
+                ),
+            )
+            timers[timer_key] = timer
+        timer.start()
+
+    def _respawn_easter_hub_egg(
+            self, runtime, prop_id: int, player_id: int | None = None) -> None:
+        """Restore one Kingshill egg and notify every player on that map."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        prop_id = int(prop_id)
+        individual_usage = player_id is not None
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            runtime.easter_hub_egg_respawn_timers.pop(timer_key, None)
+            state = runtime.props.get(prop_id)
+            if (
+                state is None
+                or map_key(runtime.map_id) != "a0200_kingscity"
+                or not _is_kingshill_spring_egg(state.definition)
+            ):
+                return
+            if individual_usage:
+                usage_key = (int(player_id), prop_id)
+                if usage_key not in runtime.individual_prop_usage:
+                    return
+                runtime.individual_prop_usage.discard(usage_key)
+            else:
+                if state.state != PROP_STATE_USED:
+                    return
+                state.state = PROP_STATE_ACTIVE
+            definition = state.definition
+        viewers = self._map_event_sessions(runtime)
+        if individual_usage:
+            viewers = tuple(
+                viewer for viewer in viewers
+                if _individual_prop_player_id(viewer) == int(player_id)
+            )
+        for viewer in viewers:
+            update = PropUpdate(
+                prop_id=definition.prop_id,
+                state=PROP_STATE_ACTIVE,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                counter=_session_game_tick(viewer),
+                state_changed=True,
+                operation=WIRE_PROP_OPERATION,
+                task_index=0,
+                keep_visual_state=False,
+            )
+            packet, packet_bits = encode_prop_update_batch(
+                (update,), actor_id=0,
+            )
+            viewer.send_reliable_ordered(
+                (packet, packet_bits), track=True,
+                label="kingshill-spring-egg-respawn",
+            )
+            if definition.instance_guid == ZERO_GUID:
+                _send_prop_info(
+                    viewer,
+                    (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+                    label="kingshill-spring-egg-respawn-info",
+                )
+        _log(
+            f"Kingshill Spring Egg prop {prop_id} respawned after "
+            f"{EASTER_HUB_EGG_RESPAWN_SECONDS:.0f}s"
+            + (f" for character {player_id}" if individual_usage else "")
+        )
+
     def _handle_staging_signal(self, s: Session, payload: bytes) -> None:
         CharacterService._handle_simple_gameplay_command(s, payload, 0x0113)
         decoded = s.gameplay_client_command_state.get(0x0113)
@@ -7655,6 +7984,10 @@ class MapEventService:
             f"{' (changed)' if flipped else ''}"
         )
         if flipped:
+            self._schedule_easter_hub_egg_respawn(
+                runtime, definition,
+                player_id=_individual_prop_player_id(s),
+            )
             self._spawn_pw022_gorgon_from_bust(s, runtime, definition)
         if flipped and new_moon_recall_row is not None:
             self._spawn_new_moon_boss_from_recall_altar(
@@ -9310,7 +9643,98 @@ class MapEventService:
     def _publish_event_props(
             self, runtime, sessions, event_sets, *, refresh_existing=False) -> None:
         with runtime.lock:
-            definitions = runtime.select_props(runtime.content.props_for_sets(event_sets))
+            authored_definitions = runtime.content.props_for_sets(event_sets)
+            if runtime.content.is_dungeon:
+                # Dungeon Easter eggs use the scaling loot id, which has no
+                # retail loot rows in the client export. Resolve it to the
+                # event's Festival Egg table before selecting variants so
+                # duplicate difficulty copies at one spot collapse to one
+                # clickable prop.
+                festival_egg_loot_id = (
+                    "CHEST_e_easter_EGG_ISLAND"
+                    if map_key(runtime.map_id) == "e_easter_dun_01"
+                    else "CHEST_e_easter_EGG_NORMAL"
+                )
+                authored_definitions = tuple(
+                    replace(
+                        definition,
+                        loot_list_id=festival_egg_loot_id,
+                    )
+                    if _is_easter_dungeon_festival_egg(definition)
+                    else definition
+                    for definition in authored_definitions
+                )
+            definitions = runtime.select_props(authored_definitions)
+            easter_eggs = tuple(
+                definition for definition in definitions
+                if _is_easter_dungeon_festival_egg(definition)
+            )
+            if easter_eggs and runtime.content.is_dungeon:
+                # These maps author each logical egg once per difficulty
+                # variation, sometimes at distinct transforms. Keep one
+                # stable copy for each egg template in this map instance.
+                chosen_by_template = {}
+                for definition in sorted(
+                    easter_eggs, key=lambda candidate: candidate.row_id,
+                ):
+                    chosen_by_template.setdefault(
+                        definition.template_id.casefold(), definition,
+                    )
+                chosen_ids = {
+                    definition.prop_id
+                    for definition in chosen_by_template.values()
+                }
+                definitions = tuple(
+                    definition for definition in definitions
+                    if not _is_easter_dungeon_festival_egg(definition)
+                    or definition.prop_id in chosen_ids
+                )
+                easter_eggs = tuple(
+                    definition for definition in definitions
+                    if _is_easter_dungeon_festival_egg(definition)
+                )
+            if easter_eggs and runtime.content.is_dungeon:
+                try:
+                    entry_position = load_local_spawn_position(
+                        self.static_database_path, runtime.map_id,
+                    )
+                except (OSError, ValueError, sqlite3.Error):
+                    entry_position = None
+                if entry_position is not None:
+                    # The authored Easter eggs are often placed deep inside
+                    # the dungeon. Put the event-controlled copies near the
+                    # player entry so the event is immediately discoverable.
+                    # Keep the authored prop ids and loot bindings intact.
+                    egg_positions = {
+                        definition.prop_id: (
+                            float(entry_position[0]) + (
+                                8.0 + 3.0 * math.sqrt(index)
+                            ) * math.cos(index * 2.399963229728653),
+                            float(entry_position[1]),
+                            float(entry_position[2]) + (
+                                8.0 + 3.0 * math.sqrt(index)
+                            ) * math.sin(index * 2.399963229728653),
+                        )
+                        for index, definition in enumerate(sorted(
+                            easter_eggs,
+                            key=lambda candidate: candidate.prop_id,
+                        ))
+                    }
+                    definitions = tuple(
+                        replace(
+                            definition,
+                            position=egg_positions[definition.prop_id],
+                        )
+                        if definition.prop_id in egg_positions
+                        else definition
+                        for definition in definitions
+                    )
+            definitions = tuple(
+                replace(definition, instance_guid=ZERO_GUID)
+                if _is_easter_dungeon_festival_egg(definition)
+                else definition
+                for definition in definitions
+            )
             if map_key(runtime.map_id) == "e_nye_dungeon_01":
                 # The Greed Fiend chest is also named by a legacy quest
                 # Switch. Its appearance is gated by opening a Fireworks
@@ -9337,13 +9761,75 @@ class MapEventService:
                         existing.definition = replace(
                             existing.definition, quest_switch_id="",
                         )
-            published = runtime.publish_props(definitions)
+            discarded_easter_prop_ids = ()
+            if easter_eggs and runtime.content.is_dungeon:
+                event_set_rows = {
+                    int(definition.event_set_row)
+                    for definition in easter_eggs
+                }
+                previous_states = {
+                    int(prop_id): state
+                    for prop_id, state in runtime.props.items()
+                    if (
+                        _is_easter_dungeon_festival_egg(state.definition)
+                        and int(state.definition.event_set_row) in event_set_rows
+                    )
+                }
+                selected_easter_ids = {
+                    int(definition.prop_id) for definition in easter_eggs
+                }
+                # Keep the selected prop IDs registered on the client and
+                # refresh their transforms with PropInfo. Discarding those
+                # IDs and recreating them in the same update can make the
+                # client drop the factory props entirely. Only retire the
+                # excess difficulty copies.
+                discarded_easter_prop_ids = tuple(sorted(
+                    set(previous_states) - selected_easter_ids
+                ))
+                # Remove every old copy from the runtime, then reinsert only
+                # the selected set while preserving its per-prop state.
+                runtime.unpublish_props(previous_states)
+                published = runtime.publish_props(
+                    definition for definition in definitions
+                    if not _is_easter_dungeon_festival_egg(definition)
+                )
+                for definition in easter_eggs:
+                    previous = previous_states.get(int(definition.prop_id))
+                    state = PropRuntimeState(
+                        definition,
+                        previous.state if previous is not None
+                        else PROP_STATE_ACTIVE,
+                    )
+                    runtime.props[int(definition.prop_id)] = state
+                published = (*published, *(
+                    runtime.props[int(definition.prop_id)]
+                    for definition in easter_eggs
+                ))
+            else:
+                published = runtime.publish_props(definitions)
             if refresh_existing:
                 # Replay authoritative states after a partial global refresh;
                 # preserve already-used props rather than resetting them.
-                published = tuple(runtime.props[d.prop_id] for d in definitions)
+                published = tuple(
+                    runtime.props[d.prop_id] for d in definitions
+                    if d.prop_id in runtime.props
+                )
+            elif easter_eggs:
+                published = tuple(
+                    runtime.props[d.prop_id] for d in definitions
+                    if d.prop_id in runtime.props
+                )
         if not published:
             return
+        if discarded_easter_prop_ids:
+            packet, packet_bits = encode_discard_prop_batch(
+                discarded_easter_prop_ids, actor_id=LOCAL_PLAYER_ACTOR_ID,
+            )
+            for viewer in sessions:
+                CharacterService._send_world_loot_state_batch(
+                    viewer, packet, packet_bits,
+                    label="easter-egg-prop-refresh-discard",
+                )
         _log(
             f"revealed {len(published)} prop(s) on {runtime.map_id}: "
             + ", ".join(sorted({
@@ -10197,6 +10683,40 @@ class MapEventService:
             )
             for r in selected
         )
+        if map_key(runtime.map_id) == "i0010_physical_big_dun":
+            # The exported Trial of the Elders scene omits the MVR links for
+            # its repeated guardian leader anchors. The event therefore sees
+            # alternate difficulty rows as separate spawns; collapse them by
+            # authored position before checking the live combat state.
+            leader_prefixes = (
+                "i0010_event_leader_guardian_physical",
+                "i0010_pw_leader_guardian_physical",
+            )
+            leader_positions = []
+            deduplicated_rows = []
+            for row in rows:
+                template_id = row.template_id.casefold()
+                is_trial_leader = template_id.startswith(leader_prefixes)
+                if is_trial_leader and any(
+                    math.hypot(
+                        float(row.position[0]) - x,
+                        float(row.position[2]) - z,
+                    ) <= EVENT_SPAWN_DUPLICATE_RADIUS
+                    for x, z in leader_positions
+                ):
+                    continue
+                deduplicated_rows.append(row)
+                if is_trial_leader:
+                    leader_positions.append((
+                        float(row.position[0]), float(row.position[2]),
+                    ))
+            removed_leaders = len(rows) - len(deduplicated_rows)
+            rows = tuple(deduplicated_rows)
+            if removed_leaders:
+                _log(
+                    f"collapsed {removed_leaders} stacked Trial of the "
+                    f"Elders leader row(s) on {runtime.map_id}"
+                )
         # Collapse stacked variation rows only after the Mortis pack and boss
         # difficulty selections: those pick specific rows out of the stacks
         # (Mortis phase 2 keeps 1530 rows in EventSet 4216), so collapsing
@@ -10400,6 +10920,17 @@ class MapEventService:
             mounted = is_tower_mechanism(
                 database_path, runtime.map_id, row.template_id,
             )
+            preserve_trial_authored_position = (
+                map_key(runtime.map_id) == "i0010_physical_big_dun"
+                and (
+                    row.template_id.casefold().startswith((
+                        "i0010_event_leader_guardian_physical",
+                        "i0010_pw_leader_guardian_physical",
+                    ))
+                    or row.template_id.casefold()
+                    == "e_easter_01_dun_boss_troll_01"
+                )
+            )
             # Lythira's level-100 template is authored with coefficient-like
             # values (50 HP, 6-8 damage) but carries CharLevel=100. Treating
             # those as already-scaled legacy stats strips the level curve and
@@ -10413,6 +10944,7 @@ class MapEventService:
             # against this exact transform, not a navigable combat position.
             if (
                 not scripted_cultist and not mounted and not hazard
+                and not preserve_trial_authored_position
                 and not is_boss_spawn_template(database_path, row.template_id)
             ):
                 try:
@@ -10440,6 +10972,8 @@ class MapEventService:
                 stationary=(
                     mounted or hazard or scripted_mortis_mirror
                     or is_new_year_dungeon_inert_helper(row.template_id)
+                    or row.template_id.casefold()
+                    == "e_easter_01_boss_egg_easter"
                 ),
             )
             if scripted_mortis_mirror and mirror_owner is not None:

@@ -196,6 +196,15 @@ EQUIPMENT_RARITIES = (
 )
 ROLLED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[:5]
 FIXED_EQUIPMENT_RARITIES = EQUIPMENT_RARITIES[5:]
+GLOBAL_RUNE_DROP_EXCLUDED_PREFIXES = (
+    "unique_gem_run_damage_berry_hal_",  # Concentrated Autumn Rune
+    "unique_gem_resistance_ice_fire_light_",  # Concentrated Spring Rune
+    "unique_gem_resistance_damage_block_",  # Concentrated Summer Rune
+    "unique_gem_resistance_ice_critical_hitpoints_",  # Concentrated Solstice Rune
+)
+GLOBAL_RUNE_DROP_EXCLUDED_IDS = frozenset({
+    "mythic_gem_ce2025_blessing_stars",  # Holy Star Shard Rune
+})
 # The last step of each difficulty ladder: Bloodshed and Parallel World
 # Bloodshed. Only these tiers can drop the best gem a monster may carry.
 TOP_MAP_DIFFICULTIES = frozenset((8, 9))
@@ -1579,8 +1588,10 @@ def _possible_reward_runes(
         for row in database.item_rows_by_category.get("equipmentrune", ())
         if str(row.get("ItemCategory") or "").casefold() == "equipmentrune"
         and int(row.get("Obsolete") or 0) == 0
+        and str(row.get("Id") or "").casefold()
+        not in GLOBAL_RUNE_DROP_EXCLUDED_IDS
         and not str(row.get("Id") or "").casefold().startswith(
-            "unique_gem_run_damage_berry_hal_"
+            GLOBAL_RUNE_DROP_EXCLUDED_PREFIXES
         )
         and rarity_order.get(str(row.get("DefaultRarity") or "").casefold(), 99)
         <= maximum_index
@@ -2456,6 +2467,8 @@ def generate_monster_loot(
     ) = None,
     additional_event_loot: tuple[tuple[str, int], ...] = (),
     difficulty_unscaled_drop_templates: frozenset[str] = frozenset(),
+    excluded_base_drop_templates: frozenset[str] = frozenset(),
+    excluded_base_drop_template_prefixes: tuple[str, ...] = (),
 ) -> WorldLootGeneration:
     """Generate editable NewItem state for one lethal monster transition.
 
@@ -3071,6 +3084,30 @@ def generate_monster_loot(
                 1, 1, "", 0,
             ))
 
+        excluded_base_ids = GLOBAL_RUNE_DROP_EXCLUDED_IDS | {
+            str(template_id).casefold()
+            for template_id in excluded_base_drop_templates
+        }
+        excluded_base_prefixes = (
+            *GLOBAL_RUNE_DROP_EXCLUDED_PREFIXES,
+            *(
+                str(prefix).casefold()
+                for prefix in excluded_base_drop_template_prefixes
+                if str(prefix)
+            ),
+        )
+        if excluded_base_ids or excluded_base_prefixes:
+            specifications = [
+                specification for specification in specifications
+                if (
+                    specification[0].template_id.casefold()
+                    not in excluded_base_ids
+                    and not specification[0].template_id.casefold().startswith(
+                        excluded_base_prefixes
+                    )
+                )
+            ]
+
         event_collectible_ids = {
             str(template_id)
             for template_id, _amount in additional_instant_consumables
@@ -3245,6 +3282,21 @@ def generate_monster_loot(
                     specifications.append((
                         generator.choice(gem_pool), 1, 1, "", 0,
                     ))
+
+        # Excluded event-only templates must not leak back through shared
+        # boss gem pools, while configured event loot added above remains
+        # eligible (for example, Daran's 2% Painting Brush roll).
+        if excluded_base_prefixes:
+            specifications = [
+                specification for specification in specifications
+                if (
+                    specification[0].template_id.casefold()
+                    not in GLOBAL_RUNE_DROP_EXCLUDED_IDS
+                    and not specification[0].template_id.casefold().startswith(
+                        excluded_base_prefixes
+                    )
+                )
+            ]
 
         # Apply the database's map-difficulty stack curve in one final pass so
         # Currency and any item with an authored VC/RC stack tag follow their

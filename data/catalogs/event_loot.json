@@ -1301,6 +1301,112 @@
         "scale_stack_amount_with_difficulty": false
       }
     ],
+    "e_easter_dun_01": [
+      {
+        "comment": "2% chance for Daran the Spoiler's Painting Brush during Easter.",
+        "item": "ingredient_rune_resistance_ice_fire_light",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.02},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "5% chance for one random Enigmatic Hatchling pet from Daran.",
+        "item": "pet_egg_block_uncommon",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options": [
+          "pet_egg_block_uncommon",
+          "pet_egg_crit_value_and_dmg_uncommon",
+          "pet_egg_damage_uncommon",
+          "pet_egg_hp_uncommon",
+          "pet_egg_movement_uncommon",
+          "pet_egg_res_andermagic_uncommon",
+          "pet_egg_res_fire_uncommon",
+          "pet_egg_res_ice_uncommon",
+          "pet_egg_res_lightning_uncommon",
+          "pet_egg_res_poison_uncommon"
+        ],
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "5% chance for one random Spring Festival Egg mount from Daran.",
+        "item": "epicmount_easteregg_01",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "item_options": [
+          "epicmount_easteregg_01",
+          "epicmount_easteregg_02",
+          "epicmount_easteregg_03",
+          "epicmount_easteregg_04",
+          "epicmount_easteregg_05",
+          "epicmount_easteregg_06",
+          "epicmount_easteregg_07",
+          "epicmount_easteregg_08"
+        ],
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "10% chance for one Joy of Spring set piece: either ring or the Spring Bells adornment.",
+        "item": "all_unique_ring_01_easter_set",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.1},
+        "amount": {"boss": [1, 1]},
+        "item_options": [
+          "all_unique_ring_01_easter_set",
+          "all_unique_ring_02_easter_set",
+          "all_unique_weaponmod_easter_set"
+        ],
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "5% chance for Spring Dust from Daran.",
+        "item": "e_easter_spring_dust",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "5% chance for Heart of Sanctity from Daran.",
+        "item": "item_ingredient_mercenary_heart_of_holy",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "5% chance for Sacred Expedition's Echo Shards from Daran.",
+        "item": "item_ingredient_mercenary_wanderer_shards",
+        "monsters": ["e_easter_01_dun_boss_troll_01"],
+        "ranks": ["boss"],
+        "chance": {"boss": 0.05},
+        "amount": {"boss": [1, 1]},
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
+    ],
     "*": [
       {
         "comment": "Stellar Gold golden monsters drop the fixed essence amount for the map difficulty: Painful 60, Excruciating 75, Fatal 81, Infernal 108, Merciless 180, Bloodshed 360 (DSOFUN Stellar Gold event guide). The item is limited to the golden-monster region and the active event.",
@@ -1663,6 +1769,17 @@
       }
     ],
     "*": [
+      {
+        "comment": "Spring Dawn Dust is a guaranteed drop from guardians, leaders, champions, sentinels, and world bosses while Easter is active. The stack scales by map difficulty and reaches 10 on Bloodshed (difficulty 8+).",
+        "item": "e_easter_keyitem_01",
+        "ranks": ["guardian", "leader", "champion", "sentinel", "worldboss"],
+        "chance": {"guardian": 1.0, "leader": 1.0, "champion": 1.0, "sentinel": 1.0, "worldboss": 1.0},
+        "amount": {"guardian": [1, 1], "leader": [1, 1], "champion": [1, 1], "sentinel": [1, 1], "worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["easter_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
       {
         "comment": "Professor Jullov's Rocketmen dungeon animatronics and junk minions have a 35% chance to drop one Oiltastic Mixture while Riot of the Rocketmen is active.",
         "item": "e_nye_keyitem_01",

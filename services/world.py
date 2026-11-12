@@ -41,6 +41,7 @@ AUTO_PICKUP_RADIUS = 2.5
 AUTO_PICKUP_INGREDIENT_RADIUS = 3.5
 PET_AUTO_PICKUP_RADIUS = 4.5
 PET_AUTO_PICKUP_INGREDIENT_RADIUS = 5.5
+AUTO_PICKUP_RANGE_BONUS = 2.0
 # Loot categories swept up from every player on approach. Keys reach world
 # loot only as event Loot-list drops (christmas sugar beets) and amphorae,
 # authored to auto-pick-up; retail auto-picked amphora Draken
@@ -53,6 +54,10 @@ AUTO_PICKUP_CATEGORIES = frozenset({
 # Full Moon Silver Essence is authored as Ammunition/Privileged in the client
 # data, but its event-map drops should be collected by every player on touch.
 FULL_MOON_SILVER_ESSENCE_ITEM_ID = 'e_ful_01_silver_essence_01'
+_EASTER_EVENT_AUTO_PICKUP_ITEM_IDS = frozenset({
+    'e_easter_progress_item_t0',
+    'e_easter_keyitem_01',
+})
 _FORTRESS_GRIMMAG_MAP = "a0005_start_fortress_dun"
 _FORTRESS_GRIMMAG_TEMPLATE = "a0005_champion_grimmag_01_q_waytogrimmagstone_03"
 _FORTRESS_GRIMMAG_VISIBILITY_ENTER_RADIUS = MONSTER_VISIBILITY_ENTER_RADIUS
@@ -78,6 +83,14 @@ _TEGAN_GRAVE_SMITH_TEMPLATE = (
     "a0601_normal_g_undead_mage_q_tegangravesmith"
 )
 _TEGAN_GRAVE_SMITH_VISIBILITY_ENTER_RADIUS = 120.0
+_DRAGAN_BIG_DUNGEON_MAP = "i0010_physical_big_dun"
+_DRAGAN_BIG_DUNGEON_MONSTER_PREFIXES = (
+    "i0010_event_normal_",
+    "i0010_pw_normal_",
+    "i0010_event_leader_guardian_physical_",
+)
+_DRAGAN_BIG_DUNGEON_MONSTER_VISIBILITY_ENTER_RADIUS = 75.0
+_DRAGAN_BIG_DUNGEON_MONSTER_VISIBILITY_EXIT_RADIUS = 85.0
 _TEGAN_GRAVE_SMITH_VISIBILITY_EXIT_RADIUS = 135.0
 _MISTY_RIDGE_MAP = "f4101_pve"
 _MISTY_RIDGE_GREAT_GNOME_SHAMAN_TEMPLATE = (
@@ -133,12 +146,16 @@ def _pet_auto_pickup_categories(resource_id: str) -> frozenset[str]:
 
 
 def _auto_pickup_radius(category: str, pet_categories: frozenset[str]) -> float:
-    """Reach of one automatic pickup; a collecting pet sweeps wider."""
+    """Reach of one automatic pickup, including the global range increase."""
     if category in pet_categories:
-        return (PET_AUTO_PICKUP_INGREDIENT_RADIUS
-                if category == 'IngredientItem' else PET_AUTO_PICKUP_RADIUS)
-    return (AUTO_PICKUP_INGREDIENT_RADIUS
-            if category == 'IngredientItem' else AUTO_PICKUP_RADIUS)
+        base_radius = (PET_AUTO_PICKUP_INGREDIENT_RADIUS
+                       if category == 'IngredientItem'
+                       else PET_AUTO_PICKUP_RADIUS)
+    else:
+        base_radius = (AUTO_PICKUP_INGREDIENT_RADIUS
+                       if category == 'IngredientItem'
+                       else AUTO_PICKUP_RADIUS)
+    return base_radius + AUTO_PICKUP_RANGE_BONUS
 
 
 @contextmanager
@@ -217,6 +234,33 @@ class WorldService:
             if combat is not None
             else None
         )
+        if (
+            monster is not None
+            and encounter is not None
+            and monster.template_id.casefold()
+            == "e_easter_01_boss_egg_easter"
+        ):
+            # Giant Eggs use a client-authored minimap icon. Keep the event
+            # target announced for the whole dungeon so its marker remains
+            # visible at any distance.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
+        if (
+            monster is not None
+            and encounter is not None
+            and encounter.map_id.casefold() == _DRAGAN_BIG_DUNGEON_MAP
+            and monster.template_id.casefold().startswith(
+                _DRAGAN_BIG_DUNGEON_MONSTER_PREFIXES
+            )
+        ):
+            # Secret Lair's authored entry is ~49 m from its first ordinary
+            # enemies. Keep those enemies visible from the entrance and while
+            # moving through the map; normal vicinity culling hid them even
+            # though combat and mercenary targeting could still reach them.
+            return (
+                _DRAGAN_BIG_DUNGEON_MONSTER_VISIBILITY_EXIT_RADIUS
+                if exiting
+                else _DRAGAN_BIG_DUNGEON_MONSTER_VISIBILITY_ENTER_RADIUS
+            )
         if (
             monster is not None
             and encounter is not None
@@ -1596,10 +1640,25 @@ class WorldService:
         with s.flow_lock:
             drop = s.gameplay_world_loot.get(int(item_id))
             template_id = str(getattr(getattr(drop, "item", None), "template_id", ""))
-        with pickup_lock:
-            picked = CharacterService._pickup_world_item_serialized(
-                s, item_id, automatic=automatic
-            )
+        if automatic:
+            # Movement-triggered auto-pickup must never wait behind another
+            # pickup transaction. Monster loot can be reconciled and scanned
+            # concurrently with movement; blocking here stalls the session's
+            # gameplay ingress until the other transaction finishes. A later
+            # movement packet retries the still-registered item.
+            if not pickup_lock.acquire(blocking=False):
+                return False
+            try:
+                picked = CharacterService._pickup_world_item_serialized(
+                    s, item_id, automatic=True
+                )
+            finally:
+                pickup_lock.release()
+        else:
+            with pickup_lock:
+                picked = CharacterService._pickup_world_item_serialized(
+                    s, item_id, automatic=False
+                )
         if picked and template_id:
             # Static code has no server handle; quests listen through the
             # presence callback like kills do (services/presence.py).
@@ -2088,6 +2147,12 @@ class WorldService:
             encounter = s.gameplay_monster_encounter
             if encounter is None:
                 return
+            event_catalog = getattr(s, 'gameplay_event_catalog', None)
+            easter_event_active = bool(
+                event_catalog is not None
+                and 'easter_event_01'
+                in event_catalog.active_template_ids()
+            )
             player_position = encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
@@ -2101,6 +2166,16 @@ class WorldService:
                     (
                         str(drop.item.template_id).casefold()
                         == FULL_MOON_SILVER_ESSENCE_ITEM_ID
+                        or (
+                            easter_event_active
+                            and (
+                                str(drop.item.template_id).casefold()
+                                in _EASTER_EVENT_AUTO_PICKUP_ITEM_IDS
+                                or str(drop.item.template_id).casefold().startswith(
+                                    'e_colour_ammunition_'
+                                )
+                            )
+                        )
                         or drop.item_category in pet_categories
                         or (
                             drop.auto_pick_up == 'All'
