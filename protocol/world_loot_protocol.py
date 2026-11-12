@@ -2469,6 +2469,7 @@ def generate_monster_loot(
     difficulty_unscaled_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_template_prefixes: tuple[str, ...] = (),
+    suppress_all_drops: bool = False,
 ) -> WorldLootGeneration:
     """Generate editable NewItem state for one lethal monster transition.
 
@@ -2504,6 +2505,10 @@ def generate_monster_loot(
             profile,
             monster_level=max(1, int(monster_level)),
         )
+    if suppress_all_drops:
+        # Encounter transition forms can be killed to advance a fight without
+        # awarding any of their native, event, or possible-reward loot.
+        return WorldLootGeneration(profile, (), int(next_item_id))
     equipment_item_level = profile.monster_level
     try:
         specifications: list[

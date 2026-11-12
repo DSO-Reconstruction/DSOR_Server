@@ -39,8 +39,13 @@ from dso_server.gameplay.stickerbook_state import stickerbook_info_entries
 from dso_server.gameplay.local_map_state import (
     CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
     CRAFTING_DUNGEON_MAP_ID,
+    load_local_map_exits,
 )
-from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.map_event_state import (
+    SARGON_SHADOWFORT_MAP_ID,
+    map_key,
+    sargon_shadowfort_seed_flags,
+)
 from dso_server.gameplay.dragan_state import (
     dragan_rare_boss_spawn_flag,
     dragan_secret_portal_target_flag,
@@ -88,6 +93,53 @@ def _hide_unselected_circus_gates(
     exits = tuple(
         entry for entry in getattr(exit_info, "exits", ())
         if bytes(entry.instance_guid) not in gate_guids
+    )
+    if hasattr(exit_info, "exits"):
+        exit_info = replace(exit_info, exits=exits)
+    return tuple(filtered_commands), exit_info
+
+
+def _hide_sargon_shadowfort_boss_gate(
+        static_database_path, gameplay_map, map_commands, exit_info):
+    """Omit the locked Throne Room exits from the initial scene snapshot."""
+
+    if map_key(gameplay_map) != SARGON_SHADOWFORT_MAP_ID:
+        return map_commands, exit_info
+    boss_exits = tuple(
+        definition for definition in load_local_map_exits(
+            static_database_path,
+            gameplay_map,
+            include_inactive_event_sets=True,
+        )
+        if str(definition.destination_map_id).casefold().startswith(
+            "pw211_sargon_boss"
+        )
+    )
+    gate_guids = frozenset(
+        bytes(definition.instance_guid) for definition in boss_exits
+    )
+    if not gate_guids:
+        return map_commands, exit_info
+    filtered_commands = []
+    for command in map_commands:
+        if getattr(command, "command_id", None) != VARIATION_INFO_COMMAND:
+            filtered_commands.append(command)
+            continue
+        value = getattr(command, "value", None)
+        entries = tuple(getattr(value, "entries", ()))
+        kept = tuple(
+            entry for entry in entries
+            if bytes(getattr(entry, "instance_guid", b"")) not in gate_guids
+        )
+        if kept:
+            filtered_commands.append(replace(
+                command, value=replace(value, entries=kept),
+            ))
+    exits = tuple(
+        replace(entry, field_10=0)
+        if bytes(getattr(entry, "instance_guid", b"")) in gate_guids
+        else entry
+        for entry in getattr(exit_info, "exits", ())
     )
     if hasattr(exit_info, "exits"):
         exit_info = replace(exit_info, exits=exits)
@@ -170,6 +222,9 @@ class PlayerInitializationWorldService:
             )
         except Exception:
             pass
+        active_event_flags = sargon_shadowfort_seed_flags(
+            gameplay_map, active_event_flags,
+        )
         if (map_key(gameplay_map) == "a0200_kingscity"
                 and "new_year_event_01" not in active_event_flags):
             # The Rocketmen portal uses a client-only map event with no end
@@ -514,10 +569,14 @@ class PlayerInitializationWorldService:
                 )
             except Exception:
                 reveal_flags = frozenset()
+            reveal_flags = sargon_shadowfort_seed_flags(
+                gameplay_map, reveal_flags,
+            )
+            late_join_flags = active_event_flags | runtime_flags | reveal_flags
             map_commands, exit_info = load_local_map_initialization(
                 self.static_database_path,
                 gameplay_map,
-                active_event_flags=active_event_flags | runtime_flags | reveal_flags,
+                active_event_flags=late_join_flags,
                 include_inactive_event_sets=True,
                 selected_map_difficulty=map_access.map_difficulty,
                 selected_map_access_id=map_access.request_map_id,
@@ -532,7 +591,7 @@ class PlayerInitializationWorldService:
                     for definition in load_local_map_exits(
                         self.static_database_path,
                         gameplay_map,
-                        active_event_flags=active_event_flags | runtime_flags | reveal_flags,
+                        active_event_flags=late_join_flags,
                     )
                     if definition.active and definition.destination_map_id
                 )
@@ -549,6 +608,28 @@ class PlayerInitializationWorldService:
                         and 638 <= int(definition.event_set_row) <= 644
                     )
                 )
+        if map_key(gameplay_map) == SARGON_SHADOWFORT_MAP_ID:
+            sentinel_defeated = False
+            if map_event_runtime is not None:
+                with map_event_runtime.lock:
+                    sentinel_defeated = bool(
+                        map_event_runtime.sargon_shadowfort_sentinel_defeated
+                    )
+            if not sentinel_defeated:
+                map_commands, exit_info = _hide_sargon_shadowfort_boss_gate(
+                    self.static_database_path,
+                    gameplay_map,
+                    map_commands,
+                    exit_info,
+                )
+                with s.flow_lock:
+                    s.gameplay_map_exits = tuple(
+                        definition
+                        for definition in s.gameplay_map_exits
+                        if not str(
+                            definition.destination_map_id
+                        ).casefold().startswith("pw211_sargon_boss")
+                    )
         with s.flow_lock:
             old_chase_timer = s.gameplay_chase_timer
             old_projectile_timers = tuple(

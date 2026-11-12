@@ -22,6 +22,7 @@ from dso_server.gameplay.event_system import (
     _tokens,
     completed_achievement_ids,
 )
+from dso_server.gameplay.quest_content import QUEST_STATE_CLOSED
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
 from dso_server.protocol.consumable_protocol import load_consumable_catalog
 from dso_server.gameplay.mortis_arena import (
@@ -43,6 +44,14 @@ _DRAGAN_CLASS_SET_ITEMS = {
     "dwarf": ("rifle", "dwarf"),
 }
 _EASTER_DARAN_TEMPLATE = "e_easter_01_dun_boss_troll_01"
+_SARGON_SHADOW_PORTAL_MAP = "g0001_beach_01_night_dun"
+_SARGON_SHADOW_PORTAL_TEMPLATE = "g0001_guardian_shadow_portal_01"
+_SARGON_SHADOW_PORTAL_FRAGMENTS = (
+    "e_sar_quest_shadow_portal_fragment_01",
+    "e_sar_quest_shadow_portal_fragment_02",
+    "e_sar_quest_shadow_portal_fragment_03",
+    "e_sar_quest_shadow_portal_fragment_04",
+)
 _DARK_DWARF_HEIST_MAPS = frozenset({
     'e_z0110_dun',
     'e_viscanium_submarine_01',
@@ -452,6 +461,19 @@ class LootPresenceService:
                 int(session.gameplay_map_difficulty),
                 int(getattr(session, 'gameplay_scaling_difficulty', 0)),
             )
+            sargon_first_phase_loot_suppressed = (
+                _map_key(encounter.map_id) == "pw211_sargon_boss"
+                and str(monster.template_id).casefold() == "boss_sargon"
+                and any(
+                    str(quest_id).casefold()
+                    == "pw210-way-to-sargon-01-n"
+                    and int(getattr(progress, "state", -1))
+                    == QUEST_STATE_CLOSED
+                    for quest_id, progress in (
+                        getattr(session, "gameplay_quest_log", {}) or {}
+                    ).items()
+                )
+            )
             active_costume = str(
                 getattr(session, "gameplay_active_costume", "") or ""
             )
@@ -573,6 +595,19 @@ class LootPresenceService:
                 rng=generator,
                 map_difficulty=map_difficulty,
             )
+            if (
+                "sargon_event" in event_catalog.active_template_ids()
+                and _SARGON_SHADOW_PORTAL_MAP in {
+                    _map_key(loot_map_id),
+                    *(_map_key(value) for value in loot_map_aliases),
+                }
+                and str(monster.template_id).casefold()
+                == _SARGON_SHADOW_PORTAL_TEMPLATE
+            ):
+                event_loot = (
+                    *event_loot,
+                    (generator.choice(_SARGON_SHADOW_PORTAL_FRAGMENTS), 1),
+                )
             difficulty_factors = loot_cache.difficulty_drop_factors.get(
                 int(map_difficulty), (1.0, 1.0)
             )
@@ -771,6 +806,7 @@ class LootPresenceService:
                     ("unique_gem_resistance_ice_fire_light",)
                     if is_easter_daran else ()
                 ),
+                suppress_all_drops=sargon_first_phase_loot_suppressed,
             )
             generation = apply_socket_drop_amounts(
                 socket_evaluation,
@@ -800,6 +836,16 @@ class LootPresenceService:
                     profile.rank_kind if profile is not None else 'normal'
                 ),
             )
+            if _map_key(encounter.map_id) == "pw210_sargon_fortress_dun":
+                generation = replace(
+                    generation,
+                    drops=tuple(
+                        drop for drop in generation.drops
+                        if "sargon_set" not in str(
+                            drop.item.template_id
+                        ).casefold()
+                    ),
+                )
             if is_rocketmen_dungeon:
                 # Rocketmen's ordinary currencies/equipment stay disabled,
                 # while its explicitly requested 35% Oiltastic Mixture drop

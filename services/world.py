@@ -54,6 +54,7 @@ AUTO_PICKUP_CATEGORIES = frozenset({
 # Full Moon Silver Essence is authored as Ammunition/Privileged in the client
 # data, but its event-map drops should be collected by every player on touch.
 FULL_MOON_SILVER_ESSENCE_ITEM_ID = 'e_ful_01_silver_essence_01'
+SARGON_COFFEE_BEAN_ITEM_ID = 'e_sar_key_coffee_beans'
 _EASTER_EVENT_AUTO_PICKUP_ITEM_IDS = frozenset({
     'e_easter_progress_item_t0',
     'e_easter_keyitem_01',
@@ -325,6 +326,16 @@ class WorldService:
         ):
             # Cosmic Chest Greedy Goblins and the final bosses have
             # client-authored minimap markers. Keep those actors map-visible.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
+        if (
+            encounter is not None
+            and encounter.map_id.casefold() == "pw210_sargon_fortress_dun"
+            and monster is not None
+            and monster.template_id.casefold()
+            == "pw210_sentinel_shadow_father_01"
+        ):
+            # The Shadowfort Sentinel's client-authored skull icon should stay
+            # on the minimap across the whole map after its event spawn.
             return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             encounter is not None
@@ -2148,11 +2159,12 @@ class WorldService:
             if encounter is None:
                 return
             event_catalog = getattr(s, 'gameplay_event_catalog', None)
-            easter_event_active = bool(
-                event_catalog is not None
-                and 'easter_event_01'
-                in event_catalog.active_template_ids()
+            active_event_templates = (
+                event_catalog.active_template_ids()
+                if event_catalog is not None else frozenset()
             )
+            easter_event_active = 'easter_event_01' in active_event_templates
+            sargon_event_active = 'sargon_event' in active_event_templates
             player_position = encounter.coordinate_frame.wire_to_world(
                 wire_position
             )
@@ -2166,6 +2178,11 @@ class WorldService:
                     (
                         str(drop.item.template_id).casefold()
                         == FULL_MOON_SILVER_ESSENCE_ITEM_ID
+                        or (
+                            sargon_event_active
+                            and str(drop.item.template_id).casefold()
+                            == SARGON_COFFEE_BEAN_ITEM_ID
+                        )
                         or (
                             easter_event_active
                             and (

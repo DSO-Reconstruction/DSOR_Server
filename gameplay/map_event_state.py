@@ -62,6 +62,50 @@ from dso_server.protocol.prop_protocol import (
 # the map's NPC ids.
 PROP_INDEX_LIMIT = 0x10000
 
+SARGON_SHADOWFORT_MAP_ID = "pw210_sargon_fortress_dun"
+SARGON_THRONE_ROOM_MAP_ID = "pw211_sargon_boss"
+SARGON_THRONE_LOCAL_ENCOUNTER_FLAGS = frozenset({
+    "boss_start",
+    "boss_spawn",
+    "boss_death",
+    "boss_sargon_second_phase",
+    "boss_sargon_second_phase_event_only",
+    "boss_sargon_second_phase_damage_aura",
+})
+SARGON_THRONE_SECRET_ROOM_GROUPS = (
+    "i0010_physical_big_dun_event_mortis_diff_",
+    "i0012_poison_big_dun_event_mortis_diff_",
+    "i0004_fire_big_dun_event_mortis_diff_",
+    "i0006_ice_big_dun_event_mortis_diff_",
+    "i0008_lightning_big_dun_event_mortis_diff_",
+    "i0002_andermagic_big_dun_event_mortis_diff_",
+)
+SARGON_SHADOWFORT_ALTAR_PREFIX = "pw210_sargon_leader_altar_"
+SARGON_SHADOWFORT_ALTAR_GROUPS = {
+    "01": ("A", "B"),
+    "02": ("A", "B", "C"),
+    "03": ("A", "B", "C", "D"),
+}
+SARGON_SHADOWFORT_ALTAR_EVENT_PREFIX = "pw210_sargon_call_leader_"
+SARGON_SHADOWFORT_SENTINEL_EVENT = "pw210_sargon_call_sentinel"
+SARGON_SHADOWFORT_SENTINEL_SIGNAL = (
+    "pw210_sargon_call_sentinel_start_signal_01"
+)
+SARGON_SHADOWFORT_SENTINEL_TEMPLATE = "pw210_sentinel_shadow_father_01"
+SARGON_SHADOWFORT_EXIT_EVENT_KEYS = frozenset({
+    "pw210_sargon_open_exit_to_sargon",
+    "pw210_sargon_open_exit_to_sargon_event_only",
+})
+SARGON_SHADOWFORT_LOCAL_EVENT_KEYS = frozenset({
+    *SARGON_SHADOWFORT_EXIT_EVENT_KEYS,
+    SARGON_SHADOWFORT_SENTINEL_EVENT,
+    *(
+        f"{SARGON_SHADOWFORT_ALTAR_EVENT_PREFIX}{group}{variant}"
+        for group, variants in SARGON_SHADOWFORT_ALTAR_GROUPS.items()
+        for variant in variants
+    ),
+})
+
 
 def prop_index(prop_id: int) -> int:
     """The slot the client selects for a prop id."""
@@ -257,6 +301,15 @@ def map_key(value: object) -> str:
     """Normalize a map or access-group id the way signal rows name maps."""
 
     return _DIFFICULTY_SUFFIX.sub("", str(value or "").strip()).casefold()
+
+
+def sargon_shadowfort_seed_flags(map_id: object, flags) -> frozenset[str]:
+    """Drop character/global copies of Sargon's per-run progression flags."""
+
+    values = frozenset(str(value).casefold() for value in flags)
+    if map_key(map_id) != SARGON_SHADOWFORT_MAP_ID:
+        return values
+    return values - SARGON_SHADOWFORT_LOCAL_EVENT_KEYS
 
 
 @dataclass(frozen=True)
@@ -2145,6 +2198,23 @@ class MapEventRuntime:
     # Circus opens one randomly selected boss-map gate after four distinct
     # summoned bosses have been defeated in this arena instance.
     circus_bosses_defeated: set[str] = field(default_factory=set)
+    # Sargon's Shadowfort selects one altar from each color group per map run.
+    # The choices and Sentinel gate are shared with every player in the run.
+    sargon_shadowfort_selected_altar_ids: frozenset[str] = field(
+        default_factory=frozenset, init=False,
+    )
+    sargon_shadowfort_selected_altar_event_keys: frozenset[str] = field(
+        default_factory=frozenset, init=False,
+    )
+    sargon_shadowfort_sentinel_unlocked: bool = False
+    sargon_shadowfort_sentinel_defeated: bool = False
+    # The Throne Room's second form is released only after a verified first
+    # Sargon kill and the matching quest-gated phase signal. Keep the random
+    # hidden-room choice once per map instance for all party members.
+    sargon_throne_first_phase_defeated: bool = False
+    sargon_throne_second_phase_authorized: bool = False
+    sargon_throne_second_phase_started: bool = False
+    sargon_throne_secret_room_group: str | None = None
     circus_random_exit_guid: bytes | None = None
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
     # Darkwood's Wendigo ritual has three independently clickable fire props.
@@ -2187,6 +2257,42 @@ class MapEventRuntime:
         self.initial_flags = frozenset(
             str(value).casefold() for value in self.initial_flags
         )
+        if map_key(self.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            # These are map-local progression events. Do not inherit a stale
+            # or globally supplied copy of them into a fresh Shadowfort run.
+            self.initial_flags -= SARGON_SHADOWFORT_LOCAL_EVENT_KEYS
+            selected_altar_ids = set()
+            for group, variants in SARGON_SHADOWFORT_ALTAR_GROUPS.items():
+                candidates = tuple(sorted(
+                    str(prop.instance_id).casefold()
+                    for prop in self.content.props
+                    if prop.kind == "spawn"
+                    and str(prop.instance_id).casefold().startswith(
+                        SARGON_SHADOWFORT_ALTAR_PREFIX + group
+                    )
+                    and str(prop.instance_id).casefold().rsplit(group, 1)[-1]
+                    in {variant.casefold() for variant in variants}
+                ))
+                if candidates:
+                    selected_altar_ids.add(random.Random(
+                        f"{self.instance_id}:sargon-shadowfort-altar:{group}"
+                    ).choice(candidates))
+            self.sargon_shadowfort_selected_altar_ids = frozenset(
+                selected_altar_ids
+            )
+            self.sargon_shadowfort_selected_altar_event_keys = frozenset(
+                SARGON_SHADOWFORT_ALTAR_EVENT_PREFIX
+                + altar_id[len(SARGON_SHADOWFORT_ALTAR_PREFIX):]
+                for altar_id in selected_altar_ids
+            )
+        elif map_key(self.map_id) == SARGON_THRONE_ROOM_MAP_ID:
+            # A fresh Throne Room run must not inherit stale encounter flags:
+            # phase two could appear early and BOSS_death could reveal the
+            # hidden exits before either boss was defeated.
+            self.initial_flags -= SARGON_THRONE_LOCAL_ENCOUNTER_FLAGS
+            self.sargon_throne_secret_room_group = random.Random(
+                f"{self.instance_id}:sargon-throne-secret-room"
+            ).choice(SARGON_THRONE_SECRET_ROOM_GROUPS)
         if self.content.is_dungeon:
             self._selected_dungeon_resource_prop_ids = (
                 self._select_dungeon_resource_props()
@@ -2385,6 +2491,15 @@ class MapEventRuntime:
         """
 
         definitions = tuple(definitions)
+        if map_key(self.map_id) == SARGON_SHADOWFORT_MAP_ID:
+            definitions = tuple(
+                definition for definition in definitions
+                if not str(definition.instance_id).casefold().startswith(
+                    SARGON_SHADOWFORT_ALTAR_PREFIX
+                )
+                or str(definition.instance_id).casefold()
+                in self.sargon_shadowfort_selected_altar_ids
+            )
         # DTU arena reward chests and Circus superchests are authored once
         # for every difficulty tier at the same locations. Keep only the
         # selected MapVariation before registering/publishing them; the other

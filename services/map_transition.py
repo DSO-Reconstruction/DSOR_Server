@@ -20,7 +20,12 @@ import sqlite3
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.protocol.gameplay_protocol import encode_player_logout_info
-from dso_server.gameplay.map_event_state import map_key
+from dso_server.gameplay.map_event_state import (
+    SARGON_SHADOWFORT_MAP_ID,
+    SARGON_THRONE_ROOM_MAP_ID,
+    map_key,
+)
+from dso_server.gameplay.local_map_state import KINGSCITY_MAP_ID
 from dso_server.gameplay.map_difficulty_state import (
     is_concrete_map_access,
     map_teleport_access_group_override,
@@ -726,10 +731,19 @@ class MapTransitionService:
             if home_exit:
                 # Arena return stones use a symbolic ExitURL, not a map file.
                 # Mortis' Exile returns to Cardhun regardless of the last town.
-                selected_access_id = (
-                    "pw000_hub" if str(s.gameplay_map).casefold() == "pw214_mortis_boss"
-                    else CharacterService._resolve_hub_travel_destination(self, s)
-                )
+                source_map = map_key(s.gameplay_map)
+                if source_map in {
+                    SARGON_SHADOWFORT_MAP_ID,
+                    SARGON_THRONE_ROOM_MAP_ID,
+                }:
+                    selected_access_id = KINGSCITY_MAP_ID
+                else:
+                    selected_access_id = (
+                        "pw000_hub" if source_map == "pw214_mortis_boss"
+                        else CharacterService._resolve_hub_travel_destination(
+                            self, s,
+                        )
+                    )
             destination_access = resolve_map_access(
                 self.static_database_path,
                 selected_access_id,
@@ -1198,6 +1212,25 @@ class MapTransitionService:
                     f"exit id {request.exit_id!r} is ambiguous without a "
                     "player position"
                 )
+            if (
+                map_key(gameplay_map) == SARGON_SHADOWFORT_MAP_ID
+                and str(definition.destination_map_id).casefold().startswith(
+                    "pw211_sargon_boss"
+                )
+            ):
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                sentinel_defeated = False
+                if runtime is not None:
+                    with runtime.lock:
+                        sentinel_defeated = bool(
+                            runtime.sargon_shadowfort_sentinel_defeated
+                        )
+                if not sentinel_defeated:
+                    print(
+                        f"[{GAMEPLAY_SERVICE_NAME}] rejected Sargon Throne "
+                        "Room exit before the Shadowfort Sentinel was defeated"
+                    )
+                    return
             artaya_access_id = self._artaya_clearing_shortcut(
                 s, gameplay_map,
             )
@@ -1285,6 +1318,12 @@ class MapTransitionService:
             )
             if redirected_destination is not None:
                 destination_access_id = redirected_destination
+            elif authored_exit_url.casefold() in {"home", "hub"}:
+                # ExitInfo displays these symbolic exits using a real map ID
+                # so the client can localize their label. Preserve the
+                # authored home route here; _activate_map_exit resolves it to
+                # Kingshill on Sargon's maps.
+                destination_access_id = authored_exit_url
             elif (
                 self._is_fractured_planes_rift(definition)
                 and CharacterService._is_fractured_planes_run(self, s)

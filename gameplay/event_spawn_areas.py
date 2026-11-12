@@ -15,6 +15,7 @@ from dso_server.gameplay.local_monster_state import (
     _load_spawn_areas, _grounded_spawn_area_candidates,
     _grounded_spawn_position, _area_template_pool,
     _load_runtime_definition,
+    _SARGON_SHADOW_PORTAL_MAP_ID, _SARGON_SHADOW_PORTAL_TEMPLATE_ID,
 )
 from dso_server.gameplay.map_event_state import GatedSpawnRow, map_key
 
@@ -305,6 +306,13 @@ def event_area_spawn_rows(
             }
             matched = tuple(t for t in pool if tokens <= set(t.casefold().split("_")))
             pool = matched or pool
+        if map_key(runtime.map_id) == _SARGON_SHADOW_PORTAL_MAP_ID:
+            # Event selectors and explicit spawn-list metadata can bypass the
+            # ordinary map pool, so cap portals here as well as in that pool.
+            pool = tuple(
+                template for template in pool
+                if template.casefold() != _SARGON_SHADOW_PORTAL_TEMPLATE_ID
+            )
         if not pool:
             continue
         if (

@@ -64,6 +64,7 @@ from dso_server.gameplay.ocp_store import (
     EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY,
     EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY,
     EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY,
+    SARGON_ATTIRE_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
     EVENT_ATTIRE_PRODUCT_KEYS,
     FULL_MOON_ATTIRE_PRODUCT_KEY,
@@ -374,6 +375,19 @@ def resolve_ocp_booking_reward(
                 "skin_dwarf_unique_backitem_attire_nye_01"
                 if class_name == "dwarf"
                 else "skin_all_unique_backitem_attire_nye_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
+            )
+        if offer_id == SARGON_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_sargon_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_sargon_01"
             )
             attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
             return OCPBookingReward(
@@ -951,6 +965,12 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_259, 9.90, False, "€", EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY, "", ""),
     OCPOffer(180_260, 9.90, False, "€", EASTER_DAILY_SPRING_PACK_PRODUCT_KEY, "", ""),
     OCPOffer(180_261, 9.90, False, "€", EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY, "", ""),
+    # Sargon's native event pass resolves to the active character's attire and
+    # its matching back skin after purchase confirmation.
+    OCPOffer(
+        180_262, 9.90, False, "€",
+        SARGON_ATTIRE_PRODUCT_KEY, "", "",
+    ),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"
