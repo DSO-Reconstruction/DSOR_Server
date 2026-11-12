@@ -21,8 +21,9 @@ early; ``LifeTime`` 0 summons keep their previous permanent behaviour.
 from __future__ import annotations
 
 import math
+import sqlite3
 import time
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from dataclasses import replace
 
 from dso_server.gameplay.local_combat_state import _monster_template_lifetime
@@ -32,6 +33,7 @@ from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
 from dso_server.gameplay.local_monster_state import (
     _grounded_spawn_position,
+    is_rocketmen_event_inert_summon,
     _load_monster,
     _load_runtime_definition,
     _spawn_group,
@@ -182,6 +184,7 @@ class MonsterSummonService:
         encounter = combat.encounter
         database_path = encounter.static_database_path
         difficulty = int(getattr(encounter, "scaling_difficulty", 0))
+        permanent_minion_requests = []
         for request in requests:
             lifetime = _monster_template_lifetime(str(database_path), request.template_id)
             if lifetime < 0:
@@ -225,7 +228,10 @@ class MonsterSummonService:
                 except (NavigationError, CollisionTerrainError, ValueError):
                     position = tuple(float(value) for value in centre)
                 definition = _load_runtime_definition(
-                    database_path, request.template_id, actor_id
+                    database_path, request.template_id, actor_id,
+                    stationary=is_rocketmen_event_inert_summon(
+                        request.template_id
+                    ),
                 )
                 if definition is None:
                     print(f"[{GAMEPLAY_SERVICE_NAME}] summon {request.template_id!r} "
@@ -239,6 +245,9 @@ class MonsterSummonService:
                         position,
                         monster_level=request.level,
                         scaling_difficulty=difficulty,
+                        non_targetable=is_rocketmen_event_inert_summon(
+                            request.template_id
+                        ),
                     )
                 except ValueError as exc:
                     print(f"[{GAMEPLAY_SERVICE_NAME}] cannot summon "
@@ -279,6 +288,17 @@ class MonsterSummonService:
                     scheduler = getattr(runtime, "scheduler", None) or getattr(session, "gameplay_deadline_scheduler", None)
                     combat.monster_summon_lifecycle = MonsterSummonLifecycle(self, combat, runtime, scheduler)
                 lifecycle = combat.monster_summon_lifecycle
+            if any(
+                str(request.template_id).casefold().startswith(
+                    "e_nye_normal_event_dun_invisible_rocket_shooter_spawner_"
+                )
+                for _actor_id in added
+            ):
+                permanent_minion_requests.extend(
+                    self._rocketmen_spawner_minions(
+                        combat, database_path, added,
+                    )
+                )
             if lifecycle is not None:
                 lifecycle.schedule()
             print(f"[{GAMEPLAY_SERVICE_NAME}] monster {request.caster_actor_id} "
@@ -295,3 +315,80 @@ class MonsterSummonService:
                 except OSError:
                     # Other viewers and expiry must not depend on this socket.
                     continue
+        if permanent_minion_requests:
+            self._spawn_monster_summons(session, permanent_minion_requests)
+
+    @staticmethod
+    def _rocketmen_spawner_minions(combat, database_path, actor_ids):
+        """Run the Minion start modifiers on the authored Rocketmen spawners.
+
+        Their permanent status effect creates the actual animatronics,
+        firecracker minions and target marker. The client handles those
+        modifiers natively; the server must materialize the same actors for
+        combat and quest kill credit.
+        """
+        from dso_server.gameplay.local_combat_state import (
+            LocalCombatState,
+            MonsterSummonRequest,
+        )
+
+        requests = []
+        with closing(sqlite3.connect(
+            f"file:{database_path.as_posix()}?mode=ro", uri=True,
+        )) as database:
+            with combat.lock:
+                casters = tuple(
+                    (
+                        int(actor_id),
+                        combat.monsters.get(int(actor_id)),
+                        combat._monster_summon_generations.get(
+                            int(actor_id), 0,
+                        ),
+                    )
+                    for actor_id in actor_ids
+                )
+            for actor_id, caster, generation in casters:
+                if caster is None:
+                    continue
+                row = database.execute(
+                    "SELECT COALESCE(PermanentStatusEffect, '') "
+                    "FROM _Template_Monster WHERE Id=? LIMIT 1",
+                    (str(caster.template_id),),
+                ).fetchone()
+                if row is None:
+                    continue
+                effects = LocalCombatState._load_victim_status_effects(
+                    database, str(row[0] or ""), default_trigger="immediate",
+                )
+                for effect in effects:
+                    if not str(effect.resource_id).casefold().startswith(
+                        "e_nye_rocket_shooter_spawner_var_"
+                    ):
+                        continue
+                    for template_id, amount, offset in (
+                        combat.player_status_minion_specs(effect)
+                    ):
+                        if _monster_template_lifetime(
+                            str(database_path), template_id,
+                        ) < 0:
+                            continue
+                        position = tuple(
+                            float(value) for value in caster.position[:3]
+                        )
+                        explicit_positions = ()
+                        if any(abs(float(value)) > 1e-6 for value in offset[:3]):
+                            explicit_positions = (tuple(
+                                position[index] + float(offset[index])
+                                for index in range(3)
+                            ),)
+                        requests.append(MonsterSummonRequest(
+                            caster_actor_id=actor_id,
+                            template_id=str(template_id),
+                            amount=max(1, int(amount)),
+                            limit=0,
+                            position=position,
+                            level=int(caster.level),
+                            positions=explicit_positions,
+                            caster_generation=generation,
+                        ))
+        return tuple(requests)

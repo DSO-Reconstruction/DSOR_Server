@@ -118,6 +118,25 @@ STELLAR_GOLD_PACKAGE_PRODUCT_KEY = (
     "8_fury_stellar_sold_package_1_1.0000_0_NONE"
 )
 
+# Riot of the Rocketmen uses the New Year event payment packages. The attire
+# purchase resolves to the active character's costume and matching back skin.
+ROCKETMEN_ATTIRE_PRODUCT_KEY = "8_event_pass_nye_1.0000_0_NONE"
+ROCKETMEN_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_nye_warrior",
+    "mage": "costume_event_pass_nye_mage",
+    "ranger": "costume_event_pass_nye_ranger",
+    "dwarf": "costume_event_pass_nye_dwarf",
+}
+ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY = (
+    "8_shark_rocket_package_1_1.0000_0_NONE"
+)
+ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY = (
+    "8_soul_destruction_chest_1.0000_0_NONE"
+)
+ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY = (
+    "8_small_soul_chest_1.0000_0_NONE"
+)
+
 CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY = (
     "101_cny_2024_1_1.0000_0_NONE"
 )
@@ -225,6 +244,10 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY: "e_ide_challenge_01",
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY: "stellar_gold_event_01",
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY: "stellar_gold_event_01",
+    ROCKETMEN_ATTIRE_PRODUCT_KEY: "new_year_event_01",
+    ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY: "new_year_event_01",
+    ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY: "new_year_event_01",
+    ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY: "new_year_event_01",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: "event_new_year_2024",
@@ -245,6 +268,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         HALLOWEEN_ATTIRE_PRODUCT_KEY,
         SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY,
         STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
+        ROCKETMEN_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -257,6 +281,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     HALLOWEEN_ATTIRE_PRODUCT_KEY: HALLOWEEN_ATTIRE_ITEMS_BY_CLASS,
     SUMMER_FESTIVAL_ATTIRE_PRODUCT_KEY: SUMMER_FESTIVAL_ATTIRE_ITEMS_BY_CLASS,
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY: STELLAR_GOLD_ATTIRE_ITEMS_BY_CLASS,
+    ROCKETMEN_ATTIRE_PRODUCT_KEY: ROCKETMEN_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -409,6 +434,21 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     STELLAR_GOLD_PACKAGE_PRODUCT_KEY: (
         ("event_stellar_gold_package", 1),
+    ),
+    # The Shark package is an inventory chest; its tooltip contents are
+    # resolved by chest_loot_protocol when opened.
+    ROCKETMEN_SHARK_PACKAGE_PRODUCT_KEY: (
+        ("event_shark_rocket_package", 1),
+    ),
+    ROCKETMEN_SOUL_DESTRUCTION_CHEST_PRODUCT_KEY: (
+        ("item_ingredient_mercenary_heart_of_destruction", 30),
+        ("liberation_key", 2),
+        ("item_ingredient_mercenary_echo_shards", 1),
+    ),
+    ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY: (
+        ("divine_crusaders_material_selection_chest", 3),
+        ("item_ingredient_mercenary_heart_of_destruction", 600),
+        ("item_ingredient_mercenary_soul_cluster", 3000),
     ),
     # Chinese New Year offers use the authored 2024 offer groups. The mount,
     # ingredients, coins, keys, and chests below match those groups' contents.

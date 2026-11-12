@@ -2509,6 +2509,60 @@
         {"item":"e_e_viscanium_hardmode_key","amount":[150,150],"chance":0.30}
       ]
     },
+    "CHEST_e_nye_boss_lootchest_01": {
+      "comment": "Unlocked Fireworks Crate rewards in Professor Jullov's Laboratory. Royal Fireworks amounts follow the event table by difficulty; Infernal, Merciless and Bloodshed each use the same stack across both sub-tiers. The New Year attire adds its advertised 50% stack bonus.",
+      "entries": [
+        {
+          "event_progress": true,
+          "event": "new_year_event_01",
+          "event_progress_item": "e_nye_progress_item",
+          "amount_by_difficulty": [5, 10, 15, 22, 35, 35, 58, 58, 115, 115],
+          "amount_bonus_by_costume": {
+            "costume_event_pass_nye_warrior": 0.5,
+            "costume_event_pass_nye_mage": 0.5,
+            "costume_event_pass_nye_ranger": 0.5,
+            "costume_event_pass_nye_dwarf": 0.5
+          }
+        },
+        {
+          "item": "item_ingredient_mercenary_soul_cluster",
+          "amount_by_difficulty": [1, 2, 3, 4, 5, 5, 6, 6, 8, 8]
+        }
+      ]
+    },
+    "CHEST_e_nye_01_rocketpile_01": {
+      "comment": "Pile of Royal Fireworks rewards in Professor Jullov's Laboratory. Amounts follow the event table by difficulty; Infernal, Merciless and Bloodshed each use the same stack across both sub-tiers. The New Year attire adds its advertised 50% stack bonus.",
+      "entries": [
+        {
+          "event_progress": true,
+          "event": "new_year_event_01",
+          "event_progress_item": "e_nye_progress_item",
+          "amount_by_difficulty": [20, 40, 65, 90, 130, 130, 230, 230, 500, 500],
+          "amount_bonus_by_costume": {
+            "costume_event_pass_nye_warrior": 0.5,
+            "costume_event_pass_nye_mage": 0.5,
+            "costume_event_pass_nye_ranger": 0.5,
+            "costume_event_pass_nye_dwarf": 0.5
+          }
+        }
+      ]
+    },
+    "lootlist_treasure_monster_e_nye": {
+      "comment": "Liberated Greed Fiend Treasure Chest from Professor Jullov's Laboratory. Opening it with a Liberation Key grants 1 Token of Gratitude.",
+      "entries": [
+        {"item":"the_greed_fiends_gratitude","amount":[1,1]}
+      ]
+    },
+    "lootlist_e_nye_worldboss_pile": {
+      "comment": "The existing Rocket Pile prop becomes clickable after all four Machine Babies are defeated and grants the New Year Worldboss ingredient tier matching map difficulty, 3-5 equipment items with a randomized Magic/Rare/Legendary mix, 2-3 difficulty-scaled gems, 2-3 separate Premium/Deluxe Mystic Cube drops, independent 5% chances for one Necklace Core, Cloak Core, and Belt Core, and a 20% chance for one Soul Destruction mercenary recipe.",
+      "entries": [
+        {"item":"boss_ingredient_nye_rarity_01","amount":[1,1],"minimum_difficulty":0,"maximum_difficulty":1},
+        {"item":"boss_ingredient_nye_rarity_02","amount":[1,1],"minimum_difficulty":2,"maximum_difficulty":3},
+        {"item":"boss_ingredient_nye_rarity_03","amount":[1,1],"minimum_difficulty":4,"maximum_difficulty":5},
+        {"item":"boss_ingredient_nye_rarity_04","amount":[1,1],"minimum_difficulty":6,"maximum_difficulty":7},
+        {"item":"boss_ingredient_nye_rarity_05","amount":[1,1],"minimum_difficulty":8,"maximum_difficulty":9}
+      ]
+    },
     "lootlist_darkdwarf_viscanium_rock": {
       "comment": "Viscanium Mine rock: the Dark Dwarf Heist guide gives 5 Pure Viscanium per click.",
       "entries": [

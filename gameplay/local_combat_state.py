@@ -64,6 +64,7 @@ from dso_server.gameplay.local_monster_state import (
     MonsterAttackDefinition,
     MonsterRuntimeDefinition,
     MonsterSpawnGroup,
+    is_new_year_dungeon_summon_controller,
     load_player_summon_spawn,
 )
 from dso_server.gameplay.local_map_state import map_database_path
@@ -284,6 +285,10 @@ MONSTER_NAVIGATION_RADIUS_CAP = max(
 )
 MONSTER_SIMULATION_RADIUS = max(
     10.0, float(os.getenv("DSO_MONSTER_ACTIVE_RADIUS", "40"))
+)
+NEW_YEAR_ANIMATRONIC_SPAWNER_RADIUS = max(
+    MONSTER_SIMULATION_RADIUS,
+    float(os.getenv("DSO_NYE_ANIMATRONIC_SPAWNER_RADIUS", "60")),
 )
 # Client actor registration is deliberately tighter than the server-side
 # navigation/simulation envelope. Retail announces ordinary monsters just
@@ -2369,6 +2374,11 @@ class LocalCombatState:
                         encounter.map_id.casefold() == "f4203_boss"
                         and monster.template_id.casefold() == "f4203_boss_06_ram"
                     )
+                    or (
+                        encounter.map_id.casefold() == "e_nye_dungeon_01"
+                        and monster.template_id.casefold()
+                        == "h0009_endlesstower_01_room_fire_shooter"
+                    )
                 ),
                 fixed_direction=spawned_as_hazard(
                     encounter.static_database_path, monster,
@@ -2640,6 +2650,11 @@ class LocalCombatState:
                     or (
                         self.encounter.map_id.casefold() == "f4203_boss"
                         and monster.template_id.casefold() == "f4203_boss_06_ram"
+                    )
+                    or (
+                        self.encounter.map_id.casefold() == "e_nye_dungeon_01"
+                        and monster.template_id.casefold()
+                        == "h0009_endlesstower_01_room_fire_shooter"
                     )
                 ),
                 fixed_direction=spawned_as_hazard(
@@ -14654,6 +14669,22 @@ class LocalCombatState:
             ):
                 continue
             monster = self.monsters[actor_id]
+            is_nye_animatronic_spawner = (
+                self.encounter.map_id.casefold() == "e_nye_dungeon_01"
+                and monster.template_id.casefold()
+                == "e_nye_normal_dun_spawner_animatronic"
+            )
+            # These authored anchors do summon Rocketmen, but unlike the
+            # invisible timed-event controllers they must obey normal player
+            # acquisition and simulation radii. Treating all 16 as global
+            # controllers caused overlapping waves across the whole map.
+            event_summon_controller = (
+                is_new_year_dungeon_summon_controller(monster.template_id)
+                and not is_nye_animatronic_spawner
+            )
+            summon_skill_controller = (
+                event_summon_controller or is_nye_animatronic_spawner
+            )
             if (
                 self.encounter.map_id.casefold() == "e_sum_minidun_arena_01"
                 and monster.template_id.casefold() in {
@@ -14768,8 +14799,18 @@ class LocalCombatState:
                     )
                 ),
             )
+            if is_nye_animatronic_spawner:
+                # The authored spawner skills have a 1m cast range because
+                # they are Shifted summon commands. Activate anchors near the
+                # player, then let the summon skill use its authored point.
+                acquisition_range = min(
+                    monster.aggro_range,
+                    monster.travel_distance,
+                    NEW_YEAR_ANIMATRONIC_SPAWNER_RADIUS,
+                )
             if (
-                home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
+                not event_summon_controller
+                and home_distance <= MONSTER_HOME_ARRIVAL_DISTANCE
                 and self._distance(player_world, monster_position)
                 > acquisition_range
             ):
@@ -14789,7 +14830,9 @@ class LocalCombatState:
                     else MONSTER_SIMULATION_RADIUS
                 )
             )
-            if (
+            if is_nye_animatronic_spawner:
+                simulation_radius = NEW_YEAR_ANIMATRONIC_SPAWNER_RADIUS
+            if not event_summon_controller and (
                 self._distance(player_world, monster.position)
                 > simulation_radius
                 or self._distance(player_world, monster_position)
@@ -14870,6 +14913,11 @@ class LocalCombatState:
                         TARGET_BULLET_SKILL_COMMAND,
                         TARGET_POINT_BULLET_SKILL_COMMAND,
                     }
+                    and definition.command_id != SHIFTED_SKILL_COMMAND
+                    and not (
+                        summon_skill_controller
+                        and definition.summon_template
+                    )
                     and vertical_gap > MONSTER_MELEE_VERTICAL_REACH
                 ):
                     # A blow does not reach a player on a ledge above or
@@ -14894,7 +14942,14 @@ class LocalCombatState:
                 elif definition.support:
                     # A summon or a self-buff strikes nobody: its HitRange is
                     # no reach, only its AttackRange says when it is cast.
-                    effective_range = definition.attack_range
+                    effective_range = (
+                        float("inf")
+                        if (
+                            summon_skill_controller
+                            and definition.summon_template
+                        )
+                        else definition.attack_range
+                    )
                 else:
                     # Melee skills commonly author a smaller AttackRange than
                     # HitRange (Bearach's strike is 4 vs. 5). Let the cast
@@ -14906,8 +14961,16 @@ class LocalCombatState:
                     continue
                 # A bullet that would strike a wall between them is not
                 # fired: it flew through it doing nothing.
-                if self._monster_shot_blocked(
-                    definition, monster_position, attack_target_world
+                if (
+                    not (
+                        summon_skill_controller
+                        and definition.summon_template
+                    )
+                    and definition.targeting_type.casefold()
+                    != "randomposition"
+                    and self._monster_shot_blocked(
+                        definition, monster_position, attack_target_world
+                    )
                 ):
                     continue
                 eligible_definitions_list.append(definition)

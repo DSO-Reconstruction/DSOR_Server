@@ -2166,6 +2166,10 @@ class MapEventRuntime:
     # signals and reconnect/replay paths.
     bgh_sequence_spawned: set[str] = field(default_factory=set)
     fractured_planes_kill_seen: bool = False
+    # Riot of the Rocketmen runs one four-machine encounter per instance.
+    # Track distinct machine deaths so its final death can close the spawner.
+    new_year_machine_babies_defeated: set[str] = field(default_factory=set)
+    new_year_encounter_cleared: bool = False
     signal_log: deque = field(default_factory=lambda: deque(maxlen=64))
     generation: int = 0
     _selected_dungeon_resource_prop_ids: frozenset[int] = field(

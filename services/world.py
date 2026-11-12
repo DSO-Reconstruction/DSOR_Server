@@ -95,6 +95,10 @@ _PIRILTIDAG_SLAVKOFF_VISIBILITY_EXIT_RADIUS = 275.0
 _TIME_HARP_MAP = "c2302_dun"
 _DARK_DWARF_HARBOR_MAP = "e_viscanium_submarine_01"
 _STELLAR_GOLD_ARENA_MAP = "e_stego_arena_01"
+_ROCKETMEN_EVENT_MINIMAP_MOB_PREFIXES = (
+    "e_nye_normal_event_dun_animatronic_",
+    "e_nye_normal_event_dun_junk_minion_",
+)
 _TIME_HARP_QUEST_MOB_TEMPLATES = frozenset({
     "c2302_normal_g_gorgon_q_templeofeternity_03a",
     "c2302_normal_g_gorgon_q_templeofeternity_03a_scale",
@@ -213,6 +217,27 @@ class WorldService:
             if combat is not None
             else None
         )
+        if (
+            monster is not None
+            and encounter is not None
+            and encounter.map_id.casefold() == "e_nye_dungeon_01"
+            and monster.rank_id.casefold() == "rank_sentinel"
+        ):
+            # The four Rocketmen Machine Babies have authored Sentinel map
+            # icons. Keep their actor announcements alive at any distance.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
+        if (
+            monster is not None
+            and encounter is not None
+            and monster.template_id.casefold().startswith(
+                _ROCKETMEN_EVENT_MINIMAP_MOB_PREFIXES
+            )
+        ):
+            # Rocketmen animatronics and junk minions are authored as normal
+            # monsters, so they do not get the map-wide minimap visibility
+            # that the client's champion/sentinel ranks receive automatically.
+            # Keep their actors announced while the event mobs are alive.
+            return _TOWER_MECHANISM_VISIBILITY_RADIUS
         if (
             monster is not None
             and encounter is not None
@@ -422,6 +447,21 @@ class WorldService:
                             command.value, template_id=visual, field_c4=spawn_tick,
                         ))
                         startup_overrides[actor_id] = duration
+                        presentation_changed = True
+                    if (
+                        command.value.template_id.casefold().startswith(
+                            _ROCKETMEN_EVENT_MINIMAP_MOB_PREFIXES
+                        )
+                        and command.value.rank.casefold() == "rank_monster"
+                    ):
+                        # The client only keeps ranked enemy markers on the
+                        # minimap at map-wide distances. Give Rocketmen mobs
+                        # the champion marker rank in their visual spawn data,
+                        # while leaving elite scaling disabled and the combat
+                        # state's authored Rank_monster unchanged.
+                        command = NewMonsterServerCommand(replace(
+                            command.value, rank="Rank_champion",
+                        ))
                         presentation_changed = True
                     team = (
                         combat.monster_team(actor_id)
@@ -966,6 +1006,15 @@ class WorldService:
                                     or combat.monsters[actor_id].rank_id.casefold()
                                     .startswith("rank_boss")
                                 )
+                            )
+                            or (
+                                encounter.map_id.casefold()
+                                == "e_nye_dungeon_01"
+                                and combat.monsters[actor_id].rank_id.casefold()
+                                == "rank_sentinel"
+                            )
+                            or combat.monsters[actor_id].template_id.casefold().startswith(
+                                _ROCKETMEN_EVENT_MINIMAP_MOB_PREFIXES
                             )
                         )
                     )

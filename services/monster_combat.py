@@ -12,6 +12,7 @@ from dso_server.runtime.transport import Session
 from dso_server.runtime.monster_runtime_diagnostics import mark_phase
 from dso_server.gameplay.local_monster_state import (
     _grounded_spawn_position,
+    is_new_year_dungeon_summon_controller,
     _load_monster,
     _load_runtime_definition,
     _spawn_group,
@@ -884,6 +885,21 @@ class MonsterCombatService(
                     and combat.monster_health.get(actor_id, 0) > 0
                 )
             }
+            event_summon_controller_ids = {
+                actor_id
+                for actor_id, monster in combat.monsters.items()
+                if (
+                    combat.monster_health.get(actor_id, 0) > 0
+                    and is_new_year_dungeon_summon_controller(
+                        monster.template_id
+                    )
+                )
+            }
+            # New Year dungeon spawners are invisible, map-wide event
+            # controllers. Their authored locations can be beyond the normal
+            # visibility radius, but their timed summon skills must keep
+            # running so the local wave actors are created.
+            wanted_actor_ids.update(event_summon_controller_ids)
             inactive_actor_ids = (
                 set(combat.active_monster_actor_ids) - wanted_actor_ids
             )
@@ -987,6 +1003,25 @@ class MonsterCombatService(
                         assignments[actor_id] = (
                             LOCAL_PLAYER_ACTOR_ID, scripted_target,
                         )
+                for actor_id in event_summon_controller_ids:
+                    monster_position = combat.monster_positions.get(actor_id)
+                    if monster_position is None or not combat_targets:
+                        continue
+                    target_actor_id, target_position, _viewer = min(
+                        combat_targets,
+                        key=lambda target: combat._distance(
+                            combat.encounter.coordinate_frame.wire_to_world(
+                                target[1]
+                            ),
+                            monster_position,
+                        ),
+                    )
+                    assignments[actor_id] = (
+                        int(target_actor_id),
+                        combat.encounter.coordinate_frame.wire_to_world(
+                            target_position
+                        ),
+                    )
                 # One movement pass preserves the map's A* budget and collision
                 # separation while each pack pursues its own nearby player.
                 fallback = combat_targets[0][1]

@@ -310,6 +310,19 @@ _AUTHORED_CHEST_CONTENTS: dict[str, tuple[tuple[str, int], ...]] = {
     "seven_hole_bone_flute": (("e_chr_2012_event_currency", 500),),
     # "Once open, it gives you a 100% chance for a complete Dragon Stone."
     "dragon_crystal_box": (("e_bgh_ancestors_soul", 1),),
+    # Riot of the Rocketmen package tooltip guarantees these three stacks.
+    "event_shark_rocket_package": (
+        ("e_nye_keyitem_01", 100),
+        ("cooking_key", 10),
+        ("ammunition_damage_epic", 999),
+    ),
+}
+
+# Independent bonus rolls printed after the guaranteed contents. The
+# Rocketmen tooltip does not state a probability; this one uses the 10% rate
+# supplied for the Shark Rocket by the server owner.
+_AUTHORED_CHEST_BONUS_CHANCES: dict[str, tuple[tuple[str, int, float], ...]] = {
+    "event_shark_rocket_package": (("epicmount_shark_rocket", 1, 10.0),),
 }
 
 # Boxes whose server-side loot lists no client data ships and whose own
@@ -1689,6 +1702,16 @@ def _authored_chest_contents(
             cls=class_name, back="dwarf" if class_name == "dwarf" else "all",
         )
         rewards.append(ChestReward(_definition(static_database_path, template_id), amount))
+    bonus_chances = _AUTHORED_CHEST_BONUS_CHANCES.get(
+        box_definition.template_id, ()
+    )
+    if bonus_chances:
+        chooser = rng or random.SystemRandom()
+        for template_id, amount, chance_percent in bonus_chances:
+            if chooser.random() * 100.0 < chance_percent:
+                rewards.append(ChestReward(
+                    _definition(static_database_path, template_id), amount
+                ))
     return ChestContents(
         box_template_id=box_definition.template_id,
         source="authored_chest_contents",

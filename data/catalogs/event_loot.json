@@ -1661,6 +1661,36 @@
         "scale_chance_with_difficulty": true,
         "scale_stack_amount_with_difficulty": false
       }
+    ],
+    "*": [
+      {
+        "comment": "Professor Jullov's Rocketmen dungeon animatronics and junk minions have a 35% chance to drop one Oiltastic Mixture while Riot of the Rocketmen is active.",
+        "item": "e_nye_keyitem_01",
+        "monsters": [
+          "e_nye_normal_event_dun_animatronic_var_01",
+          "e_nye_normal_event_dun_animatronic_var_01_scale",
+          "e_nye_normal_event_dun_animatronic_var_02",
+          "e_nye_normal_event_dun_animatronic_var_02_scale",
+          "e_nye_normal_event_dun_animatronic_var_03",
+          "e_nye_normal_event_dun_animatronic_var_03_scale",
+          "e_nye_normal_event_dun_animatronic_var_04",
+          "e_nye_normal_event_dun_animatronic_var_04_scale",
+          "e_nye_normal_event_dun_junk_minion_var_01",
+          "e_nye_normal_event_dun_junk_minion_var_01_scale",
+          "e_nye_normal_event_dun_junk_minion_var_02",
+          "e_nye_normal_event_dun_junk_minion_var_02_scale",
+          "e_nye_normal_event_dun_junk_minion_var_03",
+          "e_nye_normal_event_dun_junk_minion_var_03_scale",
+          "e_nye_normal_event_dun_junk_minion_var_04",
+          "e_nye_normal_event_dun_junk_minion_var_04_scale"
+        ],
+        "ranks": ["monster"],
+        "chance": {"monster": 0.35},
+        "amount": {"monster": [1, 1]},
+        "require_active_events": ["new_year_event_01"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      }
     ]
   }
 }
