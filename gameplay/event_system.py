@@ -1950,7 +1950,9 @@ def _load_catalog(
         seen_ids.add(event_id)
         forced_state = str(entry.get("state") or "scheduled").casefold()
         ranks = frozenset(str(value).casefold() for value in entry.get("collectible_ranks", ()))
-        if not ranks and resource_id == "scaling_dungeon_kill_event_01":
+        if not ranks and resource_id.casefold().startswith("mini_kill_event_"):
+            ranks = frozenset(("worldboss",))
+        elif not ranks and resource_id == "scaling_dungeon_kill_event_01":
             ranks = frozenset(("leader", "champion", "guardian", "boss", "worldboss"))
         events.append(ScheduledEvent(
             event_id=event_id,
