@@ -59,6 +59,11 @@ from dso_server.gameplay.ocp_store import (
     DEFEAT_UNDEFEATABLE_LAVA_MATERIAL_PRODUCT_KEY,
     DEFEAT_UNDEFEATABLE_ROAD_TO_TRIUMPH_PRODUCT_KEY,
     DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY,
+    EASTER_ATTIRE_PRODUCT_KEY,
+    EASTER_DAILY_SPRING_PACK_PRODUCT_KEY,
+    EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY,
+    EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY,
+    EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
     EVENT_ATTIRE_PRODUCT_KEYS,
     FULL_MOON_ATTIRE_PRODUCT_KEY,
@@ -939,6 +944,13 @@ LOCAL_OCP_OFFERS = (
     # Monster Hunt uses the native attire and Hunting Ring payment packages.
     OCPOffer(180_255, 9.90, False, "€", MONSTER_HUNT_ATTIRE_PRODUCT_KEY, "", ""),
     OCPOffer(180_256, 9.90, False, "€", HUNTING_RING_BUNDLE_PRODUCT_KEY, "", ""),
+    # Easter Spring Festival offers reuse the client package/item identifiers;
+    # package contents are routed by the server after purchase confirmation.
+    OCPOffer(180_257, 9.90, False, "€", EASTER_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_258, 9.90, False, "€", EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY, "", ""),
+    OCPOffer(180_259, 9.90, False, "€", EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY, "", ""),
+    OCPOffer(180_260, 9.90, False, "€", EASTER_DAILY_SPRING_PACK_PRODUCT_KEY, "", ""),
+    OCPOffer(180_261, 9.90, False, "€", EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

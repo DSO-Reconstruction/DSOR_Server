@@ -149,6 +149,26 @@ MONSTER_HUNT_ATTIRE_ITEMS_BY_CLASS = {
 }
 HUNTING_RING_BUNDLE_PRODUCT_KEY = "8_hunting_ring_bundle_1_1.0000_0_NONE"
 
+EASTER_ATTIRE_PRODUCT_KEY = "8_event_pass_easter_1.0000_0_NONE"
+EASTER_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_easter_warrior",
+    "mage": "costume_event_pass_easter_mage",
+    "ranger": "costume_event_pass_easter_ranger",
+    "dwarf": "costume_event_pass_easter_dwarf",
+}
+EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY = (
+    "8_spring_material_pack_1_1.0000_0_NONE"
+)
+EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY = (
+    "8_surprise_spring_pack_1_1.0000_0_NONE"
+)
+EASTER_DAILY_SPRING_PACK_PRODUCT_KEY = (
+    "101_daily_spring_pack_1_1.0000_0_NONE"
+)
+EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY = (
+    "shop_daily_surprise_spring_package"
+)
+
 CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY = (
     "101_cny_2024_1_1.0000_0_NONE"
 )
@@ -262,6 +282,11 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     ROCKETMEN_SMALL_SOUL_CHEST_PRODUCT_KEY: "new_year_event_01",
     MONSTER_HUNT_ATTIRE_PRODUCT_KEY: "mini_kill_event_1d_mantis",
     HUNTING_RING_BUNDLE_PRODUCT_KEY: "mini_kill_event_1d_mantis",
+    EASTER_ATTIRE_PRODUCT_KEY: "easter_event_01",
+    EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY: "easter_event_01",
+    EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY: "easter_event_01",
+    EASTER_DAILY_SPRING_PACK_PRODUCT_KEY: "easter_event_01",
+    EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY: "easter_event_01",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: "event_new_year_2024",
@@ -284,6 +309,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         STELLAR_GOLD_ATTIRE_PRODUCT_KEY,
         ROCKETMEN_ATTIRE_PRODUCT_KEY,
         MONSTER_HUNT_ATTIRE_PRODUCT_KEY,
+        EASTER_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -298,6 +324,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     STELLAR_GOLD_ATTIRE_PRODUCT_KEY: STELLAR_GOLD_ATTIRE_ITEMS_BY_CLASS,
     ROCKETMEN_ATTIRE_PRODUCT_KEY: ROCKETMEN_ATTIRE_ITEMS_BY_CLASS,
     MONSTER_HUNT_ATTIRE_PRODUCT_KEY: MONSTER_HUNT_ATTIRE_ITEMS_BY_CLASS,
+    EASTER_ATTIRE_PRODUCT_KEY: EASTER_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -503,6 +530,21 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
         ("cny_lantern_coin", 3000),
         ("e_cny_boss_essence_04", 3000),
         ("money_rc", 5000),
+    ),
+    EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY: (
+        ("holy_core_selectbox", 1),
+        ("item_ingredient_mercenary_heart_of_holy", 10),
+    ),
+    # Keep the random and daily packs intact so their authored loot tables and
+    # daily purchase behavior remain in effect when opened.
+    EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY: (
+        ("surprise_spring_pack_box", 1),
+    ),
+    EASTER_DAILY_SPRING_PACK_PRODUCT_KEY: (
+        ("daily_spring_pack_box", 1),
+    ),
+    EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY: (
+        ("daily_surprise_spring_package", 1),
     ),
 }
 

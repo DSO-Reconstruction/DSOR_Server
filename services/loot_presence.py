@@ -42,6 +42,7 @@ _DRAGAN_CLASS_SET_ITEMS = {
     "ranger": ("bow", "ranger"),
     "dwarf": ("rifle", "dwarf"),
 }
+_EASTER_DARAN_TEMPLATE = "e_easter_01_dun_boss_troll_01"
 _DARK_DWARF_HEIST_MAPS = frozenset({
     'e_z0110_dun',
     'e_viscanium_submarine_01',
@@ -425,6 +426,20 @@ class LootPresenceService:
                 map_id,
                 str(getattr(session, 'gameplay_map_access_id', None) or ""),
             )
+            is_easter_daran = (
+                _map_key(encounter.map_id) in {
+                    "e_easter_dun_01", "i0010_physical_big_dun",
+                }
+                and str(monster.template_id).casefold()
+                == _EASTER_DARAN_TEMPLATE
+            )
+            loot_map_id = (
+                "e_easter_dun_01" if is_easter_daran else event_map_id
+            )
+            loot_map_aliases = (
+                (*event_map_aliases, "e_easter_dun_01")
+                if is_easter_daran else event_map_aliases
+            )
             world_instance_key = (
                 CharacterService._gameplay_instance_key(session)
             )
@@ -528,7 +543,7 @@ class LootPresenceService:
             )
             profile = loot_cache.monster_profiles.get(monster.template_id)
             event_drops = event_catalog.collectible_drops(
-                map_id=event_map_id,
+                map_id=loot_map_id,
                 player_level=max(1, int(player_level)),
                 monster_rank=(
                     profile.rank_kind
@@ -537,7 +552,7 @@ class LootPresenceService:
                 participation=event_participation,
                 status_effects=status_effects,
                 rng=generator,
-                map_aliases=event_map_aliases,
+                map_aliases=loot_map_aliases,
                 monster_template_id=str(monster.template_id),
                 progress=event_progress,
                 completed_achievements=completed_achievements,
@@ -545,8 +560,8 @@ class LootPresenceService:
                 active_costume=active_costume,
             )
             event_loot = event_catalog.event_loot_drops(
-                map_id=event_map_id,
-                map_aliases=event_map_aliases,
+                map_id=loot_map_id,
+                map_aliases=loot_map_aliases,
                 player_level=max(1, int(player_level)),
                 monster_template_id=str(monster.template_id),
                 monster_rank=(
@@ -576,8 +591,8 @@ class LootPresenceService:
                         heart_lava_chance_bonus, 5.0,
                     )
             map_loot = event_catalog.map_loot_drops(
-                map_id=event_map_id,
-                map_aliases=event_map_aliases,
+                map_id=loot_map_id,
+                map_aliases=loot_map_aliases,
                 class_name=class_name,
                 monster_template_id=str(monster.template_id),
                 monster_rank=(
@@ -744,6 +759,17 @@ class LootPresenceService:
                 additional_event_loot=event_loot,
                 difficulty_unscaled_drop_templates=(
                     difficulty_unscaled_drop_templates
+                ),
+                # Replace Daran's authored Brush chance with the configured
+                # 2% map-loot roll and suppress the rune itself. The map-loot
+                # Brush is appended after these native drops are filtered.
+                excluded_base_drop_templates=(
+                    frozenset({"ingredient_rune_resistance_ice_fire_light"})
+                    if is_easter_daran else frozenset()
+                ),
+                excluded_base_drop_template_prefixes=(
+                    ("unique_gem_resistance_ice_fire_light",)
+                    if is_easter_daran else ()
                 ),
             )
             generation = apply_socket_drop_amounts(

@@ -33,6 +33,9 @@ from dso_server.protocol.shop_protocol import OFFER_RARITY_IDS, ShopOffer
 
 
 TRANSACTION_COMMAND = command_id("Commands::TransactionCommand", 0x005B)
+MAX_ITEM_STACK_VC_VALUE = 0xFFFF_FFFF
+
+
 @dataclass(frozen=True)
 class TransactionEntry:
     offer_id: str
@@ -440,7 +443,10 @@ def _new_item(
         socketed_templates=[],
         item_level=resolved_level,
         field_18=item_id & 0xFFFF,
-        stack_vc_value=max(0, int(definition.unit_vc_price)) * int(amount),
+        stack_vc_value=min(
+            MAX_ITEM_STACK_VC_VALUE,
+            max(0, int(definition.unit_vc_price)) * int(amount),
+        ),
         base_enchantment_tier=0,
         template_id=definition.template_id,
         enchantments=[],
@@ -515,8 +521,9 @@ def add_purchased_item(
             item_id=new_id,
             amount=new_amount,
             field_18=new_id & 0xFFFF,
-            stack_vc_value=(
-                max(0, int(definition.unit_vc_price)) * new_amount
+            stack_vc_value=min(
+                MAX_ITEM_STACK_VC_VALUE,
+                max(0, int(definition.unit_vc_price)) * new_amount,
             ),
         )
         info.items[index] = new_item

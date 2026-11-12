@@ -323,6 +323,12 @@ def map_monster_actor_base(
         ((scene_row // 0x1000) + 1) * 0x1000
         if scene_row > 0 else 0
     )
+    if normalized_map_id == "i0010_physical_big_dun":
+        # This scene's authored SpawnPoint IDs extend through 0x325B5, while
+        # the client actor table ends at the 0x33xxx scene-owned range. Starting
+        # at the next free authored ID avoids those scene actors and keeps
+        # dynamic NewMonster IDs inside the client-supported actor table.
+        scene_offset = max(scene_row + 1, 0)
     if is_boss or is_tower_layout(map_id):
         scene_offset = max(scene_offset, 0x1000)
 
@@ -1496,6 +1502,8 @@ def _load_permanent_effect_definitions(
             (str(template_id),),
         ).fetchone()
         if row is None:
+            if str(template_id).casefold() == "e_easter_01_boss_egg_easter":
+                return ()
             raise ValueError(f"unknown monster template {template_id!r}")
         resolved = []
         for resource_id, values in _permanent_effect_specs(row[0]):
@@ -1594,17 +1602,25 @@ def _load_monster_template_values(
             (template_id,),
         ).fetchone()
         if row is None:
-            raise ValueError(f"unknown monster template {template_id!r}")
-        rank_row = database.execute(
-            """
-            SELECT HealthPointsFactor, MinDamageFactor, MaxDamageFactor,
-                   ResistanceFactor
-            FROM _Template_MonsterRanks WHERE Id=? LIMIT 1
-            """,
-            (row[7],),
-        ).fetchone()
-        if rank_row is None:
-            raise ValueError(f"unknown monster rank {row[7]!r}")
+            if str(template_id).casefold() != "e_easter_01_boss_egg_easter":
+                raise ValueError(f"unknown monster template {template_id!r}")
+            # MonsterEvent stores this actor separately from Monster.
+            # Carry its authored base stats into the combat simulation.
+            row = (80, 5, 600, 1, 1,
+                   "Fire:1251;Ice:1251;Lightning:1251;Poison:1251;DarkMagic:1251",
+                   1, "Rank_leader_no_entchantments")
+            rank_row = None
+        else:
+            rank_row = database.execute(
+                """
+                SELECT HealthPointsFactor, MinDamageFactor, MaxDamageFactor,
+                       ResistanceFactor
+                FROM _Template_MonsterRanks WHERE Id=? LIMIT 1
+                """,
+                (row[7],),
+            ).fetchone()
+            if rank_row is None:
+                raise ValueError(f"unknown monster rank {row[7]!r}")
     return (
         float(row[0]),
         float(row[1]),
@@ -1614,7 +1630,7 @@ def _load_monster_template_values(
         str(row[5]),
         int(row[6]),
         str(row[7]),
-        *(float(value) for value in rank_row),
+        *(float(value) for value in (rank_row or (1.0, 1.0, 1.0, 1.0))),
     )
 
 
@@ -4271,6 +4287,17 @@ def _load_dynamic_monster_encounter(
             str(map_id).casefold() == TUTORIAL_GRIMMAG_MAP_ID
             and str(template_id).casefold() == TUTORIAL_GRIMMAG_TEMPLATE_ID
         )
+        preserve_trial_of_elders_leader_position = (
+            str(map_id).casefold() == "i0010_physical_big_dun"
+            and str(template_id).casefold().startswith((
+                "i0010_event_leader_guardian_physical",
+                "i0010_pw_leader_guardian_physical",
+            ))
+        )
+        preserve_authored_position = (
+            keep_story_boss_at_authored_position
+            or preserve_trial_of_elders_leader_position
+        )
         if int(actor_id) in used_actor_ids:
             return False
         mounted = is_tower_mechanism(static_database_path, map_id, template_id)
@@ -4285,7 +4312,10 @@ def _load_dynamic_monster_encounter(
         # meshes own the final world Y; authored spawn transforms and spawn
         # volume centers are not reliable terrain samples.
         try:
-            position = tuple(position) if mounted or hazard or authored_boss else _grounded_spawn_position(
+            position = tuple(position) if (
+                mounted or hazard or authored_boss
+                or preserve_trial_of_elders_leader_position
+            ) else _grounded_spawn_position(
                 navigation,
                 terrain,
                 position,
@@ -4294,7 +4324,7 @@ def _load_dynamic_monster_encounter(
                 prefer_navigation_height=prefer_navigation_height,
             )
             if (
-                not keep_story_boss_at_authored_position
+                not preserve_authored_position
                 and not mounted
                 and not hazard
                 and not authored_boss
@@ -4306,24 +4336,27 @@ def _load_dynamic_monster_encounter(
             ):
                 return False
         except NavigationError:
-            if not keep_story_boss_at_authored_position:
-                return False
-            # This isolated tutorial boss arena can be a different PathEngine
-            # component from the map entry. Keep its authored X/Z placement,
-            # but still project against collision terrain so a stale or
-            # mismatched PathEngine token does not leave Grimmag below the
-            # floor (or floating at the authored placeholder height).
-            try:
-                position = _grounded_spawn_position(
-                    _DirectNavigationMesh(),
-                    terrain,
-                    position,
-                    reference_position=position,
-                )
-            except NavigationError:
-                # The direct fallback normally cannot raise NavigationError;
-                # retain the authored transform if its implementation does.
+            if preserve_trial_of_elders_leader_position:
                 pass
+            elif not keep_story_boss_at_authored_position:
+                return False
+            else:
+                # This isolated tutorial boss arena can be a different
+                # PathEngine component from the map entry. Keep its authored
+                # X/Z placement, but still project against collision terrain
+                # so a stale navigation token cannot leave Grimmag below the
+                # floor or floating at the authored placeholder height.
+                try:
+                    position = _grounded_spawn_position(
+                        _DirectNavigationMesh(),
+                        terrain,
+                        position,
+                        reference_position=position,
+                    )
+                except NavigationError:
+                    # The direct fallback normally cannot raise; retain the
+                    # authored transform if its implementation does.
+                    pass
         bgh_sequence_portal = (
             str(map_id).casefold() in {
                 "e_bgh_boss_all", "e_bgh_boss_guardian_all",

@@ -53,10 +53,13 @@ class PropLootEntry:
     amount_by_difficulty: tuple[int, ...]
     per_level: tuple[float, float] | None
     stacks: int
+    level_scaled_item_prefix: str = ""
+    level_scaled_item_levels: tuple[int, ...] = ()
     map_id: str = ""
     item_options_by_class: Mapping[str, tuple[str, ...]] = MappingProxyType({})
     roll_group: str = ""
     weight: float = 0.0
+    roll_group_chance: float = 1.0
     minimum_difficulty: int = 0
     maximum_difficulty: int | None = None
     scale_chance_with_difficulty: bool = False
@@ -90,6 +93,19 @@ def _range(value: object, name: str, *, minimum: float) -> tuple[float, float]:
 def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
     event_progress = bool(entry.get("event_progress"))
     item_id = str(entry.get("item") or "").strip()
+    level_scaled_item = dict(entry.get("level_scaled_item") or {})
+    level_scaled_item_prefix = str(
+        level_scaled_item.get("prefix") or ""
+    ).strip()
+    level_scaled_item_levels = tuple(sorted({
+        int(value) for value in level_scaled_item.get("levels", ())
+        if int(value) > 0
+    }))
+    if bool(level_scaled_item_prefix) != bool(level_scaled_item_levels):
+        raise ValueError(
+            f"prop loot list {list_id!r}: level_scaled_item needs a prefix "
+            "and positive levels"
+        )
     raw_class_options = dict(entry.get("item_options_by_class") or {})
     class_options = {}
     for class_name, values in raw_class_options.items():
@@ -101,10 +117,15 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         class_options[str(class_name).casefold()] = options
     if not item_id and class_options:
         item_id = next(iter(class_options.values()))[0]
-    if event_progress == bool(item_id):
+    if event_progress == bool(item_id or level_scaled_item_prefix):
         raise ValueError(
             f"prop loot list {list_id!r}: an entry names exactly one of "
-            "'item' or 'event_progress'"
+            "'item', 'level_scaled_item', or 'event_progress'"
+        )
+    if item_id and level_scaled_item_prefix:
+        raise ValueError(
+            f"prop loot list {list_id!r}: item and level_scaled_item "
+            "cannot be specified together"
         )
     per_level = None
     if "per_level" in entry:
@@ -121,6 +142,9 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         )
     roll_group = str(entry.get("roll_group") or "").strip().casefold()
     weight = max(0.0, float(entry.get("weight", 0.0)))
+    roll_group_chance = min(
+        1.0, max(0.0, float(entry.get("roll_group_chance", 1.0)))
+    )
     if bool(roll_group) != (weight > 0.0):
         raise ValueError(
             f"prop loot list {list_id!r}: roll_group and positive weight "
@@ -150,11 +174,14 @@ def _parse_entry(list_id: str, entry: Mapping[str, object]) -> PropLootEntry:
         amount=(int(low), int(high)),
         amount_by_difficulty=amount_by_difficulty,
         per_level=per_level,
+        level_scaled_item_prefix=level_scaled_item_prefix,
+        level_scaled_item_levels=level_scaled_item_levels,
         stacks=max(1, int(entry.get("stacks", 1))),
         map_id=str(entry.get("map") or "").strip().casefold(),
         item_options_by_class=MappingProxyType(class_options),
         roll_group=roll_group,
         weight=weight,
+        roll_group_chance=roll_group_chance,
         minimum_difficulty=minimum_difficulty,
         maximum_difficulty=maximum_difficulty,
         scale_chance_with_difficulty=bool(
@@ -242,6 +269,7 @@ def roll_prop_loot(
     current_costume = str(active_costume or "").strip().casefold()
     result = []
     weighted_groups: dict[str, list[PropLootEntry]] = {}
+    weighted_group_chances: dict[str, float] = {}
 
     def add_entry(entry: PropLootEntry) -> None:
         if entry.event_progress:
@@ -262,6 +290,18 @@ def roll_prop_loot(
                 if not options:
                     return
                 items = (rng.choice(options),)
+            elif entry.level_scaled_item_prefix:
+                eligible = tuple(
+                    item_level for item_level in entry.level_scaled_item_levels
+                    if item_level <= level
+                )
+                selected_level = (
+                    eligible[-1] if eligible
+                    else entry.level_scaled_item_levels[0]
+                )
+                items = (
+                    f"{entry.level_scaled_item_prefix}{selected_level}",
+                )
             else:
                 items = (entry.item_id,)
         for item_id in items:
@@ -308,12 +348,18 @@ def roll_prop_loot(
         chance = min(1.0, max(0.0, chance))
         if entry.roll_group:
             weighted_groups.setdefault(entry.roll_group, []).append(entry)
+            weighted_group_chances.setdefault(
+                entry.roll_group, entry.roll_group_chance,
+            )
             continue
         if chance < 1.0 and rng.random() >= chance:
             continue
         add_entry(entry)
 
-    for group in weighted_groups.values():
+    for group_id, group in weighted_groups.items():
+        group_chance = weighted_group_chances[group_id]
+        if group_chance < 1.0 and rng.random() >= group_chance:
+            continue
         chosen = rng.choices(
             group,
             weights=tuple(entry.weight for entry in group),
