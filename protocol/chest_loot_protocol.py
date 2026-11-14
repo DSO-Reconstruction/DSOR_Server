@@ -2106,6 +2106,140 @@ def roll_chest_contents(
             f"selective container {box_template_id!r} requires a client "
             "reward selection"
         )
+    if box_template_id.casefold() == "anniversary_festival_chest":
+        # The authored festival chest has a single weighted outcome. Its
+        # advertised percentages add to 100%, so exactly one reward is granted.
+        outcomes = (
+            ("pet_bobr_an2026", 1, 0.5),
+            ("e_sar_chest_key", 10, 25.0),
+            ("pw_enter_locked_difficulty_key", 50, 20.0),
+            ("dragon_blood_box", 1, 15.0),
+            ("money_rc", 4000, 4.0),
+            ("e_anniversary_random_travelbox", 10, 9.0),
+            ("e_anniversary_truncheon_gold", 1, 2.5),
+            ("e_anniversary_truncheon", 20, 5.0),
+            ("scaling_dungeon_boss_key_01", 5, 9.0),
+            ("e_anniversary_cot", 1000, 10.0),
+        )
+        generator = rng or random.SystemRandom()
+        template_id, amount, _weight = generator.choices(
+            outcomes,
+            weights=tuple(weight for _template, _amount, weight in outcomes),
+            k=1,
+        )[0]
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="anniversary festival chest",
+            rewards=(ChestReward(
+                _definition(static_database_path, template_id), amount,
+            ),),
+            used_tooltip_mapping=False,
+        )
+    if box_template_id.casefold() == "e_anniversary_random_travelbox":
+        # The 2026 chip chest template is not present in this static export;
+        # use its existing Anniversary random travelbox item and resolve it to
+        # one of the arena-specific chip/key templates when opened.
+        arena_chip_templates = (
+            "e_anniversary_arena_key_01_duria",
+            "e_anniversary_arena_key_01_norselands",
+            "e_anniversary_arena_key_01_atlantis",
+            "e_anniversary_arena_key_01_myrdosch",
+            "e_anniversary_arena_key_01_lortac",
+            "e_anniversary_arena_key_01_qaizah",
+            "e_anniversary_arena_key_01_anderworld",
+            "e_anniversary_arena_key_01_helios",
+            "e_anniversary_arena_key_01_sewers",
+            "e_anniversary_arena_key_01_halloween",
+            "e_anniversary_arena_key_01_dragan",
+            "e_anniversary_arena_key_01_sargon",
+            "e_anniversary_arena_key_01_xmas",
+            "e_anniversary_arena_key_01_newyear",
+            "e_anniversary_arena_key_01_soul_frenzy",
+            "e_anniversary_arena_key_01_crystal",
+        )
+        generator = rng or random.SystemRandom()
+        chip_definition = _definition(
+            static_database_path, generator.choice(arena_chip_templates),
+        )
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="Anniversary random arena chip chest",
+            rewards=(ChestReward(chip_definition, 1),),
+            used_tooltip_mapping=False,
+        )
+    if box_template_id.casefold() == "lootbox_smelter_box":
+        # The tooltip promises either a 7-day or 30-day portable smelter but
+        # the server-side loot list is not present in the client export.
+        # Treat the two advertised durations as equally likely.
+        generator = rng or random.SystemRandom()
+        smelter_template = generator.choice((
+            "melt_tool_7d",
+            "melt_tool_30d",
+        ))
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="smelter chest",
+            rewards=(ChestReward(
+                _definition(static_database_path, smelter_template), 1,
+            ),),
+            used_tooltip_mapping=False,
+        )
+    if box_template_id.casefold() == "glyph_offer_box_big":
+        # The Large Pack of Power tooltip specifies a fixed 12 million Glyphs.
+        # Credit the wallet directly instead of creating a currency item.
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="large pack of power",
+            rewards=(ChestReward(
+                _definition(static_database_path, "money_uc_no_auto_use"),
+                12_000_000,
+                fixed_currency="glyph",
+            ),),
+            used_tooltip_mapping=False,
+        )
+    if box_template_id.casefold() == "glyph_offer_box_small":
+        # The tooltip says the Small Pack of Power contains two million
+        # Glyphs. Credit the fixed Glyph balance when the pack is opened;
+        # emitting a currency item would leave it in inventory instead.
+        return ChestContents(
+            box_template_id=box_template_id,
+            source="small pack of power",
+            rewards=(ChestReward(
+                _definition(static_database_path, "money_uc_no_auto_use"),
+                2_000_000,
+                fixed_currency="glyph",
+            ),),
+            used_tooltip_mapping=False,
+        )
+    # Each Anniversary progress chest grants ten matching collectibles for
+    # the bar and a small Crystals of Truth stack.
+    anniversary_progress_prefix = "e_anniversary_progress_chest_"
+    if (
+        box_template_id.casefold().startswith(anniversary_progress_prefix)
+        and box_template_id.casefold().endswith("_00")
+    ):
+        region = box_template_id.casefold()[len(anniversary_progress_prefix):-3]
+        progress_id = f"e_anniversary_main_progress_{region}"
+        try:
+            progress_definition = _definition(
+                static_database_path, progress_id,
+            )
+            cot_definition = _definition(
+                static_database_path, "e_anniversary_cot",
+            )
+        except ValueError:
+            pass
+        else:
+            generator = rng or random.SystemRandom()
+            return ChestContents(
+                box_template_id=box_template_id,
+                source="anniversary progress chest",
+                rewards=(
+                    ChestReward(progress_definition, 10),
+                    ChestReward(cot_definition, generator.randint(5, 25)),
+                ),
+                used_tooltip_mapping=False,
+            )
     # chest_contents.json lists the Lydia's Grace boxes with nothing in them.
     lydias_grace = _lydias_grace_contents(
         static_database_path, box_definition, player_level=player_level,

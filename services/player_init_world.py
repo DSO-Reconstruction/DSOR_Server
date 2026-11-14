@@ -43,6 +43,8 @@ from dso_server.gameplay.local_map_state import (
 )
 from dso_server.gameplay.map_event_state import (
     SARGON_SHADOWFORT_MAP_ID,
+    anniversary_arena_gate_flag,
+    is_anniversary_challenge_exit,
     map_key,
     sargon_shadowfort_seed_flags,
 )
@@ -90,6 +92,51 @@ def _hide_unselected_circus_gates(
         )
         if int(definition.event_set_row) in gate_rows
     )
+    exits = tuple(
+        entry for entry in getattr(exit_info, "exits", ())
+        if bytes(entry.instance_guid) not in gate_guids
+    )
+    if hasattr(exit_info, "exits"):
+        exit_info = replace(exit_info, exits=exits)
+    return tuple(filtered_commands), exit_info
+
+
+def _hide_anniversary_challenge_gates(
+        static_database_path, gameplay_map, map_commands, exit_info, *,
+        unlocked: bool):
+    """Keep the authored Challenge Arena exits out of the scene until earned.
+
+    The exits have State='active' in each map DB. Their EventSet ids and
+    ExitURL vary by arena/difficulty, so match the authored exit scene id.
+    """
+
+    if anniversary_arena_gate_flag(gameplay_map) is None or unlocked:
+        return map_commands, exit_info
+    gates = tuple(
+        definition for definition in load_local_map_exits(
+            static_database_path, gameplay_map,
+            include_inactive_event_sets=True,
+        )
+        if is_anniversary_challenge_exit(definition.exit_id)
+    )
+    gate_guids = frozenset(bytes(item.instance_guid) for item in gates)
+    gate_rows = frozenset(item.event_set_row for item in gates)
+    filtered_commands = []
+    for command in map_commands:
+        if getattr(command, "command_id", None) != VARIATION_INFO_COMMAND:
+            filtered_commands.append(command)
+            continue
+        value = getattr(command, "value", None)
+        entries = tuple(getattr(value, "entries", ()))
+        kept = tuple(
+            entry for entry in entries
+            if bytes(getattr(entry, "instance_guid", b"")) not in gate_guids
+            and int(getattr(entry, "event_set_row", -1)) not in gate_rows
+        )
+        if kept:
+            filtered_commands.append(replace(
+                command, value=replace(value, entries=kept),
+            ))
     exits = tuple(
         entry for entry in getattr(exit_info, "exits", ())
         if bytes(entry.instance_guid) not in gate_guids
@@ -225,6 +272,11 @@ class PlayerInitializationWorldService:
         active_event_flags = sargon_shadowfort_seed_flags(
             gameplay_map, active_event_flags,
         )
+        anniversary_gate_event = anniversary_arena_gate_flag(gameplay_map)
+        if anniversary_gate_event is not None:
+            # The challenge portals are wave-completion exits, even when the
+            # completed quest can restore other quest-gated scene exits.
+            active_event_flags -= frozenset({anniversary_gate_event})
         if (map_key(gameplay_map) == "a0200_kingscity"
                 and "new_year_event_01" not in active_event_flags):
             # The Rocketmen portal uses a client-only map event with no end
@@ -254,6 +306,13 @@ class PlayerInitializationWorldService:
         map_commands, exit_info = _hide_unselected_circus_gates(
             self.static_database_path, gameplay_map, map_commands, exit_info,
         )
+        # The first scene snapshot is built before this character attaches to
+        # the shared arena runtime, so its completion gate is always closed.
+        # A completed late-join snapshot is rebuilt below from runtime state.
+        map_commands, exit_info = _hide_anniversary_challenge_gates(
+            self.static_database_path, gameplay_map, map_commands, exit_info,
+            unlocked=False,
+        )
         # Quest state is restored by this phase. Rebuild the authoritative
         # exits from the same reveal flags as the scene snapshot, rather than
         # retaining the earlier snapshot built before quest restoration.
@@ -275,6 +334,11 @@ class PlayerInitializationWorldService:
                 s.gameplay_map_exits = tuple(
                     definition for definition in s.gameplay_map_exits
                     if not 638 <= int(definition.event_set_row) <= 644
+                )
+            if anniversary_gate_event is not None:
+                s.gameplay_map_exits = tuple(
+                    definition for definition in s.gameplay_map_exits
+                    if not is_anniversary_challenge_exit(definition.exit_id)
                 )
         native_exit_commands = tuple(
             command for command in map_commands
@@ -573,6 +637,24 @@ class PlayerInitializationWorldService:
                 gameplay_map, reveal_flags,
             )
             late_join_flags = active_event_flags | runtime_flags | reveal_flags
+            anniversary_gate_unlocked = False
+            anniversary_gate_event = anniversary_arena_gate_flag(gameplay_map)
+            if anniversary_gate_event is not None:
+                with map_event_runtime.lock:
+                    waves_completed = bool(
+                        map_event_runtime.anniversary_arena_waves_completed
+                    )
+                _accepted, solved, _tasks = (
+                    CharacterService._quest_signal_facts(self, s)
+                )
+                if (
+                    not waves_completed
+                    or "e-anniversary-boss-arena-01-n" not in solved
+                ):
+                    late_join_flags -= frozenset({anniversary_gate_event})
+                else:
+                    late_join_flags |= frozenset({anniversary_gate_event})
+                    anniversary_gate_unlocked = True
             map_commands, exit_info = load_local_map_initialization(
                 self.static_database_path,
                 gameplay_map,
@@ -584,6 +666,11 @@ class PlayerInitializationWorldService:
             map_commands, exit_info = _hide_unselected_circus_gates(
                 self.static_database_path, gameplay_map,
                 map_commands, exit_info,
+            )
+            map_commands, exit_info = _hide_anniversary_challenge_gates(
+                self.static_database_path, gameplay_map, map_commands,
+                exit_info,
+                unlocked=anniversary_gate_unlocked,
             )
             with s.flow_lock:
                 late_join_exits = tuple(
@@ -606,6 +693,11 @@ class PlayerInitializationWorldService:
                     if not (
                         map_key(gameplay_map) == "e_bos_arena_01"
                         and 638 <= int(definition.event_set_row) <= 644
+                    )
+                    and not (
+                        anniversary_gate_event is not None
+                        and not anniversary_gate_unlocked
+                        and is_anniversary_challenge_exit(definition.exit_id)
                     )
                 )
         if map_key(gameplay_map) == SARGON_SHADOWFORT_MAP_ID:

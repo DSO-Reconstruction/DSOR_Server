@@ -12,7 +12,11 @@ import threading
 import time
 import uuid
 
-from dso_server.gameplay.map_event_state import load_map_event_content, map_key
+from dso_server.gameplay.map_event_state import (
+    anniversary_arena_gate_flag,
+    load_map_event_content,
+    map_key,
+)
 from dso_server.gameplay.event_system import completed_achievement_ids
 from dso_server.persistence.account_registry import DEFAULT_SESSION_TTL_SECONDS
 from dso_server.runtime.context import *
@@ -508,6 +512,43 @@ class EventService:
                 )
             ),
         ))
+        gate_event = anniversary_arena_gate_flag(active_map_id)
+        if gate_event is not None:
+            runtime = getattr(s, "gameplay_map_event_runtime", None)
+            waves_completed = False
+            if runtime is not None:
+                with runtime.lock:
+                    waves_completed = bool(
+                        runtime.anniversary_arena_waves_completed
+                    )
+            try:
+                _accepted, solved, _tasks = (
+                    CharacterService._quest_signal_facts(self, s)
+                )
+            except Exception:
+                solved = frozenset()
+            if (
+                not waves_completed
+                or "e-anniversary-boss-arena-01-n" not in solved
+            ):
+                # Some entry routes or a reused runtime can leave this local
+                # event active in the client snapshot. Explicitly stop it on
+                # every Anniversary arena entry; the final-wave signal will
+                # publish the active state later, after both requirements.
+                update = EventUpdate((
+                    *(
+                        entry for entry in update.events
+                        if entry.event_name.casefold() != gate_event
+                    ),
+                    EventUpdateEntry(
+                        event_id=0,
+                        event_name=gate_event,
+                        flags=(False, True, False, False),
+                        starts_at=None,
+                        ends_at=None,
+                        tags=(),
+                    ),
+                ))
         if os.getenv("DSO_NPC_TRACE") == "1":
             local_state = [
                 f"{entry.event_name}={'on' if entry.flags[0] else 'off'}"
@@ -667,6 +708,7 @@ class EventService:
         if character is None:
             return False
         class_name = CLASS_NAMES.get(int(character.class_id), "Mage")
+        moment = datetime.now(timezone.utc)
         advance = catalog.advance(
             progress,
             collectible_id=collectible_id,
@@ -674,6 +716,7 @@ class EventService:
             player_level=max(1, int(character.level)),
             class_name=class_name,
             completed_achievements=completed_achievements,
+            now=moment,
         )
         if advance is None:
             return False
@@ -752,13 +795,29 @@ class EventService:
         # instead of persisting claimed keys for items the player never got.
         with s.flow_lock:
             s.gameplay_event_progress = progress
-        changed = EventProgressChanged((
-            int(advance.event.event_id),
-            int(advance.progress["amount"]),
-            int(advance.progress["level"]),
-            int(advance.progress["currency_level"]),
-            int(advance.progress["group"]),
-        ))
+        if advance.event.template.resource_id.casefold() == "anniversary_event":
+            snapshot = catalog.progress_info(
+                progress,
+                player_level=max(1, int(character.level)),
+                completed_achievements=completed_achievements,
+                now=moment,
+            )
+            entry = next((
+                value for value in snapshot.events
+                if value.event_id == advance.event.event_id
+            ), None)
+            if entry is None:
+                raise RuntimeError("active Anniversary progress entry is missing")
+            changed_values = (int(advance.event.event_id), *entry.values)
+        else:
+            changed_values = (
+                int(advance.event.event_id),
+                int(advance.progress["amount"]),
+                int(advance.progress["level"]),
+                int(advance.progress["currency_level"]),
+                int(advance.progress["group"]),
+            )
+        changed = EventProgressChanged(changed_values)
         packet, packet_bits = encode_server_command_batch((
             ServerCommand(
                 EVENT_PROGRESS_CHANGED_COMMAND,

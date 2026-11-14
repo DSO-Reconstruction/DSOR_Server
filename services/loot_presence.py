@@ -24,6 +24,9 @@ from dso_server.gameplay.event_system import (
 )
 from dso_server.gameplay.quest_content import QUEST_STATE_CLOSED
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
+from dso_server.gameplay.equipment_drop_buffs import (
+    premium_equipment_drop_buff_active,
+)
 from dso_server.protocol.consumable_protocol import load_consumable_catalog
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP, UNBOUND as MORTIS_FINAL_FORM, FINAL_GEM_REWARDS,
@@ -508,6 +511,48 @@ class LootPresenceService:
         difficulty_unscaled_drop_templates = frozenset()
         if event_catalog is None and hasattr(self, "static_database_path"):
             event_catalog = CharacterService._event_catalog(self)
+        active_event_templates = (
+            event_catalog.active_template_ids()
+            if event_catalog is not None else frozenset()
+        )
+        current_map_keys = frozenset(
+            _map_key(value)
+            for value in (
+                getattr(encounter, "map_id", ""),
+                map_id,
+                event_map_id,
+                map_access_id,
+                *event_map_aliases,
+            )
+            if value
+        )
+        anniversary_daran = (
+            str(monster.template_id).casefold()
+            == "e_anniversary_event_bonus_easter_boss_troll"
+        )
+        anniversary_arena_wave_loot_suppressed = (
+            "anniversary_event" in active_event_templates
+            and (
+                (
+                    "e_anniversary_arena_01" in current_map_keys
+                    and "anniversary_event" in active_event_templates
+                    and not anniversary_daran
+                )
+                # Soul Frenzy is a separate anniversary arena map rather
+                # than an alias of e_anniversary_arena_01; its wave mobs also
+                # leave rewards exclusively to the scripted arena chest.
+                or "e_anniversary_arena_01_soul" in current_map_keys
+                # Crystal of Forever uses the ce202506 map family.
+                or any(
+                    value == "ce202506" or value.startswith("ce202506_")
+                    for value in current_map_keys
+                )
+                # Challenge Arena bosses must never drop their own loot; all
+                # rewards come from the post-wave chest, regardless of boss
+                # rank or whether the event snapshot is currently populated.
+                or "e_anniversary_arena_02" in current_map_keys
+            )
+        )
         dragan_first_clear_items = ()
         if (
             event_catalog is not None
@@ -595,6 +640,28 @@ class LootPresenceService:
                 rng=generator,
                 map_difficulty=map_difficulty,
             )
+            if (
+                "anniversary_event" in event_catalog.active_template_ids()
+                and generator.random() < 0.05
+            ):
+                event_loot = (
+                    *event_loot,
+                    ("e_anniversary_egg_opener", 1),
+                )
+            if (
+                profile is not None
+                and profile.rank_kind.casefold() == "worldboss"
+                and "anniversary_event"
+                in event_catalog.active_template_ids()
+                and not any(
+                    str(item_id).casefold() == "e_anniversary_arena_key_01"
+                    for item_id, _amount in event_loot
+                )
+            ):
+                event_loot = (
+                    *event_loot,
+                    ("e_anniversary_arena_key_01", 1),
+                )
             if (
                 "sargon_event" in event_catalog.active_template_ids()
                 and _SARGON_SHADOW_PORTAL_MAP in {
@@ -759,6 +826,13 @@ class LootPresenceService:
                 )]
                 event_loot = (*event_loot, ("dragon_bones", amount))
 
+        if anniversary_arena_wave_loot_suppressed:
+            # ``suppress_all_drops`` covers the native monster table. Clear
+            # separately assembled event collectibles and bonus drops too,
+            # so the arena's scripted reward chests remain its only loot.
+            event_drops = ()
+            event_loot = ()
+
         # Database/cache work is pure and can take milliseconds. Generate with
         # provisional IDs, then reserve one exact map-global range in a tiny
         # world-lock transaction.
@@ -792,6 +866,11 @@ class LootPresenceService:
                 additional_instant_consumables=event_drops,
                 position_projector=position_projector,
                 additional_event_loot=event_loot,
+                premium_equipment_drop_buff_active=(
+                    premium_equipment_drop_buff_active(
+                        encounter.static_database_path, status_effects
+                    )
+                ),
                 difficulty_unscaled_drop_templates=(
                     difficulty_unscaled_drop_templates
                 ),
@@ -806,7 +885,10 @@ class LootPresenceService:
                     ("unique_gem_resistance_ice_fire_light",)
                     if is_easter_daran else ()
                 ),
-                suppress_all_drops=sargon_first_phase_loot_suppressed,
+                suppress_all_drops=(
+                    sargon_first_phase_loot_suppressed
+                    or anniversary_arena_wave_loot_suppressed
+                ),
             )
             generation = apply_socket_drop_amounts(
                 socket_evaluation,

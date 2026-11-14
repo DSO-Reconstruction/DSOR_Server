@@ -273,10 +273,9 @@ def test_per_page_lists_without_the_fixed_flag_drop_one_item_per_kill(catalog):
         ("e_ide_02_challenge_progress_02", 1),)
 
 
-def test_anniversary_drops_the_page_its_player_is_on(catalog):
+def test_anniversary_arena_waves_do_not_drop_progress(catalog):
     events = catalog("anniversary_event")
-    assert page_drops(events, map_id="e_anniversary_arena_01_duria", level=60) == (
-        ("e_anniversary_main_progress_duria", 1),)
+    assert page_drops(events, map_id="e_anniversary_arena_01_duria", level=60) == ()
 
 
 def test_happy_hour_bars_never_drop_andermant(catalog):

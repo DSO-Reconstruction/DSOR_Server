@@ -4,6 +4,16 @@ from __future__ import annotations
 
 from dso_server.runtime import resident_content
 from dso_server.gameplay.ocp_store import (
+    ANNIVERSARY_ATTIRE_PRODUCT_KEY,
+    ANNIVERSARY_DARK_NIGHTS_PACKAGE_PRODUCT_KEY,
+    ANNIVERSARY_NEW_EXPLORER_PACKAGE_PRODUCT_KEY,
+    ANNIVERSARY_PET_CHEST_PRODUCT_KEY,
+    ANNIVERSARY_SOUL_TRUNCHEON_BULK_PRODUCT_KEY,
+    ANNIVERSARY_SOUL_TRUNCHEON_BUNDLE_PRODUCT_KEY,
+    ANNIVERSARY_SOUL_TRUNCHEON_SINGLE_PRODUCT_KEY,
+    ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY,
+    ANNIVERSARY_WIND_OF_BLOOD_PACKAGE_PRODUCT_KEY,
+    CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY,
     DARK_DWARF_CLOAK_FORTUNE_CHEST_PRODUCT_KEY,
     DARK_DWARF_COPPER_FARTHING_PACKAGE_PRODUCT_KEY,
     DARK_DWARF_FORGEFYRE_MAGIC_POTION_PRODUCT_KEY,
@@ -395,6 +405,18 @@ def resolve_ocp_booking_reward(
                 attire_item_id,
                 1,
                 bundle_items=attire_rewards,
+            )
+        if offer_id == ANNIVERSARY_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_anniversary_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_anniversary_01"
+            )
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
     bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
@@ -971,6 +993,18 @@ LOCAL_OCP_OFFERS = (
         180_262, 9.90, False, "€",
         SARGON_ATTIRE_PRODUCT_KEY, "", "",
     ),
+    # Anniversary packages are only exposed while the main Anniversary event
+    # is active; their payment-provider price is represented here in euros.
+    OCPOffer(180_263, 9.90, False, "€", ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_264, 9.90, False, "€", ANNIVERSARY_NEW_EXPLORER_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_265, 9.90, False, "€", ANNIVERSARY_WIND_OF_BLOOD_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_266, 9.90, False, "€", ANNIVERSARY_DARK_NIGHTS_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_267, 9.90, False, "€", ANNIVERSARY_SOUL_TRUNCHEON_SINGLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_268, 9.90, False, "€", ANNIVERSARY_SOUL_TRUNCHEON_BUNDLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_269, 9.90, False, "€", ANNIVERSARY_SOUL_TRUNCHEON_BULK_PRODUCT_KEY, "", ""),
+    OCPOffer(180_270, 9.90, False, "€", ANNIVERSARY_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_271, 9.90, False, "€", ANNIVERSARY_PET_CHEST_PRODUCT_KEY, "", ""),
+    OCPOffer(180_272, 9.90, False, "€", CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

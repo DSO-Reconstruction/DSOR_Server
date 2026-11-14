@@ -65,7 +65,9 @@ CURRENCY_CHANGED_COMMAND = command_id("Commands::CurrencyChangedCommand", 0x0080
 MESSAGE_COMMAND = command_id("Commands::MessageCommand", 0x0089)
 LOOT_RECEIVED_MESSAGE = 0x19
 
-GOLD_ITEM_TEMPLATES = frozenset(("money_vc", "money_vc_gold"))
+GOLD_ITEM_TEMPLATES = frozenset((
+    "money_vc", "money_vc_gold", "money_vc_silver",
+))
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
@@ -2466,6 +2468,7 @@ def generate_monster_loot(
         | None
     ) = None,
     additional_event_loot: tuple[tuple[str, int], ...] = (),
+    premium_equipment_drop_buff_active: bool = False,
     difficulty_unscaled_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_templates: frozenset[str] = frozenset(),
     excluded_base_drop_template_prefixes: tuple[str, ...] = (),
@@ -3088,6 +3091,37 @@ def generate_monster_loot(
                 ),
                 1, 1, "", 0,
             ))
+
+        # Premium Elixir of Equipment guarantees one class- and level-eligible
+        # Unique or Set item from every boss/world-boss kill, independent of
+        # the monster's ordinary equipment roll chance.
+        if premium_equipment_drop_buff_active and profile.rank_kind in {
+            "boss", "worldboss",
+        }:
+            from dso_server.gameplay.equipment_drop_buffs import (
+                roll_premium_equipment_reward,
+            )
+
+            try:
+                reward = roll_premium_equipment_reward(
+                    static_database_path,
+                    class_name=class_name,
+                    player_level=equipment_item_level,
+                    rng=generator,
+                )
+                row = database.items_by_id.get(reward.template_id)
+                if row is not None:
+                    specifications.append((
+                        _loot_definition_from_row(row),
+                        1,
+                        reward.item_level,
+                        reward.appearance,
+                        reward.rarity_index,
+                    ))
+            except ValueError:
+                # Some custom server data sets may have no fixed Unique/Set
+                # gear for a class/level. Preserve the rest of the kill loot.
+                pass
 
         excluded_base_ids = GLOBAL_RUNE_DROP_EXCLUDED_IDS | {
             str(template_id).casefold()
