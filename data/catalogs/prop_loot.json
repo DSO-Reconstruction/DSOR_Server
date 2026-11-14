@@ -1,6 +1,170 @@
 {
   "note": "Contents of the loot lists named by map StateObjects (_Template_StateObject.LootListId / _Instance_StateObject.LootListId). The retail server owned these lists and the client data only names them, so they are authored here (gameplay/prop_loot.py). Each entry is one roll: 'item' with 'amount' [min, max], or 'per_level' [low, high] = player level times a uniform factor per stack; 'stacks' separate ground objects; 'chance' (default 1). Entries sharing 'roll_group' form one weighted, one-of roll. 'minimum_difficulty' and 'maximum_difficulty' gate entries and 'scale_chance_with_difficulty' applies map difficulty drop factors to 'chance'. 'map' limits an entry to one map; 'item_options_by_class' chooses the matching item for the opening character. 'event_progress': true drops the current page collectible; 'event_progress_item' restricts it to one currently active page collectible. 'event' limits an entry to maps where that event's progress applies. Aliases map event-specific amphora lists onto the three generic tiers by key cost (1 key normal, 5 keys golden, free small).",
   "loot_lists": {
+    "CHEST_e_anniversary_golden_pinata_MAIN_ellonidos": {
+      "comment": "Ellonidos Golden Pinata rewards transcribed from the supplied screenshot and follow-up: five Anniversary Arena Chips, the shown Imperial gems and runes, 87 Gorga and 87 Medusa boss skins, and 1,000 Draken.",
+      "entries": [
+        {"item":"e_anniversary_arena_key_01","amount":[5,5]},
+        {"item":"gem_diamond_n","amount":[1,1]},
+        {"item":"gem_diamond_ice_n","amount":[1,1]},
+        {"item":"gem_cyanit_n","amount":[1,1]},
+        {"item":"gem_diamond_andermagic_n","amount":[1,1]},
+        {"item":"unique_gem_resistance_fire_00","amount":[1,1]},
+        {"item":"unique_gem_resistance_lightning_00","amount":[1,1]},
+        {"item":"unique_gem_armor_01","amount":[1,1]},
+        {"item":"boss_ingredient_gorga_rarity_04","amount":[87,87]},
+        {"item":"boss_ingredient_medusa_rarity_04","amount":[87,87]},
+        {"item":"e_chr_2012_event_currency","amount":[1000,1000]}
+      ]
+    },
+    "CHEST_e_anniversary_golden_pinata_MAIN_qaizah": {
+      "comment": "Hiraja Golden Pinata rewards transcribed from the supplied screenshot and follow-up: the shown Imperial gems plus 62 Asar and 62 Sharr Kharab boss skins.",
+      "entries": [
+        {"item":"gem_diamond_lightning_n","amount":[1,1]},
+        {"item":"gem_diamond_andermagic_n","amount":[1,1]},
+        {"item":"gem_block_n","amount":[1,1]},
+        {"item":"gem_diamond_ice_n","amount":[1,1]},
+        {"item":"gem_cyanit_n","amount":[1,1]},
+        {"item":"gem_attackspeed_n","amount":[1,1]},
+        {"item":"gem_diamond_n","amount":[1,1]},
+        {"item":"boss_ingredient_asar_rarity_04","amount":[62,62]},
+        {"item":"boss_ingredient_sharrkharab_rarity_04","amount":[62,62]}
+      ]
+    },
+    "CHEST_e_anniversary_golden_pinata_MAIN_lortac": {
+      "comment": "Yaltepetli Golden Pinata rewards transcribed from the supplied screenshot and follow-up: the shown Imperial gems, 10 Mighty Spirit Guards, 10,000 gold, five Anniversary Arena Chips, and 62 Balor and 62 Nefertari boss skins.",
+      "entries": [
+        {"item":"gem_diamond_n","amount":[1,1]},
+        {"item":"gem_diamond_andermagic_n","amount":[1,1]},
+        {"item":"gem_diamond_fire_n","amount":[1,1]},
+        {"item":"gem_amethyst_n","amount":[1,1]},
+        {"item":"gem_faster_run_n","amount":[1,1]},
+        {"item":"gem_diamond_lightning_n","amount":[1,1]},
+        {"item":"gem_cyanit_n","amount":[1,1]},
+        {"item":"gem_onyx_n","amount":[1,1]},
+        {"item":"gem_block_n","amount":[1,1]},
+        {"item":"respawn_soulguardian_2","amount":[10,10]},
+        {"item":"money_gc_no_auto_use","amount":[10000,10000]},
+        {"item":"e_anniversary_arena_key_01","amount":[5,5]},
+        {"item":"boss_ingredient_balor_rarity_04","amount":[62,62]},
+        {"item":"boss_ingredient_nefertari_rarity_04","amount":[62,62]}
+      ]
+    },
+    "CHEST_e_anniversary_golden_pinata_MAIN_norselands": {
+      "comment": "Thera Golden Pinata rewards transcribed from the supplied screenshot: 58 Grimmag and 58 Mortis Epic-quality boss ingredients, five Anniversary Arena Chips, 10 Mighty Spirit Guards, and the shown Brilliant Imperial gems.",
+      "entries": [
+        {"item":"boss_ingredient_grimmag_rarity_04","amount":[58,58]},
+        {"item":"boss_ingredient_mortis_rarity_04","amount":[58,58]},
+        {"item":"e_anniversary_arena_key_01","amount":[5,5]},
+        {"item":"gem_diamond_poison_p","amount":[1,1]},
+        {"item":"gem_diamond_ice_p","amount":[1,1]},
+        {"item":"gem_diamond_p","amount":[1,1]},
+        {"item":"gem_ruby_p","amount":[1,1]},
+        {"item":"gem_diamond_fire_p","amount":[1,1]},
+        {"item":"gem_faster_run_p","amount":[1,1]},
+        {"item":"respawn_soulguardian_2","amount":[10,10]}
+      ]
+    },
+    "CHEST_e_anniversary_golden_pinata_MAIN_cardhun": {
+      "comment": "Shattered Cardhun Golden Pinata rewards transcribed from the supplied screenshot and follow-up: the shown Royal, Trapezoid and Imperial gems, plus 37 of each Parallel World boss ingredient including Mortis.",
+      "entries": [
+        {"item":"gem_diamond_lightning_i","amount":[1,1]},
+        {"item":"gem_amethyst_m","amount":[1,1]},
+        {"item":"gem_diamond_poison_i","amount":[1,1]},
+        {"item":"gem_block_i","amount":[1,1]},
+        {"item":"gem_block_n","amount":[1,1]},
+        {"item":"gem_diamond_ice_n","amount":[1,1]},
+        {"item":"gem_diamond_andermagic_n","amount":[1,1]},
+        {"item":"gem_cyanit_j","amount":[1,1]},
+        {"item":"gem_cyanit_n","amount":[1,1]},
+        {"item":"gem_cyanit_l","amount":[1,1]},
+        {"item":"gem_amethyst_n","amount":[1,1]},
+        {"item":"gem_diamond_fire_n","amount":[1,1]},
+        {"item":"gem_diamond_n","amount":[1,1]},
+        {"item":"gem_diamond_lightning_n","amount":[1,1]},
+        {"item":"boss_ingredient_heredur_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_arachna_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_bearach_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_khalys_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_herald_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_sigrismarr_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_gorga_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_medusa_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_destructor_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_grimmag_rarity_04","amount":[37,37]},
+        {"item":"boss_ingredient_mortis_rarity_04","amount":[37,37]}
+      ]
+    },
+    "LOOTLIST_e_anni_meanie": {
+      "comment": "Anniversary Ship piñata: consumes the StateObject's one Golden Hammer; guarantees 15 Fragments of Infernal Passage and one Pirate Gold, plus two independent 25% rolls for Charged Mark of Bravery and Fiery Path.",
+      "entries": [
+        {"item":"pw_enter_locked_difficulty_key","amount":[15,15]},
+        {"item":"pirate_gold","amount":[1,1]},
+        {"item":"e_anniversary_boss_portal_key","amount":[1,1],"chance":0.25},
+        {"item":"vanity_groundmarker_16","amount":[1,1],"chance":0.25}
+      ]
+    },
+    "LOOTLIST_e_anni_meanie_jackpot": {
+      "comment": "Second Anniversary Ship piñata prop; same Golden Hammer cost and reward rolls as the regular ship piñata.",
+      "entries": [
+        {"item":"pw_enter_locked_difficulty_key","amount":[15,15]},
+        {"item":"pirate_gold","amount":[1,1]},
+        {"item":"e_anniversary_boss_portal_key","amount":[1,1],"chance":0.25},
+        {"item":"vanity_groundmarker_16","amount":[1,1],"chance":0.25}
+      ]
+    },
+    "anniversary_challenge_buried_treasure": {
+      "comment": "Anniversary Challenge Buried Treasure: guarantees the supplied reward amounts when opened with one Lost Treasure Map.",
+      "entries": [
+        {"item":"ingredient_gem_dust","amount":[25000,25000]},
+        {"item":"pw_enter_locked_difficulty_key","amount":[100,100]},
+        {"item":"ce_darkforce_key","amount":[2,2]},
+        {"item":"crafting_stateobject_key","amount":[40,40]},
+        {"item":"pirate_gold","amount":[3,3]},
+        {"item":"money_vc_gold","amount":[5000,5000]}
+      ]
+    },
+    "CHEST_e_anniversary_soul_pinata": {
+      "comment": "Soul Frenzy piñata: one of the four listed premium rewards is selected at random. The screenshot's visible base rewards are awarded together; the shown Grimmag, Mortis and Sargon ingredients use Epic rarity. Soul of Jade Dragonspawn retains its separate 1% chance.",
+      "entries": [
+        {"item":"epicmount_wings_guardian_angel","amount":[1,1],"roll_group":"anniversary_soul_pinata_jackpot","weight":1},
+        {"item":"costume_anniversary_dragon_blue_01","amount":[1,1],"roll_group":"anniversary_soul_pinata_jackpot","weight":1},
+        {"item":"pet_meanie_gold","amount":[1,1],"roll_group":"anniversary_soul_pinata_jackpot","weight":1},
+        {"roll_group":"anniversary_soul_pinata_jackpot","weight":1,"amount":[1,1],"item_options_by_class":{"warrior":["costume_thunder_fighter_warrior"],"mage":["costume_thunder_fighter_mage"],"ranger":["costume_thunder_fighter_ranger"],"dwarf":["costume_thunder_fighter_dwarf"]}},
+        {"item":"e_anniversary_arena_key_01","amount":[5,5]},
+        {"item":"boss_ingredient_grimmag_rarity_04","amount":[30,30]},
+        {"item":"boss_ingredient_mortis_rarity_04","amount":[30,30]},
+        {"item":"boss_ingredient_sargon_rarity_04","amount":[30,30]},
+        {"item":"gem_diamond_poison_n","amount":[1,1]},
+        {"item":"gem_diamond_fire_n","amount":[1,1]},
+        {"item":"gem_diamond_lightning_n","amount":[1,1]},
+        {"item":"gem_diamond_ice_n","amount":[1,1]},
+        {"item":"gem_diamond_andermagic_n","amount":[1,1]},
+        {"item":"gem_diamond_n","amount":[1,1]},
+        {"item":"gem_cyanit_n","amount":[1,1]},
+        {"item":"gem_block_n","amount":[1,1]},
+        {"item":"gem_faster_run_n","amount":[1,1]},
+        {"item":"unique_gem_resistance_01","amount":[1,1]},
+        {"item":"unique_gem_block_01","amount":[1,1]},
+        {"item":"unique_gem_resistance_poison_01","amount":[1,1]},
+        {"item":"unique_gem_resistance_lightning_01","amount":[1,1]},
+        {"item_options_by_class":{"warrior":["warrior_basic_torso_02"],"mage":["mage_basic_torso_02"],"ranger":["ranger_basic_torso_02"],"dwarf":["dwarf_basic_torso_02"]},"amount":[1,1]},
+        {"item_options_by_class":{"warrior":["warrior_basic_boots_02"],"mage":["mage_basic_boots_02"],"ranger":["ranger_basic_boots_02"],"dwarf":["dwarf_basic_boots_02"]},"amount":[1,1]},
+        {"item_options_by_class":{"warrior":["warrior_basic_gloves_02"],"mage":["mage_basic_gloves_02"],"ranger":["ranger_basic_gloves_02"],"dwarf":["dwarf_basic_gloves_02"]},"amount":[1,1]},
+        {"item_options_by_class":{"warrior":["warrior_basic_lh_shield_02"],"mage":["mage_basic_lh_orb_02"],"ranger":["ranger_basic_lh_defensequiver_02"],"dwarf":["dwarf_basic_lh_absorber_02"]},"amount":[1,1]},
+        {"item_options_by_class":{"warrior":["warrior_basic_lh_shield_02"],"mage":["mage_basic_lh_book_02"],"ranger":["ranger_basic_lh_offensequiver_02"],"dwarf":["dwarf_basic_lh_gadget_02"]},"amount":[1,1]},
+        {"item":"all_basic_ring_02","amount":[1,1]},
+        {"item":"all_basic_belt_02","amount":[1,1]},
+        {"item":"money_rc","amount":[5000,5000]},
+        {"item":"money_vc","amount":[10000,10000]},
+        {"item":"e_chr_2012_event_currency","amount":[1000,1000]},
+        {"item":"ammunition_damage_magic","amount":[999,999]},
+        {"item":"ammunition_damage_rare","amount":[999,999]},
+        {"item":"ammunition_damage_epic","amount":[999,999]},
+        {"item_options_by_class":{"warrior":["warrior_unique_shoulders_anniversary"],"mage":["mage_unique_shoulders_anniversary"],"ranger":["ranger_unique_shoulders_anniversary"],"dwarf":["dwarf_unique_shoulders_anniversary"]},"amount":[1,1]},
+        {"item":"epicmount_dragonbrood_green_gs","amount":[1,1],"chance":0.01}
+      ]
+    },
     "cny_boss_nian_box_reward": {
       "comment": "Nian's final chest grants the event progress item. The official 2025 patch notes publish three possible stacks per difficulty; the equally weighted choices preserve the documented range while no individual odds are published. 2026 reuses the same chest/progress item, while Lantern Coins and the New Year Fireworks aura are boss drops.",
       "entries": [

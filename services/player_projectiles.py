@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
+from dso_server.gameplay.status_modifier_runtime import (
+    snapshot_active_status_entries,
+)
+from dso_server.gameplay.equipment_drop_buffs import (
+    premium_equipment_drop_buff_active,
+)
 from dso_server.gameplay.mortis_arena import (
     MAP_ID as MORTIS_MAP,
     UNBOUND as MORTIS_FINAL_FORM,
@@ -680,6 +686,13 @@ class PlayerProjectileService:
                             scaling_difficulty = (
                                 s.gameplay_scaling_difficulty
                             )
+                            status_effects = snapshot_active_status_entries(
+                                s.gameplay_persistent_status_effects,
+                                s.gameplay_timed_status_effect_expiries,
+                                s.gameplay_runtime_status_effects,
+                                s.gameplay_item_set_effects,
+                                s.gameplay_socket_effects,
+                            )
                             socket_evaluation = (
                                 s.gameplay_socket_effect_evaluation
                             )
@@ -699,6 +712,12 @@ class PlayerProjectileService:
                                 int(scaling_difficulty),
                             ),
                             map_access_id=map_access_id,
+                            premium_equipment_drop_buff_active=(
+                                premium_equipment_drop_buff_active(
+                                    encounter.static_database_path,
+                                    status_effects,
+                                )
+                            ),
                             extra_boss_gems=int(
                                 getattr(
                                     socket_evaluation,

@@ -177,6 +177,43 @@ SARGON_ATTIRE_ITEMS_BY_CLASS = {
     "dwarf": "costume_event_pass_sargon_dwarf",
 }
 
+ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY = (
+    "101_anniversary_starter_bundle_1.0000_0_NONE"
+)
+ANNIVERSARY_NEW_EXPLORER_PACKAGE_PRODUCT_KEY = (
+    "101_new_explorer_package_1_1.0000_0_NONE"
+)
+ANNIVERSARY_WIND_OF_BLOOD_PACKAGE_PRODUCT_KEY = (
+    "101_wind_of_blood_package_1_1.0000_0_NONE"
+)
+ANNIVERSARY_DARK_NIGHTS_PACKAGE_PRODUCT_KEY = (
+    "101_dark_nights_dependents_package_1_1.0000_0_NONE"
+)
+ANNIVERSARY_SOUL_TRUNCHEON_SINGLE_PRODUCT_KEY = (
+    "8_soul_truncheon_1_1.0000_0_NONE"
+)
+ANNIVERSARY_SOUL_TRUNCHEON_BUNDLE_PRODUCT_KEY = (
+    "8_soul_truncheon_2_1.0000_0_NONE"
+)
+ANNIVERSARY_SOUL_TRUNCHEON_BULK_PRODUCT_KEY = (
+    "8_soul_truncheon_3_1.0000_0_NONE"
+)
+ANNIVERSARY_ATTIRE_PRODUCT_KEY = (
+    "8_event_pass_anniversary_1.0000_0_NONE"
+)
+ANNIVERSARY_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_anniversary_warrior",
+    "mage": "costume_event_pass_anniversary_mage",
+    "ranger": "costume_event_pass_anniversary_ranger",
+    "dwarf": "costume_event_pass_anniversary_dwarf",
+}
+ANNIVERSARY_PET_CHEST_PRODUCT_KEY = (
+    "101_anniversary_pet_1.0000_0_NONE"
+)
+CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY = (
+    "8_bravery_package_1_1.0000_0_NONE"
+)
+
 CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY = (
     "101_cny_2024_1_1.0000_0_NONE"
 )
@@ -296,6 +333,16 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     EASTER_DAILY_SPRING_PACK_PRODUCT_KEY: "easter_event_01",
     EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY: "easter_event_01",
     SARGON_ATTIRE_PRODUCT_KEY: "sargon_event",
+    ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_NEW_EXPLORER_PACKAGE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_WIND_OF_BLOOD_PACKAGE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_DARK_NIGHTS_PACKAGE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_SOUL_TRUNCHEON_SINGLE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_SOUL_TRUNCHEON_BUNDLE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_SOUL_TRUNCHEON_BULK_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_ATTIRE_PRODUCT_KEY: "anniversary_event",
+    ANNIVERSARY_PET_CHEST_PRODUCT_KEY: "anniversary_event",
+    CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY: "anniversary_event",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_1_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_DRAGON_BUNDLE_2_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_COOKING_BUNDLE_SMALL_PRODUCT_KEY: "event_new_year_2024",
@@ -320,6 +367,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         MONSTER_HUNT_ATTIRE_PRODUCT_KEY,
         EASTER_ATTIRE_PRODUCT_KEY,
         SARGON_ATTIRE_PRODUCT_KEY,
+        ANNIVERSARY_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -336,6 +384,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     MONSTER_HUNT_ATTIRE_PRODUCT_KEY: MONSTER_HUNT_ATTIRE_ITEMS_BY_CLASS,
     EASTER_ATTIRE_PRODUCT_KEY: EASTER_ATTIRE_ITEMS_BY_CLASS,
     SARGON_ATTIRE_PRODUCT_KEY: SARGON_ATTIRE_ITEMS_BY_CLASS,
+    ANNIVERSARY_ATTIRE_PRODUCT_KEY: ANNIVERSARY_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -556,6 +605,52 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ),
     EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY: (
         ("daily_surprise_spring_package", 1),
+    ),
+    ANNIVERSARY_STARTER_BUNDLE_PRODUCT_KEY: (
+        ("e_anniversary_progress_chest_duria_00", 25),
+        ("e_anniversary_progress_chest_norselands_00", 22),
+        ("e_anniversary_progress_chest_atlantis_00", 14),
+        ("e_anniversary_progress_chest_myrdosch_00", 5),
+        ("e_anniversary_random_travelbox", 10),
+        ("e_anniversary_egg_opener", 50),
+        ("e_anniversary_truncheon_gold", 1),
+    ),
+    ANNIVERSARY_NEW_EXPLORER_PACKAGE_PRODUCT_KEY: (
+        ("premium_equipment_drop_buff", 3),
+        ("e_sar_chest_key", 10),
+        ("difficulty_key_common", 15),
+        ("cooking_key", 30),
+        ("ammunition_damage_epic", 999),
+    ),
+    ANNIVERSARY_WIND_OF_BLOOD_PACKAGE_PRODUCT_KEY: (
+        ("epicmount_wings_new_04", 1),
+        ("premium_equipment_drop_buff", 5),
+        ("e_sar_chest_key", 20),
+        ("difficulty_key_common", 30),
+        ("cooking_key", 100),
+        ("ammunition_damage_epic", 999),
+    ),
+    ANNIVERSARY_DARK_NIGHTS_PACKAGE_PRODUCT_KEY: (
+        ("pet_gargoyle_skull", 1),
+        ("ingredient_rune_resistance_ice_fire_light", 1),
+        ("premium_equipment_drop_buff", 5),
+        ("e_sar_chest_key", 20),
+        ("difficulty_key_common", 30),
+        ("cooking_key", 100),
+        ("ammunition_damage_epic", 999),
+    ),
+    ANNIVERSARY_SOUL_TRUNCHEON_SINGLE_PRODUCT_KEY: (
+        ("e_anniversary_truncheon_soul", 1),
+    ),
+    ANNIVERSARY_SOUL_TRUNCHEON_BUNDLE_PRODUCT_KEY: (
+        ("e_anniversary_truncheon_soul", 10),
+    ),
+    ANNIVERSARY_SOUL_TRUNCHEON_BULK_PRODUCT_KEY: (
+        ("e_anniversary_truncheon_soul", 33),
+    ),
+    ANNIVERSARY_PET_CHEST_PRODUCT_KEY: (("anniversary_pet_chest", 1),),
+    CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY: (
+        ("charged_mark_of_bravery_package", 1),
     ),
 }
 

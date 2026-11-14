@@ -53,6 +53,10 @@ from dso_server.gameplay.boss_encounter_policy import (
 )
 from dso_server.gameplay.event_spawn_areas import event_area_spawn_rows
 from dso_server.gameplay.event_system import completed_achievement_ids
+from dso_server.gameplay.equipment_drop_buffs import (
+    premium_equipment_drop_buff_active_for_session,
+    roll_premium_equipment_reward,
+)
 from dso_server.gameplay.local_monster_state import (
     _bgh_boss_health_multiplier,
     _grounded_spawn_position,
@@ -65,6 +69,8 @@ from dso_server.gameplay.local_monster_state import (
 from dso_server.gameplay.map_collision_terrain import CollisionTerrainError
 from dso_server.gameplay.map_hazards import is_map_hazard
 from dso_server.gameplay.map_event_state import (
+    ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES,
+    anniversary_arena_gate_flag,
     BLOODSHED_DIFFICULTY,
     CLIENT_REPORTED_SIGNAL_TYPES,
     DTU_ARENA_REWARD_CHEST_IDS,
@@ -89,6 +95,7 @@ from dso_server.gameplay.map_event_state import (
     TriggerVolumeDefinition,
     ZERO_GUID,
     is_dtu_boss_arena_map,
+    is_anniversary_challenge_exit,
     load_map_event_content,
     load_map_signal_catalog,
     map_key,
@@ -161,6 +168,7 @@ from dso_server.protocol.commerce_protocol import (
     _new_item,
     load_purchase_item_definition,
 )
+from dso_server.protocol.shop_protocol import load_shop_offers
 from dso_server.protocol.inventory_codec import InventoryInfo
 from dso_server.protocol.inventory_economy_protocol import (
     refresh_inventory_economy_values,
@@ -238,6 +246,21 @@ GATHERABLE_MULTITOOL_TEMPLATE = "crafting_stateobject_key"
 GATHERABLE_BROKEN_MULTITOOL_TEMPLATE = "crafting_stateobject_key_broken"
 GATHERABLE_AUTO_PICKUP_DELAY_SECONDS = 0.8
 EASTER_HUB_EGG_RESPAWN_SECONDS = 1.0
+ANNIVERSARY_PINATA_RESPAWN_SECONDS = 5.0
+ANNIVERSARY_SOUL_FRENZY_MAP_ID = "e_anni_ship_soul_frenzy"
+ANNIVERSARY_SOUL_FRENZY_PINATA_TEMPLATES = frozenset({
+    "e_anniversary_soul_pinata_01",
+    "e_anniversary_soul_pinata_02",
+})
+_ANNIVERSARY_MERCHANT_PINATA_SHOPS = {
+    "e_anniversary_pinata_gems": "jewelry_hub_all",
+    "e_anniversary_pinata_gnob": "monger_gnob",
+    "e_anniversary_pinata_alchemist": "alchemist_hub_duria",
+    "e_anniversary_pinata_equipment": "equip_hub_duria",
+    "e_anniversary_pinata_gambler": "gambler_trader_hub_all",
+    "e_anniversary_pinata_tamer": "mount_trader_hub_all",
+    "e_anniversary_pinata_grima": "monger_event_grima",
+}
 
 
 def _multitool_resource_category(definition) -> str:
@@ -263,6 +286,61 @@ def _multitool_resource_category(definition) -> str:
     ):
         return category
     return ""
+
+
+@lru_cache(maxsize=128)
+def _anniversary_region_loot_candidates(
+    static_database_path: str, region: str, class_name: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return normal and unique/set equipment for one Anniversary region."""
+
+    region_alias = {
+        "duria": "duria", "norselands": "norselands",
+        "atlantis": "atlantis", "myrdosch": "myrdosch",
+        "lortac": "lortac", "qaizah": "qaizah",
+        "sewers": "sewers", "dragan": "dragan", "sargon": "sargon",
+    }.get(str(region).casefold())
+    if not region_alias:
+        return (), ()
+    path = Path(static_database_path).resolve()
+    try:
+        with closing(sqlite3.connect(
+            f"file:{path.as_posix()}?mode=ro", uri=True,
+        )) as database:
+            rows = database.execute(
+                "SELECT Id, DefaultRarity, Region FROM _Template_Item "
+                "WHERE Obsolete=0 AND ItemCategory IN ('Armor','Weapon','Jewelry') "
+                "AND lower(CharClass) IN (?, '', 'all') "
+                "AND lower(Region) LIKE ?",
+                (str(class_name).casefold(), f"%{region_alias}%"),
+            ).fetchall()
+    except (OSError, sqlite3.Error):
+        return (), ()
+    normal = []
+    unique = []
+    for template_id, rarity, item_region in rows:
+        template_id = str(template_id)
+        rarity = str(rarity or "").casefold()
+        item_region = str(item_region or "").casefold()
+        template_key = template_id.casefold()
+        if rarity == "unique" and region_alias in item_region:
+            # Some regional Unique drops (for example Destruktor and
+            # Qaizah uniques) are tagged by Region but do not use the
+            # ``_region_<name>_`` template-id convention used by regional
+            # Set pieces. Keep both kinds in the auxiliary-chest pool.
+            unique.append(template_id)
+        elif (
+            (
+                f"region_{region_alias}_" in template_key
+                or f"_{region_alias}_" in template_key
+                or template_key.endswith(f"_{region_alias}")
+            )
+            and rarity == "set"
+        ):
+            unique.append(template_id)
+        elif rarity in {"common", "uncommon", "magic", "rare", "epic"}:
+            normal.append(template_id)
+    return tuple(sorted(set(normal))), tuple(sorted(set(unique)))
 
 
 @lru_cache(maxsize=4)
@@ -952,6 +1030,12 @@ def _is_kingshill_spring_egg(definition) -> bool:
     )
 
 
+def _is_anniversary_truncheon_pinata(definition) -> bool:
+    return str(getattr(definition, "template_id", "")).casefold() in (
+        ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES
+    )
+
+
 def _a_mighty_threat_goblin_template(map_id: object) -> str:
     """Fallback treasure-monster template when no map row identifies one."""
 
@@ -1502,6 +1586,36 @@ def _dtu_superchest_claim_key(viewer: Session, definition) -> str:
     if event is None:
         return ""
     return f"dtu-superchest:{int(event.event_id)}:{location}"
+
+
+def _anniversary_golden_pinata_claim_key(
+    viewer: Session, definition,
+) -> str:
+    """Allow one opening per character and physical Golden Pinata per run."""
+
+    template_id = str(getattr(definition, "template_id", "") or "").casefold()
+    if not template_id.startswith("e_anniversary_golden_pinata_"):
+        return ""
+    catalog = getattr(viewer, "gameplay_event_catalog", None)
+    if catalog is None:
+        return ""
+    event = next((
+        value for value in catalog.active_events()
+        if value.template.resource_id.casefold() == "anniversary_event"
+    ), None)
+    if event is None:
+        return ""
+    runtime = getattr(viewer, "gameplay_map_event_runtime", None)
+    map_id = map_key(getattr(runtime, "map_id", "")) or "unknown-map"
+    instance_id = str(getattr(definition, "instance_id", "") or "").strip()
+    if not instance_id:
+        instance_id = (
+            f"{template_id}:{int(getattr(definition, 'prop_id', 0) or 0)}"
+        )
+    return (
+        f"anniversary-golden-pinata:{int(event.event_id)}:"
+        f"{map_id}:{instance_id.casefold()}"
+    )
 
 
 def _summer_solstice_reward_chest_claim_key(viewer: Session, definition) -> str:
@@ -2184,6 +2298,11 @@ class MapEventService:
             s.gameplay_fractured_planes_run = True
             key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
+        anniversary_gate_event = anniversary_arena_gate_flag(map_id)
+        if anniversary_gate_event is not None:
+            # The quest reveal logic can restore quest-gated exits on entry,
+            # but this arena exit also requires the final wave to be cleared.
+            flags -= frozenset({anniversary_gate_event})
         if map_key(map_id) == "e_sum_minidun_chestroom_01":
             # Chest-game flags belong to this minigame run. Some entry
             # snapshots carry them as active and expose all reward chests
@@ -2217,6 +2336,31 @@ class MapEventService:
                 # 31 chest groups. Keep the aggregate row disabled; selected
                 # per-chest EventSets remain independently usable.
                 runtime.suppress_event_sets((1748,))
+        if map_key(map_id) == "e_anni_ship":
+            # Opening any Soul Frenzy piñata starts e_anni_meanie_ending,
+            # which disables EventSet 606. The authored piñatas all belong to
+            # that set, so the normal set transition would remove every other
+            # piñata after the first click. Keep the selected server props
+            # independent from the scene EventSet: zero-GUID props are
+            # factory-created and remain visible when the authored scene set
+            # is hidden. Their loot/key state is still tracked per prop.
+            ship_pinata_templates = {
+                "e_anni_meanie_sparkle",
+                "e_anni_meanie_sparkle_02",
+            }
+            with runtime.lock:
+                for state in runtime.props.values():
+                    definition = state.definition
+                    if (
+                        definition.template_id.casefold()
+                        in ship_pinata_templates
+                        and int(definition.event_set_row) >= 0
+                    ):
+                        state.definition = replace(
+                            definition,
+                            event_set_row=-1,
+                            instance_guid=ZERO_GUID,
+                        )
         if map_key(map_id) == "e_nye_dungeon_01":
             # The authored trap levers all sit behind EventSet 1546, which is
             # normally unavailable until the encounter is ending. Keep the
@@ -2639,6 +2783,31 @@ class MapEventService:
                 definition = runtime.catalog.event(flag)
                 if definition is None:
                     continue
+                anniversary_gate_event = anniversary_arena_gate_flag(
+                    runtime.map_id,
+                )
+                if (
+                    anniversary_gate_event is not None
+                    and str(flag).casefold() == anniversary_gate_event
+                ):
+                    # Quest discovery alone must not restore the Challenge
+                    # Arena gate on entry. The shared arena instance opens it
+                    # only after its final wave has actually been cleared.
+                    with runtime.lock:
+                        waves_completed = bool(
+                            runtime.anniversary_arena_waves_completed
+                        )
+                    if (
+                        not waves_completed
+                        or "e-anniversary-boss-arena-01-n" not in quests_solved
+                    ):
+                        with runtime.lock:
+                            already_active = (
+                                flag in runtime.active_flags()
+                            )
+                        if already_active:
+                            self._stop_map_local_event(runtime, definition)
+                        continue
                 with runtime.lock:
                     already_active = flag in runtime.active_flags()
                 if not already_active:
@@ -2706,11 +2875,79 @@ class MapEventService:
             tasks_done=tasks_done,
             unlocked_maps=unlocked_maps,
         )
+        if (
+            kind == "playerenteredmapid"
+            and anniversary_arena_gate_flag(runtime.map_id) is not None
+        ):
+            # The generic Random signal also matches the base map ID carried
+            # alongside region access IDs (for example `_sewers`). Seed the
+            # specific region before evaluating any entry rules so signal
+            # table order cannot let Random claim the run first.
+            regions = (
+                "duria", "norselands", "atlantis", "myrdosch", "lortac",
+                "qaizah", "anderworld", "helios", "sewers", "halloween",
+                "dragan", "sargon", "xmas", "newyear",
+            )
+            selected_region = (
+                "soul_frenzy"
+                if map_key(runtime.map_id) == "e_anniversary_arena_01_soul"
+                else next((
+                    region for region in regions
+                    if any(
+                        value.startswith("e_anniversary_arena_")
+                        and value.endswith("_" + region)
+                        for value in context.params
+                    )
+                ), None)
+            )
+            if selected_region is not None:
+                with runtime.lock:
+                    current_region = runtime.anniversary_arena_region
+                    wave_started = any(
+                        flag.startswith("e_anniversary_arena_")
+                        and "_wave_" in flag
+                        for flag in runtime.active_flags()
+                    )
+                    if current_region is None or (
+                        current_region == "random" and not wave_started
+                    ):
+                        runtime.anniversary_arena_region = selected_region
+                        runtime.anniversary_arena_reward_region = selected_region
+                        current_region = selected_region
+                if current_region == selected_region:
+                    _log(
+                        "selected Anniversary arena region from entry access: "
+                        f"{selected_region}"
+                    )
         if kind == "playerkilledmonster":
             self._reveal_a_mighty_threat_chest_on_kill(
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        anniversary_exit_rules = tuple(
+            rule for rule in rules
+            if (
+                rule.signal_id.casefold().startswith(
+                    "e_anniversary_arena_boss_exit_start_signal_"
+                )
+                or rule.signal_id.casefold()
+                == "e_anniversary_arena_soul_gate_start_signal"
+                or rule.signal_id.casefold()
+                == "e_anniversary_arena_crystal_gate_start_signal"
+            )
+        )
+        if (
+            anniversary_arena_gate_flag(runtime.map_id) is not None
+            and anniversary_exit_rules
+        ):
+            # The authored rules require the solved arena quest, the active
+            # final wave, and all listed wave monsters to be dead.
+            with runtime.lock:
+                runtime.anniversary_arena_waves_completed = True
+            _log(
+                "Anniversary challenge arena exit unlocked after its final "
+                "wave and quest conditions were met"
+            )
         if map_key(runtime.map_id) == SARGON_SHADOWFORT_MAP_ID:
             sentinel_rules = tuple(
                 rule for rule in rules
@@ -3433,6 +3670,52 @@ class MapEventService:
                         continue
                 definition = catalog.event(event_key)
                 if definition is not None and definition.applies_to(runtime.map_id):
+                    arena_map_id = map_key(runtime.map_id)
+                    folded_event_key = str(event_key).casefold()
+                    if (
+                        arena_map_id == "e_anniversary_arena_01"
+                        and folded_event_key.startswith(
+                            "e_anniversary_arena_"
+                        )
+                    ):
+                        # The shared arena map contains authored event sets
+                        # for every region. A run may activate only the first
+                        # region family signalled, preventing duplicate wave
+                        # mobs and overlapping region/random reward chests.
+                        parts = folded_event_key.split("_")
+                        region = parts[3] if len(parts) > 3 else ""
+                        if region in {
+                            "random", "duria", "norselands", "atlantis",
+                            "myrdosch", "lortac", "qaizah", "anderworld",
+                            "helios", "sewers", "halloween", "dragan",
+                            "sargon", "xmas", "newyear", "crystal",
+                        }:
+                            with runtime.lock:
+                                selected = getattr(
+                                    runtime,
+                                    "anniversary_arena_region",
+                                    None,
+                                )
+                                if selected is None:
+                                    runtime.anniversary_arena_region = region
+                                    runtime.anniversary_arena_reward_region = (
+                                        random.choice((
+                                            "duria", "norselands", "atlantis",
+                                            "myrdosch", "lortac", "qaizah",
+                                            "anderworld", "helios", "sewers",
+                                            "halloween", "dragan", "sargon",
+                                            "xmas", "newyear",
+                                        ))
+                                        if region == "random" else region
+                                    )
+                                    selected = region
+                            if selected != region:
+                                _log(
+                                    "ignored overlapping Anniversary arena "
+                                    f"event {folded_event_key!r}; active region "
+                                    f"is {selected!r}"
+                                )
+                                continue
                     self._schedule_map_local_event_start(runtime, definition)
         if (
             map_key(runtime.map_id) == "e_sum_minidun_arena_02"
@@ -5343,7 +5626,9 @@ class MapEventService:
     # Client-reported signals
     # ------------------------------------------------------------------
 
-    def _spawn_map_chest_loot(self, s: Session, definition) -> int:
+    def _spawn_map_chest_loot(
+        self, s: Session, definition, *, reward_override=None,
+    ) -> int:
         """Materialize supported map chest rewards as world loot.
 
         The client export names CHEST_lootlist_BLOODSHED but does not include
@@ -5379,6 +5664,11 @@ class MapEventService:
         dragan_gate_claim_update = None
         class_name = ""
         dtu_event_progress_reward = 0
+        is_main_arena_reward_chest = False
+        anniversary_main_progress_item = ""
+        anniversary_main_progress_amount = 0
+        anniversary_boss_progress_amount = 0
+        is_anniversary_boss_reward_chest = False
         with s.flow_lock:
             chest_character = s.gameplay_character
             player_level = max(
@@ -5387,7 +5677,468 @@ class MapEventService:
             class_name = CLASS_NAMES.get(
                 int(getattr(chest_character, "class_id", 0) or 0), ""
             ).casefold()
-        if is_parallel_world_boss_chest:
+        event_chest_names = (
+            loot_list_id,
+            str(getattr(definition, "instance_id", "") or "").casefold(),
+            str(getattr(definition, "template_id", "") or "").casefold(),
+            str(getattr(definition, "chest_id", "") or "").casefold(),
+        )
+        is_event_chest = any(
+            name.startswith(("e_", "event_", "chest_e_", "lootlist_e_"))
+            or "_event_" in name
+            for name in event_chest_names
+        )
+        is_anniversary_egg_or_pinata = any(
+            (
+                "anniversary" in name
+                and any(token in name for token in (
+                    "egg", "pinata", "piñata", "truncheon",
+                    "barrel", "phestos",
+                ))
+            )
+            or ("crystal" in name and "egg" in name)
+            or "pinata" in name
+            or "piñata" in name
+            for name in event_chest_names
+        )
+        is_anniversary_egg = any(
+            (
+                "anniversary" in name and "egg" in name
+            ) or ("crystal" in name and "egg" in name)
+            for name in event_chest_names
+        )
+        event_catalog = getattr(s, "gameplay_event_catalog", None)
+        anniversary_active = bool(
+            event_catalog is not None
+            and "anniversary_event" in event_catalog.active_template_ids()
+        )
+        # The Anniversary arena's authored loot-list names are present in the
+        # client map data, but the retail server tables are not. Resolve those
+        # chests here so each arena chest has one authoritative payout and the
+        # wave mobs cannot duplicate its progress reward.
+        arena_chest_name = " ".join(event_chest_names)
+        arena_runtime = getattr(s, "gameplay_map_event_runtime", None)
+        arena_runtime_map = map_key(getattr(arena_runtime, "map_id", ""))
+        arena_current_map = map_key(getattr(s, "gameplay_map", ""))
+        arena_map = arena_runtime_map or arena_current_map
+        anniversary_arena_chest = (
+            (
+                anniversary_arena_gate_flag(arena_map) is not None
+                or arena_map == "e_anniversary_arena_02"
+            )
+            and "e_anniversary_monsterwave" in arena_chest_name
+        )
+        arena_item_level = max(
+            1,
+            int(
+                getattr(s, "gameplay_monster_level", 0) or player_level
+            ),
+        )
+        if anniversary_arena_chest:
+            import re
+
+            region_match = re.search(
+                r"anniversary_monsterwave_(duria|norselands|atlantis|"
+                r"myrdosch|lortac|qaizah|anderworld|helios|sewers|"
+                r"halloween|dragan|sargon|xmas|newyear|soul(?:_frenzy)?|"
+                r"crystal|random)",
+                arena_chest_name,
+            )
+            if region_match:
+                region = region_match.group(1)
+                if region == "soul":
+                    region = "soul_frenzy"
+            else:
+                region = ""
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                if runtime is not None:
+                    with runtime.lock:
+                        region = str(getattr(
+                            runtime,
+                            "anniversary_arena_reward_region",
+                            "",
+                        ) or getattr(
+                            runtime, "anniversary_arena_region", "",
+                        ) or "")
+                region = region or "duria"
+            rng = random.SystemRandom()
+            tier = max(0, min(9, int(
+                getattr(s, "gameplay_map_difficulty", 0) or 0
+            )))
+            progress_amounts = (5, 10, 15, 20, 25, 35, 40, 45, 50, 60)
+            region_progress = {
+                "anderworld": "anderworld", "soul_frenzy": "soul_frenzy",
+            }.get(region, region)
+            if region == "random":
+                runtime = getattr(s, "gameplay_map_event_runtime", None)
+                if runtime is not None:
+                    with runtime.lock:
+                        region = str(getattr(
+                            runtime,
+                            "anniversary_arena_reward_region",
+                            "",
+                        ) or "")
+                if not region or region == "random":
+                    region = rng.choice((
+                        "duria", "norselands", "atlantis", "myrdosch",
+                        "lortac", "qaizah", "anderworld", "helios",
+                        "sewers", "halloween", "dragan", "sargon", "xmas",
+                        "newyear",
+                    ))
+                region_progress = region
+            progress_item = f"e_anniversary_main_progress_{region_progress}"
+            anniversary_main_progress_item = progress_item
+            instance_key = str(
+                getattr(definition, "instance_id", "") or ""
+            ).casefold()
+            is_anniversary_boss_reward_chest = (
+                instance_key == "e_anniversary_monsterwave_boss_reward"
+            )
+            is_main_arena_reward_chest = (
+                instance_key.startswith("e_anniversary_monsterwave_")
+                and instance_key.endswith("_reward")
+                and not is_anniversary_boss_reward_chest
+            )
+            # Initialize for both the champion chest and the four auxiliary
+            # chests before their separate reward-building paths.
+            specifications = []
+            if is_anniversary_boss_reward_chest:
+                # The Dracanian Challenge chest advances the Anniversary
+                # event's final Boss page, not the selected regional page.
+                rng = random.SystemRandom()
+                tier = max(0, min(9, int(
+                    getattr(s, "gameplay_map_difficulty", 0) or 0
+                )))
+                anniversary_boss_progress_amount = progress_amounts[tier]
+                with s.flow_lock:
+                    access_id = str(
+                        getattr(s, "gameplay_map_access_id", "") or ""
+                    ) or str(getattr(s, "gameplay_map", "") or "")
+                    chest_character = s.gameplay_character
+                    player_level = max(
+                        1, int(getattr(chest_character, "level", 1) or 1)
+                    )
+                    class_name = CLASS_NAMES.get(
+                        int(getattr(chest_character, "class_id", 0) or 0),
+                        "",
+                    ).casefold()
+
+                # Ten items on Normal, scaling to fifteen on Bloodshed. The
+                # server's Epic rarity is the client-facing Legendary tier.
+                equipment_count = 10 + round(tier * 5 / 9)
+                from dso_server.protocol.chest_loot_protocol import (
+                    roll_chest_contents,
+                )
+                from dso_server.protocol.world_loot_protocol import (
+                    EQUIPMENT_RARITIES,
+                )
+
+                try:
+                    loot_cache = prime_world_loot_cache(
+                        self.static_database_path,
+                    )
+                    map_weights = loot_cache.rarity_weights_by_difficulty.get(
+                        tier, (0, 0, 1, 0, 0),
+                    )
+                    allowed_rarities = (2, 3, 4)  # Magic, Rare, Epic/Legendary
+                    rarity_weights = tuple(
+                        map_weights[index] for index in allowed_rarities
+                    )
+                    if not any(rarity_weights):
+                        rarity_weights = (1, 1, 1)
+                    for _ in range(equipment_count):
+                        rarity_index = rng.choices(
+                            allowed_rarities, weights=rarity_weights, k=1,
+                        )[0]
+                        rarity_name = EQUIPMENT_RARITIES[
+                            rarity_index
+                        ].casefold()
+                        rolled = roll_chest_contents(
+                            self.static_database_path,
+                            f"all_class_all_equip_{rarity_name}_01",
+                            class_name=class_name,
+                            player_level=arena_item_level,
+                            rng=rng,
+                        )
+                        if not rolled.rewards:
+                            continue
+                        reward = rolled.rewards[0]
+                        item_id = reward.definition.template_id
+                        specifications.append((item_id, 1))
+                        equipment_rewards_by_template.setdefault(
+                            item_id, [],
+                        ).append(reward)
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    _log(
+                        "cannot roll Anniversary boss-chest equipment: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                try:
+                    gems = roll_possible_reward_gems(
+                        self.static_database_path, access_id, 10, rng,
+                    )
+                    specifications.extend((item_id, 1) for item_id in gems)
+                    if len(gems) < 10:
+                        from dso_server.protocol.world_loot_protocol import (
+                            BOSS_GEM_RANKS_BY_DIFFICULTY,
+                        )
+                        loot_cache = prime_world_loot_cache(
+                            self.static_database_path,
+                        )
+                        gem_candidates = tuple(
+                            gem.template_id
+                            for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[tier]
+                            for gem in loot_cache.standard_gems_by_rank.get(
+                                rank, (),
+                            )
+                        )
+                        if gem_candidates:
+                            specifications.extend(
+                                (rng.choice(gem_candidates), 1)
+                                for _ in range(10 - len(gems))
+                            )
+                except (OSError, ValueError, sqlite3.Error) as exc:
+                    _log(
+                        "cannot roll Anniversary boss-chest gems: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                # Runes scale from none on Normal to two on PW Merciless and
+                # above. Roll only real equipment-rune templates from the
+                # static catalog, up to the rarity unlocked by this map tier.
+                rune_count = min(2, tier // 4)
+                if rune_count:
+                    try:
+                        path = Path(self.static_database_path).resolve()
+                        with closing(sqlite3.connect(
+                            f"file:{path.as_posix()}?mode=ro", uri=True,
+                        )) as database:
+                            max_rune_rarity = (
+                                "Common", "Uncommon", "Magic", "Rare", "Epic",
+                            )[min(4, tier // 2)]
+                            rune_rows = database.execute(
+                                "SELECT Id FROM _Template_Item "
+                                "WHERE ItemCategory='EquipmentRune' "
+                                "AND lower(Id) LIKE 'unique_gem_%' "
+                                "AND DefaultRarity IN "
+                                "('Common','Uncommon','Magic','Rare','Epic') "
+                                "AND CASE DefaultRarity "
+                                "WHEN 'Common' THEN 0 WHEN 'Uncommon' THEN 1 "
+                                "WHEN 'Magic' THEN 2 WHEN 'Rare' THEN 3 "
+                                "WHEN 'Epic' THEN 4 ELSE 5 END <= ?",
+                                (("Common", "Uncommon", "Magic", "Rare", "Epic").index(
+                                    max_rune_rarity
+                                ),),
+                            ).fetchall()
+                        rune_candidates = tuple(
+                            str(row[0]) for row in rune_rows
+                        )
+                        if rune_candidates:
+                            specifications.extend(
+                                (rng.choice(rune_candidates), 1)
+                                for _ in range(rune_count)
+                            )
+                    except (OSError, sqlite3.Error) as exc:
+                        _log(
+                            "cannot roll Anniversary boss-chest runes: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+
+                ingredient_rarity = f"{min(5, 1 + tier // 2):02d}"
+                specifications.extend((
+                    f"basic_ingredient_{kind}_rarity_{ingredient_rarity}",
+                    1,
+                ) for kind in ("buff", "elixir", "potion", "tonic"))
+
+                class_specials = {
+                    "amulet": "all_unique_amulet_anniversary_01",
+                    "ring": "all_unique_ring_anniversary_01",
+                    "shoulders": f"{class_name}_unique_shoulders_anniversary",
+                    "weapon": {
+                        "warrior": "warrior_unique_2h_mace_anniversary",
+                        "ranger": "ranger_unique_2h_bow_anniversary",
+                        "mage": "mage_unique_2h_staff_anniversary",
+                        "necro": "necro_unique_2h_staff_anniversary",
+                        "dwarf": "dwarf_unique_2h_rifle_anniversary",
+                    }.get(class_name, ""),
+                }
+                for reward_key, chance in (
+                    ("amulet", 0.10), ("shoulders", 0.10),
+                    ("ring", 0.10), ("weapon", 0.02),
+                ):
+                    item_id = class_specials[reward_key]
+                    if item_id and rng.random() < chance:
+                        specifications.append((item_id, 1))
+                if rng.random() < 0.10:
+                    specifications.append(("item_ingredient_dream_silk", 1))
+                if rng.random() < 0.01:
+                    specifications.append(("item_ingredient_eternal_amethyst", 1))
+            elif is_main_arena_reward_chest:
+                anniversary_main_progress_amount = progress_amounts[tier]
+                specifications = []
+                # Parallel World Bloodshed grants the maximum Prowess keys;
+                # lower difficulties taper from eight to one.
+                if tier >= 9:
+                    key_count = 8
+                else:
+                    key_count = max(1, min(7, tier))
+                specifications.append(("scaling_dungeon_boss_key_01", key_count))
+                gem_count = max(1, min(3, 1 + tier // 4))
+                item_count = max(2, min(6, 2 + tier // 2))
+                try:
+                    gems = roll_possible_reward_gems(
+                        self.static_database_path,
+                        str(getattr(s, "gameplay_map_access_id", "") or "")
+                        or str(getattr(s, "gameplay_map", "") or ""),
+                        gem_count, rng,
+                    )
+                    if len(gems) < gem_count:
+                        from dso_server.protocol.world_loot_protocol import (
+                            BOSS_GEM_RANKS_BY_DIFFICULTY,
+                        )
+                        loot_cache = prime_world_loot_cache(
+                            self.static_database_path,
+                        )
+                        candidates = tuple(
+                            gem.template_id
+                            for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[tier]
+                            for gem in loot_cache.standard_gems_by_rank.get(
+                                rank, (),
+                            )
+                        )
+                        if candidates:
+                            gems = (*gems, *(
+                                rng.choice(candidates)
+                                for _ in range(gem_count - len(gems))
+                            ))
+                    specifications.extend((item_id, 1) for item_id in gems)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
+                if tier >= 9:
+                    specifications.append(("money_vc_silver", rng.randint(1, 20)))
+                specifications.append((
+                    "money_rc", max(1, min(50, 5 * (tier + 1))),
+                ))
+                # Champion chest is the event's sole arena progress source.
+                # Avoid also granting the same progress item through the
+                # generic collectible roll below.
+                try:
+                    from dso_server.protocol.chest_loot_protocol import (
+                        roll_chest_contents,
+                    )
+                    from dso_server.protocol.world_loot_protocol import (
+                        EQUIPMENT_RARITIES,
+                    )
+                    cache = prime_world_loot_cache(self.static_database_path)
+                    for _ in range(item_count):
+                        rarity_weights = cache.rarity_weights_by_difficulty.get(
+                            tier, (0, 0, 1, 0, 0)
+                        )
+                        eligible_weights = tuple(
+                            rarity_weights[i] for i in (2, 3, 4)
+                        )
+                        if not any(eligible_weights):
+                            eligible_weights = (0, 0, 1)
+                        rarity_index = rng.choices(
+                            (2, 3, 4),
+                            weights=eligible_weights,
+                            k=1,
+                        )[0]
+                        rarity = EQUIPMENT_RARITIES[rarity_index].casefold()
+                        rolled = roll_chest_contents(
+                            self.static_database_path,
+                            f"all_class_all_equip_{rarity}_01",
+                            class_name=class_name,
+                            player_level=arena_item_level,
+                            rng=rng,
+                        )
+                        for reward in rolled.rewards[:1]:
+                            template_id = reward.definition.template_id
+                            specifications.append((template_id, 1))
+                            equipment_rewards_by_template.setdefault(
+                                template_id, [],
+                            ).append(reward)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
+                supported_forfeit_regions = (
+                    "duria", "norselands", "atlantis", "myrdosch",
+                    "lortac", "qaizah", "anderworld", "helios", "sewers",
+                    "halloween", "dragan", "sargon", "xmas", "newyear",
+                )
+                if region in supported_forfeit_regions:
+                    forfeit_region = region
+                elif region == "crystal":
+                    # Crystal of Forever has its own progress collectible but
+                    # no regional Anniversary Forfeit Chest template. Do not
+                    # substitute an unrelated region's chest here.
+                    forfeit_region = ""
+                else:
+                    forfeit_region = rng.choice(supported_forfeit_regions)
+                if forfeit_region:
+                    specifications.append((
+                        f"e_anniversary_progress_chest_{forfeit_region}_00", 1,
+                    ))
+                if rng.random() < 0.10:
+                    # Spiritual Treasure is the supported class-neutral
+                    # option; the client export has no Ring of Diversion item.
+                    specifications.append((
+                        "all_unique_amulet_anniversary_01", 1,
+                    ))
+            else:
+                # The four auxiliary chests each roll up to three rewards
+                # from the selected region's own equipment, gem and key pool.
+                regional_pool = ["scaling_dungeon_boss_key_01"]
+                regional_gems = ()
+                try:
+                    regional_gems = roll_possible_reward_gems(
+                        self.static_database_path,
+                        str(getattr(s, "gameplay_map_access_id", "") or "")
+                        or str(getattr(s, "gameplay_map", "") or ""),
+                        3, rng,
+                    )
+                    regional_pool.extend(regional_gems)
+                except (OSError, ValueError, sqlite3.Error):
+                    pass
+                normal_region_items, unique_region_items = (
+                    _anniversary_region_loot_candidates(
+                        str(self.static_database_path), region, class_name,
+                    )
+                )
+                if normal_region_items:
+                    regional_pool.append(rng.choice(normal_region_items))
+                if unique_region_items:
+                    regional_pool.append(rng.choice(unique_region_items))
+                if len(regional_gems) < 3:
+                    from dso_server.protocol.world_loot_protocol import (
+                        BOSS_GEM_RANKS_BY_DIFFICULTY,
+                    )
+                    loot_cache = prime_world_loot_cache(
+                        self.static_database_path,
+                    )
+                    gem_candidates = tuple(
+                        gem.template_id
+                        for rank in BOSS_GEM_RANKS_BY_DIFFICULTY[tier]
+                        for gem in loot_cache.standard_gems_by_rank.get(
+                            rank, (),
+                        )
+                    )
+                    if gem_candidates:
+                        regional_pool.extend(
+                            rng.choice(gem_candidates)
+                            for _ in range(3 - len(regional_gems))
+                        )
+                for item_id in rng.sample(
+                    regional_pool, k=min(rng.randint(1, 3), len(regional_pool)),
+                ):
+                    specifications.append((item_id, 1))
+            _log(
+                f"Anniversary arena chest {definition.instance_id!r} "
+                f"resolved region={region!r}, rewards={tuple(specifications)!r}"
+            )
+        if anniversary_arena_chest:
+            pass
+        elif is_parallel_world_boss_chest:
             tier = int(definition.variation_difficulty or 0)
             if tier >= BLOODSHED_DIFFICULTY:
                 materi_amount = 10_000
@@ -5486,6 +6237,8 @@ class MapEventService:
                 )
         else:
             specifications = None
+        if reward_override is not None:
+            specifications = [reward_override]
         is_a_mighty_sentinel_chest = (
             "sentinel_lootchest_" in (
                 f"{definition.instance_id} {definition.template_id}"
@@ -5495,7 +6248,9 @@ class MapEventService:
         is_dtu_boss_reward_chest = loot_list_id in {
             "chest_e_bos_normal", "chest_e_bos_golden",
         }
-        if is_parallel_world_boss_chest:
+        if reward_override is not None:
+            pass
+        elif is_parallel_world_boss_chest:
             pass
         elif is_dtu_boss_reward_chest:
             # The arena exports name the one-key and ten-key chest lists but
@@ -6001,13 +6756,20 @@ class MapEventService:
                 _log(f"prop loot catalog unavailable: {type(exc).__name__}: {exc}")
                 entries = None
             if entries is None:
-                _log(
-                    f"no local loot table for chest {definition.instance_id!r} "
-                    f"({loot_list_id!r}); no rewards spawned"
-                )
-                specifications = []
+                if anniversary_arena_chest:
+                    _log(
+                        f"Anniversary arena chest {definition.instance_id!r} "
+                        "using its resolved regional reward roll"
+                    )
+                elif not (is_anniversary_egg_or_pinata and anniversary_active):
+                    _log(
+                        f"no local loot table for chest {definition.instance_id!r} "
+                        f"({loot_list_id!r}); no rewards spawned"
+                    )
+                    specifications = []
             else:
-                specifications = list(self._roll_map_chest_loot(s, entries))
+                if not anniversary_arena_chest:
+                    specifications = list(self._roll_map_chest_loot(s, entries))
                 if loot_list_id == "lootlist_e_nye_worldboss_pile":
                     rng = random.SystemRandom()
                     with s.flow_lock:
@@ -6308,6 +7070,74 @@ class MapEventService:
                     specifications.append(
                         (jewel_rng.choice(candidates), 1)
                     )
+        if (
+            specifications is not None
+            and is_event_chest
+            and premium_equipment_drop_buff_active_for_session(
+                self.static_database_path, s,
+            )
+        ):
+            try:
+                reward = roll_premium_equipment_reward(
+                    self.static_database_path,
+                    class_name=class_name,
+                    player_level=player_level,
+                    rng=random.SystemRandom(),
+                )
+                reward_definition = load_purchase_item_definition(
+                    self.static_database_path, reward.template_id,
+                )
+                from dso_server.protocol.chest_loot_protocol import (
+                    ChestReward,
+                )
+                specifications.append((reward.template_id, 1))
+                equipment_rewards_by_template.setdefault(
+                    reward.template_id, [],
+                ).append(ChestReward(
+                    definition=reward_definition,
+                    amount=1,
+                    item_level=reward.item_level,
+                    rarity=reward.rarity_index,
+                    appearance=reward.appearance,
+                ))
+            except ValueError:
+                _log(
+                    "Premium Elixir of Equipment had no eligible Unique/Set "
+                    f"reward for {class_name!r} at level {player_level}"
+                )
+        if (
+            specifications is not None
+            and is_anniversary_egg
+            and anniversary_active
+        ):
+            egg_rng = random.SystemRandom()
+            specifications.append((
+                "e_anniversary_cot", egg_rng.randint(5, 10),
+            ))
+            specifications.append(("golden_eggshell", 1))
+            if egg_rng.random() < 0.35:
+                specifications.append(("e_anniversary_arena_key_01", 1))
+        if is_main_arena_reward_chest and specifications is not None:
+            other_progress = tuple(
+                item_id for item_id, _amount in specifications
+                if str(item_id).casefold().startswith(
+                    "e_anniversary_main_progress_"
+                ) and str(item_id).casefold()
+                != anniversary_main_progress_item.casefold()
+            )
+            if other_progress:
+                _log(
+                    f"filtered nonregional Anniversary progress from "
+                    f"{definition.instance_id!r}: {other_progress!r}"
+                )
+                specifications = [
+                    (item_id, amount)
+                    for item_id, amount in specifications
+                    if not str(item_id).casefold().startswith(
+                        "e_anniversary_main_progress_"
+                    ) or str(item_id).casefold()
+                    == anniversary_main_progress_item.casefold()
+                ]
         if not specifications:
             _log(f"chest {definition.instance_id!r} rolled no rewards")
             return 0
@@ -6324,6 +7154,11 @@ class MapEventService:
         )
         player_level = max(1, int(getattr(character, "level", 1)))
         equipment_difficulty = int(definition.variation_difficulty or 0)
+        if anniversary_arena_chest:
+            equipment_difficulty = max(
+                equipment_difficulty,
+                int(getattr(s, "gameplay_map_difficulty", 0) or 0),
+            )
         if is_new_year_worldboss_pile:
             equipment_difficulty = max(
                 equipment_difficulty,
@@ -6367,7 +7202,10 @@ class MapEventService:
                     in _BGH_OLD_GLORY_RING_TEMPLATES
                 )
                 item_level = (
-                    100 if is_bgh_old_glory_ring else player_level
+                    100 if is_bgh_old_glory_ring else (
+                        arena_item_level
+                        if anniversary_arena_chest else player_level
+                    )
                 )
                 item_level = min(
                     max(
@@ -6506,6 +7344,69 @@ class MapEventService:
             CharacterService._pickup_nearby_auto_loot(
                 s, last_move.relative_position,
             )
+        if is_main_arena_reward_chest and anniversary_main_progress_amount:
+            progress_callback = getattr(
+                s, "gameplay_event_progress_callback", None,
+            )
+            if callable(progress_callback):
+                try:
+                    progressed = progress_callback(
+                        s,
+                        collectible_id=anniversary_main_progress_item,
+                        amount=anniversary_main_progress_amount,
+                    )
+                except Exception as exc:
+                    _log(
+                        f"cannot credit Anniversary arena progress from "
+                        f"{definition.instance_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    if not progressed:
+                        _log(
+                            f"Anniversary arena progress collectible was not "
+                            f"accepted for {definition.instance_id!r} "
+                            f"({anniversary_main_progress_item} x"
+                            f"{anniversary_main_progress_amount})"
+                        )
+            else:
+                _log(
+                    f"Anniversary arena progress callback unavailable for "
+                    f"{definition.instance_id!r}"
+                )
+        if (
+            is_anniversary_boss_reward_chest
+            and anniversary_boss_progress_amount
+        ):
+            progress_callback = getattr(
+                s, "gameplay_event_progress_callback", None,
+            )
+            if callable(progress_callback):
+                try:
+                    progressed = progress_callback(
+                        s,
+                        collectible_id="e_anniversary_main_progress_boss",
+                        amount=anniversary_boss_progress_amount,
+                    )
+                except Exception as exc:
+                    _log(
+                        f"cannot credit Anniversary Boss-page progress from "
+                        f"{definition.instance_id!r}: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                else:
+                    if not progressed:
+                        _log(
+                            "Anniversary Boss-page progress collectible was "
+                            f"not accepted for {definition.instance_id!r} "
+                            f"(e_anniversary_main_progress_boss x"
+                            f"{anniversary_boss_progress_amount})"
+                        )
+            else:
+                _log(
+                    f"Anniversary Boss-page progress callback unavailable "
+                    f"for {definition.instance_id!r}"
+                )
         _log(
             f"spawned {len(drops)} reward item(s) from "
             f"{definition.instance_id!r} for player session"
@@ -6633,7 +7534,7 @@ class MapEventService:
             )
             if claim_key and purchases.get(claim_key):
                 _log(
-                    f"refused already-claimed DTU superchest "
+                    f"refused already-claimed single-use prop "
                     f"{definition.instance_id!r} ({claim_key})"
                 )
                 return False
@@ -6666,7 +7567,7 @@ class MapEventService:
         )
         CharacterService._request_account_save(
             s,
-            "DTU superchest claimed" if claim_key else "chest key spent",
+            "single-use prop claimed" if claim_key else "chest key spent",
             flush=bool(claim_key),
         )
         return True
@@ -6844,6 +7745,139 @@ class MapEventService:
                 s, (PropRuntimeState(definition, PROP_STATE_USED),),
                 label=f"{label}-info",
             )
+
+    def _roll_anniversary_pinata_offer(self, s: Session, definition):
+        """Choose one currently available item from the piñata's merchant."""
+
+        template_id = str(definition.template_id or "").casefold()
+        shop_id = _ANNIVERSARY_MERCHANT_PINATA_SHOPS.get(template_id)
+        if shop_id is None:
+            return None
+        event_catalog = getattr(s, "gameplay_event_catalog", None)
+        active_events = frozenset(
+            event_catalog.active_template_ids()
+            if event_catalog is not None else ()
+        )
+        if "anniversary_event" not in active_events:
+            return None
+        with s.flow_lock:
+            character = s.gameplay_character
+            player_level = max(1, int(getattr(character, "level", 1) or 1))
+            class_id = int(getattr(character, "class_id", 0) or 0)
+        try:
+            shop = load_shop_offers(
+                self.static_database_path,
+                shop_id,
+                player_level=player_level,
+                class_id=class_id,
+                active_event_ids=active_events,
+            )
+            offers = tuple(
+                offer for offer in shop.offers
+                if offer is not None and str(offer.item_id or "").strip()
+            )
+            if not offers:
+                _log(
+                    f"Anniversary piñata {definition.instance_id!r} has no "
+                    f"eligible merchant offers in {shop_id!r}"
+                )
+                return None
+            offer = random.SystemRandom().choice(offers)
+            # Resolve before consuming the key so a stale merchant item cannot
+            # charge the player without producing a world-loot reward.
+            load_purchase_item_definition(
+                self.static_database_path, offer.item_id,
+            )
+            return offer.item_id, max(1, int(offer.amount or 1))
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            _log(
+                f"cannot roll Anniversary piñata {definition.instance_id!r} "
+                f"from {shop_id!r}: {type(exc).__name__}: {exc}"
+            )
+            return None
+
+    def _schedule_anniversary_pinata_respawn(
+            self, runtime, definition, *, player_id: int) -> None:
+        if not _is_anniversary_truncheon_pinata(definition):
+            return
+        if (
+            map_key(runtime.map_id) == ANNIVERSARY_SOUL_FRENZY_MAP_ID
+            and str(definition.template_id or "").casefold()
+            in ANNIVERSARY_SOUL_FRENZY_PINATA_TEMPLATES
+        ):
+            # These props are released by the authored Mortis-kill event and
+            # are reactivated by each Mortis kill, not a cooldown timer.
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            _log("Anniversary piñata respawn has no map deadline scheduler")
+            return
+        prop_id = int(definition.prop_id)
+        timer_key = (int(player_id), prop_id)
+        with runtime.lock:
+            if timer_key not in runtime.individual_prop_usage:
+                return
+            timers = runtime.anniversary_pinata_respawn_timers
+            if timer_key in timers:
+                return
+            timer = scheduler.timer(
+                ANNIVERSARY_PINATA_RESPAWN_SECONDS,
+                self._respawn_anniversary_pinata,
+                args=(runtime, prop_id, int(player_id)),
+            )
+            timers[timer_key] = timer
+        timer.start()
+
+    def _respawn_anniversary_pinata(
+            self, runtime, prop_id: int, player_id: int) -> None:
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        prop_id = int(prop_id)
+        player_id = int(player_id)
+        timer_key = (player_id, prop_id)
+        with runtime.lock:
+            runtime.anniversary_pinata_respawn_timers.pop(timer_key, None)
+            state = runtime.props.get(prop_id)
+            if (
+                state is None
+                or not _is_anniversary_truncheon_pinata(state.definition)
+                or not state.definition.individual_usage
+                or timer_key not in runtime.individual_prop_usage
+            ):
+                return
+            runtime.individual_prop_usage.discard(timer_key)
+            definition = state.definition
+        for viewer in self._map_event_sessions(runtime):
+            if _individual_prop_player_id(viewer) != player_id:
+                continue
+            update = PropUpdate(
+                prop_id=definition.prop_id,
+                state=PROP_STATE_ACTIVE,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                counter=_session_game_tick(viewer),
+                state_changed=True,
+                operation=WIRE_PROP_OPERATION,
+                task_index=0,
+                keep_visual_state=False,
+            )
+            packet, packet_bits = encode_prop_update_batch(
+                (update,), actor_id=0,
+            )
+            viewer.send_reliable_ordered(
+                (packet, packet_bits), track=True,
+                label="anniversary-pinata-respawn",
+            )
+            if definition.instance_guid == ZERO_GUID:
+                _send_prop_info(
+                    viewer,
+                    (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+                    label="anniversary-pinata-respawn-info",
+                )
+        _log(
+            f"Anniversary piñata prop {prop_id} respawned after "
+            f"{ANNIVERSARY_PINATA_RESPAWN_SECONDS:.0f}s for character "
+            f"{player_id}"
+        )
 
     def _schedule_easter_hub_egg_respawn(
             self, runtime, definition, *, player_id: int) -> None:
@@ -7885,6 +8919,10 @@ class MapEventService:
                 )
             )
         dtu_superchest_claim_key = ""
+        anniversary_golden_pinata_claim_key = (
+            _anniversary_golden_pinata_claim_key(s, keyed.definition)
+            if keyed is not None else ""
+        )
         summer_reward_claim_key = (
             _summer_solstice_reward_chest_claim_key(
                 s, keyed.definition,
@@ -7904,6 +8942,24 @@ class MapEventService:
                 _log(
                     f"refused already-claimed Kalodoro Summer Solstice chest "
                     f"{keyed.definition.instance_id!r}"
+                )
+                return
+        if anniversary_golden_pinata_claim_key:
+            with s.flow_lock:
+                already_claimed = bool(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        anniversary_golden_pinata_claim_key, 0,
+                    )
+                )
+            if already_claimed:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition,
+                    label="anniversary-golden-pinata-already-claimed",
+                )
+                _log(
+                    f"refused already-claimed Anniversary Golden Pinata "
+                    f"{keyed.definition.instance_id!r} "
+                    f"({anniversary_golden_pinata_claim_key})"
                 )
                 return
         if (
@@ -7971,6 +9027,27 @@ class MapEventService:
                     f"prop {keyed.definition.instance_id!r} needs "
                     f"{keyed.definition.key_amount}x {keyed.definition.key_id!r}; "
                     f"player is {missing} short"
+                )
+                return
+        anniversary_pinata_reward = None
+        if (
+            keyed_first_use
+            and keyed is not None
+            and str(keyed.definition.template_id or "").casefold()
+            in _ANNIVERSARY_MERCHANT_PINATA_SHOPS
+        ):
+            anniversary_pinata_reward = self._roll_anniversary_pinata_offer(
+                s, keyed.definition,
+            )
+            if anniversary_pinata_reward is None:
+                self._restore_prop_for_viewer(
+                    s, keyed.definition,
+                    label="anniversary-pinata-reward-unavailable",
+                )
+                _log(
+                    f"refused Anniversary merchant piñata "
+                    f"{keyed.definition.instance_id!r}: no eligible offer; "
+                    f"template={keyed.definition.template_id!r}"
                 )
                 return
         new_moon_recall_row = None
@@ -8170,7 +9247,11 @@ class MapEventService:
         if (
             flipped and definition.spends_keys
             and not self._spend_prop_keys(
-                s, definition, claim_key=dtu_superchest_claim_key,
+                s, definition,
+                claim_key=(
+                    dtu_superchest_claim_key
+                    or anniversary_golden_pinata_claim_key
+                ),
             )
         ):
             # The keys left the bag between the check and the use: undo it.
@@ -8243,6 +9324,10 @@ class MapEventService:
         )
         if flipped:
             self._schedule_easter_hub_egg_respawn(
+                runtime, definition,
+                player_id=_individual_prop_player_id(s),
+            )
+            self._schedule_anniversary_pinata_respawn(
                 runtime, definition,
                 player_id=_individual_prop_player_id(s),
             )
@@ -8335,6 +9420,13 @@ class MapEventService:
             # revealed by the authored chest/brazier flow. Dropping the plate
             # loot immediately would bypass the Chamber's risk mechanic.
             pass
+        elif (
+            flipped
+            and anniversary_pinata_reward is not None
+        ):
+            self._spawn_map_chest_loot(
+                s, definition, reward_override=anniversary_pinata_reward,
+            )
         elif (
             flipped
             and map_key(runtime.map_id) == "e_sum_dun_02"
@@ -10380,6 +11472,27 @@ class MapEventService:
                         "varholm_to_bloodmoon_"
                     )
                 )
+            anniversary_gate_event = anniversary_arena_gate_flag(
+                runtime.map_id
+            )
+            if anniversary_gate_event is not None:
+                with runtime.lock:
+                    waves_completed = bool(
+                        runtime.anniversary_arena_waves_completed
+                    )
+                _accepted, solved, _tasks = (
+                    CharacterService._quest_signal_facts(self, viewer)
+                )
+                if (
+                    not waves_completed
+                    or "e-anniversary-boss-arena-01-n" not in solved
+                ):
+                    viewer_definitions = tuple(
+                        definition for definition in viewer_definitions
+                        if not is_anniversary_challenge_exit(
+                            definition.exit_id
+                        )
+                    )
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
             )
@@ -10897,6 +12010,178 @@ class MapEventService:
             return
         gated_rows = runtime.gated_spawn_rows(event_sets)
         extra_rows = tuple(extra_rows)
+        anniversary_map = map_key(runtime.map_id)
+        if (
+            anniversary_map.startswith("e_anniversary_arena_01")
+            or anniversary_map == "e_anniversary_arena_12_03"
+        ):
+            random_bosses = tuple(
+                row for row in gated_rows
+                if str(row.template_id).casefold().startswith(
+                    "e_anniversary_random_sentinel_"
+                )
+            )
+            if random_bosses:
+                with runtime.lock:
+                    selected_rows = (
+                        runtime.anniversary_arena_random_boss_rows
+                    )
+                    if selected_rows is None:
+                        unique_candidates = {}
+                        for row in random_bosses:
+                            unique_candidates.setdefault(
+                                str(row.template_id).casefold(), row,
+                            )
+                        choices = tuple(unique_candidates.values())
+                        selected_rows = tuple(
+                            int(row.row_id)
+                            for row in random.SystemRandom().sample(
+                                choices, k=min(3, len(choices)),
+                            )
+                        )
+                        runtime.anniversary_arena_random_boss_rows = (
+                            selected_rows
+                        )
+                selected_row_ids = set(selected_rows)
+                gated_rows = tuple(
+                    row for row in gated_rows
+                    if not str(row.template_id).casefold().startswith(
+                        "e_anniversary_random_sentinel_"
+                    ) or int(row.row_id) in selected_row_ids
+                )
+                if len(selected_row_ids) == 3:
+                    selected_templates = tuple(
+                        row.template_id for row in gated_rows
+                        if int(row.row_id) in selected_row_ids
+                    )
+                    _log(
+                        "Anniversary random final wave selected exactly three "
+                        f"distinct bosses: {selected_templates!r}"
+                    )
+            daran_template = "e_anniversary_event_bonus_easter_boss_troll"
+            daran_rows = tuple(
+                row for row in gated_rows
+                if (
+                    anniversary_map == "e_anniversary_arena_01"
+                    and str(row.template_id).casefold() == daran_template
+                )
+            )
+            if daran_rows:
+                with runtime.lock:
+                    attempted = runtime.anniversary_daran_attempted
+                    spawned = runtime.anniversary_daran_spawned
+                    if not attempted:
+                        runtime.anniversary_daran_attempted = True
+                        spawned = random.random() < 0.05
+                        runtime.anniversary_daran_spawned = spawned
+                if not attempted and spawned:
+                    selected_daran = random.choice(daran_rows)
+                    gated_rows = tuple(
+                        row for row in gated_rows
+                        if str(row.template_id).casefold() != daran_template
+                        or row is selected_daran
+                    )
+                    _log(
+                        "Anniversary Daran passed its single 5% post-wave "
+                        "roll and will spawn once"
+                    )
+                else:
+                    gated_rows = tuple(
+                        row for row in gated_rows
+                        if str(row.template_id).casefold() != daran_template
+                    )
+                    if not attempted:
+                        _log(
+                            "Anniversary Daran failed its single 5% "
+                            "post-wave roll"
+                        )
+        elif anniversary_map == "e_anniversary_arena_02":
+            # The challenge arena has three actual boss positions. The map
+            # database also contains two duplicate sets of boss rows at the
+            # arena entrance, so choosing a row independently per boss can
+            # put multiple bosses at the entrance or stack them together.
+            # Keep only complete, non-duplicated position groups, then assign
+            # one distinct boss template to each of three distinct points.
+            boss_prefix = "e_anniversary_arena_boss_"
+            boss_rows = tuple(
+                row for row in gated_rows
+                if str(row.template_id).casefold().startswith(boss_prefix)
+            )
+            if boss_rows:
+                with runtime.lock:
+                    selected_rows = runtime.anniversary_arena_random_boss_rows
+                    if selected_rows is None:
+                        rows_by_template = {}
+                        rows_by_position = {}
+                        for row in boss_rows:
+                            template = str(row.template_id).casefold()
+                            rows_by_template.setdefault(template, []).append(row)
+                            position = (
+                                round(float(row.position[0]), 2),
+                                round(float(row.position[2]), 2),
+                            )
+                            rows_by_position.setdefault(
+                                position, {},
+                            ).setdefault(template, []).append(row)
+                        templates = tuple(rows_by_template)
+                        spawn_points = tuple(
+                            (position, rows_by_point)
+                            for position, rows_by_point in rows_by_position.items()
+                            if set(rows_by_point) == set(templates)
+                            and all(
+                                len(rows) == 1
+                                for rows in rows_by_point.values()
+                            )
+                        )
+                        rng = random.SystemRandom()
+                        boss_count = min(
+                            3, len(templates), len(spawn_points),
+                        )
+                        if boss_count != 3:
+                            _log(
+                                "Anniversary challenge expected three complete "
+                                "boss spawn points but found "
+                                f"{len(spawn_points)} on {runtime.map_id}"
+                            )
+                        selected_templates = rng.sample(
+                            templates, k=boss_count,
+                        )
+                        selected_points = rng.sample(
+                            spawn_points, k=boss_count,
+                        )
+                        selected_rows = tuple(
+                            int(rows_by_point[template][0].row_id)
+                            for (_position, rows_by_point), template in zip(
+                                selected_points, selected_templates,
+                                strict=True,
+                            )
+                        )
+                        runtime.anniversary_arena_random_boss_rows = (
+                            selected_rows
+                        )
+                selected_row_ids = set(selected_rows)
+                gated_rows = tuple(
+                    row for row in gated_rows
+                    if not str(row.template_id).casefold().startswith(
+                        boss_prefix
+                    ) or int(row.row_id) in selected_row_ids
+                )
+                selected_boss_rows = tuple(
+                    row for row in boss_rows
+                    if int(row.row_id) in selected_row_ids
+                )
+                selected_templates = tuple(
+                    row.template_id for row in selected_boss_rows
+                )
+                selected_positions = tuple(
+                    tuple(round(float(value), 2) for value in row.position)
+                    for row in selected_boss_rows
+                )
+                _log(
+                    "Anniversary challenge boss wave selected exactly "
+                    f"{len(selected_row_ids)} boss spawn(s): "
+                    f"{selected_templates!r} at {selected_positions!r}"
+                )
         if map_key(runtime.map_id) == "e_nye_dungeon_01":
             gated_rows = tuple(
                 row for row in gated_rows

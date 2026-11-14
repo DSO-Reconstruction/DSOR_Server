@@ -5,7 +5,9 @@ import time
 
 from dso_server.services.admin_live import ready
 from dso_server.services.base import CharacterService
+from dso_server.gameplay.event_system import scheduled_event_flag_names
 from dso_server.gameplay.map_event_state import map_key
+from dso_server.protocol.prop_protocol import PROP_STATE_ACTIVE
 
 
 @contextmanager
@@ -72,6 +74,10 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
 
     active_templates = catalog.active_template_ids()
     rocketmen_active = "new_year_event_01" in active_templates
+    anniversary_ended = (
+        "anniversary_event" in previous.active_template_ids()
+        and "anniversary_event" not in active_templates
+    )
 
     # Kingshill's Rocketmen portal is controlled by a separate map-local
     # event. Its start signal requires the global event, but it has no end
@@ -100,7 +106,7 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
         value.casefold()
         for source in (previous, catalog)
         for event in source.events
-        for value in (event.template.resource_id, *event.tags)
+        for value in scheduled_event_flag_names(event)
     }
     if kingshill_rocketmen_closed:
         # The client-only portal controller can also be captured as an
@@ -111,6 +117,34 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
         enabled, disabled = runtime.replace_global_flags(
             owned_flags, catalog.active_event_flags(),
         )
+        if anniversary_ended:
+            golden_prop_ids = {
+                int(prop_id)
+                for prop_id, state in runtime.props.items()
+                if str(
+                    state.definition.template_id or "",
+                ).casefold().startswith("e_anniversary_golden_pinata_")
+            }
+            if golden_prop_ids:
+                runtime.individual_prop_usage = {
+                    key for key in runtime.individual_prop_usage
+                    if int(key[1]) not in golden_prop_ids
+                }
+                for prop_id in golden_prop_ids:
+                    state = runtime.props.get(prop_id)
+                    if state is not None:
+                        state.state = PROP_STATE_ACTIVE
+                for timer_key, timer in tuple(
+                    runtime.anniversary_pinata_respawn_timers.items()
+                ):
+                    if int(timer_key[1]) not in golden_prop_ids:
+                        continue
+                    runtime.anniversary_pinata_respawn_timers.pop(
+                        timer_key, None,
+                    )
+                    cancel = getattr(timer, "cancel", None)
+                    if cancel is not None:
+                        cancel()
         # State packets are replayable independently of the shared transition.
         # A failed send must not turn a retry of the same catalog into a no-op.
         affected = {

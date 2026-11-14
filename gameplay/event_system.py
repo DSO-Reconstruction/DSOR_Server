@@ -239,6 +239,51 @@ class EventProgressBarDefinition:
     # collectible only as their progress unit; monsters never drop it.
     monster_drops: bool = True
 
+    def final_item_threshold(self, tier: int) -> int:
+        """The last item milestone for one page/group of a progress bar."""
+
+        return max((
+            int(reward.threshold)
+            for reward in self.item_rewards
+            if int(reward.tier) == int(tier)
+        ), default=0)
+
+    def page_end(self, tier: int) -> int:
+        """Include both reward tracks when deciding that a page is complete."""
+        return max((reward.threshold for reward in (
+            *self.item_rewards, *self.currency_rewards,
+        ) if reward.tier == tier), default=0)
+
+    def anniversary_state(self, state: Mapping[str, object]) -> dict[str, object]:
+        """Read the sequential counter, migrating the earlier regional saves."""
+        result = dict(state)
+        claimed = {str(value) for value in state.get("claimed", ())}
+        groups = state.get("groups", {})
+        if state.get("progress_model") != "sequential" and isinstance(groups, Mapping) and groups:
+            total = 0
+            for tier in sorted({value.tier for value in self.collectibles if value.tier is not None}):
+                regional = groups.get(str(tier), {})
+                if not isinstance(regional, Mapping):
+                    regional = {}
+                start = self.page_end(tier - 1) if tier else 0
+                end = self.page_end(tier)
+                local = min(end - start, max(0, int(regional.get("amount", 0))))
+                total = start + local
+                if total < end:
+                    break
+            for regional in groups.values():
+                if isinstance(regional, Mapping):
+                    claimed.update(str(value) for value in regional.get("claimed", ()))
+        else:
+            total = max(0, int(state.get("amount", 0)))
+        last = max((reward.threshold for reward in (
+            *self.item_rewards, *self.currency_rewards,
+        )), default=0)
+        result.update(amount=min(total, last), group=0,
+                      progress_model="sequential", claimed=sorted(claimed))
+        result.pop("groups", None)
+        return result
+
     def accepts(
         self,
         player_level: int,
@@ -309,6 +354,7 @@ class EventTemplateDefinition:
     # event runs (christmas sugar beets). Contents: data/catalogs/event_loot.json.
     loot_list_id: str = ""
 
+
     def progress_bar(
         self,
         player_level: int,
@@ -321,6 +367,30 @@ class EventTemplateDefinition:
         if not eligible:
             return None
         return max(eligible, key=lambda bar: (bar.priority, bar.minimum_level))
+
+
+# Some map EventSets are authored against separate silent event flags even
+# though those flags are part of one scheduled event from the operator's
+# point of view. Keep these as aliases of the parent schedule so they follow
+# its activation and deactivation without requiring separate CMS entries.
+SCHEDULED_EVENT_FLAG_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "anniversary_event": (
+        "e_anniversary_challenge_silent_duria",
+        "e_anniversary_challenge_silent_ellonidos",
+        "e_anniversary_challenge_silent_lortac",
+        "e_anniversary_challenge_silent_myrdosch",
+        "e_anniversary_challenge_silent_norselands",
+        "e_anniversary_challenge_silent_pw",
+        "e_anniversary_challenge_silent_qaizah",
+    ),
+})
+
+def scheduled_event_flag_names(event: "ScheduledEvent") -> tuple[str, ...]:
+    """Return the flags owned by one scheduled event, including its aliases."""
+
+    resource_id = event.template.resource_id
+    aliases = SCHEDULED_EVENT_FLAG_ALIASES.get(resource_id.casefold(), ())
+    return tuple(dict.fromkeys((resource_id, *event.tags, *aliases)))
 
 
 @dataclass(frozen=True)
@@ -485,7 +555,7 @@ class EventCatalog:
         return frozenset(
             value.casefold()
             for event in self.active_events(now)
-            for value in (event.template.resource_id, *event.tags)
+            for value in scheduled_event_flag_names(event)
         )
 
     def event_update(self, now: datetime | None = None) -> EventUpdate:
@@ -501,7 +571,14 @@ class EventCatalog:
                 flags=(state == "active", event.template.map_local, False, False),
                 starts_at=_wire_time(event.starts_at),
                 ends_at=_wire_time(event.ends_at),
-                tags=event.tags,
+                # Send dependent silent flags with the parent event entry so
+                # the client can resolve EventSets that reference them too.
+                tags=tuple(dict.fromkeys((
+                    *event.tags,
+                    *SCHEDULED_EVENT_FLAG_ALIASES.get(
+                        event.template.resource_id.casefold(), ()
+                    ),
+                ))),
             ))
         return EventUpdate(tuple(entries))
 
@@ -547,6 +624,41 @@ class EventCatalog:
             ) is None:
                 continue
             state = progress.get(str(event.event_id), {})
+            bar = event.template.progress_bar(
+                player_level, completed_achievements
+            )
+            if (
+                bar is not None
+                and event.template.resource_id.casefold() == "anniversary_event"
+                and any(
+                    value.item_id.casefold().startswith(
+                        "e_anniversary_main_progress_"
+                    )
+                    and value.tier is not None
+                    for value in bar.collectibles
+                )
+            ):
+                # One cumulative counter advances through regional pages.
+                # The wire group selects the template, not the regional page.
+                wire_amount = int(bar.anniversary_state(state)["amount"])
+                item_tiers = [
+                    reward.tier for reward in bar.item_rewards
+                    if reward.threshold <= wire_amount
+                ]
+                currency_tiers = [
+                    reward.tier for reward in bar.currency_rewards
+                    if reward.threshold <= wire_amount
+                ]
+                result.append(EventProgressInfoEntry(
+                    event.event_id,
+                    (
+                        wire_amount,
+                        max(item_tiers) + 1 if item_tiers else UINT32_MAX,
+                        max(currency_tiers) if currency_tiers else UINT32_MAX,
+                        0,
+                    ),
+                ))
+                continue
             result.append(EventProgressInfoEntry(
                 event.event_id,
                 (
@@ -830,6 +942,12 @@ class EventCatalog:
             if current_maps & template.excluded_maps:
                 continue
             if template.map_id and _map_key(template.map_id) not in current_maps:
+                continue
+            if template.resource_id.casefold() == "anniversary_event":
+                # Regional arena rewards and forfeit chests grant Anniversary
+                # progress explicitly. A kill/drop scan cannot infer one
+                # region from these unscoped collectible template rows and
+                # would award all seventeen items on the same map.
                 continue
             bar = template.progress_bar(
                 player_level, completed_achievements
@@ -1173,18 +1291,58 @@ class EventCatalog:
         )
         if found is None:
             return None
-        event, _any_bar = found
-        bar = event.template.progress_bar(
-            player_level, completed_achievements
+        event, matching_bar = found
+        bar = (
+            matching_bar
+            if event.template.resource_id.casefold() == "anniversary_event"
+            else event.template.progress_bar(player_level, completed_achievements)
         )
         if bar is None or not any(
             value.item_id == collectible_id for value in bar.collectibles
         ):
             return None
         key = str(event.event_id)
-        old = dict(progress.get(key, {}))
+        prior = dict(progress.get(key, {}))
+        anniversary_group = None
+        if (
+            event.template.resource_id.casefold() == "anniversary_event"
+            and str(collectible_id).casefold().startswith(
+                "e_anniversary_main_progress_"
+            )
+        ):
+            collectible = next(
+                value for value in bar.collectibles
+                if value.item_id == collectible_id
+            )
+            if collectible.tier is None:
+                return None
+            anniversary_group = max(0, int(collectible.tier))
+            old = bar.anniversary_state(prior)
+            current_page = bar.current_tier(int(old["amount"]))
+            if (
+                anniversary_group != current_page
+                or int(old["amount"]) >= bar.page_end(current_page)
+            ):
+                return None
+        else:
+            old = prior
         previous = max(0, int(old.get("amount", 0)))
         current = min(UINT32_MAX, previous + max(0, int(amount)))
+        completion_threshold = max((
+            int(reward.threshold)
+            for reward in (*bar.item_rewards, *bar.currency_rewards)
+        ), default=0)
+        if completion_threshold > 0:
+            # Stop exactly on the bar's final authored reward threshold. This
+            # also preserves the short remainder when a chest's progress award
+            # is larger than the amount left (for example 530 + 10 on a 537
+            # point bar becomes 537, so the client can disable the completed
+            # bar without losing those last seven points).
+            current = min(current, completion_threshold)
+        if anniversary_group is not None:
+            # Excess Duria progress must not fill Norselands. Unlock the next
+            # page at this boundary and require its own collectible next time.
+            current = min(current, bar.page_end(anniversary_group))
         claimed = {str(value) for value in old.get("claimed", ())}
 
         def crossed(reward: EventReward) -> bool:
@@ -1192,18 +1350,27 @@ class EventCatalog:
             # players already progressing on the old level-100 bar need any
             # newly eligible top-bar milestones up to their current amount.
             # Claimed reward keys still prevent duplicate delivery.
-            reached = reward.threshold <= current and (
-                previous < reward.threshold
+            threshold = reward.threshold
+            reached = threshold <= current and (
+                previous < threshold
                 or event.template.resource_id.casefold() == "dragan_event_03"
             )
             return reached and reward.key not in claimed
 
         item_rewards = tuple(
             reward for reward in bar.item_rewards
-            if crossed(reward) and reward.item_for_class(class_name)
+            if (
+                (anniversary_group is None or reward.tier == anniversary_group)
+                and crossed(reward)
+                and reward.item_for_class(class_name)
+            )
         )
         currency_rewards = tuple(
-            reward for reward in bar.currency_rewards if crossed(reward)
+            reward for reward in bar.currency_rewards
+            if (
+                (anniversary_group is None or reward.tier == anniversary_group)
+                and crossed(reward)
+            )
         )
         claimed.update(reward.key for reward in item_rewards)
         claimed.update(reward.key for reward in currency_rewards)
@@ -1216,21 +1383,25 @@ class EventCatalog:
             reward.tier for reward in bar.currency_rewards
             if reward.threshold <= current
         ]
+        item_level = (
+            max(reached_item_tiers) + 1
+            if reached_item_tiers else UINT32_MAX
+        )
+        currency_level = (
+            max(reached_currency_tiers)
+            if reached_currency_tiers else UINT32_MAX
+        )
         state = {
             "template_id": event.template.resource_id,
             "amount": current,
             # Retail uses UINT_MAX for no progress and one-based item pages.
-            "level": (
-                max(reached_item_tiers) + 1
-                if reached_item_tiers else UINT32_MAX
-            ),
-            "currency_level": (
-                max(reached_currency_tiers)
-                if reached_currency_tiers else UINT32_MAX
-            ),
+            "level": item_level,
+            "currency_level": currency_level,
             "group": 0,
             "claimed": sorted(claimed),
         }
+        if anniversary_group is not None:
+            state["progress_model"] = "sequential"
         return EventProgressAdvance(event, state, item_rewards, currency_rewards)
 
 
@@ -1286,6 +1457,47 @@ def _parse_reward_entries(value: object, *, currency: bool) -> tuple[EventReward
             currency=currency,
         ))
     return tuple(sorted(rewards, key=lambda reward: reward.threshold))
+
+
+def _normalize_reward_item_templates(
+    value: str,
+    item_rows: Mapping[str, Mapping[str, object]],
+) -> str:
+    """Repair reward IDs that accidentally include a chest display suffix.
+
+    Some client static event-bar rows store an item ID followed by the word
+    ``Chest`` (for example ``e_anniversary_arena_key_01 Chest``), although
+    that template does not exist and the un-suffixed item does. Keep the
+    static database read-only and normalize only when the exact ID is absent
+    and the candidate template is present.
+    """
+
+    valid_items = set(item_rows)
+    normalized_entries = []
+    for raw in str(value or "").split(";"):
+        parts = raw.split(":")
+        if len(parts) >= 3:
+            options = []
+            for option in parts[1].split(","):
+                option = option.strip()
+                if not option:
+                    options.append(option)
+                    continue
+                class_name, separator, item_id = option.partition("|")
+                candidate = item_id if separator else option
+                if (
+                    candidate not in valid_items
+                    and candidate.casefold().endswith(" chest")
+                ):
+                    base_item = candidate[:-len(" chest")].rstrip()
+                    if base_item in valid_items:
+                        candidate = base_item
+                options.append(
+                    f"{class_name}|{candidate}" if separator else candidate
+                )
+            parts[1] = ",".join(options)
+        normalized_entries.append(":".join(parts))
+    return ";".join(normalized_entries)
 
 
 def _event_owned_maps(
@@ -1922,6 +2134,9 @@ def _load_catalog(
                     ),
                 ))
             reward_items = str(bar_row.get("EventRewardItems") or "")
+            reward_items = _normalize_reward_item_templates(
+                reward_items, item_rows,
+            )
             if (
                 resource_id.casefold() == "e_ide_challenge_01"
                 and bar_id.casefold() == "e_ide_challenge_01_progressbar_03"

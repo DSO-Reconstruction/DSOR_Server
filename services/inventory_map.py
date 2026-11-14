@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import random
+from dataclasses import replace
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -1745,6 +1747,7 @@ class InventoryMapService:
             )
             return
 
+        anniversary_progress_credit = None
         try:
             if inventory is None or currency is None:
                 raise ValueError("player inventory is not initialized")
@@ -1815,6 +1818,85 @@ class InventoryMapService:
                         else ""
                 ),
             )
+                from dso_server.gameplay.equipment_drop_buffs import (
+                    is_event_equipment_chest,
+                    premium_equipment_drop_buff_active_for_session,
+                    roll_premium_equipment_reward,
+                )
+                if (
+                    is_event_equipment_chest(
+                        self.static_database_path, item.template_id,
+                    )
+                    and premium_equipment_drop_buff_active_for_session(
+                        self.static_database_path, s,
+                    )
+                ):
+                    try:
+                        reward = roll_premium_equipment_reward(
+                            self.static_database_path,
+                            class_name=(
+                                CLASS_NAMES[int(character.class_id)].lower()
+                                if character is not None else ""
+                            ),
+                            player_level=(
+                                max(1, int(character.level))
+                                if character is not None else 1
+                            ),
+                            rng=random.SystemRandom(),
+                        )
+                        from dso_server.protocol.chest_loot_protocol import (
+                            ChestReward,
+                        )
+                        reward_definition = load_purchase_item_definition(
+                            self.static_database_path, reward.template_id,
+                        )
+                        contents = replace(
+                            contents,
+                            rewards=(
+                                *contents.rewards,
+                                ChestReward(
+                                    definition=reward_definition,
+                                    amount=1,
+                                    item_level=reward.item_level,
+                                    rarity=reward.rarity_index,
+                                    appearance=reward.appearance,
+                                ),
+                            ),
+                        )
+                    except ValueError:
+                        pass
+                anniversary_chest_prefix = "e_anniversary_progress_chest_"
+                anniversary_chest_template = str(
+                    item.template_id or ""
+                ).casefold()
+                if (
+                    anniversary_chest_template.startswith(
+                        anniversary_chest_prefix
+                    )
+                    and anniversary_chest_template.endswith("_00")
+                ):
+                    region = anniversary_chest_template[
+                        len(anniversary_chest_prefix):-3
+                    ]
+                    collectible_id = (
+                        f"e_anniversary_main_progress_{region}"
+                    )
+                    progress_reward = next((
+                        reward for reward in contents.rewards
+                        if reward.definition.template_id.casefold()
+                        == collectible_id
+                    ), None)
+                    if progress_reward is not None:
+                        anniversary_progress_credit = (
+                            collectible_id, max(1, int(progress_reward.amount)),
+                        )
+                        contents = replace(
+                            contents,
+                            rewards=tuple(
+                                reward for reward in contents.rewards
+                                if reward is not progress_reward
+                            ),
+                        )
                 mutation = open_mapped_chest(
                     inventory,
                     currency,
@@ -2034,6 +2116,9 @@ class InventoryMapService:
                     progress_callback(
                         s, collectible_id, max(1, int(reward.amount)),
                     )
+            if anniversary_progress_credit is not None:
+                collectible_id, amount = anniversary_progress_credit
+                progress_callback(s, collectible_id, amount)
         for achievement_packet, achievement_bits, achievement_label in deferred_achievement_packets:
             CharacterService._send_world_loot_state_batch(
                 s, achievement_packet, achievement_bits, label=achievement_label

@@ -61,6 +61,34 @@ from dso_server.protocol.prop_protocol import (
 # events. This matches the working DRASA path, which allocates prop ids after
 # the map's NPC ids.
 PROP_INDEX_LIMIT = 0x10000
+ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES = frozenset({
+    "e_anni_meanie",
+    "e_anni_meanie_02",
+    "e_anni_meanie_sparkle",
+    "e_anni_meanie_sparkle_02",
+    "e_anniversary_pinata_gems",
+    "e_anniversary_pinata_gnob",
+    "e_anniversary_pinata_alchemist",
+    "e_anniversary_pinata_equipment",
+    "e_anniversary_pinata_gambler",
+    "e_anniversary_pinata_tamer",
+    "e_anniversary_pinata_grima",
+    "e_anniversary_soul_pinata_01",
+    "e_anniversary_soul_pinata_02",
+})
+ANNIVERSARY_BURIED_TREASURE_MAPS = frozenset({
+    "a0405_swampcave",          # Rootrock Caverns
+    "a0504_dun",                # Stonekeep
+    "b1204_dun",                # Hailstone Mountains
+    "f4102_dun",                # The Gleaming Mountains
+    "c2102_dun",                # Mount Suvius
+    "h0007_treasure_cave_dun",  # Treasure Cave
+    "g0011_temple_death_01_dun",  # Cradle of Death
+})
+ANNIVERSARY_BURIED_TREASURE_EVENT_SET_ROW = 234
+ANNIVERSARY_BURIED_TREASURE_LOOT_LIST = (
+    "anniversary_challenge_buried_treasure"
+)
 
 SARGON_SHADOWFORT_MAP_ID = "pw210_sargon_fortress_dun"
 SARGON_THRONE_ROOM_MAP_ID = "pw211_sargon_boss"
@@ -301,6 +329,50 @@ def map_key(value: object) -> str:
     """Normalize a map or access-group id the way signal rows name maps."""
 
     return _DIFFICULTY_SUFFIX.sub("", str(value or "").strip()).casefold()
+
+
+def _anniversary_buried_treasure_variant(template_id: object) -> int | None:
+    """Return the shared visual/clickable variant number for a treasure prop."""
+
+    template = str(template_id or "").casefold()
+    if template == "e_pirate_cross_mark_sparkle":
+        return 1
+    for prefix in (
+        "e_pirate_cross_ground_",
+        "e_pirate_cross_mark_sparkle_",
+    ):
+        if template.startswith(prefix):
+            suffix = template[len(prefix):]
+            if suffix.isdigit():
+                variant = int(suffix)
+                if 1 <= variant <= 7:
+                    return variant
+    return None
+
+
+def anniversary_arena_gate_flag(map_id: object) -> str | None:
+    """Return the challenge exit flag used by an Anniversary arena variant."""
+
+    key = map_key(map_id)
+    if key == "ce202506" or key.startswith("ce202506_"):
+        return "e_anniversary_arena_crystal_gate"
+    if key == "e_anniversary_arena_01_soul":
+        return "e_anniversary_arena_soul_gate"
+    if key.startswith("e_anniversary_arena_01"):
+        return "e_anniversary_arena_boss_exit"
+    return None
+
+
+def is_anniversary_challenge_exit(exit_id: object) -> bool:
+    """Match the authored Dracanian Challenge exits by their scene id.
+
+    ExitURL varies across the ten difficulty rows, so it cannot identify this
+    family reliably (the first row points at ``..._01_boss``).
+    """
+
+    return str(exit_id or "").casefold().startswith(
+        "e_anniversary_arena_02_boss_diff_"
+    )
 
 
 def sargon_shadowfort_seed_flags(map_id: object, flags) -> frozenset[str]:
@@ -872,6 +944,10 @@ class MapPropDefinition:
             }
             and self.key_id.casefold() == "e_sum_01_fishing_rod_01"
         )
+        anniversary_pinata = (
+            self.template_id.casefold()
+            in ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES
+        )
         return bool(
             self.key_id and self.key_amount > 0
             and (
@@ -882,6 +958,7 @@ class MapPropDefinition:
                 or darkwood_summoning_slate
                 or darkwood_wendigo_circle
                 or summer_fishing_vat
+                or anniversary_pinata
             )
         )
 
@@ -897,6 +974,13 @@ class MapPropDefinition:
         if str(self.template_id).casefold().startswith((
             "e_easter_01_egg_", "e_easter_01_dun_egg_",
         )):
+            return True
+        if str(self.template_id).casefold().startswith(
+            "e_pirate_cross_ground_"
+        ):
+            # Buried Treasure's ground marker is a visual-only StateObject.
+            # The client cannot render its authored GUID while the map's
+            # original, unrelated EventSet flag remains inactive.
             return True
         if self.workbench or self.signal_referenced or self.quest_switch_id:
             return True
@@ -925,7 +1009,11 @@ class MapPropDefinition:
             # Retail published a scene amphora (PropInfo on approach) and
             # answered its click with loot; chests whose list the server can
             # fill are interactive the same way.
-            return has_prop_loot(self.loot_list_id or self.chest_id)
+            return (
+                has_prop_loot(self.loot_list_id or self.chest_id)
+                or self.template_id.casefold()
+                in ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES
+            )
         return bool(self.operation or self.loot_list_id or self.chest_id)
 
     def new_prop(self, state: int) -> NewProp:
@@ -1549,6 +1637,15 @@ def _load_map_event_content(
             "SELECT Id, EventFlags FROM _Instance_EventSets"
         ):
             flags = effective_event_set_declarations(map_id, int(row_id), flags)
+            if (
+                map_key(map_id) in ANNIVERSARY_BURIED_TREASURE_MAPS
+                and int(row_id) == ANNIVERSARY_BURIED_TREASURE_EVENT_SET_ROW
+            ):
+                # The extracted treasure props use a flag that the event
+                # never sets. Tie this EventSet to the global challenge event
+                # so the authored buried-treasure locations appear only while
+                # the Anniversary Challenge is active.
+                flags = "anniversary_event_challenge=True;"
             required = set()
             forbidden = set()
             for declaration in str(flags or "").split(";"):
@@ -1748,6 +1845,18 @@ def _load_map_event_content(
                 key_id, key_amount,
             ) = row
             if (
+                map_key(map_id) in ANNIVERSARY_BURIED_TREASURE_MAPS
+                and template_id.casefold().startswith(
+                    "e_pirate_cross_mark_sparkle"
+                )
+            ):
+                # Keep the authored prop positions and interaction behavior,
+                # while ensuring every marked treasure has the same one-map
+                # cost and Anniversary Challenge reward pool.
+                loot_list_id = ANNIVERSARY_BURIED_TREASURE_LOOT_LIST
+                key_id = "e_pir_treasure_map"
+                key_amount = 1
+            if (
                 map_key(map_id) in {
                     "e_z0110_dun", "e_viscanium_submarine_01",
                 }
@@ -1811,6 +1920,11 @@ def _load_map_event_content(
                 and str(loot_list_id).casefold()
                 == "sub_event_dark_dwarf_progress_geode"
             )
+            anniversary_buried_treasure_prop = (
+                map_key(map_id) in ANNIVERSARY_BURIED_TREASURE_MAPS
+                and _anniversary_buried_treasure_variant(template_id)
+                is not None
+            )
             props.append(MapPropDefinition(
                 prop_id=prop_actor_base + int(row_id) - 1,
                 row_id=int(row_id),
@@ -1821,6 +1935,14 @@ def _load_map_event_content(
                     ZERO_GUID if (
                         quest_seal or quest_controlled
                         or summer_chestroom_reward or viscanium_geode
+                        or anniversary_buried_treasure_prop
+                        or (
+                            map_key(map_id) == "e_anni_ship"
+                            and template_id.casefold() in {
+                                "e_anni_meanie_sparkle",
+                                "e_anni_meanie_sparkle_02",
+                            }
+                        )
                     )
                     else client_state_object_guids.get(
                         int(row_id), bytes(guid) if guid else ZERO_GUID
@@ -1830,12 +1952,24 @@ def _load_map_event_content(
                 rotation=rotation,
                 event_set_row=int(event_set_row),
                 operation=authored_operation,
-                one_shot=bool(int(one_shot or 0)),
+                one_shot=bool(int(one_shot or 0)) or (
+                    map_key(map_id) == "e_anni_ship"
+                    and template_id.casefold() in {
+                        "e_anni_meanie_sparkle",
+                        "e_anni_meanie_sparkle_02",
+                    }
+                ),
                 # Each geode is one shared mining deposit. The stock
                 # template's IndividualUsage would let every player mine
                 # the same prop separately instead of consuming its state.
                 individual_usage=(
-                    False if viscanium_geode else templates.get(
+                    True if (
+                        map_key(map_id) == "e_anni_ship"
+                        and template_id.casefold() in {
+                            "e_anni_meanie_sparkle",
+                            "e_anni_meanie_sparkle_02",
+                        }
+                    ) else False if viscanium_geode else templates.get(
                         template_id, ("", False, "", "", False),
                     )[4]
                 ),
@@ -1872,6 +2006,7 @@ def _load_map_event_content(
             operation, one_shot, loot_list_id, chest_id, individual_usage = templates.get(
                 template_id, ("", False, "", "", False)
             )
+            key_id, key_amount = template_keys.get(template_id, ("", 0))
             signal_referenced = (
                 instance_id.casefold() in signal_props
                 or template_id.casefold() in signal_props
@@ -1923,8 +2058,8 @@ def _load_map_event_content(
                 # Match either so quest-controlled spawn props are published
                 # and revealed when their task is active.
                 quest_switch_id=quest_switch_id,
-                key_id=template_keys.get(template_id, ("", 0))[0],
-                key_amount=template_keys.get(template_id, ("", 0))[1],
+                key_id=key_id,
+                key_amount=key_amount,
             ))
 
         volumes = []
@@ -2171,6 +2306,17 @@ class MapEventRuntime:
     # Stellar Gold releases one randomly selected final boss per arena run.
     # Retain its authored SpawnPoint row so event replay cannot reroll it.
     stellar_gold_final_boss_spawn: tuple[int, str] | None = None
+    # Anniversary arenas share one physical map across many region event
+    # families. Keep one region's event sets and reward mapping per run, and
+    # roll the optional Daran boss at most once.
+    anniversary_arena_region: str | None = None
+    anniversary_arena_reward_region: str | None = None
+    anniversary_arena_waves_completed: bool = False
+    # The random Anniversary final wave authors a long list of alternative
+    # sentinels on one EventSet. Retain the three choices for this run.
+    anniversary_arena_random_boss_rows: tuple[int, ...] | None = None
+    anniversary_daran_attempted: bool = False
+    anniversary_daran_spawned: bool = False
     a_mighty_threat_position: tuple[float, float, float] | None = None
     a_mighty_threat_chest_revealed: bool = False
     pending_start_tokens: dict[str, object] = field(default_factory=dict)
@@ -2188,6 +2334,9 @@ class MapEventRuntime:
     # Kingshill's six Spring Eggs are one-shot scene props but respawn after
     # a short event cooldown. Keep one timer per authored prop per instance.
     easter_hub_egg_respawn_timers: dict[object, object] = field(default_factory=dict)
+    # Five-second timers for reusable Anniversary piñatas; Soul Frenzy's
+    # Mortis piñatas use their map-run event lifecycle instead.
+    anniversary_pinata_respawn_timers: dict[object, object] = field(default_factory=dict)
     # Quest placements used in this map instance: (player, switch id, prop id).
     # Retail refreshes props with the map, so a new run offers them again; a
     # later task's own switch may also reuse the same placement.
@@ -2491,6 +2640,32 @@ class MapEventRuntime:
         """
 
         definitions = tuple(definitions)
+        if map_key(self.map_id) in ANNIVERSARY_BURIED_TREASURE_MAPS:
+            has_buried_treasure = any(
+                _anniversary_buried_treasure_variant(
+                    definition.template_id
+                ) is not None
+                for definition in definitions
+            )
+            if has_buried_treasure:
+                # Seven visual/clickable variants occupy the exact same
+                # coordinates in the extracted maps. Select one matching
+                # pair so they don't overlap; create it server-side instead
+                # of waiting on the client's unrelated static EventSet.
+                selected_variant = random.Random(
+                    f"{self.instance_id}:anniversary-buried-treasure"
+                ).randint(1, 7)
+                definitions = tuple(
+                    definition for definition in definitions
+                    if (
+                        _anniversary_buried_treasure_variant(
+                            definition.template_id
+                        ) is None
+                        or _anniversary_buried_treasure_variant(
+                            definition.template_id
+                        ) == selected_variant
+                    )
+                )
         if map_key(self.map_id) == SARGON_SHADOWFORT_MAP_ID:
             definitions = tuple(
                 definition for definition in definitions

@@ -15,15 +15,174 @@ import tempfile
 import threading
 import xml.etree.ElementTree as ElementTree
 
-from dso_server.gameplay.event_system import load_event_catalog, UINT32_MAX
+from dso_server.gameplay.event_system import (
+    load_event_catalog, scheduled_event_flag_names, UINT32_MAX,
+)
+from dso_server.gameplay.quest_content import (
+    NO_TIMESTAMP, QUEST_STATE_CANCELLED, load_quest_catalog,
+)
 from dso_server.services import events as game_events
-from dso_server.paths import DEFAULT_LANGUAGE_ROOT, PACKAGE_ROOT
+from dso_server.paths import (
+    DEFAULT_LANGUAGE_ROOT, DEFAULT_QUESTS_PATH, PACKAGE_ROOT,
+)
 from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.runtime.file_revisions import invalidate as invalidate_file_revision
 from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
 
 _SCHEDULE_LOCK = threading.RLock()
+
+
+def _event_quest_ids(template_id, event_flags):
+    catalog = load_quest_catalog(DEFAULT_QUESTS_PATH)
+    flags = {str(value).casefold() for value in event_flags}
+    flags.add(str(template_id).casefold())
+    return frozenset(
+        quest.key for quest in catalog.quests.values()
+        if flags.intersection(
+            value.strip().casefold()
+            for value in str(quest.event_id or "").split(";")
+            if value.strip()
+        )
+    )
+
+
+def _clear_anniversary_golden_pinata_claims(claims, event_id):
+    """Clear per-pinata claims when the Anniversary event run ends."""
+
+    legacy_key = f"anniversary-golden-pinata:{int(event_id)}"
+    prefix = legacy_key + ":"
+    changed = False
+    for key in tuple(claims):
+        normalized = str(key).casefold()
+        if normalized == legacy_key or normalized.startswith(prefix):
+            claims.pop(key, None)
+            changed = True
+    return changed
+
+
+def _clear_event_run_state(
+        state, event_id, quest_ids, *, reset_anniversary_pinatas=False,
+):
+    changed = False
+    progress = state.event_progress
+    for key in (str(event_id), int(event_id)):
+        changed = progress.pop(key, None) is not None or changed
+    participation = state.event_participation
+    for key in (str(event_id), int(event_id)):
+        changed = participation.pop(key, None) is not None or changed
+    for quest_id in tuple(state.quest_log):
+        if str(quest_id).casefold() in quest_ids:
+            del state.quest_log[quest_id]
+            changed = True
+    if reset_anniversary_pinatas:
+        changed = _clear_anniversary_golden_pinata_claims(
+            state.timed_offer_purchases, event_id,
+        ) or changed
+    return changed
+
+
+def _reset_event_run(service, event):
+    """Clear a finished run's saved progress and its scheduled event quests."""
+
+    flags = scheduled_event_flag_names(event)
+    quest_ids = _event_quest_ids(event.template.resource_id, flags)
+    reset_anniversary_pinatas = (
+        str(event.template.resource_id).casefold() == "anniversary_event"
+    )
+    app = getattr(service, "application", None)
+    servers = tuple(
+        server for server in (
+            getattr(app, "characters", None), getattr(app, "login", None),
+        ) if server is not None
+    )
+
+    # Update live sessions first so their next autosave cannot put completed
+    # event progress back after the durable records have been cleared.
+    seen_sessions = set()
+    for server in servers:
+        for session in server.session_snapshot():
+            identity = id(session)
+            if identity in seen_sessions:
+                continue
+            seen_sessions.add(identity)
+            removed_quests = []
+            with session.flow_lock:
+                if getattr(session, "gameplay_character", None) is None:
+                    continue
+                changed = False
+                progress = getattr(session, "gameplay_event_progress", {})
+                participation = getattr(
+                    session, "gameplay_event_participation", {},
+                )
+                for key in (str(event.event_id), int(event.event_id)):
+                    changed = progress.pop(key, None) is not None or changed
+                    changed = participation.pop(key, None) is not None or changed
+                for attr in ("gameplay_quest_log", "gameplay_dormant_quests"):
+                    quest_log = getattr(session, attr, {}) or {}
+                    for quest_id in tuple(quest_log):
+                        if str(quest_id).casefold() in quest_ids:
+                            del quest_log[quest_id]
+                            removed_quests.append(str(quest_id))
+                            changed = True
+                if reset_anniversary_pinatas:
+                    claims = getattr(
+                        session, "gameplay_timed_offer_purchases", None,
+                    )
+                    if claims is not None:
+                        changed = _clear_anniversary_golden_pinata_claims(
+                            claims, event.event_id,
+                        ) or changed
+                tracking = getattr(session, "gameplay_quest_tracking", None)
+                if tracking and str(tracking[0]).casefold() in quest_ids:
+                    session.gameplay_quest_tracking = None
+                    changed = True
+            if removed_quests:
+                try:
+                    state_commands = tuple(
+                        server._quest_state_commands(
+                            session, quest_id, QUEST_STATE_CANCELLED,
+                            NO_TIMESTAMP,
+                        )[0]
+                        for quest_id in dict.fromkeys(removed_quests)
+                    )
+                    state_commands += server._quest_state_commands(
+                        session, removed_quests[0], QUEST_STATE_CANCELLED,
+                        NO_TIMESTAMP,
+                    )[1:]
+                    server._send_quest_commands(
+                        session, state_commands,
+                        label="admin-event-reset-quests",
+                    )
+                except Exception as exc:
+                    print(
+                        f"[Admin events] could not clear event quest UI for "
+                        f"character {getattr(session.gameplay_character, 'character_id', 0)}: "
+                        f"{exc}"
+                    )
+            if changed:
+                persist = getattr(session, "gameplay_persist_callback", None)
+                if persist is not None:
+                    persist(session, "event reset", flush=False)
+
+    seen_stores = set()
+    for server in servers:
+        store = getattr(server, "account_store", None)
+        if store is None or id(store) in seen_stores:
+            continue
+        seen_stores.add(id(store))
+        with store.lock:
+            character_ids = tuple(store.states)
+        for character_id in character_ids:
+            state = store.get(character_id)
+            if state is not None and _clear_event_run_state(
+                state, event.event_id, quest_ids,
+                reset_anniversary_pinatas=reset_anniversary_pinatas,
+            ):
+                store.put(state)
+        # Persist the full reset once after every character snapshot has been
+        # queued; event transitions are rare but can affect the whole roster.
+        store.flush()
 
 
 class EventScheduleConflict(ValueError):
@@ -334,6 +493,14 @@ class EventAdministration:
         from dso_server.services.global_event_refresh import refresh_map_events
         from dso_server.protocol.player_init_protocol import EVENT_UPDATE_COMMAND, encode_event_update
         result = {"updated": 0, "deferred": 0, "errors": []}
+        now = datetime.now(timezone.utc)
+        current_by_id = {event.event_id: event for event in catalog.events}
+        for event in previous.events:
+            current = current_by_id.get(event.event_id)
+            if event.active_at(now) and (
+                current is None or not current.active_at(now)
+            ):
+                _reset_event_run(self.service, event)
         app = self.service.application
         if app is None:
             return result
