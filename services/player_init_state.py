@@ -23,6 +23,8 @@ from dso_server.gameplay.starter_config import (
     load_starter_config,
     calculate_starter_gold_units,
     calculate_membership_expiry_iso,
+    DEFAULT_MEMBERSHIP_TYPE,
+    DEFAULT_MEMBERSHIP_ACTIVE,
 )
 
 
@@ -1014,13 +1016,13 @@ class PlayerInitializationStateService:
             try:
                 starter_cfg = load_starter_config()
                 cfg_m = starter_cfg.get("membership", {})
-                membership_type = int(cfg_m.get("type", DELUXE_MEMBERSHIP))
+                membership_type = int(cfg_m.get("type", DEFAULT_MEMBERSHIP_TYPE))
                 membership_expires_at = calculate_membership_expiry_iso(starter_cfg)
-                membership_active = bool(cfg_m.get("active", True))
+                membership_active = bool(cfg_m.get("active", DEFAULT_MEMBERSHIP_ACTIVE))
             except Exception:
-                membership_type = DELUXE_MEMBERSHIP
-                membership_expires_at = default_deluxe_expiry()
-                membership_active = True
+                membership_type = DEFAULT_MEMBERSHIP_TYPE
+                membership_expires_at = calculate_membership_expiry_iso({})
+                membership_active = DEFAULT_MEMBERSHIP_ACTIVE
             membership_premium_expires_at = ""
         # Premium paused under a Deluxe that ended while offline runs again.
         membership_type, membership_expires_at, membership_active = premium_handover(

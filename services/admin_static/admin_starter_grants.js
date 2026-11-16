@@ -115,8 +115,8 @@ function renderContent(data) {
             </select>
           </label>
           <label>Duration (days)
-            <input name="membership-duration" type="number" min="1" max="36500" value="${esc(m.duration_days ?? 1825)}" required>
-            <small>Default 1825 days (~5 years). Enter total days of active membership.</small>
+            <input name="membership-duration" type="number" min="0" max="36500" value="${esc(m.duration_days ?? 0)}" required>
+            <small>Enter total days of active membership (0 for none).</small>
           </label>
           <label class="check" style="align-self: center; margin-top: 1.5rem;">
             <input type="checkbox" name="membership-active" ${m.active ? "checked" : ""}>
