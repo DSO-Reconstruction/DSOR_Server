@@ -722,6 +722,45 @@ class SpecialOffer:
     groups_a0: tuple[OfferGroup, ...]
 
 
+DEFAULT_INVENTORY_EXTENSION_OFFER = OfferDetails(
+    resource_id="misc_bag_extension_01",
+    field_58=1600,
+    field_5c=0,
+    field_50="misc_bag_extension_01",
+    field_74=1,
+    field_78=0,
+    field_94=0,
+    field_98=46,
+    values_168=(),
+    values_190=(),
+    field_c0="icons/misc_bag_extension_01",
+    field_c8="item_generic",
+    field_80=1,
+    field_84=200,
+    field_88=False,
+    field_8b=True,
+)
+
+DEFAULT_BANK_EXTENSION_OFFER = OfferDetails(
+    resource_id="misc_bank_extension_01",
+    field_58=800,
+    field_5c=0,
+    field_50="misc_bank_extension_01",
+    field_74=1,
+    field_78=0,
+    field_94=0,
+    field_98=46,
+    values_168=(),
+    values_190=(),
+    field_c0="icons/misc_bank_extension_01",
+    field_c8="item_generic",
+    field_80=1,
+    field_84=200,
+    field_88=False,
+    field_8b=True,
+)
+
+
 @dataclass(frozen=True)
 class TimedOffer:
     offer_id: str
@@ -2607,7 +2646,17 @@ def build_local_player_init_commands(
             ServerCommand(
                 SPECIAL_OFFER_COMMAND,
                 special_offer if special_offer is not None
-                else SpecialOffer(None, None, None, False, "", (), (), (), ()),
+                else SpecialOffer(
+                    DEFAULT_INVENTORY_EXTENSION_OFFER,
+                    DEFAULT_BANK_EXTENSION_OFFER,
+                    None,
+                    False,
+                    "",
+                    (),
+                    (),
+                    (),
+                    (),
+                ),
                 0,
             ),
             ServerCommand(

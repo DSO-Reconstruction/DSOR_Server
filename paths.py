@@ -43,3 +43,8 @@ DEFAULT_DUNGEON_ELITES_CONFIG_PATH = Path(
 DEFAULT_MYSTIC_CUBE_CONFIG_PATH = Path(
     os.getenv("DSO_MYSTIC_CUBE_CONFIG") or DATA_ROOT / "mystic_cube.json"
 )
+# CMS-edited starter grants (membership, currencies, starter items & equipment).
+DEFAULT_STARTER_CONFIG_PATH = Path(
+    os.getenv("DSO_STARTER_CONFIG") or DATA_ROOT / "starter_config.json"
+)
+

@@ -1534,6 +1534,9 @@ class InventoryMapService:
         # ordinary use operation still points to the same authored
         # cast_mount_* -> ride_mount_* status-effect flow.
         if action.operation == 0x13 and inventory is not None:
+            from dso_server.services.storage_extensions import handle_storage_extension_use
+            if handle_storage_extension_use(self, s, action.item_id):
+                return
             from dso_server.services.rune_progression import handle_rune_extension_use
             from dso_server.services.recipe_progression import handle_recipe_item_use
 

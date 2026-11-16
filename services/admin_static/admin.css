@@ -631,3 +631,41 @@ strong.changed { color: var(--link); }
 @container cms-content (max-width: 740px) {
   .live-workspace.form-page { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Starter Grants styles */
+.tab-button {
+  background: #171b1c;
+  color: #a6a49c;
+  border: 1px solid #343635;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.tab-button:hover {
+  color: var(--ink);
+  background: #202628;
+}
+.tab-button.active {
+  color: var(--nav-active-ink);
+  border-color: #38545a;
+  background: linear-gradient(135deg, #1d3034, #1b2629);
+  font-weight: 600;
+}
+.delete-shared-btn {
+  padding: 4px 8px;
+  min-height: 28px;
+  line-height: 1;
+  color: var(--danger);
+  border-color: rgba(230, 129, 120, 0.4);
+}
+.delete-shared-btn:hover {
+  background: rgba(230, 129, 120, 0.15);
+  border-color: var(--danger);
+}
+#shared-items-table th, #shared-items-table td,
+.class-eq-panel th, .class-eq-panel td {
+  vertical-align: middle;
+}
+

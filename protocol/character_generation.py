@@ -155,12 +155,19 @@ def encode_character_generation(
 
 
 def character_generation_editor_response(
-    *, locale: str, preview_id: int, character=None, operation: int = 2
+    *,
+    locale: str,
+    preview_id: int,
+    character=None,
+    operation: int = 2,
+    andermant: int = 0,
 ) -> CharacterGeneration:
     """Build a server editor response (op 2 create, op 9 alter).
 
     When ``character`` is supplied the same editor is preloaded for a
     character-alteration booking instead of a new character preview.
+    ``andermant`` supplies the account's actual Andermant balance displayed
+    in the editor.
     """
 
     return CharacterGeneration(
@@ -174,7 +181,7 @@ def character_generation_editor_response(
         body_style=int(getattr(character, "body_style", 0)),
         body_stature=int(getattr(character, "body_stature", 0)),
         name=str(getattr(character, "name", "")),
-        fields_84=(0, 0, 0, DEFAULT_GENERATION_REVISION),
+        fields_84=(0, 0, 0, max(0, int(andermant))),
         transform=IDENTITY_CAPTURE_TRANSFORM,
         locale=str(locale),
         tail_bits=48,

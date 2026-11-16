@@ -10,6 +10,7 @@ import { lootRatesPage } from "./admin_loot.js";
 import { dungeonElitesPage } from "./admin_elites.js";
 import { mysticCubePage } from "./admin_mystic_cube.js";
 import { bonusCodesPage, bonusCodePage, newBonusCodePage } from "./admin_bonus_codes.js";
+import { starterGrantsPage } from "./admin_starter_grants.js";
 import { settingsPage, serverControlPage } from "./admin_control.js";
 
 let generation = 0, shownPath = null;
@@ -105,6 +106,7 @@ async function render() {
     else if (name === "dungeon-elites") result = await dungeonElitesPage(route);
     else if (name === "mystic-cube") result = await mysticCubePage(route);
     else if (name === "bonus-codes") result = id === "new" ? await newBonusCodePage(route) : id ? await bonusCodePage(route) : await bonusCodesPage(route);
+    else if (name === "starter-grants") result = await starterGrantsPage(route);
     else if (name === "bookings" && id === "new") result = await newBookingPage(route);
     else if (name === "bookings" && id === "batch") result = await batchBookingPage(route);
     else if (name === "accounts" && id) result = await accountPage(route);

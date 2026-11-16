@@ -70,7 +70,86 @@ GOLD_ITEM_TEMPLATES = frozenset((
 ))
 ANDERMANT_ITEM_TEMPLATE = "money_rc"
 WISDOM_ITEM_TEMPLATE = "money_gc"
+REALM_FRAGMENT_ITEM_TEMPLATE = "e_item_teleport_change_01"
 ANDERMANT_BASE_DROP_MULTIPLIER = 50
+
+# Map difficulty tiers: 0: Normal, 1: Painful, 2: Excruciating, 3: Fatal,
+# 4: Infernal, 5: PW Infernal, 6: Merciless, 7: PW Merciless, 8: Bloodshed, 9: PW Bloodshed
+# Worldboss guaranteed drops scaled from Bloodshed down to lower difficulties:
+# Kangölü (Bloodshed): 75x Wisdom guaranteed, 25% chance for +50x Wisdom bonus, 1x-3x Realm Fragments guaranteed.
+WORLDBOSS_GUARANTEED_WISDOM_BY_DIFFICULTY = (
+    8,   # 0 Normal
+    17,  # 1 Painful
+    25,  # 2 Excruciating
+    33,  # 3 Fatal
+    42,  # 4 Infernal
+    50,  # 5 PW Infernal
+    58,  # 6 Merciless
+    67,  # 7 PW Merciless
+    75,  # 8 Bloodshed
+    75,  # 9 PW Bloodshed
+)
+WORLDBOSS_BONUS_WISDOM_BY_DIFFICULTY = (
+    6,   # 0 Normal
+    11,  # 1 Painful
+    17,  # 2 Excruciating
+    22,  # 3 Fatal
+    28,  # 4 Infernal
+    33,  # 5 PW Infernal
+    39,  # 6 Merciless
+    44,  # 7 PW Merciless
+    50,  # 8 Bloodshed
+    50,  # 9 PW Bloodshed
+)
+WORLDBOSS_BONUS_WISDOM_CHANCE = 0.25
+WORLDBOSS_REALM_FRAGMENT_RANGE_BY_DIFFICULTY = (
+    (1, 1),  # 0 Normal: 1x
+    (1, 1),  # 1 Painful: 1x
+    (1, 1),  # 2 Excruciating: 1x
+    (1, 1),  # 3 Fatal: 1x
+    (1, 2),  # 4 Infernal: 1x-2x
+    (1, 2),  # 5 PW Infernal: 1x-2x
+    (1, 2),  # 6 Merciless: 1x-2x
+    (1, 2),  # 7 PW Merciless: 1x-2x
+    (1, 3),  # 8 Bloodshed: 1x-3x
+    (1, 3),  # 9 PW Bloodshed: 1x-3x
+)
+
+# Guardian, Leader, Champion, Sentinel mobs:
+# Kangölü (Bloodshed): 15% chance to drop 20x Wisdom and 3x Realm Fragments,
+# scaled down proportionally on lower difficulties:
+SPECIAL_MOB_RANKS = frozenset({"guardian", "leader", "champion", "sentinel"})
+SPECIAL_MOB_DROP_CHANCE = 0.15
+SPECIAL_MOB_WISDOM_BY_DIFFICULTY = (
+    2,   # 0 Normal
+    4,   # 1 Painful
+    6,   # 2 Excruciating
+    8,   # 3 Fatal
+    12,  # 4 Infernal
+    14,  # 5 PW Infernal
+    16,  # 6 Merciless
+    18,  # 7 PW Merciless
+    20,  # 8 Bloodshed
+    20,  # 9 PW Bloodshed
+)
+SPECIAL_MOB_REALM_FRAGMENTS_BY_DIFFICULTY = (
+    1,   # 0 Normal: 1x
+    1,   # 1 Painful: 1x
+    1,   # 2 Excruciating: 1x
+    1,   # 3 Fatal: 1x
+    2,   # 4 Infernal: 2x
+    2,   # 5 PW Infernal: 2x
+    2,   # 6 Merciless: 2x
+    2,   # 7 PW Merciless: 2x
+    3,   # 8 Bloodshed: 3x
+    3,   # 9 PW Bloodshed: 3x
+)
+
+# All mobs drops:
+# 0.05% (%0.05) chance to drop 1x Realm Fragment
+ALL_MOBS_REALM_FRAGMENT_CHANCE = 0.0005
+# 0.015% (%0.015) chance to drop 1x or 3x Ancient Wisdom
+ALL_MOBS_WISDOM_CHANCE = 0.00015
 # The Happy Hour travel-item descriptions promise these guaranteed totals for
 # the corresponding Andermant Golem boss tiers. Static data names each row's
 # loot as SPECIAL_*, a server-owned list that is not exposed as ordinary
@@ -3492,6 +3571,63 @@ def generate_monster_loot(
             for definition, amount, item_level, appearance, rarity
             in specifications
         ]
+
+        # Configured currency drop definitions with AutoPickUp="All"
+        wisdom_definition = LootItemDefinition(
+            WISDOM_ITEM_TEMPLATE,
+            "Currency",
+            "All",
+            "0",
+            "0",
+            "",
+        )
+        realm_fragment_definition = LootItemDefinition(
+            REALM_FRAGMENT_ITEM_TEMPLATE,
+            "ItemCurrency",
+            "All",
+            "0",
+            "0",
+            "",
+        )
+
+        diff_tier = max(
+            0,
+            min(
+                len(WORLDBOSS_GUARANTEED_WISDOM_BY_DIFFICULTY) - 1,
+                int(map_difficulty),
+            ),
+        )
+
+        # 1. Worldboss guaranteed drops (scaled by difficulty, Bloodshed: 75x Wisdom + 25% 50x bonus, 1-3x Realm Fragment)
+        if (
+            profile.rank_kind == "worldboss"
+            and not suppress_worldboss_reward_drops
+        ):
+            guaranteed_wb_wisdom = WORLDBOSS_GUARANTEED_WISDOM_BY_DIFFICULTY[diff_tier]
+            specifications.append((wisdom_definition, guaranteed_wb_wisdom, 1, "", 0))
+            if force_drops or generator.random() <= WORLDBOSS_BONUS_WISDOM_CHANCE:
+                bonus_wb_wisdom = WORLDBOSS_BONUS_WISDOM_BY_DIFFICULTY[diff_tier]
+                specifications.append((wisdom_definition, bonus_wb_wisdom, 1, "", 0))
+            low_rf, high_rf = WORLDBOSS_REALM_FRAGMENT_RANGE_BY_DIFFICULTY[diff_tier]
+            wb_rf_amount = generator.randint(low_rf, high_rf)
+            specifications.append((realm_fragment_definition, wb_rf_amount, 1, "", 0))
+
+        # 2. Guardian, leader, champion, sentinel drops (15% chance, Bloodshed: 20x Wisdom + 3x Realm Fragment)
+        if profile.rank_kind in SPECIAL_MOB_RANKS:
+            if force_drops or generator.random() <= SPECIAL_MOB_DROP_CHANCE:
+                elite_wisdom = SPECIAL_MOB_WISDOM_BY_DIFFICULTY[diff_tier]
+                elite_rf = SPECIAL_MOB_REALM_FRAGMENTS_BY_DIFFICULTY[diff_tier]
+                specifications.append((wisdom_definition, elite_wisdom, 1, "", 0))
+                specifications.append((realm_fragment_definition, elite_rf, 1, "", 0))
+
+        # 3. All mobs: 0.05% chance for 1x Realm Fragment
+        if generator.random() <= ALL_MOBS_REALM_FRAGMENT_CHANCE:
+            specifications.append((realm_fragment_definition, 1, 1, "", 0))
+
+        # 4. All mobs: 0.015% chance for 1x or 3x Ancient Wisdom
+        if generator.random() <= ALL_MOBS_WISDOM_CHANCE:
+            mob_wisdom = generator.choice((1, 3))
+            specifications.append((wisdom_definition, mob_wisdom, 1, "", 0))
 
         positions = _scatter_positions(
             position,

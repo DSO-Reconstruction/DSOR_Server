@@ -315,10 +315,10 @@ class InventoryInfo:
     ingredient_bag_item_ids: list[int] = field(default_factory=list)  # +0x180
     # Generated helper 0x1409225a4: array<string>, _Template_IngredientBag ids.
     ingredient_bag_templates: list[str] = field(default_factory=list)  # +0x1a0
-    storage_upgrade: int = 30
-    bank_storage_upgrade: int = 55
-    storage_size: int = 224
-    bank_storage_size: int = 280
+    storage_upgrade: int = 1
+    bank_storage_upgrade: int = 3
+    storage_size: int = 21
+    bank_storage_size: int = 20
     extra_bank_storage_size: int = 0
     extra_storage_size: int = 0
     health_points: float = 3459715.25
@@ -980,21 +980,22 @@ def encode_bootstrap_inventory_info(
     *,
     class_name: str = "dwarf",
     item_level: int = 1,
+    starter_config: Mapping[str, Any] | None = None,
 ) -> tuple[bytes, int]:
     """Create a typed inventory satisfying the client's equipment UI contract.
 
     ``TransmogWidget::UpdateEquipmentSlots`` indexes equipment slots 0..7 and
     requires each to contain a valid item.  Use the class' enchantment-free
-    valid class-specific starter templates for those slots, followed by the three
-    independently reconstructed trinket, consumable and travel allocations.
+    valid class-specific starter templates for those slots, followed by the
+    configured trinket, consumable, mount, pet and travel allocations.
     """
 
-    try:
-        core_templates = _CLASS_CORE_EQUIPMENT[class_name]
-    except KeyError as exc:
-        raise ValueError(
-            f"unsupported bootstrap inventory class {class_name!r}"
-        ) from exc
+    if starter_config is None:
+        try:
+            from dso_server.gameplay.starter_config import load_starter_config
+            starter_config = load_starter_config()
+        except Exception:
+            starter_config = None
 
     now = datetime.now()
     created_at = (
@@ -1005,28 +1006,126 @@ def encode_bootstrap_inventory_info(
         now.minute,
         now.second,
     )
+
     core_items: list[ItemInfo] = []
     core_allocations: dict[int, tuple[int, ...]] = {}
-    for index, (template_id, slots) in enumerate(core_templates):
-        item_id = 0x00F00100 + index
-        core_items.append(
-            ItemInfo(
+
+    configured_class_eq = None
+    if starter_config:
+        configured_class_eq = (
+            starter_config.get("starter_items", {})
+            .get("class_equipment", {})
+            .get(class_name)
+        )
+
+    if configured_class_eq:
+        for index, entry in enumerate(configured_class_eq):
+            template_id = str(entry.get("template_id", "")).strip()
+            if not template_id:
+                continue
+            slot = int(entry.get("slot", 0))
+            lvl = int(entry.get("item_level", item_level))
+            rarity = int(entry.get("rarity", 0))
+            item_id = 0x00F00100 + index
+            core_items.append(
+                ItemInfo(
+                    item_id=item_id,
+                    template_id=template_id,
+                    rarity=rarity,
+                    socket_count=0,
+                    socketed_templates=[],
+                    item_level=max(1, lvl),
+                    field_18=0x1000 + index,
+                    stack_vc_value=1,
+                    base_enchantment_tier=0,
+                    enchantments=[],
+                    created_at=created_at,
+                )
+            )
+            core_allocations[item_id] = (slot,)
+    else:
+        try:
+            core_templates = _CLASS_CORE_EQUIPMENT[class_name]
+        except KeyError as exc:
+            raise ValueError(
+                f"unsupported bootstrap inventory class {class_name!r}"
+            ) from exc
+
+        for index, (template_id, slots) in enumerate(core_templates):
+            item_id = 0x00F00100 + index
+            core_items.append(
+                ItemInfo(
+                    item_id=item_id,
+                    template_id=template_id,
+                    rarity=0,
+                    socket_count=0,
+                    socketed_templates=[],
+                    item_level=max(1, int(item_level)),
+                    field_18=0x1000 + index,
+                    stack_vc_value=1,
+                    base_enchantment_tier=0,
+                    enchantments=[],
+                    created_at=created_at,
+                )
+            )
+            core_allocations[item_id] = slots
+
+    # Process shared items from starter_config if available
+    configured_shared = (
+        starter_config.get("starter_items", {}).get("shared")
+        if starter_config
+        else None
+    )
+
+    if configured_shared is not None:
+        extra_items: list[ItemInfo] = []
+        equipment_slots = dict(core_allocations)
+        storage_slots: dict[int, int] = {}
+        storage_index = 0
+
+        for index, entry in enumerate(configured_shared):
+            template_id = str(entry.get("template_id", "")).strip()
+            if not template_id:
+                continue
+            amount = max(1, int(entry.get("amount", 1)))
+            lvl = max(1, int(entry.get("item_level", 1)))
+            rarity = max(0, int(entry.get("rarity", 0)))
+            slot_spec = str(entry.get("slot", "inventory")).strip().lower()
+
+            item_id = 0x00F00150 + index
+            item = ItemInfo(
                 item_id=item_id,
                 template_id=template_id,
-                # All gameplay starter rows are Common.  CharCreation rows are
-                # intentionally excluded from this packet.
-                rarity=0,
+                amount=amount,
+                rarity=rarity,
                 socket_count=0,
                 socketed_templates=[],
-                item_level=max(1, int(item_level)),
-                field_18=0x1000 + index,
+                item_level=lvl,
+                field_18=0x2120 + index,
                 stack_vc_value=1,
                 base_enchantment_tier=0,
-                enchantments=[],
                 created_at=created_at,
             )
+            extra_items.append(item)
+
+            if slot_spec == "ring1":
+                equipment_slots[item_id] = (8,)
+            elif slot_spec == "ring2":
+                equipment_slots[item_id] = (9,)
+            elif slot_spec.isdigit() and int(slot_spec) not in equipment_slots.values():
+                equipment_slots[item_id] = (int(slot_spec),)
+            else:
+                storage_slots[item_id] = storage_index
+                storage_index += 1
+
+        return encode_inventory_info(
+            InventoryInfo(
+                items=core_items + extra_items,
+                equipment_slots=equipment_slots,
+                storage_slots=storage_slots,
+                actor_id=actor_id,
+            )
         )
-        core_allocations[item_id] = slots
 
     ring_death = ItemInfo(
         item_id=BOOTSTRAP_STARTER_RING_DEATH_ID,

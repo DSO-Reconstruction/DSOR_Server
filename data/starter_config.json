@@ -1,0 +1,426 @@
+{
+  "membership": {
+    "type": 2,
+    "duration_days": 1825,
+    "active": false
+  },
+  "currencies": {
+    "andermant": 600,
+    "gold": 1,
+    "silver": 0,
+    "copper": 0,
+    "badge_of_honor": 0,
+    "draken": 0,
+    "glyph_of_power": 0,
+    "game_currencies": {
+      "realm_fragment": 0,
+      "gilded_clover": 0,
+      "materi_fragment": 0,
+      "crystal_of_truth": 0,
+      "altered_crescerite": 0,
+      "community_coin": 0,
+      "solar_coin": 0,
+      "bone_coin": 0,
+      "frozen_coins": 0,
+      "kitchen_coin": 0,
+      "victory_medals": 0,
+      "dragon_blood_essence": 0,
+      "season_coin": 0,
+      "lantern_coin": 0
+    }
+  },
+  "starter_items": {
+    "shared": [
+      {
+        "template_id": "potion_combined_health_rarity_05",
+        "name": "Healing Potion",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 4,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "misc_travelmap",
+        "name": "Travel Map",
+        "amount": 1,
+        "item_level": 10,
+        "rarity": 0,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "gold_pass",
+        "name": "Season Gold Pass",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 5,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "gold_pass_2",
+        "name": "Season Gold Pass II",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 5,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "red_pass",
+        "name": "Season Red Pass",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 7,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "red_pass_2",
+        "name": "Season Red Pass II",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 7,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "item_rune_extension_stone",
+        "name": "Divination Stones",
+        "amount": 2,
+        "item_level": 1,
+        "rarity": 0,
+        "slot": "inventory"
+      },
+      {
+        "template_id": "all_base_ring_offense_crafted",
+        "name": "Signet Ring",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 0,
+        "slot": "ring1"
+      },
+      {
+        "template_id": "all_base_ring_offense_crafted",
+        "name": "Mühür yüzüğü",
+        "amount": 1,
+        "item_level": 1,
+        "rarity": 0,
+        "slot": "ring2"
+      }
+    ],
+    "class_equipment": {
+      "warrior": [
+        {
+          "template_id": "warrior_base_helmet_crafted",
+          "slot": 0,
+          "slot_name": "Helmet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_shoulders_crafted",
+          "slot": 1,
+          "slot_name": "Shoulders",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_torso_crafted",
+          "slot": 2,
+          "slot_name": "Torso",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_gloves_crafted",
+          "slot": 3,
+          "slot_name": "Gloves",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_boots_crafted",
+          "slot": 4,
+          "slot_name": "Boots",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_rh_sword_speedAttack_damage",
+          "slot": 5,
+          "slot_name": "Main Hand Weapon",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_lh_shield_armor_healthpoints_resistanceAll",
+          "slot": 6,
+          "slot_name": "Offhand / Shield",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_backitem_defense_crafted",
+          "slot": 7,
+          "slot_name": "Cloak / Back Item",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_amulet_crafted",
+          "slot": 10,
+          "slot_name": "Amulet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_belt_crafted",
+          "slot": 11,
+          "slot_name": "Belt",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "warrior_base_weaponmod_crafted",
+          "slot": 12,
+          "slot_name": "Weapon Modifier",
+          "item_level": 1,
+          "rarity": 0
+        }
+      ],
+      "mage": [
+        {
+          "template_id": "mage_base_helmet_crafted",
+          "slot": 0,
+          "slot_name": "Helmet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_shoulders_crafted",
+          "slot": 1,
+          "slot_name": "Shoulders",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_torso_crafted",
+          "slot": 2,
+          "slot_name": "Torso",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_gloves_crafted",
+          "slot": 3,
+          "slot_name": "Gloves",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_boots_crafted",
+          "slot": 4,
+          "slot_name": "Boots",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_rh_staff_speedAttack_damage",
+          "slot": 5,
+          "slot_name": "Main Hand Weapon",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_lh_orb_armor_healthpoints_resistanceAll",
+          "slot": 6,
+          "slot_name": "Offhand / Shield",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_backitem_defense_crafted",
+          "slot": 7,
+          "slot_name": "Cloak / Back Item",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_amulet_crafted",
+          "slot": 10,
+          "slot_name": "Amulet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_belt_crafted",
+          "slot": 11,
+          "slot_name": "Belt",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "mage_base_weaponmod_crafted",
+          "slot": 12,
+          "slot_name": "Weapon Modifier",
+          "item_level": 1,
+          "rarity": 0
+        }
+      ],
+      "ranger": [
+        {
+          "template_id": "ranger_base_helmet_crafted",
+          "slot": 0,
+          "slot_name": "Helmet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_shoulders_crafted",
+          "slot": 1,
+          "slot_name": "Shoulders",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_torso_crafted",
+          "slot": 2,
+          "slot_name": "Torso",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_gloves_crafted",
+          "slot": 3,
+          "slot_name": "Gloves",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_boots_crafted",
+          "slot": 4,
+          "slot_name": "Boots",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_rh_shortbow_speedAttack_damage",
+          "slot": 5,
+          "slot_name": "Main Hand Weapon",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_lh_defensequiver_armor_healthpoints_resistanceAll",
+          "slot": 6,
+          "slot_name": "Offhand / Shield",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_backitem_defense_crafted",
+          "slot": 7,
+          "slot_name": "Cloak / Back Item",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_amulet_crafted",
+          "slot": 10,
+          "slot_name": "Amulet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_belt_crafted",
+          "slot": 11,
+          "slot_name": "Belt",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "ranger_base_weaponmod_crafted",
+          "slot": 12,
+          "slot_name": "Weapon Modifier",
+          "item_level": 1,
+          "rarity": 0
+        }
+      ],
+      "dwarf": [
+        {
+          "template_id": "dwarf_base_helmet_crafted",
+          "slot": 0,
+          "slot_name": "Helmet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_shoulders_crafted",
+          "slot": 1,
+          "slot_name": "Shoulders",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_torso_crafted",
+          "slot": 2,
+          "slot_name": "Torso",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_gloves_crafted",
+          "slot": 3,
+          "slot_name": "Gloves",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_boots_crafted",
+          "slot": 4,
+          "slot_name": "Boots",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_rh_pistol_speedAttack_damage",
+          "slot": 5,
+          "slot_name": "Main Hand Weapon",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_lh_absorber_armor_healthpoints_resistanceAll",
+          "slot": 6,
+          "slot_name": "Offhand / Shield",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_backitem_defense_crafted",
+          "slot": 7,
+          "slot_name": "Cloak / Back Item",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_amulet_crafted",
+          "slot": 10,
+          "slot_name": "Amulet",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "all_base_belt_crafted",
+          "slot": 11,
+          "slot_name": "Belt",
+          "item_level": 1,
+          "rarity": 0
+        },
+        {
+          "template_id": "dwarf_base_weaponmod_crafted",
+          "slot": 12,
+          "slot_name": "Weapon Modifier",
+          "item_level": 1,
+          "rarity": 0
+        }
+      ]
+    }
+  }
+}

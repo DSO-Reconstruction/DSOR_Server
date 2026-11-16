@@ -1278,6 +1278,74 @@ class CommerceService:
                             currency, game_currencies, price,
                             shop_currency_resource=None,
                         )
+                        from dso_server.services.storage_extensions import (
+                            extension_grant_amounts,
+                            MAX_INVENTORY_SLOTS,
+                            MAX_INVENTORY_UPGRADES,
+                            MAX_BANK_SLOTS,
+                            MAX_BANK_UPGRADES,
+                        )
+                        ext_kind, ext_upgrades, ext_slots = extension_grant_amounts(str(row[1]))
+                        if ext_kind:
+                            if ext_kind == "inventory":
+                                inventory.storage_size = min(
+                                    MAX_INVENTORY_SLOTS,
+                                    int(getattr(inventory, "storage_size", 21)) + ext_slots * direct_entry.amount,
+                                )
+                                inventory.storage_upgrade = min(
+                                    MAX_INVENTORY_UPGRADES,
+                                    int(getattr(inventory, "storage_upgrade", 0)) + ext_upgrades * direct_entry.amount,
+                                )
+                            else:
+                                inventory.bank_storage_size = min(
+                                    MAX_BANK_SLOTS,
+                                    int(getattr(inventory, "bank_storage_size", 20)) + ext_slots * direct_entry.amount,
+                                )
+                                inventory.bank_storage_upgrade = min(
+                                    MAX_BANK_UPGRADES,
+                                    int(getattr(inventory, "bank_storage_upgrade", 0)) + ext_upgrades * direct_entry.amount,
+                                )
+                            from dso_server.protocol.reward_protocol import (
+                                resolve_inventory_extension_offer,
+                                resolve_bank_extension_offer,
+                            )
+                            from dso_server.protocol.player_init_protocol import (
+                                SPECIAL_OFFER_COMMAND,
+                                SpecialOffer,
+                            )
+                            updated_special_offer = SpecialOffer(
+                                resolve_inventory_extension_offer(self.static_database_path, inventory.storage_upgrade),
+                                resolve_bank_extension_offer(self.static_database_path, inventory.bank_storage_upgrade),
+                                None, False, "0000-00-00 00:00:00", (), (), (), ()
+                            )
+                            delta_inv = clone_inventory_info(inventory)
+                            commands = [
+                                ServerCommand(INVENTORY_INFO_COMMAND, delta_inv, LOCAL_PLAYER_ACTOR_ID),
+                                ServerCommand(CURRENCY_CHANGED_COMMAND, currency, LOCAL_PLAYER_ACTOR_ID),
+                                ServerCommand(SPECIAL_OFFER_COMMAND, updated_special_offer, 0),
+                            ]
+                            packet, packet_bits = encode_server_command_batch(
+                                tuple(commands), include_terminator=True,
+                            )
+                            with s.flow_lock:
+                                s.gameplay_currency_state = currency
+                                s.gameplay_game_currencies = game_currencies
+                                s.gameplay_inventory = inventory
+                            s.send_reliable_ordered_split(
+                                packet, total_bit_length=packet_bits,
+                                track=True, label_prefix="direct-storage-extension-purchase",
+                            )
+                            self._credit_tier_spender_progress(s, price.rc)
+                            self._season_pass_feed(s, "SpendRealCurrency", count=price.rc)
+                            CharacterService._persist_gameplay_session(
+                                self, s, reason="direct storage extension transaction",
+                            )
+                            print(
+                                f"[{GAMEPLAY_SERVICE_NAME}] handled direct {ext_kind} expansion "
+                                f"(storage_size={inventory.storage_size}, bank_storage_size={inventory.bank_storage_size})"
+                            )
+                            return
+
                         mutation = add_purchased_item(
                             inventory, definition, purchased_amount,
                             next_item_id=next_item_id,
