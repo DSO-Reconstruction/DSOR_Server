@@ -65,6 +65,15 @@ def test_character_generation_editor_andermant():
     assert resp.fields_84 == (0, 0, 0, 54321)
 
 
+def test_resolve_editor_andermant():
+    from dso_server.services.character_selection import CharacterSelectionService
+    svc = CharacterSelectionService.__new__(CharacterSelectionService)
+    svc.character_selection = MagicMock(characters=[])
+    svc.account_store = None
+    val = svc._resolve_editor_andermant(None)
+    assert isinstance(val, int) and val >= 0
+
+
 def test_extension_grant_amounts():
     kind, upg, slots = extension_grant_amounts("misc_bag_extension_01")
     assert kind == "inventory" and upg == 1 and slots == 7

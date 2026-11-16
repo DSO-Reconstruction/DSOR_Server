@@ -492,7 +492,7 @@ class CharacterSelectionService:
             base_prem = int(getattr(target_character, "premium_currency", default_andermant))
             store = getattr(self, "account_store", None)
             if store is not None and cid:
-                from dso_server.protocol.currency_protocol import CurrencyChanged
+                from dso_server.protocol.player_init_protocol import CurrencyChanged
                 try:
                     return int(
                         store.currency_for_character(
