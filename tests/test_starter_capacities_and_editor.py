@@ -154,8 +154,8 @@ def test_special_offer_slot_expansion_offers():
 
     bank_offer = resolve_bank_extension_offer(DEFAULT_STATIC_DB_PATH, 3)
     assert bank_offer is not None
-    assert bank_offer.resource_id == "misc_bank_extension_01"
-    assert bank_offer.field_58 == 800  # 800 Andermant
+    assert bank_offer.resource_id == "misc_bank_extension_03"
+    assert bank_offer.field_58 == 2000  # 2000 Andermant
 
     sp = SpecialOffer(inv_offer, bank_offer, None, False, "0000-00-00 00:00:00", (), (), (), ())
     w = BitWriter()
@@ -167,5 +167,35 @@ def test_special_offer_slot_expansion_offers():
     assert sp_decoded.primary is not None
     assert sp_decoded.primary.resource_id == "misc_bag_extension_01"
     assert sp_decoded.secondary is not None
-    assert sp_decoded.secondary.resource_id == "misc_bank_extension_01"
+    assert sp_decoded.secondary.resource_id == "misc_bank_extension_03"
+
+
+def test_account_wide_membership_inheritance():
+    import threading
+    from unittest.mock import MagicMock
+    from dso_server.persistence.account_state import AccountStateStore, AccountState
+    from dso_server.protocol.membership_protocol import DELUXE_MEMBERSHIP, default_deluxe_expiry
+
+    mock_registry = MagicMock()
+    mock_registry.wallet_owner.return_value = (1001, (10, 20))
+
+    store = AccountStateStore.__new__(AccountStateStore)
+    store.lock = threading.RLock()
+    store.account_registry = mock_registry
+    store.states = {}
+
+    # Character 10 has active Deluxe
+    st10 = MagicMock(spec=AccountState)
+    st10.membership_type = DELUXE_MEMBERSHIP
+    st10.membership_expires_at = default_deluxe_expiry()
+    st10.membership_active = True
+    st10.membership_premium_expires_at = ""
+    store.states[10] = st10
+
+    # Character 20 is a new character with no state yet
+    m = store.account_membership(20)
+    assert m is not None
+    assert m[0] == DELUXE_MEMBERSHIP
+    assert m[2] is True  # active
+
 
