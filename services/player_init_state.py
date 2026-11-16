@@ -992,7 +992,20 @@ class PlayerInitializationStateService:
                 True,
             )
         )
-        if persisted_state is not None:
+        acct_store = getattr(self, "account_store", None)
+        acct_membership = (
+            acct_store.account_membership(getattr(character, "character_id", 0))
+            if acct_store is not None
+            else None
+        )
+        if acct_membership is not None:
+            (
+                membership_type,
+                membership_expires_at,
+                membership_active,
+                membership_premium_expires_at,
+            ) = acct_membership
+        elif persisted_state is not None:
             membership_type = int(persisted_state.membership_type)
             membership_expires_at = str(persisted_state.membership_expires_at)
             membership_active = bool(persisted_state.membership_active)

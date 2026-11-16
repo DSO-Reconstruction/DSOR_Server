@@ -33,6 +33,8 @@ from dso_server.protocol.membership_protocol import (
     DELUXE_MEMBERSHIP,
     default_deluxe_expiry,
     parse_membership_expiry,
+    membership_is_active,
+    premium_handover,
 )
 from dso_server.gameplay.achievement_content import (
     AchievementProgress,
@@ -1557,6 +1559,29 @@ class AccountStateStore:
                 raise ValueError("insufficient account Andermant or wallet exceeds wire range")
             self.account_wallets[owner] = balance
             return replace(currency, currency_type=balance, wallet_base=balance)
+
+    def account_membership(self, character_id: int) -> tuple[int, str, bool, str] | None:
+        """Return the account's active membership (type, expires_at, active, premium_expires_at) if any character has one."""
+        with self.lock:
+            registry = self.account_registry
+            if registry is None:
+                return None
+            ownership = registry.wallet_owner(int(character_id))
+            if ownership is None:
+                return None
+            account_id, character_ids = ownership
+            now = datetime.now(timezone.utc)
+            for cid in character_ids:
+                st = self.states.get(int(cid))
+                if st is not None:
+                    m_type = int(st.membership_type)
+                    m_exp = str(st.membership_expires_at)
+                    m_act = bool(st.membership_active)
+                    m_prem = str(st.membership_premium_expires_at or "")
+                    m_type, m_exp, m_act = premium_handover(m_type, m_exp, m_act, m_prem, now=now)
+                    if membership_is_active(m_type, m_act, m_exp, now=now):
+                        return (m_type, m_exp, m_act, m_prem)
+            return None
 
     def get(self, character_id: int) -> AccountState | None:
         with self.lock:

@@ -864,7 +864,7 @@ def resolve_bank_extension_offer(
 ) -> OfferDetails | None:
     if bank_storage_upgrade >= 55:
         return None
-    upg = max(1, min(54, int(bank_storage_upgrade) - 2))
+    upg = max(1, min(54, int(bank_storage_upgrade)))
     offer_id = f"misc_bank_extension_{upg:02d}"
     return load_extension_offer(database_path, offer_id)
 
