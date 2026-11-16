@@ -862,6 +862,14 @@ class PlayerInitializationStateService:
             pvp_solo_matches_won=pvp_solo_matches_won,
             pvp_team_matches_played=pvp_team_matches_played,
             pvp_team_matches_won=pvp_team_matches_won,
+            inventory_capacities=(
+                int(getattr(state.inventory, "storage_upgrade", 0)),
+                int(getattr(state.inventory, "bank_storage_upgrade", 0)),
+                int(getattr(state.inventory, "storage_size", 21)),
+                int(getattr(state.inventory, "bank_storage_size", 20)),
+                int(getattr(state.inventory, "extra_bank_storage_size", 0)),
+                int(getattr(state.inventory, "extra_storage_size", 0)),
+            ),
             **state.player_xp_state,
         )
         new_player, consumed = decode_new_player_prefix(

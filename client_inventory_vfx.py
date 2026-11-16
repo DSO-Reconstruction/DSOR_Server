@@ -10,6 +10,7 @@ from pathlib import Path
 _SUPPORTED_CLIENT_SHA256 = frozenset({
     "0b593691da671f5cb525a566b83e7fde3b9e9e009512928bf3ede036fe718e06",
     "dba92163fd8d5535fd7bb69158d10b26269b8510fe2197576a307ef210647454",
+    "5bf85ffd5681d84d041b03b9f0e2bad3126a9270721c07e178e451c286c337eb",
 })
 _CALL_RVA = 0x1513CD
 _CALL_OFFSET = 0x1507CD
@@ -51,6 +52,9 @@ def _patched_image(source: bytes) -> bytes | None:
     # The guard occupies zero padding at the end of the executable .text
     # section. Extend VirtualSize to cover it without moving any sections.
     struct.pack_into("<I", image, _TEXT_VIRTUAL_SIZE_OFFSET, _GUARD_RVA - 0x1000 + len(guard))
+    # Ensure Average Item Level patch is applied
+    from tools.patch_client_average_item_level import PATCH_OFFSET, PATCH_TOTAL_LEN, REPLACEMENT_BYTES
+    image[PATCH_OFFSET : PATCH_OFFSET + PATCH_TOTAL_LEN] = REPLACEMENT_BYTES
     return bytes(image)
 
 

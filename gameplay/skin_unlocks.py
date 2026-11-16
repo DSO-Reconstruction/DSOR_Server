@@ -85,11 +85,15 @@ def repair_skin_source_inventory(
 
     source_templates = {str(row[2]) for row in rows if row[2]}
     # The client asserts when bank storage exceeds its fixed native limit.
-    # Repair any capacity/allocation written by the earlier implementation.
-    # The server sells no bank extensions, so every character gets the full
-    # bank; saves from the 53-extension capture had a 30-slot last bag.
-    inventory.bank_storage_size = MAX_BANK_STORAGE_SLOTS
-    inventory.bank_storage_upgrade = MAX_BANK_STORAGE_UPGRADE
+    # Clamp capacity to the maximum native limit without overriding normal upgrades.
+    if getattr(inventory, "bank_storage_size", 0) <= 0:
+        inventory.bank_storage_size = 20
+    if getattr(inventory, "bank_storage_upgrade", 0) < 0:
+        inventory.bank_storage_upgrade = 0
+    if inventory.bank_storage_size > MAX_BANK_STORAGE_SLOTS:
+        inventory.bank_storage_size = MAX_BANK_STORAGE_SLOTS
+    if inventory.bank_storage_upgrade > MAX_BANK_STORAGE_UPGRADE:
+        inventory.bank_storage_upgrade = MAX_BANK_STORAGE_UPGRADE
     inventory.bank_storage_slots = {
         item_id: slot
         for item_id, slot in inventory.bank_storage_slots.items()

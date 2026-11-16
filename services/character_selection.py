@@ -472,6 +472,39 @@ class CharacterSelectionService:
             f"{reason} (deny reason {deny_reason})"
         )
 
+    def _resolve_editor_andermant(self, character=None) -> int:
+        """Return the account/character Andermant balance for the editor display."""
+        try:
+            from dso_server.gameplay.starter_config import load_starter_config
+            starter_cfg = load_starter_config()
+            default_andermant = int(starter_cfg.get("currencies", {}).get("andermant", 100_000_000))
+        except Exception:
+            default_andermant = 100_000_000
+
+        target_character = character
+        if target_character is None and getattr(self, "character_selection", None):
+            chars = getattr(self.character_selection, "characters", [])
+            if chars:
+                target_character = chars[0]
+
+        if target_character is not None:
+            cid = int(getattr(target_character, "character_id", 0))
+            base_prem = int(getattr(target_character, "premium_currency", default_andermant))
+            store = getattr(self, "account_store", None)
+            if store is not None and cid:
+                from dso_server.protocol.currency_protocol import CurrencyChanged
+                try:
+                    return int(
+                        store.currency_for_character(
+                            cid, CurrencyChanged(base_prem, 0, (0, 0, 0), 0, False)
+                        ).andermant
+                    )
+                except Exception:
+                    pass
+            return base_prem
+
+        return default_andermant
+
     def _open_character_generation_editor(
             self, s: Session, *, reason: str, force: bool = False,
             character=None) -> bool:
@@ -502,11 +535,13 @@ class CharacterSelectionService:
         else:
             with self.character_roster_lock:
                 preview_id = self._next_character_id()
+        andermant = self._resolve_editor_andermant(character)
         response = character_generation_editor_response(
             locale=self.character_selection.locale,
             preview_id=preview_id,
             character=character,
             operation=9 if character is not None else 2,
+            andermant=andermant,
         )
         self._send_character_generation_packet(
             s, response, label="character-generation-editor"

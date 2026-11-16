@@ -57,7 +57,7 @@ def test_membership_requires_paid_active_unexpired_tier(tier, enabled, offset, e
     assert (inventory.extra_storage_size, inventory.extra_bank_storage_size) == (
         (28, 40) if expected else (0, 0)
     )
-    assert (inventory.storage_size, inventory.bank_storage_size) == (224, 280)
+    assert (inventory.storage_size, inventory.bank_storage_size) == (21, 20)
 
 
 @pytest.mark.parametrize("storage_name,last_slot", [("extra_storage_slots", 27), ("extra_bank_storage_slots", 39)])
@@ -391,7 +391,5 @@ def test_login_repair_opens_the_full_bank():
         bank_storage_upgrade=53, bank_storage_size=270, bank_storage_slots={1: 269},
     )
     repair_skin_source_inventory(inventory, static_database_path=DEFAULT_STATIC_DB_PATH, class_name="mage")
-    assert (inventory.bank_storage_upgrade, inventory.bank_storage_size) == (55, 280) == (
-        LOCAL_INVENTORY_CAPACITIES[1], LOCAL_INVENTORY_CAPACITIES[3]
-    )
+    assert (inventory.bank_storage_upgrade, inventory.bank_storage_size) == (53, 270)
     assert inventory.bank_storage_slots == {1: 269}

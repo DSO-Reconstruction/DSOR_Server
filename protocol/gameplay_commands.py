@@ -42,9 +42,9 @@ LOCAL_PREMIUM_CURRENCY_BALANCE = 9_999_999
 # character whose inventory has expanded ordinary/bank storage.  NewPlayer and
 # InventoryInfo must publish the same six values: the inventory UI allocates
 # its FixedArray<UI::Slot> from them and later indexes the expanded layout when
-# the window opens. The captured bank had 53 of 55 extensions (270 slots, a
-# 30-slot last bag); publish the full seven 40-slot bags instead.
-LOCAL_INVENTORY_CAPACITIES = (30, 55, 224, 280, 0, 0)
+# Default initial inventory capacities for new characters:
+# Bag 1 has 21 slots open (upgrade 0), Bank Box 1 has 20 slots open (upgrade 0).
+LOCAL_INVENTORY_CAPACITIES = (0, 0, 21, 20, 0, 0)
 
 CAPTURED_INVENTORY_HEALTH_POINTS = 3459715.25
 CAPTURED_INVENTORY_SECONDARY_RESOURCE = 100.0
@@ -195,6 +195,7 @@ def encode_new_player(
     pvp_solo_matches_won: int = 0,
     pvp_team_matches_played: int = 0,
     pvp_team_matches_won: int = 0,
+    inventory_capacities: tuple[int, int, int, int, int, int] | None = None,
 ) -> tuple[bytes, int]:
     """Serialize ``NewPlayerCommand`` (0x001d) for the selected character.
 
@@ -309,10 +310,10 @@ def encode_new_player(
     writer.write_uint32_le(0)
 
     # Inventory::Setup consumes these before InventoryInfo is handled. Keep
-    # them consistent with the default_player row in static.db4 and with the
-    # capacities sent by encode_inventory_info().
-    for value in LOCAL_INVENTORY_CAPACITIES:
-        writer.write_uint32_le(value)  # +0x170..+0x184
+    # them consistent with the player's persisted inventory capacities.
+    caps = inventory_capacities if inventory_capacities is not None else LOCAL_INVENTORY_CAPACITIES
+    for value in caps:
+        writer.write_uint32_le(int(value))  # +0x170..+0x184
     # +0x188 is the premium-currency balance. The live soul-stone purchase
     # decrements this exact field through CurrencyChanged (0x0080).
     writer.write_uint32_le(max(0, int(premium_currency)))  # +0x188

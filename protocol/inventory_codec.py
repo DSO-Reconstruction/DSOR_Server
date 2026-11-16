@@ -315,10 +315,10 @@ class InventoryInfo:
     ingredient_bag_item_ids: list[int] = field(default_factory=list)  # +0x180
     # Generated helper 0x1409225a4: array<string>, _Template_IngredientBag ids.
     ingredient_bag_templates: list[str] = field(default_factory=list)  # +0x1a0
-    storage_upgrade: int = 30
-    bank_storage_upgrade: int = 55
-    storage_size: int = 224
-    bank_storage_size: int = 280
+    storage_upgrade: int = 0
+    bank_storage_upgrade: int = 0
+    storage_size: int = 21
+    bank_storage_size: int = 20
     extra_bank_storage_size: int = 0
     extra_storage_size: int = 0
     health_points: float = 3459715.25
