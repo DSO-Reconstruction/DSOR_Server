@@ -67,11 +67,30 @@ def test_character_generation_editor_andermant():
 
 def test_resolve_editor_andermant():
     from dso_server.services.character_selection import CharacterSelectionService
+    from dso_server.protocol.character_selection import CharacterRecord
+    from dso_server.runtime.transport import Session
     svc = CharacterSelectionService.__new__(CharacterSelectionService)
-    svc.character_selection = MagicMock(characters=[])
+    # Another user's character exists on server with 999M andermant
+    other_char = MagicMock(spec=CharacterRecord, character_id=200000001, premium_currency=999_999_999)
+    svc.character_selection = MagicMock(characters=[other_char])
     svc.account_store = None
+    svc._owned_character_ids = MagicMock(return_value=())
+
+    # None session should resolve to default_andermant, NOT other_char's 999M
     val = svc._resolve_editor_andermant(None)
     assert isinstance(val, int) and val >= 0
+    assert val != 999_999_999
+
+    # Fresh session for an account with no characters should NOT get other_char's andermant
+    mock_session = MagicMock(spec=Session, account_id=12345)
+    val_session = svc._resolve_editor_andermant(mock_session)
+    assert val_session != 999_999_999
+
+    # Existing account with a wallet should get its own wallet balance
+    mock_store = MagicMock()
+    mock_store.account_wallets = {12345: 54321}
+    svc.account_store = mock_store
+    assert svc._resolve_editor_andermant(mock_session) == 54321
 
 
 def test_extension_grant_amounts():
