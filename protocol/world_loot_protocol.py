@@ -2681,6 +2681,31 @@ def generate_monster_loot(
                 != "e_hal_01_boss_gwenfara_phase_03"
             ):
                 listed_rewards = ()
+
+            # Winter Summit / Bear's Den possible rewards:
+            # Big Paws' Frosty equipment set and Greed's End belong exclusively
+            # to bosses, never to ordinary trash mobs.
+            # Moosov mount is excluded from drops entirely.
+            # Winter's Guardian Amulet is dropped only by Big Momma on Bloodshed difficulty.
+            is_winter_summit_access = str(map_access_id).casefold().startswith(("e_b1205_", "b1205_"))
+            is_winter_boss = False
+            if is_winter_summit_access:
+                is_winter_boss = (
+                    str(profile.rank_kind).casefold() in {"boss", "worldboss"}
+                    or "boss" in str(profile.template_id).casefold()
+                    or "big_paws" in str(profile.template_id).casefold()
+                )
+                if not is_winter_boss:
+                    listed_rewards = ()
+                else:
+                    listed_rewards = tuple(
+                        r for r in listed_rewards
+                        if not any(
+                            token in str(r.template_id).casefold()
+                            for token in ("moose", "winters_guardian")
+                        )
+                    )
+
             crafting_special_reward_ids = frozenset((
                 CRAFTING_DUNGEON_JEWEL_TEMPLATE,
                 *CRAFTING_DUNGEON_MOUNT_TEMPLATES,
@@ -2697,6 +2722,17 @@ def generate_monster_loot(
                 != "e_hal_01_boss_gwenfara_phase_03"
             ):
                 region_uniques = ()
+            if is_winter_summit_access:
+                if not is_winter_boss:
+                    region_uniques = ()
+                else:
+                    region_uniques = tuple(
+                        r for r in region_uniques
+                        if not any(
+                            token in str(r.template_id).casefold()
+                            for token in ("moose", "winters_guardian")
+                        )
+                    )
             if str(map_access_id).casefold().startswith(
                 "e_fullmoon_varholm_dun"
             ):

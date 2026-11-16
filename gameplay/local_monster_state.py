@@ -520,11 +520,72 @@ SPAWN_AREA_MAX_TOTAL_MONSTERS = max(
     0, int(os.environ.get("DSO_SPAWN_AREA_MAX_TOTAL_MONSTERS", "162"))
 )
 
+_WINTER_SUMMIT_NORMAL_MONSTERS = (
+    "e_chr_b1205_normal_beast_hound_01",
+    "e_chr_b1205_normal_meanie_rascal_01",
+    "e_chr_b1205_normal_norsegnome_01",
+    "e_chr_b1205_normal_troll_01",
+    "e_chr_b1205_normal_ice_minion_01",
+    "e_chr_b1205_normal_thing_roots_01",
+)
+
+_CHRISTMAS_CHALLENGE_NORMAL_MONSTERS = (
+    "e_chr_2015_normal_andermight_minion",
+    "e_chr_2015_normal_anderworld_creature",
+    "e_chr_2015_normal_chimera",
+    "e_chr_2015_guardian_01",
+)
+
+_CHRISTMAS_CHALLENGE_WAY_BACK_MONSTERS = (
+    "e_chr_2015_normal_andermight_minion",
+    "e_chr_2015_normal_anderworld_creature",
+    "e_chr_2015_normal_chimera",
+    "e_chr_2015_guardian_01",
+    "e_chr_2015_normal_guardian_death",
+)
+
 # Spawn-list membership is server-owned and is not shipped in static.db4.
 # These names are descriptive enough to recover the exact b1201 membership;
 # other maps use their map-scoped normal monster templates as a deterministic
 # fallback.
 _SPAWN_LIST_TEMPLATE_OVERRIDES = {
+    **{
+        challenge_map: {
+            "normal_spawn": _CHRISTMAS_CHALLENGE_NORMAL_MONSTERS,
+            "way_back_spawn": (
+                _CHRISTMAS_CHALLENGE_WAY_BACK_MONSTERS
+                if challenge_map != "e_chr_challenge_dun_01"
+                else _CHRISTMAS_CHALLENGE_NORMAL_MONSTERS
+            ),
+        }
+        for challenge_map in (
+            "e_chr_challenge_dun_01",
+            "e_chr_challenge_dun_02",
+            "e_chr_challenge_dun_03",
+        )
+    },
+    **{
+        winter_map_id: {
+            lane: _WINTER_SUMMIT_NORMAL_MONSTERS
+            for lane in (
+                "spawnlist_chr_lane_00",
+                "spawnlist_chr_lane_01",
+                "spawnlist_chr_lane_02",
+                "spawnlist_chr_lane_03",
+                "spawnlist_chr_lane_04",
+                "spawnlist_chr_lane_05_A",
+                "spawnlist_chr_lane_05_B",
+                "spawnlist_chr_lane_05_C",
+                "spawnlist_chr_spot_01",
+                "spawnlist_chr_spot_02",
+            )
+        }
+        for winter_map_id in (
+            "e_b1205_dun_chr_2012_01",
+            "e_b1205_dun_chr_2012_02",
+            "e_b1205_dun_chr_2024",
+        )
+    },
     # Viscanium Mine's exported map has no e_z0110_* monster family and its
     # server-owned spawn-list registry is not present in static.db4. Falling
     # back to the map's fixed actors (or the old e_ide_02_champion_* templates)
@@ -3554,6 +3615,10 @@ def _load_map_monster_templates(
         # Guardian Straying Lava Hound, and fills every density area with it.
         if str(map_id).casefold() == "e_sum_dun_01":
             map_prefix = "e_sum_01_normal_"
+        elif str(map_id).casefold().startswith(("e_b1205_dun_chr_", "b1205_dun_chr_")):
+            map_prefix = "e_chr_b1205_normal_"
+        elif str(map_id).casefold().startswith("e_chr_challenge_dun_"):
+            map_prefix = "e_chr_2015_"
         rows = database.execute(
             """
             SELECT Id
@@ -3581,6 +3646,11 @@ def _load_map_monster_templates(
             for fragment in excluded_fragments
         )
     )
+    if str(map_id).casefold().startswith("e_chr_challenge_dun_"):
+        templates = tuple(
+            template for template in templates
+            if "spawner" not in template.casefold()
+        )
     if str(map_id).casefold() == _SARGON_SHADOW_PORTAL_MAP_ID:
         # Portals are capped through their authored fixed SpawnPoints below;
         # keep generic density areas from creating additional portals.

@@ -623,6 +623,72 @@ def _new_year_trap_hazards(static_database_path: str, map_id: str):
     return tuple(result)
 
 
+@lru_cache(maxsize=16)
+def _christmas_challenge_freeze_fields(static_database_path: str, map_id: str):
+    """Load the authored fog and safe-zone volumes for Krampus challenges."""
+
+    key = map_key(map_id)
+    if key not in {
+        "e_chr_challenge_dun_01",
+        "e_chr_challenge_dun_02",
+        "e_chr_challenge_dun_03",
+    }:
+        return ()
+    path = map_database_path(static_database_path, map_id)
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as database:
+            rows = database.execute(
+                "SELECT rowid, COALESCE(EventSetRow, -1), Transform, Id, "
+                "StatusEffectId FROM _Instance_LocationEffect "
+                "WHERE lower(StatusEffectId) IN ("
+                "'e_chr_challenge_freeze_debuff_aura', "
+                "'e_chr_challenge_freeze_debuff_clean_aura')"
+            ).fetchall()
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"Krampus challenge frost-field load failed on {map_id}: {exc}")
+        return ()
+    fields = []
+    for row_id, event_set, transform, field_id, effect_id in rows:
+        try:
+            matrix = tuple(struct.unpack("<16f", bytes(transform)))
+        except (TypeError, struct.error):
+            continue
+        fields.append((
+            TriggerVolumeDefinition(
+                int(row_id), str(field_id), int(event_set), False,
+                "krampus-challenge-frost", matrix,
+            ),
+            str(effect_id).casefold(),
+        ))
+    return tuple(fields)
+
+
+@lru_cache(maxsize=16)
+def _christmas_challenge_freeze_effect_spec(static_database_path: str):
+    """Return the authored Krampus frost effect id and duration in seconds."""
+
+    try:
+        with sqlite3.connect(
+            f"{Path(static_database_path).resolve().as_uri()}?mode=ro",
+            uri=True,
+        ) as database:
+            row = database.execute(
+                "SELECT rowid - 1, COALESCE(StatusEffectDuration, 0) "
+                "FROM _Template_StatusEffect "
+                "WHERE Id='e_chr_challenge_freeze_debuff_effect' LIMIT 1"
+            ).fetchone()
+    except (OSError, sqlite3.Error) as exc:
+        _log(f"Krampus challenge frost effect load failed: {exc}")
+        return None
+    if row is None:
+        return None
+    effect_id, duration_seconds = row
+    duration_seconds = max(0.0, float(duration_seconds or 0.0))
+    if duration_seconds <= 0.0:
+        return None
+    return int(effect_id), duration_seconds
+
+
 # How far a trap/debuff aura may sit from the room it belongs to. Authored
 # auras sit on the corridor in front of their room, a few tens of units away
 # from the density area that populates it.
@@ -1504,6 +1570,18 @@ def _prop_state_for_viewer(viewer: Session, state: PropRuntimeState) -> PropRunt
     """Return this player's view of an individually used prop."""
 
     definition = state.definition
+    christmas_claim_key = _christmas_calendar_present_claim_key(
+        viewer, definition,
+    )
+    if christmas_claim_key:
+        with viewer.flow_lock:
+            claimed = bool(
+                getattr(viewer, "gameplay_timed_offer_purchases", {}).get(
+                    christmas_claim_key, 0,
+                )
+            )
+        if claimed:
+            return PropRuntimeState(definition, PROP_STATE_USED)
     summer_claim_key = _summer_solstice_reward_chest_claim_key(
         viewer, definition,
     )
@@ -1512,6 +1590,18 @@ def _prop_state_for_viewer(viewer: Session, state: PropRuntimeState) -> PropRunt
             claimed = bool(
                 getattr(viewer, "gameplay_timed_offer_purchases", {}).get(
                     summer_claim_key, 0,
+                )
+            )
+        if claimed:
+            return PropRuntimeState(definition, PROP_STATE_USED)
+    festive_claim_key = _festive_winter_solstice_present_claim_key(
+        viewer, definition,
+    )
+    if festive_claim_key:
+        with viewer.flow_lock:
+            claimed = bool(
+                getattr(viewer, "gameplay_timed_offer_purchases", {}).get(
+                    festive_claim_key, 0,
                 )
             )
         if claimed:
@@ -1635,6 +1725,55 @@ def _summer_solstice_reward_chest_claim_key(viewer: Session, definition) -> str:
     }:
         return ""
     return f"summer-solstice-reward-chest:{instance_id}"
+
+
+def _christmas_calendar_present_claim_key(viewer: Session, definition) -> str:
+    """Persist Solstice Cave advent calendar present usage across map and server sessions."""
+
+    runtime = getattr(viewer, "gameplay_map_event_runtime", None)
+    map_id = map_key(getattr(runtime, "map_id", "")) or map_key(getattr(viewer, "gameplay_map", ""))
+    if map_id != "e_chr_calendar_dun_01":
+        return ""
+    instance_id = str(getattr(definition, "instance_id", "") or "").casefold()
+    if not instance_id.startswith("e_chr_calendar_present_"):
+        template_id = str(getattr(definition, "template_id", "") or "").casefold()
+        if not template_id.startswith("e_chr_calendar_present_"):
+            return ""
+        instance_id = template_id
+    catalog = getattr(viewer, "gameplay_event_catalog", None)
+    event_id = 0
+    if catalog is not None:
+        event = next((
+            val for val in catalog.active_events()
+            if val.template.resource_id.casefold() == "christmas_2012"
+        ), None)
+        if event is not None:
+            event_id = int(event.event_id)
+    return f"christmas-calendar-present:{event_id}:{instance_id}"
+
+
+def _festive_winter_solstice_present_claim_key(viewer: Session, definition) -> str:
+    """Persist Festive Winter Solstice Present usage across map and server sessions."""
+
+    instance_id = str(getattr(definition, "instance_id", "") or "").casefold()
+    template_id = str(getattr(definition, "template_id", "") or "").casefold()
+    if instance_id != "e_chr_big_present_01" and template_id != "e_chr_big_present_01":
+        return ""
+    catalog = getattr(viewer, "gameplay_event_catalog", None)
+    event_id = 0
+    if catalog is not None:
+        event = next((
+            val for val in catalog.active_events()
+            if val.template.resource_id.casefold() == "christmas_2012"
+        ), None)
+        if event is None:
+            event = next((
+                val for val in catalog.active_events()
+                if val.template.resource_id.casefold() == "christmas_2012_silent"
+            ), None)
+        if event is not None:
+            event_id = int(event.event_id)
+    return f"festive-winter-solstice-present:{event_id}"
 
 
 def _send_prop_info_entries(viewer: Session, pairs, *, label: str) -> None:
@@ -7984,6 +8123,119 @@ class MapEventService:
             + (f" for character {player_id}" if individual_usage else "")
         )
 
+    def _schedule_winter_event_chest_respawn(
+            self, runtime, definition, *, player_id: int) -> None:
+        """Reactivate e_chr_2023_event_chest_collect after 3.0s cooldown."""
+
+        template_id = str(getattr(definition, "template_id", "") or "").casefold()
+        instance_id = str(getattr(definition, "instance_id", "") or "").casefold()
+        if (
+            template_id != "e_chr_2023_event_chest_collect"
+            and instance_id != "e_chr_2023_event_chest_collect"
+        ):
+            return
+        scheduler = getattr(runtime, "scheduler", None)
+        if scheduler is None:
+            _log("Winter event chest respawn has no map deadline scheduler")
+            return
+        prop_id = int(definition.prop_id)
+        individual_usage = bool(definition.individual_usage)
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            state = runtime.props.get(prop_id)
+            if individual_usage:
+                if timer_key not in runtime.individual_prop_usage:
+                    return
+            elif state is None or state.state != PROP_STATE_USED:
+                return
+            timers = getattr(runtime, "winter_chest_respawn_timers", None)
+            if timers is None:
+                timers = runtime.winter_chest_respawn_timers = {}
+            if timer_key in timers:
+                return
+            timer = scheduler.timer(
+                3.0,
+                self._respawn_winter_event_chest,
+                args=(
+                    runtime, prop_id,
+                    int(player_id) if individual_usage else None,
+                ),
+            )
+            timers[timer_key] = timer
+        timer.start()
+
+    def _respawn_winter_event_chest(
+            self, runtime, prop_id: int, player_id: int | None = None) -> None:
+        """Restore one winter collect chest and notify players."""
+
+        if not self._map_event_runtime_is_live(runtime):
+            return
+        prop_id = int(prop_id)
+        individual_usage = player_id is not None
+        timer_key = (
+            (int(player_id), prop_id) if individual_usage else prop_id
+        )
+        with runtime.lock:
+            timers = getattr(runtime, "winter_chest_respawn_timers", None)
+            if timers is not None:
+                timers.pop(timer_key, None)
+            state = runtime.props.get(prop_id)
+            if state is None:
+                return
+            template_id = str(getattr(state.definition, "template_id", "") or "").casefold()
+            instance_id = str(getattr(state.definition, "instance_id", "") or "").casefold()
+            if (
+                template_id != "e_chr_2023_event_chest_collect"
+                and instance_id != "e_chr_2023_event_chest_collect"
+            ):
+                return
+            if individual_usage:
+                usage_key = (int(player_id), prop_id)
+                if usage_key not in runtime.individual_prop_usage:
+                    return
+                runtime.individual_prop_usage.discard(usage_key)
+            else:
+                if state.state != PROP_STATE_USED:
+                    return
+                state.state = PROP_STATE_ACTIVE
+            definition = state.definition
+        viewers = self._map_event_sessions(runtime)
+        if individual_usage:
+            viewers = tuple(
+                viewer for viewer in viewers
+                if _individual_prop_player_id(viewer) == int(player_id)
+            )
+        for viewer in viewers:
+            update = PropUpdate(
+                prop_id=definition.prop_id,
+                state=PROP_STATE_ACTIVE,
+                actor_id=LOCAL_PLAYER_ACTOR_ID,
+                counter=_session_game_tick(viewer),
+                state_changed=True,
+                operation=WIRE_PROP_OPERATION,
+                task_index=0,
+                keep_visual_state=False,
+            )
+            packet, packet_bits = encode_prop_update_batch(
+                (update,), actor_id=0,
+            )
+            viewer.send_reliable_ordered(
+                (packet, packet_bits), track=True,
+                label="winter-event-chest-respawn",
+            )
+            if definition.instance_guid == ZERO_GUID:
+                _send_prop_info(
+                    viewer,
+                    (PropRuntimeState(definition, PROP_STATE_ACTIVE),),
+                    label="winter-event-chest-respawn-info",
+                )
+        _log(
+            f"Winter event chest prop {prop_id} respawned after 3.0s"
+            + (f" for character {player_id}" if individual_usage else "")
+        )
+
     def _handle_staging_signal(self, s: Session, payload: bytes) -> None:
         CharacterService._handle_simple_gameplay_command(s, payload, 0x0113)
         decoded = s.gameplay_client_command_state.get(0x0113)
@@ -8689,6 +8941,9 @@ class MapEventService:
             if previous_wire_position is not None
             else None
         )
+        MapEventService._apply_christmas_challenge_safe_zone(
+            s, runtime, world, previous_position=previous_world,
+        )
         MapEventService._apply_darkwood_wendigo_hazard_damage(
             s, runtime, world,
         )
@@ -8745,6 +9000,294 @@ class MapEventService:
         callback = getattr(s, "gameplay_presence_callback", None)
         if callback is not None:
             callback(s, ("map_signal", "PlayerHitTrigger", trigger_ids))
+
+    @staticmethod
+    def _apply_christmas_challenge_safe_zone(
+            s: Session, runtime: MapEventRuntime, position, *,
+            previous_position=None) -> None:
+        """Apply the Krampus fog timer and clear it when the player reaches safety.
+
+        The client map contains these as LocationEffect volumes, not
+        TriggerVolumes. Movement still reaches the server, so mirror their
+        effects here: entering frost starts the authored timer, while reaching
+        a safe field clears it.
+        """
+
+        if not map_key(runtime.map_id).startswith("e_chr_challenge_dun_"):
+            with s.flow_lock:
+                s.gameplay_chr_challenge_safe_map = ""
+                s.gameplay_chr_challenge_safe_fields_inside = set()
+                s.gameplay_chr_challenge_frost_exposure_map = ""
+                s.gameplay_chr_challenge_frost_exposure_active = False
+            return
+        combat = getattr(s, "gameplay_combat_state", None)
+        if combat is None:
+            return
+        static_database_path = str(getattr(
+            getattr(combat, "encounter", None),
+            "static_database_path",
+            DEFAULT_STATIC_DB_PATH,
+        ))
+        fields = _christmas_challenge_freeze_fields(
+            static_database_path, runtime.map_id,
+        )
+        with runtime.lock:
+            active_sets = set(runtime.enabled_event_sets)
+        frost_fields = tuple(
+            volume for volume, effect_id in fields
+            if effect_id == "e_chr_challenge_freeze_debuff_aura"
+            and (
+                volume.event_set_row < 0
+                or volume.event_set_row in active_sets
+            )
+        )
+        safe_fields = tuple(
+            volume for volume, effect_id in fields
+            if effect_id == "e_chr_challenge_freeze_debuff_clean_aura"
+            and (
+                volume.event_set_row < 0
+                or volume.event_set_row in active_sets
+            )
+        )
+        if not frost_fields and not safe_fields:
+            with s.flow_lock:
+                s.gameplay_chr_challenge_safe_map = map_key(runtime.map_id)
+                s.gameplay_chr_challenge_safe_fields_inside = set()
+                s.gameplay_chr_challenge_frost_exposure_map = map_key(
+                    runtime.map_id,
+                )
+                s.gameplay_chr_challenge_frost_exposure_active = False
+            return
+        world = tuple(float(value) for value in position[:3])
+        with s.flow_lock:
+            s.gameplay_chr_challenge_frost_last_position = world
+        inside = {
+            volume.row_id for volume in safe_fields
+            if volume.contains(world)
+        }
+        with s.flow_lock:
+            previous_map = str(getattr(
+                s, "gameplay_chr_challenge_safe_map", "",
+            )).casefold()
+            previous_inside = (
+                set(getattr(
+                    s, "gameplay_chr_challenge_safe_fields_inside", (),
+                ))
+                if previous_map == map_key(runtime.map_id)
+                else set()
+            )
+            s.gameplay_chr_challenge_safe_map = map_key(runtime.map_id)
+            s.gameplay_chr_challenge_safe_fields_inside = inside
+        entered = inside - previous_inside
+        start = previous_position
+        if start is None:
+            start = getattr(s, "gameplay_spawn_position", None)
+        if start is not None:
+            entered.update(
+                volume.row_id
+                for volume in safe_fields
+                if volume.row_id not in previous_inside
+                and not volume.contains(start)
+                and volume.intersects_segment(start, world)
+            )
+        if inside:
+            if entered:
+                MapEventService._cleanse_challenge_freeze_debuff(s)
+            else:
+                with s.flow_lock:
+                    s.gameplay_chr_challenge_frost_exposure_map = map_key(
+                        runtime.map_id,
+                    )
+                    s.gameplay_chr_challenge_frost_exposure_active = False
+            return
+
+        # LocationEffect volumes are not part of the normal trigger list, so
+        # explicitly detect both standing in the fog and crossing a narrow
+        # field between two movement updates.
+        in_frost = any(volume.contains(world) for volume in frost_fields)
+        touches_frost = in_frost or (
+            start is not None
+            and any(
+                volume.intersects_segment(start, world)
+                for volume in frost_fields
+            )
+        )
+        exposure_map = map_key(runtime.map_id)
+        with s.flow_lock:
+            previous_exposure_map = str(getattr(
+                s, "gameplay_chr_challenge_frost_exposure_map", "",
+            )).casefold()
+            exposure_active = (
+                bool(getattr(
+                    s, "gameplay_chr_challenge_frost_exposure_active", False,
+                ))
+                if previous_exposure_map == exposure_map
+                else False
+            )
+            s.gameplay_chr_challenge_frost_exposure_map = exposure_map
+            if not in_frost:
+                s.gameplay_chr_challenge_frost_exposure_active = False
+            elif exposure_active:
+                s.gameplay_chr_challenge_frost_exposure_active = True
+        if not touches_frost or exposure_active:
+            return
+
+        effect_spec = _christmas_challenge_freeze_effect_spec(
+            static_database_path,
+        )
+        if effect_spec is None:
+            return
+        freeze_effect_id, duration_seconds = effect_spec
+        duration_ticks = max(
+            1, int(math.ceil(duration_seconds * int(SERVER_TICKS_PER_SECOND))),
+        )
+        now = time.perf_counter()
+        with s.flow_lock:
+            active_entries = list(s.gameplay_persistent_status_effects.values())
+            active_entries.extend(
+                current_entry
+                for current_entry, expires_at
+                in s.gameplay_runtime_status_effects.values()
+                if expires_at is None or float(expires_at) > now
+            )
+            if any(
+                int(current.effect_id) == freeze_effect_id
+                for current in active_entries
+            ):
+                if in_frost:
+                    s.gameplay_chr_challenge_frost_exposure_active = True
+                return
+            start_tick = _session_game_tick(s) & 0xFFFFFFFF
+            instance_id = int(s.gameplay_next_status_effect_instance_id)
+            s.gameplay_next_status_effect_instance_id += 1
+            tick_rate = int(SERVER_TICKS_PER_SECOND)
+            entry = StatusEffectEntry(
+                effect_id=freeze_effect_id,
+                instance_id=instance_id,
+                end_tick=(start_tick + duration_ticks) & 0xFFFFFFFF,
+                tick_interval=tick_rate,
+                start_tick=start_tick,
+                stack_index=0,
+                total_duration=duration_ticks,
+                source_level=100,
+                source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+                update_timing=False,
+                stacked=False,
+                permanent=False,
+                has_details=True,
+            )
+            s.gameplay_runtime_status_effects[instance_id] = (
+                entry, now + duration_seconds,
+            )
+            s.gameplay_chr_challenge_frost_exposure_active = in_frost
+            timer_key = ("challenge-frost-expire", instance_id)
+            timer = s.gameplay_deadline_timer(
+                duration_seconds,
+                MapEventService._expire_challenge_frost_debuff,
+                args=(s, runtime, instance_id, entry),
+            )
+            timer.daemon = True
+            s.gameplay_projectile_timers[timer_key] = timer
+        timer.start()
+        value = StatusEffect(False, (entry,))
+        s.send_reliable_ordered(
+            encode_status_effect_batch(value, actor_id=LOCAL_PLAYER_ACTOR_ID),
+            track=True,
+            label="challenge-fog-freeze-debuff",
+        )
+        callback = getattr(s, "gameplay_presence_callback", None)
+        if callback is not None:
+            callback(s, ("status_effects", (value,)))
+        _log(
+            f"applied Krampus challenge frost timer on {runtime.map_id}: "
+            f"effect={freeze_effect_id}, duration={duration_seconds:.1f}s"
+        )
+
+    @staticmethod
+    def _expire_challenge_frost_debuff(
+            s: Session, runtime: MapEventRuntime,
+            instance_id: int, expected_entry: StatusEffectEntry) -> None:
+        """Apply the authored lethal Done modifier when frost reaches zero."""
+
+        timer_key = ("challenge-frost-expire", int(instance_id))
+        with s.flow_lock:
+            current_map = map_key(
+                getattr(s, "gameplay_map", "") or runtime.map_id,
+            )
+            if (
+                s.gameplay_projectile_timers.pop(timer_key, None) is None
+                or not s.connected
+                or current_map != map_key(runtime.map_id)
+            ):
+                return
+            running = s.gameplay_runtime_status_effects.get(int(instance_id))
+            if running is not None and running[0] != expected_entry:
+                return
+            s.gameplay_runtime_status_effects.pop(int(instance_id), None)
+            combat = s.gameplay_combat_state
+            if combat is None:
+                return
+            player_actor_id = int(
+                getattr(s, "gameplay_remote_actor_id", 0)
+                or combat.player_actor_id
+            )
+            position = tuple(getattr(
+                s, "gameplay_chr_challenge_frost_last_position", (0.0, 0.0, 0.0),
+            ))
+
+        with combat.lock:
+            if s.gameplay_combat_state is not combat:
+                return
+            health = combat.player_health.get(player_actor_id)
+            if health is None or int(health[0]) <= 0:
+                return
+            previous, maximum = int(health[0]), int(health[1])
+            health[0] = 0
+            if player_actor_id == int(combat.player_actor_id):
+                combat.player_current_health = 0
+            from dso_server.services.talent_events import (
+                dispatch_talent_event, spare_player,
+            )
+            death_saved = spare_player(s, combat, player_actor_id)
+            current = int(health[0])
+
+        with s.flow_lock:
+            if s.gameplay_combat_state is not combat:
+                return
+            inventory = s.gameplay_inventory
+            if inventory is not None:
+                inventory.health_points = float(current)
+            server_tick = _session_game_tick(s)
+        if current == previous and not death_saved:
+            return
+        CharacterService._cancel_respawn_protection(s)
+        resolution = DamageResolution(
+            target_actor_id=CharacterService._viewer_actor_id(
+                s, player_actor_id,
+            ),
+            attacker_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            current_health=current,
+            maximum_health=maximum,
+            damage=previous - current,
+            killed=current <= 0,
+            position=position,
+            server_tick=server_tick,
+            hit_tags=(0,),
+            skill_index=0,
+            source_actor_id=LOCAL_PLAYER_ACTOR_ID,
+            periodic_damage=True,
+        )
+        CharacterService._send_combat_resolution(
+            s, resolution, label="challenge-frost-hatred-expiry",
+            include_item_set_procs=False,
+        )
+        if death_saved:
+            dispatch_talent_event(s, "nohealth", server_tick=server_tick)
+        _log(
+            f"Krampus challenge frost timer expired on {runtime.map_id}: "
+            f"actor={player_actor_id}, damage={previous - current}, "
+            f"killed={current <= 0}, saved={death_saved}"
+        )
 
     @staticmethod
     def _apply_new_year_trap_damage(
@@ -8923,6 +9466,49 @@ class MapEventService:
             _anniversary_golden_pinata_claim_key(s, keyed.definition)
             if keyed is not None else ""
         )
+        christmas_present_claim_key = (
+            _christmas_calendar_present_claim_key(
+                s, keyed.definition,
+            ) if keyed is not None else ""
+        )
+        festive_present_claim_key = (
+            _festive_winter_solstice_present_claim_key(
+                s, keyed.definition,
+            ) if keyed is not None else ""
+        )
+        if festive_present_claim_key:
+            with s.flow_lock:
+                already_claimed = bool(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        festive_present_claim_key, 0,
+                    )
+                )
+            if already_claimed:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition,
+                    label="festive-winter-solstice-present-already-claimed",
+                )
+                _log(
+                    f"refused already-claimed Festive Winter Solstice Present "
+                    f"{keyed.definition.instance_id!r}"
+                )
+                return
+        if christmas_present_claim_key:
+            with s.flow_lock:
+                already_claimed = bool(
+                    getattr(s, "gameplay_timed_offer_purchases", {}).get(
+                        christmas_present_claim_key, 0,
+                    )
+                )
+            if already_claimed:
+                self._show_used_prop_for_viewer(
+                    s, keyed.definition, label="christmas-calendar-present-already-claimed",
+                )
+                _log(
+                    f"refused already-claimed Solstice Cave advent calendar present "
+                    f"{keyed.definition.instance_id!r}"
+                )
+                return
         summer_reward_claim_key = (
             _summer_solstice_reward_chest_claim_key(
                 s, keyed.definition,
@@ -9221,6 +9807,29 @@ class MapEventService:
             return
         state, flipped = result
         definition = state.definition
+        if flipped and christmas_present_claim_key:
+            with s.flow_lock:
+                purchases = dict(
+                    getattr(s, "gameplay_timed_offer_purchases", {})
+                )
+                already_claimed = bool(purchases.get(christmas_present_claim_key, 0))
+                if not already_claimed:
+                    purchases[christmas_present_claim_key] = 1
+                    s.gameplay_timed_offer_purchases = purchases
+            if already_claimed:
+                if definition.individual_usage:
+                    with runtime.lock:
+                        runtime.individual_prop_usage.discard((
+                            _individual_prop_player_id(s),
+                            int(definition.prop_id),
+                        ))
+                self._show_used_prop_for_viewer(
+                    s, definition, label="christmas-calendar-present-race-claimed",
+                )
+                return
+            CharacterService._request_account_save(
+                s, "Solstice Cave advent calendar present claimed", flush=True,
+            )
         if flipped and summer_reward_claim_key:
             with s.flow_lock:
                 purchases = dict(
@@ -9251,6 +9860,7 @@ class MapEventService:
                 claim_key=(
                     dtu_superchest_claim_key
                     or anniversary_golden_pinata_claim_key
+                    or festive_present_claim_key
                 ),
             )
         ):
@@ -9331,7 +9941,13 @@ class MapEventService:
                 runtime, definition,
                 player_id=_individual_prop_player_id(s),
             )
+            self._schedule_winter_event_chest_respawn(
+                runtime, definition,
+                player_id=_individual_prop_player_id(s),
+            )
             self._spawn_pw022_gorgon_from_bust(s, runtime, definition)
+        if flipped and definition.template_id.casefold() == "e_chr_save_spot":
+            self._cleanse_challenge_freeze_debuff(s)
         if flipped and new_moon_recall_row is not None:
             self._spawn_new_moon_boss_from_recall_altar(
                 s, runtime, definition, new_moon_recall_row,
@@ -9757,6 +10373,67 @@ class MapEventService:
             )
         except (OSError, sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
             _log(f"could not grant Stonekeep Miller ammunition: {exc}")
+
+    @staticmethod
+    def _cleanse_challenge_freeze_debuff(s: Session) -> None:
+        """Clear the challenge freeze debuff when the player reaches safety."""
+        try:
+            from dso_server.gameplay.status_runtime_catalog import (
+                load_status_runtime_catalog,
+            )
+            combat = getattr(s, "gameplay_combat_state", None)
+            static_database_path = str(getattr(
+                getattr(combat, "encounter", None),
+                "static_database_path",
+                DEFAULT_STATIC_DB_PATH,
+            ))
+            effects = load_status_runtime_catalog(
+                static_database_path,
+            ).effect_ids
+            freeze_effect_id = effects.get(
+                "e_chr_challenge_freeze_debuff_effect",
+            )
+            if freeze_effect_id is None:
+                _log("challenge freeze status effect is missing from static data")
+                return
+            start_tick = _session_game_tick(s) & 0xFFFFFFFF
+            removals = []
+            timers = []
+            with s.flow_lock:
+                for inst_id, (entry, _) in list(s.gameplay_runtime_status_effects.items()):
+                    if int(entry.effect_id) == freeze_effect_id:
+                        del s.gameplay_runtime_status_effects[inst_id]
+                        removals.append(CharacterService._consumable_cleanup_entry(
+                            entry, server_tick=start_tick,
+                        ))
+                        for prefix in (
+                            "player-status-tick", "runtime-effect-expire",
+                            "challenge-frost-expire",
+                        ):
+                            timer = s.gameplay_projectile_timers.pop(
+                                (prefix, int(inst_id)), None,
+                            )
+                            if timer is not None:
+                                timers.append(timer)
+                s.gameplay_chr_challenge_frost_exposure_map = ""
+                s.gameplay_chr_challenge_frost_exposure_active = False
+            for timer in timers:
+                timer.cancel()
+            if removals:
+                value = StatusEffect(False, tuple(removals))
+                s.send_reliable_ordered(
+                    encode_status_effect_batch(
+                        value, actor_id=LOCAL_PLAYER_ACTOR_ID,
+                    ),
+                    track=True,
+                    label="challenge-safe-spot-freeze-cleanse",
+                )
+                callback = getattr(s, "gameplay_presence_callback", None)
+                if callback is not None:
+                    callback(s, ("status_effects", (value,)))
+            _log("cleansed challenge freeze debuff in safe spot")
+        except Exception as exc:
+            _log(f"could not cleanse challenge freeze debuff: {exc}")
 
     def _grant_darkwood_wendigo_buff(
             self, s: Session, definition, expected_effect: str) -> None:

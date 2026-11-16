@@ -248,6 +248,26 @@ DEFEAT_UNDEFEATABLE_HERO_BAG_PRODUCT_KEY = (
 DEFEAT_UNDEFEATABLE_ROAD_TO_TRIUMPH_PRODUCT_KEY = (
     "101_dtu216_big_1.0000_0_NONE"
 )
+
+# Winter Solstice Festival OCP packages (christmas_2012)
+WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY = "8_event_pass_xmas_1.0000_0_NONE"
+WINTER_SOLSTICE_ATTIRE_ITEMS_BY_CLASS = {
+    "warrior": "costume_event_pass_xmas_warrior",
+    "mage": "costume_event_pass_xmas_mage",
+    "ranger": "costume_event_pass_xmas_ranger",
+    "dwarf": "costume_event_pass_xmas_dwarf",
+}
+TEARS_OF_UNIVERSE_PACKAGE_PRODUCT_KEY = "8_tears_universe_1_1.0000_0_NONE"
+WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY = "8_winter_package_2023_1_1.0000_0_NONE"
+WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY = "101_winter_package_2023_2_1.0000_0_NONE"
+MASCOT_PACKAGE_PRODUCT_KEY = "101_mascot_package_1_1.0000_0_NONE"
+WINTER_SOLSTICE_CHEST_PRODUCT_KEY = "8_winter_solstice_chest_1_1.0000_0_NONE"
+WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY = (
+    "8_winter_solstice_materials_chest_1.0000_0_NONE"
+)
+TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY = (
+    "8_triangle_forces_1_1.0000_0_NONE"
+)
 DEFEAT_UNDEFEATABLE_UNLOCK_VICTORY_PRODUCT_KEY = (
     "101_dtu216_med_1.0000_0_NONE"
 )
@@ -350,6 +370,14 @@ EVENT_OCP_PRODUCT_EVENT_IDS = {
     CHINESE_NEW_YEAR_KUNG_FU_LION_PACKAGE_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_SURPRISE_CHEST_PRODUCT_KEY: "event_new_year_2024",
     CHINESE_NEW_YEAR_GIFT_CHEST_PRODUCT_KEY: "event_new_year_2024",
+    WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY: "christmas_2012",
+    TEARS_OF_UNIVERSE_PACKAGE_PRODUCT_KEY: "christmas_2012",
+    WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY: "christmas_2012",
+    WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY: "christmas_2012",
+    MASCOT_PACKAGE_PRODUCT_KEY: "christmas_2012",
+    WINTER_SOLSTICE_CHEST_PRODUCT_KEY: "christmas_2012",
+    WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY: "christmas_2012",
+    TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY: "christmas_2012",
 }
 
 EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
@@ -368,6 +396,7 @@ EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT = {
         EASTER_ATTIRE_PRODUCT_KEY,
         SARGON_ATTIRE_PRODUCT_KEY,
         ANNIVERSARY_ATTIRE_PRODUCT_KEY,
+        WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY,
     )
 }
 EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
@@ -385,6 +414,7 @@ EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS = {
     EASTER_ATTIRE_PRODUCT_KEY: EASTER_ATTIRE_ITEMS_BY_CLASS,
     SARGON_ATTIRE_PRODUCT_KEY: SARGON_ATTIRE_ITEMS_BY_CLASS,
     ANNIVERSARY_ATTIRE_PRODUCT_KEY: ANNIVERSARY_ATTIRE_ITEMS_BY_CLASS,
+    WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY: WINTER_SOLSTICE_ATTIRE_ITEMS_BY_CLASS,
 }
 EVENT_ATTIRE_PRODUCT_KEYS = frozenset(EVENT_ATTIRE_EVENT_IDS_BY_PRODUCT)
 EVENT_OCP_PRODUCT_KEYS = frozenset(EVENT_OCP_PRODUCT_EVENT_IDS)
@@ -651,6 +681,50 @@ DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS = {
     ANNIVERSARY_PET_CHEST_PRODUCT_KEY: (("anniversary_pet_chest", 1),),
     CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY: (
         ("charged_mark_of_bravery_package", 1),
+    ),
+    TEARS_OF_UNIVERSE_PACKAGE_PRODUCT_KEY: (
+        ("tears_of_the_star", 2),
+        ("tears_of_the_moon", 2),
+        ("tears_of_the_sun", 2),
+        ("e_chr_2012_snow_ammunition", 1999),
+        ("money_rc", 2000),
+    ),
+    WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY: (
+        ("event_chr_craftingcake_honeymilk", 100),
+        ("event_chr_craftingcake_gingerpowder", 100),
+        ("event_chr_craftingcake_granulatedsugar", 100),
+        ("event_chr_craftingcake_sweetcream", 20),
+    ),
+    WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY: (
+        ("event_chr_craftingcake_honeymilk", 1000),
+        ("event_chr_craftingcake_gingerpowder", 1000),
+        ("event_chr_craftingcake_granulatedsugar", 1000),
+        ("event_chr_craftingcake_sweetcream", 200),
+    ),
+    MASCOT_PACKAGE_PRODUCT_KEY: (
+        ("pet_bobr_05", 1),
+        ("premium_equipment_drop_buff", 5),
+        ("e_sar_chest_key", 20),
+        ("difficulty_key_common", 30),
+        ("e_chr_frost_coins", 100),
+        ("e_chr_2012_snow_ammunition", 9999),
+    ),
+    WINTER_SOLSTICE_CHEST_PRODUCT_KEY: (
+        ("frost_age_material_selection_chest", 5),
+        ("e_chr_2012_snow_ammunition", 999),
+        ("e_chr_frost_coins", 10),
+        ("e_b1205_dun_chr_2025_01_travelitem", 1),
+    ),
+    WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY: (
+        ("frost_age_material_selection_chest", 50),
+        ("item_heart_of_winter", 650),
+        ("item_zero_degree_ice_crystal", 2000),
+    ),
+    TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY: (
+        ("triangles_of_strength", 3),
+        ("triangles_of_wisdom", 3),
+        ("triangles_of_courage", 3),
+        ("e_sar_chest_key", 5),
     ),
 }
 

@@ -959,6 +959,7 @@ class MapPropDefinition:
                 or darkwood_wendigo_circle
                 or summer_fishing_vat
                 or anniversary_pinata
+                or self.template_id.casefold() == "e_chr_save_spot"
             )
         )
 
@@ -983,6 +984,12 @@ class MapPropDefinition:
             # original, unrelated EventSet flag remains inactive.
             return True
         if self.workbench or self.signal_referenced or self.quest_switch_id:
+            return True
+        # Winter Solstice Challenge save spots consume the authored challenge
+        # key and cleanse the frost debuff.  They have no loot list or
+        # OperationId, so the generic prop filter otherwise leaves them
+        # client-only even though PropInteraction has server-side handling.
+        if self.template_id.casefold() == "e_chr_save_spot":
             return True
         # Gatherable StateObjectSpawnPoints use the retail MAIN_ herb/ore loot
         # lists, which are not chest tables in prop_loot.json. They still need

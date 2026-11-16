@@ -27,10 +27,21 @@ from dso_server.paths import (
 )
 from dso_server.runtime.admin_commands import call_admin_command
 from dso_server.runtime.file_revisions import invalidate as invalidate_file_revision
+from types import MappingProxyType
+from typing import Mapping
+
 from dso_server.services.admin_items import _display_name, item_language_directory, locale_titles
 
 
 _SCHEDULE_LOCK = threading.RLock()
+
+LINKED_SILENT_EVENTS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    "christmas_2012": (
+        "christmas_2012_silent",
+        "e_chr_calendar_map_silent",
+        "event_chr_event_2023_silent",
+    ),
+})
 
 
 def _event_quest_ids(template_id, event_flags):
@@ -61,8 +72,22 @@ def _clear_anniversary_golden_pinata_claims(claims, event_id):
     return changed
 
 
+def _clear_christmas_calendar_present_claims(claims, event_id):
+    """Clear Solstice Cave advent calendar present claims when the event run ends."""
+
+    legacy_key = f"christmas-calendar-present:{int(event_id)}"
+    prefix = legacy_key + ":"
+    changed = False
+    for key in tuple(claims):
+        normalized = str(key).casefold()
+        if normalized == legacy_key or normalized.startswith(prefix):
+            claims.pop(key, None)
+            changed = True
+    return changed
+
+
 def _clear_event_run_state(
-        state, event_id, quest_ids, *, reset_anniversary_pinatas=False,
+        state, event_id, quest_ids, *, reset_anniversary_pinatas=False, reset_christmas_calendar=False,
 ):
     changed = False
     progress = state.event_progress
@@ -79,6 +104,10 @@ def _clear_event_run_state(
         changed = _clear_anniversary_golden_pinata_claims(
             state.timed_offer_purchases, event_id,
         ) or changed
+    if reset_christmas_calendar:
+        changed = _clear_christmas_calendar_present_claims(
+            state.timed_offer_purchases, event_id,
+        ) or changed
     return changed
 
 
@@ -89,6 +118,9 @@ def _reset_event_run(service, event):
     quest_ids = _event_quest_ids(event.template.resource_id, flags)
     reset_anniversary_pinatas = (
         str(event.template.resource_id).casefold() == "anniversary_event"
+    )
+    reset_christmas_calendar = (
+        str(event.template.resource_id).casefold() == "christmas_2012"
     )
     app = getattr(service, "application", None)
     servers = tuple(
@@ -131,6 +163,14 @@ def _reset_event_run(service, event):
                     )
                     if claims is not None:
                         changed = _clear_anniversary_golden_pinata_claims(
+                            claims, event.event_id,
+                        ) or changed
+                if reset_christmas_calendar:
+                    claims = getattr(
+                        session, "gameplay_timed_offer_purchases", None,
+                    )
+                    if claims is not None:
+                        changed = _clear_christmas_calendar_present_claims(
                             claims, event.event_id,
                         ) or changed
                 tracking = getattr(session, "gameplay_quest_tracking", None)
@@ -178,6 +218,7 @@ def _reset_event_run(service, event):
             if state is not None and _clear_event_run_state(
                 state, event.event_id, quest_ids,
                 reset_anniversary_pinatas=reset_anniversary_pinatas,
+                reset_christmas_calendar=reset_christmas_calendar,
             ):
                 store.put(state)
         # Persist the full reset once after every character snapshot has been
@@ -450,6 +491,42 @@ class EventAdministration:
             if enabled and any(event.event_id != event_id and event.template.resource_id == template_id
                                and event.state_at(now) != "expired" for event in previous.events):
                 raise ValueError("this template already has an active or upcoming event instance")
+            linked_silent_templates = LINKED_SILENT_EVENTS.get(
+                str(template_id).casefold() if template_id else "", ()
+            )
+            for silent_tmpl in linked_silent_templates:
+                silent_entry = next(
+                    (
+                        e for e in document.get("events", [])
+                        if str(e.get("template_id", "")).casefold() == silent_tmpl.casefold()
+                    ),
+                    None,
+                )
+                if enabled:
+                    if silent_entry is not None:
+                        silent_entry["state"] = entry["state"]
+                        silent_entry["starts_at"] = entry["starts_at"]
+                        silent_entry["ends_at"] = entry["ends_at"]
+                        for opt in ("participation_default", "collectible_drop_chance", "collectible_amount"):
+                            if opt in entry:
+                                silent_entry[opt] = entry[opt]
+                    else:
+                        silent_id = max((65535, *(int(e.get("event_id", 0)) for e in document.get("events", [])))) + 1
+                        new_silent = {
+                            "event_id": silent_id,
+                            "template_id": silent_tmpl,
+                            "state": entry["state"],
+                            "starts_at": entry["starts_at"],
+                            "ends_at": entry["ends_at"],
+                            "participation_default": entry.get("participation_default", True),
+                            "collectible_drop_chance": entry.get("collectible_drop_chance", 0.35),
+                            "collectible_amount": entry.get("collectible_amount", 1),
+                        }
+                        document.setdefault("events", []).append(new_silent)
+                else:
+                    if silent_entry is not None and silent_entry.get("state") != "expired":
+                        silent_entry["state"] = "expired"
+                        silent_entry["ends_at"] = now.isoformat()
             record = {"reason": reason, "before": before, "after": copy.deepcopy(entry)}
             catalog = self._write(document, revision, actor, action, event_id, record)
             # Keep publication ordered with schedule edits so a slower request

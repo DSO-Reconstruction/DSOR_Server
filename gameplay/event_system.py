@@ -75,6 +75,31 @@ _SARGON_ATTIRE_COSTUMES = frozenset({
     "costume_event_pass_sargon_ranger",
     "costume_event_pass_sargon_dwarf",
 })
+_CHRISTMAS_ATTIRE_COSTUMES = frozenset({
+    "costume_event_pass_xmas_warrior",
+    "costume_event_pass_xmas_mage",
+    "costume_event_pass_xmas_ranger",
+    "costume_event_pass_xmas_dwarf",
+    "costume_event_pass_xmas_three_hours_warrior",
+    "costume_event_pass_xmas_three_hours_mage",
+    "costume_event_pass_xmas_three_hours_ranger",
+    "costume_event_pass_xmas_three_hours_dwarf",
+})
+_CHRISTMAS_DIFFICULTY_INDEX_MAP = {
+    0: 0,  # Normal
+    1: 1,  # Painful
+    2: 2,  # Excruciating
+    3: 3,  # Fatal
+    4: 4,  # Infernal
+    5: 4,  # PW Infernal
+    6: 5,  # Merciless
+    7: 5,  # PW Merciless
+    8: 6,  # Bloodshed
+    9: 6,  # PW Bloodshed
+}
+_CHRISTMAS_BOSS_PROGRESS_AMOUNTS = (100, 125, 150, 175, 300, 400, 550)
+_CHRISTMAS_ELITE_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
+_CHRISTMAS_PIGLET_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
 YEAR_ROUND_MOON_EVENT_MAPS = frozenset({
     "e_fullmoon_varholm_dun",
     "e_newmoon_blakborg_city_dun",
@@ -166,6 +191,298 @@ def _dragan_progress_amount(
         if "e_dra_03_dun_02" in maps:
             return _DRAGAN_GREAT_HALL_PROGRESS_AMOUNTS[difficulty_index]
     return None
+
+
+def _christmas_progress_amount(
+    *,
+    item_id: str,
+    monster_rank: str,
+    map_difficulty: int = 0,
+    monster_template_id: str = "",
+) -> int | None:
+    """Return the progress stack for Winter Solstice Festival (christmas_2012).
+
+    Difficulty tiers: Normal (100/5), Painful (125/6), Excruciating (150/8),
+    Fatal (175/9), Infernal (300/15), Merciless (400/20), Bloodshed (550/28).
+    """
+
+    if str(item_id or "").casefold() != "e_chr_progress_item":
+        return None
+    rank = str(monster_rank or "normal").casefold()
+    diff_index = _CHRISTMAS_DIFFICULTY_INDEX_MAP.get(int(map_difficulty or 0), 0)
+
+    # Piglets
+    if "pig" in str(monster_template_id or "").casefold():
+        return _CHRISTMAS_PIGLET_PROGRESS_AMOUNTS[diff_index]
+
+    # Event Bosses
+    if rank in {"worldboss", "boss"}:
+        return _CHRISTMAS_BOSS_PROGRESS_AMOUNTS[diff_index]
+
+    # Elite monsters (sentinel, champion, leader, elite)
+    if rank in {"sentinel", "champion", "leader", "elite"}:
+        return _CHRISTMAS_ELITE_PROGRESS_AMOUNTS[diff_index]
+
+    return None
+
+
+_CHRISTMAS_BIG_PAWS_FROST_SHARDS = {
+    0: (1, 2),   # Normal
+    1: (1, 2),   # Painful
+    2: (2, 4),   # Excruciating
+    3: (3, 5),   # Fatal
+    4: (4, 6),   # Infernal
+    6: (8, 10),  # Merciless
+    8: (9, 11),  # Bloodshed
+}
+
+_CHRISTMAS_KRANPARUS_FROST_SHARDS = {
+    0: (2, 6),    # Normal: 2-6
+    1: (5, 10),   # Painful: 5-10
+    2: (10, 15),  # Excruciating: 10-15
+    3: (15, 20),  # Fatal: 15-20
+    4: (15, 25),  # Infernal: 15-25
+    6: (35, 45),  # Merciless: 35-45
+    8: (45, 55),  # Bloodshed: 45-55
+}
+
+_CHRISTMAS_BIG_MOMMA_HEART_OF_WINTER = {
+    0: (1, 1),   # Normal: 1
+    1: (1, 1),   # Painful: 1
+    2: (1, 2),   # Excruciating: 1-2
+    3: (1, 2),   # Fatal: 1-2
+    4: (2, 3),   # Infernal: 2-3
+    6: (5, 7),   # Merciless: 5-7
+    8: (7, 9),   # Bloodshed: 7-9
+}
+
+_WINTERS_GUARDIAN_AMULET_BY_CLASS = MappingProxyType({
+    "warrior": "set_winters_guardian_amulet_warrior",
+    "dragonknight": "set_winters_guardian_amulet_warrior",
+    "dk": "set_winters_guardian_amulet_warrior",
+    "mage": "set_winters_guardian_amulet_mage",
+    "spellweaver": "set_winters_guardian_amulet_mage",
+    "ranger": "set_winters_guardian_amulet_ranger",
+    "dwarf": "set_winters_guardian_amulet_dwarf",
+    "steammechanicus": "set_winters_guardian_amulet_dwarf",
+})
+
+_BIG_PAWS_WEAPON_BY_CLASS = MappingProxyType({
+    "warrior": "warrior_unique_2h_mace_christmas_bear_set",
+    "dragonknight": "warrior_unique_2h_mace_christmas_bear_set",
+    "dk": "warrior_unique_2h_mace_christmas_bear_set",
+    "mage": "mage_unique_2h_staff_christmas_bear_set",
+    "spellweaver": "mage_unique_2h_staff_christmas_bear_set",
+    "ranger": "ranger_unique_2h_bow_christmas_bear_set",
+    "dwarf": "dwarf_unique_2h_rifle_christmas_bear_set",
+    "steammechanicus": "dwarf_unique_2h_rifle_christmas_bear_set",
+})
+
+_BIG_PAWS_BACKITEM_BY_CLASS = MappingProxyType({
+    "warrior": "warrior_unique_backitem_christmas_bear_set",
+    "dragonknight": "warrior_unique_backitem_christmas_bear_set",
+    "dk": "warrior_unique_backitem_christmas_bear_set",
+    "mage": "mage_unique_backitem_christmas_bear_set",
+    "spellweaver": "mage_unique_backitem_christmas_bear_set",
+    "ranger": "ranger_unique_backitem_christmas_bear_set",
+    "dwarf": "dwarf_unique_backitem_christmas_bear_set",
+    "steammechanicus": "dwarf_unique_backitem_christmas_bear_set",
+})
+
+
+def _canonical_christmas_difficulty(map_difficulty: int) -> int:
+    diff = int(map_difficulty or 0)
+    if diff in (4, 5):
+        return 4
+    if diff in (6, 7):
+        return 6
+    if diff in (8, 9):
+        return 8
+    return min(max(0, diff), 3)
+
+
+def christmas_boss_extra_loot(
+    *,
+    map_id: str,
+    monster_template_id: str,
+    map_difficulty: int = 0,
+    class_name: str = "",
+    rng: random.Random | None = None,
+    map_aliases: Iterable[str] = (),
+) -> tuple[tuple[str, int], ...]:
+    """Calculate additional boss drops for the Winter Solstice Festival.
+
+    Drop tables:
+    - Pristine Frost Shard (item_zero_degree_ice_crystal) for Big Paws & Kranparus
+    - Heart of Winter (item_heart_of_winter) for Big Paws, Kranparus & Big Momma
+    - Frost Age Materials (Torso, Gloves, Boots) for Kranparus challenges, Frozen Field & Big Momma
+    - Winter's Guardian Amulet for Big Momma on Bloodshed difficulty
+    """
+    generator = rng or random.Random()
+    current_maps = frozenset(
+        _map_key(m) for m in (map_id, *tuple(map_aliases or ())) if m
+    )
+    monster = str(monster_template_id or "").casefold()
+
+    is_big_paws = (
+        monster == "e_chr_boss_big_paws"
+        or (
+            "big_paws" in monster
+            and "mom" not in monster
+            and ("e_b1205_dun_chr_2012_02" in current_maps or not current_maps)
+        )
+    )
+
+    is_big_momma = (
+        monster == "e_chr_boss_big_paws_mom"
+        or (
+            "mom" in monster
+            and ("e_b1205_dun_chr_2025_01" in current_maps or "big_paws" in monster or not current_maps)
+        )
+        or ("e_b1205_dun_chr_2025_01" in current_maps and "boss" in monster)
+    )
+
+    is_krampus_challenge_01 = (
+        monster == "e_chr_2015_boss_krampus_challenge_01"
+        or (
+            "challenge_01" in monster
+            and ("krampus" in monster or "kranparus" in monster)
+        )
+        or (
+            "e_chr_challenge_dun_01" in current_maps
+            and ("krampus" in monster or "kranparus" in monster or "boss" in monster)
+        )
+    )
+
+    is_krampus_challenge_02 = (
+        monster == "e_chr_2015_boss_krampus_challenge_02"
+        or (
+            "challenge_02" in monster
+            and ("krampus" in monster or "kranparus" in monster)
+        )
+        or (
+            "e_chr_challenge_dun_02" in current_maps
+            and ("krampus" in monster or "kranparus" in monster or "boss" in monster)
+        )
+    )
+
+    is_krampus_challenge_03 = (
+        monster == "e_chr_2015_boss_krampus_challenge_03"
+        or (
+            "challenge_03" in monster
+            and ("krampus" in monster or "kranparus" in monster)
+        )
+        or (
+            "e_chr_challenge_dun_03" in current_maps
+            and ("krampus" in monster or "kranparus" in monster or "boss" in monster)
+        )
+    )
+
+    is_krampus_frozen_field = (
+        "e_b1205_dun_chr_2024" in current_maps
+        and (
+            "krampus" in monster
+            or "kranparus" in monster
+            or monster.startswith("e_chr_2024_boss_krampus")
+            or "boss" in monster
+        )
+    )
+
+    is_kranparus_any = (
+        is_krampus_challenge_01
+        or is_krampus_challenge_02
+        or is_krampus_challenge_03
+        or is_krampus_frozen_field
+        or (("krampus" in monster or "kranparus" in monster) and not is_big_paws and not is_big_momma)
+    )
+
+    if not (is_big_paws or is_big_momma or is_kranparus_any):
+        return ()
+
+    diff_key = _canonical_christmas_difficulty(map_difficulty)
+    extra_drops: list[tuple[str, int]] = []
+
+    # 1. Pristine Frost Shard (item_zero_degree_ice_crystal)
+    if is_big_paws:
+        low, high = _CHRISTMAS_BIG_PAWS_FROST_SHARDS.get(diff_key, (1, 2))
+        extra_drops.append(("item_zero_degree_ice_crystal", generator.randint(low, high)))
+    elif is_kranparus_any:
+        low, high = _CHRISTMAS_KRANPARUS_FROST_SHARDS.get(diff_key, (2, 6))
+        extra_drops.append(("item_zero_degree_ice_crystal", generator.randint(low, high)))
+
+    # 2. Heart of Winter (item_heart_of_winter)
+    if is_big_paws:
+        if diff_key in (6, 8):
+            extra_drops.append(("item_heart_of_winter", 1))
+    elif is_kranparus_any:
+        if diff_key == 6:
+            extra_drops.append(("item_heart_of_winter", generator.randint(3, 4)))
+        elif diff_key == 8:
+            extra_drops.append(("item_heart_of_winter", generator.randint(4, 5)))
+    elif is_big_momma:
+        low, high = _CHRISTMAS_BIG_MOMMA_HEART_OF_WINTER.get(diff_key, (1, 1))
+        extra_drops.append(("item_heart_of_winter", generator.randint(low, high)))
+
+    # 3. Frost Age Materials (Torso, Gloves, Boots)
+    frost_age_materials = (
+        "item_ingredient_frost_age_torso",
+        "item_ingredient_frost_age_gloves",
+        "item_ingredient_frost_age_boots",
+    )
+
+    if is_krampus_challenge_01:
+        if diff_key in (6, 8) and generator.random() < 0.03:
+            extra_drops.append(("item_ingredient_frost_age_torso", 1))
+    elif is_krampus_challenge_02:
+        if diff_key in (6, 8) and generator.random() < 0.03:
+            extra_drops.append(("item_ingredient_frost_age_gloves", 1))
+    elif is_krampus_challenge_03:
+        if diff_key in (6, 8) and generator.random() < 0.03:
+            extra_drops.append(("item_ingredient_frost_age_boots", 1))
+    elif is_krampus_frozen_field:
+        if diff_key in (6, 8) and generator.random() < 0.03:
+            extra_drops.append((generator.choice(frost_age_materials), 1))
+    elif is_big_momma:
+        if diff_key < 8:
+            if generator.random() < 0.03:
+                extra_drops.append((generator.choice(frost_age_materials), 1))
+        else:
+            # On Bloodshed, significantly higher chance, can drop all 3 ingredients
+            roll = generator.random()
+            if roll < 0.20:
+                for mat in frost_age_materials:
+                    extra_drops.append((mat, 1))
+            elif roll < 0.40:
+                extra_drops.append((generator.choice(frost_age_materials), 1))
+
+    # 4. Big Momma Winter's Guardian (Amulet) on Bloodshed (2% chance)
+    if is_big_momma and diff_key == 8:
+        if generator.random() < 0.02:
+            amulet_template = _WINTERS_GUARDIAN_AMULET_BY_CLASS.get(
+                str(class_name or "").casefold(),
+                "set_winters_guardian_amulet_warrior",
+            )
+            extra_drops.append((amulet_template, 1))
+
+    # 5. Big Paws' Frosty Weapon & Greed's End (Backitem)
+    if is_big_paws:
+        class_key = str(class_name or "").casefold()
+        if generator.random() < 0.25:
+            weapon_template = _BIG_PAWS_WEAPON_BY_CLASS.get(
+                class_key, "mage_unique_2h_staff_christmas_bear_set"
+            )
+            extra_drops.append((weapon_template, 1))
+        if generator.random() < 0.25:
+            backitem_template = _BIG_PAWS_BACKITEM_BY_CLASS.get(
+                class_key, "mage_unique_backitem_christmas_bear_set"
+            )
+            extra_drops.append((backitem_template, 1))
+
+    # 6. Frostpocalypse Recipe (recipe_cataclysmic_winter) on boss (10% chance)
+    if (is_big_paws or is_big_momma) and generator.random() < 0.10:
+        extra_drops.append(("recipe_cataclysmic_winter", 1))
+
+    return tuple(extra_drops)
 
 
 def _timestamp(value: object) -> datetime | None:
@@ -383,13 +700,38 @@ SCHEDULED_EVENT_FLAG_ALIASES: Mapping[str, tuple[str, ...]] = MappingProxyType({
         "e_anniversary_challenge_silent_pw",
         "e_anniversary_challenge_silent_qaizah",
     ),
+    "christmas_2012": (
+        "christmas_2012_silent",
+        "e_chr_calendar_map_silent",
+        "event_chr_event_2023_silent",
+    ),
 })
 
-def scheduled_event_flag_names(event: "ScheduledEvent") -> tuple[str, ...]:
-    """Return the flags owned by one scheduled event, including its aliases."""
+def christmas_calendar_day_index(
+    starts_at: datetime | None = None,
+    now: datetime | None = None,
+) -> int:
+    """Return the active calendar day (1..25) for the Winter Solstice advent calendar."""
+    moment = now or datetime.now(timezone.utc)
+    if moment.month == 12:
+        return min(25, max(1, moment.day))
+    if starts_at is not None:
+        start_date = starts_at.date() if isinstance(starts_at, datetime) else moment.date()
+        days_passed = (moment.date() - start_date).days
+        return min(25, max(1, days_passed + 1))
+    return 1
+
+
+def scheduled_event_flag_names(
+    event: "ScheduledEvent", now: datetime | None = None
+) -> tuple[str, ...]:
+    """Return the flags owned by one scheduled event, including its aliases and dynamic daily flags."""
 
     resource_id = event.template.resource_id
-    aliases = SCHEDULED_EVENT_FLAG_ALIASES.get(resource_id.casefold(), ())
+    aliases = list(SCHEDULED_EVENT_FLAG_ALIASES.get(resource_id.casefold(), ()))
+    if resource_id.casefold() == "christmas_2012":
+        day = christmas_calendar_day_index(event.starts_at, now)
+        aliases.append(f"e_chr_present_{day:02d}")
     return tuple(dict.fromkeys((resource_id, *event.tags, *aliases)))
 
 
@@ -551,11 +893,11 @@ class EventCatalog:
 
     def active_event_flags(self, now: datetime | None = None) -> frozenset[str]:
         """Names understood by map EventSets and other authored gates."""
-
+        moment = now or datetime.now(timezone.utc)
         return frozenset(
             value.casefold()
-            for event in self.active_events(now)
-            for value in scheduled_event_flag_names(event)
+            for event in self.active_events(moment)
+            for value in scheduled_event_flag_names(event, moment)
         )
 
     def event_update(self, now: datetime | None = None) -> EventUpdate:
@@ -565,20 +907,35 @@ class EventCatalog:
             state = event.state_at(moment)
             if state == "expired":
                 continue
+            is_active = state == "active"
+            event_tags = list(event.tags)
+            event_tags.extend(
+                SCHEDULED_EVENT_FLAG_ALIASES.get(
+                    event.template.resource_id.casefold(), ()
+                )
+            )
+            if event.template.resource_id.casefold() == "christmas_2012" and is_active:
+                day = christmas_calendar_day_index(event.starts_at, moment)
+                day_flag = f"e_chr_present_{day:02d}"
+                event_tags.append(day_flag)
+                # Client only resolves EventSets from EventUpdateEntry.event_name.
+                # Emit a dedicated entry for today's present so the client instantiates
+                # the authored present StateObject and enables its daily champion spawn.
+                entries.append(EventUpdateEntry(
+                    event_id=0,
+                    event_name=day_flag,
+                    flags=(True, False, False, False),
+                    starts_at=_wire_time(event.starts_at),
+                    ends_at=_wire_time(event.ends_at),
+                    tags=(),
+                ))
             entries.append(EventUpdateEntry(
                 event_id=event.event_id,
                 event_name=event.template.resource_id,
-                flags=(state == "active", event.template.map_local, False, False),
+                flags=(is_active, event.template.map_local, False, False),
                 starts_at=_wire_time(event.starts_at),
                 ends_at=_wire_time(event.ends_at),
-                # Send dependent silent flags with the parent event entry so
-                # the client can resolve EventSets that reference them too.
-                tags=tuple(dict.fromkeys((
-                    *event.tags,
-                    *SCHEDULED_EVENT_FLAG_ALIASES.get(
-                        event.template.resource_id.casefold(), ()
-                    ),
-                ))),
+                tags=tuple(dict.fromkeys(event_tags)),
             ))
         return EventUpdate(tuple(entries))
 
@@ -863,6 +1220,21 @@ class EventCatalog:
                 # The Terrifying Shadows attire increases Shadow stack size
                 # by 50%, with a minimum increase of one item.
                 base = max(base + 1, int(base * 1.5 + 0.5))
+            elif event.template.resource_id.casefold() == "christmas_2012":
+                chr_amount = _christmas_progress_amount(
+                    item_id=collectible.item_id,
+                    monster_rank=rank,
+                    map_difficulty=map_difficulty,
+                    monster_template_id=monster_template_id,
+                )
+                if chr_amount is not None:
+                    base = chr_amount
+                # Winter Solstice Festival Attire increases Joy of Winter Solstice Festival stack size by 50%
+                if (
+                    str(active_costume or "").casefold() in _CHRISTMAS_ATTIRE_COSTUMES
+                    and collectible.item_id.casefold() == "e_chr_progress_item"
+                ):
+                    base = int(base * 1.5 + 0.5)
             amount = self._modified_drop_amount(
                 collectible.item_id, base, active_effects
             )

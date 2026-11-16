@@ -21,6 +21,7 @@ from dso_server.gameplay.event_system import (
     _map_key,
     _tokens,
     completed_achievement_ids,
+    christmas_boss_extra_loot,
 )
 from dso_server.gameplay.quest_content import QUEST_STATE_CLOSED
 from dso_server.gameplay.status_runtime_catalog import load_status_runtime_catalog
@@ -675,6 +676,16 @@ class LootPresenceService:
                     *event_loot,
                     (generator.choice(_SARGON_SHADOW_PORTAL_FRAGMENTS), 1),
                 )
+            chr_boss_loot = christmas_boss_extra_loot(
+                map_id=loot_map_id,
+                monster_template_id=str(monster.template_id),
+                map_difficulty=map_difficulty,
+                class_name=class_name,
+                rng=generator,
+                map_aliases=loot_map_aliases,
+            )
+            if chr_boss_loot:
+                event_loot = (*event_loot, *chr_boss_loot)
             difficulty_factors = loot_cache.difficulty_drop_factors.get(
                 int(map_difficulty), (1.0, 1.0)
             )

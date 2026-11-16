@@ -73,6 +73,14 @@ from dso_server.gameplay.ocp_store import (
     EASTER_DAILY_SPRING_PACK_PRODUCT_KEY,
     EASTER_DAILY_SURPRISE_SPRING_PACKAGE_PRODUCT_KEY,
     EASTER_SPRING_MATERIAL_PACK_PRODUCT_KEY,
+    WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY,
+    TEARS_OF_UNIVERSE_PACKAGE_PRODUCT_KEY,
+    WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY,
+    WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY,
+    MASCOT_PACKAGE_PRODUCT_KEY,
+    WINTER_SOLSTICE_CHEST_PRODUCT_KEY,
+    WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY,
+    TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY,
     EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY,
     SARGON_ATTIRE_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
@@ -417,6 +425,19 @@ def resolve_ocp_booking_reward(
                 attire_item_id,
                 1,
                 bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
+            )
+        if offer_id == WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_xmas_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_xmas_01"
+            )
+            attire_rewards = ((attire_item_id, 1), (skin_item_id, 1))
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=attire_rewards,
             )
         return OCPBookingReward(offer_id, attire_item_id, 1)
     bundle_reward = DEFEAT_UNDEFEATABLE_BUNDLE_REWARDS.get(offer_id)
@@ -1005,6 +1026,15 @@ LOCAL_OCP_OFFERS = (
     OCPOffer(180_270, 9.90, False, "€", ANNIVERSARY_ATTIRE_PRODUCT_KEY, "", ""),
     OCPOffer(180_271, 9.90, False, "€", ANNIVERSARY_PET_CHEST_PRODUCT_KEY, "", ""),
     OCPOffer(180_272, 9.90, False, "€", CHARGED_MARK_OF_BRAVERY_PACKAGE_PRODUCT_KEY, "", ""),
+    # Winter Solstice Festival OCP Cashshop offers (9.90 EUR each)
+    OCPOffer(180_273, 9.90, False, "€", WINTER_SOLSTICE_ATTIRE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_274, 9.90, False, "€", TEARS_OF_UNIVERSE_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_275, 9.90, False, "€", WINTER_EVENT_SMALL_BUNDLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_276, 9.90, False, "€", WINTER_EVENT_BIG_BUNDLE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_277, 9.90, False, "€", MASCOT_PACKAGE_PRODUCT_KEY, "", ""),
+    OCPOffer(180_278, 9.90, False, "€", WINTER_SOLSTICE_CHEST_PRODUCT_KEY, "", ""),
+    OCPOffer(180_279, 9.90, False, "€", WINTER_SOLSTICE_MATERIALS_CHEST_PRODUCT_KEY, "", ""),
+    OCPOffer(180_280, 9.90, False, "€", TRIANGLE_OF_FORCES_PACKAGE_PRODUCT_KEY, "", ""),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"
