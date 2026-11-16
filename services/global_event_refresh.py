@@ -87,6 +87,10 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
         map_key(runtime.map_id) == "a0200_kingscity"
         and not rocketmen_active
     )
+    kingshill_sewers_closed = (
+        map_key(runtime.map_id) == "a0200_kingscity"
+        and "event_kingshill_sewers_01" not in active_templates
+    )
     if kingshill_rocketmen_closed:
         portal_event = runtime.catalog.event("a0200_new_year_event_exit")
         if portal_event is not None:
@@ -98,6 +102,23 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
             if portal_event_is_running:
                 CharacterService._stop_map_local_event(
                     server, runtime, portal_event,
+                )
+    if kingshill_sewers_closed:
+        # The optional challenge entrance has its own quest-driven map-local
+        # event. A completed quest can leave that event running after the
+        # scheduled Sewers event ends, keeping the Kingshill exit visible.
+        challenge_portal_event = runtime.catalog.event(
+            "e_ks_challenge_dungeon_entry_unlock"
+        )
+        if challenge_portal_event is not None:
+            with runtime.lock:
+                challenge_portal_is_running = (
+                    challenge_portal_event.key in runtime.running
+                    or challenge_portal_event.key in runtime.pending_start_tokens
+                )
+            if challenge_portal_is_running:
+                CharacterService._stop_map_local_event(
+                    server, runtime, challenge_portal_event,
                 )
 
     # Include both catalogs' inactive entries and aliases. Removing a schedule
@@ -113,6 +134,10 @@ def _refresh_map_events(server, runtime, viewers, previous, catalog):
         # initialization flag (for example through a revealed quest NPC).
         # Once the global event is closed, retire that stale flag too.
         owned_flags.add("a0200_new_year_event_exit")
+    if kingshill_sewers_closed:
+        # Remove a quest-restored initialization flag along with any running
+        # instance event so the challenge exit closes for occupied Kingshill.
+        owned_flags.add("e_ks_challenge_dungeon_entry_unlock")
     with runtime.lock:
         enabled, disabled = runtime.replace_global_flags(
             owned_flags, catalog.active_event_flags(),

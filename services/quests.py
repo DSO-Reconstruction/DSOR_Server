@@ -389,6 +389,13 @@ class QuestService:
         )
         class_name, level = _character_facts(s)
         running = self._quest_active_events(s)
+        try:
+            kingshill_sewers_active = (
+                "event_kingshill_sewers_01"
+                in self._event_catalog().active_template_ids()
+            )
+        except Exception:
+            kingshill_sewers_active = False
         restored = set()
 
         def rule_accepts(rule) -> bool:
@@ -477,6 +484,16 @@ class QuestService:
 
         for flag, destinations in exit_destinations.items():
             event = signals.event(flag)
+            if (
+                normalized_map == "a0200_kingscity"
+                and flag.casefold() == "e_ks_challenge_dungeon_entry_unlock"
+                and not kingshill_sewers_active
+            ):
+                # Quest completion normally restores this map-local challenge
+                # gate on Kingshill. It is still owned by the scheduled
+                # Sewers event, so durable quest/discovery state must not
+                # reopen it while the event is inactive.
+                continue
             if (
                 normalized_map == "a0200_kingscity"
                 and flag.casefold() == "a0200_new_year_event_exit"
