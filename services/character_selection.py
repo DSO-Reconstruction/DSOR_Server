@@ -472,7 +472,9 @@ class CharacterSelectionService:
             f"{reason} (deny reason {deny_reason})"
         )
 
-    def _resolve_editor_andermant(self, character=None) -> int:
+    def _resolve_editor_andermant(
+        self, s_or_char: Session | CharacterRecord | None = None, character=None
+    ) -> int:
         """Return the account/character Andermant balance for the editor display."""
         try:
             from dso_server.gameplay.starter_config import load_starter_config
@@ -481,16 +483,21 @@ class CharacterSelectionService:
         except Exception:
             default_andermant = 100_000_000
 
-        target_character = character
-        if target_character is None and getattr(self, "character_selection", None):
-            chars = getattr(self.character_selection, "characters", [])
-            if chars:
-                target_character = chars[0]
+        if isinstance(s_or_char, Session):
+            s = s_or_char
+            target_character = character
+        elif s_or_char is not None and character is None:
+            s = None
+            target_character = s_or_char
+        else:
+            s = None
+            target_character = character
+
+        store = getattr(self, "account_store", None)
 
         if target_character is not None:
             cid = int(getattr(target_character, "character_id", 0))
             base_prem = int(getattr(target_character, "premium_currency", default_andermant))
-            store = getattr(self, "account_store", None)
             if store is not None and cid:
                 from dso_server.protocol.player_init_protocol import CurrencyChanged
                 try:
@@ -502,6 +509,29 @@ class CharacterSelectionService:
                 except Exception:
                     pass
             return base_prem
+
+        if s is not None:
+            account_id = getattr(s, "account_id", None)
+            if store is not None and account_id is not None:
+                wallets = getattr(store, "account_wallets", {})
+                if account_id in wallets:
+                    return int(wallets[account_id])
+            if hasattr(self, "_owned_character_ids"):
+                owned = self._owned_character_ids(s)
+                if owned:
+                    first_cid = int(owned[0])
+                    if store is not None:
+                        from dso_server.protocol.player_init_protocol import CurrencyChanged
+                        try:
+                            return int(
+                                store.currency_for_character(
+                                    first_cid,
+                                    CurrencyChanged(default_andermant, 0, (0, 0, 0), 0, False),
+                                ).andermant
+                            )
+                        except Exception:
+                            pass
+            return default_andermant
 
         return default_andermant
 
@@ -535,7 +565,7 @@ class CharacterSelectionService:
         else:
             with self.character_roster_lock:
                 preview_id = self._next_character_id()
-        andermant = self._resolve_editor_andermant(character)
+        andermant = self._resolve_editor_andermant(s, character=character)
         response = character_generation_editor_response(
             locale=self.character_selection.locale,
             preview_id=preview_id,
@@ -888,6 +918,27 @@ class CharacterSelectionService:
                     starter_andermant = 100_000_000
                     starter_gold_val = STARTER_GOLD_UNITS
 
+                account_id = getattr(s, "account_id", None)
+                store = getattr(self, "account_store", None)
+                char_andermant = starter_andermant
+                if store is not None and account_id is not None:
+                    wallets = getattr(store, "account_wallets", {})
+                    if account_id in wallets:
+                        char_andermant = int(wallets[account_id])
+                    elif hasattr(self, "_owned_character_ids"):
+                        owned = self._owned_character_ids(s)
+                        if owned:
+                            from dso_server.protocol.player_init_protocol import CurrencyChanged
+                            try:
+                                char_andermant = int(
+                                    store.currency_for_character(
+                                        int(owned[0]),
+                                        CurrencyChanged(starter_andermant, 0, (0, 0, 0), 0, False),
+                                    ).andermant
+                                )
+                            except Exception:
+                                pass
+
                 character = CharacterRecord(
                     name=request.name,
                     map_id=NEW_CHARACTER_GAMEPLAY_MAP,
@@ -899,7 +950,7 @@ class CharacterSelectionService:
                     body_stature=request.body_stature,
                     character_id=character_id,
                     unknown_u32_a=0,
-                    premium_currency=starter_andermant,
+                    premium_currency=char_andermant,
                     progression_u64=0,
                     progression_u32=0,
                     level=1,

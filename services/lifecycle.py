@@ -672,6 +672,28 @@ class LifecycleService:
             selection.character_alteration_bookings = (
                 registry.character_alteration_bookings(account_id)
             )
+
+        # Synchronize characters' premium_currency with the account's wallet balance
+        store = getattr(self, "account_store", None)
+        account_andermant = None
+        if store is not None:
+            if account_id > 0 and account_id in getattr(store, "account_wallets", {}):
+                account_andermant = int(store.account_wallets[account_id])
+            elif selection.characters:
+                first_cid = int(selection.characters[0].character_id)
+                try:
+                    from dso_server.protocol.player_init_protocol import CurrencyChanged
+                    cur = store.currency_for_character(
+                        first_cid,
+                        CurrencyChanged(selection.characters[0].premium_currency, 0, (0, 0, 0), 0, False),
+                    )
+                    account_andermant = int(cur.andermant)
+                except Exception:
+                    pass
+
+        if account_andermant is not None:
+            for character in selection.characters:
+                character.premium_currency = account_andermant
         # The payload carries one equipment list: the active character's.
         # Build it from the account store on every selection request. Gameplay
         # customization changes the inventory without changing the character
