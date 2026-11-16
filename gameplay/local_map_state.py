@@ -8,6 +8,7 @@ from functools import lru_cache, wraps
 import hashlib
 import math
 import os
+import random
 import sqlite3
 import struct
 from pathlib import Path
@@ -485,6 +486,18 @@ def active_local_map_event_flags(
         *(str(value).casefold() for value in active_event_flags),
         *BASELINE_MAP_EVENT_FLAGS.get(str(map_id), frozenset()),
     })
+
+
+def strip_doe_portal_unlock_flags(map_id: str, flags) -> frozenset[str]:
+    """Portal unlocks belong to the current Desert of the Lost run only."""
+
+    normalized = frozenset(str(value).casefold() for value in flags)
+    if str(map_id).casefold() != "e_doe_map_01":
+        return normalized
+    return frozenset(
+        value for value in normalized
+        if not value.startswith("e_doe_portal_")
+    )
 
 
 def _event_set_declarations(declarations: str) -> list[tuple[str, str]]:
@@ -1007,6 +1020,7 @@ def load_local_map_exits(
     *,
     include_inactive_event_sets: bool = False,
     active_event_flags: frozenset[str] = frozenset(),
+    selected_doe_portal_target: str | None = None,
 ) -> tuple[LocalMapExit, ...]:
     """Load exits instantiated by the currently supported base-map scene.
 
@@ -1115,8 +1129,12 @@ def load_local_map_exits(
                     event_set_row=event_set_row,
                 )
             )
-        return filter_dragan_secret_portal_exits(
+        result = filter_dragan_secret_portal_exits(
             map_id, tuple(exits), active_event_flags,
+        )
+        return filter_native_scene_exit_definitions(
+            map_id, result,
+            selected_doe_portal_target=selected_doe_portal_target,
         )
     finally:
         database.close()
@@ -1533,6 +1551,11 @@ def _exit_info_entries_for_access(
 
 
 _NATIVE_SCENE_EXIT_TARGETS = {
+    # Desert of the Lost's colored portals are present in the extracted exit
+    # catalog, but the loaded client scene does not instantiate their exit
+    # entities. Create only the active color and selected difficulty variant
+    # from its authored GUID after the matching map-local event opens it.
+    "e_doe_map_01": ("e_doe_map_02_",),
     # Castle Ravencaw authors the Dragan Battleground exits, but its loaded
     # scene omits the portal entity. Create only the selected difficulty gate
     # from the authored exit GUID so the arena entrance is visible and usable.
@@ -1669,12 +1692,59 @@ _NATIVE_SCENE_EXIT_TARGETS = {
 }
 
 
+_DOE_RANDOM_PORTAL_TARGETS = (
+    "e_doe_map_02_blue_",
+    "e_doe_map_02_green_",
+    "e_doe_map_02_red_",
+    "e_doe_map_02_yellow_",
+    "e_doe_map_02_purple_",
+)
+
+
+def select_doe_random_portal_target(instance_key: object) -> str:
+    """Choose one stable Kia Krisal destination for a Desert of the Lost run."""
+
+    seed = f"{instance_key!r}:desert-of-the-lost-central-portal"
+    return random.Random(seed).choice(_DOE_RANDOM_PORTAL_TARGETS)
+
+
+def filter_native_scene_exit_definitions(
+    map_id: str,
+    exits: tuple[LocalMapExit, ...],
+    *,
+    selected_doe_portal_target: str | None = None,
+) -> tuple[LocalMapExit, ...]:
+    """Remove alternative destinations that share one native portal slot."""
+
+    # The central DoE gate authors five alternative destinations at one exact
+    # transform under EventSet 806. They are variants of a single portal,
+    # not five portals that should be factory-created together. Choose one
+    # Kia Krisal destination for the map run; the other colors have separate
+    # color-gated exits elsewhere in the map.
+    if (str(map_id).casefold() == "e_doe_map_01"
+            and selected_doe_portal_target):
+        exits = tuple(
+            definition for definition in exits
+            if int(definition.event_set_row) != 806
+            or definition.destination_map_id.casefold().startswith(
+                selected_doe_portal_target.casefold()
+            )
+        )
+    return exits
+
+
 def native_scene_exit_variation_entries(
     map_id: str,
     exits: tuple[LocalMapExit, ...],
+    *,
+    selected_doe_portal_target: str | None = None,
 ) -> tuple[VariationInfoEntry, ...]:
     """Build client entities for active exits absent from the loaded scene."""
 
+    exits = filter_native_scene_exit_definitions(
+        map_id, exits,
+        selected_doe_portal_target=selected_doe_portal_target,
+    )
     targets = _NATIVE_SCENE_EXIT_TARGETS.get(str(map_id).casefold(), ())
     return tuple(
         VariationInfoEntry(
@@ -1712,6 +1782,7 @@ def load_local_map_initialization(
     include_inactive_event_sets: bool = False,
     selected_map_difficulty: int | None = None,
     selected_map_access_id: str | None = None,
+    selected_doe_portal_target: str | None = None,
 ) -> tuple[tuple[ServerCommand, ...], ExitInfo]:
     """Return every map NPC service and all active map exits.
 
@@ -1775,6 +1846,7 @@ def load_local_map_initialization(
             map_id,
             active_event_flags=active_event_flags,
             include_inactive_event_sets=include_inactive_event_sets,
+            selected_doe_portal_target=selected_doe_portal_target,
         )
         exit_definitions = filter_parallel_world_exits_for_access(
             static_database_path,
@@ -1782,6 +1854,10 @@ def load_local_map_initialization(
             all_exit_definitions,
             selected_map_access_id=selected_map_access_id or "",
             selected_map_difficulty=selected_map_difficulty,
+        )
+        exit_definitions = filter_native_scene_exit_definitions(
+            map_id, exit_definitions,
+            selected_doe_portal_target=selected_doe_portal_target,
         )
         native_targets = _NATIVE_SCENE_EXIT_TARGETS.get(
             str(map_id).casefold(), (),
@@ -1801,6 +1877,7 @@ def load_local_map_initialization(
         )
         native_exit_entries = native_scene_exit_variation_entries(
             map_id, exit_definitions,
+            selected_doe_portal_target=selected_doe_portal_target,
         )
         if native_exit_entries:
             # ExitInfo only updates existing entities. The client handler for

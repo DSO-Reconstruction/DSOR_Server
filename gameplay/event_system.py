@@ -116,6 +116,20 @@ _KINGSHILL_SEWERS_BOSS_PROGRESS_AMOUNTS = (36, 36, 72, 108, 143, 287, 537)
 _KINGSHILL_SEWERS_BLITZ_WORM_PROGRESS_AMOUNTS = (
     None, None, None, None, 25, 75, 95,
 )
+# Kia Krisal's armor boss has an explicit difficulty-sized progress stack,
+# ending at the requested 170 on Bloodshed. Its static rank is Sentinel, so
+# scope by the boss templates as well as the authored rank.
+_DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS = (
+    20, 39, 58, 76, 95, 114, 133, 151, 170, 170,
+)
+_DOE_KIA_KRISAL_BOSS_TEMPLATES = frozenset({
+    "e_doe_boss_armor_white_steam_ranger",
+    "e_doe_boss_armor_green_ranger",
+    "e_doe_boss_armor_yellow_dwarf",
+    "e_doe_boss_armor_blue_mage",
+    "e_doe_boss_armor_red_dragon_knight",
+    "e_doe_boss_armor_purple_battle_mage",
+})
 _CHRISTMAS_BOSS_PROGRESS_AMOUNTS = (100, 125, 150, 175, 300, 400, 550)
 _CHRISTMAS_ELITE_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
 _CHRISTMAS_PIGLET_PROGRESS_AMOUNTS = (5, 6, 8, 9, 15, 20, 28)
@@ -1249,6 +1263,18 @@ class EventCatalog:
                 and str(monster_template_id).casefold()
                 == "e_ks_blitz_champion_worm_01"
             )
+            doe_kia_krisal_boss_progress = (
+                event.template.resource_id.casefold()
+                == "desert_of_essences_02"
+                and rank == "sentinel"
+                and str(monster_template_id).casefold()
+                in _DOE_KIA_KRISAL_BOSS_TEMPLATES
+                and any(
+                    _map_key(value) == "e_doe_map_02"
+                    or _map_key(value).startswith("e_doe_map_02_")
+                    for value in map_ids
+                )
+            )
             # An event map's final boss (Big Paws, Dragan, Wendigo...) always
             # pays out; generate_monster_loot sizes its stack. The Sewers Blitz
             # champion worm is also guaranteed its event progression; its
@@ -1257,6 +1283,7 @@ class EventCatalog:
             if (
                 rank != "worldboss"
                 and not sewers_blitz_worm_progress
+                and not doe_kia_krisal_boss_progress
                 and rng.random() > event.collectible_drop_chance
             ):
                 continue
@@ -1270,6 +1297,14 @@ class EventCatalog:
                     monster_rank=rank,
                     map_difficulty=map_difficulty,
                 )
+            elif doe_kia_krisal_boss_progress:
+                base = _DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS[max(
+                    0,
+                    min(
+                        int(map_difficulty or 0),
+                        len(_DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS) - 1,
+                    ),
+                )]
             elif sewers_blitz_worm_progress:
                 difficulty_index = _KINGSHILL_SEWERS_DIFFICULTY_INDEX_MAP.get(
                     int(map_difficulty or 0), 0

@@ -32,6 +32,12 @@ _ORSHA_MACHINE_BABY_TEMPLATES = (
     "pw212_normal_buzzsaw_01_q_orsha",
 )
 
+# The six DoE sandstorm SpawnAreas each expand to 333 actors from their
+# authored density. Those are one scripted wave apiece, so cap each wave at
+# 50 while retaining an even spread across the authored area.
+_DOE_SANDSTORM_EVENT_SETS = frozenset(range(794, 800))
+_DOE_SANDSTORM_MAX_WAVE_MONSTERS = 50
+
 _EVENT_AREA_TEMPLATE_OVERRIDES = {
     # e_viscanium_submarine_01 has five test spawn volumes instead of the
     # retail per-area list registry. The map's two fixed champion spawnpoints
@@ -294,11 +300,23 @@ def event_area_spawn_rows(
             )
         name = area.spawn_list_id.casefold()
         # Adds/main populations exclude the bosses/guardians placed as fixed
-        # points in the same script. Explicit leader/sentinel areas keep them.
-        rank = ("sentinel" if "sentinel" in name and "add" not in name else
-                "leader" if "leader" in name and "add" not in name else "monster")
+        # points in the same script. Explicit leader/sentinel lists keep them;
+        # otherwise honor the SpawnArea's authored rank. Champion areas use
+        # normal templates and promote only their configured champion count.
+        named_rank = (
+            "sentinel" if "sentinel" in name and "add" not in name else
+            "leader" if "leader" in name and "add" not in name else ""
+        )
+        area_rank = str(area.rank).removeprefix("rank_").casefold()
+        rank = named_rank or (
+            area_rank if area_rank in {"monster", "champion"} else "monster"
+        )
+        template_rank = "monster" if rank == "champion" else rank
         if not override:
-            ranked = tuple(t for t in pool if rank in metadata.get(t, "rank_monster"))
+            ranked = tuple(
+                t for t in pool
+                if template_rank in metadata.get(t, "rank_monster")
+            )
             pool = ranked or pool
             tokens = set(name.split("_")) - {
                 "random", "main", "add", "adds", "group", "wave", "normal",
@@ -327,6 +345,20 @@ def event_area_spawn_rows(
                 encounter.navigation, encounter.terrain, area,
                 area.candidate_positions(),
             )
+        if (
+            map_key(runtime.map_id) == "e_doe_map_01"
+            and int(area.event_set_row) in _DOE_SANDSTORM_EVENT_SETS
+            and len(positions) > _DOE_SANDSTORM_MAX_WAVE_MONSTERS
+        ):
+            # Spread the cap over the full volume instead of taking the first
+            # 50 grid points near one edge of the map.
+            last = len(positions) - 1
+            positions = tuple(
+                positions[round(
+                    index * last / (_DOE_SANDSTORM_MAX_WAVE_MONSTERS - 1)
+                )]
+                for index in range(_DOE_SANDSTORM_MAX_WAVE_MONSTERS)
+            )
         if area.row_id in a_mighty_add_area_ids:
             positions = tuple(sorted(
                 positions,
@@ -346,10 +378,25 @@ def event_area_spawn_rows(
                 if champion_area else 1
             )
             positions = positions[:area_spawn_limit]
-        for position in positions:
+        champion_count = (
+            min(
+                len(positions),
+                max(int(area.min_champion_spawn), int(area.max_champion_spawn)),
+            )
+            if rank == "champion" else 0
+        )
+        champion_positions = set(random.sample(
+            range(len(positions)), champion_count,
+        )) if champion_count else set()
+        for position_index, position in enumerate(positions):
             if any((position[0]-p[0])**2 + (position[2]-p[2])**2 < 1.0 for p in occupied):
                 continue
             occupied.append(position)
             result.append(GatedSpawnRow(-area.row_id, area.event_set_row,
-                                       random.choice(pool), position))
+                                       random.choice(pool), position,
+                                       rank_override=(
+                                           "rank_champion"
+                                           if position_index in champion_positions
+                                           else ""
+                                       )))
     return tuple(result)

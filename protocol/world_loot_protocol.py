@@ -2472,6 +2472,7 @@ def generate_monster_loot(
     member_mystic_cube_eligible: bool = False,
     map_difficulty: int = 0,
     map_access_id: str = "",
+    rank_kind_override: str | None = None,
     extra_boss_gems: int = 0,
     extra_boss_clovers: int = 0,
     guaranteed_gem_templates: tuple[str, ...] = (),
@@ -2526,6 +2527,11 @@ def generate_monster_loot(
         profile = replace(
             profile,
             monster_level=max(1, int(monster_level)),
+        )
+    if rank_kind_override:
+        profile = replace(
+            profile,
+            rank_kind=str(rank_kind_override).casefold(),
         )
     if suppress_all_drops:
         # Encounter transition forms can be killed to advance a fight without
@@ -3270,8 +3276,12 @@ def generate_monster_loot(
             )
             stack_multiplier = (
                 1
-                if str(template_id).casefold()
-                in EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS
+                if (
+                    str(template_id).casefold()
+                    in EXPLICIT_DIFFICULTY_SIZED_EVENT_PROGRESS_ITEMS
+                    or str(template_id)
+                    in difficulty_unscaled_drop_templates
+                )
                 else event_rank_multiplier
             )
             specifications.append((

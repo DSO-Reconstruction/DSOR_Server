@@ -40,6 +40,8 @@ from dso_server.gameplay.local_map_state import (
     CRAFTING_DUNGEON_LEADER_PRESENT_FLAG,
     CRAFTING_DUNGEON_MAP_ID,
     load_local_map_exits,
+    select_doe_random_portal_target,
+    strip_doe_portal_unlock_flags,
 )
 from dso_server.gameplay.map_event_state import (
     SARGON_SHADOWFORT_MAP_ID,
@@ -216,6 +218,12 @@ class PlayerInitializationWorldService:
         character = state.character
         gameplay_map = state.gameplay_map
         map_access = state.map_access
+        doe_random_portal_target = (
+            select_doe_random_portal_target(
+                CharacterService._gameplay_instance_key(s)
+            )
+            if map_key(gameplay_map) == "e_doe_map_01" else None
+        )
         # PropInfo is keyed to the concrete player actor for this map session,
         # even on hub maps that do not create a combat encounter.
         CharacterService._session_remote_actor_id(self, s)
@@ -272,6 +280,9 @@ class PlayerInitializationWorldService:
         active_event_flags = sargon_shadowfort_seed_flags(
             gameplay_map, active_event_flags,
         )
+        active_event_flags = strip_doe_portal_unlock_flags(
+            gameplay_map, active_event_flags,
+        )
         anniversary_gate_event = anniversary_arena_gate_flag(gameplay_map)
         if anniversary_gate_event is not None:
             # The challenge portals are wave-completion exits, even when the
@@ -302,6 +313,7 @@ class PlayerInitializationWorldService:
             include_inactive_event_sets=True,
             selected_map_difficulty=map_access.map_difficulty,
             selected_map_access_id=map_access.request_map_id,
+            selected_doe_portal_target=doe_random_portal_target,
         )
         map_commands, exit_info = _hide_unselected_circus_gates(
             self.static_database_path, gameplay_map, map_commands, exit_info,
@@ -321,6 +333,7 @@ class PlayerInitializationWorldService:
             for definition in load_local_map_exits(
                 self.static_database_path, gameplay_map,
                 active_event_flags=active_event_flags,
+                selected_doe_portal_target=doe_random_portal_target,
             )
             if definition.active and definition.destination_map_id
         )
@@ -662,6 +675,11 @@ class PlayerInitializationWorldService:
                 include_inactive_event_sets=True,
                 selected_map_difficulty=map_access.map_difficulty,
                 selected_map_access_id=map_access.request_map_id,
+                selected_doe_portal_target=(
+                    map_event_runtime.doe_random_exit_target
+                    if map_event_runtime is not None
+                    else doe_random_portal_target
+                ),
             )
             map_commands, exit_info = _hide_unselected_circus_gates(
                 self.static_database_path, gameplay_map,
@@ -679,6 +697,11 @@ class PlayerInitializationWorldService:
                         self.static_database_path,
                         gameplay_map,
                         active_event_flags=late_join_flags,
+                        selected_doe_portal_target=(
+                            map_event_runtime.doe_random_exit_target
+                            if map_event_runtime is not None
+                            else doe_random_portal_target
+                        ),
                     )
                     if definition.active and definition.destination_map_id
                 )
