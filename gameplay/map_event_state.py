@@ -816,6 +816,9 @@ class GatedSpawnRow:
     # Some maps author normal/guardian actors as overlapping level variants.
     variation_level_group: int = 0
     variation_level: int = 0
+    # SpawnAreas can promote a selected subset of their density population
+    # without changing the actor template (for example DoE's Champion waves).
+    rank_override: str = ""
 
 
 def select_variation_spawn_rows(
@@ -966,6 +969,16 @@ class MapPropDefinition:
             self.template_id.casefold()
             in ANNIVERSARY_TRUNCHEON_PINATA_TEMPLATES
         )
+        doe_crystal_portal = (
+            self.template_id.casefold() in {
+                "e_doe_crystal_portal_black",
+                "e_doe_crystal_portal_white",
+                "e_doe_crystal_portal_red",
+                "e_doe_crystal_portal_green",
+                "e_doe_crystal_portal_blue",
+                "e_doe_crystal_portal_yellow",
+            }
+        )
         sewers_blitz_pile = (
             self.template_id.casefold() in SEWERS_BLITZ_PILE_TEMPLATES
         )
@@ -980,6 +993,7 @@ class MapPropDefinition:
                 or darkwood_wendigo_circle
                 or summer_fishing_vat
                 or anniversary_pinata
+                or doe_crystal_portal
                 or sewers_blitz_pile
                 or self.template_id.casefold() == "e_chr_save_spot"
             )
@@ -1902,6 +1916,22 @@ def _load_map_event_content(
                 # These 2026 Dark Dwarf Heist amphorae use Amphora Keys;
                 # the inherited map rows still name Sargon's chest key.
                 key_id = "e_sar_chest_key"
+            if (
+                map_key(map_id) == "e_doe_map_01"
+                and str(template_id or "").casefold() in {
+                    "e_doe_crystal_portal_black",
+                    "e_doe_crystal_portal_white",
+                    "e_doe_crystal_portal_red",
+                    "e_doe_crystal_portal_green",
+                    "e_doe_crystal_portal_blue",
+                    "e_doe_crystal_portal_yellow",
+                }
+            ):
+                # Every portal is a fresh per-run unlock and costs the same
+                # 80 Crystal Dew, even where the extracted black/white rows
+                # contain older, lower KeyAmount values.
+                key_id = "e_doe_keyitem_01"
+                key_amount = 80
             try:
                 _matrix, position, rotation = _read_transform(transform)
             except ValueError:
@@ -2413,6 +2443,9 @@ class MapEventRuntime:
     sargon_throne_second_phase_started: bool = False
     sargon_throne_secret_room_group: str | None = None
     circus_random_exit_guid: bytes | None = None
+    # The central Desert of the Lost gate chooses one Kia Krisal destination
+    # per map run and shares that choice with every party member.
+    doe_random_exit_target: str | None = None
     event_set_actor_ids: dict[int, set[int]] = field(default_factory=dict)
     # Darkwood's Wendigo ritual has three independently clickable fire props.
     # Each unique prop costs its authored 10 fire keys; the boss is released

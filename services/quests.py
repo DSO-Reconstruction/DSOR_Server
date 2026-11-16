@@ -485,6 +485,15 @@ class QuestService:
         for flag, destinations in exit_destinations.items():
             event = signals.event(flag)
             if (
+                normalized_map == "e_doe_map_01"
+                and flag.casefold().startswith("e_doe_portal_")
+            ):
+                # Desert of the Lost color portals are bought per map run
+                # with Crystal Dew. Discovery of a destination is not proof
+                # that this run paid its 80 Dew, so never restore these gate
+                # events from durable quest/map discovery on entry.
+                continue
+            if (
                 normalized_map == "a0200_kingscity"
                 and flag.casefold() == "e_ks_challenge_dungeon_entry_unlock"
                 and not kingshill_sewers_active

@@ -36,6 +36,9 @@ from dso_server.gameplay.local_map_state import (
     _exit_info_entries_for_access,
     exit_display_map_id,
     filter_parallel_world_exits_for_access,
+    filter_native_scene_exit_definitions,
+    select_doe_random_portal_target,
+    strip_doe_portal_unlock_flags,
     load_local_map_exits,
     load_local_npc_definitions,
     load_local_spawn_position,
@@ -2437,6 +2440,7 @@ class MapEventService:
             s.gameplay_fractured_planes_run = True
             key = (*key, "fracturedplanes")
         flags = active_local_map_event_flags(map_id, frozenset(initial_flags))
+        flags = strip_doe_portal_unlock_flags(map_id, flags)
         anniversary_gate_event = anniversary_arena_gate_flag(map_id)
         if anniversary_gate_event is not None:
             # The quest reveal logic can restore quest-gated exits on entry,
@@ -2468,7 +2472,16 @@ class MapEventService:
                     map_difficulty=int(map_difficulty),
                 )
                 runtime.scheduler = s.gameplay_deadline_scheduler
+                if map_key(map_id) == "e_doe_map_01":
+                    runtime.doe_random_exit_target = (
+                        select_doe_random_portal_target(key)
+                    )
                 registry[key] = runtime
+            elif (map_key(map_id) == "e_doe_map_01"
+                    and runtime.doe_random_exit_target is None):
+                runtime.doe_random_exit_target = (
+                    select_doe_random_portal_target(key)
+                )
             if map_key(map_id) == "e_sum_minidun_chestroom_01":
                 # EventSet 1748 is authored as an OR over the ending flag and
                 # every reward flag, so starting the ending event exposes all
@@ -2918,6 +2931,9 @@ class MapEventService:
                 )
             except Exception:
                 durable_exit_flags = frozenset()
+            durable_exit_flags = strip_doe_portal_unlock_flags(
+                runtime.map_id, durable_exit_flags,
+            )
             for flag in durable_exit_flags:
                 definition = runtime.catalog.event(flag)
                 if definition is None:
@@ -3063,6 +3079,19 @@ class MapEventService:
                 s, runtime, context.params,
             )
         rules = runtime.catalog.evaluate(kind, context)
+        if (
+            map_key(runtime.map_id) == "e_doe_map_01"
+            and kind == "monsterseliminatedpercentage"
+        ):
+            # This generic 5%-clear rule only enables EventSet 141, which has
+            # no DoE chest props. Its early activation was misleading and did
+            # not unlock any of the seven authored sandstorm reward chests;
+            # those remain tied to their corresponding wave-clear signals.
+            rules = tuple(
+                rule for rule in rules
+                if rule.signal_id.casefold()
+                != "all_unlock_chests_start_signal_01"
+            )
         anniversary_exit_rules = tuple(
             rule for rule in rules
             if (
@@ -5844,6 +5873,14 @@ class MapEventService:
             map_difficulty = max(0, min(9, int(
                 getattr(s, "gameplay_map_difficulty", 0) or 0
             )))
+        is_doe_sandstorm_chest = (
+            map_key(getattr(s, "gameplay_map", "")) == "e_doe_map_01"
+            and any(
+                str(getattr(definition, attribute, "") or "")
+                .casefold().startswith("e_doe_sandstorm_chest_01_wave_")
+                for attribute in ("instance_id", "template_id")
+            )
+        )
         event_chest_names = (
             loot_list_id,
             str(getattr(definition, "instance_id", "") or "").casefold(),
@@ -7327,6 +7364,41 @@ class MapEventService:
                     ) or str(item_id).casefold()
                     == anniversary_main_progress_item.casefold()
                 ]
+        if is_doe_sandstorm_chest:
+            # The extracted DoE chest loot lists have no server-side rows.
+            # Scale guaranteed resources proportionally from Normal through
+            # Bloodshed; PW Bloodshed shares the Bloodshed maximum.
+            rng = random.SystemRandom()
+            reward_tier = min(map_difficulty, BLOODSHED_DIFFICULTY)
+            dew_amount = max(1, round(
+                20 * (reward_tier + 1) / (BLOODSHED_DIFFICULTY + 1)
+            ))
+            essence_water_amount = max(1, round(
+                12 * (reward_tier + 1) / (BLOODSHED_DIFFICULTY + 1)
+            ))
+            specifications = [
+                ("e_doe_keyitem_01", dew_amount),  # Crystal Dew
+                ("e_ess_01_progress_item_01", essence_water_amount),
+            ]
+            from dso_server.protocol.chest_loot_protocol import (
+                roll_chest_contents,
+            )
+            for _ in range(rng.randint(1, 3)):
+                rarity = rng.choice(("magic", "rare", "epic"))
+                rolled = roll_chest_contents(
+                    self.static_database_path,
+                    f"all_class_all_equip_{rarity}_01",
+                    player_level=player_level,
+                    class_name=class_name,
+                    rng=rng,
+                )
+                for reward in rolled.rewards:
+                    specifications.append((
+                        reward.definition.template_id, int(reward.amount),
+                    ))
+                    equipment_rewards_by_template.setdefault(
+                        reward.definition.template_id, [],
+                    ).append(reward)
         if not specifications:
             _log(f"chest {definition.instance_id!r} rolled no rewards")
             return 0
@@ -7377,7 +7449,7 @@ class MapEventService:
             drops = []
             for (template_id, amount), position in zip(specifications, positions):
                 if socket_evaluation is not None:
-                    if not is_kingshill_waste_box:
+                    if not (is_kingshill_waste_box or is_doe_sandstorm_chest):
                         absolute, relative = socket_evaluation.drop_amount_bonus(
                             template_id
                         )
@@ -12559,6 +12631,12 @@ class MapEventService:
                 selected_map_access_id=selected_access_id,
                 selected_map_difficulty=selected_tier,
             )
+            viewer_definitions = filter_native_scene_exit_definitions(
+                runtime.map_id, viewer_definitions,
+                selected_doe_portal_target=(
+                    runtime.doe_random_exit_target
+                ),
+            )
             if map_key(runtime.map_id) == _SARGON_THRONE_ROOM_MAP:
                 with runtime.lock:
                     secret_room_group = (
@@ -12618,6 +12696,9 @@ class MapEventService:
                     )
             native_exit_entries = native_scene_exit_variation_entries(
                 runtime.map_id, viewer_definitions,
+                selected_doe_portal_target=(
+                    runtime.doe_random_exit_target
+                ),
             )
             native_exit_guids = {
                 entry.instance_guid for entry in native_exit_entries
@@ -13468,6 +13549,9 @@ class MapEventService:
                     f"from {len(final_boss_rows)} candidate(s) on {runtime.map_id}"
                 )
         authored_rotations = {row.row_id: row.rotation for row in rows}
+        authored_rank_overrides = {
+            row.row_id: row.rank_override for row in rows
+        }
         # An EventSet keeps one row per difficulty variant of its boss (the
         # Heredur arena's BOSS_spawn set holds ten ``boss_heredur_scaling``
         # rows and the spawner).  The load-time population already picks one
@@ -13486,6 +13570,7 @@ class MapEventService:
             GatedSpawnRow(
                 int(r[0]), int(r[3]), str(r[2]), tuple(r[1]),
                 authored_rotations.get(int(r[0]), 0.0),
+                rank_override=authored_rank_overrides.get(int(r[0]), ""),
             )
             for r in selected
         )
@@ -13844,7 +13929,7 @@ class MapEventService:
                         "rank_sentinel"
                         if map_key(runtime.map_id) == "e_nye_dungeon_01"
                         and _is_new_year_machine_baby(row.template_id)
-                        else ""
+                        else row.rank_override
                     ),
                 )
             except ValueError as exc:

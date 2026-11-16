@@ -3131,6 +3131,7 @@ class _MonsterSpawnArea:
     # Areas built without them (tests, older callers) spawn no champions.
     min_champion_spawn: int = 0
     max_champion_spawn: int = 0
+    rank: str = "rank_monster"
 
     @property
     def width(self) -> float:
@@ -3312,6 +3313,7 @@ def _load_spawn_areas(
             SELECT rowid, COALESCE(ParentNodeIndex, 0),
                    COALESCE(EventSetRow, -1), Transform,
                    COALESCE(SpawnListId, ''), SpawnPerMeter, Priority,
+                   COALESCE(Rank, 'Rank_monster'),
                    COALESCE(MinChampionSpawn, 0),
                    COALESCE(MaxChampionSpawn, 0)
             FROM _Instance_SpawnArea
@@ -3332,6 +3334,7 @@ def _load_spawn_areas(
         spawn_list_id,
         density,
         priority,
+        rank,
         min_champion_spawn,
         max_champion_spawn,
     ) in rows:
@@ -3356,6 +3359,7 @@ def _load_spawn_areas(
             int(priority),
             max(0, int(min_champion_spawn or 0)),
             max(0, int(max_champion_spawn or 0)),
+            str(rank or "Rank_monster").casefold(),
         )
         if area.horizontal_area > 1e-4:
             result.append(area)

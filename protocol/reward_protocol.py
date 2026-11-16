@@ -88,6 +88,7 @@ from dso_server.gameplay.ocp_store import (
     KINGSHILL_SEWERS_DAILY_PACK_PRODUCT_KEY,
     KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY,
     KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY,
+    DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY,
     EASTER_SURPRISE_SPRING_PACK_PRODUCT_KEY,
     SARGON_ATTIRE_PRODUCT_KEY,
     EVENT_ATTIRE_ITEMS_BY_PRODUCT_CLASS,
@@ -451,6 +452,18 @@ def resolve_ocp_booking_reward(
                 "skin_dwarf_unique_backitem_attire_sewers_01"
                 if class_name == "dwarf"
                 else "skin_all_unique_backitem_attire_sewers_01"
+            )
+            return OCPBookingReward(
+                offer_id,
+                attire_item_id,
+                1,
+                bundle_items=((attire_item_id, 1), (skin_item_id, 1)),
+            )
+        if offer_id == DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY:
+            skin_item_id = (
+                "skin_dwarf_unique_backitem_attire_doe_01"
+                if class_name == "dwarf"
+                else "skin_all_unique_backitem_attire_doe_01"
             )
             return OCPBookingReward(
                 offer_id,
@@ -1066,6 +1079,12 @@ LOCAL_OCP_OFFERS = (
     # icons and once-only descriptions; the server grants their fixed contents.
     OCPOffer(180_286, 9.90, False, "€", KINGSHILL_SEWERS_RAMPAGING_STORM_PRODUCT_KEY, "", ""),
     OCPOffer(180_287, 9.90, False, "€", KINGSHILL_SEWERS_RAMPAGING_HURRICANE_PRODUCT_KEY, "", ""),
+    # The native Desert of Essences event pass resolves to the character's
+    # class attire and its matching equipment appearance unlock.
+    OCPOffer(
+        180_288, 9.90, False, "€",
+        DESERT_OF_ESSENCES_ATTIRE_PRODUCT_KEY, "", "",
+    ),
 )
 
 CHARACTER_ALTERATION_PRODUCT_KEY = "7_characterStyleEdit_1.0000_0_NONE"

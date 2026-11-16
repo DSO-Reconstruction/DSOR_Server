@@ -18,6 +18,7 @@ from dso_server.protocol.membership_protocol import (
     membership_is_active,
 )
 from dso_server.gameplay.event_system import (
+    _DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS,
     _map_key,
     _tokens,
     completed_achievement_ids,
@@ -48,6 +49,43 @@ _DRAGAN_CLASS_SET_ITEMS = {
     "dwarf": ("rifle", "dwarf"),
 }
 _EASTER_DARAN_TEMPLATE = "e_easter_01_dun_boss_troll_01"
+_DOE_KIA_KRISAL_BOSS_TEMPLATES = frozenset({
+    "e_doe_boss_armor_white_steam_ranger",
+    "e_doe_boss_armor_green_ranger",
+    "e_doe_boss_armor_yellow_dwarf",
+    "e_doe_boss_armor_blue_mage",
+    "e_doe_boss_armor_red_dragon_knight",
+    "e_doe_boss_armor_purple_battle_mage",
+})
+_DOE_KIA_KRISAL_MAPS = frozenset({
+    "e_doe_map_02_white",
+    "e_doe_map_02_green",
+    "e_doe_map_02_yellow",
+    "e_doe_map_02_blue",
+    "e_doe_map_02_red",
+    "e_doe_map_02_purple",
+})
+_DOE_KIA_KRISAL_BOSS_SPHERES = {
+    "e_doe_boss_armor_white_steam_ranger": (
+        "ingredient_elemental_essence_crafting_light",
+    ),
+    "e_doe_boss_armor_green_ranger": (
+        "ingredient_elemental_essence_crafting_poison",
+    ),
+    "e_doe_boss_armor_yellow_dwarf": (
+        "ingredient_elemental_essence_crafting_lightning",
+    ),
+    "e_doe_boss_armor_blue_mage": (
+        "ingredient_elemental_essence_crafting_ice",
+    ),
+    "e_doe_boss_armor_red_dragon_knight": (
+        "ingredient_elemental_essence_crafting_fire",
+    ),
+    "e_doe_boss_armor_purple_battle_mage": (
+        "ingredient_elemental_essence_crafting_andermagic",
+    ),
+}
+_DOE_KIA_KRISAL_SPHERE_AMOUNTS = (1, 2, 3, 4, 5, 6, 7, 8, 10, 10)
 _SEWERS_CASTLE_MAP = "e_ks_01_boss_01"
 _SEWERS_MHORBLIK_MAP = "e_ks_01_boss_02"
 _SEWERS_MHORBLIK_TEMPLATE = "e_ks_boss_eye"
@@ -547,6 +585,8 @@ class LootPresenceService:
         # under tests and requires no static-database work on the hot path.
         generator = random.Random()
         difficulty_unscaled_drop_templates = frozenset()
+        is_doe_kia_krisal_boss = False
+        loot_rank_kind = "normal"
         if event_catalog is None and hasattr(self, "static_database_path"):
             event_catalog = CharacterService._event_catalog(self)
         active_event_templates = (
@@ -647,6 +687,22 @@ class LootPresenceService:
                 or prime_world_loot_cache(encounter.static_database_path)
             )
             profile = loot_cache.monster_profiles.get(monster.template_id)
+            is_doe_kia_krisal_boss = (
+                profile is not None
+                and str(monster.template_id).casefold()
+                in _DOE_KIA_KRISAL_BOSS_TEMPLATES
+                and any(
+                    key == "e_doe_map_02"
+                    or key in _DOE_KIA_KRISAL_MAPS
+                    or key.startswith("e_doe_map_02_")
+                    for key in current_map_keys
+                )
+                and "desert_of_essences_02" in active_event_templates
+            )
+            loot_rank_kind = (
+                "worldboss" if is_doe_kia_krisal_boss
+                else profile.rank_kind if profile is not None else "normal"
+            )
             event_drops = event_catalog.collectible_drops(
                 map_id=loot_map_id,
                 player_level=max(1, int(player_level)),
@@ -664,14 +720,31 @@ class LootPresenceService:
                 map_difficulty=map_difficulty,
                 active_costume=active_costume,
             )
+            if is_doe_kia_krisal_boss:
+                progress_item = "e_ess_01_progress_item_01"
+                progress_amount = (
+                    _DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS[max(
+                        0,
+                        min(
+                            int(map_difficulty),
+                            len(_DOE_KIA_KRISAL_BOSS_PROGRESS_AMOUNTS) - 1,
+                        ),
+                    )]
+                )
+                # Keep the Kia Krisal boss's event progress guaranteed
+                # even when this shared map is reported without its color
+                # region alias; replace any generic roll with the exact stack.
+                event_drops = tuple(
+                    (item_id, amount) for item_id, amount in event_drops
+                    if str(item_id).casefold() != progress_item
+                ) + ((progress_item, progress_amount),)
             event_loot = event_catalog.event_loot_drops(
                 map_id=loot_map_id,
                 map_aliases=loot_map_aliases,
                 player_level=max(1, int(player_level)),
                 monster_template_id=str(monster.template_id),
                 monster_rank=(
-                    profile.rank_kind
-                    if profile is not None else "normal"
+                    loot_rank_kind
                 ),
                 monster_level=max(1, int(monster.level)),
                 participation=event_participation,
@@ -688,7 +761,7 @@ class LootPresenceService:
                 )
             if (
                 profile is not None
-                and profile.rank_kind.casefold() == "worldboss"
+                and loot_rank_kind.casefold() == "worldboss"
                 and "anniversary_event"
                 in event_catalog.active_template_ids()
                 and not any(
@@ -746,8 +819,7 @@ class LootPresenceService:
                 class_name=class_name,
                 monster_template_id=str(monster.template_id),
                 monster_rank=(
-                    profile.rank_kind
-                    if profile is not None else "normal"
+                    loot_rank_kind
                 ),
                 monster_level=max(1, int(monster.level)),
                 rng=generator,
@@ -801,7 +873,7 @@ class LootPresenceService:
                 )
             if (
                 profile is not None
-                and profile.rank_kind.casefold() == "worldboss"
+                and loot_rank_kind.casefold() == "worldboss"
                 and not is_sewers_ambushing_worm
             ):
                 ingredient = None
@@ -853,11 +925,43 @@ class LootPresenceService:
                     (item_id, amount) for item_id, amount in event_drops
                     if str(item_id).casefold() not in map_progress_items
                 )
+            doe_kia_sphere = _DOE_KIA_KRISAL_BOSS_SPHERES.get(
+                str(monster.template_id).casefold()
+            )
+            if is_doe_kia_krisal_boss and doe_kia_sphere:
+                sphere_item = doe_kia_sphere[0]
+                if not any(
+                    str(drop.item_id).casefold() == sphere_item.casefold()
+                    for drop in map_loot
+                ):
+                    # Some runtime map aliases expose only the shared
+                    # e_doe_map_02 template, so the region-scoped map-loot
+                    # table can miss the color-specific sphere. The armor boss
+                    # template identifies the correct guaranteed one.
+                    sphere_amount = _DOE_KIA_KRISAL_SPHERE_AMOUNTS[max(
+                        0,
+                        min(
+                            int(map_difficulty),
+                            len(_DOE_KIA_KRISAL_SPHERE_AMOUNTS) - 1,
+                        ),
+                    )]
+                    event_loot = (*event_loot, (sphere_item, sphere_amount))
             difficulty_unscaled_drop_templates = frozenset(
                 drop.item_id
                 for drop in map_loot
                 if not drop.scale_stack_amount_with_difficulty
             )
+            if is_doe_kia_krisal_boss:
+                difficulty_unscaled_drop_templates |= frozenset({
+                    "e_ess_01_progress_item_01",
+                    *(
+                        _DOE_KIA_KRISAL_BOSS_SPHERES[
+                            str(monster.template_id).casefold()
+                        ]
+                        if str(monster.template_id).casefold()
+                        in _DOE_KIA_KRISAL_BOSS_SPHERES else ()
+                    ),
+                })
             event_loot = (
                 *event_loot,
                 *((drop.item_id, drop.amount) for drop in map_loot),
@@ -952,6 +1056,9 @@ class LootPresenceService:
                 member_mystic_cube_eligible=member_mystic_cube_eligible,
                 map_difficulty=map_difficulty,
                 map_access_id=map_access_id,
+                rank_kind_override=(
+                    "worldboss" if is_doe_kia_krisal_boss else None
+                ),
                 extra_boss_gems=int(
                     getattr(socket_evaluation, "boss_bonus_gems", 0)
                 ),

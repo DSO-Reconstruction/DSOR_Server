@@ -1829,6 +1829,84 @@
         "require_active_events": ["new_year_event_01"],
         "scale_chance_with_difficulty": false,
         "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The White Kia Krisal armor boss guarantees Light Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_light",
+        "monsters": ["e_doe_boss_armor_white_steam_ranger"],
+        "map_regions": ["e_doe_map_02_white"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The Green Kia Krisal armor boss guarantees Poison Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_poison",
+        "monsters": ["e_doe_boss_armor_green_ranger"],
+        "map_regions": ["e_doe_map_02_green"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The Yellow Kia Krisal armor boss guarantees Lightning Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_lightning",
+        "monsters": ["e_doe_boss_armor_yellow_dwarf"],
+        "map_regions": ["e_doe_map_02_yellow"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The Blue Kia Krisal armor boss guarantees Ice Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_ice",
+        "monsters": ["e_doe_boss_armor_blue_mage"],
+        "map_regions": ["e_doe_map_02_blue"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The Red Kia Krisal armor boss guarantees Fire Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_fire",
+        "monsters": ["e_doe_boss_armor_red_dragon_knight"],
+        "map_regions": ["e_doe_map_02_red"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
+      },
+      {
+        "comment": "The Purple Kia Krisal armor boss guarantees Andermagic Spheres while Desert of Essences is active; stack sizes scale from 1 on Normal to 10 on Bloodshed.",
+        "item": "ingredient_elemental_essence_crafting_andermagic",
+        "monsters": ["e_doe_boss_armor_purple_battle_mage"],
+        "map_regions": ["e_doe_map_02_purple"],
+        "ranks": ["worldboss"],
+        "chance": {"worldboss": 1.0},
+        "amount": {"worldboss": [1, 1]},
+        "amount_by_difficulty": [1, 2, 3, 4, 5, 6, 7, 8, 10, 10],
+        "require_active_events": ["desert_of_essences_02"],
+        "scale_chance_with_difficulty": false,
+        "scale_stack_amount_with_difficulty": false
       }
     ]
   }
