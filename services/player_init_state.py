@@ -19,6 +19,12 @@ from dso_server.protocol.currency_protocol import (
     STARTER_GOLD_UNITS,
     normalize_game_currency_balances,
 )
+from dso_server.gameplay.starter_config import (
+    load_starter_config,
+    calculate_starter_gold_units,
+    calculate_membership_expiry_iso,
+)
+
 
 from dso_server.runtime.context import *
 from dso_server.gameplay.premium_bags import reconcile_premium_bags
@@ -712,24 +718,45 @@ class PlayerInitializationStateService:
 
         character = state.character
         persisted_state = state.persisted_state
-        starter_currency = 100_000_000
+        try:
+            starter_cfg = load_starter_config()
+            cfg_currencies = starter_cfg.get("currencies", {})
+            starter_gold_val = calculate_starter_gold_units(starter_cfg)
+            default_badge = int(cfg_currencies.get("badge_of_honor", 8_883_102))
+            default_draken = int(cfg_currencies.get("draken", 30_424))
+            default_glyph = int(cfg_currencies.get("glyph_of_power", 710_712_427))
+            default_andermant = int(cfg_currencies.get("andermant", 100_000_000))
+            raw_gc = cfg_currencies.get("game_currencies", {})
+            default_gc = {
+                definition.wire_id: int(raw_gc.get(definition.name, raw_gc.get(definition.wire_id, definition.default_balance)))
+                for definition in GAME_CURRENCY_DEFINITIONS
+            }
+        except Exception:
+            starter_gold_val = STARTER_GOLD_UNITS
+            default_badge = 8_883_102
+            default_draken = 30_424
+            default_glyph = 710_712_427
+            default_andermant = 100_000_000
+            default_gc = {
+                definition.wire_id: 100_000_000
+                for definition in GAME_CURRENCY_DEFINITIONS
+            }
+
         _upgrade_legacy_starter_gold(persisted_state)
         game_currency_balances = normalize_game_currency_balances(
             persisted_state.game_currencies
             if persisted_state is not None
-            else {
-                definition.wire_id: starter_currency
-                for definition in GAME_CURRENCY_DEFINITIONS
-            }
+            else default_gc
         )
         premium = (persisted_state.currency.andermant if persisted_state is not None
-                   else getattr(character, "premium_currency", 100_000_000))
+                   else getattr(character, "premium_currency", default_andermant))
         store = getattr(self, "account_store", None)
-        starter_gold = STARTER_GOLD_UNITS
+        starter_gold = starter_gold_val
         if persisted_state is None and store is not None:
             profile = store.get_profile(character.character_id)
             if profile is not None and int(profile.gold) > 0:
                 starter_gold = int(profile.gold)
+
         if store is not None:
             premium = store.currency_for_character(character.character_id,
                 CurrencyChanged(premium, 0, (0, 0, 0), 0, False)).andermant
@@ -797,22 +824,22 @@ class PlayerInitializationStateService:
             badge_of_honor=(
                 max(0, int(persisted_state.currency.badge_of_honor))
                 if persisted_state is not None
-                else starter_currency
+                else default_badge
             ),
             legacy_progression_currency=(
                 max(0, int(persisted_state.currency.legacy_progression))
                 if persisted_state is not None
-                else starter_currency
+                else default_andermant
             ),
             draken=(
                 max(0, int(persisted_state.currency.draken))
                 if persisted_state is not None
-                else starter_currency
+                else default_draken
             ),
             glyph_of_power=(
                 max(0, int(persisted_state.currency.glyph_of_power))
                 if persisted_state is not None
-                else starter_currency
+                else default_glyph
             ),
             game_currencies=game_currency_balances,
             knowledge_xp=state.talent_category_points[1],
@@ -957,24 +984,23 @@ class PlayerInitializationStateService:
                 True,
             )
         )
-        membership_type = (
-            int(persisted_state.membership_type)
-            if persisted_state is not None
-            else DELUXE_MEMBERSHIP
-        )
-        membership_expires_at = (
-            str(persisted_state.membership_expires_at)
-            if persisted_state is not None
-            else default_deluxe_expiry()
-        )
-        membership_active = (
-            bool(persisted_state.membership_active)
-            if persisted_state is not None else True
-        )
-        membership_premium_expires_at = (
-            str(persisted_state.membership_premium_expires_at)
-            if persisted_state is not None else ""
-        )
+        if persisted_state is not None:
+            membership_type = int(persisted_state.membership_type)
+            membership_expires_at = str(persisted_state.membership_expires_at)
+            membership_active = bool(persisted_state.membership_active)
+            membership_premium_expires_at = str(persisted_state.membership_premium_expires_at)
+        else:
+            try:
+                starter_cfg = load_starter_config()
+                cfg_m = starter_cfg.get("membership", {})
+                membership_type = int(cfg_m.get("type", DELUXE_MEMBERSHIP))
+                membership_expires_at = calculate_membership_expiry_iso(starter_cfg)
+                membership_active = bool(cfg_m.get("active", True))
+            except Exception:
+                membership_type = DELUXE_MEMBERSHIP
+                membership_expires_at = default_deluxe_expiry()
+                membership_active = True
+            membership_premium_expires_at = ""
         # Premium paused under a Deluxe that ended while offline runs again.
         membership_type, membership_expires_at, membership_active = premium_handover(
             membership_type, membership_expires_at, membership_active,

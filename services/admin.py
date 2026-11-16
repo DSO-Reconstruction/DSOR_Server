@@ -66,6 +66,10 @@ from dso_server.services.admin_elites import (
 from dso_server.services.admin_mystic_cube import (
     MysticCubeAdministration, MysticCubeConfigConflict,
 )
+from dso_server.services.admin_starter_grants import (
+    StarterGrantsAdministration, StarterConfigConflict,
+)
+
 from dso_server.services.player_persistence import PlayerPersistenceService
 from dso_server.services.player_progression import player_level_range, player_level_xp
 
@@ -102,7 +106,10 @@ class AdminError(Exception):
 
 
 def reason_from(payload):
-    reason = payload.get("reason", "")
+    reason = payload.get("reason")
+    if (not reason or not isinstance(reason, str)) and isinstance(payload.get("body"), dict):
+        reason = payload["body"].get("reason", "")
+    reason = reason or ""
     if not isinstance(reason, str) or not 3 <= len(reason.strip()) <= 500:
         raise ValueError("a reason of 3 to 500 characters is required")
     return reason.strip()
@@ -136,6 +143,7 @@ class AdminService:
         self.loot_rates = LootRateAdministration(self)
         self.dungeon_elites = DungeonEliteAdministration(self)
         self.mystic_cube = MysticCubeAdministration(self)
+        self.starter_grants = StarterGrantsAdministration(self)
         self.bonus_codes = BonusCodeAdministration(self)
         self.delivery.live_receipt = self.live.has_receipt
         self.secure_cookie = secure_cookie
@@ -1884,6 +1892,8 @@ class AdminService:
             )
         if path == "/api/mystic-cube":
             return self.mystic_cube.overview()
+        if path == "/api/starter-grants":
+            return self.starter_grants.overview()
         if path == "/api/currencies":
             return {"currencies": list(CURRENCIES)}
         if path.startswith("/api/items/"):
@@ -1965,6 +1975,17 @@ class AdminService:
                 return self.mystic_cube.update(account.username, reason, payload)
             except MysticCubeConfigConflict as exc:
                 raise AdminError(409, str(exc)) from exc
+        if path == "/api/starter-grants":
+            try:
+                return self.starter_grants.update(account.username, reason, payload)
+            except StarterConfigConflict as exc:
+                raise AdminError(409, str(exc)) from exc
+        if path == "/api/starter-grants/reset":
+            try:
+                return self.starter_grants.reset(account.username, reason, str(payload.get("revision", "")))
+            except StarterConfigConflict as exc:
+                raise AdminError(409, str(exc)) from exc
+
         if path.startswith("/api/npc-shops/"):
             parts = path.strip("/").split("/")
             if len(parts) < 3 or parts[0:2] != ["api", "npc-shops"]:

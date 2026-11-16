@@ -4,6 +4,10 @@ from __future__ import annotations
 from dataclasses import replace
 from dso_server.protocol.item_customization_protocol import item_tint
 from dso_server.protocol.currency_protocol import STARTER_GOLD_UNITS
+from dso_server.gameplay.starter_config import (
+    load_starter_config,
+    calculate_starter_gold_units,
+)
 
 from dso_server.runtime.context import *
 from dso_server.runtime.transport import Session
@@ -841,6 +845,14 @@ class CharacterSelectionService:
                 denial_code = self.DENY_NAME_EXISTS
             else:
                 character_id = self._next_character_id()
+                try:
+                    starter_cfg = load_starter_config()
+                    starter_andermant = int(starter_cfg["currencies"]["andermant"])
+                    starter_gold_val = calculate_starter_gold_units(starter_cfg)
+                except Exception:
+                    starter_andermant = 100_000_000
+                    starter_gold_val = STARTER_GOLD_UNITS
+
                 character = CharacterRecord(
                     name=request.name,
                     map_id=NEW_CHARACTER_GAMEPLAY_MAP,
@@ -852,7 +864,7 @@ class CharacterSelectionService:
                     body_stature=request.body_stature,
                     character_id=character_id,
                     unknown_u32_a=0,
-                    premium_currency=100_000_000,
+                    premium_currency=starter_andermant,
                     progression_u64=0,
                     progression_u32=0,
                     level=1,
@@ -877,7 +889,7 @@ class CharacterSelectionService:
         if self.account_store is not None:
             self.account_store.put_profile(
                 CharacterProfile.from_character_record(
-                    character, gold=STARTER_GOLD_UNITS
+                    character, gold=starter_gold_val
                 ),
                 flush=False,
             )
