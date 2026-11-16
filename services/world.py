@@ -849,6 +849,9 @@ class WorldService:
                         track=True, label="player-locked-movement-correction",
                     )
             return
+        movement_speed_multiplier = (
+            CharacterService._player_victim_movement_speed_multiplier(s)
+        )
         correction = None
         with s.flow_lock:
             s.gameplay_revive_movement_correction_until = 0.0
@@ -856,7 +859,9 @@ class WorldService:
             previous_move_received_at = float(
                 getattr(s, "gameplay_last_move_received_at", 0.0) or 0.0
             )
-            refusal = movement_validation.check_move(s, move)
+            refusal = movement_validation.check_move(
+                s, move, speed_multiplier=movement_speed_multiplier,
+            )
             if refusal is None:
                 s.gameplay_last_move = move
                 accepted_move_at = server_time() / 1000.0
@@ -909,6 +914,7 @@ class WorldService:
                     f"[{GAMEPLAY_SERVICE_NAME}] refused move: {refusal}; "
                     f"corrected to {stopped.relative_position}"
                 )
+
                 s.send_unreliable_sequenced(
                     encode_move(stopped, actor_id=LOCAL_PLAYER_ACTOR_ID)
                 )
@@ -1223,6 +1229,90 @@ class WorldService:
         CharacterService._pickup_nearby_auto_loot(
             s, move.relative_position
         )
+
+    @staticmethod
+    def _player_victim_movement_speed_multiplier(s: Session) -> float:
+        """Scale the server movement budget by active incoming speed effects.
+
+        The client reports predicted positions. Without this factor the server
+        allowed the same run budget with and without a stacked Frost slow, so
+        the visible debuff never constrained accepted movement.
+        """
+
+        with s.flow_lock:
+            combat = s.gameplay_combat_state
+            character = s.gameplay_character
+            inventory = s.gameplay_inventory
+        if combat is None or character is None:
+            return 1.0
+        victim_sources = tuple(
+            CharacterService._active_pvp_victim_modifier_sources(s)
+        )
+        modifier_sources = tuple(
+            CharacterService._active_skill_modifier_sources(s)
+        )
+        if not modifier_sources:
+            return 1.0
+        from dso_server.gameplay.player_combat_stats import (
+            calculate_player_combat_stats,
+            prime_player_combat_database,
+        )
+
+        database = prime_player_combat_database(
+            combat.encounter.static_database_path,
+        )
+        frost_effect_ids = {
+            database.status_effect_ids.get(effect_name)
+            for effect_name in (
+                "Frost", "debuff_cc_frost", "e_chr_2012_frost_damage",
+            )
+        } - {None}
+        frost_sources = tuple(
+            source for source in modifier_sources
+            if getattr(source, "effect_id", None) in frost_effect_ids
+        )
+        movement_slow_sources = victim_sources + frost_sources
+        movement_slow_source_ids = {
+            id(source) for source in movement_slow_sources
+        }
+        if not any(
+            id(source) in movement_slow_source_ids
+            for source in modifier_sources
+        ):
+            return 1.0
+        unaffected_sources = tuple(
+            source for source in modifier_sources
+            if id(source) not in movement_slow_source_ids
+        )
+
+        stats_args = {
+            "database_path": combat.encounter.static_database_path,
+            "class_name": CLASS_NAMES.get(int(character.class_id), ""),
+            "level": max(1, int(character.level)),
+            "inventory": inventory,
+            "cache_owner": s,
+        }
+        affected = calculate_player_combat_stats(
+            **stats_args, modifier_sources=modifier_sources,
+        )
+        unaffected = calculate_player_combat_stats(
+            **stats_args, modifier_sources=unaffected_sources,
+        )
+        affected_speed = max(
+            0.0,
+            float(affected.movement_speed)
+            + float(affected.movement_bonus_speed),
+        )
+        unaffected_speed = max(
+            0.0,
+            float(unaffected.movement_speed)
+            + float(unaffected.movement_bonus_speed),
+        )
+        if unaffected_speed <= 0.0:
+            return 1.0
+        if affected_speed >= unaffected_speed:
+            return 1.0
+        return min(1.0, affected_speed / unaffected_speed)
 
     @staticmethod
     def _handle_actor_request(s: Session, payload: bytes) -> None:

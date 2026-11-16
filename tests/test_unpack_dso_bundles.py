@@ -54,6 +54,17 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(argv[argv.index("--runtime-cache") + 1], str(out / "dlcache"))
         self.assertNotIn(str(client / "dlcache"), argv)
 
+    def test_unpack_client_flag_unpacks_into_client_cache(self):
+        calls = []
+        with tempfile.TemporaryDirectory() as root:
+            client = Path(root) / "DSOClient"
+            with patch.object(setup.subprocess, "run",
+                              side_effect=lambda argv, **_: calls.append(argv) or type("R", (), {"returncode": 0})()):
+                self.assertEqual(setup._unpack_client_bundles(client, client), 0)
+        argv = calls[0]
+        self.assertEqual(argv[argv.index("-o") + 1], str(client))
+        self.assertEqual(argv[argv.index("--runtime-cache") + 1], str(client / "dlcache"))
+
 
 if __name__ == "__main__":
     unittest.main()

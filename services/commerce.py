@@ -651,6 +651,7 @@ class CommerceService:
             next_item_id = int(s.gameplay_next_item_id)
             character = copy.deepcopy(s.gameplay_character)
             commands = []
+            purchased_andermant = reward.amount if reward.item_id == 'money_rc' else 0
             if reward.item_id == 'money_rc':
                 if currency is None:
                     raise ValueError('player currency state is not initialized')
@@ -697,6 +698,38 @@ class CommerceService:
                     or ((reward.item_id, reward.amount),)
                 )
                 for item_id, amount in inventory_rewards:
+                    item_id_str = str(item_id).casefold()
+                    if item_id_str == 'money_rc':
+                        if currency is None:
+                            raise ValueError('player currency state is not initialized')
+                        balance = int(currency.currency_type) + int(amount)
+                        if balance > 0xFFFFFFFF:
+                            raise ValueError('Andermant balance exceeds wire range')
+                        currency = CurrencyChanged(
+                            balance, currency.amount, currency.values,
+                            currency.delta, True, currency.wallet_base,
+                        )
+                        commands.append(ServerCommand(
+                            CURRENCY_CHANGED_COMMAND, currency,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ))
+                        purchased_andermant += int(amount)
+                        continue
+                    if item_id_str in {'money_vc', 'money_vc_gold'}:
+                        if currency is None:
+                            raise ValueError('player currency state is not initialized')
+                        balance = int(currency.amount) + int(amount)
+                        if balance > 0xFFFFFFFF:
+                            raise ValueError('gold balance exceeds wire range')
+                        currency = CurrencyChanged(
+                            currency.currency_type, balance, currency.values,
+                            currency.delta, True, currency.wallet_base,
+                        )
+                        commands.append(ServerCommand(
+                            CURRENCY_CHANGED_COMMAND, currency,
+                            LOCAL_PLAYER_ACTOR_ID,
+                        ))
+                        continue
                     item = load_purchase_item_definition(
                         self.static_database_path, item_id
                     )
@@ -753,7 +786,7 @@ class CommerceService:
             _achievement_on_purchased_dragon_bones(
                 self, s, item_id, amount,
             )
-        if reward.item_id == 'money_rc':
+        if purchased_andermant > 0:
             event_progress_callback = getattr(
                 s, 'gameplay_event_progress_callback', None,
             )
@@ -763,7 +796,7 @@ class CommerceService:
                 # Run this only after the OCP confirmation has committed the
                 # wallet credit, so pending or duplicate confirmations cannot
                 # award event progress.
-                event_progress_callback(s, 'money_rc', reward.amount)
+                event_progress_callback(s, 'money_rc', purchased_andermant)
         print(
             f'[{GAMEPLAY_SERVICE_NAME}] settled OCP booking: '
             f'{reward.amount}x {reward.item_id}'

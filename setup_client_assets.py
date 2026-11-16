@@ -377,11 +377,28 @@ def main() -> int:
               "__root.txt.before-unpack). Default: data/client_unpacked, client untouched."),
     )
     parser.add_argument(
+        "--unpack-client",
+        action="store_true",
+        help=("Force unpacking all client bundles directly into the official client's "
+              "dlcache folder (%%LOCALAPPDATA%%\\Temp\\DSOClient\\dlcache), ensuring all 3D "
+              "models, physics meshes, and textures are available offline even if server assets "
+              "are already present. Implies --client-cache and --force-unpack."),
+    )
+    parser.add_argument(
+        "--force-unpack",
+        action="store_true",
+        help="Force unpacking bundles even if minimum server assets are already present.",
+    )
+    parser.add_argument(
         "--overwrite-quests-xml",
         action="store_true",
         help="Replace an existing data/quests.xml with the decoded client quest pack.",
     )
     args = parser.parse_args()
+
+    if args.unpack_client:
+        args.client_cache = True
+        args.force_unpack = True
 
     server_dir = args.server_dir.expanduser().resolve()
     data_root = server_dir / "data"
@@ -414,7 +431,7 @@ def main() -> int:
     minimum_assets_present = bool(
         static_present and map_databases and navigation_meshes and navshapes_present
     )
-    unpack_bundles = bundle_input_exists and not minimum_assets_present
+    unpack_bundles = bundle_input_exists and (not minimum_assets_present or args.force_unpack)
 
     if not minimum_assets_present and not bundle_input_exists:
         say()

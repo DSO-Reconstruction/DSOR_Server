@@ -1,8 +1,11 @@
 """Map-owned, explicitly started quest defense encounters."""
 
 from dataclasses import dataclass, field, replace
+from functools import lru_cache
 import math
+from pathlib import Path
 import random
+import sqlite3
 import threading
 import time
 
@@ -77,6 +80,24 @@ def resolve_holdground(server, session, binding, *, npc_actor_id=None):
     return plan
 
 
+@lru_cache(maxsize=1024)
+def _map_access_group_key(static_database_path, map_id: str) -> str:
+    key = map_key(map_id)
+    if not key or not static_database_path:
+        return ""
+    path = Path(static_database_path)
+    if not path.is_file():
+        return ""
+    try:
+        with sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True) as db:
+            row = db.execute(
+                "SELECT AccessGroup FROM _Template_MapAccessGroup WHERE Id=?", (key,),
+            ).fetchone()
+            return map_key(row[0]) if row and row[0] else ""
+    except Exception:
+        return ""
+
+
 def holdground_hosted_here(server, session, task, binding):
     """Whether the session's map hosts a live defense binding.
 
@@ -90,9 +111,16 @@ def holdground_hosted_here(server, session, task, binding):
     content, never a reason to look elsewhere (hub NPCs share templates).
     """
     current = map_key(getattr(session, "gameplay_map", "") or "")
-    if not task.maps or current in {map_key(value) for value in task.maps}:
+    current_access = map_key(getattr(session, "gameplay_map_access_id", "") or "")
+    current_access_group = map_key(getattr(session, "gameplay_map_access_group_id", "") or "")
+    task_maps = {map_key(value) for value in task.maps}
+    if not task_maps or current in task_maps or (current_access and current_access in task_maps) or (current_access_group and current_access_group in task_maps):
         return True
-    path = server.static_database_path
+    path = getattr(server, "static_database_path", None)
+    if path and task_maps:
+        access_groups = {_map_access_group_key(path, m) for m in task_maps} - {""}
+        if current in access_groups or (current_access_group and current_access_group in access_groups):
+            return True
     if any(not map_database_path(path, value).is_file()
            or holdground_actor_ids(path, value, binding.actor) for value in task.maps):
         return False

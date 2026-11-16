@@ -102,7 +102,9 @@ def _on_corridor(point, start, end, width) -> bool:
     return math.hypot(px - sx * fraction, pz - sz * fraction) <= width
 
 
-def check_move(session, move, now: float | None = None):
+def check_move(
+        session, move, now: float | None = None, *,
+        speed_multiplier: float = 1.0):
     """Return None for an allowed move, otherwise a concise refusal reason.
 
     Call while holding the session's flow lock.
@@ -112,7 +114,10 @@ def check_move(session, move, now: float | None = None):
     previous = session.gameplay_last_move
     frame, navigation = _navigation(session)
     new_wire = move.relative_position
-    capacity = MAX_PLAYER_SPEED * BURST_SECONDS
+    speed = MAX_PLAYER_SPEED * max(
+        0.0, min(1.0, float(speed_multiplier)),
+    )
+    capacity = speed * BURST_SECONDS
 
     if previous is None:
         if frame is None or session.gameplay_spawn_position is None:
@@ -144,7 +149,7 @@ def check_move(session, move, now: float | None = None):
     budget = min(
         capacity,
         float(getattr(session, "gameplay_move_budget", capacity))
-        + MAX_PLAYER_SPEED * elapsed,
+        + speed * elapsed,
     )
     if distance > budget + POSITION_TOLERANCE:
         session.gameplay_move_budget = budget
